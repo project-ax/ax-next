@@ -28,6 +28,7 @@ import { createBrandingPlugin } from '@ax/branding';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentActivityPlugin } from '@ax/agent-activity';
 import { createUsageLimitsPlugin } from '@ax/usage-limits';
+import { createDiskQuotaPlugin } from '@ax/disk-quota';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
@@ -1035,6 +1036,23 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // /admin/usage* routes (view, limits, suspend/resume), so it hard-depends
   // on http:register-route + auth:require-user.
   plugins.push(createUsageLimitsPlugin());
+
+  // ----- 7d. per-owner storage limit (TASK-690) ---------------------------
+  // Prod keeps every agent workspace (bare git repos) and every uploaded or
+  // published file on ONE shared volume; this is the per-person limit on it.
+  // GATES the two places bytes are written: `workspace:pre-apply` (veto; fires
+  // on the runner's commit AND on every in-process workspace:apply) and
+  // `blob:pre-put` (veto; fired by the `blob:put` facade every blob backend
+  // registers behind). Fails CLOSED. METERS `blob:stored` (a ledger row per
+  // owner and sha256) and `workspace:applied` (re-measures that agent's
+  // workspace through the optional `workspace:usage`, which only the local git
+  // backend registers today), plus a periodic sweep that backfills every
+  // personal agent. Reuses the shared postgres pool (tables
+  // `disk_quota_v1_*`); the limit lives in the admin-editable
+  // `settings:disk-quota` storage key. Mounts GET /settings/storage (a person's
+  // own numbers) and GET /admin/storage + PUT /admin/storage/limits, so it
+  // hard-depends on http:register-route + auth:require-user.
+  plugins.push(createDiskQuotaPlugin());
 
   // ----- 8. agents -------------------------------------------------------
   // Registers `agents:resolve` (the ACL gate the chat-orchestrator hard-

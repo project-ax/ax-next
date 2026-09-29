@@ -144,7 +144,7 @@ export const NEAR_LIMIT_BODY =
   "Once it's full, new file changes and uploads won't be saved. Ask an admin for more room before that happens.";
 export const FULL_TITLE = 'Your storage is full';
 export const FULL_BODY =
-  "Nothing new can be saved right now, including changes to your agents' files and new uploads. Ask an admin for more room.";
+  "Nothing new can be saved right now, including changes to your agents' files and new uploads, and new messages are held until there's more room. Ask an admin for more room.";
 
 /**
  * The default for a message the server turned away because the attachment

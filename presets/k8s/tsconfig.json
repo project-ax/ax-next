@@ -53,6 +53,7 @@
     { "path": "../../packages/auth-better" },
     { "path": "../../packages/teams" },
     { "path": "../../packages/usage-limits" },
+    { "path": "../../packages/disk-quota" },
     { "path": "../../packages/static-files" },
     { "path": "../../packages/onboarding" },
     { "path": "../../packages/validator-identity" },

@@ -64,6 +64,12 @@ tester.run('no-bare-tenant-tables', rule, {
       code: "db.selectFrom('usage_limits_v1_suspensions').execute()",
       filename: '/foo/packages/usage-limits/src/store.ts',
     },
+    // The disk_quota_v1_ prefix (TASK-690) is exempt inside its plugin's
+    // store.ts, where every per-owner storage query lives.
+    {
+      code: "db.selectFrom('disk_quota_v1_usage').execute()",
+      filename: '/foo/packages/disk-quota/src/store.ts',
+    },
 
     // Non-`selectFrom` calls are out of scope (insertInto / updateTable
     // are write paths handled by the plugin's CRUD methods).
@@ -131,6 +137,20 @@ tester.run('no-bare-tenant-tables', rule, {
         {
           messageId: 'bareQuery',
           data: { table: 'usage_limits_v1_buckets' },
+        },
+      ],
+    },
+    // disk_quota_v1_* (TASK-690): per-owner storage ledger rows. A query from
+    // the plugin's routes.ts (or anywhere but store.ts) is flagged. Without
+    // this case, dropping the prefix from TENANT_TABLE_PREFIXES would leave
+    // every other test green.
+    {
+      code: "db.selectFrom('disk_quota_v1_usage').execute()",
+      filename: '/foo/packages/disk-quota/src/routes.ts',
+      errors: [
+        {
+          messageId: 'bareQuery',
+          data: { table: 'disk_quota_v1_usage' },
         },
       ],
     },

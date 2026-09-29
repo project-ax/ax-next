@@ -85,13 +85,30 @@ blob store gets the same shape.
    the decoded bundle length on the runner path, the sum of the put contents on
    the in-process path. The existing policy subscribers ignore the field. A veto
    on the runner path already answers `accepted: false, recoverable: false`, so
-   the runner discards the refused work (no re-submit loop) and hands the reason
-   to the agent (`rejectionReason`), which tells the person.
+   the runner discards the refused work (no re-submit loop). **Be precise about
+   who hears the reason:** the runner hands `rejectionReason` to the agent only
+   on the mid-turn flush before a host tool. The ordinary end-of-turn save runs
+   after the reply is already shown, and its reason is dropped (a stderr line and
+   a trace, for every veto, not just this one). So on its own a refused
+   end-of-turn save is SILENT to the person. That is what the third gate is for.
 2. **`blob:put` becomes a facade** (`@ax/core` `registerBlobPutFacade`), exactly
    like `workspace:apply`. Backends register `blob:put-internal`; the public
    `blob:put` fires the veto `blob:pre-put { size }`, calls the backend, then
    fires the observe-only `blob:stored { sha256, size }`. Every caller (all four
    above, plus any future one) keeps calling `blob:put` and cannot skip it.
+
+3. **`chat:start` (the front door).** Once a person's storage is full, the
+   plugin turns their NEXT message away at `chat:start` with the reason
+   `storage-full`, which channel-web turns into "Your storage is full, so nothing
+   new can be saved right now. Ask an admin for more room." That is how a person
+   learns of the limit when the refusal happened silently at the end of a turn,
+   and it saves running an agent whose work cannot be saved. Unlike the two write
+   gates it fails OPEN (a storage hiccup must not stop people chatting; the write
+   gates are the guard). Cost: a person who is full cannot chat at all, including
+   read-only questions, until an admin raises the limit. That is a deliberate
+   trade: nothing they can do gives space back, so work started now could not be
+   kept anyway. `chat:resume` (a parked agent woken by a decision) is not gated;
+   its writes still hit the write gates.
 
 Plus one new service hook so the quota plugin can measure without knowing the
 backend layout: **`workspace:usage {} -> { bytes }`**, registered by
@@ -101,8 +118,8 @@ does not register it yet (see gaps).
 ## The plugin: `@ax/disk-quota`
 
 Subscribes `workspace:pre-apply` (gate), `workspace:applied` (re-measure that
-agent), `blob:pre-put` (gate), `blob:stored` (ledger row). Registers no service
-hooks. Storage: one Postgres table `disk_quota_v1_usage (owner_id, source, kind,
+agent), `blob:pre-put` (gate), `blob:stored` (ledger row) and `chat:start` (front
+door). Registers no service hooks. Storage: one Postgres table `disk_quota_v1_usage (owner_id, source, kind,
 bytes, updated_at)`, primary key `(owner_id, source)`; `source` is
 `workspace:<agentId>` or `blob:<sha256>`. The limit setting is
 `settings:disk-quota` through `storage:get`/`storage:set` (the `@ax/usage-limits`
@@ -126,7 +143,8 @@ Surface (every route takes the user from the session, never from the URL):
 
 UI: a "Storage" tab under Settings (everyone sees their own bar, admins also see
 the limit form and the biggest-owners table, in the same tab so the nav does not
-grow), plus the friendly sentence when a message with attachments is refused.
+grow), the friendly sentence when a message with attachments is refused, and the
+`chat:start:storage-full` sentence for a full person's next message.
 
 ## Known gaps (stated, not hidden)
 
@@ -156,9 +174,15 @@ grow), plus the friendly sentence when a message with attachments is refused.
   is swallowed by `commitNotifyWithResync` as `kept`. Not changed here; returned
   as a follow-up.
 - **The refused turn's file changes are removed.** The runner-commit refusal takes
-  the existing `recoverable: false` answer so the agent is handed the reason; the
-  cost is that the runner resets the tree to its last saved state. The reason
-  says so.
+  the existing `recoverable: false` answer (no re-submit loop); the cost is that
+  the runner resets the tree to its last saved state. If the crossing commit is
+  the end-of-turn save, the person is not told at that moment (see seam 1); they
+  are told on their next message by the `chat:start` gate, and the Settings
+  Storage tab shows the state. Making the end-of-turn reason reach the person is a
+  runner-side change and a follow-up.
+- **In-process writers see a raw refusal.** The Rules and agent-identity screens
+  call `workspace:apply`; over the limit they get a `rejected` error that their
+  routes do not turn into a sentence. Follow-up.
 - **A write is refused only when it would go over.** A person already over the
   limit (limit lowered later) can read everything and is refused every write
   until they are back under it or the limit is raised.
