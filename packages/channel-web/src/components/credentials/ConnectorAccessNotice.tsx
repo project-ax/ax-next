@@ -44,8 +44,11 @@ export function ConnectorAccessNotice({
     <Alert role="note" data-testid="connector-access-notice" className={className}>
       <TriangleAlert className="size-4" aria-hidden="true" />
       <AlertDescription className="flex flex-col gap-1.5">
-        <p className="font-medium text-foreground">{headline}</p>
-        <p className="text-muted-foreground">{details}</p>
+        <p className="font-medium">{headline}</p>
+        {/* Regular weight, NOT muted: the second paragraph carries the sentence
+            about being tricked, which is the one least worth skimming. Both
+            inherit the Alert's foreground token. */}
+        <p>{details}</p>
       </AlertDescription>
     </Alert>
   );

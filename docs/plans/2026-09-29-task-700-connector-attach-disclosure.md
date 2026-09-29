@@ -49,6 +49,7 @@ secrets (`RoutinesList`).
 - `connector-access-copy.test.ts`: every kind is 2–3 sentences, the four required ideas are present, the banned words are absent.
 - `ConnectorAccessNotice.test.tsx`: renders inside the `Alert`, `role="note"`, no raw colour classes.
 - one test per surface asserting the notice renders where the credential is attached and does **not** render where no credential is (no-key connector, non-admin shared connector, zero key rows).
+- `__tests__/connector-access-coverage.test.ts` (added after the UX review): a source scan that fails when a `components/` file calls `setDestinationCredential(`, renders `<CredentialSlotForm` or `<ConnectorOAuthConnect` without rendering `<ConnectorAccessNotice`, so the next key-entry surface cannot ship without it. The two exemptions (`CredentialSlotForm`, `CredentialSlotRow`: shared with model-provider keys and routine webhook secrets) are checked both ways so they cannot go stale.
 
 ## YAGNI
 

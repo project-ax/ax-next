@@ -28,7 +28,10 @@
  *   key      — a person is typing or saving an API key.
  *   sign-in  — a person is about to sign in to the service (no key to narrow,
  *              so the last sentence does not tell them to choose a narrower one).
- *   attach   — a person is choosing which connectors an agent gets.
+ *   attach   — a person is choosing which connectors an agent gets. The list
+ *              can hold a connector that needs no key at all, so the sentence is
+ *              conditional ("once this connector has a key or sign-in") rather
+ *              than promising a key that may not exist (UX review).
  *   author   — a person is defining a connector; no key exists yet, so it says
  *              what will be true once one is added rather than "your key".
  *
@@ -58,7 +61,7 @@ const HEADLINE: Record<ConnectorAccessNoticeKind, string> = {
   'sign-in':
     'Your assistant gets the access this sign-in allows, and can read or change things in this service without asking you each time.',
   attach:
-    'Attaching a connector gives this agent the same access its key or sign-in has, and it can read or change things in that service without asking you each time.',
+    'Once this connector has a key or sign-in, this agent gets that same access and can read or change things in the service without asking you each time.',
   author:
     'Any key added for this connector gives the assistant the same access the key has, and it can read or change things in this service without asking each time.',
 };
