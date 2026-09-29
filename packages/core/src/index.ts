@@ -26,6 +26,7 @@ export {
   WorkspaceDeltaSchema,
   WorkspaceApplyOutputSchema,
   WorkspaceDiffOutputSchema,
+  WorkspaceUsageOutputSchema,
 } from './workspace.js';
 export {
   filterToPolicy,
@@ -38,6 +39,9 @@ export {
   RUNNER_IMMUTABLE_PREFIXES,
 } from './workspace-policy.js';
 export { registerWorkspaceApplyFacade } from './workspace-apply-facade.js';
+export type { WorkspacePreApplyPayload } from './workspace-apply-facade.js';
+export { registerBlobPutFacade } from './blob-put-facade.js';
+export type { BlobPrePutPayload, BlobStoredPayload } from './blob-put-facade.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
 export type {
   Bytes,
@@ -53,5 +57,7 @@ export type {
   WorkspaceListOutput,
   WorkspaceReadInput,
   WorkspaceReadOutput,
+  WorkspaceUsageInput,
+  WorkspaceUsageOutput,
   WorkspaceVersion,
 } from './workspace.js';

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { S3Client } from '@aws-sdk/client-s3';
+import { reject } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { blobKey } from '../store.js';
 import {
@@ -33,8 +34,9 @@ describe('@ax/blob-store-s3 plugin', () => {
     await h.close();
   });
 
-  it('registers all four blob:* hooks', () => {
+  it('registers all four blob:* hooks (plus the internal put the facade wraps)', () => {
     expect(h.bus.hasService('blob:put')).toBe(true);
+    expect(h.bus.hasService('blob:put-internal')).toBe(true);
     expect(h.bus.hasService('blob:get')).toBe(true);
     expect(h.bus.hasService('blob:stat')).toBe(true);
     expect(h.bus.hasService('blob:delete')).toBe(true);
@@ -45,6 +47,7 @@ describe('@ax/blob-store-s3 plugin', () => {
     expect(p.manifest.name).toBe('@ax/blob-store-s3');
     expect(p.manifest.registers).toEqual([
       'blob:put',
+      'blob:put-internal',
       'blob:get',
       'blob:stat',
       'blob:delete',
@@ -60,6 +63,40 @@ describe('@ax/blob-store-s3 plugin', () => {
     });
     expect(out.sha256).toBe(sha256Hex(bytes));
     expect(out.size).toBe(bytes.length);
+  });
+
+  it('a blob:pre-put veto makes blob:put throw and leaves the store empty', async () => {
+    h.bus.subscribe('blob:pre-put', 'test-quota', async () =>
+      reject({ reason: 'storage full', source: 'test-quota' }),
+    );
+    const bytes = new TextEncoder().encode('refused');
+
+    await expect(
+      h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), { bytes }),
+    ).rejects.toMatchObject({ code: 'rejected', message: expect.stringContaining('storage full') });
+
+    expect(
+      await h.bus.call<{ sha256: string }, BlobStatOutput>('blob:stat', h.ctx(), {
+        sha256: sha256Hex(bytes),
+      }),
+    ).toEqual({ found: false });
+  });
+
+  it('blob:stored fires once with the sha256 and size after a successful put', async () => {
+    const seen: Array<{ sha256: string; size: number }> = [];
+    h.bus.subscribe<{ sha256: string; size: number }>(
+      'blob:stored',
+      'test-ledger',
+      async (_ctx, payload) => {
+        seen.push(payload);
+        return undefined;
+      },
+    );
+    const bytes = new TextEncoder().encode('ledger me');
+
+    await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), { bytes });
+
+    expect(seen).toEqual([{ sha256: sha256Hex(bytes), size: bytes.length }]);
   });
 
   it('blob:put → blob:get round-trips the exact bytes', async () => {
