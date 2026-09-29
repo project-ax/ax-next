@@ -181,7 +181,10 @@ describe('@ax/memory — a retracted (never-right) value re-mentioned later', ()
     );
   });
 
-  it('history marks the re-mention overridden rather than current', async () => {
+  // TASK-665 ruling (Vinay, 2026-09-28): history is a surface too, so the
+  // re-mention is hidden there — it used to be shown, marked overridden. The
+  // retraction itself stays: the person's own "never right" is their record.
+  it('history hides the re-mention and keeps the retraction', async () => {
     harness = await makeMemoryHarness();
     const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
     await retract(harness, portland!);
@@ -192,14 +195,10 @@ describe('@ax/memory — a retracted (never-right) value re-mentioned later', ()
     );
 
     const out = await harness.recall({ activeOnly: false });
-    const closures = out.statements.map((s) => [s.value, s.closure ?? 'current']);
-    expect(closures).toEqual(
-      expect.arrayContaining([
-        ['Portland, Oregon', 'retracted'],
-        ['Portland, Oregon', 'overridden'],
-        ['Seattle, Washington', 'current'],
-      ]),
-    );
+    expect(out.statements.map((s) => [s.value, s.closure ?? 'current'])).toEqual([
+      ['Seattle, Washington', 'current'],
+      ['Portland, Oregon', 'retracted'],
+    ]);
   });
 
   it('the profile does not pick the re-mention over a fresh value', async () => {
@@ -257,7 +256,7 @@ describe('@ax/memory — a retracted value re-mentioned with NO rival in its slo
     expect(values(await harness.recall({ query: 'Portland, Oregon' }))).toEqual([]);
   });
 
-  it('history marks the lone re-mention overridden, and the profile history agrees', async () => {
+  it('history hides the lone re-mention, and the profile history agrees (TASK-665)', async () => {
     harness = await makeMemoryHarness();
     const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
     await retract(harness, portland!);
@@ -265,12 +264,9 @@ describe('@ax/memory — a retracted value re-mentioned with NO rival in its slo
 
     for (const input of [{ activeOnly: false }, { activeOnly: false, profile: true }]) {
       const out = await harness.recall(input);
-      expect(out.statements.map((s) => [s.value, s.closure ?? 'current'])).toEqual(
-        expect.arrayContaining([
-          ['Portland, Oregon', 'retracted'],
-          ['Portland, Oregon', 'overridden'],
-        ]),
-      );
+      expect(out.statements.map((s) => [s.value, s.closure ?? 'current'])).toEqual([
+        ['Portland, Oregon', 'retracted'],
+      ]);
     }
   });
 
@@ -496,5 +492,98 @@ describe('@ax/memory — the conversation feed hides a retracted value re-mentio
     expect(values(await harness.recall({ conversationId: 'conv-rail' })).includes('Portland, Oregon')).toBe(
       shown,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-665 — HUMAN RULING (Vinay, 2026-09-28): recall's history read
+// (`activeOnly: false`) is a surface, so the "hide retracted re-mentions
+// everywhere" rule (TASK-655/657) applies there too — the same predicate the
+// export uses, closed re-mentions included. Only retracted re-mentions: a
+// replaced value's re-mention is still shown (marked), and the person
+// restating a retracted value is still shown.
+// ---------------------------------------------------------------------------
+
+describe('@ax/memory — recall history hides retracted re-mentions (TASK-665)', () => {
+  const HISTORY_READS = [{ activeOnly: false }, { activeOnly: false, profile: true }] as const;
+
+  it('a CLOSED re-mention of a retracted value is absent from history', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(
+      harness,
+      row('Seattle, Washington', FEB, 'human'),
+      row('Portland, Oregon', JUN, 'extracted', { conversationId: 'conv-a' }),
+      // A newer mention closes the June one: the re-mention is now closed.
+      row('Tacoma, Washington', JUL, 'extracted', { conversationId: 'conv-b' }),
+    );
+
+    for (const input of HISTORY_READS) {
+      const out = await harness.recall(input);
+      const portlands = out.statements.filter((s) => s.value === 'Portland, Oregon');
+      expect(portlands.map((s) => s.closure)).toEqual(['retracted']);
+      expect(values(out)).toContain('Seattle, Washington');
+    }
+  });
+
+  it('a re-mention of a REPLACED value is still shown in history', async () => {
+    harness = await makeMemoryHarness();
+    await correctedThenRestated(harness);
+
+    for (const input of HISTORY_READS) {
+      const out = await harness.recall(input);
+      expect(out.statements.filter((s) => s.value === 'Portland, Oregon')).toHaveLength(2);
+    }
+  });
+
+  it('a retracted value the person restated in their own message is still shown', async () => {
+    harness = await makeMemoryHarness();
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(
+      harness,
+      row('Seattle, Washington', FEB, 'human'),
+      row('Portland, Oregon', JUN, 'extracted', {
+        conversationId: 'conv-me',
+        sourceTurnId: 'turn-user',
+        sourceRole: 'user',
+      }),
+    );
+
+    for (const input of HISTORY_READS) {
+      const out = await harness.recall(input);
+      expect(out.statements.filter((s) => s.value === 'Portland, Oregon').map((s) => s.closure)).toEqual([
+        undefined,
+        'retracted',
+      ]);
+    }
+  });
+
+  it('the page is still full to the limit when re-mentions are hidden', async () => {
+    harness = await makeMemoryHarness();
+    // Three older slot-less rows, then the retraction and three newer
+    // re-mentions: the newest rows are exactly the ones hidden.
+    await record(
+      harness,
+      row('likes tea', '2025-10-01T12:00:00.000Z', 'extracted', { relation: 'likes', slot: undefined }),
+      row('likes chess', '2025-11-01T12:00:00.000Z', 'extracted', { relation: 'likes', slot: undefined }),
+      row('likes hiking', '2025-12-01T12:00:00.000Z', 'extracted', { relation: 'likes', slot: undefined }),
+    );
+    const [portland] = await record(harness, row('Portland, Oregon', JAN, 'extracted'));
+    await retract(harness, portland!);
+    await record(
+      harness,
+      row('Portland, Oregon', JUN, 'extracted', { conversationId: 'conv-1' }),
+      row('portland, oregon.', JUL, 'agent', { conversationId: 'conv-2' }),
+      row('Portland, Oregon', '2026-08-10T12:00:00.000Z', 'extracted', { conversationId: 'conv-3' }),
+    );
+
+    const out = await harness.recall({ activeOnly: false, limit: 3 });
+    expect(out.statements.map((s) => [s.value, s.closure ?? 'current'])).toEqual([
+      ['Portland, Oregon', 'retracted'],
+      ['likes hiking', 'current'],
+      ['likes chess', 'current'],
+    ]);
   });
 });

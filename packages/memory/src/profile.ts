@@ -252,8 +252,9 @@ export function dropRementionedSlotRows<T extends SlotGroupRow>(
 
 /**
  * The rows of `rows` that {@link dropRementionedSlotRows} hides. History
- * reads mark these instead of dropping them; one function decides both so
- * the hide rule and the mark rule cannot drift.
+ * reads mark these instead of dropping them — except the retracted ones,
+ * which history drops too via {@link retractedRementionRows} (TASK-665); one
+ * function decides both so the hide rule and the mark rule cannot drift.
  */
 export function rementionedSlotRows<T extends SlotGroupRow>(
   rows: readonly T[],

@@ -58,6 +58,7 @@ import {
   isRetractedValue,
   needsSlotHistory,
   rementionedSlotRows,
+  retractedRementionRows,
   selectProfileRows,
 } from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
@@ -341,6 +342,13 @@ export interface MemoryPluginConfig {
 }
 
 const DEFAULT_MAX_RECALL_LIMIT = 100;
+
+/**
+ * The most rows the history read asks the engine for while refilling a page
+ * it hid rows from (TASK-665) — the engines' own ceiling on `limit`, so
+ * asking for more would be clamped anyway.
+ */
+const ENGINE_READ_CAP = 200;
 
 const NO_RECEIPTS_DEGRADATION =
   'no recall receipts are kept, so an answer shows no "used memories" and memory:recall-receipts reads empty; memory_recall itself is unaffected';
@@ -717,107 +725,116 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           );
 
           const asOf = new Date().toISOString();
-          const raw = await bus.call<unknown, EngineRecallOutput | null>(
-            FACTS_RECALL_HOOK,
-            ctx,
-            {
-              limit: input.profile === true ? Math.max(32, limit) : limit,
-              // Owner scope, pushed DOWN into the engine's query rather than
-              // applied to the rows that come back. A post-filter under a
-              // `limit` silently returns fewer rows than asked for — ask for
-              // 20 and get 3 because 17 belonged to somebody else — which is
-              // design §6.1's "never post-filter a widened pool". It is also
-              // the only version that works at all: the engine's `FactRecord`
-              // does not carry an owner, so there is nothing here to filter
-              // ON. A team agent widens the same push-down deliberately:
-              // `memoryReadScope` omits the owner filter only after
-              // `agents:resolve` proved this caller is a current member of a
-              // team agent, and the rows are that agent's shared knowledge —
-              // never another agent's, never another person's under a
-              // personal agent.
-              //
-              // The conversation feed (TASK-626) is the one read that does NOT
-              // widen on a team agent: a conversation belongs to one person,
-              // so the owner is ALWAYS pushed down with it. Without that, a
-              // teammate who learned (or guessed) another member's
-              // conversation id would read what that person said in it. With
-              // it, a foreign id answers nothing.
-              ...(input.conversationId !== undefined
-                ? { ownerUserId: access.userId, conversationId: input.conversationId }
-                : memoryReadScope(access)),
-              // `about: 'user'` means "the person talking", and what a write
-              // stored under that is `user:<userId>`. Same rewrite, both
-              // directions — see `subject.ts`.
-              ...(input.profile === true
-                ? { about: rewriteSpeaker('user', ownerUserId), slots: [...SLOTS] }
-                : input.about !== undefined
-                  ? { about: rewriteSpeaker(input.about, ownerUserId) }
+          // The primary read, validated. A function because the history read
+          // may re-ask for a longer list: it hides retracted re-mentions
+          // (TASK-665), and a page is filled to `limit` after hiding, not
+          // before.
+          const readPrimary = async (engineLimit: number): Promise<EngineRecallOutput> => {
+            const raw = await bus.call<unknown, EngineRecallOutput | null>(
+              FACTS_RECALL_HOOK,
+              ctx,
+              {
+                limit: engineLimit,
+                // Owner scope, pushed DOWN into the engine's query rather than
+                // applied to the rows that come back. A post-filter under a
+                // `limit` silently returns fewer rows than asked for — ask for
+                // 20 and get 3 because 17 belonged to somebody else — which is
+                // design §6.1's "never post-filter a widened pool". It is also
+                // the only version that works at all: the engine's `FactRecord`
+                // does not carry an owner, so there is nothing here to filter
+                // ON. A team agent widens the same push-down deliberately:
+                // `memoryReadScope` omits the owner filter only after
+                // `agents:resolve` proved this caller is a current member of a
+                // team agent, and the rows are that agent's shared knowledge —
+                // never another agent's, never another person's under a
+                // personal agent.
+                //
+                // The conversation feed (TASK-626) is the one read that does NOT
+                // widen on a team agent: a conversation belongs to one person,
+                // so the owner is ALWAYS pushed down with it. Without that, a
+                // teammate who learned (or guessed) another member's
+                // conversation id would read what that person said in it. With
+                // it, a foreign id answers nothing.
+                ...(input.conversationId !== undefined
+                  ? { ownerUserId: access.userId, conversationId: input.conversationId }
+                  : memoryReadScope(access)),
+                // `about: 'user'` means "the person talking", and what a write
+                // stored under that is `user:<userId>`. Same rewrite, both
+                // directions — see `subject.ts`.
+                ...(input.profile === true
+                  ? { about: rewriteSpeaker('user', ownerUserId), slots: [...SLOTS] }
+                  : input.about !== undefined
+                    ? { about: rewriteSpeaker(input.about, ownerUserId) }
+                    : {}),
+                ...(input.query !== undefined ? { query: input.query } : {}),
+                ...(input.query !== undefined
+                  ? { poolSize: Math.min(200, Math.max(40, Math.ceil(limit * 40 / 15))) }
                   : {}),
-              ...(input.query !== undefined ? { query: input.query } : {}),
-              ...(input.query !== undefined
-                ? { poolSize: Math.min(200, Math.max(40, Math.ceil(limit * 40 / 15))) }
-                : {}),
-              ...(input.activeOnly !== undefined ? { activeOnly: input.activeOnly } : {}),
-            },
-          );
+                ...(input.activeOnly !== undefined ? { activeOnly: input.activeOnly } : {}),
+              },
+            );
 
-          const result = requireEngineResult(raw, MEMORY_RECALL_HOOK, FACTS_RECALL_HOOK);
+            const result = requireEngineResult(raw, MEMORY_RECALL_HOOK, FACTS_RECALL_HOOK);
 
-          // A malformed `statements` is an ERROR, not an empty memory — the
-          // same call `requireEngineResult` just made one line up, and for the
-          // same reason. Coercing a non-array to `[]` here would render "the
-          // engine answered nonsense" and "you have no memories" identically
-          // to a person and to a model, and one of them is a lie. Only
-          // reachable through an engine contract violation, which is exactly
-          // when a loud failure is worth more than a plausible one.
-          //
-          // `undefined` is NOT tolerated: `statements` is the answer. That is
-          // the asymmetry with `degraded` below, which is a signal ABOUT the
-          // answer and whose absence honestly means "nothing was degraded".
-          if (!Array.isArray(result.statements)) {
-            throw new PluginError({
-              code: 'invalid-return',
-              plugin: PLUGIN_NAME,
-              hookName: MEMORY_RECALL_HOOK,
-              message: `${FACTS_RECALL_HOOK} returned a non-array statements; memory cannot report an empty answer for a store whose response it could not read`,
-            });
-          }
-          // A `degraded` that is present but not an array is malformed for the
-          // same reason. Absent is fine and means "nothing was degraded".
-          if (result.degraded !== undefined && !Array.isArray(result.degraded)) {
-            throw new PluginError({
-              code: 'invalid-return',
-              plugin: PLUGIN_NAME,
-              hookName: MEMORY_RECALL_HOOK,
-              message: `${FACTS_RECALL_HOOK} returned a non-array degraded; a degradation signal we cannot read is not the same as no degradation`,
-            });
-          }
-          // And its ELEMENTS, the same step `toMemoryStatement` takes for
-          // `statements` rows: validating the array but not what is in it
-          // would hand a caller `[42]` or `[null]` on a payload typed
-          // `string[]`. An unreadable element is thrown on, not dropped (a
-          // dropped element is a silently discarded degradation signal) and
-          // not coerced (`String(null)` is a flag the engine never raised).
-          // The message is a static literal: the element is engine-supplied
-          // and never interpolated. Only the TYPE is checked — the vocabulary
-          // is deliberately open, so a flag a newer engine learned to raise
-          // still passes through verbatim below. `for...of`, not `every`:
-          // `every` skips a hole, and the spread below would then hand the
-          // caller that hole as a real `undefined`.
-          for (const flag of result.degraded ?? []) {
-            if (typeof flag !== 'string') {
+            // A malformed `statements` is an ERROR, not an empty memory — the
+            // same call `requireEngineResult` just made one line up, and for the
+            // same reason. Coercing a non-array to `[]` here would render "the
+            // engine answered nonsense" and "you have no memories" identically
+            // to a person and to a model, and one of them is a lie. Only
+            // reachable through an engine contract violation, which is exactly
+            // when a loud failure is worth more than a plausible one.
+            //
+            // `undefined` is NOT tolerated: `statements` is the answer. That is
+            // the asymmetry with `degraded` below, which is a signal ABOUT the
+            // answer and whose absence honestly means "nothing was degraded".
+            if (!Array.isArray(result.statements)) {
               throw new PluginError({
                 code: 'invalid-return',
                 plugin: PLUGIN_NAME,
                 hookName: MEMORY_RECALL_HOOK,
-                message: `${FACTS_RECALL_HOOK} returned a non-string degraded flag; a degradation signal we cannot read is not one we may hand a caller`,
+                message: `${FACTS_RECALL_HOOK} returned a non-array statements; memory cannot report an empty answer for a store whose response it could not read`,
               });
             }
-          }
+            // A `degraded` that is present but not an array is malformed for the
+            // same reason. Absent is fine and means "nothing was degraded".
+            if (result.degraded !== undefined && !Array.isArray(result.degraded)) {
+              throw new PluginError({
+                code: 'invalid-return',
+                plugin: PLUGIN_NAME,
+                hookName: MEMORY_RECALL_HOOK,
+                message: `${FACTS_RECALL_HOOK} returned a non-array degraded; a degradation signal we cannot read is not the same as no degradation`,
+              });
+            }
+            // And its ELEMENTS, the same step `toMemoryStatement` takes for
+            // `statements` rows: validating the array but not what is in it
+            // would hand a caller `[42]` or `[null]` on a payload typed
+            // `string[]`. An unreadable element is thrown on, not dropped (a
+            // dropped element is a silently discarded degradation signal) and
+            // not coerced (`String(null)` is a flag the engine never raised).
+            // The message is a static literal: the element is engine-supplied
+            // and never interpolated. Only the TYPE is checked — the vocabulary
+            // is deliberately open, so a flag a newer engine learned to raise
+            // still passes through verbatim below. `for...of`, not `every`:
+            // `every` skips a hole, and the spread below would then hand the
+            // caller that hole as a real `undefined`.
+            for (const flag of result.degraded ?? []) {
+              if (typeof flag !== 'string') {
+                throw new PluginError({
+                  code: 'invalid-return',
+                  plugin: PLUGIN_NAME,
+                  hookName: MEMORY_RECALL_HOOK,
+                  message: `${FACTS_RECALL_HOOK} returned a non-string degraded flag; a degradation signal we cannot read is not one we may hand a caller`,
+                });
+              }
+            }
 
-          for (const row of result.statements) {
-            toMemoryStatement(row);
-          }
+            for (const row of result.statements) {
+              toMemoryStatement(row);
+            }
+            return result;
+          };
+          let engineLimit = input.profile === true ? Math.max(32, limit) : limit;
+          let result = await readPrimary(engineLimit);
           const activeOnly = input.activeOnly !== false;
           // Each subject's slot chains read whole (closed rows included): the
           // replaced row and the correction may sit outside the retrieved
@@ -872,7 +889,27 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             // person edits the one the agent never uses. The same selection
             // functions as the active branches decide, so the mark and the
             // hide cannot drift.
-            page = result.statements.slice(0, limit);
+            //
+            // One exception: a re-mention of a value the person marked never
+            // right is hidden here too, active or closed, unless the person
+            // restated it (TASK-665 ruling, Vinay 2026-09-28 — history is a
+            // surface, "hide it everywhere"). The export's predicate, so the
+            // two cannot drift. A replaced value's re-mention stays: it was
+            // once true. The limit applies AFTER hiding: while the engine
+            // answered a full list and the page is still short, ask for more.
+            let group = await readSlotGroup();
+            let hidden = retractedRementionRows(result.statements, group);
+            while (
+              result.statements.length - hidden.size < limit &&
+              result.statements.length >= engineLimit &&
+              engineLimit < ENGINE_READ_CAP
+            ) {
+              engineLimit = Math.min(ENGINE_READ_CAP, engineLimit + Math.max(hidden.size, limit));
+              result = await readPrimary(engineLimit);
+              group = await readSlotGroup();
+              hidden = retractedRementionRows(result.statements, group);
+            }
+            page = result.statements.filter((row) => !hidden.has(row)).slice(0, limit);
             if (input.profile === true) {
               // The winners come from the ACTIVE slot rows read on their own,
               // not from this page: the page is recency-ordered and capped,
@@ -920,7 +957,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 ),
               );
             } else {
-              overridden = rementionedSlotRows(result.statements, await readSlotGroup());
+              overridden = rementionedSlotRows(result.statements, group);
             }
           }
           const visibleIds = new Set(page.map((row) => row.id));
