@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
+import { deleteInboxEntries } from './inbox.js';
 import type { SessionDatabase } from './migrations.js';
 
 const PLUGIN_NAME = '@ax/session-postgres';
@@ -140,6 +141,43 @@ export interface SessionStore {
     conversationId: string | null;
   } | null>;
   terminate(sessionId: string): Promise<void>;
+  /**
+   * TASK-718. Every session minted for `agentId`, terminated or not, with the
+   * v1 row's `terminated` flag (a v2 row whose v1 row is gone reads as
+   * terminated: there is nothing left to tear down). Empty `agentId` throws.
+   */
+  listForAgent(agentId: string): Promise<AgentSessionRef[]>;
+  /**
+   * TASK-718. Hard-delete the agent's session data — inbox, v1 session rows
+   * (which hold the bearer token) and v2 owner rows — in ONE transaction, and
+   * report how many rows went. Idempotent. Empty `agentId` throws.
+   *
+   * Does NOT tear anything down: callers terminate live sessions first (see
+   * the `agents:deleted` subscriber), because once these rows are gone there
+   * is nothing left to flip a flag on.
+   */
+  deleteForAgent(agentId: string): Promise<AgentPurgeCounts>;
+}
+
+export interface AgentSessionRef {
+  sessionId: string;
+  terminated: boolean;
+}
+
+export interface AgentPurgeCounts {
+  sessions: number;
+  inboxEntries: number;
+}
+
+function requireAgentId(agentId: unknown, method: string): asserts agentId is string {
+  if (typeof agentId !== 'string' || agentId.length === 0) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: method,
+      message: `'agentId' must be a non-empty string`,
+    });
+  }
 }
 
 function mintToken(): string {
@@ -332,6 +370,49 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         .set({ terminated: true })
         .where('session_id', '=', sessionId)
         .execute();
+    },
+
+    async listForAgent(agentId) {
+      requireAgentId(agentId, 'listForAgent');
+      // v2 is the side that knows the agent; LEFT JOIN so a v2 row whose v1
+      // row is missing still shows up (as terminated — nothing to tear down).
+      const rows = await db
+        .selectFrom('session_postgres_v2_session_agent as a')
+        .leftJoin('session_postgres_v1_sessions as s', 's.session_id', 'a.session_id')
+        .select(['a.session_id', 's.terminated'])
+        .where('a.agent_id', '=', agentId)
+        .orderBy('a.created_at')
+        .execute();
+      return rows.map((r) => ({
+        sessionId: r.session_id,
+        terminated: r.terminated ?? true,
+      }));
+    },
+
+    async deleteForAgent(agentId) {
+      requireAgentId(agentId, 'deleteForAgent');
+      return db.transaction().execute(async (trx) => {
+        // Delete the v2 rows FIRST and take the session ids from what that
+        // statement actually removed. A session created for this agent between
+        // an earlier list and this delete is then either fully in (its v1 row
+        // is inserted in the same transaction as its v2 row, so it is visible
+        // whenever the v2 row is) or fully out — never a v1 row stranded
+        // without an owner, which would still resolve its token as an
+        // ownerless session.
+        const removed = await trx
+          .deleteFrom('session_postgres_v2_session_agent')
+          .where('agent_id', '=', agentId)
+          .returning('session_id')
+          .execute();
+        const sessionIds = removed.map((r) => r.session_id);
+        if (sessionIds.length === 0) return { sessions: 0, inboxEntries: 0 };
+        const inboxEntries = await deleteInboxEntries(trx, sessionIds);
+        const res = await trx
+          .deleteFrom('session_postgres_v1_sessions')
+          .where(sql<boolean>`session_id = ANY(${sessionIds})`)
+          .executeTakeFirst();
+        return { sessions: Number(res.numDeletedRows), inboxEntries };
+      });
     },
   };
 }
