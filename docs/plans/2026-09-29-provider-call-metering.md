@@ -15,8 +15,9 @@ Bash tool runs in (`proxy-startup.ts` `providerEnv`; aisdk `bashEnv`).
 So a `curl` in the sandbox is indistinguishable, at the proxy, from the runner:
 same session token, same placeholder, same host.
 
-Measured 2026-09-29, in-process, against the real listener
-(`listener-provider-metering.test.ts`, first run against unmodified code):
+Measured 2026-09-29, in-process, against the real listener (a probe in the
+`listener-credential-binding.test.ts` harness, run against unmodified code; its
+cases are now the first block of `listener-provider-metering.test.ts`):
 
 1. 25 requests written by a "sandbox curl" down one keep-alive tunnel: the
    upstream received the REAL key on 25 of 25. Nothing in `ProxyAuditEntry`

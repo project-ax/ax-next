@@ -165,8 +165,9 @@ the model loop to the runner, LLM calls to the runner's SDK (the host no longer
 registers `llm:call` for the chat path; only the per-provider
 `llm:call:anthropic` / `llm:call:openrouter` exist, served by `@ax/llm-anthropic`
 and `@ax/llm-openrouter` for host-side helper calls — titles, memory extraction,
-the skill safety scan, web-tools — never the agent. Both kinds of traffic are
-metered by `@ax/usage-limits`; see Section 6).
+the skill safety scan, web-tools — never the agent. The agent's own model
+traffic is metered at the credential proxy and by what the runner reports; both
+feed `@ax/usage-limits`, see Section 6).
 
 ---
 
@@ -385,6 +386,17 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   - `event.turn-end`'s optional `usage` (`{ model, inputTokens, outputTokens,
     cacheReadTokens, cacheWriteTokens }`) is runner-reported, so **untrusted**;
     it rides `chat:turn-end` and is metered there (absent → flat assumed cost).
+  - Model calls that code in the sandbox makes on its own (TASK-715): the
+    operator's provider key is unlocked only at the credential proxy, so the proxy
+    meters it. `proxy:open-session` marks the provider credential `metered`
+    (`{ requests: [...] }`, from `PROVIDER_ENDPOINTS[p].inferenceRequests`); a
+    tunnel to that host splices the key only into those requests, asks a per-user
+    gate before each, and reads usage out of each response. `usage:provider-status`
+    `{}` and `usage:provider-record` `{ model?, usage | null, requestBytes | null }`
+    (service hooks, act for `ctx.userId`) return `{ blocked: false }` or
+    `{ blocked: true, reason }`; blocked means suspended or past 2x the daily
+    limit. Spend is the larger of runner-reported and proxy-measured, plus helper
+    calls. Design and the residual gaps: `2026-09-29-provider-call-metering.md`.
 
 ### Stable — covered by ARCH-13's long-tail rollout
 
