@@ -91,4 +91,5 @@ export type {
   RunnerDeps,
   RunnerSeams,
   StreamChunk,
+  TurnUsage,
 } from './run-runner.js';

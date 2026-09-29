@@ -391,6 +391,7 @@ describe('runRunner', () => {
         contentBlocks: [],
         toolResultBlocks: [{ type: 'tool_result', tool_use_id: 't1', content: 'held' }],
         readTurnId: async () => undefined,
+        usage: null,
       } as unknown as Parameters<LoopContext['endTurn']>[0];
 
       const loop: Loop = {
@@ -447,6 +448,7 @@ describe('runRunner', () => {
         contentBlocks: [],
         toolResultBlocks: [],
         readTurnId: async () => undefined,
+        usage: null,
       } as unknown as Parameters<LoopContext['endTurn']>[0];
       const loop: Loop = {
         run: vi.fn(async (ctx: LoopContext) => {
@@ -495,6 +497,7 @@ describe('runRunner', () => {
         contentBlocks: [],
         toolResultBlocks: [],
         readTurnId: async () => undefined,
+        usage: null,
       } as unknown as Parameters<LoopContext['endTurn']>[0];
       const loop: Loop = {
         run: vi.fn(async (ctx: LoopContext) => {
@@ -555,6 +558,7 @@ describe('runRunner', () => {
         contentBlocks: [],
         toolResultBlocks: [],
         readTurnId: async () => undefined,
+        usage: null,
       } as unknown as Parameters<LoopContext['endTurn']>[0];
       const loop: Loop = {
         run: vi.fn(async (ctx: LoopContext) => {
@@ -618,6 +622,7 @@ describe('runRunner', () => {
         contentBlocks: [],
         toolResultBlocks: [],
         readTurnId: async () => undefined,
+        usage: null,
       } as unknown as Parameters<LoopContext['endTurn']>[0];
       const loop: Loop = {
         run: vi.fn(async (ctx: LoopContext) => {
@@ -678,6 +683,7 @@ describe('runRunner', () => {
         contentBlocks: [],
         toolResultBlocks: [],
         readTurnId: async () => undefined,
+        usage: null,
       } as unknown as Parameters<LoopContext['endTurn']>[0];
       const loop: Loop = {
         run: vi.fn(async (ctx: LoopContext) => {
@@ -743,6 +749,7 @@ describe('runRunner', () => {
       contentBlocks: [],
       toolResultBlocks: [],
       readTurnId: async () => undefined,
+      usage: null,
     } as unknown as Parameters<LoopContext['endTurn']>[0];
 
     function deferred<T = void>() {
@@ -1147,6 +1154,7 @@ describe('runRunner', () => {
             contentBlocks: [],
             toolResultBlocks: [],
             readTurnId: async () => undefined,
+            usage: null,
           });
           return 0;
         }),
@@ -1209,6 +1217,119 @@ describe('runRunner', () => {
       };
       expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
       expect(callBinaryUpload).not.toHaveBeenCalled();
+    });
+  });
+
+  // TASK-692 (per-user spend limits). `usage` is a REQUIRED field of
+  // `EndTurnInput`, so a loop cannot close a turn without saying what it cost.
+  // The shell forwards it on the ASSISTANT turn-end only: the role='tool' one
+  // is the same turn's tool results, and metering it too would double-charge.
+  describe('turn usage (TASK-692)', () => {
+    const usage = {
+      model: 'anthropic/claude-sonnet-4-6',
+      inputTokens: 1200,
+      outputTokens: 340,
+      cacheReadTokens: 9000,
+      cacheWriteTokens: 500,
+    };
+
+    /** Run one turn that closes with `usage`, return the turn-end payloads by role. */
+    async function turnEnds(
+      usageArg: unknown,
+      opts: { toolResults?: boolean } = {},
+    ): Promise<{ tool?: Record<string, unknown>; assistant?: Record<string, unknown> }> {
+      fakeClient.event.mockClear();
+      scriptInbox([
+        { type: 'user-message', payload: { role: 'user', content: 'hi' }, reqId: 'req-u', cursor: 1 },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.endTurn({
+            contentBlocks: [{ type: 'text', text: 'done' }],
+            toolResultBlocks:
+              opts.toolResults === true
+                ? [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }]
+                : [],
+            readTurnId: async () => undefined,
+            usage: usageArg,
+          } as unknown as Parameters<LoopContext['endTurn']>[0]);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      const out: { tool?: Record<string, unknown>; assistant?: Record<string, unknown> } = {};
+      for (const c of fakeClient.event.mock.calls) {
+        if (c[0] !== 'event.turn-end') continue;
+        const p = c[1] as Record<string, unknown>;
+        if (p.role === 'tool') out.tool = p;
+        if (p.role === 'assistant') out.assistant = p;
+      }
+      return out;
+    }
+
+    it('rides the assistant turn-end and NOT the role=tool one', async () => {
+      const { tool, assistant } = await turnEnds(usage, { toolResults: true });
+      expect(tool).toBeDefined();
+      expect(tool).not.toHaveProperty('usage');
+      expect(assistant?.usage).toEqual(usage);
+    });
+
+    it('sends no usage key at all when the loop reports null (host charges its flat assumption)', async () => {
+      const { assistant } = await turnEnds(null);
+      expect(assistant).toBeDefined();
+      expect(assistant).not.toHaveProperty('usage');
+    });
+
+    it('treats an omitted usage (an untyped/legacy caller) like null instead of crashing', async () => {
+      const { assistant } = await turnEnds(undefined);
+      expect(assistant).toBeDefined();
+      expect(assistant).not.toHaveProperty('usage');
+    });
+
+    it('normalizes garbage numbers: NaN/Infinity -> 0, negatives -> 0, fractions rounded, clamped to 1e9', async () => {
+      const { assistant } = await turnEnds({
+        model: 'anthropic/claude-sonnet-4-6',
+        inputTokens: Number.NaN,
+        outputTokens: -5,
+        cacheReadTokens: 1.6,
+        cacheWriteTokens: 5_000_000_000,
+      });
+      expect(assistant?.usage).toEqual({
+        model: 'anthropic/claude-sonnet-4-6',
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 1_000_000_000,
+      });
+      const { assistant: inf } = await turnEnds({
+        ...usage,
+        inputTokens: Number.POSITIVE_INFINITY,
+        outputTokens: '12' as unknown as number,
+      });
+      // A non-finite (or non-number) count is unreadable, not "huge": 0.
+      expect((inf?.usage as { inputTokens: number }).inputTokens).toBe(0);
+      expect((inf?.usage as { outputTokens: number }).outputTokens).toBe(0);
+    });
+
+    it('drops the usage field entirely when the model is empty, missing, or too long for the wire', async () => {
+      for (const model of ['', undefined, 'm'.repeat(201)]) {
+        const { assistant } = await turnEnds({ ...usage, model });
+        expect(assistant).toBeDefined();
+        expect(assistant).not.toHaveProperty('usage');
+      }
+    });
+
+    it('every normalized value passes the wire schema the host validates against', async () => {
+      const { EventTurnEndSchema } = await import('@ax/ipc-protocol');
+      const { assistant } = await turnEnds({
+        model: 'openrouter/anthropic/claude-opus-4-5',
+        inputTokens: -1,
+        outputTokens: 7.4,
+        cacheReadTokens: Number.NaN,
+        cacheWriteTokens: 9e15,
+      });
+      expect(EventTurnEndSchema.safeParse(assistant).success).toBe(true);
     });
   });
 });

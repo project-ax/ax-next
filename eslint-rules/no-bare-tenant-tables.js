@@ -1,7 +1,8 @@
 // Custom ESLint rule: no-bare-tenant-tables
 //
 // Enforces invariant I7 from the Week 9.5 multi-tenant slice: tenant-scoped
-// tables (`agents_v1_*`, `auth_v1_*`, `teams_v1_*`) must only be queried
+// tables (`agents_v1_*`, `auth_v1_*`, `teams_v1_*`, … — see
+// TENANT_TABLE_PREFIXES below) must only be queried
 // from the plugin's own `store.ts` or `scope.ts` (or from tests). Anywhere
 // else, callers are expected to go through `scopedAgents()` / a store API
 // so ACL filtering happens in one place per plugin.
@@ -24,6 +25,9 @@ const TENANT_TABLE_PREFIXES = [
   'connectors_v1_',
   'conversations_v1_',
   'teams_v1_',
+  // Per-user spend + turn counters and suspensions (TASK-692): only
+  // packages/usage-limits/src/store.ts queries these.
+  'usage_limits_v1_',
 ];
 
 function isTenantTable(name) {

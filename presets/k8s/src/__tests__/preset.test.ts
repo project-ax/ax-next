@@ -227,6 +227,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/tool-artifact-publish',
         '@ax/tool-dispatcher',
         '@ax/tool-policy',
+        '@ax/usage-limits',
         '@ax/validator-identity',
         '@ax/validator-routine',
         '@ax/validator-service',
@@ -617,6 +618,56 @@ describe('@ax/preset-k8s wiring', () => {
     // to boot: no catalog means the line falls to its T0 floor.
     expect(activity!.manifest.calls).toEqual([]);
     expect(activity!.manifest.optionalCalls?.map((o) => o.hook)).toEqual(['tool:list']);
+  });
+
+  it('loads @ax/usage-limits: gates chat:start, meters chat:turn-end + llm:usage, all calls satisfied (TASK-692)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const usage = plugins.find((p) => p.manifest.name === '@ax/usage-limits');
+    expect(usage).toBeDefined();
+    // Subscriber-only: no service hooks, so nothing can bypass the gate by
+    // calling around it, and no second source of truth for usage rows.
+    expect(usage!.manifest.registers).toEqual([]);
+    expect(usage!.manifest.subscribes).toEqual([
+      'chat:start',
+      'chat:resume',
+      'chat:turn-end',
+      'llm:usage',
+    ]);
+
+    // Every hard call is registered by some OTHER plugin in the preset: the
+    // shared pg pool, the settings key-value store, and the admin routes.
+    expect(usage!.manifest.calls).toEqual([
+      'database:get-instance',
+      'storage:get',
+      'storage:set',
+      'http:register-route',
+      'auth:require-user',
+    ]);
+    for (const hook of usage!.manifest.calls) {
+      const owners = plugins
+        .filter((p) => p.manifest.name !== '@ax/usage-limits')
+        .filter((p) => p.manifest.registers.includes(hook))
+        .map((p) => p.manifest.name);
+      expect(owners, `no registrant for ${hook}`).toHaveLength(1);
+    }
+
+    // The two meters need producers loaded next to the gate, or the plugin
+    // would refuse over-cap users while counting nothing:
+    //   - chat:turn-end is fired by the IPC dispatcher behind @ax/ipc-http
+    //     (runner-reported `usage` on the assistant turn-end);
+    //   - llm:usage is fired by the host-side helper-call providers.
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/ipc-http');
+    expect(names).toContain('@ax/llm-anthropic');
+    expect(names).toContain('@ax/llm-openrouter');
+    // chat:start (the gate) is fired by agent:invoke's owner.
+    const invokeOwner = plugins.find((p) => p.manifest.registers.includes('agent:invoke'));
+    expect(invokeOwner?.manifest.name).toBe('@ax/chat-orchestrator');
+    // chat:resume (the gate's side door) is fired by @ax/decisions before it
+    // wakes a parked agent: a decision-resolved wake-up starts a turn WITHOUT
+    // agent:invoke, so without this producer a suspended user could keep an
+    // agent running by approving what it asks for.
+    expect(names).toContain('@ax/decisions');
   });
 
   it("reads resting once a turn's reply is done, while the runner stays warm (TASK-686)", async () => {

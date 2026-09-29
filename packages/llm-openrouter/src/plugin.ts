@@ -1,6 +1,7 @@
 import {
   LlmCallOutputSchema,
   PluginError,
+  fireLlmUsage,
   providerEndpointFor,
   type AgentContext,
   type HookBus,
@@ -10,7 +11,7 @@ import {
   type ProviderEndpoint,
 } from '@ax/core';
 import { z, type ZodType } from 'zod';
-import { toChatCompletionsRequest, fromChatCompletionsBody } from './translate.js';
+import { DEFAULT_MODEL, toChatCompletionsRequest, fromChatCompletionsBody } from './translate.js';
 
 const PLUGIN_NAME = '@ax/llm-openrouter';
 const PLUGIN_VERSION = '0.0.0';
@@ -246,7 +247,7 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
         bus.registerService<LlmCallInput, LlmCallOutput>(
           'llm:call:openrouter',
           PLUGIN_NAME,
-          async (_ctx, input) => callWithRetry(fetchImpl, apiKey, input, cfg),
+          async (ctx, input) => callAndReportUsage(bus, ctx, fetchImpl, apiKey, input, cfg),
           { returns: LlmCallOutputSchema, timeoutMs: 300_000, stallWarnMs: LLM_CALL_STALL_WARN_MS },
         );
       } else {
@@ -256,7 +257,7 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
           PLUGIN_NAME,
           async (ctx, input) => {
             const apiKey = await resolveApiKey(bus, ctx, cfg, credentialRef);
-            return callWithRetry(fetchImpl, apiKey, input, cfg);
+            return callAndReportUsage(bus, ctx, fetchImpl, apiKey, input, cfg);
           },
           { returns: LlmCallOutputSchema, timeoutMs: 300_000, stallWarnMs: LLM_CALL_STALL_WARN_MS },
         );
@@ -302,6 +303,32 @@ class OpenRouterHttpError extends Error {
     this.name = 'OpenRouterHttpError';
     this.status = status;
   }
+}
+
+/**
+ * One `llm:call:openrouter`, then a report of what it cost on the `llm:usage`
+ * subscriber hook (TASK-692, per-user spend limits). Twin of the one in
+ * `@ax/llm-anthropic`: host-side helper calls spend the operator's key on a
+ * user's behalf, so a metering plugin can subscribe and count them. Only a
+ * SUCCESSFUL call reports, and `fireLlmUsage` never throws, so metering cannot
+ * turn an answer into a failure.
+ */
+async function callAndReportUsage(
+  bus: HookBus,
+  ctx: AgentContext,
+  fetchImpl: typeof fetch,
+  apiKey: string,
+  input: LlmCallInput,
+  cfg: LlmOpenRouterConfig,
+): Promise<LlmCallOutput> {
+  const out = await callWithRetry(fetchImpl, apiKey, input, cfg);
+  await fireLlmUsage(bus, ctx, {
+    // `input.model` is a bare slug on this hook; the ref the limiter prices is
+    // `provider/model-id`, so put the provider back.
+    model: `openrouter/${input.model ?? cfg.defaultModel ?? DEFAULT_MODEL}`,
+    usage: out.usage,
+  });
+  return out;
 }
 
 async function callWithRetry(

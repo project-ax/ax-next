@@ -455,6 +455,73 @@ describe('aisdk runner — parity', () => {
     });
   });
 
+  // TASK-692 (per-user spend limits). The assistant turn-end carries what the
+  // turn cost, summed over EVERY model step, in DISJOINT buckets. The scripted
+  // usage below is the V4 PROVIDER shape (`{ total, noCache, cacheRead, ... }`):
+  // the flat `{ inputTokens: 1 }` form the other rows use maps to "no usage
+  // reported", which is its own row below.
+  const v4Usage = (u: {
+    total: number;
+    noCache: number;
+    cacheRead: number;
+    cacheWrite: number;
+    out: number;
+    reasoning: number;
+  }) => ({
+    inputTokens: {
+      total: u.total,
+      noCache: u.noCache,
+      cacheRead: u.cacheRead,
+      cacheWrite: u.cacheWrite,
+    },
+    outputTokens: { total: u.out, text: u.out - u.reasoning, reasoning: u.reasoning },
+  });
+  const withUsage = (chunks: Chunk[], usage: unknown): Chunk[] =>
+    chunks.map((c) => (c.type === 'finish' ? { ...c, usage } : c));
+
+  it('reports the turn\'s usage on the assistant turn-end: every step summed, cache buckets disjoint, reasoning inside output', async () => {
+    scriptedModel.mockReturnValue(
+      modelReplaying([
+        withUsage(
+          toolStep('Write', { file_path: path.join(workspaceRoot, 'u.txt'), content: 'x' }),
+          v4Usage({ total: 1000, noCache: 100, cacheRead: 850, cacheWrite: 50, out: 30, reasoning: 20 }),
+        ),
+        withUsage(
+          textStep('done'),
+          v4Usage({ total: 1100, noCache: 200, cacheRead: 900, cacheWrite: 0, out: 45, reasoning: 0 }),
+        ),
+      ]),
+    );
+    inboxEntries = [userMessage('write it')];
+
+    await expect(main()).resolves.toBe(0);
+
+    const toolEnd = turnEnds().find((t) => t.role === 'tool');
+    const assistantEnd = turnEnds().find((t) => t.role === 'assistant');
+    // Metered once, on the assistant event: the tool turn-end is the same turn.
+    expect(toolEnd).toBeDefined();
+    expect(toolEnd).not.toHaveProperty('usage');
+    expect(assistantEnd!.usage).toEqual({
+      model: 'anthropic/claude-sonnet-4-6',
+      inputTokens: 100 + 200,
+      outputTokens: 30 + 45,
+      cacheReadTokens: 850 + 900,
+      cacheWriteTokens: 50,
+    });
+  });
+
+  it('sends no usage when the provider reported none (the host charges its flat assumption, never zero)', async () => {
+    // The flat `{ inputTokens: 1, ... }` finish usage maps to undefined figures.
+    scriptedModel.mockReturnValue(modelReplaying([textStep('hi')]));
+    inboxEntries = [userMessage('hello')];
+
+    await expect(main()).resolves.toBe(0);
+
+    const assistantEnd = turnEnds().find((t) => t.role === 'assistant');
+    expect(assistantEnd).toBeDefined();
+    expect(assistantEnd).not.toHaveProperty('usage');
+  });
+
   it('routes a model tool call through tool.pre-call and back as a tool result', async () => {
     scriptedModel.mockReturnValue(
       modelReplaying([

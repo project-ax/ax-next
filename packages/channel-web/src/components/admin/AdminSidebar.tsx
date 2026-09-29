@@ -10,6 +10,7 @@ import {
   Wrench,
   ListChecks,
   Palette,
+  Gauge,
 } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
 import { SidebarSectionLabel } from '../SidebarSectionLabel';
@@ -34,7 +35,8 @@ export type AdminTabId =
   | 'model-config'
   | 'auth-providers'
   | 'teams'
-  | 'branding';
+  | 'branding'
+  | 'usage';
 
 type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
 
@@ -51,6 +53,8 @@ export const ADMIN_NAV: NavItem[] = [
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'teams', label: 'Teams', icon: UsersRound },
   { id: 'branding', label: 'Branding', icon: Palette },
+  // TASK-692 — who used what, the two per-person limits, and the pause switch.
+  { id: 'usage', label: 'Usage', icon: Gauge },
 ];
 
 export interface AdminSidebarProps {

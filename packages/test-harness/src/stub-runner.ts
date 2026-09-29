@@ -10,7 +10,7 @@
  *
  * Why this exists: tests need a runner that exercises the real IPC wire path
  * (tool.list / tool.pre-call / tool.execute-host / event.tool-post-call /
- * event.chat-end) without depending on a live LLM or the SDK. Each test
+ * event.turn-end / event.chat-end) without depending on a live LLM or the SDK. Each test
  * encodes a deterministic script of tool calls + assistant text + finish,
  * spawns this stub against a real orchestrator, and asserts on the IPC
  * actions that fire.
@@ -126,6 +126,15 @@ async function run(): Promise<number> {
 
     if (entry.kind === 'assistant-text') {
       messages.push({ role: 'assistant', content: entry.content });
+      continue;
+    }
+
+    if (entry.kind === 'turn-end') {
+      await client.event('event.turn-end', {
+        reason: 'user-message-wait',
+        role: 'assistant',
+        ...(entry.usage !== undefined ? { usage: entry.usage } : {}),
+      });
       continue;
     }
 

@@ -15,10 +15,10 @@ export interface AdminPaneHeaderProps {
 /**
  * THE `h1` OF THE SETTINGS SURFACE (TASK-446).
  *
- * `AdminShell` mounts this on every one of its nine tabs and mounts nothing
+ * `AdminShell` mounts this on every one of its tabs and mounts nothing
  * else that is always present, so this title — and only this title — is the
  * page heading a screen-reader user lands on. It used to be a `<span>`, which
- * left the whole surface with no `h1` at all while six of the nine tab bodies
+ * left the whole surface with no `h1` at all while six of the (then nine) tab bodies
  * went straight to `h2` (or, on Skills and Connectors, straight to `h3`).
  *
  * The eyebrow stays a `<span>` deliberately. "Settings" / "Admin" is the

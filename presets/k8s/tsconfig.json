@@ -52,6 +52,7 @@
     { "path": "../../packages/http-server" },
     { "path": "../../packages/auth-better" },
     { "path": "../../packages/teams" },
+    { "path": "../../packages/usage-limits" },
     { "path": "../../packages/static-files" },
     { "path": "../../packages/onboarding" },
     { "path": "../../packages/validator-identity" },

@@ -38,6 +38,38 @@ describe('StubRunnerScriptSchema', () => {
     });
   });
 
+  it('accepts a turn-end entry with and without usage', () => {
+    const script: StubRunnerScript = {
+      entries: [
+        {
+          kind: 'turn-end',
+          usage: {
+            model: 'anthropic/claude-sonnet-4-6',
+            inputTokens: 1000,
+            outputTokens: 500,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+          },
+        },
+        { kind: 'turn-end' },
+        { kind: 'finish', reason: 'end_turn' },
+      ],
+    };
+    const parsed = StubRunnerScriptSchema.parse(script);
+    expect(parsed.entries[0]).toEqual(script.entries[0]);
+    expect(parsed.entries[1]).toEqual({ kind: 'turn-end' });
+    expect(decodeScript(encodeScript(script))).toEqual(script);
+  });
+
+  it('rejects a turn-end entry with a negative or fractional token count', () => {
+    for (const bad of [{ inputTokens: -1 }, { outputTokens: 1.5 }]) {
+      const result = StubRunnerScriptSchema.safeParse({
+        entries: [{ kind: 'turn-end', usage: bad }, { kind: 'finish', reason: 'end_turn' }],
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
   it('rejects an unknown entry kind', () => {
     const result = StubRunnerScriptSchema.safeParse({
       entries: [{ kind: 'mystery', payload: 'nope' }],

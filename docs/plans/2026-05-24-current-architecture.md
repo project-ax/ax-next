@@ -162,8 +162,11 @@ are now precisely:
 What is **not** in the kernel anymore (vs. the 04-22 doc Section 3): the chat
 loop. Its responsibilities dispersed — orchestration to `@ax/chat-orchestrator`,
 the model loop to the runner, LLM calls to the runner's SDK (the host no longer
-registers `llm:call` for the chat path; only `@ax/llm-anthropic`'s
-`llm:call:anthropic` exists, used for auto-titling and web-tools, not the agent).
+registers `llm:call` for the chat path; only the per-provider
+`llm:call:anthropic` / `llm:call:openrouter` exist, served by `@ax/llm-anthropic`
+and `@ax/llm-openrouter` for host-side helper calls — titles, memory extraction,
+the skill safety scan, web-tools — never the agent. Both kinds of traffic are
+metered by `@ax/usage-limits`; see Section 6).
 
 ---
 
@@ -363,6 +366,25 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   only the opaque `runnerEndpoint`. A strict schema would strip the handle.
 - **Tool catalog:** `tool:register`, `tool:list`, and the dynamic
   `tool:execute:<name>` family.
+- **Usage limits (TASK-692, `@ax/usage-limits`):**
+  - `chat:start` veto reasons `usage-limit-daily` | `usage-limit-rate` |
+    `usage-suspended` | `usage-check-unavailable` are owned by `@ax/usage-limits`
+    and surface as outcome reason `chat:start:<code>` (channel-web maps them to
+    sentences). The gate fails closed.
+  - `chat:resume` (veto-capable subscriber): fired by `@ax/decisions` as the
+    decision's **owner** before it wakes a parked agent with a `decision-resolved`
+    entry, because that wake-up starts a turn without passing `agent:invoke`
+    (so `chat:start` never sees it). Payload `{ decisionId, outcome }`;
+    `@ax/usage-limits` judges it exactly like a `chat:start`. A refusal makes
+    `deliverResolution` return `{ delivered: false, reason: 'refused' }`: the agent
+    is not woken, and the deferred-delivery sweep treats it like any delivery
+    nobody received, so the host replay still makes the call the person approved
+    (the gate stops model turns, not a human-approved call).
+  - `llm:usage` (subscriber): fired by `@ax/llm-anthropic` / `@ax/llm-openrouter`
+    after a successful host-side call; payload `{ model, usage }`. Fire-and-forget.
+  - `event.turn-end`'s optional `usage` (`{ model, inputTokens, outputTokens,
+    cacheReadTokens, cacheWriteTokens }`) is runner-reported, so **untrusted**;
+    it rides `chat:turn-end` and is metered there (absent → flat assumed cost).
 
 ### Stable — covered by ARCH-13's long-tail rollout
 

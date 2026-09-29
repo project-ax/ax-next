@@ -157,6 +157,64 @@ export type StreamChunk =
       held?: boolean;
     };
 
+/**
+ * What one turn cost, as the loop measured it (TASK-692, per-user spend
+ * limits). Rides the assistant `event.turn-end` as `usage`; the host meters it.
+ *
+ * The buckets are DISJOINT — the host prices each at its own rate, so a loop
+ * that lets them overlap double-charges the user:
+ *   - `model`: the `provider/model-id` ref the turn ran on (the agent's
+ *     configured model, e.g. `anthropic/claude-sonnet-4-6`).
+ *   - `inputTokens`: input billed at the STANDARD input rate, i.e. EXCLUDING
+ *     cache reads and cache writes.
+ *   - `outputTokens`: every output token, including reasoning/thinking.
+ *   - `cacheReadTokens` / `cacheWriteTokens`: cached input read / written.
+ */
+export interface TurnUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+/** Upper bound on any reported token count; mirrors the wire schema's max. */
+const MAX_TOKEN_COUNT = 1_000_000_000;
+/** Mirrors the wire schema's `model` max length. A longer ref fails validation. */
+const MAX_MODEL_REF_LENGTH = 200;
+
+/**
+ * One token count made safe for the wire: an unreadable value (NaN, Infinity,
+ * a string) is 0, a fraction rounds, a negative is 0, and anything above the
+ * wire's ceiling is clamped to it. Loop data is not trusted to be well-formed —
+ * and a value the host's schema rejects would fail the WHOLE turn-end (the
+ * display frame rides it), so a bad count must never reach the wire.
+ */
+function normalizeTokenCount(n: unknown): number {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return 0;
+  return Math.min(MAX_TOKEN_COUNT, Math.max(0, Math.round(n)));
+}
+
+/**
+ * The `usage` object for the wire, or `undefined` when there is none to send
+ * (the loop reported `null`/nothing, or the model ref is unusable). `undefined`
+ * means "unknown", which the host charges at a conservative flat cost.
+ */
+function normalizeTurnUsage(usage: TurnUsage | null | undefined): TurnUsage | undefined {
+  if (usage === null || usage === undefined) return undefined;
+  const model: unknown = usage.model;
+  if (typeof model !== 'string' || model.length === 0 || model.length > MAX_MODEL_REF_LENGTH) {
+    return undefined;
+  }
+  return {
+    model,
+    inputTokens: normalizeTokenCount(usage.inputTokens),
+    outputTokens: normalizeTokenCount(usage.outputTokens),
+    cacheReadTokens: normalizeTokenCount(usage.cacheReadTokens),
+    cacheWriteTokens: normalizeTokenCount(usage.cacheWriteTokens),
+  };
+}
+
 /** What the loop hands the shell at a turn boundary. */
 export interface EndTurnInput {
   /** Assistant-side blocks observed during the turn (text/thinking/tool_use). */
@@ -191,6 +249,20 @@ export interface EndTurnInput {
     sessionId: string,
     role: 'tool' | 'assistant',
   ) => Promise<string | undefined>;
+  /**
+   * What this turn cost. REQUIRED, on purpose: `endTurn` is the one seam every
+   * loop closes a turn through, so a loop cannot compile without saying what
+   * its turn cost — a new runner cannot silently skip the meter (TASK-692).
+   *
+   * `null` means "this loop cannot tell" (an aborted turn with no accounting, a
+   * provider that reports none). The host then charges a conservative flat
+   * assumed cost: unknown is never free. Do NOT pass zeros to mean "unknown" —
+   * zeros are a claim that the turn was free.
+   *
+   * The shell forwards it on the ASSISTANT `event.turn-end` only (never the
+   * role='tool' one), after clamping each count to a sane non-negative integer.
+   */
+  usage: TurnUsage | null;
 }
 
 /** The shell surface a loop drives. */
@@ -1512,6 +1584,10 @@ async function runRunnerInner(
       transcriptSessionId !== null
         ? await input.readTurnId(transcriptSessionId, 'assistant')
         : undefined;
+    // Normalized at the last moment, on the assistant event ONLY: the role='tool'
+    // turn-end above is the same turn's tool results, so metering both would
+    // double-charge it. `undefined` (no usage / unusable model) sends no key.
+    const turnUsage = normalizeTurnUsage(input.usage);
     await client
       .event('event.turn-end', {
         reason: 'user-message-wait',
@@ -1519,6 +1595,7 @@ async function runRunnerInner(
         ...(input.contentBlocks.length > 0
           ? { contentBlocks: input.contentBlocks }
           : {}),
+        ...(turnUsage !== undefined ? { usage: turnUsage } : {}),
         // See reqId rationale on the tool turn-end above.
         ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
         ...(assistantTurnId !== undefined ? { turnId: assistantTurnId } : {}),

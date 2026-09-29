@@ -48,6 +48,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     );
     expect(screen.queryByText('AI model keys')).not.toBeInTheDocument();
     expect(screen.queryByText('Teams')).not.toBeInTheDocument();
+    expect(screen.queryByText('Usage')).not.toBeInTheDocument();
     // The "Admin" section label is also absent for non-admins.
     expect(screen.queryByText('Admin')).not.toBeInTheDocument();
     // Agents is owner-scoped and lives in the user Settings group → still shown.
@@ -70,6 +71,28 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     expect(screen.getByText('Skills')).toBeInTheDocument();
     expect(screen.getByText('AI model keys')).toBeInTheDocument();
     expect(screen.getByText('Teams')).toBeInTheDocument();
+    expect(screen.getByText('Usage')).toBeInTheDocument();
+  });
+
+  it('routes the admin Usage tab to the usage tab id', () => {
+    const onTabChange = vi.fn();
+    render(
+      <AdminSidebar activeTab="branding" isAdmin onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
+    );
+    screen.getByText('Usage').click();
+    expect(onTabChange).toHaveBeenCalledWith('usage');
+  });
+
+  it('lists Usage in the Admin group, right after Branding', () => {
+    render(
+      <AdminSidebar activeTab="usage" isAdmin onTabChange={noop} onBack={noop} backLabel="chat" />,
+    );
+    const items = screen
+      .getAllByRole('button')
+      .map((b) => b.textContent?.trim() ?? '')
+      .filter((t) => t.length > 0);
+    expect(items.indexOf('Usage')).toBe(items.indexOf('Branding') + 1);
+    expect(screen.getByRole('button', { name: 'Usage' }).getAttribute('data-active')).toBeTruthy();
   });
 
   it('folds the catalog / admit-queue / connector-registry surfaces out of the nav', () => {
