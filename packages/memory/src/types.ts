@@ -70,7 +70,8 @@ export interface MemoryStatement {
    *
    * `overridden` appears only on history reads (`activeOnly: false`), on a
    * row that is still ACTIVE but that the equivalent active read hides
-   * because a higher-provenance row outranks it.
+   * because a higher-provenance row outranks it. (A re-mention of a
+   * RETRACTED value is not marked: history leaves it out, TASK-665.)
    */
   closure?: 'replaced' | 'forgotten' | 'retracted' | 'overridden';
   /**
@@ -143,7 +144,12 @@ export interface MemoryRecallInput {
    * key exactly as a write is, so a read finds what a write stored.
    */
   about?: string;
-  /** Defaults to `true` — only currently-active statements. */
+  /**
+   * Defaults to `true` — only currently-active statements. `false` is the
+   * history read: closed rows too, with one exception — a re-mention of a
+   * value the person marked never right is left out, active or closed,
+   * unless the person restated it (TASK-665).
+   */
   activeOnly?: boolean;
   profile?: boolean;
   /** Defaults to {@link DEFAULT_RECALL_LIMIT}. */
