@@ -143,6 +143,29 @@ describe('AgentForm — styled delete confirm', () => {
     confirmSpy.mockRestore();
   });
 
+  // TASK-718: deleting an agent deletes its conversations, the files in them,
+  // the files it saved, and its routines. The dialog used to say only "This
+  // cannot be undone", which left a person free to assume their chats survive
+  // the agent. It must say what goes, and must not promise anything is kept.
+  it('says plainly what is deleted with the agent, and promises nothing is kept', async () => {
+    render(<AgentForm isAdmin />);
+    await waitFor(() => {
+      expect(screen.getByText('Research Bot')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'delete' }));
+    await waitFor(() => {
+      expect(screen.getByText('Delete agent?')).toBeTruthy();
+    });
+    const body = within(screen.getByRole('dialog')).getByText(/cannot be undone/i);
+    const text = body.textContent ?? '';
+    expect(text).toMatch(/conversations/i);
+    expect(text).toMatch(/files/i);
+    expect(text).toMatch(/routines/i);
+    expect(text).not.toMatch(/\b(keep|kept|retain|archive)/i);
+    // The agent's name stays in the sentence so the person can see WHICH one.
+    expect(text).toContain('Research Bot');
+  });
+
   it('confirm path → calls deleteAgent with the id', async () => {
     render(<AgentForm isAdmin />);
     await waitFor(() => {
