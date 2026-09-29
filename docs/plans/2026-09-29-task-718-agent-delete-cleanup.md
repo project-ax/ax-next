@@ -59,5 +59,13 @@ purge.
   the reclaim pod runs, and `rm -rf` then fails with "Directory not empty".
 - Append-path guards: load-bearing for the live-runner case; without them an in-flight
   turn resurrects orphan event rows after the purge.
-- A boot-time sweep of orphans: cut. Nothing produces new orphans once the subscribers
-  exist, and prod residue is cleaned by hand under Vinay's OK.
+- A boot-time sweep of orphans: cut, but it is the follow-up that matters most. The
+  subscribers are the fix for every new delete; they are not a recovery path. Each
+  cleanup is idempotent, but `deleteAgent` removes the row BEFORE it fires the event,
+  so a host that dies in between skips every subscriber and the id can never be
+  deleted again; and attachments hears about a conversation once, from the purge that
+  deletes it, so a lost `conversations:purged` is not healed by firing `agents:deleted`
+  again. What a failure leaves is unreadable (every read gates on the agent or the
+  conversation, both gone), not exposed. Prod residue is cleaned by hand under
+  Vinay's OK; a sweep that finds agent-keyed rows whose agent no longer exists would
+  heal both.

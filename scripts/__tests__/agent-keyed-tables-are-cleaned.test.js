@@ -34,6 +34,15 @@
 //     blobs, files on a volume. Those are listed under NOT_TABLES below so the gap
 //     is written down where the next person will look for it.
 //   - A table created some way other than a `CREATE TABLE` in a .ts file.
+//   - A table that ties rows to an agent through a GENERIC owner column
+//     (`owner_id` plus `owner_type = 'agent'`, the shape the credentials store
+//     uses) rather than one of the four scoping columns. Credentials are purged by
+//     `credentials:purge-by-owner` from `deleteAgent` itself; the next table of
+//     that shape has to be added to SCOPING_COLUMNS or found by review.
+//   - A cleanup that cannot be re-run. The subscribers are idempotent, but
+//     attachments hears about a conversation once, from the purge that deletes it,
+//     so a lost `conversations:purged` is not healed by firing `agents:deleted`
+//     again. Whatever such a failure leaves is unreadable, not exposed.
 //
 // THE ALLOWLIST IS PART OF THE TEST. Adding a table to KEPT_ON_PURPOSE is a
 // decision that a person's data outlives the agent that produced it. Say why, in a
@@ -51,7 +60,7 @@ const PACKAGES = join(ROOT, 'packages');
 const SCOPING_COLUMNS = ['agent_id', 'agent_key', 'conversation_id', 'session_id'];
 
 /** Hooks a package may use to hear that an agent, or its conversations, are gone. */
-const CLEANUP_TRIGGERS = ["'agents:deleted'", "'conversations:purged'"];
+const CLEANUP_TRIGGERS = [/['"`]agents:deleted['"`]/, /['"`]conversations:purged['"`]/];
 
 /**
  * Agent-scoped tables that deliberately survive the agent. Every entry is a
@@ -256,7 +265,7 @@ function stripComments(text) {
 
 /** Does this package react to the agent, or its conversations, going away? */
 export function reactsToDeletion(files) {
-  return files.some(({ text }) => CLEANUP_TRIGGERS.some((t) => text.includes(t)));
+  return files.some(({ text }) => CLEANUP_TRIGGERS.some((t) => t.test(text)));
 }
 
 describe('agent-scoped tables are cleaned when their agent is deleted (TASK-718)', () => {
@@ -405,6 +414,9 @@ describe('agent-scoped tables are cleaned when their agent is deleted (TASK-718)
       expect(reactsToDeletion([file('p/plugin.ts', "subscribes: ['agents:deleted']")])).toBe(true);
       expect(reactsToDeletion([file('p/plugin.ts', "subscribes: ['conversations:purged']")])).toBe(true);
       expect(reactsToDeletion([file('p/plugin.ts', "subscribes: ['chat:turn-end']")])).toBe(false);
+      // Quote style is not the point.
+      expect(reactsToDeletion([file('p/plugin.ts', 'subscribes: ["agents:deleted"]')])).toBe(true);
+      expect(reactsToDeletion([file('p/plugin.ts', 'bus.subscribe(`agents:deleted`, X, h)')])).toBe(true);
     });
   });
 });
