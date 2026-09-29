@@ -177,6 +177,27 @@ describe('ProviderMeterHub — recording and the verdict that comes back', () =>
     });
   });
 
+  it('passes a partial marker through to the ledger, and only when the settlement has one', async () => {
+    const l = fakeLedger();
+    const hub = new ProviderMeterHub({ ledger: l.ledger });
+    const { meter } = await hub.forSession(SESSION('s1'));
+    meter.admit();
+    meter.settle({ ...BILLABLE, partial: { bytes: 900, streamed: true } });
+    meter.admit();
+    meter.settle(BILLABLE);
+    await flush();
+    expect(l.of('record')[0]!.payload).toMatchObject({ partial: { bytes: 900, streamed: true } });
+    expect('partial' in l.of('record')[1]!.payload!).toBe(false);
+  });
+
+  it('defaults to 8 calls in flight per user', async () => {
+    const l = fakeLedger();
+    const hub = new ProviderMeterHub({ ledger: l.ledger });
+    const { meter } = await hub.forSession(SESSION('s1'));
+    for (let i = 0; i < 8; i++) expect(meter.admit().ok).toBe(true);
+    expect(meter.admit()).toMatchObject({ ok: false, reason: 'busy' });
+  });
+
   it('omits model when the settlement has none (the payload never carries an undefined key)', async () => {
     const l = fakeLedger();
     const hub = new ProviderMeterHub({ ledger: l.ledger });

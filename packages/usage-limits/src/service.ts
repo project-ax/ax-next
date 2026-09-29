@@ -80,6 +80,17 @@ const ProviderRecordSchema = z.object({
     })
     .nullable(),
   requestBytes: z.number().finite().nonnegative().nullable(),
+  /**
+   * Present only when the response ended before it was complete: how much of it
+   * arrived. The counters that would say what the model generated may be the
+   * part that never did, so the bytes that did are the evidence. A malformed
+   * value is ignored (`.catch`), never trusted and never fatal.
+   */
+  partial: z
+    .object({ bytes: z.number().finite().nonnegative(), streamed: z.boolean() })
+    .nullable()
+    .optional()
+    .catch(undefined),
 });
 
 /**
@@ -92,12 +103,34 @@ const UNMEASURED_INPUT_TOKENS_UNKNOWN_SIZE = 200_000;
 const UNMEASURED_OUTPUT_TOKENS = 4096;
 const UNMEASURED_BYTES_PER_TOKEN = 3;
 
-function unmeasuredCostMicros(requestBytes: number | null): number {
+/**
+ * A response that ended early is floored at the output its bytes could have held.
+ * The bytes-per-token figures are deliberately LOW so the floor over-counts: a
+ * server-sent-events delta carries a JSON envelope of ~120 bytes around a few
+ * tokens of text (so a real stream is 30-100+ bytes per token), and ordinary JSON
+ * text is ~4 bytes per token. Over-counting only ever costs someone who hung up
+ * mid-response; under-counting would let a client read every token and hang up
+ * just before the final usage event.
+ */
+const PARTIAL_STREAMED_BYTES_PER_TOKEN = 8;
+const PARTIAL_OTHER_BYTES_PER_TOKEN = 3;
+
+function partialOutputFloor(partial: { bytes: number; streamed: boolean } | null | undefined): number {
+  if (partial === null || partial === undefined) return 0;
+  const perToken = partial.streamed ? PARTIAL_STREAMED_BYTES_PER_TOKEN : PARTIAL_OTHER_BYTES_PER_TOKEN;
+  return Math.min(MAX_TOKENS, Math.ceil(partial.bytes / perToken));
+}
+
+function unmeasuredCostMicros(
+  requestBytes: number | null,
+  partial: { bytes: number; streamed: boolean } | null | undefined,
+): number {
   const inputTokens =
     requestBytes === null
       ? UNMEASURED_INPUT_TOKENS_UNKNOWN_SIZE
       : Math.min(MAX_TOKENS, Math.ceil(requestBytes / UNMEASURED_BYTES_PER_TOKEN));
-  return costMicros(undefined, { inputTokens, outputTokens: UNMEASURED_OUTPUT_TOKENS });
+  const outputTokens = Math.max(UNMEASURED_OUTPUT_TOKENS, partialOutputFloor(partial));
+  return costMicros(undefined, { inputTokens, outputTokens });
 }
 
 export interface UsageService {
@@ -266,14 +299,18 @@ export function createUsageService(deps: {
         const parsed = ProviderRecordSchema.safeParse(payload);
         let cost: number;
         if (parsed.success && parsed.data.usage !== null) {
-          cost = costMicros(parsed.data.model, parsed.data.usage);
+          const u = parsed.data.usage;
+          cost = costMicros(parsed.data.model, {
+            ...u,
+            outputTokens: Math.max(u.outputTokens, partialOutputFloor(parsed.data.partial)),
+          });
         } else {
           // Billable but unread, or not a payload we understand: charge the
           // estimate rather than nothing. An unparseable payload also forgets
           // its requestBytes (we cannot trust any of it), so it pays the flat
           // guess, never a cheaper one.
           const requestBytes = parsed.success ? parsed.data.requestBytes : null;
-          cost = unmeasuredCostMicros(requestBytes);
+          cost = unmeasuredCostMicros(requestBytes, parsed.success ? parsed.data.partial : undefined);
           logQuietly(ctx, 'info', 'usage_provider_unmeasured', {
             cause: parsed.success ? 'unreadable' : 'invalid',
           });

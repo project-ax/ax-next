@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ResponseTap, type TapResponse } from '../response-tap.js';
+import { ResponseTap, type ResponseMeta, type TapResponse } from '../response-tap.js';
 
 // ---------------------------------------------------------------------------
 // Builders
@@ -60,6 +60,7 @@ function randomPieces(buf: Buffer, rnd: () => number, maxPiece: number): Buffer[
  */
 function harness(methods: (string | undefined)[] = []) {
   const results: TapResponse[] = [];
+  const metas: ResponseMeta[] = [];
   const queue = [...methods];
   let peeks = 0;
   const tap = new ResponseTap({
@@ -67,12 +68,13 @@ function harness(methods: (string | undefined)[] = []) {
       peeks++;
       return queue[0];
     },
-    onResponse: (r) => {
+    onResponse: (r, meta) => {
       results.push(r);
+      metas.push(meta);
       queue.shift();
     },
   });
-  return { tap, results, peeks: () => peeks };
+  return { tap, results, metas, peeks: () => peeks };
 }
 
 const SSE = [
@@ -826,5 +828,67 @@ describe('ResponseTap: scale', () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.complete).toBe(true);
     expect(results[0]?.usage?.outputTokens).toBe(4242);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ResponseMeta (TASK-715): what arrived of the body, for a response that ended
+// early. A stream cut just before its final usage event is otherwise charged as
+// if almost nothing had been generated.
+// ---------------------------------------------------------------------------
+
+describe('ResponseTap: ResponseMeta', () => {
+  it('counts body bytes of a Content-Length response and flags a non-stream', () => {
+    const h = harness(['POST']);
+    h.tap.push(clResponse(JSON_BODY, ['Content-Type: application/json']));
+    expect(h.metas).toEqual([{ bodyBytes: Buffer.byteLength(JSON_BODY), streamed: false }]);
+  });
+
+  it('counts only chunk DATA for a chunked body, never the size lines or CRLFs, and flags event-stream', () => {
+    const h = harness(['POST']);
+    h.tap.push(
+      chunkedResponse(splitEvery(SSE, 23), ['Content-Type: text/event-stream; charset=utf-8']),
+    );
+    expect(h.metas).toEqual([{ bodyBytes: Buffer.byteLength(SSE), streamed: true }]);
+  });
+
+  it('reports the bytes that arrived when the connection ends mid-body', () => {
+    const h = harness(['POST']);
+    const cut = SSE.slice(0, SSE.indexOf('event: message_delta'));
+    const whole = chunkedResponse(splitEvery(cut, 40), ['Content-Type: text/event-stream']);
+    // Drop the terminating "0\r\n\r\n": the stream stops without its last chunk.
+    h.tap.push(whole.subarray(0, whole.length - 5));
+    h.tap.end();
+    expect(h.results).toHaveLength(1);
+    expect(h.results[0]).toMatchObject({ complete: false });
+    expect(h.metas[0]).toEqual({ bodyBytes: Buffer.byteLength(cut), streamed: true });
+  });
+
+  it('is byte-for-byte the same whatever the push boundaries', () => {
+    const wire = chunkedResponse(splitEvery(SSE, 17), ['Content-Type: text/event-stream']);
+    const whole = harness(['POST']);
+    whole.tap.push(wire);
+    const bytes = harness(['POST']);
+    for (let i = 0; i < wire.length; i++) bytes.tap.push(wire.subarray(i, i + 1));
+    expect(bytes.metas).toEqual(whole.metas);
+  });
+
+  it('resets between responses on one connection', () => {
+    const h = harness(['POST', 'POST']);
+    h.tap.push(Buffer.concat([
+      chunkedResponse(splitEvery(SSE, 50), ['Content-Type: text/event-stream']),
+      clResponse('{}', ['Content-Type: application/json']),
+    ]));
+    expect(h.metas).toEqual([
+      { bodyBytes: Buffer.byteLength(SSE), streamed: true },
+      { bodyBytes: 2, streamed: false },
+    ]);
+  });
+
+  it('counts the bytes of a body it did not scan (encoded)', () => {
+    const h = harness(['POST']);
+    h.tap.push(clResponse('abcdefghij', ['Content-Encoding: gzip']));
+    expect(h.results[0]).toMatchObject({ encoded: true, usage: null });
+    expect(h.metas[0]).toEqual({ bodyBytes: 10, streamed: false });
   });
 });

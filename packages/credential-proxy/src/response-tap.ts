@@ -55,6 +55,19 @@ export interface TapResponse {
   usage: MeasuredUsage | null;
 }
 
+/**
+ * What arrived of a response's body, alongside the report. Kept out of
+ * `TapResponse` on purpose: it only matters when a response ended early, where
+ * the counters in the body may not have arrived yet but the bytes that did are
+ * still evidence of how much was generated.
+ */
+export interface ResponseMeta {
+  /** Body bytes seen (chunk data only for a chunked body, never the framing). */
+  bodyBytes: number;
+  /** `Content-Type: text/event-stream`: the body was delivered as server-sent events. */
+  streamed: boolean;
+}
+
 export interface ResponseTapOptions {
   /**
    * Called once per response, when its final head has parsed, to learn the
@@ -62,7 +75,7 @@ export interface ResponseTapOptions {
    * undefined if unknown. Do not pop anything; the caller pops in onResponse.
    */
   peekMethod(): string | undefined;
-  onResponse(r: TapResponse): void;
+  onResponse(r: TapResponse, meta: ResponseMeta): void;
 }
 
 const MAX_HEAD_BYTES = 64 * 1024;
@@ -94,6 +107,7 @@ interface Framing {
   contentLength: number | undefined;
   chunked: boolean;
   encoded: boolean;
+  streamed: boolean;
 }
 
 export class ResponseTap {
@@ -109,6 +123,8 @@ export class ResponseTap {
   // The response currently being framed.
   private status = 0;
   private encoded = false;
+  private streamed = false;
+  private bodyBytes = 0;
   private scanner: UsageScanner | null = null;
   private remaining = 0;
 
@@ -142,8 +158,9 @@ export class ResponseTap {
       } else {
         report = this.snapshot(this.state === 'body-close');
       }
+      const meta = this.meta();
       this.kill();
-      if (report) this.emit(report);
+      if (report) this.emit(report, meta);
     } catch {
       this.kill();
     }
@@ -250,7 +267,7 @@ export class ResponseTap {
     if (status === 101) {
       // The connection stops being HTTP here. Report once and stand down.
       this.kill();
-      this.emit({ status, complete: false, encoded: false, usage: null });
+      this.emit({ status, complete: false, encoded: false, usage: null }, { bodyBytes: 0, streamed: false });
       return;
     }
 
@@ -264,6 +281,7 @@ export class ResponseTap {
     if (framing === null) return this.lose();
 
     this.encoded = framing.encoded;
+    this.streamed = framing.streamed;
     // Peeked for EVERY final head (once per response), not only when the
     // status alone would not settle it.
     const isHeadResponse = this.peekIsHead();
@@ -371,7 +389,13 @@ export class ResponseTap {
   // ---- reporting -----------------------------------------------------------
 
   private scan(buf: Buffer, start: number, end: number): void {
-    if (this.scanner !== null && end > start) this.scanner.feed(buf.subarray(start, end));
+    if (end <= start) return;
+    this.bodyBytes += end - start;
+    if (this.scanner !== null) this.scanner.feed(buf.subarray(start, end));
+  }
+
+  private meta(): ResponseMeta {
+    return { bodyBytes: this.bodyBytes, streamed: this.streamed };
   }
 
   private snapshot(complete: boolean): TapResponse {
@@ -389,22 +413,26 @@ export class ResponseTap {
   /** The response in progress is over. Report it and get ready for the next head. */
   private finish(complete: boolean): void {
     const report = this.snapshot(complete);
+    const meta = this.meta();
     this.resetResponse();
-    this.emit(report);
+    this.emit(report, meta);
   }
 
   /** Framing can no longer be trusted. Report once, then stay silent for good. */
   private lose(): void {
     if (this.state === 'dead') return;
     let report: TapResponse;
+    let meta: ResponseMeta;
     try {
       report = this.snapshot(false);
       report.encoded = false;
+      meta = this.meta();
     } catch {
       report = { status: 0, complete: false, encoded: false, usage: null };
+      meta = { bodyBytes: 0, streamed: false };
     }
     this.kill();
-    this.emit(report);
+    this.emit(report, meta);
   }
 
   private kill(): void {
@@ -419,6 +447,8 @@ export class ResponseTap {
     this.crlfMatch = 0;
     this.status = 0;
     this.encoded = false;
+    this.streamed = false;
+    this.bodyBytes = 0;
     this.scanner = null;
     this.remaining = 0;
     this.line = '';
@@ -436,9 +466,9 @@ export class ResponseTap {
     }
   }
 
-  private emit(report: TapResponse): void {
+  private emit(report: TapResponse, meta: ResponseMeta): void {
     try {
-      this.opts.onResponse(report);
+      this.opts.onResponse(report, meta);
     } catch {
       // The listener's bug is not the tap's problem, and must not corrupt it.
     }
@@ -455,6 +485,7 @@ function parseFraming(lines: readonly string[]): Framing | null {
   let contentLength: number | undefined;
   const transferCodings: string[] = [];
   const contentCodings: string[] = [];
+  let streamed = false;
 
   for (let k = 1; k < lines.length; k++) {
     const line = lines[k] ?? '';
@@ -474,6 +505,8 @@ function parseFraming(lines: readonly string[]): Framing | null {
       pushTokens(transferCodings, value);
     } else if (lower === 'content-encoding') {
       pushTokens(contentCodings, value);
+    } else if (lower === 'content-type') {
+      streamed = value.toLowerCase().startsWith('text/event-stream');
     }
   }
 
@@ -489,7 +522,7 @@ function parseFraming(lines: readonly string[]): Framing | null {
     // Transfer-Encoding overrides Content-Length (RFC 9112 6.3).
     contentLength = undefined;
   }
-  return { contentLength, chunked, encoded };
+  return { contentLength, chunked, encoded, streamed };
 }
 
 function pushTokens(into: string[], value: string): void {

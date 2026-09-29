@@ -94,6 +94,8 @@ interface Provider {
   requests: Array<{ line: string; apiKey: string | undefined }>;
   /** What the NEXT response reports. */
   next: { model: string; input: number; output: number };
+  /** When set, the NEXT response is an event stream that stops before its final usage event. */
+  cutStreamBytes?: number;
   close(): Promise<void>;
 }
 
@@ -150,6 +152,35 @@ async function startProvider(ca: { key: string; cert: string }): Promise<Provide
         if (buf.length - (end + 4) < len) return;
         buf = buf.slice(end + 4 + len);
         provider.requests.push({ line: lines[0] ?? '', apiKey: headers['x-api-key'] });
+        if (provider.cutStreamBytes !== undefined) {
+          // Every token delivered, then the upstream hangs up: `message_delta`, which carries the
+          // real output_tokens, never arrives. message_start says output_tokens: 1.
+          const ev = (name: string, data: unknown): string =>
+            `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+          let events = ev('message_start', {
+            type: 'message_start',
+            message: {
+              id: 'msg_cut',
+              model: provider.next.model,
+              usage: { input_tokens: provider.next.input, output_tokens: 1 },
+            },
+          });
+          const text = 'x'.repeat(350);
+          while (Buffer.byteLength(events) < provider.cutStreamBytes) {
+            events += ev('content_block_delta', {
+              type: 'content_block_delta',
+              index: 0,
+              delta: { type: 'text_delta', text },
+            });
+          }
+          provider.cutStreamBytes = undefined;
+          sock.write(
+            'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n' +
+              `${Buffer.byteLength(events).toString(16)}\r\n${events}\r\n`,
+          );
+          setTimeout(() => sock.destroy(), 50);
+          return;
+        }
         const body = JSON.stringify({
           id: 'msg_canary',
           model: provider.next.model,
@@ -368,6 +399,40 @@ describe('@ax/preset-k8s provider metering canary (real credential-proxy + usage
     return { status: parseInt(got.split(' ')[1] ?? '0', 10), body: got.slice(got.indexOf('\r\n\r\n') + 4) };
   }
 
+  /** Like callFromSandbox, but the response is a stream that the upstream cuts off; resolves when the tunnel closes. */
+  async function streamCutFromSandbox(s: Session, bytes: number, usage = OPUS_60K): Promise<void> {
+    provider!.next = usage;
+    provider!.cutStreamBytes = bytes;
+    const raw = net.connect(s.proxyPort, HOST);
+    await new Promise<void>((r) => raw.once('connect', () => r()));
+    raw.write(
+      `CONNECT ${HOST}:${provider!.port} HTTP/1.1\r\nHost: ${HOST}:${provider!.port}\r\n` +
+        `Proxy-Authorization: Basic ${Buffer.from(`ax:${s.proxyAuthToken}`).toString('base64')}\r\n\r\n`,
+    );
+    await new Promise<void>((resolve, reject) => {
+      let acc = '';
+      raw.on('data', function onData(d: Buffer) {
+        acc += d.toString('latin1');
+        if (!acc.includes('\r\n\r\n')) return;
+        raw.removeListener('data', onData);
+        if (acc.startsWith('HTTP/1.1 200')) resolve();
+        else reject(new Error(`CONNECT refused: ${acc}`));
+      });
+    });
+    const inner: TLSSocket = tlsConnect({ socket: raw, servername: HOST, ca: live().ca.cert });
+    inner.on('error', () => undefined);
+    await new Promise<void>((r) => inner.once('secureConnect', () => r()));
+    const closed = new Promise<void>((r) => inner.once('close', () => r()));
+    inner.on('data', () => undefined);
+    const body = JSON.stringify({ model: usage.model, max_tokens: usage.output, stream: true, messages: [] });
+    inner.write(
+      `POST /v1/messages HTTP/1.1\r\nHost: ${HOST}\r\nx-api-key: ${s.envMap.ANTHROPIC_API_KEY}\r\n` +
+        `content-type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+    );
+    await closed;
+    raw.destroy();
+  }
+
   const chatStart = (userId: string) =>
     live().bus.fire('chat:start', ctxFor(userId), { message: 'hello' });
 
@@ -493,6 +558,20 @@ describe('@ax/preset-k8s provider metering canary (real credential-proxy + usage
     await sql`DELETE FROM usage_limits_v1_suspensions WHERE user_id = ${USER_D}`.execute(await db());
     const lifted = await openSession(USER_D);
     expect((await callFromSandbox(lifted)).status).toBe(200);
+  });
+
+  it('(f) reading every token of a stream and hanging up before the final usage event is charged for the tokens read', async () => {
+    const s = await openSession(USER_C);
+    // ~480 KB of text deltas: at the stream floor of 8 bytes a token that is >= 60,000 output
+    // tokens, i.e. >= $4.50 on Opus. Counting only what the stream REPORTED (output_tokens: 1)
+    // would book about a cent, and the whole answer would have been free.
+    await streamCutFromSandbox(s, 480_000);
+    await vi.waitFor(async () => expect((await ledgerFor(USER_C)).provider).toBeGreaterThanOrEqual(OPUS_60K_MICROS), {
+      timeout: 10_000,
+      interval: 50,
+    });
+    // …and stays a plausible over-count rather than a runaway one (well under 2x the ceiling here).
+    expect((await ledgerFor(USER_C)).provider).toBeLessThan(2 * OPUS_60K_MICROS);
   });
 
   it('(e) a request that is not a model call never gets the key, even from a session that has it', async () => {

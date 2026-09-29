@@ -40,7 +40,7 @@ const SUBSCRIBED = ['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage'] a
 // two SERVICE hooks, both acting for `ctx.userId`:
 //
 //   usage:provider-status  {}                                   -> ProviderVerdict
-//   usage:provider-record  { model?, usage | null, requestBytes | null }
+//   usage:provider-record  { model?, usage | null, requestBytes | null, partial? }
 //                                                               -> ProviderVerdict
 //
 // The verdict says whether the proxy may keep splicing the operator's key into

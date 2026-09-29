@@ -34,6 +34,8 @@ export interface UsageRecordPayload {
   model?: string;
   usage: MeasuredUsage | null;
   requestBytes: number | null;
+  /** Only when the response ended early; see ProviderCallSettlement.partial. */
+  partial?: { bytes: number; streamed: boolean };
 }
 
 /**
@@ -45,7 +47,7 @@ export interface UsageLedgerPort {
   record(ctx: AgentContext, payload: UsageRecordPayload): Promise<UsageVerdict>;
 }
 
-export const DEFAULT_MAX_IN_FLIGHT_PER_USER = 16;
+export const DEFAULT_MAX_IN_FLIGHT_PER_USER = 8;
 export const DEFAULT_REFRESH_MS = 15_000;
 export const DEFAULT_PROBE_MS = 5_000;
 
@@ -238,6 +240,7 @@ export class ProviderMeterHub {
       ...(s.model !== undefined ? { model: s.model } : {}),
       usage: s.usage,
       requestBytes: s.requestBytes,
+      ...(s.partial !== undefined ? { partial: s.partial } : {}),
     };
     try {
       this.apply(st, seq, await ledger.record(st.ctx, payload));

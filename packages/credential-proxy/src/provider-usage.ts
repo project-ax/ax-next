@@ -39,6 +39,15 @@ export interface ProviderCallSettlement {
   usage: MeasuredUsage | null;
   /** Size of the request body, or null when it was not length-delimited. */
   requestBytes: number | null;
+  /**
+   * Set only when the response ended before it was complete (the client or the
+   * upstream hung up mid-body): how much of the body arrived, and whether it was
+   * an event stream. The counters that say what the model generated are usually
+   * the LAST thing in a response, so a client that reads every token and hangs up
+   * just before them would otherwise be charged for almost none. The meter uses
+   * the bytes as a floor on the output. Absent for a complete response.
+   */
+  partial?: { bytes: number; streamed: boolean };
 }
 
 /** The gate's answer for a request about to be sent with the key spliced in. */

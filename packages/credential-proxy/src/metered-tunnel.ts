@@ -22,7 +22,7 @@
 
 import type { ProviderCallSettlement, ProviderMeter } from './provider-usage.js';
 import type { MeteredRequestPolicy, RequestHeadInfo, RequestVerdict } from './request-framer.js';
-import { ResponseTap, type TapResponse } from './response-tap.js';
+import { ResponseTap, type ResponseMeta, type TapResponse } from './response-tap.js';
 
 /** `/*` in a pattern: exactly one more segment of these characters, never `/`, `%` or a leading dot. */
 const WILDCARD_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -57,6 +57,9 @@ export function requestAllowed(method: string, target: string, patterns: readonl
   return false;
 }
 
+/** No honest client has more than a handful of requests unanswered on one connection. */
+const MAX_OUTSTANDING = 256;
+
 interface Outstanding {
   method: string;
   path: string;
@@ -78,7 +81,7 @@ export class MeteredTunnel implements MeteredRequestPolicy {
   constructor(private readonly meter: ProviderMeter) {
     this.tap = new ResponseTap({
       peekMethod: () => this.outstanding[0]?.method,
-      onResponse: (r) => this.answered(r),
+      onResponse: (r, meta) => this.answered(r, meta),
     });
   }
 
@@ -87,6 +90,16 @@ export class MeteredTunnel implements MeteredRequestPolicy {
     const requestBytes = info.contentLength;
     const spliceable =
       info.version === 'HTTP/1.1' && requestAllowed(info.method, info.target, this.meter.requests);
+    // A client that pipelines request after request without reading a response
+    // must not grow this list without bound.
+    if (this.outstanding.length >= MAX_OUTSTANDING) {
+      return {
+        kind: 'deny',
+        status: 429,
+        reason: 'busy',
+        message: 'Too many requests are waiting for an answer on this connection.',
+      };
+    }
     if (!spliceable) {
       // Not a model call: the head goes out with the placeholder inert. It is
       // still tracked, only so its response lines up with the right request.
@@ -125,15 +138,15 @@ export class MeteredTunnel implements MeteredRequestPolicy {
     }
   }
 
-  private answered(r: TapResponse): void {
+  private answered(r: TapResponse, meta: ResponseMeta): void {
     const o = this.outstanding.shift();
     // No request outstanding: a response to something the framer never saw (the
     // tail of a chunked request). No credential was spliced into it.
     if (o === undefined || !o.admitted) return;
-    this.settle(o, r);
+    this.settle(o, r, meta);
   }
 
-  private settle(o: Outstanding, r: TapResponse | undefined): void {
+  private settle(o: Outstanding, r: TapResponse | undefined, meta?: ResponseMeta): void {
     let settlement: ProviderCallSettlement;
     if (isFree(o) || (r !== undefined && r.status >= 400)) {
       settlement = { billable: false, usage: null, requestBytes: o.requestBytes };
@@ -145,6 +158,10 @@ export class MeteredTunnel implements MeteredRequestPolicy {
         // with usage null: the meter charges an estimate, never zero.
         usage: r?.usage ?? null,
         requestBytes: o.requestBytes,
+        // The response ended early: what arrived is evidence of what was generated.
+        ...(r !== undefined && !r.complete && meta !== undefined
+          ? { partial: { bytes: meta.bodyBytes, streamed: meta.streamed } }
+          : {}),
       };
     }
     try {

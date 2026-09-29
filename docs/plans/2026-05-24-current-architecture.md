@@ -392,7 +392,7 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     (`{ requests: [...] }`, from `PROVIDER_ENDPOINTS[p].inferenceRequests`); a
     tunnel to that host splices the key only into those requests, asks a per-user
     gate before each, and reads usage out of each response. `usage:provider-status`
-    `{}` and `usage:provider-record` `{ model?, usage | null, requestBytes | null }`
+    `{}` and `usage:provider-record` `{ model?, usage | null, requestBytes | null, partial? }`
     (service hooks, act for `ctx.userId`) return `{ blocked: false }` or
     `{ blocked: true, reason }`; blocked means suspended or past 2x the daily
     limit. Spend is the larger of runner-reported and proxy-measured, plus helper

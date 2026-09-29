@@ -386,6 +386,108 @@ describe('providerRecord', () => {
     );
   });
 
+  // A response that ended early. A stream cut just before its final usage event
+  // (the attacker's move: read all the text, hang up before the bill arrives) reports
+  // only the input and `output_tokens: 1`, so what actually arrived is the evidence.
+  describe('a response that ended early (partial)', () => {
+    const cutStream = { inputTokens: 1000, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 };
+
+    it('floors the output tokens at bytes / 8 for an event stream (over-counting, on purpose)', async () => {
+      const s = setup();
+      await s.svc.providerRecord(s.ctx(), {
+        model: 'anthropic/claude-opus-4-1',
+        usage: cutStream,
+        requestBytes: 4_000,
+        partial: { bytes: 800_000, streamed: true },
+      });
+      expect(s.providerRecorded[0]!.costMicros).toBe(
+        costMicros('anthropic/claude-opus-4-1', { ...cutStream, outputTokens: 100_000 }),
+      );
+    });
+
+    it('floors at bytes / 3 for a body that is not an event stream', async () => {
+      const s = setup();
+      await s.svc.providerRecord(s.ctx(), {
+        model: 'anthropic/claude-opus-4-1',
+        usage: cutStream,
+        requestBytes: null,
+        partial: { bytes: 300_000, streamed: false },
+      });
+      expect(s.providerRecorded[0]!.costMicros).toBe(
+        costMicros('anthropic/claude-opus-4-1', { ...cutStream, outputTokens: 100_000 }),
+      );
+    });
+
+    it('never LOWERS what the response reported', async () => {
+      const s = setup();
+      const reported = { ...cutStream, outputTokens: 50_000 };
+      await s.svc.providerRecord(s.ctx(), {
+        model: 'anthropic/claude-opus-4-1',
+        usage: reported,
+        requestBytes: null,
+        partial: { bytes: 800, streamed: true }, // floor 100 tokens
+      });
+      expect(s.providerRecorded[0]!.costMicros).toBe(costMicros('anthropic/claude-opus-4-1', reported));
+    });
+
+    it('lifts the unmeasured output estimate above 4096 when more than that arrived', async () => {
+      const s = setup();
+      await s.svc.providerRecord(s.ctx(), {
+        usage: null,
+        requestBytes: 300,
+        partial: { bytes: 800_000, streamed: true },
+      });
+      expect(s.providerRecorded[0]!.costMicros).toBe(
+        costMicros(undefined, { inputTokens: 100, outputTokens: 100_000 }),
+      );
+    });
+
+    it('keeps the 4096 output estimate when little arrived', async () => {
+      const s = setup();
+      await s.svc.providerRecord(s.ctx(), {
+        usage: null,
+        requestBytes: 300,
+        partial: { bytes: 100, streamed: true },
+      });
+      expect(s.providerRecorded[0]!.costMicros).toBe(
+        costMicros(undefined, { inputTokens: 100, outputTokens: 4096 }),
+      );
+    });
+
+    it('a complete response (no partial) is charged exactly what it reported: the floor is for early endings only', async () => {
+      const s = setup();
+      await s.svc.providerRecord(s.ctx(), {
+        model: 'anthropic/claude-opus-4-1',
+        usage: cutStream,
+        requestBytes: 4_000,
+      });
+      expect(s.providerRecorded[0]!.costMicros).toBe(costMicros('anthropic/claude-opus-4-1', cutStream));
+    });
+
+    it('a malformed partial is ignored rather than trusted or fatal', async () => {
+      const s = setup();
+      await s.svc.providerRecord(s.ctx(), {
+        model: 'anthropic/claude-opus-4-1',
+        usage: cutStream,
+        requestBytes: null,
+        partial: { bytes: -5, streamed: 'yes' },
+      });
+      expect(s.providerRecorded[0]!.costMicros).toBe(costMicros('anthropic/claude-opus-4-1', cutStream));
+    });
+
+    it('clamps a huge byte count like any token count', async () => {
+      const s = setup();
+      await s.svc.providerRecord(s.ctx(), {
+        usage: null,
+        requestBytes: 0,
+        partial: { bytes: 1e18, streamed: true },
+      });
+      expect(s.providerRecorded[0]!.costMicros).toBe(
+        costMicros(undefined, { inputTokens: 0, outputTokens: 1_000_000_000 }),
+      );
+    });
+  });
+
   it('charges an unparseable payload the conservative estimate instead of dropping it', async () => {
     const conservative = 200_000 * 15 + ESTIMATE_OUTPUT_MICROS;
     const s = setup();

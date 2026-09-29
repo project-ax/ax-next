@@ -96,6 +96,14 @@ completes or the tunnel ends first. A response that yields no usage figure is
 charged from the request size. A 4xx/5xx costs nothing; `count_tokens` costs
 nothing. Unknown is never free.
 
+The counters are the LAST thing in a response, so "read every token, hang up
+before the bill arrives" must not be free either: a response that ended early
+carries how many body bytes arrived (`partial: { bytes, streamed }`), and the
+ledger floors the output at `bytes / 8` for an event stream (`bytes / 3`
+otherwise). The divisors are low on purpose, so the floor over-counts a client
+that hung up honestly (the Stop button) rather than under-counting one that did
+it to dodge the meter. A complete response is charged exactly what it reported.
+
 The usage scanner takes, per field, the MAX over the whole response (Anthropic
 streams report cumulative counts; `message_delta` repeats them), for
 `input_tokens`, `output_tokens`, `cache_read_input_tokens`,
@@ -109,7 +117,7 @@ Inflating your own count only hurts you.
 
 `provider-meter.ts`: per user (not per session, so N sessions do not multiply
 anything), an in-memory `{ blocked, inFlight, lastCheckedAt }`.
-`admit()` is refused when `blocked` or `inFlight >= 16`. It is seeded by an
+`admit()` is refused when `blocked` or `inFlight >= 8`. It is seeded by an
 awaited `usage:provider-status` at `proxy:open-session`, refreshed at most every
 15 s while the user is active (5 s while blocked, so a lifted block clears
 quickly), and updated by the verdict every `settle()` gets back from
@@ -124,7 +132,8 @@ Two service hooks (the only new hook surface):
 - `usage:provider-status` `{}` -> `{ blocked: false } | { blocked: true, reason }`
 - `usage:provider-record` `{ model?, usage | null, requestBytes | null }` -> same verdict
 
-Both act for `ctx.userId`. `reason` is `usage-suspended | usage-limit-daily |
+Both act for `ctx.userId`. `usage:provider-record` also takes an optional
+`partial: { bytes, streamed }` (see above). `reason` is `usage-suspended | usage-limit-daily |
 usage-check-unavailable`. Blocked means: suspended, or estimated spend over
 `PROVIDER_CEILING_MULTIPLE` (2) x the daily limit. A turn is admitted at 1x
 (`chat:start`); a turn already under way may run to 2x before the sandbox loses
@@ -144,7 +153,7 @@ call shows up as the excess. The admin view and `chat:start` use the same figure
 
 ## What stays unmetered or unbounded, said plainly
 
-- The overshoot is bounded, not zero: up to 16 calls in flight per user when the
+- The overshoot is bounded, not zero: up to 8 calls in flight per user when the
   block lands, each up to the model's maximum output, plus the ~15 s the
   suspend button takes to reach a user who was not otherwise blocked.
 - The cap is per user. Open signup plus many accounts is not addressed here (the

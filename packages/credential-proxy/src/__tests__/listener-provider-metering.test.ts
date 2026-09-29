@@ -815,6 +815,39 @@ describe('what a settled call is worth', () => {
     inner.destroy();
   });
 
+  it('a client that reads every token and hangs up before the final usage event is charged for what arrived, not for almost nothing', async () => {
+    // The whole answer, minus the last two events (message_delta carries the real
+    // output_tokens; message_stop follows it). All the text has been delivered.
+    const events = anthropicStream();
+    const cut = events.slice(0, events.indexOf('event: message_delta'));
+    const wire =
+      'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n' +
+      `${cut.length.toString(16)}\r\n${cut}\r\n`;
+    const provider = await startUpstream(PROVIDER, (_req, _n, sock) => {
+      sock.write(wire);
+      setTimeout(() => sock.destroy(), 30);
+      return 'silence';
+    });
+    const registry = new SharedCredentialRegistry();
+    const ph = registerSession(registry, 's1');
+    const m = fakeMeter();
+    const { port } = await start(registry, [session('s1', [PROVIDER], m.meter)]);
+    const inner = await openTunnel(port, PROVIDER, provider.port, tokenFor('s1'));
+    send(inner, { headers: { 'x-api-key': ph }, body: MODEL_BODY });
+    await waitFor(() => m.settled.length === 1, 'settle on tunnel close');
+    // The counters that did arrive say output_tokens: 1. The bytes say otherwise.
+    expect(m.settled[0]).toMatchObject({ billable: true, usage: { outputTokens: 1 } });
+    expect(m.settled[0]!.partial).toEqual({ bytes: Buffer.byteLength(cut), streamed: true });
+    inner.destroy();
+  });
+
+  it('a complete response carries no partial marker', async () => {
+    const { m, inner } = await one(jsonResponse(200, { model: 'claude-haiku-4-5', usage: { input_tokens: 1, output_tokens: 2 } }));
+    await waitFor(() => m.settled.length === 1, 'settle');
+    expect('partial' in m.settled[0]!).toBe(false);
+    inner.destroy();
+  });
+
   it('a request the upstream never answered is settled as unanswered (billable, usage null) when the tunnel ends', async () => {
     const { m, provider, inner } = await one('hangup');
     await waitFor(() => provider.requests.length === 1, 'the request to arrive');
@@ -959,6 +992,23 @@ describe('scope: only the session that opted in, only its metered host', () => {
     expect(other.requests[0]!.headers['x-api-key']).toBe(REAL);
     expect(m.admits()).toBe(0);
     inner.destroy();
+  });
+
+  it('a client that pipelines requests without reading any answer is cut off, not buffered without bound', async () => {
+    const provider = await startUpstream(PROVIDER, () => 'silence');
+    const registry = new SharedCredentialRegistry();
+    registerSession(registry, 's1');
+    const m = fakeMeter();
+    const { port } = await start(registry, [session('s1', [PROVIDER], m.meter)]);
+    const inner = await openTunnel(port, PROVIDER, provider.port, tokenFor('s1'));
+    const got = collect(inner);
+    // 400 bodiless GETs in ONE write; the upstream never answers, so none is ever settled.
+    inner.write(
+      Array.from({ length: 400 }, () => `GET /v1/other HTTP/1.1\r\nHost: ${PROVIDER}\r\n\r\n`).join(''),
+    );
+    await waitFor(() => got().includes('429'), 'the cut-off');
+    expect(provider.requests.length).toBe(256);
+    expect(m.admits()).toBe(0);
   });
 
   it('a metered tunnel refuses a malformed request head with 400 and forwards nothing', async () => {
