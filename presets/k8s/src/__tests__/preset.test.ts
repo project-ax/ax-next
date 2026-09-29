@@ -415,7 +415,9 @@ describe('@ax/preset-k8s wiring', () => {
     // — exactly as `tool.execute-host` does.
     expect(d!.manifest.calls).toEqual(['database:get-instance', 'tool-policy:evaluate']);
     expect(d!.manifest.calls).not.toContain('tool:execute:request_capability');
-    expect(d!.manifest.subscribes).toEqual(['tool:pre-call']);
+    // `agents:deleted` (TASK-718): a deleted agent's decisions go with it. The
+    // gate is still the only `tool:pre-call` subscriber.
+    expect(d!.manifest.subscribes).toEqual(['tool:pre-call', 'agents:deleted']);
 
     // TASK-227 (AW-6). Both OPTIONAL, and the distinction is load-bearing in
     // both directions: a host with no conversations store treats every held
