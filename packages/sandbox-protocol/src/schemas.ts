@@ -279,11 +279,15 @@ export const ProxyConfigSchema = z
     /** env-var name → `ax-cred:<hex>` placeholder map the proxy recognizes. */
     envMap: z.record(z.string(), z.string()),
     /**
-     * Per-session proxy token for egress attribution (TASK-52;
-     * Proxy-Authorization Basic). Optional + backend-agnostic (I1) — an
-     * opaque secret, no transport/storage vocabulary. The sandbox bootstrap
-     * embeds it into the proxy URL userinfo so every egress client sends it
-     * automatically. It is an attribution label, never an authz input.
+     * Per-session proxy token (TASK-52; Proxy-Authorization Basic). Optional +
+     * backend-agnostic (I1) — an opaque secret, no transport/storage
+     * vocabulary. The sandbox bootstrap embeds it into the proxy URL userinfo
+     * so every egress client sends it automatically. Since TASK-158 it is the
+     * credential the proxy AUTHENTICATES the caller with: a request without it
+     * is refused, and the request is gated on the allowlist of the session it
+     * belongs to. Optional in the schema only for stub proxies (test harness)
+     * that never front a real listener; the real `proxy:open-session` always
+     * mints one.
      */
     proxyAuthToken: z
       .string()

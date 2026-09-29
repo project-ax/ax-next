@@ -22,13 +22,15 @@ interface HttpEgressEvent {
   classification: 'llm' | 'mcp' | 'other';
   // Keep in sync with @ax/credential-proxy's HttpEgressEvent.blockedReason
   // (structural mirror per I2 — the bus is the contract, not the type).
-  // `'request-body-too-large'` added with the TASK-24 plain-HTTP body cap.
+  // `'request-body-too-large'` added with the TASK-24 plain-HTTP body cap;
+  // `'proxy-auth'` with TASK-158 (caller sent no valid per-session proxy token).
   blockedReason?:
     | 'allowlist'
     | 'private-ip'
     | 'canary'
     | 'tls-error'
-    | 'request-body-too-large';
+    | 'request-body-too-large'
+    | 'proxy-auth';
   timestamp: number;
 }
 

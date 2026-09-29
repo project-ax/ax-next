@@ -26,9 +26,14 @@
  *   returned IP is then used for the actual upstream connection so a
  *   second DNS resolution can't return a different (private) IP. See
  *   the SECURITY docstring on `resolveAndCheck`.
- * - Allowlist check: a host is allowed iff at least one registered
- *   session's `allowlist` contains it. Phase 1a passes `sessions`
- *   directly; Task 9 swaps to a per-process map keyed by sessionId.
+ * - Caller authentication + allowlist check (TASK-158): every request must
+ *   carry the per-session `Proxy-Authorization: Basic ax:<token>` the sandbox
+ *   was given at `proxy:open-session`. The token resolves to exactly ONE
+ *   registered session (`authenticateCaller`), and a host is allowed iff THAT
+ *   session's own `allowlist` contains it. A missing, malformed or unknown
+ *   token is denied (407) before anything else is parsed. There is NO
+ *   OR-across-sessions fallback: one shared proxy serves many users, and
+ *   session A's allowlisted host must never be reachable by session B.
  * - MITM is the default for HTTPS. The minted leaf cert chains to the
  *   CA passed via `ProxyListenerOptions.ca`; sandboxed clients trust
  *   that CA via the bridge's env-var injection. `bypassMITM` is the
@@ -39,6 +44,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import * as net from 'node:net';
 import * as tls from 'node:tls';
 import { existsSync, unlinkSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { resolveAndCheck, BlockedIPError, type Resolver } from './private-ip.js';
 import type { SharedCredentialRegistry } from './registry.js';
@@ -48,8 +54,10 @@ import { RequestFramer, findCanaryHit } from './request-framer.js';
 // ── Types ────────────────────────────────────────────────────────────
 
 /**
- * One session's egress policy. Multiple sessions can share a listener;
- * the allowlist check ORs across all registered sessions.
+ * One session's egress policy. Multiple sessions can share a listener, but
+ * each request is gated ONLY on the policy of the session its proxy token
+ * identifies (TASK-158) — sessions never see each other's allowlist,
+ * `allowedIPs` or `bypassMITM`.
  */
 export interface SessionConfig {
   /** Hostnames this session is allowed to reach (exact match). */
@@ -65,17 +73,23 @@ export interface SessionConfig {
    * bypass for the hostname, the listener takes the safer default and
    * skips MITM for that host. Minting a cert for a pinned host would
    * break the client; failing closed (raw tunnel, no credential injection)
-   * is the right call — sessions that wanted MITM still get the bytes
-   * passed through, just without inspection.
+   * is the right call.
+   *
+   * Scope (TASK-158): applies to THIS session's own connections only. It used
+   * to be "any-bypass-wins" across every registered session, which let one
+   * session's config silently downgrade another session's inspection (no
+   * credential substitution, no canary scan) on a shared proxy.
    */
   bypassMITM?: Set<string>;
   /**
    * Optional canary token. When MITM is active and any decrypted request
    * chunk contains this byte sequence, the proxy aborts with 403 and
-   * audits `blocked: 'canary_detected'`. Per-session: each session's token
-   * is checked independently; a chunk matches if ANY session's token is
-   * present. Used to detect prompt-injection attacks that try to exfiltrate
-   * a canary string the model was told not to leak.
+   * audits `blocked: 'canary_detected'`. A chunk matches if ANY registered
+   * session's token is present (deliberately NOT narrowed to the caller: a
+   * canary that belongs to another session turning up in this session's
+   * egress is itself a leak worth blocking, and over-blocking is the safe
+   * direction). Used to detect prompt-injection attacks that try to
+   * exfiltrate a canary string the model was told not to leak.
    */
   canaryToken?: string;
   /**
@@ -116,16 +130,19 @@ export interface SessionConfig {
    */
   classification?: 'llm' | 'mcp' | 'other';
   /**
-   * Per-session proxy token (TASK-52). An ATTRIBUTION LABEL, not an authz
-   * input. Clients send it as `Proxy-Authorization: Basic ax:<token>`; the
-   * listener resolves token → session (see findSessionByProxyToken) so even
-   * an allowlist-MISS (403) — which matches no session via findAllowingSession
-   * — can be attributed to the session that made the request. A missing or
-   * forged token degrades to "no attribution" (today's behavior); it NEVER
-   * affects the allow/deny decision and can never widen egress. Optional for
-   * back-compat with tests that build SessionConfig directly.
+   * Per-session proxy token (TASK-52 minted it for attribution; TASK-158 made
+   * it the AUTHENTICATION credential). Clients send it as
+   * `Proxy-Authorization: Basic ax:<token>`; the listener resolves token →
+   * session (see `authenticateCaller`) and gates the request on THAT session's
+   * policy. It is a bearer credential for this session's egress reach: 128
+   * random bits, 32 lowercase hex chars, minted by `proxy:open-session`,
+   * compared in constant time, and dead the moment the session closes.
+   *
+   * REQUIRED: a session without a token can never authenticate, so it could
+   * never egress. The type makes that unrepresentable rather than a quiet
+   * runtime dead end.
    */
-  proxyToken?: string;
+  proxyToken: string;
 }
 
 /**
@@ -136,9 +153,9 @@ export interface SessionConfig {
  *
  * The `blocked` field uses the listener's own vocabulary
  * (`'canary_detected'`, `'tls_error: …'`, `'Blocked: …'` from
- * BlockedIPError, `'domain_denied: <host>'`, `'invalid_target'`); the
- * plugin translates to the bus's `'allowlist' | 'private-ip' | 'canary'
- * | 'tls-error'` enumeration.
+ * BlockedIPError, `'domain_denied: <host>'`, `'proxy_auth_required'`,
+ * `'invalid_target'`); the plugin translates to the bus's `'allowlist' |
+ * 'private-ip' | 'canary' | 'tls-error' | 'proxy-auth'` enumeration.
  */
 export interface ProxyAuditEntry {
   action: 'proxy_request';
@@ -152,10 +169,12 @@ export interface ProxyAuditEntry {
   /** True iff MITM substitution actually replaced bytes on this connection. */
   credentialInjected?: boolean;
   /**
-   * Set when the listener could match the request to a registered session
-   * (every success case, plus canary/tls-error/private-IP blocks where the
-   * allowlist check passed). Unset when no session matched (allowlist miss
-   * — the request never had an owner to begin with).
+   * Set whenever the caller authenticated as a registered session (every
+   * success case, plus allowlist-miss / canary / tls-error / private-IP
+   * blocks — the caller is known even when the destination is denied).
+   * Unset only when authentication itself failed (`blocked:
+   * 'proxy_auth_required'`): a request with a missing, malformed or unknown
+   * proxy token has no owner to attribute it to.
    */
   sessionId?: string;
   /** Same lifecycle as `sessionId`; copied from the matching session. */
@@ -204,13 +223,14 @@ export interface ProxyListener {
   stop(): void;
 }
 
-// ── Allowlist-miss message ───────────────────────────────────────────
+// ── Deny messages ────────────────────────────────────────────────────
 
 /**
- * The actionable body returned when a request is denied because its host is in
- * no session's allowlist. Shared by the HTTP-forward and HTTPS-CONNECT deny
- * paths so the two can't drift — a binary-download CLI fails over CONNECT, an
- * API call over HTTP, and both deserve the same guidance (TASK-25).
+ * The actionable body returned when a request is denied because its host is not
+ * in the CALLING session's allowlist. Shared by the HTTP-forward and
+ * HTTPS-CONNECT deny paths so the two can't drift — a binary-download CLI fails
+ * over CONNECT, an API call over HTTP, and both deserve the same guidance
+ * (TASK-25).
  *
  * The second sentence calls out the prebuilt-binary case specifically: many
  * npm CLIs (esbuild / swc / biome / @schpet/linear-cli, …) are a thin wrapper
@@ -228,7 +248,7 @@ export interface ProxyListener {
  */
 function allowlistMissBody(hostname: string): string {
   return (
-    `Egress to ${hostname} was blocked: it is not in any session allowlist. ` +
+    `Egress to ${hostname} was blocked: it is not in this session's allowlist. ` +
     `To fix, install a skill that declares this domain in its allowedHosts, ` +
     `or ask an admin to approve it. ` +
     `(Heads-up: some CLIs download a prebuilt binary from a GitHub release — ` +
@@ -236,45 +256,44 @@ function allowlistMissBody(hostname: string): string {
   );
 }
 
-// ── Allowlist check ──────────────────────────────────────────────────
+/**
+ * Body of the 407 returned when the caller could not be authenticated. Fixed
+ * text — it echoes nothing from the request (no hostname, no header value), and
+ * it says nothing about which sessions or hosts exist.
+ */
+const PROXY_AUTH_REQUIRED_BODY =
+  'Egress was blocked: this proxy only serves sandboxed agent sessions, and this ' +
+  'request did not carry a valid session credential (Proxy-Authorization).';
 
 /**
- * A hostname is allowed iff some registered session's allowlist contains it.
- * Returns the allowedIPs override of the FIRST matching session, or undefined.
- *
- * Phase 1a uses exact-match. Wildcards are deliberately out of scope —
- * the bridge passes literal hostnames extracted from the URL.
+ * RFC 9110 §15.5.8: a 407 MUST carry Proxy-Authenticate. Advertising Basic is
+ * accurate (it is what the runner sends) and lets a client that negotiates
+ * credentials on a 407 retry with them, instead of failing outright.
  */
-function findAllowingSession(
-  hostname: string,
-  sessions: Map<string, SessionConfig>,
-): SessionConfig | undefined {
-  for (const session of sessions.values()) {
-    if (session.allowlist.has(hostname)) return session;
-  }
-  return undefined;
-}
+const PROXY_AUTHENTICATE = 'Basic realm="ax-egress"';
+
+// ── Caller authentication ────────────────────────────────────────────
 
 // TASK-52: the per-session proxy token format, re-asserted at this trust
 // boundary (defense in depth — the runner validates independently; no shared
-// helper crosses the plugin boundary, per I2). Attribution-only.
+// helper crosses the plugin boundary, per I2).
 const PROXY_TOKEN_RE = /^[0-9a-f]{32}$/;
 
 /**
  * Parse a `Proxy-Authorization: Basic base64("ax:<token>")` header into the
- * 32-hex token, or undefined. ATTRIBUTION-ONLY — a malformed/absent header
- * simply yields no attribution; it NEVER affects the allow/deny decision and
- * can never widen egress.
+ * 32-hex token, or undefined. Anything that is not exactly that shape — no
+ * header, another scheme, no `:`, a token that is not 32 lowercase hex —
+ * yields undefined, and the caller is then DENIED (see authenticateCaller).
+ * The username half is ignored: the token is the secret.
+ *
+ * RFC 9110 §11.1: the auth scheme name is case-insensitive.
  */
 function parseProxyToken(headerValue: string | string[] | undefined): string | undefined {
   const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
-  if (typeof raw !== 'string' || !raw.startsWith('Basic ')) return undefined;
-  let decoded: string;
-  try {
-    decoded = Buffer.from(raw.slice('Basic '.length), 'base64').toString('utf-8');
-  } catch {
-    return undefined;
-  }
+  if (typeof raw !== 'string') return undefined;
+  const m = /^basic +(\S+)$/i.exec(raw);
+  if (m === null) return undefined;
+  const decoded = Buffer.from(m[1] as string, 'base64').toString('utf-8');
   const sep = decoded.indexOf(':');
   if (sep === -1) return undefined;
   const token = decoded.slice(sep + 1);
@@ -282,62 +301,33 @@ function parseProxyToken(headerValue: string | string[] | undefined): string | u
 }
 
 /**
- * Resolve a proxy token → its SessionConfig (attribution). Linear scan; the
- * per-process session count is small. Returns undefined for an absent or
- * unregistered (forged) token — the caller then leaves the audit unattributed,
- * exactly as before this feature existed.
+ * AUTHENTICATE the caller (TASK-158): resolve the request's proxy token to the
+ * one registered session that owns it. `undefined` — a missing, malformed or
+ * unknown token — means the request MUST be denied; there is deliberately no
+ * "fall back to the union of everyone's allowlist" path, because that fallback
+ * is exactly the cross-session reach this function exists to remove.
+ *
+ * Every registered session's token is compared with `timingSafeEqual` and the
+ * scan does not stop at a match, so response time does not reveal how much of a
+ * guessed token was right or where in the session map its owner sits. (Both
+ * sides are 32 hex chars, so the lengths match; a session whose configured
+ * token is a different length is skipped, never compared.) Linear scan: the
+ * per-process session count is small.
  */
-function findSessionByProxyToken(
-  token: string | undefined,
-  sessions: Map<string, SessionConfig>,
-): SessionConfig | undefined {
-  if (token === undefined) return undefined;
-  for (const session of sessions.values()) {
-    if (session.proxyToken !== undefined && session.proxyToken === token) {
-      return session;
-    }
-  }
-  return undefined;
-}
-
-/**
- * TASK-52: build the session-attribution fields to spread onto a BLOCKED
- * (allowlist-miss) audit entry, resolved from the request's Proxy-Authorization
- * header. Returns an empty object when no token matches — the block stays
- * unattributed (today's behavior). This is additive: it does NOT touch the
- * allow/deny gate (findAllowingSession), so it can never widen egress.
- */
-function blockAttribution(
+function authenticateCaller(
   proxyAuthHeader: string | string[] | undefined,
   sessions: Map<string, SessionConfig>,
-): Partial<Pick<ProxyAuditEntry, 'sessionId' | 'userId' | 'classification'>> {
-  const attributed = findSessionByProxyToken(parseProxyToken(proxyAuthHeader), sessions);
-  if (attributed === undefined) return {};
-  return {
-    ...(attributed.sessionId !== undefined ? { sessionId: attributed.sessionId } : {}),
-    ...(attributed.userId !== undefined ? { userId: attributed.userId } : {}),
-    ...(attributed.classification !== undefined
-      ? { classification: attributed.classification }
-      : {}),
-  };
-}
-
-/**
- * Returns true iff ANY registered session has the hostname in `bypassMITM`.
- *
- * "Any wins" is the safer default — minting a leaf cert for a cert-pinned
- * host would break the pinned client. If even one session asked us not to
- * intercept this host, we honor it for all sessions sharing the listener.
- * Sessions that wanted MITM still get bytes through, just unwrapped.
- */
-function findAnyBypassingSession(
-  hostname: string,
-  sessions: Map<string, SessionConfig>,
-): boolean {
+): SessionConfig | undefined {
+  const token = parseProxyToken(proxyAuthHeader);
+  if (token === undefined) return undefined;
+  const presented = Buffer.from(token, 'utf8');
+  let owner: SessionConfig | undefined;
   for (const session of sessions.values()) {
-    if (session.bypassMITM?.has(hostname)) return true;
+    const expected = Buffer.from(String(session.proxyToken), 'utf8');
+    if (expected.length !== presented.length) continue;
+    if (timingSafeEqual(expected, presented) && owner === undefined) owner = session;
   }
-  return false;
+  return owner;
 }
 
 /** Collect all canary tokens declared across sessions, deduped + non-empty. */
@@ -477,7 +467,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   /**
    * Copy the session-stamping fields (`sessionId`, `userId`, `classification`)
    * off `session` onto an audit entry. No-op if `session` is undefined
-   * (allowlist-miss + invalid-target paths can't attribute to a session).
+   * (only the authentication-failure entry has no session to stamp).
    *
    * `exactOptionalPropertyTypes` means we only set keys when defined;
    * setting `key: undefined` is a type error.
@@ -502,6 +492,32 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     let requestBytes = 0;
     let responseBytes = 0;
 
+    // AUTHENTICATE FIRST (TASK-158), before the target URL is even parsed: the
+    // per-session proxy token identifies the ONE session whose policy governs
+    // this request. Missing, malformed or unknown → 407, nothing else runs. A
+    // keep-alive connection is re-checked per request (each carries its own
+    // Proxy-Authorization); nothing about a connection is trusted.
+    const callerSession = authenticateCaller(req.headers['proxy-authorization'], sessions);
+    if (callerSession === undefined) {
+      audit({
+        action: 'proxy_request',
+        method,
+        url,
+        status: 407,
+        requestBytes: 0,
+        responseBytes: 0,
+        durationMs: Date.now() - startTime,
+        blocked: 'proxy_auth_required',
+      });
+      res.writeHead(407, {
+        'Content-Type': 'text/plain',
+        'Proxy-Authenticate': PROXY_AUTHENTICATE,
+        Connection: 'close',
+      });
+      res.end(PROXY_AUTH_REQUIRED_BODY);
+      return;
+    }
+
     try {
       // The bridge forwards the absolute URL in `req.url` (HTTP-proxy convention).
       // Fall back to constructing one from the Host header so direct curl-style
@@ -516,15 +532,11 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           ? targetUrl.hostname.slice(1, -1)
           : targetUrl.hostname;
 
-      // Allowlist gate (I2): hostname must be in some session's allowlist.
-      const allowingSession = findAllowingSession(hostname, sessions);
-      if (!allowingSession) {
-        // No allowing session, but the request may still carry a per-session
-        // proxy token (TASK-52) — resolve it so even this allowlist-miss 403
-        // is attributed to the session that made it. Attribution-only: a
-        // missing/forged token just leaves the fields empty (today's
-        // behavior); it never affects the allow/deny decision above.
-        audit({
+      // Allowlist gate (I2): the hostname must be in the CALLER's own
+      // allowlist — never another session's. The denial is attributed to the
+      // caller (its token authenticated above).
+      if (!callerSession.allowlist.has(hostname)) {
+        audit(stampSession({
           action: 'proxy_request',
           method,
           url,
@@ -533,8 +545,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           responseBytes: 0,
           durationMs: Date.now() - startTime,
           blocked: `domain_denied: ${hostname}`,
-          ...blockAttribution(req.headers['proxy-authorization'], sessions),
-        });
+        }, callerSession));
         res.writeHead(403, { 'Content-Type': 'text/plain' });
         res.end(allowlistMissBody(hostname));
         return;
@@ -542,8 +553,9 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
 
       // SSRF block (I3): resolve and verify against private CIDRs.
       // Use the returned IP for the upstream connection — DO NOT re-resolve
-      // (DNS rebinding defense). See SECURITY note on resolveAndCheck.
-      const resolvedIP = await resolveAndCheck(hostname, allowingSession.allowedIPs, resolver);
+      // (DNS rebinding defense). See SECURITY note on resolveAndCheck. The
+      // `allowedIPs` override is the CALLER's own, not some other session's.
+      const resolvedIP = await resolveAndCheck(hostname, callerSession.allowedIPs, resolver);
 
       // Read request body, CAPPED so one large upload can't OOM the host
       // (TASK-24). Over the cap we 413 without forwarding; a client that hangs
@@ -568,7 +580,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           responseBytes: 0,
           durationMs: Date.now() - startTime,
           blocked: 'request_body_too_large',
-        }, allowingSession));
+        }, callerSession));
         res.writeHead(413, { 'Content-Type': 'text/plain' });
         res.end('Request body exceeds the proxy limit.');
         return;
@@ -576,6 +588,13 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       requestBytes = body.length;
 
       // Forward headers (strip hop-by-hop and encoding headers — fetch handles these).
+      //
+      // `proxy-authorization` is hop-by-hop (RFC 9110 §11.7.2: it applies to the
+      // proxy alone) and, since TASK-158, it carries a live BEARER credential
+      // for this session's egress reach. This leg goes to the upstream over
+      // plain HTTP, so forwarding it would hand that credential to the
+      // destination and to anything on the wire. Strip it (and its response-
+      // side twin) here, exactly like the other proxy-* hop-by-hop headers.
       const headers: Record<string, string> = {};
       for (const [key, value] of Object.entries(req.headers)) {
         if (
@@ -583,6 +602,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           key === 'host' ||
           key === 'connection' ||
           key === 'proxy-connection' ||
+          key === 'proxy-authorization' ||
+          key === 'proxy-authenticate' ||
           key === 'transfer-encoding' ||
           key === 'content-length'
         )
@@ -637,7 +658,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         requestBytes,
         responseBytes,
         durationMs: Date.now() - startTime,
-      }, allowingSession));
+      }, callerSession));
     } catch (err) {
       // BlockedIPError → 403 (policy block); anything else → 502 (network/DNS).
       // Reviewer M3 from Task 5: use typed instanceof, not string match.
@@ -652,25 +673,9 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       }
       res.end(message);
 
-      // Re-resolve the matching session for stamping. The catch can fire
-      // either before or after `allowingSession` was set in the try block,
-      // and `allowingSession` isn't in scope here. Re-running the lookup is
-      // cheap (Map.values iteration over a tiny set) and keeps the flow
-      // straightforward.
-      const hostnameForCatch = (() => {
-        try {
-          return new URL(
-            url.startsWith('http://') || url.startsWith('https://')
-              ? url
-              : `http://${req.headers.host ?? 'unknown'}${url}`,
-          ).hostname;
-        } catch {
-          return undefined;
-        }
-      })();
-      const sessionForCatch = hostnameForCatch
-        ? findAllowingSession(hostnameForCatch, sessions)
-        : undefined;
+      // The caller authenticated before the try block, so every error here —
+      // private-IP block, DNS/upstream failure, even a malformed target URL —
+      // is attributable to it.
       const blockedEntry: ProxyAuditEntry = {
         action: 'proxy_request',
         method,
@@ -681,23 +686,26 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         durationMs: Date.now() - startTime,
       };
       if (isBlocked) blockedEntry.blocked = message;
-      audit(stampSession(blockedEntry, sessionForCatch));
+      audit(stampSession(blockedEntry, callerSession));
     }
   }
 
   // ── HTTPS CONNECT — MITM path (TLS terminate, substitute, canary scan) ──
   //
   // Ported from v1 ~/dev/ai/ax/src/host/web-proxy.ts:497-620 with adaptations:
-  //  - `options.mitm.credentials` → the per-session view of the shared
-  //    `SharedCredentialRegistry` already passed to the listener. One tunnel
-  //    sees ALL active sessions' placeholders; cross-session collision is
-  //    statistically infeasible (16 random bytes per placeholder).
+  //  - `options.mitm.credentials` → the shared `SharedCredentialRegistry`
+  //    already passed to the listener. One tunnel substitutes ANY active
+  //    session's placeholder; cross-session collision is statistically
+  //    infeasible (16 random bytes per placeholder). NOTE (TASK-158): egress
+  //    REACH is per-session (the CONNECT was gated on the caller's own
+  //    allowlist), but placeholder SUBSTITUTION is not yet bound to the owning
+  //    session or to a destination host — that is the sibling card TASK-687.
   //  - `generateDomainCert` static-imported (no longer dynamic).
   //  - `canaryToken` aggregated across sessions (per-session field, not
   //    a single global option). A chunk matches if any session's token is in it.
   //  - `sessionId`/`userId`/`classification` are stamped via `stampSession`
-  //    from the SessionConfig that allowed the request. The plugin sets
-  //    those fields at `proxy:open-session` time (Task 11).
+  //    from the CALLING session (the one the proxy token authenticated). The
+  //    plugin sets those fields at `proxy:open-session` time (Task 11).
 
   async function handleMITMConnect(
     clientSocket: net.Socket,
@@ -707,7 +715,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     head: Buffer,
     startTime: number,
     target: string,
-    allowingSession: SessionConfig,
+    callerSession: SessionConfig,
   ): Promise<void> {
     const domainCert = generateDomainCert(hostname, ca);
 
@@ -756,7 +764,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           responseBytes: 0,
           durationMs: Date.now() - startTime,
           blocked: `tls_error: ${err.message}`,
-        }, allowingSession));
+        }, callerSession));
       }
     });
 
@@ -793,7 +801,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         responseBytes: 0,
         durationMs: Date.now() - startTime,
         blocked: 'canary_detected',
-      }, allowingSession));
+      }, callerSession));
       // Send a 403 over the TLS channel before tearing down.
       clientTls.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       clientTls.end();
@@ -873,7 +881,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           // Omit `credentialInjected` when false to satisfy
           // exactOptionalPropertyTypes — only present when substitution fired.
           ...(credentialInjected ? { credentialInjected: true as const } : {}),
-        }, allowingSession));
+        }, callerSession));
       }
     };
 
@@ -888,16 +896,19 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   // Ported from v1 ~/dev/ai/ax/src/host/web-proxy.ts:353-493 (allowlist + DNS
   // gates) and 497-620 (handleMITMConnect). Cuts vs. v1:
   //  - urlRewrites block dropped (out of scope for v2).
-  //  - onApprove dropped — per-session allowlist is the only egress gate.
+  //  - onApprove dropped — the CALLING session's allowlist is the only egress
+  //    gate (TASK-158: the caller is authenticated by its proxy token).
   //  - sessionId/userId/classification are stamped on audit entries via
-  //    `stampSession` from the matching SessionConfig (Task 11).
-  //  - bypassDomains field renamed to per-session bypassMITM, aggregated
-  //    "any-bypass-wins" so cert-pinning hosts never get a minted cert.
+  //    `stampSession` from the calling SessionConfig (Task 11).
+  //  - bypassDomains field renamed to per-session bypassMITM, so cert-pinning
+  //    hosts the CALLING session declared never get a minted cert. (Used to be
+  //    aggregated "any-bypass-wins" across sessions; TASK-158 scoped it to the
+  //    caller so one session cannot switch off another's inspection.)
   //
-  // MITM is the default. If the hostname is NOT in any session's bypassMITM,
-  // traffic is intercepted with a dynamically-minted domain cert and decrypted
-  // in-process for credential injection + canary scanning. Hosts in
-  // bypassMITM fall through to the raw-tunnel path below (no inspection).
+  // MITM is the default. If the hostname is NOT in the calling session's own
+  // bypassMITM, traffic is intercepted with a dynamically-minted domain cert
+  // and decrypted in-process for credential injection + canary scanning. Hosts
+  // in bypassMITM fall through to the raw-tunnel path below (no inspection).
 
   async function handleCONNECT(
     req: IncomingMessage,
@@ -909,6 +920,36 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     let requestBytes = head.length;
     let responseBytes = 0;
 
+    // AUTHENTICATE FIRST (TASK-158), before the CONNECT target is parsed or
+    // resolved: the per-session proxy token on the CONNECT request identifies
+    // the ONE session whose policy governs this tunnel. Missing, malformed or
+    // unknown → 407, no DNS lookup, no upstream connection. (Bytes after the
+    // CONNECT headers, `head`, are never read on this path.)
+    const callerSession = authenticateCaller(req.headers['proxy-authorization'], sessions);
+    if (callerSession === undefined) {
+      clientSocket.write(
+        `HTTP/1.1 407 Proxy Authentication Required\r\n` +
+          `Proxy-Authenticate: ${PROXY_AUTHENTICATE}\r\n` +
+          `Content-Type: text/plain\r\n` +
+          `Content-Length: ${Buffer.byteLength(PROXY_AUTH_REQUIRED_BODY)}\r\n` +
+          `Connection: close\r\n` +
+          `\r\n` +
+          PROXY_AUTH_REQUIRED_BODY,
+      );
+      clientSocket.end();
+      audit({
+        action: 'proxy_request',
+        method: 'CONNECT',
+        url: target,
+        status: 407,
+        requestBytes: 0,
+        responseBytes: 0,
+        durationMs: Date.now() - startTime,
+        blocked: 'proxy_auth_required',
+      });
+      return;
+    }
+
     // Parse host:port from CONNECT target ("host:port")
     const [hostname, portStr] = target.split(':');
     const port = parseInt(portStr ?? '443', 10);
@@ -916,7 +957,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     if (!hostname || Number.isNaN(port)) {
       clientSocket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
       clientSocket.end();
-      audit({
+      audit(stampSession({
         action: 'proxy_request',
         method: 'CONNECT',
         url: target,
@@ -925,14 +966,14 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         responseBytes: 0,
         durationMs: Date.now() - startTime,
         blocked: 'invalid_target',
-      });
+      }, callerSession));
       return;
     }
 
     try {
-      // Allowlist gate (I2): hostname must be in some session's allowlist.
-      const allowingSession = findAllowingSession(hostname, sessions);
-      if (!allowingSession) {
+      // Allowlist gate (I2): the hostname must be in the CALLER's own
+      // allowlist — never another session's.
+      if (!callerSession.allowlist.has(hostname)) {
         // Write an ACTIONABLE 403 (not a bare status line): a binary-download
         // CLI fails over CONNECT, and a body-less denial surfaces as an opaque
         // error to the agent and the user. Mirror the HTTP path's guidance via
@@ -950,10 +991,9 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
             body,
         );
         clientSocket.end();
-        // Same shape as the HTTP allowlist-miss case — attribute via the
-        // per-session proxy token on the CONNECT request when present
-        // (TASK-52). Node exposes the CONNECT request's headers the same way.
-        audit({
+        // Same shape as the HTTP allowlist-miss case — attributed to the
+        // caller its token authenticated as.
+        audit(stampSession({
           action: 'proxy_request',
           method: 'CONNECT',
           url: target,
@@ -962,18 +1002,20 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           responseBytes: 0,
           durationMs: Date.now() - startTime,
           blocked: `domain_denied: ${hostname}`,
-          ...blockAttribution(req.headers['proxy-authorization'], sessions),
-        });
+        }, callerSession));
         return;
       }
 
       // SSRF block (I3): resolve and verify against private CIDRs.
       // Use the returned IP for the upstream connection — DO NOT re-resolve
-      // (DNS rebinding defense). See SECURITY note on resolveAndCheck.
-      const resolvedIP = await resolveAndCheck(hostname, allowingSession.allowedIPs, resolver);
+      // (DNS rebinding defense). See SECURITY note on resolveAndCheck. The
+      // `allowedIPs` override is the CALLER's own, not some other session's.
+      const resolvedIP = await resolveAndCheck(hostname, callerSession.allowedIPs, resolver);
 
-      // MITM unless ANY session has the host in bypassMITM (any-bypass-wins).
-      const shouldMitm = !findAnyBypassingSession(hostname, sessions);
+      // MITM unless the CALLING session declared this host in its own
+      // bypassMITM. Another session's bypass never changes how this session's
+      // traffic is inspected.
+      const shouldMitm = !callerSession.bypassMITM?.has(hostname);
       if (shouldMitm) {
         await handleMITMConnect(
           clientSocket,
@@ -983,7 +1025,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           head,
           startTime,
           target,
-          allowingSession,
+          callerSession,
         );
         return;
       }
@@ -1032,7 +1074,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           requestBytes,
           responseBytes,
           durationMs: Date.now() - startTime,
-        }, allowingSession));
+        }, callerSession));
       };
 
       targetSocket.on('close', cleanup);
@@ -1050,12 +1092,9 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       );
       clientSocket.end();
 
-      // The catch fires either before or after `allowingSession` was set
-      // in the try block; re-resolve via hostname to attribute when possible.
-      // Allowlist hits with a private-IP block (BlockedIPError) DO have a
-      // matching session — the resolveAndCheck call only runs after the
-      // allowlist gate passed.
-      const sessionForCatch = findAllowingSession(hostname, sessions);
+      // The caller authenticated before the try block, so every error here —
+      // private-IP block, DNS failure, a throw while setting up the tunnel — is
+      // attributable to it.
       const blockedEntry: ProxyAuditEntry = {
         action: 'proxy_request',
         method: 'CONNECT',
@@ -1066,7 +1105,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         durationMs: Date.now() - startTime,
       };
       if (isBlocked) blockedEntry.blocked = (err as BlockedIPError).message;
-      audit(stampSession(blockedEntry, sessionForCatch));
+      audit(stampSession(blockedEntry, callerSession));
     }
   }
 

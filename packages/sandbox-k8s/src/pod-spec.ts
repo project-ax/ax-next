@@ -75,9 +75,11 @@ export interface PodProxyConfig {
   caCertPem: string;
   envMap: Record<string, string>;
   /**
-   * Per-session proxy token for egress attribution (TASK-52). Stamped as
-   * AX_PROXY_TOKEN; the runner embeds it as Proxy-Authorization Basic
-   * userinfo. Attribution label only — never an authz input.
+   * Per-session proxy token (TASK-52; the proxy's caller-authentication
+   * credential since TASK-158). Stamped as AX_PROXY_TOKEN; the runner embeds it
+   * as Proxy-Authorization Basic userinfo, and the credential-proxy gates every
+   * request on the allowlist of the session this token belongs to. A bearer
+   * secret for this session's egress reach — treat it like AX_AUTH_TOKEN.
    */
   proxyAuthToken?: string;
 }
@@ -747,10 +749,11 @@ export function buildPodSpec(
       });
     }
     if (pc.proxyAuthToken !== undefined) {
-      // TASK-52: per-session proxy token for egress attribution. The runner
-      // reads AX_PROXY_TOKEN and embeds it as Proxy-Authorization Basic
-      // userinfo on the local bridge URL, so the host listener can attribute
-      // egress (including blocked, allowlist-miss requests) to this session.
+      // TASK-52/158: per-session proxy token. The runner reads AX_PROXY_TOKEN
+      // and embeds it as Proxy-Authorization Basic userinfo on the proxy URL;
+      // the host listener AUTHENTICATES the caller with it and gates the
+      // request on this session's own allowlist. Without it every request is
+      // refused (407).
       proxyEnv.push({ name: 'AX_PROXY_TOKEN', value: pc.proxyAuthToken });
     }
     // Proxy CONTROL env wins over credential slots (TASK-149, codex P2). The

@@ -499,10 +499,11 @@ interface ProxyOpenSessionOutput {
   /** envName → opaque placeholder token (`ax-cred:<32-hex>`). */
   envMap: Record<string, string>;
   /**
-   * Per-session proxy token (TASK-52). Threaded onto `proxyConfig` so the
-   * sandbox carries it as Proxy-Authorization for egress attribution.
-   * Attribution label only — never an authz input. Optional for back-compat
-   * with a proxy plugin build that predates the token.
+   * Per-session proxy token (TASK-52; the proxy's caller-authentication
+   * credential since TASK-158). Threaded onto `proxyConfig` so the sandbox
+   * carries it as Proxy-Authorization; the proxy refuses a request without it.
+   * Optional in the type only for stub proxy plugins (test harness) that never
+   * front a real listener — the real `proxy:open-session` always returns one.
    */
   proxyAuthToken?: string;
 }
@@ -524,7 +525,8 @@ interface HttpEgressEventLike {
     | 'private-ip'
     | 'canary'
     | 'tls-error'
-    | 'request-body-too-large';
+    | 'request-body-too-large'
+    | 'proxy-auth';
 }
 
 // Minimal structural view of @ax/core's `WorkspaceDelta` — the B3
@@ -3617,8 +3619,9 @@ function endpointToProxyConfig(
   proxyAuthToken?: string,
 ): ProxyConfig {
   // Spread the token in conditionally so `exactOptionalPropertyTypes` doesn't
-  // reject `proxyAuthToken: undefined` (TASK-52). It's an attribution label;
-  // when the proxy plugin omits it, proxyConfig stays as it was before.
+  // reject `proxyAuthToken: undefined` (TASK-52). The real proxy plugin always
+  // supplies it (it is the egress-authentication credential, TASK-158); a stub
+  // that omits it simply leaves proxyConfig without one.
   const token = proxyAuthToken !== undefined ? { proxyAuthToken } : {};
   if (rawEndpoint.startsWith('unix://')) {
     return {
