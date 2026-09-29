@@ -1,4 +1,11 @@
-import { makeAgentContext, reject, type HookBus, type Plugin } from '@ax/core';
+import {
+  makeAgentContext,
+  reject,
+  type HookBus,
+  type Plugin,
+  type Rejection,
+  type WorkspaceDeletedPayload,
+} from '@ax/core';
 import type { Kysely } from 'kysely';
 import { createLimitsStore } from './config.js';
 import { runDiskQuotaMigration, type DiskQuotaDatabase } from './migrations.js';
@@ -21,6 +28,7 @@ const SUBSCRIBED = [
   'blob:pre-put',
   'blob:stored',
   'chat:start',
+  'workspace:deleted',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -44,7 +52,8 @@ const SUBSCRIBED = [
 //   - METERS what was stored. `blob:stored` charges the writer (one row per
 //     owner and sha, so a re-put is free); `workspace:applied` re-measures
 //     that agent's repo in the background; a periodic sweep backfills every
-//     personal agent and repairs drift.
+//     personal agent and repairs drift. `workspace:deleted` (the agent's repo is
+//     gone) drops that agent's row, so a deleted agent stops charging its owner.
 //   - Mounts the usage views under /settings/storage and /admin/storage.
 //
 // Registers no service hooks. See docs/plans/2026-09-29-workspace-disk-quota.md.
@@ -71,6 +80,28 @@ export interface DiskQuotaPlugin extends Plugin {
 function sizeField(payload: unknown, key: string): number {
   if (payload === null || typeof payload !== 'object') return 0;
   return cleanSize((payload as Record<string, unknown>)[key]);
+}
+
+/**
+ * The `agentId` of a `workspace:deleted` payload as sent, else undefined. The
+ * type says what a well-behaved publisher sends; the value is still untrusted,
+ * so it comes back as `unknown` for the service to validate.
+ */
+function agentIdField(payload: unknown): unknown {
+  if (payload === null || typeof payload !== 'object') return undefined;
+  return (payload as Partial<WorkspaceDeletedPayload>).agentId;
+}
+
+/**
+ * The veto for a refused write: the sentence, plus the machine-readable code
+ * when the refusal carries one (only "storage is full" does). The key is built
+ * only when present, so the fail-closed refusal has no `code` at all.
+ */
+function vetoFor(decision: { reason: string; code?: string }): Rejection {
+  return reject({
+    reason: decision.reason,
+    ...(decision.code !== undefined ? { code: decision.code } : {}),
+  });
 }
 
 export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQuotaPlugin {
@@ -183,15 +214,17 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
         // plugin must not leave gates behind.
         subscribedBus = bus;
         // The reasons are PROSE and are shown verbatim (to the agent on the
-        // runner-commit path, to the person on the upload paths).
+        // runner-commit path, to the person on the upload paths). A refusal
+        // because storage is full also carries `code: 'storage-full'`, for a
+        // caller that has to tell that apart without reading the sentence.
         bus.subscribe<unknown>('workspace:pre-apply', PLUGIN_NAME, async (ctx, payload) => {
           const decision = await svc.admitWorkspaceWrite(ctx, sizeField(payload, 'sizeBytes'));
-          if (!decision.ok) return reject({ reason: decision.reason });
+          if (!decision.ok) return vetoFor(decision);
           return undefined;
         });
         bus.subscribe<unknown>('blob:pre-put', PLUGIN_NAME, async (ctx, payload) => {
           const decision = await svc.admitBlobWrite(ctx, sizeField(payload, 'size'));
-          if (!decision.ok) return reject({ reason: decision.reason });
+          if (!decision.ok) return vetoFor(decision);
           return undefined;
         });
         // The front door. The write gates above are the hard guard, but the
@@ -215,6 +248,14 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
           // Re-measuring walks a repo directory, so it happens off the
           // write's path. The payload is a delta and is deliberately ignored.
           svc.scheduleWorkspaceMeasure(ctx);
+          return undefined;
+        });
+        // The agent's repo is gone (the deleter fires this after removing it),
+        // so its bytes are free: drop the row rather than charge the owner for a
+        // workspace that no longer exists. The payload is untrusted; the service
+        // validates it, never throws, and logs its own failures.
+        bus.subscribe<unknown>('workspace:deleted', PLUGIN_NAME, async (_ctx, payload) => {
+          await svc.releaseWorkspace(agentIdField(payload));
           return undefined;
         });
 

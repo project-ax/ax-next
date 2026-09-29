@@ -163,6 +163,9 @@ const failingStore: DiskQuotaStore = {
   async totals() {
     throw new Error('db down');
   },
+  async deleteWorkspaceUsage() {
+    throw new Error('db down');
+  },
 };
 
 const errorLogged = (w: World, msg: string) => w.lines.some((l) => l.level === 'error' && l.msg === msg);
@@ -180,7 +183,9 @@ describe('the blob gate', () => {
     await w.setLimitMb(64);
     await w.seedFiles('alice', 60 * MB);
     const d = await w.svc.admitBlobWrite(w.ctx('alice'), 5 * MB);
-    expect(d).toEqual({ ok: false, reason: blobFullMessage(60 * MB, 64 * MB) });
+    // The sentence is for the person; the code is for whoever must react to it
+    // without matching prose (an HTTP status, a specific banner).
+    expect(d).toEqual({ ok: false, reason: blobFullMessage(60 * MB, 64 * MB), code: 'storage-full' });
     expect((d as { reason: string }).reason).toContain('60 MB of 64 MB');
   });
 
@@ -266,19 +271,20 @@ describe('the blob gate', () => {
 
   it('FAILS CLOSED when the store throws: the person is told nothing was saved', async () => {
     const w = makeWorld({ store: failingStore });
-    expect(await w.svc.admitBlobWrite(w.ctx('alice'), 1)).toEqual({
-      ok: false,
-      reason: STORAGE_UNAVAILABLE_MESSAGE,
-    });
+    const d = await w.svc.admitBlobWrite(w.ctx('alice'), 1);
+    expect(d).toEqual({ ok: false, reason: STORAGE_UNAVAILABLE_MESSAGE });
+    // "We could not check" is NOT "your storage is full": it must not carry the
+    // full code, or a caller keyed on it would tell a person with plenty of room
+    // to make some. (toEqual ignores an undefined key, so ask for the key itself.)
+    expect('code' in d).toBe(false);
     expect(errorLogged(w, 'disk_quota_admit_failed')).toBe(true);
   });
 
-  it('FAILS CLOSED when the limit setting cannot be read', async () => {
+  it('FAILS CLOSED when the limit setting cannot be read, again without the full code', async () => {
     const w = makeWorld({ storageGetThrows: true });
-    expect(await w.svc.admitBlobWrite(w.ctx('alice'), 1)).toEqual({
-      ok: false,
-      reason: STORAGE_UNAVAILABLE_MESSAGE,
-    });
+    const d = await w.svc.admitBlobWrite(w.ctx('alice'), 1);
+    expect(d).toEqual({ ok: false, reason: STORAGE_UNAVAILABLE_MESSAGE });
+    expect('code' in d).toBe(false);
   });
 
   it('a corrupt stored limit falls back to the default; it does not open the gate or close it', async () => {
@@ -318,7 +324,7 @@ describe('the workspace gate', () => {
     await w.seedWorkspace('alice', 'agt_default', 60 * MB);
     expect(await w.svc.admitWorkspaceWrite(w.ctx('alice'), 4 * MB)).toEqual({ ok: true });
     const d = await w.svc.admitWorkspaceWrite(w.ctx('alice'), 4 * MB + 1);
-    expect(d).toEqual({ ok: false, reason: workspaceFullMessage(60 * MB, 64 * MB) });
+    expect(d).toEqual({ ok: false, reason: workspaceFullMessage(60 * MB, 64 * MB), code: 'storage-full' });
   });
 
   it('leaves another owner alone', async () => {
@@ -445,12 +451,11 @@ describe('the workspace gate', () => {
     expect((await w.svc.admitWorkspaceWrite(w.ctx('system', 'agt_x'), 1)).ok).toBe(false);
   });
 
-  it('FAILS CLOSED when the store throws', async () => {
+  it('FAILS CLOSED when the store throws, without the full code', async () => {
     const w = makeWorld({ store: failingStore });
-    expect(await w.svc.admitWorkspaceWrite(w.ctx('alice'), 1)).toEqual({
-      ok: false,
-      reason: STORAGE_UNAVAILABLE_MESSAGE,
-    });
+    const d = await w.svc.admitWorkspaceWrite(w.ctx('alice'), 1);
+    expect(d).toEqual({ ok: false, reason: STORAGE_UNAVAILABLE_MESSAGE });
+    expect('code' in d).toBe(false);
     expect(errorLogged(w, 'disk_quota_admit_failed')).toBe(true);
   });
 
@@ -828,6 +833,97 @@ describe('the workspace meter (scheduleWorkspaceMeasure + drain)', () => {
     w.svc.scheduleWorkspaceMeasure(w.ctx('alice', 'agt_1'));
     await w.svc.drain();
     expect((await w.svc.admitWorkspaceWrite(w.ctx('alice', 'agt_1'), 1)).ok).toBe(false);
+  });
+});
+
+// An agent delete removes its repo, so the bytes are really free. Nothing else
+// ever takes a workspace row out (the sweep only upserts, by design), so without
+// this the owner stays charged for a workspace that no longer exists.
+describe('releaseWorkspace (an agent was deleted)', () => {
+  it("drops that agent's row: the owner's usage falls by exactly those bytes, and other agents stay", async () => {
+    const w = makeWorld();
+    await w.seedWorkspace('alice', 'agt_1', 30 * MB);
+    await w.seedWorkspace('alice', 'agt_2', 5 * MB);
+    await w.seedFiles('alice', 2 * MB);
+    await w.svc.releaseWorkspace('agt_1');
+    expect(await w.store.usageFor('alice')).toEqual({ workspaceBytes: 5 * MB, fileBytes: 2 * MB });
+  });
+
+  it('frees room: a write the full gate refused is admitted once the workspace is gone', async () => {
+    const w = makeWorld();
+    await w.setLimitMb(64);
+    await w.seedWorkspace('alice', 'agt_1', 64 * MB);
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 5 * MB)).ok).toBe(false);
+    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(false);
+    await w.svc.releaseWorkspace('agt_1');
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 5 * MB)).ok).toBe(true);
+    expect((await w.svc.admitTurn(w.ctx('alice'))).ok).toBe(true);
+  });
+
+  it("keys on the agent alone: a team's row goes too, with no owner lookup at all", async () => {
+    // No agents:resolve is registered (and the agent is already deleted, so it
+    // could not resolve anyway): the row is found by its source, not its owner.
+    const w = makeWorld();
+    await w.seedWorkspace('team:t1', 'agt_team', 30 * MB);
+    await w.seedWorkspace('alice', 'agt_team', 1 * MB); // a fallback-charged copy
+    await w.seedWorkspace('team:t1', 'agt_other', 4 * MB);
+    await w.svc.releaseWorkspace('agt_team');
+    expect(await w.store.usageFor('team:t1')).toEqual({ workspaceBytes: 4 * MB, fileBytes: 0 });
+    expect(await w.store.usageFor('alice')).toEqual({ workspaceBytes: 0, fileBytes: 0 });
+  });
+
+  it('is idempotent and harmless for an agent that was never measured', async () => {
+    const w = makeWorld();
+    await w.seedWorkspace('alice', 'agt_1', 3 * MB);
+    await w.svc.releaseWorkspace('agt_1');
+    await w.svc.releaseWorkspace('agt_1');
+    await w.svc.releaseWorkspace('agt_never');
+    expect(await w.store.topOwners(10)).toEqual([]);
+    expect(w.lines.filter((l) => l.level === 'warn' || l.level === 'error')).toEqual([]);
+  });
+
+  it('deletes nothing for an id that is not one, and never throws', async () => {
+    const w = makeWorld();
+    await w.seedWorkspace('alice', 'agt_1', 3 * MB);
+    for (const bad of [undefined, null, '', 5, {}, ['agt_1'], true]) {
+      await expect(w.svc.releaseWorkspace(bad), String(bad)).resolves.toBeUndefined();
+    }
+    expect(await w.store.usageFor('alice')).toEqual({ workspaceBytes: 3 * MB, fileBytes: 0 });
+    expect(w.lines.some((l) => l.level === 'warn' && l.msg === 'disk_quota_workspace_deleted_invalid')).toBe(
+      true,
+    );
+  });
+
+  it('SWALLOWS a store failure (a delete must never fail because of the ledger) and logs it', async () => {
+    const w = makeWorld({ store: failingStore });
+    await expect(w.svc.releaseWorkspace('agt_1')).resolves.toBeUndefined();
+    expect(errorLogged(w, 'disk_quota_release_failed')).toBe(true);
+  });
+
+  it('waits out a measurement already in flight, so a stale figure cannot re-create the row after the delete', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let started = false;
+    const w = makeWorld({
+      services: {
+        'workspace:usage': async () => {
+          started = true;
+          await gate; // measuring the repo as it was BEFORE the delete
+          return { bytes: 40 * MB };
+        },
+      },
+    });
+    w.svc.scheduleWorkspaceMeasure(w.ctx('alice', 'agt_1'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(started).toBe(true);
+
+    const released = w.svc.releaseWorkspace('agt_1');
+    release(); // the stale reading now lands and is upserted...
+    await released; // ...and the delete runs AFTER it
+    await w.svc.drain();
+    expect(await w.store.topOwners(10)).toEqual([]);
   });
 });
 

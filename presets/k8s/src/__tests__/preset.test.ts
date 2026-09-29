@@ -712,6 +712,7 @@ describe('@ax/preset-k8s wiring', () => {
       'blob:pre-put',
       'blob:stored',
       'chat:start',
+      'workspace:deleted',
     ]);
     expect(quota!.manifest.calls).toEqual([
       'database:get-instance',
