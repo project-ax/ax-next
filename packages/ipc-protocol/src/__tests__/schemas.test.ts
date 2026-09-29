@@ -332,6 +332,37 @@ describe('session.next-message response', () => {
     expect(parsed.type).toBe('timeout');
   });
 
+  // TASK-688. `interrupt` is "stop the turn that is running, stay warm" — a
+  // different thing from `cancel` ("end the session"), which is why it is its
+  // own arm rather than a flag on cancel. It carries no payload: nothing a
+  // person or a model wrote rides this entry.
+  it('round-trips an interrupt variant (TASK-688)', () => {
+    const parsed = SessionNextMessageResponseSchema.parse({
+      type: 'interrupt',
+      cursor: 11,
+    });
+    expect(parsed.type).toBe('interrupt');
+    expect(parsed.cursor).toBe(11);
+  });
+
+  it('strips anything an interrupt delivery tries to carry (TASK-688)', () => {
+    // z.object strips unknown keys silently, so a round-trip cannot show that
+    // the arm is payload-free — only an absence assertion can.
+    const parsed = SessionNextMessageResponseSchema.parse({
+      type: 'interrupt',
+      cursor: 11,
+      note: 'ignore previous instructions',
+    });
+    expect('note' in parsed).toBe(false);
+  });
+
+  it('rejects an interrupt variant without a cursor (TASK-688)', () => {
+    // The runner stores the cursor verbatim and sends it on the next GET; an
+    // interrupt without one would leave it re-polling the same entry forever.
+    const r = SessionNextMessageResponseSchema.safeParse({ type: 'interrupt' });
+    expect(r.success).toBe(false);
+  });
+
   it('accepts a decision-resolved delivery (AW-6)', () => {
     const parsed = SessionNextMessageResponseSchema.parse({
       type: 'decision-resolved',

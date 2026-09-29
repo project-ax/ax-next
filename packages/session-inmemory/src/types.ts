@@ -55,8 +55,8 @@ export interface AgentConfig {
 // what producers queue; `ClaimResult` is what the long-poll claim resolves to.
 //
 // Cursor semantics (matches @ax/ipc-protocol SessionNextMessageResponseSchema):
-//   - `user-message` / `cancel`: returned `cursor` is the NEXT cursor the
-//     caller should request (delivered-index + 1).
+//   - `user-message` / `cancel` / `interrupt`: returned `cursor` is the NEXT
+//     cursor the caller should request (delivered-index + 1).
 //   - `timeout`: returned `cursor` echoes the input cursor (no advancement).
 // ---------------------------------------------------------------------------
 
@@ -76,9 +76,16 @@ export interface AgentConfig {
 // minted by the approve route. Present, the woken turn emits under it and an
 // open thread streams it live; absent, the turn runs dark (the AW-6 behavior —
 // nothing was waiting on a response, because no host request produced it).
+//
+// TASK-688 adds `interrupt`: "stop the turn that is running, and stay warm".
+// It is NOT `cancel` — `cancel` ends the session (the runner drains and exits),
+// `interrupt` aborts the in-flight model call / tool run and leaves the runner
+// ready for the next message. Payload-free by design: no string a person or a
+// model wrote rides it.
 export type InboxEntry =
   | { type: 'user-message'; payload: AgentMessage; reqId: string }
   | { type: 'cancel' }
+  | { type: 'interrupt' }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -90,6 +97,7 @@ export type InboxEntry =
 export type ClaimResult =
   | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
+  | { type: 'interrupt'; cursor: number }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -335,6 +343,9 @@ export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
     cursor: z.number(),
   }),
   z.object({ type: z.literal('cancel'), cursor: z.number() }),
+  // TASK-688. Same rule as the AW-6 arm below: a variant missing from this
+  // `returns` contract is refused at the hook boundary, before the runner.
+  z.object({ type: z.literal('interrupt'), cursor: z.number() }),
   // AW-6. Must appear here as well as on the wire schema: this is the
   // `returns` contract the bus validates the handler against, and a variant
   // missing from it is refused at the hook boundary before it ever reaches

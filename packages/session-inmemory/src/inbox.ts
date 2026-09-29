@@ -70,6 +70,11 @@ export function createInbox(): Inbox {
         cursor: cursor + 1,
       };
     }
+    if (entry.type === 'interrupt') {
+      // TASK-688. Built fresh rather than spread from the stored entry, so
+      // nothing a caller hung on the object can ride to the runner.
+      return { type: 'interrupt', cursor: cursor + 1 };
+    }
     return { type: 'cancel', cursor: cursor + 1 };
   };
 

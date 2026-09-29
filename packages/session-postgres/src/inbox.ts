@@ -62,9 +62,15 @@ const PLUGIN_NAME = '@ax/session-postgres';
 //
 // TASK-278 adds the optional `reqId` (the continuation turn's chat
 // correlation) to the stored shape — mirrors @ax/session-inmemory.
+//
+// TASK-688 adds `interrupt`: "stop the turn that is running, and stay warm"
+// (NOT `cancel`, which ends the session). Payload-free, stored as JSONB null
+// exactly like `cancel`, so it needs no migration: the `type` column is plain
+// TEXT with no CHECK constraint (see the note in migrations.ts).
 export type InboxEntry =
   | { type: 'user-message'; payload: AgentMessage; reqId: string }
   | { type: 'cancel' }
+  | { type: 'interrupt' }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -76,6 +82,7 @@ export type InboxEntry =
 export type ClaimResult =
   | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
+  | { type: 'interrupt'; cursor: number }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -511,6 +518,9 @@ async function fetchEntry(
   if (row.type === 'cancel') {
     return { type: 'cancel' };
   }
+  if (row.type === 'interrupt') {
+    return { type: 'interrupt' };
+  }
   if (row.type === 'decision-resolved') {
     // Same posture as the user-message branch above: a malformed payload is
     // CORRUPTION, and returning null would leave the row in the DB but
@@ -619,6 +629,9 @@ function deliver(entry: InboxEntry, cursor: number): ClaimResult {
       ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
       cursor: cursor + 1,
     };
+  }
+  if (entry.type === 'interrupt') {
+    return { type: 'interrupt', cursor: cursor + 1 };
   }
   return { type: 'cancel', cursor: cursor + 1 };
 }
