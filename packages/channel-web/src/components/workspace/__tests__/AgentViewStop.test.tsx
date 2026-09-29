@@ -528,8 +528,16 @@ describe('when the Stop request itself fails', () => {
   parallel and meet in `AgentView`'s failure strip and its Resend gate; a textual
   merge cannot tell you which sentence wins, so these do.
 
-  Against a merge that let the kickoff copy outrank the stop copy, the first test
-  fails: a Stop that could not be sent would say the greeting never arrived.
+  Which test guards what (each was mutation-checked against the merge decision it
+  names):
+    - the FIRST test is the copy-precedence guard: against a merge that let the
+      kickoff copy outrank the stop copy, a Stop that could not be sent would say
+      the greeting never arrived, and it fails;
+    - the THIRD is the Resend-gate guard for a hidden turn (`sent.hidden !== true`);
+    - the SECOND passes against either merge order. A CONFIRMED stop sets no
+      `turnError`, so the precedence never comes into it; it pins what the person
+      sees when the greeting is stopped (the note, no kickoff sentence), and its
+      "no empty-pane copy" holds because the stopped note fills the live thread.
 */
 describe('a Stop pressed while a new agent is greeting (hidden kickoff)', () => {
   const hiddenKickoff = {
