@@ -18,9 +18,32 @@ const FinishEntrySchema = z.object({
   reason: z.enum(['end_turn', 'tool_use']),
 });
 
+const TokenCount = z.number().int().nonnegative();
+
+/**
+ * Close an assistant turn the way the real runners do: POST `event.turn-end`
+ * (role 'assistant', reason 'user-message-wait'). `usage` is what the turn
+ * cost as a runner would report it; omit it to model a runner that cannot
+ * tell (the host then charges a flat assumed cost). This is the path
+ * per-user metering (@ax/usage-limits) rides: runner -> IPC -> chat:turn-end.
+ */
+const TurnEndEntrySchema = z.object({
+  kind: z.literal('turn-end'),
+  usage: z
+    .object({
+      model: z.string().min(1).optional(),
+      inputTokens: TokenCount.optional(),
+      outputTokens: TokenCount.optional(),
+      cacheReadTokens: TokenCount.optional(),
+      cacheWriteTokens: TokenCount.optional(),
+    })
+    .optional(),
+});
+
 const ScriptEntrySchema = z.discriminatedUnion('kind', [
   ToolCallEntrySchema,
   AssistantTextEntrySchema,
+  TurnEndEntrySchema,
   FinishEntrySchema,
 ]);
 

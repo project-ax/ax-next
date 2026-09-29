@@ -58,6 +58,12 @@ tester.run('no-bare-tenant-tables', rule, {
       code: "db.selectFrom('connectors_v1_connectors').execute()",
       filename: '/foo/packages/connectors/src/scope.ts',
     },
+    // The usage_limits_v1_ prefix (TASK-692) is exempt inside its plugin's
+    // store.ts, where every per-user usage query lives.
+    {
+      code: "db.selectFrom('usage_limits_v1_suspensions').execute()",
+      filename: '/foo/packages/usage-limits/src/store.ts',
+    },
 
     // Non-`selectFrom` calls are out of scope (insertInto / updateTable
     // are write paths handled by the plugin's CRUD methods).
@@ -111,6 +117,20 @@ tester.run('no-bare-tenant-tables', rule, {
         {
           messageId: 'bareQuery',
           data: { table: 'connectors_v1_connectors' },
+        },
+      ],
+    },
+    // usage_limits_v1_* (TASK-692): per-user spend rows. A query from the
+    // plugin's routes.ts (or anywhere but store.ts) is flagged. Without this
+    // case, dropping the prefix from TENANT_TABLE_PREFIXES would leave every
+    // other test green.
+    {
+      code: "db.selectFrom('usage_limits_v1_buckets').execute()",
+      filename: '/foo/packages/usage-limits/src/routes.ts',
+      errors: [
+        {
+          messageId: 'bareQuery',
+          data: { table: 'usage_limits_v1_buckets' },
         },
       ],
     },

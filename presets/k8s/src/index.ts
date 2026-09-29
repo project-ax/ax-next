@@ -27,6 +27,7 @@ import { createAdminSettingsRoutesPlugin } from '@ax/admin-settings-routes';
 import { createBrandingPlugin } from '@ax/branding';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentActivityPlugin } from '@ax/agent-activity';
+import { createUsageLimitsPlugin } from '@ax/usage-limits';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
@@ -90,8 +91,14 @@ import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
 //   7. mcp-client (catalog + tool descriptors + tool:register/tool:list)
 //   8. agents (admin endpoints + agents:resolve gate)
 //
-// (Host-side LLM plugins were deleted in Phase 6 — the SDK runner reaches
-// Anthropic via the credential-proxy, not through a host `llm:call` hook.)
+// Two kinds of model traffic, and they take different roads:
+//   - AGENT traffic goes runner (in the sandbox) -> credential proxy ->
+//     provider. It never goes through a host `llm:call` hook.
+//   - The host's own helper calls (conversation titles, memory extraction,
+//     the skill safety scan) use `llm:call:<provider>`, served by
+//     @ax/llm-anthropic and @ax/llm-openrouter, which this preset loads.
+// Both are metered by @ax/usage-limits: agent turns via the runner-reported
+// `usage` on `chat:turn-end`, helper calls via `llm:usage`.
 // ---------------------------------------------------------------------------
 
 const requireFromPreset = createRequire(import.meta.url);
@@ -1014,6 +1021,20 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // `routes-workspace-rail.test.ts` asserts the hook is never even reached for
   // an agent the caller cannot resolve.
   plugins.push(createAgentActivityPlugin());
+
+  // ----- 7c. per-user spend + rate limits (TASK-692) ----------------------
+  // GATES every turn on `chat:start` (veto; fired by agent:invoke before a
+  // sandbox spawns): a suspended user, one over the rolling daily spend cap,
+  // or one over the hourly turn cap is refused with a stable reason code
+  // (`chat:start:usage-*`). Fails CLOSED if the check itself breaks.
+  // METERS each agent turn on `chat:turn-end` (runner-reported usage,
+  // untrusted, or a flat assumed cost when absent) and each host-side helper
+  // call on `llm:usage`. Reuses the shared postgres pool via
+  // `database:get-instance` (tables `usage_limits_v1_*`); limits live in the
+  // `settings:usage-limits` storage key. Mounts the admin-only
+  // /admin/usage* routes (view, limits, suspend/resume), so it hard-depends
+  // on http:register-route + auth:require-user.
+  plugins.push(createUsageLimitsPlugin());
 
   // ----- 8. agents -------------------------------------------------------
   // Registers `agents:resolve` (the ACL gate the chat-orchestrator hard-

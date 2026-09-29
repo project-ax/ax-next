@@ -335,6 +335,73 @@ describe('stub-runner', () => {
     expect(stderr).toMatch(/AX_TEST_STUB_SCRIPT/);
   });
 
+  it('fires event.turn-end (assistant, with usage) at its place in the script, before chat-end', async () => {
+    const server = await startFakeServer();
+    servers.push(server);
+    const usage = {
+      model: 'anthropic/claude-sonnet-4-6',
+      inputTokens: 1000,
+      outputTokens: 500,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
+    const script: StubRunnerScript = {
+      entries: [
+        { kind: 'assistant-text', content: 'hi' },
+        { kind: 'turn-end', usage },
+        { kind: 'finish', reason: 'end_turn' },
+      ],
+    };
+    const stub = spawnStub(server, { AX_TEST_STUB_SCRIPT: encodeScript(script) });
+    children.push(stub.child);
+    const { code, stderr } = await stub.exit;
+    expect(code, `stderr: ${stderr}`).toBe(0);
+
+    const turnEnds = server.calls.filter((c) => c.url === '/event.turn-end');
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]?.method).toBe('POST');
+    expect(turnEnds[0]?.body).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      usage,
+    });
+    const turnEndIdx = server.calls.findIndex((c) => c.url === '/event.turn-end');
+    const chatEndIdx = server.calls.findIndex((c) => c.url === '/event.chat-end');
+    expect(turnEndIdx).toBeLessThan(chatEndIdx);
+  });
+
+  it('fires event.turn-end WITHOUT a usage key when the entry has no usage', async () => {
+    const server = await startFakeServer();
+    servers.push(server);
+    const script: StubRunnerScript = {
+      entries: [{ kind: 'turn-end' }, { kind: 'finish', reason: 'end_turn' }],
+    };
+    const stub = spawnStub(server, { AX_TEST_STUB_SCRIPT: encodeScript(script) });
+    children.push(stub.child);
+    const { code, stderr } = await stub.exit;
+    expect(code, `stderr: ${stderr}`).toBe(0);
+
+    const turnEnd = server.calls.find((c) => c.url === '/event.turn-end');
+    expect(turnEnd?.body).toEqual({ reason: 'user-message-wait', role: 'assistant' });
+    expect(Object.keys(turnEnd?.body as object)).not.toContain('usage');
+  });
+
+  it('never fires event.turn-end for a script without a turn-end entry', async () => {
+    const server = await startFakeServer();
+    servers.push(server);
+    const script: StubRunnerScript = {
+      entries: [
+        { kind: 'assistant-text', content: 'hello' },
+        { kind: 'finish', reason: 'end_turn' },
+      ],
+    };
+    const stub = spawnStub(server, { AX_TEST_STUB_SCRIPT: encodeScript(script) });
+    children.push(stub.child);
+    const { code, stderr } = await stub.exit;
+    expect(code, `stderr: ${stderr}`).toBe(0);
+    expect(server.calls.filter((c) => c.url === '/event.turn-end')).toHaveLength(0);
+  });
+
   it('fires event.chat-end with the assistant-text content when present', async () => {
     const server = await startFakeServer();
     servers.push(server);
