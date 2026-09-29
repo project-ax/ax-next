@@ -363,4 +363,68 @@ describe('createMcpOAuthStore', () => {
       expect(await store.getClient('k|a')).not.toBeNull();
     });
   });
+
+  // TASK-718 — deleting an agent must drop its in-flight OAuth handshakes. The
+  // pending row carries the PKCE verifier and, for a confidential client, its
+  // secret in plaintext, so leaving it behind for a deleted agent is worse than
+  // clutter. Keyed on `agent_id` ALONE (a team agent's connect can be started
+  // by several people). `mcp_oauth_v1_clients` has no `agent_id` column at all
+  // (it is keyed by `${connectorId}|${authServerUrl}` and shared by every
+  // agent), so it is deliberately out of reach of this method.
+  describe('deleteAllForAgent (TASK-718)', () => {
+    it('deletes every pending handshake for the agent — any user, any cred scope — and nothing else', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.putPending(makePending({ state: 'g1', agentId: 'agt_gone', userId: 'u1' }));
+      await store.putPending(
+        makePending({
+          state: 'g2',
+          agentId: 'agt_gone',
+          userId: 'u2',
+          credScope: 'user',
+          clientId: 'cid',
+          clientSecret: 'plaintext-secret',
+        }),
+      );
+      await store.putPending(makePending({ state: 'g3', agentId: 'agt_gone', userId: 'u3' }), Date.now() - 60 * 60_000);
+      await store.putPending(makePending({ state: 'k1', agentId: 'agt_kept', userId: 'u1' }));
+      await store.putPending(makePending({ state: 'k2', agentId: 'agt_kept', userId: 'u2', credScope: 'user' }));
+      // The legacy shared client row: not agent-keyed, so it must survive.
+      await db
+        .insertInto('mcp_oauth_v1_clients')
+        .values({ client_key: 'k|a', client_id: 'cid', client_secret: null, dynamic: true, created_at: new Date(0) })
+        .execute();
+
+      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 3 });
+
+      for (const s of ['g1', 'g2', 'g3']) expect(await store.getPending(s)).toBeNull();
+      for (const s of ['k1', 'k2']) expect(await store.getPending(s)).not.toBeNull();
+      expect(await store.getClient('k|a')).not.toBeNull();
+    });
+
+    it('is a no-op the second time', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.putPending(makePending({ state: 'g1', agentId: 'agt_gone' }));
+      await store.putPending(makePending({ state: 'k1', agentId: 'agt_kept' }));
+      await store.deleteAllForAgent('agt_gone');
+
+      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 0 });
+      expect(await store.getPending('k1')).not.toBeNull();
+    });
+
+    it('refuses an empty agentId — never runs a delete with an empty key', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.putPending(makePending({ state: 'k1', agentId: 'agt_kept' }));
+
+      for (const bad of ['', undefined as unknown as string, null as unknown as string]) {
+        await expect(store.deleteAllForAgent(bad)).rejects.toThrow(/agentId is required/);
+      }
+      expect(await store.getPending('k1')).not.toBeNull();
+    });
+  });
 });

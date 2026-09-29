@@ -44,7 +44,9 @@ export function createHostGrantsPlugin(): Plugin {
         'host-grants:revoke',
       ],
       calls: ['database:get-instance'],
-      subscribes: [],
+      // TASK-718: `@ax/agents` fires this after the agent row is gone; the
+      // grants table has no FK to it, so this subscriber is the only cleanup.
+      subscribes: ['agents:deleted'],
     },
 
     async init({ bus }) {
@@ -56,7 +58,30 @@ export function createHostGrantsPlugin(): Plugin {
       );
       const typed = db as Kysely<HostGrantsDatabase>;
       await runHostGrantsMigration(typed);
-      store = createHostGrantsStore(typed);
+      const localStore = createHostGrantsStore(typed);
+      store = localStore;
+
+      // TASK-718 — a deleted agent's grants must go with it. Payload (declared
+      // locally, no cross-plugin import): `{ agentId, ownerId, ownerType }`;
+      // only `agentId` matters, and it is keyed on ALONE because a team agent
+      // holds grants under several owner users. K10: a subscriber must never
+      // throw — a failed purge is logged loudly and swallowed.
+      bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+        if (typeof agentId !== 'string' || agentId.length === 0) {
+          ctx.logger.warn('host_grants_purge_for_deleted_agent_skipped', {
+            reason: 'agents:deleted payload has no non-empty string agentId',
+          });
+          return undefined;
+        }
+        try {
+          const { deleted } = await localStore.deleteAllForAgent(agentId);
+          ctx.logger.info('host_grants_purged_for_deleted_agent', { agentId, deleted });
+        } catch (err) {
+          ctx.logger.error('host_grants_purge_for_deleted_agent_failed', { agentId, err });
+        }
+        return undefined;
+      });
 
       bus.registerService<HostGrantsGrantInput, HostGrantsGrantOutput>(
         'host-grants:grant',

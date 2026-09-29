@@ -10,7 +10,8 @@ import { sql, type Kysely } from 'kysely';
  * of the LIVE proxy:add-host grant (TASK-37): the orchestrator loads these
  * hosts into the egress allowlist at every fresh session open. `agent_id` is
  * an opaque scoping key — no FK to agents_v1_agents (cross-plugin FKs are
- * banned; a dangling grant to a deleted agent simply never loads).
+ * banned), so deleting an agent does not cascade here: this plugin subscribes
+ * to `agents:deleted` and removes the agent's rows itself (TASK-718).
  */
 export async function runHostGrantsMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`

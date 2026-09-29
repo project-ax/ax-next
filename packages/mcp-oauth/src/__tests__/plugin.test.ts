@@ -10,8 +10,9 @@ import {
   startTestContainer,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import type { ServiceHandler } from '@ax/core';
+import { createLogger, type ServiceHandler } from '@ax/core';
 import type { Kysely } from 'kysely';
+import pg from 'pg';
 import { createMcpOAuthPlugin } from '../plugin.js';
 import { createMcpOAuthStore } from '../store.js';
 import type { McpOAuthDatabase } from '../migrations.js';
@@ -83,7 +84,9 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     expect(off.manifest.name).toBe('@ax/mcp-oauth');
     expect(off.manifest.registers).toContain('credentials:resolve:mcp-oauth');
     expect(off.manifest.calls).toEqual(['database:get-instance']);
-    expect(off.manifest.subscribes).toEqual([]);
+    // TASK-718: a deleted agent's in-flight handshakes go with it. Subscribed
+    // whether or not the routes are mounted — the table exists either way.
+    expect(off.manifest.subscribes).toEqual(['agents:deleted']);
 
     const on = createMcpOAuthPlugin({
       mountRoutes: true,
@@ -91,6 +94,7 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     });
     // Always registers the resolver sub-service.
     expect(on.manifest.registers).toContain('credentials:resolve:mcp-oauth');
+    expect(on.manifest.subscribes).toEqual(['agents:deleted']);
     // The route handlers call these; mountRoutes pushes them onto `calls`.
     expect(on.manifest.calls).toEqual([
       'database:get-instance',
@@ -203,5 +207,176 @@ describe('@ax/mcp-oauth plugin init (mountRoutes:true)', () => {
         ],
       }),
     ).rejects.toThrow(/publicOrigin/);
+  });
+});
+
+// TASK-718 — `@ax/agents` fires `agents:deleted` AFTER the agent row is gone.
+// `mcp_oauth_v1_pending` carries `agent_id` with no FK to the agents table
+// (deliberately), so nothing but this subscriber ever removes an in-flight
+// handshake for a deleted agent. Tokens live in the credentials store and are
+// purged there; `mcp_oauth_v1_clients` has no `agent_id` and is left alone.
+describe('@ax/mcp-oauth agents:deleted subscriber (TASK-718)', () => {
+  async function boot(): Promise<TestHarness> {
+    const h = await createTestHarness({
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createMcpOAuthPlugin()],
+    });
+    harnesses.push(h);
+    return h;
+  }
+
+  function pendingFor(state: string, agentId: string, userId: string, over: Record<string, unknown> = {}) {
+    return {
+      state,
+      userId,
+      agentId,
+      connectorId: 'my-connector',
+      slot: 'default',
+      codeVerifier: 'verifier',
+      authServerUrl: 'https://auth.example.com',
+      clientKey: 'my-connector|https://auth.example.com',
+      resource: 'https://api.example.com',
+      scope: 'read',
+      credScope: 'agent' as const,
+      createdAt: Date.now(),
+      ...over,
+    };
+  }
+
+  async function seed(h: TestHarness): Promise<void> {
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const store = createMcpOAuthStore(db);
+    // agt_del: handshakes started by three different people, both cred scopes,
+    // one with a confidential client's secret in the row.
+    await store.putPending(pendingFor('d1', 'agt_del', 'u1'));
+    await store.putPending(pendingFor('d2', 'agt_del', 'u2', { credScope: 'user' }));
+    await store.putPending(
+      pendingFor('d3', 'agt_del', 'u3', { clientId: 'cid', clientSecret: 'plaintext-secret' }),
+    );
+    await store.putPending(pendingFor('k1', 'agt_keep', 'u1'));
+    await store.putPending(pendingFor('k2', 'agt_keep', 'u2', { credScope: 'user' }));
+    // The legacy shared client row is not agent-keyed; it must survive.
+    await db
+      .insertInto('mcp_oauth_v1_clients')
+      .values({ client_key: 'k|a', client_id: 'cid', client_secret: null, dynamic: true, created_at: new Date(0) })
+      .execute();
+  }
+
+  async function countPending(agentId: string): Promise<number> {
+    const c = new pg.Client({ connectionString });
+    await c.connect();
+    try {
+      const r = await c.query(
+        'SELECT COUNT(*)::int AS n FROM mcp_oauth_v1_pending WHERE agent_id = $1',
+        [agentId],
+      );
+      return r.rows[0].n as number;
+    } finally {
+      await c.end().catch(() => {});
+    }
+  }
+
+  async function countClients(): Promise<number> {
+    const c = new pg.Client({ connectionString });
+    await c.connect();
+    try {
+      const r = await c.query('SELECT COUNT(*)::int AS n FROM mcp_oauth_v1_clients');
+      return r.rows[0].n as number;
+    } finally {
+      await c.end().catch(() => {});
+    }
+  }
+
+  /** A ctx whose logger writes into `lines`, so a test can read what was logged. */
+  function loggedCtx(h: TestHarness, lines: string[]) {
+    return h.ctx({ logger: createLogger({ reqId: 'req-del', writer: (l) => lines.push(l) }) });
+  }
+
+  const parse = (lines: string[]): Array<Record<string, unknown>> =>
+    lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+
+  const deleted = (agentId: unknown) => ({ agentId, ownerId: 'u1', ownerType: 'user' });
+
+  it('removes every pending handshake for the deleted agent, and only those', async () => {
+    const h = await boot();
+    await seed(h);
+    expect(await countPending('agt_del')).toBe(3);
+    const lines: string[] = [];
+
+    const res = await h.bus.fire('agents:deleted', loggedCtx(h, lines), deleted('agt_del'));
+
+    expect(res.rejected).toBe(false);
+    expect(await countPending('agt_del')).toBe(0);
+    expect(await countPending('agt_keep')).toBe(2);
+    // No `agent_id` column on the legacy clients table: not this plugin's to purge.
+    expect(await countClients()).toBe(1);
+    expect(
+      parse(lines).find((e) => e.msg === 'mcp_oauth_purged_for_deleted_agent'),
+    ).toMatchObject({ level: 'info', agentId: 'agt_del', deleted: 3 });
+  });
+
+  it('firing again for the same agent is a no-op that neither throws nor touches other agents', async () => {
+    const h = await boot();
+    await seed(h);
+    await h.bus.fire('agents:deleted', loggedCtx(h, []), deleted('agt_del'));
+    const lines: string[] = [];
+
+    const res = await h.bus.fire('agents:deleted', loggedCtx(h, lines), deleted('agt_del'));
+
+    expect(res.rejected).toBe(false);
+    expect(await countPending('agt_del')).toBe(0);
+    expect(await countPending('agt_keep')).toBe(2);
+    const events = parse(lines);
+    expect(events.find((e) => e.msg === 'mcp_oauth_purged_for_deleted_agent')).toMatchObject({
+      deleted: 0,
+    });
+    expect(events.some((e) => e.level === 'error')).toBe(false);
+  });
+
+  it('a malformed payload deletes nothing, warns, and does not throw', async () => {
+    const h = await boot();
+    await seed(h);
+    for (const bad of [{}, { agentId: '' }, { agentId: 42 }, { agentId: null }, null, 'agt_del']) {
+      const lines: string[] = [];
+      const res = await h.bus.fire('agents:deleted', loggedCtx(h, lines), bad);
+      expect(res.rejected).toBe(false);
+      const events = parse(lines);
+      expect(events.filter((e) => e.level === 'warn').map((e) => e.msg)).toEqual([
+        'mcp_oauth_purge_for_deleted_agent_skipped',
+      ]);
+      // The subscriber handled it itself: the bus never had to catch a throw.
+      expect(events.some((e) => e.msg === 'hook_subscriber_failed')).toBe(false);
+    }
+    expect(await countPending('agt_del')).toBe(3);
+    expect(await countPending('agt_keep')).toBe(2);
+  });
+
+  it('a failing store is logged at error and swallowed — the subscriber never throws', async () => {
+    const h = await boot();
+    await seed(h);
+    // Break the store out from under the subscriber: the DELETE now fails with
+    // "relation does not exist".
+    const c = new pg.Client({ connectionString });
+    await c.connect();
+    try {
+      await c.query('DROP TABLE mcp_oauth_v1_pending');
+    } finally {
+      await c.end().catch(() => {});
+    }
+    const lines: string[] = [];
+
+    const res = await h.bus.fire('agents:deleted', loggedCtx(h, lines), deleted('agt_del'));
+
+    expect(res.rejected).toBe(false);
+    const events = parse(lines);
+    expect(events.filter((e) => e.level === 'error').map((e) => e.msg)).toEqual([
+      'mcp_oauth_purge_for_deleted_agent_failed',
+    ]);
+    expect(events.find((e) => e.level === 'error')).toMatchObject({ agentId: 'agt_del' });
+    // The bus's own isolation did NOT have to catch anything: we swallowed it.
+    expect(events.some((e) => e.msg === 'hook_subscriber_failed')).toBe(false);
   });
 });
