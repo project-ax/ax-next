@@ -2410,11 +2410,19 @@ function buildThread(
         only start a turn from a user message; drawn here it reads as a message
         they never typed, so the agent's own greeting opens the thread instead.
 
-        TURN 0 ONLY, and only the exact sentence: the same words later in a
-        conversation are somebody pasting them, and that message is theirs to
-        see. (Titles are unaffected either way — they read the raw transcript.)
+        TURN 0 ONLY, only the exact sentence, and only with no file: the same
+        words later in a conversation are somebody pasting them, and a turn that
+        also carries a file is theirs — the kickoff never has one, and skipping
+        it would take their file chip down with the words. (Titles are
+        unaffected either way — they read the raw transcript.)
       */
-      if (turn.turnIndex === 0 && text === KICKOFF_TEXT) continue;
+      if (
+        turn.turnIndex === 0 &&
+        attachments.length === 0 &&
+        text === KICKOFF_TEXT
+      ) {
+        continue;
+      }
       dated.push({
         at: turn.createdAt,
         msg: {

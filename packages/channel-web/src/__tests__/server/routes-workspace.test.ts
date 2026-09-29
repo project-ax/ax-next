@@ -1044,6 +1044,53 @@ describe('channel-web agent-workspace BFF', () => {
   });
 
   /*
+    A turn 0 that carries the reserved sentence AND a file is not the kickoff —
+    the kickoff never carries one. Skipping it would take the person's file chip
+    down with the words, so the rule is "the sentence and nothing else".
+
+    VACUITY, against the rule as first written (turn 0 + exact text, no look at
+    attachments): this FAILS — the turn is skipped and the thread is empty.
+  */
+  it('(TASK-689) still draws turn 0 when it carries the reserved sentence AND a file', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [
+          { type: 'text', text: KICKOFF_TEXT },
+          {
+            type: 'attachment',
+            path: 'uploads/c1/notes.txt',
+            displayName: 'notes.txt',
+            mediaType: 'text/plain',
+            sizeBytes: 12,
+          },
+        ],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'assistant',
+        contentBlocks: [{ type: 'text', text: 'Got your file.' }],
+        createdAt: '2026-08-01T10:00:04.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    expect(body.thread.map((m) => m.kind)).toEqual(['user', 'agent']);
+    expect(body.thread[0]).toMatchObject({ kind: 'user', text: KICKOFF_TEXT });
+    expect(body.thread[0]).toHaveProperty('attachments');
+  });
+
+  /*
     TASK-498 — THE FAILURE HAS TO SURVIVE THE RELOAD.
 
     `chat:turn-error` has been persisted as a host-only display event since
