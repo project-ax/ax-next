@@ -60,6 +60,19 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
+  // UsageTab reads GET /admin/usage on mount (an empty day is a valid report).
+  if (/\/admin\/usage(\?|$)/.test(url)) {
+    return new Response(
+      JSON.stringify({
+        windowHours: 24,
+        truncated: false,
+        limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 },
+        totals: { turns: 0, spendUsd: 0, users: 0 },
+        users: [],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  }
   return new Response(JSON.stringify({ providers: [], agents: [], teams: [], connectors: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -100,11 +113,13 @@ describe('AdminShell', () => {
     // own agents), no longer in the Admin group.
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
     // Admin tabs (Admin section) — present for admins. The Admin group is now
-    // keys / model / sign-in / teams; the duplicate Catalog / Connector-catalog
-    // surfaces are gone.
+    // keys / model / sign-in / teams / branding / usage; the duplicate Catalog /
+    // Connector-catalog surfaces are gone.
     expect(screen.getByRole('button', { name: 'AI model keys' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Helper model' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Branding' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Usage' })).toBeTruthy();
     // Skills is the default active tab for everyone.
     expect(
       screen.getByRole('button', { name: 'Skills' }).getAttribute('data-active'),
@@ -118,6 +133,25 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Teams' })).toBeNull();
+    // Usage is money and a pause switch: an admin's tab, never offered to a user.
+    expect(screen.queryByRole('button', { name: 'Usage' })).toBeNull();
+  });
+
+  it('opens Usage and limits from the Usage nav item (admins only)', async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Usage' }));
+    expect(
+      screen.getByRole('button', { name: 'Usage' }).getAttribute('data-active'),
+    ).toBeTruthy();
+    // The nav says "Usage"; the page says what it is for.
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Usage and limits' }),
+    ).toBeTruthy();
+    // …and the tab really mounted and read its data, not just a title.
+    expect(await screen.findByText('No usage in the last 24 hours')).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/admin\/usage$/.test(String(url))),
+    ).toBe(true);
   });
 
   it('clicking Default AI model makes it the active tab', () => {
@@ -162,6 +196,29 @@ describe('AdminShell — initialTab (TASK-627)', () => {
     );
     expect(active('AI model keys')).toBe(true);
     expect(active('Skills')).toBe(false);
+  });
+
+  it('opens on Usage and limits when asked, for an admin', async () => {
+    render(
+      <UserProvider value={fakeUser}>
+        <AdminShell isAdmin onClose={vi.fn()} initialTab="usage" />
+      </UserProvider>,
+    );
+    expect(active('Usage')).toBe(true);
+    expect(await screen.findByText('No usage in the last 24 hours')).toBeTruthy();
+  });
+
+  it('never opens Usage for someone who is not an admin, and never asks the server for it', () => {
+    render(
+      <UserProvider value={{ ...fakeUser, role: 'user' }}>
+        <AdminShell isAdmin={false} onClose={vi.fn()} initialTab="usage" />
+      </UserProvider>,
+    );
+    expect(active('Skills')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Usage' })).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/admin\/usage/.test(String(url))),
+    ).toBe(false);
   });
 
   it('ignores an admin-only tab for someone who is not an admin', () => {
