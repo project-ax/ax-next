@@ -1175,6 +1175,31 @@ describe('a kickoff the shell sent on the person\'s behalf (TASK-689)', () => {
     expect(screen.queryByText(/Nothing you sent was lost/)).toBeNull();
   });
 
+  /*
+    TASK-695. A failed kickoff leaves an EMPTY thread (the person sent nothing
+    and the hello never came), so the failure strip and the "Nothing here yet —
+    send something below" copy used to render together: two prompts pointing at
+    the same composer, in two voices. The strip is the one with the reason, so it
+    speaks alone. Dismissing it must hand the pane back to the empty copy — a
+    blank pane with nothing on it would be worse than either.
+  */
+  it('when the kickoff FAILS, the strip speaks alone; Dismiss hands the pane back to the empty copy', async () => {
+    agentMock.mockResolvedValue(detail({ conversationId: 'c-new', thread: [] }));
+    streamMock.mockImplementation(async (_r: string, h: StreamHandlers) => {
+      h.onError?.('The runner went away.');
+    });
+
+    renderView({ pendingReply: hiddenKickoff });
+
+    expect(await screen.findByText(/hello didn’t come through/)).toBeTruthy();
+    expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+
+    expect(await screen.findByText(EMPTY_TITLE)).toBeTruthy();
+    expect(screen.queryByText(/hello didn’t come through/)).toBeNull();
+  });
+
   it('never claims the pane is empty in the gap between the reply finishing and the re-read landing', async () => {
     // First read: nothing durable. Second read (the one `onDone` fires): held
     // open, so the pane is exactly as the person sees it in that gap — streamed

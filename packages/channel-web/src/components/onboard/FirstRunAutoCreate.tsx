@@ -5,6 +5,7 @@ import { SetupShell } from '../setup/SetupShell';
 import { autoCreateBareAgent } from '../../lib/auto-create-agent';
 import { hydrateAgentsOnce } from '../../lib/hydrate-agents';
 import { agentStoreActions } from '../../lib/agent-store';
+import { logRequestFailure } from '../../lib/http';
 
 /**
  * First-run: no form (TASK-140, conversational-agent-identity). We create a
@@ -112,7 +113,12 @@ export function FirstRunAutoCreate({
           be resting on.
         */
         onDone(agent.agentId);
-      } catch {
+      } catch (e) {
+        // The operator's half (TASK-695): the person is told below, but a real
+        // bootstrap failure used to leave nothing in the console to start from.
+        // Before the `cancelled` check on purpose — the breadcrumb is not this
+        // component's state, so it must not depend on anyone still watching.
+        logRequestFailure(e, 'agent-bootstrap');
         if (!cancelled) {
           // Names the agent: it is the one thing on this card the person typed,
           // and it says WHICH create failed when they are adding another.

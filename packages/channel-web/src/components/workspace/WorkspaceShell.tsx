@@ -51,6 +51,7 @@ import {
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
+import { logRequestFailure } from '@/lib/http';
 import { toastActions } from '@/lib/toast-store';
 import { grantResumedTitle } from '@/lib/grant-copy';
 import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
@@ -672,7 +673,11 @@ function Inner({
     const id = kickoffAgentId;
     onKickoffConsumed?.();
     startTurn(id, KICKOFF_TEXT, undefined, { hidden: true })
-      .catch(() => {
+      .catch((e: unknown) => {
+        // The operator's half (TASK-695): the toast below is for the person;
+        // this is the console line `AgentView.send` leaves for the same kind
+        // of failure, so "the agent never said hello" has somewhere to start.
+        logRequestFailure(e, 'workspace-kickoff');
         // The agent exists, it just has not been greeted — never silently. The
         // words below are the way forward, not a claim we said anything for
         // them: the person types, and the bootstrap script runs on that.
