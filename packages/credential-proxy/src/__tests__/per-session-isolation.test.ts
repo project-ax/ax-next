@@ -25,6 +25,10 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { createServer as httpCreate, type Server } from 'node:http';
 import { createServer as tlsCreate, type Server as TLSServer } from 'node:tls';
 import { X509Certificate } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as net from 'node:net';
 import * as tls from 'node:tls';
 import forgeModule from 'node-forge';
@@ -578,5 +582,63 @@ describe('per-session egress isolation — HTTPS CONNECT', () => {
     // B (declared nothing): MITM'd — the client sees a certificate the proxy minted.
     expect(await peerFingerprint(tokenFor(B))).not.toBe(upstreamFingerprint);
     expect(upstreamConnections).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── A real, credential-NEGOTIATING client ────────────────────────────
+//
+// MEASURED-BY-PROBE (2026-09-29): curl, wget, python, npm and undici (via the
+// real proxy-bootstrap.cjs) send `Proxy-Authorization` PREEMPTIVELY when the
+// proxy URL carries userinfo. `git` (libcurl, `http.proxyAuthMethod=anyauth`)
+// does NOT: it sends the first request bare, waits for a 407 whose
+// `Proxy-Authenticate` names a scheme, then retries with credentials. That is
+// why the refusal is a 407 WITH a `Proxy-Authenticate: Basic` challenge and not
+// a bare 403 — a 403 would lock every `git clone` out of the sandbox.
+
+function gitAvailable(): boolean {
+  const r = spawnSync('git', ['--version'], { encoding: 'utf8' });
+  return r.status === 0;
+}
+
+describe.skipIf(!gitAvailable())('per-session egress isolation — a credential-negotiating client (git)', () => {
+  it('still gets through: bare first request is refused with a 407 challenge, the retry carries the token and is attributed', async () => {
+    const up = await startHttpUpstream();
+    const { port, audits } = await startListener([session(A, { allowlist: new Set(['a.test']) })]);
+    const home = mkdtempSync(join(tmpdir(), 'isolation-git-home-'));
+    closers.push(() => rmSync(home, { recursive: true, force: true }));
+
+    // The listener lives in THIS process, so the client must be async (spawnSync
+    // would freeze the event loop the proxy answers on).
+    await new Promise<void>((resolve) => {
+      const child = spawn('git', ['ls-remote', `http://a.test:${up.port}/x.git`], {
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: home,
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_CONFIG_GLOBAL: '/dev/null',
+          GIT_TERMINAL_PROMPT: '0',
+          http_proxy: `http://ax:${tokenFor(A)}@127.0.0.1:${port}`,
+        },
+        stdio: 'ignore',
+      });
+      const timer = setTimeout(() => child.kill('SIGKILL'), 20_000);
+      child.on('close', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.on('error', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+
+    // We don't care whether the tiny fake upstream satisfies git's protocol —
+    // only that git was let through after the challenge, as session A.
+    const authed = audits.filter((e) => e.status === 200);
+    expect(authed.length).toBeGreaterThanOrEqual(1);
+    for (const e of authed) expect(e.sessionId).toBe(A);
+    expect(up.hits.length).toBeGreaterThanOrEqual(1);
+    // Nothing that reached the upstream was unauthenticated.
+    for (const e of audits.filter((x) => x.status !== 407)) expect(e.sessionId).toBe(A);
   });
 });
