@@ -84,8 +84,11 @@ For a tunnel whose CONNECT target is a metered host, per request head:
    is blocked (suspended, or over the ceiling) or has too many provider calls
    in flight.
 3. **Identity encoding.** `Accept-Encoding` is replaced with `identity` on the
-   forwarded head so the response can be read without a decompressor. A
-   response that arrives encoded anyway is charged as unmeasured.
+   forwarded head so the response can be read without a decompressor. A head
+   that cannot be rewritten safely (an obsolete folded header line) is never
+   spliced into, so a keyed request always asks for an unencoded answer. A
+   response that arrives encoded anyway is charged as unmeasured, floored by its
+   size.
 4. **Meter.** A passive tap on the upstream bytes frames the HTTP/1.1
    responses (Content-Length, chunked, close-delimited, interim 1xx, HEAD/204/
    304) and scans the decoded body for usage counters. Bytes are forwarded
@@ -97,8 +100,10 @@ charged from the request size. A 4xx/5xx costs nothing; `count_tokens` costs
 nothing. Unknown is never free.
 
 The counters are the LAST thing in a response, so "read every token, hang up
-before the bill arrives" must not be free either: a response that ended early
-carries how many body bytes arrived (`partial: { bytes, streamed }`), and the
+before the bill arrives" must not be free either: a response that ended early,
+or that arrived whole but could not be read (encoded, or no counter in it),
+carries how many body bytes arrived (`partial: { bytes, streamed }`; encoded
+bytes count 4x), and the
 ledger floors the output at `bytes / 8` for an event stream (`bytes / 3`
 otherwise). The divisors are low on purpose, so the floor over-counts a client
 that hung up honestly (the Stop button) rather than under-counting one that did
@@ -158,6 +163,10 @@ call shows up as the excess. The admin view and `chat:start` use the same figure
   suspend button takes to reach a user who was not otherwise blocked.
 - The cap is per user. Open signup plus many accounts is not addressed here (the
   fleet-wide cap is still a follow-up).
+- The usage ledger is now on the critical path of every sandbox model call. The
+  gate fails closed and caches its answer for about 15 s, so a usage-database
+  outage longer than that pauses model calls from the sandbox (the runner's
+  included, not just new turns) until it recovers; both SDKs retry the 429.
 - Server-side tool charges (web search per request) and Anthropic's
   `usage.iterations` compaction extras are not in the price table.
 - State is per host process. With more than one host replica the in-flight cap
