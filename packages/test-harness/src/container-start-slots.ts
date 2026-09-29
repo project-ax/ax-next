@@ -31,7 +31,11 @@ import { join } from 'node:path';
  * had failed. So waiting is announced through `warn` when it begins, and if it
  * lasts past the wait budget the start fails with an error that says it was
  * queueing, not starting. That budget (40s) sits under the smallest hook budget
- * in the repo (60s), so the named error wins that race. It also means a start
+ * of any container-starting suite in the repo (60s), so the named error wins
+ * that race in the common case. It is not a guarantee: the Docker preflight
+ * runs first from the same hook budget and may take up to its own 45s ceiling
+ * (DOCKER_PREFLIGHT_TIMEOUT_MS), so a slow daemon plus a full queue can still
+ * hit a bare 60s hook timeout. The preflight measured 1-3s under load. It also means a start
  * that gave up waiting never runs later, after its hook is gone, to leave an
  * orphaned container behind.
  */
