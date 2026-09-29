@@ -122,7 +122,10 @@ export function createRoutinesPlugin(
       const localStore = store;
       const localDb = db;
       const pending: PendingFires = new Map();
-      const fireRoutine = createFireRoutine({ bus, pending });
+      const fireRoutine = createFireRoutine({
+        bus, pending,
+        recordFire: (input) => localStore.recordFire(input),
+      });
 
       bus.subscribe<WorkspaceDelta>(
         'workspace:applied', PLUGIN_NAME,
@@ -322,14 +325,21 @@ export function createRoutinesPlugin(
           // above the bus wants it — it is storage vocabulary, and it used to
           // reach users as "Fired (#7, ok)" (TASK-313) — so it is dropped
           // here rather than returned and stripped by the schema.
-          await localStore.recordFire({
-            agentId: row.agentId, path: row.path,
-            triggerSource: effectiveSource,
-            conversationId: result.conversationId ?? null,
-            status: result.status,
-            error: result.error,
-            renderedPrompt: result.renderedPrompt,
-          });
+          //
+          // TASK-679: only when nothing downstream will. A dispatched fire's
+          // one row is written when its turn settles (the chat:turn-end
+          // subscriber above, or fire.ts on a failed invoke); writing `ok`
+          // here too gave every fire a twin.
+          if (result.recordedAtTurnEnd !== true) {
+            await localStore.recordFire({
+              agentId: row.agentId, path: row.path,
+              triggerSource: effectiveSource,
+              conversationId: result.conversationId ?? null,
+              status: result.status,
+              error: result.error,
+              renderedPrompt: result.renderedPrompt,
+            });
+          }
           // The conversation id stays ON THE FIRE ROW above, where the
           // Routines UI reads it from `routines:recent-fires`. It is not
           // returned here: the caller has no surface to show it on.

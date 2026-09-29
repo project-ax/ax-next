@@ -26,6 +26,20 @@ export interface FireResult {
    * scheduling the next fire. Absent on every other outcome, errors included.
    */
   agentGone?: true;
+  /**
+   * TASK-679 — `true` when the fire was DISPATCHED and its one fire row
+   * belongs to whoever settles the turn: the `chat:turn-end` subscriber
+   * (`ok` / `silenced`), or `fire.ts` itself if the invoke fails first
+   * (`error`). The caller that started the fire (the tick, `fire-now`) must
+   * then write NO row of its own. It used to write `ok` here meaning only
+   * "agent:invoke was started", so every dispatched fire got two rows and a
+   * silent heartbeat showed up in Activity as "Ran heartbeat" every day.
+   *
+   * Absent / `false`: nothing else will record this fire (it failed before
+   * dispatch, or the fire function has no turn to wait on) — the caller
+   * records `status` itself.
+   */
+  recordedAtTurnEnd?: boolean;
 }
 
 export type FireRoutineFn = (
@@ -157,14 +171,17 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
       continue;
     }
 
-    await input.store.recordFire({
-      agentId: row.agentId, path: row.path,
-      triggerSource: 'tick',
-      conversationId: result.conversationId ?? null,
-      status: result.status,
-      error: result.error,
-      renderedPrompt: result.renderedPrompt,
-    });
+    // TASK-679: a dispatched fire's row is written when its turn settles.
+    if (result.recordedAtTurnEnd !== true) {
+      await input.store.recordFire({
+        agentId: row.agentId, path: row.path,
+        triggerSource: 'tick',
+        conversationId: result.conversationId ?? null,
+        status: result.status,
+        error: result.error,
+        renderedPrompt: result.renderedPrompt,
+      });
+    }
 
     // row.nextRunAt has been bumped by claimWindowMinutes by claimDue; recover the
     // original scheduled time so drift control advances from the right baseline.

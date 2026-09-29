@@ -2,6 +2,7 @@ import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import type { RoutineRow, FireSource } from './types.js';
 import type { FireResult } from './tick.js';
 import { renderTemplate } from './template.js';
+import type { RecordFireInput } from './store.js';
 
 export interface PendingFire {
   row: RoutineRow;
@@ -15,6 +16,14 @@ export type PendingFires = Map<string, PendingFire>;
 export interface FireDeps {
   bus: HookBus;
   pending: PendingFires;
+  /**
+   * Writes the fire's one row when the invoke fails before its turn ends
+   * (TASK-679). The rule that keeps it to ONE row: whoever removes the
+   * `pending` entry for a reqId writes that fire's row — the chat:turn-end
+   * subscriber (`ok` / `silenced`) or the invoke-failure path here (`error`).
+   * `Map#delete` returns true to exactly one of them.
+   */
+  recordFire: (input: RecordFireInput) => Promise<unknown>;
 }
 
 let nextReqIdCounter = 0;
@@ -157,18 +166,52 @@ export function createFireRoutine(deps: FireDeps) {
       onTurnEnd: async () => {},
     });
 
-    void deps.bus.call('agent:invoke', fireCtx, {
-      message: { role: 'user', content: prompt },
-    }).catch((err) => {
-      const pf = deps.pending.get(reqId);
-      if (pf !== undefined) {
-        deps.pending.delete(reqId);
+    // The invoke settles AFTER its turn in the ordinary case, so on success
+    // the chat:turn-end subscriber has already taken the pending entry and
+    // written the row. Only when the entry is still ours — the invoke threw,
+    // or came back `terminated` without a turn ever ending — is this the
+    // fire's one row, and then it is an error: a fire that never produced a
+    // turn must not vanish from the log (routines design §5.2, "errors are
+    // visible").
+    const settleWithoutTurn = async (error: string): Promise<void> => {
+      if (!deps.pending.delete(reqId)) return;
+      process.stderr.write(
+        `[ax/routines] agent:invoke failed for ${row.agentId}/${row.path}: ${error}\n`,
+      );
+      try {
+        await deps.recordFire({
+          agentId: row.agentId, path: row.path,
+          triggerSource: source,
+          conversationId,
+          status: 'error', error,
+          renderedPrompt: prompt,
+        });
+      } catch (err) {
         process.stderr.write(
-          `[ax/routines] agent:invoke failed for ${row.agentId}/${row.path}: ${err instanceof Error ? err.message : String(err)}\n`,
+          `[ax/routines] recording failed fire for ${row.agentId}/${row.path} failed: ${err instanceof Error ? err.message : String(err)}\n`,
         );
       }
-    });
+    };
 
-    return { status: 'ok', conversationId, error: null, renderedPrompt: prompt };
+    void deps.bus.call<unknown, { kind?: string; reason?: unknown } | undefined>(
+      'agent:invoke', fireCtx, {
+        message: { role: 'user', content: prompt },
+      },
+    ).then(
+      (outcome) => {
+        if (outcome?.kind === 'terminated') {
+          return settleWithoutTurn(`terminated: ${String(outcome.reason ?? 'unknown')}`);
+        }
+        return undefined;
+      },
+      (err: unknown) => settleWithoutTurn(err instanceof Error ? err.message : String(err)),
+    );
+
+    // TASK-679: the row for this fire is written when the turn settles, not
+    // here — see FireResult.recordedAtTurnEnd.
+    return {
+      status: 'ok', conversationId, error: null, renderedPrompt: prompt,
+      recordedAtTurnEnd: true,
+    };
   };
 }
