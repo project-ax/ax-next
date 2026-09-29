@@ -31,12 +31,16 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 /**
  * `hideClose` — for a dialog the user genuinely may not dismiss.
  *
- * (TASK-340 / audit B4.) The first-run "name your agent" dialog is one: there
- * is no app behind it until an agent exists. It was already refusing to close,
- * but it kept rendering a live-looking ✕, and Radix still fired Escape and
- * outside-click. All three silently did nothing — on the very first interaction
- * a new user has with the product, which is the worst possible place to look
- * broken.
+ * (TASK-340 / audit B4.) It was added for the first-run "name your agent"
+ * dialog: there is no app behind that until an agent exists. It was already
+ * refusing to close, but it kept rendering a live-looking ✕, and Radix still
+ * fired Escape and outside-click. All three silently did nothing — on the very
+ * first interaction a new user has with the product, which is the worst
+ * possible place to look broken.
+ *
+ * NO DIALOG USES IT TODAY. TASK-689 turned that first-run step into a
+ * `SetupShell` card (`NewAgentCard`) — a page, not a modal — so this option now
+ * waits for the next dialog that genuinely may not be dismissed.
  *
  * The fix is to stop OFFERING the exits rather than to keep swallowing them: no
  * ✕, and Escape / outside-click are prevented at the primitive so they never
