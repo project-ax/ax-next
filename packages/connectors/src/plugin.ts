@@ -36,6 +36,7 @@ import {
   registerUserConnectorRoutes,
 } from './admin-routes.js';
 import { authorizeGlobalAccountRead } from './credential-authz.js';
+import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
 import {
   ActivateAuthoredOutputSchema,
   AuthorizeGlobalOutputSchema,
@@ -421,6 +422,10 @@ async function upsertConnector(
   const keyMode = validateKeyMode(input.keyMode);
   const visibility = validateVisibility(input.visibility);
   const capabilities = validateCapabilities(input.capabilities);
+  // TASK-712 — an OAuth slot's clientSecretRef may name only this connector's own
+  // account key. Checked on WRITE only (the read schema must keep parsing a legacy
+  // row so its owner can open and fix it); @ax/mcp-oauth re-checks at `begin`.
+  assertOwnClientSecretRefs(connectorId, capabilities);
   // defaultAttached is an optional boolean — validate the type at the boundary
   // (an arbitrary truthy value must not slip into the DB). Absent ⟹ undefined,
   // which the store reads as "preserve existing on update / false on insert".

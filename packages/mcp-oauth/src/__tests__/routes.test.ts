@@ -429,7 +429,7 @@ describe('mcp-oauth begin route', () => {
                 kind: 'oauth',
                 server: 'srv',
                 clientId: 'pinned-cid',
-                clientSecretRef: 'secret-ref-1',
+                clientSecretRef: 'account:conn-1:oauth-client-secret',
               },
             ],
           }),
@@ -462,7 +462,7 @@ describe('mcp-oauth begin route', () => {
                 kind: 'oauth',
                 server: 'srv',
                 clientId: 'pinned-cid',
-                clientSecretRef: 'missing-ref',
+                clientSecretRef: 'account:conn-1:oauth-client-secret',
               },
             ],
           }),
@@ -479,6 +479,126 @@ describe('mcp-oauth begin route', () => {
     expect(state.status).toBe(400);
     expect(state.json).toEqual({ error: 'oauth_client_secret_unavailable' });
     expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-712 — `clientSecretRef` is author-controlled text that `begin` hands to
+  // `credentials:get`; the resolved value is then posted to a token endpoint the
+  // same author chose. Only `account:<this connector>:<tag>` may reach the vault.
+  //
+  // The check must fire BEFORE any vault call, so these assert `credentials:get`
+  // was never called -- not merely that the flow ended in a 400. (On main a refused
+  // ref used to end in `oauth_client_secret_unavailable` too, because the vault
+  // threw on the placeholder agentId; that outcome cannot tell "refused" from
+  // "asked and failed", and it is the accident this change stops depending on.)
+  // -------------------------------------------------------------------------
+  describe('clientSecretRef must be this connector\'s own account key (TASK-712)', () => {
+    async function beginWithRef(ref: string, over: { clientId?: string | undefined } = {}) {
+      const getSecret = vi.fn(() => 'the-resolved-secret');
+      const flow = fakeFlow();
+      const store = fakeStore();
+      const { deps, logger } = makeDeps(
+        {
+          'auth:require-user': () => OK_USER,
+          'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+          'connectors:get': () =>
+            connectorFixture({
+              credentials: [
+                {
+                  slot: 'oauth-main',
+                  kind: 'oauth',
+                  server: 'srv',
+                  ...('clientId' in over
+                    ? over.clientId !== undefined
+                      ? { clientId: over.clientId }
+                      : {}
+                    : { clientId: 'pinned-cid' }),
+                  clientSecretRef: ref,
+                },
+              ],
+            }),
+          'credentials:get': getSecret,
+        },
+        { flow, store },
+      );
+      const handlers = createMcpOAuthRouteHandlers(deps);
+      const { res, state } = fakeRes();
+      await handlers.begin(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+        res,
+      );
+      return { getSecret, flow, store, logger, state };
+    }
+
+    it.each([
+      // the operator's model key, the wizard's ref, any platform-minted namespace
+      ['provider:anthropic'],
+      ['provider:probe'],
+      ['mcp:srv:env:API_KEY'],
+      ['mcp:srv:header:Authorization'],
+      ['skill:some-skill:SLOT'],
+      ['routine:agent-1:daily:hmac'],
+      // an env-fallback name (`envFallback: { 'anthropic-api': ... }` in the k8s preset)
+      ['anthropic-api'],
+      // someone else's account key, bare and tagged, and an id that merely starts with ours
+      ['account:opskey'],
+      ['account:zendesk:oauth-client-secret'],
+      ['account:conn-10:oauth-client-secret'],
+      ['account:conn-1-x:oauth-client-secret'],
+      // this connector's TOKEN ref (bare), and malformed tags
+      ['account:conn-1'],
+      ['account:conn-1:'],
+      ['account:conn-1:a:b'],
+      ['account:conn-1:../secret'],
+      ['account:conn-1:oauth-client-secret '],
+      ['account:conn-1: oauth-client-secret'],
+      [`account:conn-1:${'x'.repeat(65)}`],
+      ['ACCOUNT:conn-1:oauth-client-secret'],
+      [' account:conn-1:oauth-client-secret'],
+      ['account:CONN-1:oauth-client-secret'],
+    ])('refuses %j: 400 oauth_client_secret_ref_not_allowed, no vault call, no discovery', async (ref) => {
+      const { getSecret, flow, store, logger, state } = await beginWithRef(ref);
+      expect(state.status).toBe(400);
+      expect(state.json).toEqual({ error: 'oauth_client_secret_ref_not_allowed' });
+      expect(getSecret).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+      expect(flow.ensureClient).not.toHaveBeenCalled();
+      expect(store.putPending).not.toHaveBeenCalled();
+      // The rejected ref is author-controlled and may itself be a pasted credential:
+      // the log carries the connector id only.
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(ref);
+      expect(logger.warn).toHaveBeenCalledWith('mcp_oauth_begin_client_secret_ref_rejected', {
+        connectorId: 'conn-1',
+      });
+    });
+
+    it('refuses a foreign ref even when no clientId is pinned (the check is not gated on clientId)', async () => {
+      const { getSecret, state } = await beginWithRef('provider:anthropic', { clientId: undefined });
+      expect(state.status).toBe(400);
+      expect(state.json).toEqual({ error: 'oauth_client_secret_ref_not_allowed' });
+      expect(getSecret).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['account:conn-1:oauth-client-secret'],
+      ['account:conn-1:OAUTH_SECRET'],
+      ['account:conn-1:s'],
+    ])('accepts %j: resolved via credentials:get for the caller and pinned', async (ref) => {
+      const { getSecret, flow, state } = await beginWithRef(ref);
+      expect(state.status).toBe(200);
+      expect(getSecret).toHaveBeenCalledTimes(1);
+      expect(getSecret).toHaveBeenCalledWith({ ref, userId: 'user-1' });
+      const pinned = (flow.ensureClient as ReturnType<typeof vi.fn>).mock.calls[0]![0].pinned;
+      expect(pinned).toEqual({ clientId: 'pinned-cid', clientSecret: 'the-resolved-secret' });
+    });
+
+    it('an empty clientSecretRef is "no pinned secret" (never dereferenced), not a refusal', async () => {
+      const { getSecret, flow, state } = await beginWithRef('');
+      expect(state.status).toBe(200);
+      expect(getSecret).not.toHaveBeenCalled();
+      const pinned = (flow.ensureClient as ReturnType<typeof vi.fn>).mock.calls[0]![0].pinned;
+      expect(pinned).toEqual({ clientId: 'pinned-cid' });
+    });
   });
 
   it('Fix5. connector with >1 oauth slot → 400 multiple_oauth_slots_unsupported; no discovery', async () => {
