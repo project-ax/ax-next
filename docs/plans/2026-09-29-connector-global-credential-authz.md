@@ -53,7 +53,9 @@ Boundary review (new service hook):
    the security-checklist note.
 
 Not in this card: the admin gate on `/admin/connectors*` (TASK-698), host binding of credentials
-at the proxy (TASK-687), `agent`-scope rows, `mcp-oauth`'s `clientSecretRef`.
+at the proxy (TASK-687), `agent`-scope rows, `mcp-oauth`'s `clientSecretRef` (TASK-712: an OAuth
+slot may now name only `account:<its own connector id>:<tag>`, checked at `connectors:upsert` and
+again in `mcp-oauth`'s `begin`, so this guard is what decides what a global-scope step does with it).
 
 ## Prod read-only check (2026-09-29, ids only)
 

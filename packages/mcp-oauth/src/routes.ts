@@ -6,6 +6,7 @@ import {
   PluginError,
 } from '@ax/core';
 import type { discover, ensureClient, buildAuthorization, redeemCode } from './oauth-flow.js';
+import { isOwnClientSecretRef } from './client-secret-ref.js';
 import { NeedsReconnectError } from './resolver.js';
 import type { McpOAuthStore } from './store.js';
 import {
@@ -141,6 +142,12 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   // `agents:resolve`, `credentials:*`) key on the explicit `userId` in their
   // INPUT, so we hand them a userId-bearing ctx too for good measure but rely
   // on the input field as the contract.
+  //
+  // NOT a real agent: `'@ax/mcp-oauth'` fails the vault's `ownerId` grammar (the
+  // `/`), so a `credentials:get` from `begin` that misses the user scope THROWS at
+  // the agent-scope step instead of walking on to global scope or the env fallback.
+  // That is an accident of the name, not a control, and nothing may rely on it:
+  // `begin` bounds what it may ask the vault for with `isOwnClientSecretRef`.
   function ctxFor(userId: string): AgentContext {
     return makeAgentContext({ sessionId: 'mcp-oauth', agentId: '@ax/mcp-oauth', userId });
   }
@@ -278,6 +285,17 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       return;
     }
     const slot = oauthSlots[0]!;
+    // A pinned client secret is dereferenced with `credentials:get` and posted to
+    // an authorization server the connector's AUTHOR picked, so the ref may name
+    // only this connector's own account key (TASK-712). Refuse anything else BEFORE
+    // any vault call: `begin`'s placeholder agentId (see ctxFor) happens to stop the
+    // vault's agent-scope step today, but that is an accident this must not lean on.
+    // Same truthiness as the dereference below (`''` = no pinned secret).
+    if (slot.clientSecretRef && !isOwnClientSecretRef(connectorId, slot.clientSecretRef)) {
+      logger.warn('mcp_oauth_begin_client_secret_ref_rejected', { connectorId });
+      res.status(400).json({ error: 'oauth_client_secret_ref_not_allowed' });
+      return;
+    }
     const server = caps.mcpServers.find((s) => s.name === slot.server);
     if (!server || !server.url) {
       res.status(400).json({ error: 'oauth slot references no mcpServer with a url' });
