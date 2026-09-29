@@ -2019,3 +2019,63 @@ pod death — that's the signal the host keys off.
   or `sandbox-exit-before-chat-end` (fresh-spawn). Note `chat:turn-error` is
   an internal bus event, surfaced in logs as the `chat_turn_error` message —
   the `reason` is orchestrator vocabulary, not the `pod_*` exit code.
+
+## Scenario: Stop cancels the running turn (TASK-688)
+
+> **Runner-level half is auto-tested.** The `interrupt` wire, the shell that
+> routes it, and both runners' handling (aisdk aborts the model call and kills
+> the running Bash by process group; claude-sdk calls `Query.interrupt()`) are
+> covered by unit and e2e tests — including one that drives the REAL `claude`
+> binary and checks the running command is dead
+> (`packages/agent-claude-sdk-runner/src/__tests__/interrupt-real-sdk.e2e.test.ts`).
+> This walk covers what only a cluster can: the SPA button, the host route, the
+> session store, and a real pod.
+
+### What this proves
+
+Pressing **Stop** in the workspace composer stops the turn *server-side* —
+the model call ends and a running shell command is killed — instead of only
+detaching the browser (the bug the §8 aisdk walk found: the `touch` still
+happened 45 s later). Then the same conversation keeps working, warm.
+
+### Walk (run once on a `claude-sdk` agent and once on an `aisdk` agent)
+
+1. Open the workspace, pick the agent, and send:
+
+   > Run this exact command in Bash and tell me when it finishes:
+   > `sleep 45 && touch /agent/cancel-probe.txt`
+
+2. Wait until the reply shows the step running (about 5-6 s). The send button
+   has been replaced by a **Stop** button (a filled square).
+3. Click **Stop**. Within a second or two the spinner goes away, the composer
+   is back, and the thread ends with a quiet note: "You stopped this reply."
+4. Wait 60 s, then check the pod:
+
+   ```bash
+   kubectl -n ax-next-runners get pods
+   kubectl -n ax-next-runners exec <sandbox-pod> -- ls /agent/cancel-probe.txt
+   ```
+
+5. Send "say hi". The same sandbox answers (no cold start), and the transcript
+   is coherent.
+
+### Acceptance criteria
+
+- `ls` in step 4 reports **No such file** — the command was killed, not merely
+  hidden. (Before this change the file appeared.)
+- The Stop button only shows while a reply is streaming; it is gone when idle
+  and gone in a read-only excerpt.
+- The note in step 3 is shown, is not styled as an error, and disappears on the
+  next message.
+- Step 5 works without a cold start; host logs show no `chat_turn_error` for the
+  stopped turn.
+- Stopping during **"Getting set up…"** (a cold spawn) also stops the turn: the
+  runner starts it and ends it at once, no reply text.
+- Another user's session cannot stop yours:
+  `curl -X POST -H 'x-requested-with: ax-admin' --cookie <B's cookie>
+  https://<host>/api/chat/conversations/<A's conversation id>/interrupt` is a
+  **404**, and A's turn keeps running.
+
+### Cleanup
+
+Nothing to clean: `/agent/cancel-probe.txt` should not exist.
