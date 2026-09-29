@@ -556,6 +556,11 @@ describe('@ax/agents service hooks (round trip)', () => {
       caught = err;
     }
     expect((caught as PluginError).code).toBe('not-found');
+    // TASK-680 — @ax/routines prunes a deleted agent's routines only on a
+    // not-found carrying THIS hookName (a not-found propagated from a hook
+    // resolve calls must not prune a live agent). Drop it and deleted agents'
+    // heartbeats fail forever again.
+    expect((caught as PluginError).hookName).toBe('agents:resolve');
   });
 
   it('agents:any-attached-to-skill returns false when no agent has the skill', async () => {

@@ -459,4 +459,92 @@ describe('runTickOnce', () => {
     expect(defaultAdvance).toBeDefined();
     expect(defaultAdvance!.nextRunAt).toBeNull();
   });
+
+  // TASK-680 — prod had four deleted agents whose default heartbeat fired
+  // every day since June, each fire an `error` ("not-found: agent '<id>' not
+  // found"). Nothing ever removed their routine rows, so the claim kept
+  // finding them. The tick must treat "the agent is gone" as terminal: prune
+  // that agent's routines and never claim them again. This is also what
+  // heals the rows orphaned BEFORE the agents:deleted subscriber existed —
+  // no event will ever fire for those agents again.
+  it('prunes a deleted agent\'s routines on the first fire that finds it gone, so it never fires again (TASK-680)', async () => {
+    const store = createRoutinesStore(db);
+    const noop: FireRoutineFn = async () => ({ status: 'ok', error: null, renderedPrompt: 'p' });
+
+    // Both agents exist when the heartbeat default is materialized.
+    await runTickOnce({
+      store, fire: noop, now: new Date('2026-05-14T12:00:00Z'),
+      claimBatchSize: 50, claimWindowMinutes: 5,
+      getAgents: async () => [
+        { agentId: 'agt_live', ownerUserId: 'u_live' },
+        { agentId: 'agt_gone', ownerUserId: 'u_gone' },
+      ],
+    });
+    // agt_gone also has a workspace-authored interval routine.
+    await seedInterval(store, 'agt_gone', '30m', new Date('2026-05-14T12:00:00Z'));
+    // Make the materialized defaults due.
+    await sql`
+      UPDATE routines_v1_definitions
+         SET created_at = ${new Date('2026-05-12T12:00:00Z')}
+       WHERE definition_id IS NOT NULL
+    `.execute(db);
+
+    // agt_gone is deleted: it drops out of the owners list, and resolving it
+    // is `not-found`, which fireRoutine reports as `agentGone`.
+    const firedFor: string[] = [];
+    const fire: FireRoutineFn = async (row) => {
+      firedFor.push(row.agentId);
+      if (row.agentId === 'agt_gone') {
+        return {
+          status: 'error', error: "not-found: agent 'agt_gone' not found",
+          conversationId: null, renderedPrompt: null, agentGone: true,
+        };
+      }
+      return { status: 'ok', error: null, renderedPrompt: 'p' };
+    };
+    const liveOnly = async () => [{ agentId: 'agt_live', ownerUserId: 'u_live' }];
+
+    await runTickOnce({
+      store, fire, now: new Date('2026-05-14T13:00:00Z'),
+      claimBatchSize: 50, claimWindowMinutes: 5, getAgents: liveOnly,
+    });
+    // Two rows of agt_gone were due in this batch; the first fire finds the
+    // agent gone and prunes both, so the second is never fired.
+    expect(firedFor.filter((a) => a === 'agt_gone')).toHaveLength(1);
+    expect(firedFor).toContain('agt_live');
+
+    // Every routine row of the deleted agent is gone; the live agent's stays.
+    const goneRows = await db.selectFrom('routines_v1_definitions')
+      .select(['path']).where('agent_id', '=', 'agt_gone').execute();
+    expect(goneRows).toEqual([]);
+    const liveRows = await db.selectFrom('routines_v1_definitions')
+      .select(['path']).where('agent_id', '=', 'agt_live').execute();
+    expect(liveRows.length).toBeGreaterThanOrEqual(1);
+
+    // Days later: the deleted agent is never claimed again, while the live
+    // agent keeps its heartbeat.
+    firedFor.length = 0;
+    await runTickOnce({
+      store, fire, now: new Date('2026-05-17T13:00:00Z'),
+      claimBatchSize: 50, claimWindowMinutes: 5, getAgents: liveOnly,
+    });
+    expect(firedFor).not.toContain('agt_gone');
+    expect(firedFor).toContain('agt_live');
+  });
+
+  it('keeps an agent\'s routines when a fire fails for any reason other than the agent being gone (TASK-680)', async () => {
+    const store = createRoutinesStore(db);
+    await seedInterval(store, 'agt_a', '30m', new Date('2026-05-14T12:00:00Z'));
+    const fire: FireRoutineFn = async () => ({
+      status: 'error', error: 'forbidden: denied', conversationId: null, renderedPrompt: null,
+    });
+    await runTickOnce({
+      store, fire, now: new Date('2026-05-14T12:01:00Z'),
+      claimBatchSize: 50, claimWindowMinutes: 5,
+    });
+    const rows = await db.selectFrom('routines_v1_definitions')
+      .selectAll().where('agent_id', '=', 'agt_a').execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.last_status).toBe('error');
+  });
 });

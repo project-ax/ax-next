@@ -63,6 +63,17 @@ export function createFireRoutine(deps: FireDeps) {
           error: `${err.code}: ${err.message}`,
           conversationId: null,
           renderedPrompt: null,
+          // TASK-680 — `agents:resolve` answers `not-found` only when the
+          // agent row does not exist (a present-but-not-yours agent is
+          // `forbidden`). The tick treats this as terminal and prunes the
+          // agent's routines; every other failure stays retryable. The
+          // hookName check matters: a `not-found` raised by something the
+          // resolve calls on the way (a team-membership lookup, say) and
+          // propagated through it says nothing about the agent, and pruning
+          // a live agent's routines is not recoverable.
+          ...(err.code === 'not-found' && err.hookName === 'agents:resolve'
+            ? { agentGone: true }
+            : {}),
         };
       }
       throw err;

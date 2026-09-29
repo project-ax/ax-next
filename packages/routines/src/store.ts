@@ -167,6 +167,18 @@ export interface RoutinesStore {
    * routines_v1_fires has no FK to definitions, so it is preserved.
    */
   removeMaterializedDefault(input: { agentId: string; defaultRoutineId: string }): Promise<void>;
+  /**
+   * TASK-680 — forget every routine of an agent that no longer exists: its
+   * workspace-authored rows, its materialized default rows, and its per-agent
+   * default overrides. Returns the routine rows removed (their `path`s), so the
+   * caller can unmount any webhook route it holds for them.
+   *
+   * Fire history (routines_v1_fires) is kept, as everywhere else in this
+   * store: it has no FK to definitions. Nothing re-creates the rows afterwards
+   * — `materializeMissing` only materializes agents that
+   * `agents:list-personal-owners` still returns.
+   */
+  deleteAllForAgent(agentId: string): Promise<{ paths: string[] }>;
 }
 
 /**
@@ -709,6 +721,22 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         .where('agent_id', '=', input.agentId)
         .where('definition_id', '=', input.defaultRoutineId)
         .execute();
+    },
+
+    async deleteAllForAgent(agentId) {
+      // No transaction: the tick calls this on its pinned advisory-lock
+      // connection. Overrides go FIRST so a failure between the two deletes
+      // leaves the routine rows in place — the next fire that finds the
+      // agent gone retries both — instead of stranding override rows that
+      // nothing would ever look for again.
+      await db.deleteFrom('agent_default_routine_overrides_v1')
+        .where('agent_id', '=', agentId)
+        .execute();
+      const removed = await db.deleteFrom('routines_v1_definitions')
+        .where('agent_id', '=', agentId)
+        .returning(['path'])
+        .execute();
+      return { paths: removed.map((r) => r.path) };
     },
   };
 }
