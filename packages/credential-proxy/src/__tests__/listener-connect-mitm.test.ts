@@ -26,13 +26,18 @@ import {
 } from 'node:tls';
 import * as net from 'node:net';
 import { ProxyAgent } from 'undici';
-import { startProxyListener, type ProxyListener } from '../listener.js';
+import {
+  startProxyListener,
+  type ProxyListener,
+  type ProxyAuditEntry,
+} from '../listener.js';
 import {
   CredentialPlaceholderMap,
   SharedCredentialRegistry,
 } from '../registry.js';
 import { generateDomainCert, type CAKeyPair } from '../ca.js';
 import forgeModule from 'node-forge';
+import { basicAuth, rawConnect, tokenFor } from './proxy-auth-helpers.js';
 
 const forge = forgeModule as typeof forgeModule;
 
@@ -225,14 +230,16 @@ async function openMitmTunnel(
   upstreamHost: string,
   upstreamPort: number,
   ca: CAKeyPair,
+  token: string,
 ): Promise<TLSSocket> {
   const raw = net.connect(proxyPort, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
     raw.once('error', reject);
     raw.once('connect', () => resolve());
   });
-  // CONNECT, wait for "200 Connection Established".
-  raw.write(`CONNECT ${upstreamHost}:${upstreamPort} HTTP/1.1\r\nHost: ${upstreamHost}:${upstreamPort}\r\n\r\n`);
+  // CONNECT (carrying the session's proxy token — TASK-158), wait for
+  // "200 Connection Established".
+  raw.write(rawConnect(`${upstreamHost}:${upstreamPort}`, token));
   await new Promise<void>((resolve, reject) => {
     const onData = (d: Buffer) => {
       if (d.toString('latin1').includes('200')) {
@@ -278,6 +285,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
           {
             allowlist: new Set(['127.0.0.1']),
             allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
             // No bypassMITM → MITM path.
           },
         ],
@@ -286,6 +294,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
 
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
+      token: basicAuth(tokenFor('s1')),
       requestTls: { ca: ca.cert },
     });
 
@@ -334,12 +343,20 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
       registry,
       ca,
       sessions: new Map([
-        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
+          },
+        ],
       ]),
     });
 
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
+      token: basicAuth(tokenFor('s1')),
       requestTls: { ca: ca.cert },
     });
 
@@ -389,6 +406,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
           {
             allowlist: new Set(['127.0.0.1']),
             allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
             canaryToken: canary,
           },
         ],
@@ -397,6 +415,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
 
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
+      token: basicAuth(tokenFor('s1')),
       requestTls: { ca: ca.cert },
     });
 
@@ -448,6 +467,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
           {
             allowlist: new Set(['127.0.0.1']),
             allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
             bypassMITM: new Set(['127.0.0.1']),
           },
         ],
@@ -459,6 +479,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
     // and validates against `ca.cert` in the trust store.
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
+      token: basicAuth(tokenFor('s1')),
       requestTls: { ca: ca.cert },
     });
 
@@ -499,13 +520,14 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
           {
             allowlist: new Set(['127.0.0.1']),
             allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
             // No bypassMITM → MITM path.
           },
         ],
       ]),
     });
 
-    const inner = await openMitmTunnel(listener.port, '127.0.0.1', upInfo.port, ca);
+    const inner = await openMitmTunnel(listener.port, '127.0.0.1', upInfo.port, ca, tokenFor('s1'));
 
     // git uses Basic auth with the credential as the password (oauth2:<token>).
     const basic = Buffer.from(`oauth2:${placeholder}`).toString('base64');
@@ -561,13 +583,14 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
           {
             allowlist: new Set(['127.0.0.1']),
             allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
             canaryToken: canary,
           },
         ],
       ]),
     });
 
-    const inner = await openMitmTunnel(listener.port, '127.0.0.1', upInfo.port, ca);
+    const inner = await openMitmTunnel(listener.port, '127.0.0.1', upInfo.port, ca, tokenFor('s1'));
 
     // The canary is base64-buried in a Basic blob — a raw `chunk.includes`
     // scan would be blinded; the framer must decode → scan → block.
@@ -590,5 +613,146 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
 
     expect(upstreamSawRequest).toBe(false);
     expect(sawForbidden).toBe(true);
+  });
+
+  it('refuses a CONNECT with no / forged proxy token: 407, unattributed audit, upstream never touched (TASK-158)', async () => {
+    const ca = mintCA();
+    const upInfo = await startCapturingUpstream(ca);
+    // Count raw TCP accepts on the upstream: not even a connection may open.
+    let upstreamConnections = 0;
+    upstream!.on('connection', () => {
+      upstreamConnections += 1;
+    });
+    let upstreamSawRequest = false;
+    void upInfo.gotRequest.then(() => {
+      upstreamSawRequest = true;
+    });
+
+    const audits: ProxyAuditEntry[] = [];
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry: new SharedCredentialRegistry(),
+      ca,
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            sessionId: 's1',
+            userId: 'u1',
+            classification: 'llm' as const,
+            proxyToken: tokenFor('s1'),
+          },
+        ],
+      ]),
+      onAudit: (e) => audits.push(e),
+    });
+
+    const target = `127.0.0.1:${upInfo.port}`;
+    // The host IS in s1's allowlist and the port is live — the ONLY thing wrong
+    // is that the caller is not authenticated as any session.
+    for (const token of [undefined, tokenFor('nobody')]) {
+      const response = await new Promise<string>((resolve, reject) => {
+        const sock = net.connect(listener!.port, '127.0.0.1', () => {
+          sock.write(rawConnect(target, token));
+        });
+        let acc = '';
+        sock.on('data', (d: Buffer) => {
+          acc += d.toString('utf8');
+        });
+        sock.on('end', () => resolve(acc));
+        sock.on('close', () => resolve(acc));
+        sock.on('error', reject);
+      });
+      expect(response).toMatch(/^HTTP\/1\.1 407\b/);
+      expect(response).toContain('Proxy-Authenticate: Basic realm="ax-egress"');
+    }
+
+    // Grace window so a (wrongly) forwarded connection would have landed.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(upstreamConnections).toBe(0);
+    expect(upstreamSawRequest).toBe(false);
+
+    // Both refusals are audited as unauthenticated: no session is credited.
+    expect(audits).toHaveLength(2);
+    for (const entry of audits) {
+      expect(entry.status).toBe(407);
+      expect(entry.blocked).toBe('proxy_auth_required');
+      expect(entry.sessionId).toBeUndefined();
+      expect(entry.userId).toBeUndefined();
+      expect(entry.classification).toBeUndefined();
+    }
+  });
+
+  it("bypassMITM is scoped to the declaring session: another session's tunnel to the same host is still MITM'd (TASK-158)", async () => {
+    const ca = mintCA();
+    const upInfo = await startMultiCapturingUpstream(ca, 2);
+
+    const credMap = new CredentialPlaceholderMap();
+    const placeholder = credMap.register('ANTHROPIC_API_KEY', 'sk-real-secret-xyz');
+    const registry = new SharedCredentialRegistry();
+    registry.register('s1', credMap);
+
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca,
+      sessions: new Map([
+        [
+          // s1 declares the bypass for 127.0.0.1 (a cert-pinning host, say).
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            bypassMITM: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
+          },
+        ],
+        [
+          // s2 has NOT: its traffic to the very same host must stay inspected.
+          's2',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s2'),
+          },
+        ],
+      ]),
+    });
+
+    const sendAs = async (label: string): Promise<void> => {
+      const dispatcher = new ProxyAgent({
+        uri: `http://127.0.0.1:${listener!.port}`,
+        token: basicAuth(tokenFor(label)),
+        requestTls: { ca: ca.cert },
+      });
+      try {
+        const res = await fetch(`https://127.0.0.1:${upInfo.port}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${placeholder}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ hello: 'world' }),
+          dispatcher,
+        } as RequestInit);
+        expect(res.status).toBe(200);
+        await res.text();
+      } finally {
+        await dispatcher.close();
+      }
+    };
+
+    // Sequential, so `authorizations[i]` maps to the i-th caller.
+    await sendAs('s2');
+    await sendAs('s1');
+    await upInfo.gotAll;
+
+    // s2 (no bypass of its own) was MITM'd despite s1's declaration: the
+    // placeholder was substituted with the real credential.
+    expect(upInfo.authorizations[0]).toBe('Bearer sk-real-secret-xyz');
+    // s1 (the declaring session) gets the raw tunnel: placeholder verbatim.
+    expect(upInfo.authorizations[1]).toBe(`Bearer ${placeholder}`);
   });
 });

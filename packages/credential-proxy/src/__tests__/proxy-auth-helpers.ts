@@ -1,3 +1,6 @@
+import { request as httpRequest } from 'node:http';
+import * as net from 'node:net';
+
 /**
  * Shared test helpers for the per-session proxy token (TASK-52 / TASK-158).
  *
@@ -45,4 +48,70 @@ export function rawConnect(target: string, token?: string): string {
     (token !== undefined ? `Proxy-Authorization: ${basicAuth(token)}\r\n` : '') +
     `\r\n`
   );
+}
+
+export interface HttpResult {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}
+
+/** An absolute-URL proxy request with an explicit Proxy-Authorization (or none). */
+export function viaHttpProxy(
+  proxyPort: number,
+  targetUrl: string,
+  proxyAuthorization: string | undefined,
+): Promise<HttpResult> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(targetUrl);
+    const req = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: proxyPort,
+        method: 'GET',
+        path: targetUrl,
+        headers: {
+          Host: target.host,
+          ...(proxyAuthorization !== undefined ? { 'Proxy-Authorization': proxyAuthorization } : {}),
+        },
+      },
+      (res) => {
+        let body = '';
+        res.on('data', (c: Buffer) => (body += c.toString('utf8')));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/**
+ * Write a raw CONNECT to the proxy and return its status + the reply text seen
+ * so far (through the header block, plus anything already in the same chunk),
+ * then drop the socket. Enough to tell `200` (tunnel granted) from `403`/`407`.
+ */
+export function connectStatus(
+  proxyPort: number,
+  request: string,
+): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(proxyPort, '127.0.0.1', () => socket.write(request));
+    let text = '';
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve({ status: parseInt(text.split(' ')[1] ?? '0', 10), text });
+    };
+    socket.on('data', (c: Buffer) => {
+      text += c.toString('utf8');
+      if (text.includes('\r\n\r\n')) finish();
+    });
+    socket.on('close', finish);
+    socket.on('error', (err) => {
+      if (!done) reject(err);
+    });
+  });
 }

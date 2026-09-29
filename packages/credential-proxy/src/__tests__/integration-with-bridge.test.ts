@@ -42,6 +42,7 @@ import {
 import { startWebProxyBridge, type WebProxyBridge } from '@ax/credential-proxy-bridge';
 import { generateDomainCert, getOrCreateCA, type CAKeyPair } from '../ca.js';
 import { createCredentialProxyPlugin, type HttpEgressEvent } from '../plugin.js';
+import { basicAuth } from './proxy-auth-helpers.js';
 
 // ── Test helpers (same shapes as acceptance.test.ts / egress-events.test.ts) ──
 
@@ -281,7 +282,12 @@ describe('credential-proxy + bridge end-to-end (Phase 1a Task 17)', () => {
     //    exempt it from the private-IP block (test-only escape hatch).
     const opened = await bus.call<
       unknown,
-      { proxyEndpoint: string; caCertPem: string; envMap: Record<string, string> }
+      {
+        proxyEndpoint: string;
+        caCertPem: string;
+        envMap: Record<string, string>;
+        proxyAuthToken: string;
+      }
     >('proxy:open-session', ctx(), {
       sessionId: 'int-s1',
       userId: 'int-u1',
@@ -312,9 +318,15 @@ describe('credential-proxy + bridge end-to-end (Phase 1a Task 17)', () => {
     //    so we exercise the full chain. requestTls.ca trusts the CA the
     //    proxy returned via open-session (which is the same CA that
     //    signed the upstream leaf, so the MITM-minted leaf for 127.0.0.1
-    //    chains cleanly).
+    //    chains cleanly). `token` is the per-session proxy token that
+    //    open-session minted (TASK-158): undici sends it as
+    //    `Proxy-Authorization` on the CONNECT, the bridge forwards that
+    //    header untouched, and the host listener authenticates the caller as
+    //    session `int-s1` and gates the tunnel on THAT session's allowlist.
+    expect(opened.proxyAuthToken).toMatch(/^[0-9a-f]{32}$/);
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${bridge.port}`,
+      token: basicAuth(opened.proxyAuthToken),
       requestTls: { ca: opened.caCertPem },
     });
 

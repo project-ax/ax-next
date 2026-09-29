@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { createServer as httpCreate, type Server } from 'node:http';
+import { createServer as httpCreate, request as httpRequest, type Server } from 'node:http';
 import { ProxyAgent } from 'undici';
 import {
   startProxyListener,
@@ -8,6 +8,7 @@ import {
   type SessionConfig,
 } from '../listener.js';
 import { SharedCredentialRegistry } from '../registry.js';
+import { basicAuth, tokenFor } from './proxy-auth-helpers.js';
 import type { CAKeyPair } from '../ca.js';
 import forgeModule from 'node-forge';
 
@@ -40,6 +41,37 @@ function mintCA(): CAKeyPair {
   };
 }
 
+/**
+ * Send a plain-HTTP proxy request (absolute-URL request line) straight at the
+ * listener, with exactly the headers given. undici's `ProxyAgent` turns any 407
+ * into a client-side error, so it can't be used to observe a 407 refusal.
+ */
+function proxyRequest(
+  proxyPort: number,
+  targetUrl: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: '127.0.0.1', port: proxyPort, method: 'GET', path: targetUrl, headers },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString('utf8'),
+          }),
+        );
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 let upstream: Server | undefined;
 let listener: ProxyListener | undefined;
 
@@ -64,25 +96,34 @@ describe('proxy listener — HTTP forwarding', () => {
       registry,
       ca: mintCA(),
       sessions: new Map([
-        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
+          },
+        ],
       ]),
     });
 
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false, // HTTP path: send absolute-URL request, not CONNECT
+      token: basicAuth(tokenFor('s1')),
     });
     const res = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('OK from upstream');
   });
 
-  it('returns 403 when host not in any session allowlist', async () => {
+  it("returns 403, attributed to the caller, when the host is not in the calling session's own allowlist", async () => {
     upstream = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
     const upPort = await new Promise<number>((r) =>
       upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
     );
 
+    const audits: ProxyAuditEntry[] = [];
     const registry = new SharedCredentialRegistry();
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
@@ -91,17 +132,29 @@ describe('proxy listener — HTTP forwarding', () => {
       sessions: new Map([
         [
           's1',
-          { allowlist: new Set(['other.example.com']), allowedIPs: new Set(['127.0.0.1']) },
+          {
+            allowlist: new Set(['other.example.com']),
+            allowedIPs: new Set(['127.0.0.1']),
+            sessionId: 's1',
+            proxyToken: tokenFor('s1'),
+          },
         ],
       ]),
+      onAudit: (e) => audits.push(e),
     });
 
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false, // HTTP path: send absolute-URL request, not CONNECT
+      token: basicAuth(tokenFor('s1')),
     });
     const res = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
     expect(res.status).toBe(403);
+
+    const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
+    expect(block).toBeDefined();
+    expect(block!.status).toBe(403);
+    expect(block!.sessionId).toBe('s1');
   });
 
   it('attributes an allowlist-miss 403 to its session when the request carries the proxy token (TASK-52)', async () => {
@@ -110,7 +163,7 @@ describe('proxy listener — HTTP forwarding', () => {
       upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
     );
 
-    const token = 'a'.repeat(32);
+    const token = tokenFor('s1');
     const audits: ProxyAuditEntry[] = [];
     const registry = new SharedCredentialRegistry();
     const sessions = new Map<string, SessionConfig>([
@@ -118,8 +171,8 @@ describe('proxy listener — HTTP forwarding', () => {
         's1',
         {
           // 'other.example.com' is allowed; the request targets 127.0.0.1 →
-          // allowlist MISS → 403, which matches NO session via findAllowing-
-          // Session. Attribution must come from the token instead.
+          // allowlist MISS → 403, attributed to the session the token
+          // authenticated as.
           allowlist: new Set(['other.example.com']),
           sessionId: 's1',
           userId: 'u1',
@@ -139,7 +192,7 @@ describe('proxy listener — HTTP forwarding', () => {
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false,
       // undici sets Proxy-Authorization to this token string verbatim.
-      token: 'Basic ' + Buffer.from('ax:' + token).toString('base64'),
+      token: basicAuth(token),
     });
     const res = await fetch(`http://127.0.0.1:${upPort}/x`, { dispatcher } as RequestInit);
     expect(res.status).toBe(403);
@@ -150,8 +203,12 @@ describe('proxy listener — HTTP forwarding', () => {
     expect(block!.userId).toBe('u1');
   });
 
-  it('leaves the session unattributed on a blocked request with no token (no widening, just no attribution) (TASK-52)', async () => {
-    upstream = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
+  it('refuses a request with no proxy token with 407 and never reaches the upstream (TASK-158)', async () => {
+    let upstreamHits = 0;
+    upstream = httpCreate((_req, res) => {
+      upstreamHits += 1;
+      res.end('SHOULD NOT REACH');
+    });
     const upPort = await new Promise<number>((r) =>
       upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
     );
@@ -162,10 +219,13 @@ describe('proxy listener — HTTP forwarding', () => {
       [
         's1',
         {
-          allowlist: new Set(['other.example.com']),
+          // The host IS allowlisted by a registered session; the only thing
+          // wrong with the request is that it does not authenticate.
+          allowlist: new Set(['127.0.0.1']),
+          allowedIPs: new Set(['127.0.0.1']),
           sessionId: 's1',
           userId: 'u1',
-          proxyToken: 'a'.repeat(32),
+          proxyToken: tokenFor('s1'),
         },
       ],
     ]);
@@ -177,23 +237,31 @@ describe('proxy listener — HTTP forwarding', () => {
       onAudit: (e) => audits.push(e),
     });
 
-    const dispatcher = new ProxyAgent({
-      uri: `http://127.0.0.1:${listener.port}`,
-      proxyTunnel: false,
-      // No token at all.
+    // No Proxy-Authorization header at all.
+    const res = await proxyRequest(listener.port, `http://127.0.0.1:${upPort}/x`, {
+      Host: `127.0.0.1:${upPort}`,
     });
-    const res = await fetch(`http://127.0.0.1:${upPort}/x`, { dispatcher } as RequestInit);
-    // Still blocked — the missing token never widens egress.
-    expect(res.status).toBe(403);
+    // Refused before anything else is parsed: the missing token never
+    // widens egress, and never picks a session to be judged against.
+    expect(res.status).toBe(407);
+    expect(res.headers['proxy-authenticate']).toBe('Basic realm="ax-egress"');
+    expect(res.body).not.toContain('SHOULD NOT REACH');
+    expect(upstreamHits).toBe(0);
 
-    const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
-    expect(block).toBeDefined();
-    expect(block!.sessionId).toBeUndefined();
-    expect(block!.userId).toBeUndefined();
+    expect(audits.some((a) => a.blocked?.startsWith('domain_denied:'))).toBe(false);
+    const refusal = audits.find((a) => a.blocked === 'proxy_auth_required');
+    expect(refusal).toBeDefined();
+    expect(refusal!.status).toBe(407);
+    expect(refusal!.sessionId).toBeUndefined();
+    expect(refusal!.userId).toBeUndefined();
   });
 
-  it('leaves the session unattributed on a blocked request with an unknown/forged token (TASK-52)', async () => {
-    upstream = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
+  it('refuses a request with an unknown/forged proxy token with 407 and never reaches the upstream (TASK-158)', async () => {
+    let upstreamHits = 0;
+    upstream = httpCreate((_req, res) => {
+      upstreamHits += 1;
+      res.end('SHOULD NOT REACH');
+    });
     const upPort = await new Promise<number>((r) =>
       upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
     );
@@ -204,10 +272,11 @@ describe('proxy listener — HTTP forwarding', () => {
       [
         's1',
         {
-          allowlist: new Set(['other.example.com']),
+          allowlist: new Set(['127.0.0.1']),
+          allowedIPs: new Set(['127.0.0.1']),
           sessionId: 's1',
           userId: 'u1',
-          proxyToken: 'a'.repeat(32),
+          proxyToken: tokenFor('s1'),
         },
       ],
     ]);
@@ -219,18 +288,22 @@ describe('proxy listener — HTTP forwarding', () => {
       onAudit: (e) => audits.push(e),
     });
 
-    const dispatcher = new ProxyAgent({
-      uri: `http://127.0.0.1:${listener.port}`,
-      proxyTunnel: false,
-      // A well-formed but UNREGISTERED token — matches no session.
-      token: 'Basic ' + Buffer.from('ax:' + 'f'.repeat(32)).toString('base64'),
+    // A well-formed but UNREGISTERED token — matches no session.
+    const res = await proxyRequest(listener.port, `http://127.0.0.1:${upPort}/x`, {
+      Host: `127.0.0.1:${upPort}`,
+      'Proxy-Authorization': basicAuth('f'.repeat(32)),
     });
-    const res = await fetch(`http://127.0.0.1:${upPort}/x`, { dispatcher } as RequestInit);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(407);
+    expect(res.headers['proxy-authenticate']).toBe('Basic realm="ax-egress"');
+    expect(res.body).not.toContain('SHOULD NOT REACH');
+    expect(upstreamHits).toBe(0);
 
-    const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
-    expect(block).toBeDefined();
-    expect(block!.sessionId).toBeUndefined();
+    expect(audits.some((a) => a.blocked?.startsWith('domain_denied:'))).toBe(false);
+    const refusal = audits.find((a) => a.blocked === 'proxy_auth_required');
+    expect(refusal).toBeDefined();
+    expect(refusal!.status).toBe(407);
+    expect(refusal!.sessionId).toBeUndefined();
+    expect(refusal!.userId).toBeUndefined();
   });
 
   it('returns 413 when a plain-HTTP request body exceeds the cap (does not buffer it all)', async () => {
@@ -256,13 +329,21 @@ describe('proxy listener — HTTP forwarding', () => {
       ca: mintCA(),
       maxHttpRequestBodyBytes: 1024, // tiny cap for the test
       sessions: new Map([
-        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
+          },
+        ],
       ]),
     });
 
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false,
+      token: basicAuth(tokenFor('s1')),
     });
     const big = Buffer.alloc(1024 * 8, 0x61); // 8 KiB > 1 KiB cap
     const res = await fetch(`http://127.0.0.1:${upPort}/up`, {
@@ -292,12 +373,20 @@ describe('proxy listener — HTTP forwarding', () => {
       ca: mintCA(),
       maxHttpRequestBodyBytes: 4096,
       sessions: new Map([
-        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
+          },
+        ],
       ]),
     });
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false,
+      token: basicAuth(tokenFor('s1')),
     });
     // A chunked body that emits 16 x 1 KiB chunks with small gaps so the cap
     // (4 KiB) trips well before the stream ends — exercises the mid-stream path.
@@ -344,12 +433,20 @@ describe('proxy listener — HTTP forwarding', () => {
       ca: mintCA(),
       maxHttpRequestBodyBytes: 1024,
       sessions: new Map([
-        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
+          },
+        ],
       ]),
     });
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false,
+      token: basicAuth(tokenFor('s1')),
     });
     const res = await fetch(`http://127.0.0.1:${upPort}/up`, {
       method: 'POST',
@@ -382,12 +479,20 @@ describe('proxy listener — HTTP forwarding', () => {
       ca: mintCA(),
       maxHttpRequestBodyBytes: 4096,
       sessions: new Map([
-        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
+          },
+        ],
       ]),
     });
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false,
+      token: basicAuth(tokenFor('s1')),
     });
 
     // Abort the upload after the first chunk (mid-stream, before end).
@@ -431,12 +536,16 @@ describe('proxy listener — HTTP forwarding', () => {
       registry,
       ca: mintCA(),
       sessions: new Map([
-        ['s1', { allowlist: new Set(['127.0.0.1']) /* no allowedIPs */ }],
+        [
+          's1',
+          { allowlist: new Set(['127.0.0.1']) /* no allowedIPs */, proxyToken: tokenFor('s1') },
+        ],
       ]),
     });
     const dispatcher = new ProxyAgent({
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false, // HTTP path: send absolute-URL request, not CONNECT
+      token: basicAuth(tokenFor('s1')),
     });
     // We're testing the proxy's private-IP block. Requesting
     // `http://127.0.0.1/` (the metadata-style bare-loopback target) is

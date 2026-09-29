@@ -9,6 +9,7 @@ import {
 import { SharedCredentialRegistry } from '../registry.js';
 import { generateDomainCert, type CAKeyPair } from '../ca.js';
 import forgeModule from 'node-forge';
+import { rawConnect, tokenFor } from './proxy-auth-helpers.js';
 
 const forge = forgeModule as typeof forgeModule;
 
@@ -61,10 +62,12 @@ async function connectThroughProxy(
   proxyHost: string,
   proxyPort: number,
   target: string,
+  token?: string,
 ): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const sock = net.connect(proxyPort, proxyHost, () => {
-      sock.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+      // TASK-158: the CONNECT must carry the session's proxy token or it is a 407.
+      sock.write(rawConnect(target, token));
     });
     let buf = Buffer.alloc(0);
     const onData = (chunk: Buffer) => {
@@ -100,10 +103,11 @@ async function connectCaptureBlockedResponse(
   proxyHost: string,
   proxyPort: number,
   target: string,
+  token?: string,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const sock = net.connect(proxyPort, proxyHost, () => {
-      sock.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+      sock.write(rawConnect(target, token));
     });
     let acc = '';
     sock.on('data', (chunk: Buffer) => {
@@ -139,13 +143,19 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
             allowlist: new Set(['127.0.0.1']),
             allowedIPs: new Set(['127.0.0.1']),
             bypassMITM: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
           },
         ],
       ]),
     });
 
     // 3. Issue CONNECT through the proxy, then upgrade the tunneled socket to TLS.
-    const tunnel = await connectThroughProxy('127.0.0.1', listener.port, `127.0.0.1:${upPort}`);
+    const tunnel = await connectThroughProxy(
+      '127.0.0.1',
+      listener.port,
+      `127.0.0.1:${upPort}`,
+      tokenFor('s1'),
+    );
 
     // The whole point of this test is the CONNECT bypass mode — the
     // upstream is a self-signed test server we've spawned in this very
@@ -171,7 +181,58 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     tlsSock.destroy();
   });
 
-  it('returns 403 for CONNECT to a host not in any session allowlist', async () => {
+  it('refuses a bypassMITM host with 407 when the CONNECT carries no valid proxy token (TASK-158)', async () => {
+    // The raw-tunnel path is not a side door around authentication: a caller
+    // that cannot prove which session it is gets no tunnel, bypass or not.
+    let upstreamConnections = 0;
+    const { key, cert } = mintTestCert('localhost');
+    upstream = tlsCreate({ key, cert }, (socket) => {
+      socket.write('SHOULD NOT REACH');
+    });
+    upstream.on('connection', () => {
+      upstreamConnections += 1;
+    });
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const audits: ProxyAuditEntry[] = [];
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry: new SharedCredentialRegistry(),
+      ca: { key: 'unused-key', cert: 'unused-cert' },
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            bypassMITM: new Set(['127.0.0.1']),
+            sessionId: 's1',
+            proxyToken: tokenFor('s1'),
+          },
+        ],
+      ]),
+      onAudit: (e) => audits.push(e),
+    });
+
+    for (const token of [undefined, tokenFor('someone-else')]) {
+      await expect(
+        connectThroughProxy('127.0.0.1', listener.port, `127.0.0.1:${upPort}`, token),
+      ).rejects.toThrow(/407/);
+    }
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(upstreamConnections).toBe(0);
+    expect(audits).toHaveLength(2);
+    for (const entry of audits) {
+      expect(entry.status).toBe(407);
+      expect(entry.blocked).toBe('proxy_auth_required');
+      expect(entry.sessionId).toBeUndefined();
+    }
+  });
+
+  it("returns 403 for CONNECT to a host not in the caller's own allowlist", async () => {
     const { key, cert } = mintTestCert('localhost');
     upstream = tlsCreate({ key, cert }, (socket) => {
       socket.write('SHOULD NOT REACH');
@@ -191,20 +252,21 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
           {
             allowlist: new Set(['other.example.com']),
             allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
           },
         ],
       ]),
     });
 
     await expect(
-      connectThroughProxy('127.0.0.1', listener.port, `127.0.0.1:${upPort}`),
+      connectThroughProxy('127.0.0.1', listener.port, `127.0.0.1:${upPort}`, tokenFor('s1')),
     ).rejects.toThrow(/403/);
   });
 
   it('attributes a CONNECT allowlist-miss 403 to its session via the proxy token (TASK-52)', async () => {
     // The k8s-relevant path: HTTPS egress arrives as a CONNECT carrying
-    // `Proxy-Authorization: Basic ax:<token>` (forwarded by the bridge). Even
-    // though the host is allowlist-MISS (no allowing session), the listener
+    // `Proxy-Authorization: Basic ax:<token>` (forwarded by the bridge). The
+    // host is allowlist-MISS for the caller's own allowlist, and the listener
     // attributes the block to the session that owns the token.
     const { key, cert } = mintTestCert('localhost');
     upstream = tlsCreate({ key, cert }, (socket) => socket.write('SHOULD NOT REACH'));
@@ -275,6 +337,7 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
           {
             allowlist: new Set(['registry.npmjs.org']), // github.com is NOT allowlisted
             allowedIPs: new Set(['127.0.0.1']),
+            proxyToken: tokenFor('s1'),
           },
         ],
       ]),
@@ -284,6 +347,7 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
       '127.0.0.1',
       listener.port,
       'github.com:443',
+      tokenFor('s1'),
     );
 
     // Status line is still a 403.
@@ -310,12 +374,12 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
       sessions: new Map([
         // 127.0.0.1 is in allowlist (passes domain gate) but no allowedIPs
         // override, so resolveAndCheck throws BlockedIPError → 403.
-        ['s1', { allowlist: new Set(['127.0.0.1']) }],
+        ['s1', { allowlist: new Set(['127.0.0.1']), proxyToken: tokenFor('s1') }],
       ]),
     });
 
     await expect(
-      connectThroughProxy('127.0.0.1', listener.port, '127.0.0.1:443'),
+      connectThroughProxy('127.0.0.1', listener.port, '127.0.0.1:443', tokenFor('s1')),
     ).rejects.toThrow(/403/);
   });
 });

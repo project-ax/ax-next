@@ -23,6 +23,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { connect as netConnect } from 'node:net';
 import { createServer as tlsCreate, type Server as TLSServer } from 'node:tls';
 import { ProxyAgent } from 'undici';
 import {
@@ -35,6 +36,7 @@ import {
 } from '@ax/core';
 import { generateDomainCert, type CAKeyPair } from '../ca.js';
 import { createCredentialProxyPlugin } from '../plugin.js';
+import { basicAuth, rawConnect } from './proxy-auth-helpers.js';
 
 // In-memory `credentials:get` / `credentials:set` plugin. Matches the
 // Phase 3 shape of @ax/credentials: `({ref, userId}) → string`. Stub
@@ -328,7 +330,12 @@ describe('@ax/credential-proxy plugin', () => {
 
       const opened = await bus.call<
         unknown,
-        { proxyEndpoint: string; caCertPem: string; envMap: Record<string, string> }
+        {
+          proxyEndpoint: string;
+          caCertPem: string;
+          proxyAuthToken: string;
+          envMap: Record<string, string>;
+        }
       >('proxy:open-session', ctx(), {
         sessionId: 's1',
         userId: 'u1',
@@ -348,6 +355,7 @@ describe('@ax/credential-proxy plugin', () => {
       // SHOULD happen — the upstream sees the real value.
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
+        token: basicAuth(opened.proxyAuthToken),
         requestTls: { ca: ca.cert },
       });
       const res = await fetch(`https://127.0.0.1:${upInfo.port}/v1/messages`, {
@@ -365,14 +373,16 @@ describe('@ax/credential-proxy plugin', () => {
       expect(upInfo.captured.authorization).not.toContain('ax-cred:');
 
       // Now close the session and verify substitution no longer happens.
-      // The upstream is also no longer reachable because the allowlist is
-      // gone — so the proxy returns 403 on CONNECT, which fetch surfaces
-      // as a network error. That 403 IS the proof that the session-config
-      // store no longer has the entry.
+      // The upstream is also no longer reachable because the session is gone:
+      // its proxy token no longer authenticates, so the proxy returns 407 on
+      // CONNECT, which fetch surfaces as a network error. We deliberately
+      // present the CLOSED session's own token again — that 407 IS the proof
+      // that the session-config store no longer has the entry.
       await bus.call('proxy:close-session', ctx(), { sessionId: 's1' });
 
       const dispatcher2 = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
+        token: basicAuth(opened.proxyAuthToken),
         requestTls: { ca: ca.cert },
       });
       let secondReqError: Error | undefined;
@@ -389,11 +399,24 @@ describe('@ax/credential-proxy plugin', () => {
       } catch (err) {
         secondReqError = err as Error;
       }
-      // A 403 on CONNECT shows up as a fetch error from undici. Either way,
+      // A 407 on CONNECT shows up as a fetch error from undici. Either way,
       // the upstream MUST NOT see a second request body with the real secret.
       // The first request already resolved gotRequest; the captured object
       // would be overwritten if a second body got through.
       expect(secondReqError).toBeDefined();
+      // undici reports a refused CONNECT as an opaque "cancelled" error, so pin
+      // the actual reason with a raw CONNECT: the CLOSED session's token no
+      // longer authenticates → the proxy answers 407, not some other failure.
+      const rawReply = await new Promise<string>((resolve, reject) => {
+        const sock = netConnect(proxyPort, '127.0.0.1', () => {
+          sock.write(rawConnect(`127.0.0.1:${upInfo.port}`, opened.proxyAuthToken));
+        });
+        let buf = '';
+        sock.on('data', (d) => (buf += d.toString('utf8')));
+        sock.on('end', () => resolve(buf));
+        sock.on('error', reject);
+      });
+      expect(rawReply).toMatch(/^HTTP\/1\.1 407 /);
       expect(upInfo.captured.body).toBe(JSON.stringify({ hello: 'world' }));
       expect(upInfo.captured.authorization).toBe('Bearer sk-secret-one');
     } finally {
@@ -473,7 +496,12 @@ describe('@ax/credential-proxy plugin', () => {
 
       const opened = await bus.call<
         unknown,
-        { proxyEndpoint: string; caCertPem: string; envMap: Record<string, string> }
+        {
+          proxyEndpoint: string;
+          caCertPem: string;
+          proxyAuthToken: string;
+          envMap: Record<string, string>;
+        }
       >('proxy:open-session', ctx(), {
         sessionId: 's1',
         userId: 'u1',
@@ -493,6 +521,7 @@ describe('@ax/credential-proxy plugin', () => {
       // ORIGINAL value.
       const dispatcher1 = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
+        token: basicAuth(opened.proxyAuthToken),
         requestTls: { ca: ca.cert },
       });
       const wait1 = nextRequest();
@@ -522,8 +551,11 @@ describe('@ax/credential-proxy plugin', () => {
       expect(placeholderAfterRotate).toBe(oldPlaceholder);
 
       // Second round-trip with the SAME placeholder: substitution → ROTATED.
+      // Rotation re-resolves credentials only; the session's proxy token is
+      // unchanged, so the same token still authenticates the second request.
       const dispatcher2 = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
+        token: basicAuth(opened.proxyAuthToken),
         requestTls: { ca: ca.cert },
       });
       const wait2 = nextRequest();

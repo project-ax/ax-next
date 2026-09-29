@@ -49,6 +49,7 @@ import { startProxyListener, type ProxyListener } from '../listener.js';
 import { SharedCredentialRegistry } from '../registry.js';
 import type { CAKeyPair } from '../ca.js';
 import forgeModule from 'node-forge';
+import { rawConnect, tokenFor } from './proxy-auth-helpers.js';
 
 const forge = forgeModule as typeof forgeModule;
 
@@ -148,10 +149,18 @@ describe('proxy listener — shutdown-race', () => {
     // Resolver that never resolves — pins handleCONNECT in the await window
     // after the allowlist gate and before handleMITMConnect can attach
     // clientSocket.on('error', …).
-    const hangingResolver = (): Promise<{ address: string; family: number }> =>
-      new Promise(() => {
+    //
+    // Since TASK-158 a CONNECT is authenticated BEFORE it is resolved, so these
+    // CONNECTs carry the session's proxy token — without it the proxy would 407
+    // immediately and never enter the window under test (and the assertions
+    // below would pass without exercising anything).
+    let resolverCalls = 0;
+    const hangingResolver = (): Promise<{ address: string; family: number }> => {
+      resolverCalls++;
+      return new Promise(() => {
         /* hang forever */
       });
+    };
 
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
@@ -163,6 +172,7 @@ describe('proxy listener — shutdown-race', () => {
             allowlist: new Set(['example.test']),
             sessionId: 's1',
             userId: 'u1',
+            proxyToken: tokenFor('s1'),
           },
         ],
       ]),
@@ -181,12 +191,15 @@ describe('proxy listener — shutdown-race', () => {
         client.once('connect', () => resolve());
         client.once('error', reject);
       });
-      client.write('CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n');
+      client.write(rawConnect('example.test:443', tokenFor('s1')));
       clients.push(client);
     }
 
     // Let the proxies receive their requests and enter the resolveAndCheck await.
     await new Promise((r) => setTimeout(r, 100));
+    // Non-vacuity: every CONNECT really got past authentication + the allowlist
+    // gate and is parked inside the resolver.
+    expect(resolverCalls).toBe(4);
 
     // Force a TCP RST from each client side so the proxy's inbound sockets
     // have read-side errors queued in the kernel.
@@ -219,6 +232,7 @@ describe('proxy listener — shutdown-race', () => {
             allowedIPs: new Set(['127.0.0.1']),
             sessionId: 's1',
             userId: 'u1',
+            proxyToken: tokenFor('s1'),
           },
         ],
       ]),
@@ -235,14 +249,15 @@ describe('proxy listener — shutdown-race', () => {
         client.once('connect', () => resolve());
         client.once('error', reject);
       });
-      client.write(
-        `CONNECT 127.0.0.1:${upPort} HTTP/1.1\r\nHost: 127.0.0.1:${upPort}\r\n\r\n`,
-      );
+      client.write(rawConnect(`127.0.0.1:${upPort}`, tokenFor('s1')));
       clients.push(client);
     }
 
     // Wait for proxy → upstream tls.connect() to reach mid-handshake state.
     await new Promise((r) => setTimeout(r, 200));
+    // Non-vacuity: the proxy really dialled the hanging upstream for all 4
+    // tunnels (i.e. authentication + the allowlist gate let them through).
+    expect(upstreamSockets.length).toBe(4);
 
     listener.stop();
 
@@ -271,6 +286,7 @@ describe('proxy listener — shutdown-race', () => {
             bypassMITM: new Set(['127.0.0.1']),
             sessionId: 's1',
             userId: 'u1',
+            proxyToken: tokenFor('s1'),
           },
         ],
       ]),
@@ -287,13 +303,13 @@ describe('proxy listener — shutdown-race', () => {
         client.once('connect', () => resolve());
         client.once('error', reject);
       });
-      client.write(
-        `CONNECT 127.0.0.1:${upPort} HTTP/1.1\r\nHost: 127.0.0.1:${upPort}\r\n\r\n`,
-      );
+      client.write(rawConnect(`127.0.0.1:${upPort}`, tokenFor('s1')));
       clients.push(client);
     }
 
     await new Promise((r) => setTimeout(r, 150));
+    // Non-vacuity: the raw-tunnel net.connect() reached the hanging upstream.
+    expect(upstreamSockets.length).toBe(4);
 
     listener.stop();
 
