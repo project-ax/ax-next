@@ -595,6 +595,30 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
         },
       });
 
+      // TASK-688 — Stop. The shell calls this when a person presses Stop while a
+      // turn is running (`interrupt` in the inbox; an idle press never gets
+      // here). `Query.interrupt()` is the SDK's own "abort this turn": it kills
+      // the running tool (Bash exits 137), ends the model request, and the turn
+      // then closes through the ordinary `result` branch below — `endTurn`,
+      // turn-end, the person's stream closes — with the words already written
+      // and the interrupted tool_result (flagged is_error) in the durable turn.
+      // Probed against the real binary (see main.test.ts); the SAME query serves
+      // the next message, so nothing here ends the session. `cancel` does that.
+      //
+      // Deliberately NOT `options.abortController`: aborting that tears the whole
+      // query down, and this runner has to stay warm.
+      //
+      // Fire-and-forget by design — the shell calls handlers synchronously from
+      // its inbox reader — and a rejection (control channel already closed) is
+      // logged, never thrown: the turn ends on its own `result` regardless.
+      ctx.onInterrupt(() => {
+        queryIter.interrupt().catch((err: unknown) => {
+          process.stderr.write(
+            `runner: query.interrupt() failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        });
+      });
+
       for await (const msg of queryIter) {
         if (msg.type === 'system' && msg.subtype === 'init') {
           // Capture the SDK session_id so the per-turn flush wait can locate the

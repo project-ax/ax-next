@@ -4539,4 +4539,196 @@ describe('main()', () => {
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // TASK-688 — Stop. The shell routes an `interrupt` inbox entry to the handler
+  // this loop registers; the handler is `Query.interrupt()`, and nothing else.
+  //
+  // MEASURED-BY-PROBE (2026-09-29, the real `claude` binary 0.2.119 against a
+  // scripted local Anthropic-compatible server): `interrupt()` during a Bash
+  // call kills the command (exit 137), yields a tool_result flagged is_error and
+  // a `result` with `terminal_reason: 'aborted_tools'`; during text streaming it
+  // keeps the partial assistant message and yields 'aborted_streaming'; and the
+  // SAME query serves the next message. So the loop's existing `result` branch
+  // is the whole ending — these tests fake exactly that behaviour and pin that
+  // the loop asks for it, once, and carries on.
+  // -------------------------------------------------------------------------
+  describe('Stop (TASK-688)', () => {
+    function resultInterrupted(): SDKMessage {
+      return {
+        ...(resultSuccess() as unknown as Record<string, unknown>),
+        subtype: 'error_during_execution',
+        is_error: true,
+        terminal_reason: 'aborted_streaming',
+        errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
+      } as unknown as SDKMessage;
+    }
+    function wireConfig(): void {
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+    }
+    function deferred<T = void>() {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    }
+    /** An inbox whose entries are released by the test; exhausted -> cancel. */
+    function gatedInbox(entries: Array<() => Promise<InboxLoopEntry>>): void {
+      const queue = [...entries];
+      fakeInbox = {
+        next: vi.fn(async (): Promise<InboxLoopEntry> => {
+          const e = queue.shift();
+          return e !== undefined ? e() : { type: 'cancel' };
+        }),
+        cursor: 0,
+      } as unknown as FakeInbox;
+    }
+    const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+    it('an interrupt mid-turn asks the SDK to interrupt, once, and the turn ends through the normal result path', async () => {
+      setEnv(COMPLETE_ENV);
+      wireConfig();
+      const stop = deferred();
+      const finish = deferred();
+      const interrupted = deferred();
+      gatedInbox([
+        async () => userEntry('write me a long story'),
+        async () => {
+          await stop.promise;
+          return { type: 'interrupt' };
+        },
+        async () => {
+          await finish.promise;
+          return cancelEntry;
+        },
+      ]);
+      const interrupt = vi.fn(async () => {
+        // What the real SDK does: the current turn ends with an aborted result.
+        interrupted.resolve();
+      });
+      queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        const gen = (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('Once upon a ');
+          stop.resolve(); // the person presses Stop mid-reply
+          await interrupted.promise; // ... and nothing more happens until the SDK is asked
+          yield resultInterrupted();
+          finish.resolve();
+          await it.next(); // the cancel that ends the session, later
+        })();
+        return Object.assign(gen, { interrupt });
+      });
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      expect(interrupt).toHaveBeenCalledTimes(1);
+      // The stopped turn closes like any other: one assistant turn-end carrying
+      // the words the person saw, stamped with the turn's own reqId.
+      const turnEnds = fakeClient.event.mock.calls.filter(
+        (c) => c[0] === 'event.turn-end' && (c[1] as { role?: string }).role === 'assistant',
+      );
+      expect(turnEnds).toHaveLength(1);
+      expect(turnEnds[0]?.[1]).toMatchObject({
+        reqId: 'req-test',
+        contentBlocks: [{ type: 'text', text: 'Once upon a ' }],
+      });
+      // And the runner ended only because the SESSION was cancelled afterwards.
+      const chatEnds = fakeClient.event.mock.calls.filter((c) => c[0] === 'event.chat-end');
+      expect(chatEnds).toHaveLength(1);
+      expect((chatEnds[0]?.[1] as { outcome: { kind: string } }).outcome.kind).toBe('complete');
+    });
+
+    it('an interrupt with no turn running never reaches the SDK', async () => {
+      setEnv(COMPLETE_ENV);
+      wireConfig();
+      const late = deferred();
+      gatedInbox([
+        async () => ({ type: 'interrupt' }), // before any message: idle
+        async () => userEntry('hi'),
+        async () => {
+          await late.promise;
+          return { type: 'interrupt' }; // after the turn: idle again
+        },
+        async () => cancelEntry,
+      ]);
+      const interrupt = vi.fn(async () => undefined);
+      queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        const gen = (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('hello');
+          yield resultSuccess();
+          late.resolve();
+          await flush();
+          await it.next();
+        })();
+        return Object.assign(gen, { interrupt });
+      });
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      // An idle `query.interrupt()` is harmless in the SDK (probed), but a
+      // press that lost the race with the turn's own ending has no business
+      // reaching a process that has moved on to the next one.
+      expect(interrupt).not.toHaveBeenCalled();
+    });
+
+    it('a failing query.interrupt() does not take the runner down', async () => {
+      setEnv(COMPLETE_ENV);
+      wireConfig();
+      const stop = deferred();
+      gatedInbox([
+        async () => userEntry('go'),
+        async () => {
+          await stop.promise;
+          return { type: 'interrupt' };
+        },
+      ]);
+      const interrupt = vi.fn(async () => {
+        throw new Error('control channel closed');
+      });
+      queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        const gen = (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('partial');
+          stop.resolve();
+          await flush();
+          await flush();
+          yield resultSuccess();
+          await it.next();
+        })();
+        return Object.assign(gen, { interrupt });
+      });
+
+      const { main } = await import('../main.js');
+      // The turn ends on its own result; the failed interrupt is logged, not thrown.
+      expect(await main()).toBe(0);
+      expect(interrupt).toHaveBeenCalledTimes(1);
+    });
+  });
 });
