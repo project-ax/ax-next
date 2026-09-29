@@ -16,7 +16,6 @@ import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import type { Kysely } from 'kysely';
 import { createMcpOAuthPlugin } from '../plugin.js';
-import { createMcpOAuthStore } from '../store.js';
 import { runMcpOAuthMigration, type McpOAuthDatabase } from '../migrations.js';
 import { encodeTokenBlob, decodeTokenBlob } from '../types.js';
 import type { RefreshedTokens, ResolverDeps } from '../resolver.js';
@@ -100,11 +99,13 @@ const PAST = Date.now() - 24 * 60 * 60_000;
 interface FreshTokenRecorder {
   refresh: RefreshedTokens & { refresh_token: string };
   calls: number;
+  /** The client each refresh call was made as (clientId / clientSecret only). */
+  clients: Array<{ clientId: string; clientSecret: string | undefined }>;
 }
 
 /** Build a fake refresh (the production `testOverrides.refresh` shape) that
  *  returns a fresh access token + a ROTATED refresh token and records how many
- *  times it was invoked. */
+ *  times it was invoked, and as which client. */
 function makeFakeRefresh(): {
   fakeRefresh: ResolverDeps['refresh'];
   recorder: FreshTokenRecorder;
@@ -117,12 +118,34 @@ function makeFakeRefresh(): {
       token_type: 'Bearer',
     },
     calls: 0,
+    clients: [],
   };
-  const fakeRefresh: ResolverDeps['refresh'] = async () => {
+  const fakeRefresh: ResolverDeps['refresh'] = async ({ client }) => {
     recorder.calls += 1;
+    recorder.clients.push({ clientId: client.clientId, clientSecret: client.clientSecret });
     return { ...recorder.refresh };
   };
   return { fakeRefresh, recorder };
+}
+
+/** Seed a row in the LEGACY shared client table. Nothing in the plugin writes it
+ *  any more (the store has no putClient), so this stands in for a row left behind
+ *  by the pre-TASK-696 `begin`, which a legacy token blob (no clientId of its own)
+ *  still resolves its client through. */
+async function seedLegacyClient(
+  db: Kysely<McpOAuthDatabase>,
+  c: { clientKey: string; clientId: string; clientSecret: string | null },
+): Promise<void> {
+  await db
+    .insertInto('mcp_oauth_v1_clients')
+    .values({
+      client_key: c.clientKey,
+      client_id: c.clientId,
+      client_secret: c.clientSecret,
+      dynamic: true,
+      created_at: new Date(),
+    })
+    .execute();
 }
 
 async function bootStack(testOverrides: Parameters<typeof createMcpOAuthPlugin>[0]) {
@@ -136,35 +159,33 @@ async function bootStack(testOverrides: Parameters<typeof createMcpOAuthPlugin>[
     ],
   });
   harnesses.push(h);
-  // The store lives on the same shared kysely the plugin migrated. The
-  // migration already ran in the plugin's init; build a store handle off the
-  // same instance so the test can seed the client registration row.
+  // The plugin's tables live on the same shared kysely the plugin migrated. The
+  // migration already ran in the plugin's init; grab that instance so the test
+  // can seed the legacy client registration row.
   const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>(
     'database:get-instance',
     h.ctx(),
     {},
   );
   await runMcpOAuthMigration(db); // idempotent — CREATE TABLE IF NOT EXISTS
-  const store = createMcpOAuthStore(db);
-  return { h, store };
+  return { h, db };
 }
 
 describe('@ax/mcp-oauth e2e canary — sharee resolves owner agent-bound token + lazy refresh', () => {
-  it('a different user resolves the OWNER agent-bound token, refreshes it lazily, and rotation is re-stored', async () => {
+  // This canary's token is a LEGACY blob (written before TASK-696: no clientId of
+  // its own), so it proves the fallback path stays alive: the resolver reads the
+  // client from the shared legacy row by `clientKey`. The per-token path (a blob
+  // that carries its own client) is the next test.
+  it('a different user resolves the OWNER agent-bound token, refreshes it lazily, and rotation is re-stored (LEGACY blob → legacy client row)', async () => {
     const { fakeRefresh, recorder } = makeFakeRefresh();
-    const { h, store } = await bootStack({ testOverrides: { refresh: fakeRefresh } });
+    const { h, db } = await bootStack({ testOverrides: { refresh: fakeRefresh } });
 
     // The real resolver sub-service must be live (registered by the factory).
     expect(h.bus.hasService('credentials:resolve:mcp-oauth')).toBe(true);
 
-    // (2) Client registration in the mcp-oauth store — the resolver's getClient
-    //     reads it before refreshing.
-    await store.putClient({
-      clientKey: CLIENT_KEY,
-      clientId: 'cid',
-      clientSecret: 's',
-      dynamic: true,
-    });
+    // (2) Legacy client registration row — the resolver's getClient(clientKey)
+    //     reads it before refreshing a blob that has no clientId.
+    await seedLegacyClient(db, { clientKey: CLIENT_KEY, clientId: 'cid', clientSecret: 's' });
 
     // (3) The OWNER stores an EXPIRED agent-bound token, exactly as the callback
     //     route would: scope:'agent', ownerId = the agent id. We write it via the
@@ -203,6 +224,8 @@ describe('@ax/mcp-oauth e2e canary — sharee resolves owner agent-bound token +
     );
     expect(resolved).toBe('fresh-AT'); // (a) bob got the OWNER's token, (b) refreshed, (c) fakeRefresh ran
     expect(recorder.calls).toBe(1);
+    // The legacy blob refreshed as the client in the shared legacy row.
+    expect(recorder.clients).toEqual([{ clientId: 'cid', clientSecret: 's' }]);
 
     // (5a) ROTATION RE-STORE. The credentials plugin re-stored the refreshed
     //      blob under the SAME scope+owner. Peek the agent-scope row directly
@@ -240,6 +263,62 @@ describe('@ax/mcp-oauth e2e canary — sharee resolves owner agent-bound token +
     );
     expect(resolved2).toBe('fresh-AT');
     expect(recorder.calls).toBe(1); // still exactly one refresh, ever
+  });
+
+  // TASK-696: a token that carries its own client refreshes as THAT client, with
+  // no shared client row involved, and the client survives the vault re-store.
+  it('a blob carrying its own client refreshes as that client (no legacy row needed) and keeps it after the re-store', async () => {
+    const { fakeRefresh, recorder } = makeFakeRefresh();
+    const { h, db } = await bootStack({ testOverrides: { refresh: fakeRefresh } });
+
+    // A DIFFERENT client sits in the shared legacy row for the same clientKey (what
+    // a later `begin` used to leave behind). It must NOT be the one used.
+    await seedLegacyClient(db, { clientKey: CLIENT_KEY, clientId: 'registered-last', clientSecret: null });
+
+    await h.bus.call('credentials:set', h.ctx({ agentId: 'agent-A', userId: 'owner' }), {
+      scope: 'agent',
+      ownerId: 'agent-A',
+      ref: 'account:test',
+      kind: 'mcp-oauth',
+      payload: encodeTokenBlob({
+        accessToken: 'stale-AT',
+        refreshToken: 'rt1',
+        tokenType: 'Bearer',
+        expiresAt: PAST,
+        scope: 'read',
+        resource: 'https://mcp.example.com',
+        authServerUrl: 'https://auth.example.com',
+        tokenEndpoint: 'https://auth.example.com/token',
+        clientKey: CLIENT_KEY,
+        clientId: 'issuing-cid',
+        clientSecret: 'issuing-secret',
+      }),
+      expiresAt: PAST,
+    });
+
+    const resolved = await h.bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      h.ctx({ agentId: 'agent-A', userId: 'bob' }),
+      { ref: 'account:test', userId: 'bob' },
+    );
+    expect(resolved).toBe('fresh-AT');
+    expect(recorder.clients).toEqual([{ clientId: 'issuing-cid', clientSecret: 'issuing-secret' }]);
+
+    // The re-stored (refreshed) blob still names its issuing client.
+    const got = await h.bus.call<
+      { scope: 'agent'; ownerId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', h.ctx(), { scope: 'agent', ownerId: 'agent-A', ref: 'account:test' });
+    const plaintext = await h.bus.call<{ ciphertext: Uint8Array }, { plaintext: string }>(
+      'credentials:envelope-decrypt',
+      h.ctx(),
+      { ciphertext: got.blob! },
+    );
+    const env = JSON.parse(plaintext.plaintext) as { payloadB64: string };
+    const stored = decodeTokenBlob(new Uint8Array(Buffer.from(env.payloadB64, 'base64')));
+    expect(stored.refreshToken).toBe('rt2');
+    expect(stored.clientId).toBe('issuing-cid');
+    expect(stored.clientSecret).toBe('issuing-secret');
   });
 });
 
@@ -468,6 +547,11 @@ describe('@ax/mcp-oauth e2e canary — user-scope connect-once reuse across agen
     const storedBlob = decodeTokenBlob(new Uint8Array(Buffer.from(env.payloadB64, 'base64')));
     expect(storedBlob.accessToken).toBe('dave-user-AT');
     expect(storedBlob.refreshToken).toBe('dave-user-RT');
+    // TASK-696: the blob names the client the authorization was started with...
+    expect(storedBlob.clientId).toBe('cid');
+    expect('clientSecret' in storedBlob).toBe(false); // public client
+    // ...and begin/callback wrote nothing to the (legacy, read-only) shared client table.
+    expect(await db.selectFrom('mcp_oauth_v1_clients').selectAll().execute()).toEqual([]);
 
     // (4) User-scope reuse: two DIFFERENT agentIds resolve the same token.
     // The precedence chain (user → agent → global) hits the user-scope row first

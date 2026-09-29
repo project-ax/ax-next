@@ -13,7 +13,7 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { FetchLike } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { assertSafeUrl, type HostResolver, safeFetch } from './ssrf.js';
-import type { ClientRegistration } from './types.js';
+import type { ClientRegistration, OAuthClientCredentials } from './types.js';
 
 /**
  * The MCP SDK's OAuth helpers drive the full authorization-code + PKCE dance, but
@@ -165,7 +165,7 @@ export async function ensureClient(opts: {
  */
 export async function buildAuthorization(opts: {
   metadata: AuthorizationServerMetadata;
-  client: ClientRegistration;
+  client: OAuthClientCredentials;
   redirectUri: string;
   resource: string;
   scope?: string;
@@ -194,7 +194,7 @@ export async function buildAuthorization(opts: {
 /** Exchange an authorization code for tokens (SSRF-guarded token-endpoint hit). */
 export async function redeemCode(opts: {
   metadata: AuthorizationServerMetadata;
-  client: ClientRegistration;
+  client: OAuthClientCredentials;
   code: string;
   codeVerifier: string;
   redirectUri: string;
@@ -221,7 +221,7 @@ export async function redeemCode(opts: {
 /** Exchange a refresh token for fresh tokens (SSRF-guarded token-endpoint hit). */
 export async function refresh(opts: {
   metadata: AuthorizationServerMetadata;
-  client: ClientRegistration;
+  client: OAuthClientCredentials;
   refreshToken: string;
   resource: string;
   allowedHosts: Set<string>;
@@ -268,8 +268,8 @@ function sameResource(a: string, b: string): boolean {
   }
 }
 
-/** Adapt our stored registration into the SDK's `OAuthClientInformation` shape. */
-function toClientInformation(client: ClientRegistration): OAuthClientInformation {
+/** Adapt our client credentials into the SDK's `OAuthClientInformation` shape. */
+function toClientInformation(client: OAuthClientCredentials): OAuthClientInformation {
   return {
     client_id: client.clientId,
     ...(client.clientSecret !== undefined ? { client_secret: client.clientSecret } : {}),

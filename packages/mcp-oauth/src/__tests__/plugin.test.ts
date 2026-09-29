@@ -127,17 +127,24 @@ describe('@ax/mcp-oauth plugin init (mountRoutes:false)', () => {
     );
     const store = createMcpOAuthStore(db);
 
-    // mcp_oauth_v1_clients
-    await store.putClient({
-      clientKey: 'c|https://auth.example.com',
-      clientId: 'cid',
-      clientSecret: undefined,
-      dynamic: true,
-    });
+    // mcp_oauth_v1_clients — a READ-ONLY legacy fallback: the store can no longer
+    // write it, so seed a row directly (as the pre-TASK-696 code would have) and
+    // prove the migrated table lines up with what `getClient` reads.
+    await db
+      .insertInto('mcp_oauth_v1_clients')
+      .values({
+        client_key: 'c|https://auth.example.com',
+        client_id: 'cid',
+        client_secret: null,
+        dynamic: true,
+        created_at: new Date(),
+      })
+      .execute();
     const client = await store.getClient('c|https://auth.example.com');
     expect(client?.clientId).toBe('cid');
 
-    // mcp_oauth_v1_pending
+    // mcp_oauth_v1_pending — including the client_id / client_secret columns the
+    // migration adds (a token is redeemed as the client its authorization started with).
     await store.putPending({
       state: 'st1',
       userId: 'u',
@@ -147,12 +154,17 @@ describe('@ax/mcp-oauth plugin init (mountRoutes:false)', () => {
       codeVerifier: 'cv',
       authServerUrl: 'https://auth.example.com',
       clientKey: 'c|https://auth.example.com',
+      clientId: 'pending-cid',
+      clientSecret: 'pending-secret',
       resource: 'https://mcp.example.com',
       scope: 'read',
+      credScope: 'agent',
       createdAt: Date.now(),
     });
     const pending = await store.getPending('st1');
     expect(pending?.userId).toBe('u');
+    expect(pending?.clientId).toBe('pending-cid');
+    expect(pending?.clientSecret).toBe('pending-secret');
   });
 });
 

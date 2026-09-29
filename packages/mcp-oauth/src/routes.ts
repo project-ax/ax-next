@@ -12,13 +12,14 @@ import {
   clientKeyOf,
   encodeTokenBlob,
   type McpOAuthTokenBlob,
+  type OAuthClientCredentials,
   type PendingAuthorization,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
 // The OAuth begin/callback HTTP routes — the security lynchpin of the MCP-OAuth
-// flow. Three things must hold or a token can be bound to the wrong agent / a
-// CSRF'd victim:
+// flow. These must hold or a token can be bound to the wrong agent / a CSRF'd
+// victim / a client that can't refresh it:
 //
 //   1. CSRF binding. `state` is server-generated, single-use, TTL'd, and bound
 //      to the initiating user at `begin`. `callback` re-checks `pending.userId`
@@ -28,6 +29,13 @@ import {
 //      and a team agent for members — a successful resolve IS the authorization.
 //   3. The vault write only happens after 1+2 pass, with `scope: 'agent'` and a
 //      ref keyed by the connector id.
+//
+//   4. The token is bound to the OAuth client it was ISSUED to. `begin` records
+//      the client it started the authorization with on the pending row; `callback`
+//      redeems the code as that client and writes it into the token blob, so the
+//      resolver later refreshes as the same client. (`begin` re-registers a
+//      dynamic client every time, so "the client for this connector" is not a
+//      stable thing to look up later — only the token's own client is.)
 //
 // We NEVER log the authorization code, tokens, code_verifier, or client secret.
 // Error responses carry only neutral codes (and, for discovery, an error
@@ -323,7 +331,16 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         ...(pinned !== undefined ? { pinned } : {}),
         allowedHosts,
       });
-      await store.putClient(client);
+
+      // Housekeeping BEFORE the new row goes in: a pending row past the TTL can
+      // never be redeemed, and it may hold a confidential client's secret in
+      // plaintext — an abandoned authorization must not keep it forever. Best-
+      // effort by design: a purge failure must never fail a begin.
+      try {
+        await store.purgeExpiredPending(now() - pendingTtlMs);
+      } catch (err) {
+        logger.warn('mcp_oauth_begin_purge_failed', errFields(err));
+      }
 
       const state = genState();
       const { authorizationUrl, codeVerifier } = await flow.buildAuthorization({
@@ -345,6 +362,12 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         codeVerifier,
         authServerUrl,
         clientKey,
+        // The client THIS authorization was started with. The callback redeems the
+        // code as it, and the token blob records it, so the token is refreshed by
+        // the client it was issued to — never by whichever client a later begin
+        // registered for the same connector|authServer.
+        clientId: client.clientId,
+        ...(client.clientSecret !== undefined ? { clientSecret: client.clientSecret } : {}),
         resource,
         scope,
         credScope,
@@ -443,29 +466,41 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
     const allowedHosts = new Set(connector.capabilities.allowedHosts);
 
-    // Client-registration lookup. A throw is a DB/server fault; a null is a
-    // server-state inconsistency. Both are SERVER faults → log + clean redirect
-    // (uniform with the other post-state failures, per the review).
-    let client;
-    try {
-      client = await store.getClient(pending.clientKey);
-    } catch (err) {
-      logger.error('mcp_oauth_callback_failed', {
-        stage: 'getClient',
-        connectorId: pending.connectorId,
-        ...errFields(err),
-      });
-      res.redirect(returnUrl(pending.connectorId, 'error'));
-      return;
-    }
-    if (!client) {
-      logger.error('mcp_oauth_callback_failed', {
-        stage: 'getClient',
-        connectorId: pending.connectorId,
-        reason: 'client_registration_missing',
-      });
-      res.redirect(returnUrl(pending.connectorId, 'error'));
-      return;
+    // The OAuth client to redeem the code as: the one this authorization was
+    // STARTED with, carried on the pending row. (Redeeming as any other client
+    // makes a strict authorization server answer `invalid_grant` — RFC 6749 §4.1.3
+    // binds the code to the client it was issued to.) Only a row written before
+    // TASK-696 (an authorization in flight across the deploy) has no client of its
+    // own; that one falls back to the shared row via its legacy `clientKey`.
+    let client: OAuthClientCredentials;
+    if (pending.clientId !== undefined) {
+      client = { clientId: pending.clientId, clientSecret: pending.clientSecret };
+    } else {
+      // Legacy lookup. A throw is a DB/server fault; a null is a server-state
+      // inconsistency. Both are SERVER faults → log + clean redirect (uniform with
+      // the other post-state failures, per the review).
+      let legacy;
+      try {
+        legacy = await store.getClient(pending.clientKey);
+      } catch (err) {
+        logger.error('mcp_oauth_callback_failed', {
+          stage: 'getClient',
+          connectorId: pending.connectorId,
+          ...errFields(err),
+        });
+        res.redirect(returnUrl(pending.connectorId, 'error'));
+        return;
+      }
+      if (!legacy) {
+        logger.error('mcp_oauth_callback_failed', {
+          stage: 'getClient',
+          connectorId: pending.connectorId,
+          reason: 'client_registration_missing',
+        });
+        res.redirect(returnUrl(pending.connectorId, 'error'));
+        return;
+      }
+      client = legacy;
     }
 
     // Discovery is a server-side metadata fetch; a failure here is a server/
@@ -524,7 +559,12 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       resource: pending.resource,
       authServerUrl: pending.authServerUrl,
       tokenEndpoint: metadata.token_endpoint,
+      // `clientKey` stays only as the legacy index for readers that predate the
+      // per-token client; the client that redeemed this code — and so the only
+      // one that may refresh it — rides on the blob itself.
       clientKey: pending.clientKey,
+      clientId: client.clientId,
+      ...(client.clientSecret !== undefined ? { clientSecret: client.clientSecret } : {}),
     };
 
     // The vault write. A throw is a SERVER/DB fault (NOT "OAuth failed") → log
