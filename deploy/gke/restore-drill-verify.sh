@@ -44,6 +44,21 @@ fail() {
 ok() { echo "ok:   $*"; }
 warn() { echo "warn: $*"; }
 
+# Every git call in this file goes through here. The repositories on the disk
+# are written by agents, so their contents and their own config are untrusted:
+# this is a read-only check, and nothing a repository says may make git run a
+# program. `fsck` and `log` on a bare repo do not consult these settings today;
+# they are switched off anyway so that stays true if git changes.
+#   safe.directory   the copy is owned by whoever wrote it in production, and the
+#                    ownership guard would only get in the way of a disposable disk
+#   core.fsmonitor / core.hooksPath / core.pager   no helper programs
+#   GIT_CONFIG_NOSYSTEM, GIT_TERMINAL_PROMPT       no system config, no prompts
+safe_git() {
+  GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git \
+    -c safe.directory='*' -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat \
+    "$@"
+}
+
 # ── Workspace disk: the git repos ─────────────────────────────────────────────
 echo "== workspace disk ($WS)"
 if [ ! -d "$WS" ]; then
@@ -65,11 +80,8 @@ else
     for repo in $repos; do
       [ "$checked" -lt "$MAX_REPOS" ] || break
       checked=$((checked + 1))
-      # safe.directory: the copy is owned by whoever wrote it in production.
-      # These are read-only checks on a disposable disk, so the ownership guard
-      # would only get in the way.
-      if out=$(git -c safe.directory='*' --git-dir="$repo" fsck --connectivity-only --no-progress 2>&1); then
-        newest=$(git -c safe.directory='*' --git-dir="$repo" log -1 --all --format='%h %cI' 2>/dev/null || true)
+      if out=$(safe_git --git-dir="$repo" fsck --connectivity-only --no-progress 2>&1); then
+        newest=$(safe_git --git-dir="$repo" log -1 --all --format='%h %cI' 2>/dev/null || true)
         ok "$(basename "$repo") fsck clean${newest:+ (newest commit $newest)}"
       else
         fail "$(basename "$repo") fsck failed: $(printf '%s' "$out" | head -3 | tr '\n' ' ')"

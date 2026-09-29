@@ -53,6 +53,21 @@ case "$rest" in
   "get deployment ax-next-host -o jsonpath={.spec.template.spec.containers[0].image}")
     echo "example.invalid/ax-next/agent:v1"
     ;;
+  "get pv -l "*" -o name")
+    # Selector ignored on purpose: hand back every PV the drill applied plus any
+    # look-alikes a test planted, and let the script's own name-prefix guard decide.
+    [ -z "${STUB_GET_PV_FAILS:-}" ] || {
+      echo "Error from server (Forbidden): stub refuses to list volumes" >&2
+      exit 1
+    }
+    for f in "$STUB_STATE"/applied-*.yaml; do
+      [ -f "$f" ] || continue
+      if grep -q '^kind: PersistentVolume$' "$f"; then
+        echo "persistentvolume/$(awk '/^  name:/ { print $2; exit }' "$f")"
+      fi
+    done
+    if [ -f "$STUB_STATE/pvs" ]; then cat "$STUB_STATE/pvs"; fi
+    ;;
   "get namespace "*)
     # Only the live namespace exists, unless a test says the drill's does too.
     if [ "$rest" = "get namespace ax-next" ] || [ -n "${STUB_NS_EXISTS:-}" ]; then

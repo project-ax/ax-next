@@ -151,6 +151,11 @@ case "$w" in
     case "$format" in
       "value(state)") echo RUNNABLE ;;
       "value(settings.deletionProtectionEnabled)")
+        # STUB_SQL_DP_READ_FAILS_AFTER_PATCH: the read that follows the patch is refused.
+        if [ -n "${STUB_SQL_DP_READ_FAILS_AFTER_PATCH:-}" ] && [ -f "$STUB_STATE/sql-dp" ]; then
+          echo "ERROR: (gcloud.sql.instances.describe) stub transient failure" >&2
+          exit 1
+        fi
         if [ -f "$STUB_STATE/sql-dp" ]; then echo True; fi
         ;;
       "value(settings.backupConfiguration.enabled)") echo "${STUB_SQL_BACKUPS-True}" ;;

@@ -750,13 +750,17 @@ What it does, in order (so you can do it by hand if the script is unavailable):
    `--workspace-snapshot` and `--facts-snapshot`) and prints when it was taken.
 2. `gcloud compute disks create` a scratch disk from each, named
    `ax-restore-drill-<workspace|facts>-<timestamp>` and labelled `ax_restore_drill`.
-3. Creates the namespace `ax-restore-drill`, a ConfigMap holding
+3. Creates the namespace `ax-restore-drill` (Pod Security level `restricted`) unless
+   it already exists, a ConfigMap holding
    [`gke/restore-drill-verify.sh`](gke/restore-drill-verify.sh), and for each scratch
    disk a PersistentVolume (pinned to the disk's zone, `Retain`) and a claim.
 4. Starts one pod, running the same image as the host, as UID 1000 with a read-only
-   root filesystem and no network need. It runs the checks and exits.
-5. Prints the pod's report and the verdict, deletes the pod, claims, volumes and
-   scratch disks, and prints how long each stage took.
+   root filesystem. The restored repositories were written by agents, so they are
+   treated as untrusted: the pod gets a deny-all NetworkPolicy (it needs no network;
+   the node pulls the image), and every `git` call it makes switches off hooks,
+   filesystem monitors and pagers. It runs the checks and exits.
+5. Prints the pod's report and the verdict, deletes the pod, policy, claims, volumes
+   and scratch disks, and prints how long each stage took.
 
 **PASS** means: at least one `ws-*.git` repo, every one checked (up to 25, newest
 first) passes `git fsck`; and `facts.db` opens, passes `integrity_check`, and has
@@ -765,10 +769,13 @@ facts in it, an empty copy is wrong. **FAIL** exits 1 and the report says which
 check.
 
 If the drill dies half way (your laptop sleeps, you hit Ctrl-C twice), it may leave
-scratch disks behind. `bash deploy/gke/backups.sh drill-cleanup --project $PROJECT_ID`
-removes anything carrying the drill's label *and* its name prefix, and nothing else.
+scratch disks behind. `bash deploy/gke/backups.sh drill-cleanup` removes what the drill
+made: disks and volumes only if they carry the drill's label *and* its name prefix,
+and everything else only by the drill's label inside the drill's namespace. Nothing
+else. Add `--project $PROJECT_ID` and it also works when the deployment (and so its
+claims) no longer exists, which is exactly when forgotten scratch disks get expensive.
 `drill --keep` skips the cleanup on purpose, if you want to poke at the restored
-disks; run `drill-cleanup` when you're done.
+disks; run `drill-cleanup` (with the same `--drill-namespace`) when you're done.
 
 Record every drill here, including the ones that fail:
 

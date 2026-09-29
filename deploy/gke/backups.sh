@@ -25,9 +25,11 @@
 #                 a throwaway pod in its own namespace, runs the checks in
 #                 restore-drill-verify.sh, then deletes everything it made. The
 #                 production disks are never attached to the drill pod.
-#   drill-cleanup Deletes leftovers of a drill that died half way. It only
-#                 touches objects carrying the label `ax-restore-drill` (disks:
-#                 `ax_restore_drill`) AND named ax-restore-drill-*.
+#   drill-cleanup Deletes leftovers of a drill that died half way. Disks and
+#                 PersistentVolumes need the drill's label (`ax_restore_drill` on
+#                 disks, `ax-restore-drill` on everything else) AND a name
+#                 starting ax-restore-drill-; namespaced objects are selected by
+#                 the label inside the drill namespace.
 #
 # HOW IT FINDS THINGS. Nothing about a particular deployment is written in this
 # file (the repo is public). The disks come from the cluster at run time:
@@ -43,6 +45,8 @@
 #   Re-running    is safe. Every step checks before it writes.
 #   --project     is an ASSERTION, not a selector: if you pass it and the disks
 #                 live in a different project, the script stops before writing.
+#                 (The one exception is drill-cleanup, which then names the
+#                 project itself and skips looking the disks up.)
 #   --context     defaults to your CURRENT kubectl context; the script prints it
 #                 first, and every kubectl call after that names it explicitly,
 #                 so switching context in another terminal cannot redirect it.
@@ -88,6 +92,7 @@ OPT_facts_snapshot=""
 PROJECT=""
 RUN_ID=""
 PROBLEMS=0
+DISCOVERED=0 # 1 once the disks have been found from the PVCs
 STAGES=""
 # Tests set this to 0 so the stubbed cluster does not make them sleep.
 POLL_SECONDS="${AX_BACKUPS_POLL_SECONDS:-5}"
@@ -131,7 +136,8 @@ Commands
   drill           Restore the newest snapshot of each disk to scratch disks,
                   mount them in a throwaway pod, check the git repos and
                   facts.db open, then delete everything it made.
-  drill-cleanup   Remove anything a drill left behind.
+  drill-cleanup   Remove anything a drill left behind. Pass --project ID and it
+                  works even when the deployment (and so its PVCs) is gone.
 
 Options
   --dry-run              Change nothing; print every write that would happen.
@@ -405,6 +411,7 @@ discover_all() {
     setv "V_${kind}_size" "$size"
     setv "V_${kind}_type" "$dtype"
   done
+  DISCOVERED=1
 }
 
 kv() { printf '    %-16s: %s\n' "$1" "$2"; }
@@ -418,10 +425,14 @@ banner() {
   kv "namespace" "$NAMESPACE"
   kv "gcloud account" "${account:-unknown}"
   kv "gcloud project" "$PROJECT"
-  for kind in $KINDS; do
-    kv "$kind disk" "$(getv "V_${kind}_disk")  ($(getv "V_${kind}_zone"), $(getv "V_${kind}_size") GB, $(getv "V_${kind}_type"))  <- PVC $NAMESPACE/$(pvc_for "$kind")"
-  done
-  kv "Cloud SQL" "$SQL_INSTANCE"
+  if [ "$DISCOVERED" = 1 ]; then
+    for kind in $KINDS; do
+      kv "$kind disk" "$(getv "V_${kind}_disk")  ($(getv "V_${kind}_zone"), $(getv "V_${kind}_size") GB, $(getv "V_${kind}_type"))  <- PVC $NAMESPACE/$(pvc_for "$kind")"
+    done
+    kv "Cloud SQL" "$SQL_INSTANCE"
+  else
+    kv "disks" "not looked up (the project came from --project)"
+  fi
 }
 
 region_of() { printf '%s' "${1%-*}"; }
@@ -528,12 +539,17 @@ sql_report() {
 }
 
 sql_enable() {
+  local after
   SQL_DP_OFF=0
   sql_report
   if [ "$SQL_DP_OFF" = 1 ]; then
     run_write "${GC[@]}" sql instances patch "$SQL_INSTANCE" --deletion-protection --quiet
     if [ "$DRY_RUN" != 1 ]; then
-      is_true "$(sql_get settings.deletionProtectionEnabled)" ||
+      # Not sql_get: that one swallows errors, and this is the one read whose
+      # whole job is to say whether the write took.
+      after="$("${GC[@]}" sql instances describe "$SQL_INSTANCE" --format='value(settings.deletionProtectionEnabled)')" ||
+        fail "asked Cloud SQL to turn deletion protection on, but could not read the setting back to check. Run: bash deploy/gke/backups.sh status"
+      is_true "$after" ||
         fail "asked Cloud SQL to turn deletion protection on, but it still reads back as off"
       note "  deletion protection : now ON"
     fi
@@ -691,6 +707,28 @@ metadata:
   name: ${DRILL_NAMESPACE}
   labels:
     ax-restore-drill-home: "true"
+    pod-security.kubernetes.io/enforce: restricted
+EOF
+}
+
+# The restored repositories are written by agents, so they are untrusted. The
+# pod has no use for a network (the image is pulled by the node), so give it
+# none. The selector is our pod's own label: this is safe to apply in ANY
+# namespace, including the live one, because no other pod carries it.
+manifest_networkpolicy() {
+  cat <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ax-restore-drill-deny-all
+  namespace: ${DRILL_NAMESPACE}
+  labels:
+    ax-restore-drill: "${RUN_ID}"
+spec:
+  podSelector:
+    matchLabels:
+      ax-restore-drill: "${RUN_ID}"
+  policyTypes: ["Ingress", "Egress"]
 EOF
 }
 
@@ -858,11 +896,24 @@ fetch_logs() {
 # (once the disks have detached) the scratch disks. <which> is a run id, or
 # `all` for every leftover. Only ever selects by our own label.
 cleanup_drill() {
-  local which="$1" sel rc=0 out name zone rid i users
+  local which="$1" sel rc=0 out pvs pv name zone rid i users
   if [ "$which" = all ]; then sel="ax-restore-drill"; else sel="ax-restore-drill=$which"; fi
   step "Cleaning up drill leftovers ($which)"
-  run_soft "${KC[@]}" -n "$DRILL_NAMESPACE" delete pod,pvc,configmap -l "$sel" --ignore-not-found --wait=true || rc=1
-  run_soft "${KC[@]}" delete pv -l "$sel" --ignore-not-found --wait=true || rc=1
+  run_soft "${KC[@]}" -n "$DRILL_NAMESPACE" delete pod,pvc,configmap,networkpolicy -l "$sel" --ignore-not-found --wait=true || rc=1
+  # PersistentVolumes are cluster-wide, so they get the same two guards as the
+  # disks: our label (the selector) AND our name prefix (checked here).
+  if pvs="$("${KC[@]}" get pv -l "$sel" -o name)"; then
+    while IFS= read -r pv; do
+      [ -n "$pv" ] || continue
+      case "$pv" in
+        persistentvolume/ax-restore-drill-* | pv/ax-restore-drill-*) run_soft "${KC[@]}" delete "$pv" --ignore-not-found --wait=true || rc=1 ;;
+        *) warn "not deleting $pv: it carries our label but not our name prefix" ;;
+      esac
+    done <<<"$pvs"
+  else
+    warn "could not list the drill's PersistentVolumes"
+    rc=1
+  fi
   out="$("${GC[@]}" compute disks list --filter='labels.ax_restore_drill:*' --format='value(name,zone.basename(),labels.ax_restore_drill)' 2>&1)" || {
     warn "could not list scratch disks: $out"
     return 1
@@ -893,9 +944,9 @@ on_exit() {
     if [ "$KEEP" = 1 ]; then
       step "--keep: leaving the drill in place"
       note "namespace $DRILL_NAMESPACE, pod ax-restore-drill, disks named $(scratch_disk workspace) and $(scratch_disk facts)"
-      note "Remove it with: bash deploy/gke/backups.sh drill-cleanup --context $CONTEXT"
+      note "Remove it with: bash deploy/gke/backups.sh drill-cleanup --context $CONTEXT --drill-namespace $DRILL_NAMESPACE"
     elif ! cleanup_drill "$RUN_ID"; then
-      warn "cleanup did not finish. Scratch disks cost money. Run: bash deploy/gke/backups.sh drill-cleanup --context $CONTEXT"
+      warn "cleanup did not finish. Scratch disks cost money. Run: bash deploy/gke/backups.sh drill-cleanup --context $CONTEXT --drill-namespace $DRILL_NAMESPACE"
       [ "$rc" -ne 0 ] || rc=1
     fi
   fi
@@ -947,6 +998,7 @@ cmd_drill() {
     manifest_pv "$kind" | apply_manifest "volume for the restored $kind disk"
     manifest_pvc "$kind" | apply_manifest "claim for the restored $kind disk"
   done
+  manifest_networkpolicy | apply_manifest "a deny-all network policy for the checking pod"
   manifest_pod | apply_manifest "the checking pod"
 
   if [ "$DRY_RUN" = 1 ]; then
@@ -995,7 +1047,17 @@ cmd_drill() {
 }
 
 cmd_drill_cleanup() {
-  discover_all
+  if [ -n "$ASSERT_PROJECT" ]; then
+    # Cleanup only ever deletes objects carrying the drill's own label and name
+    # prefix, so it does not need the live PVCs to know where it is. Naming the
+    # project lets it work when they are gone (a deleted deployment is exactly
+    # when scratch disks get forgotten).
+    resolve_context
+    PROJECT="$ASSERT_PROJECT"
+    GC=(gcloud --project "$PROJECT")
+  else
+    discover_all
+  fi
   banner
   cleanup_drill all || fail "cleanup did not finish"
   if [ "$DRY_RUN" = 1 ]; then step "Dry run finished: nothing was changed."; else step "Done"; fi

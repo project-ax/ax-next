@@ -299,6 +299,14 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       expect(r.out).toContain('will not expire on their own');
     });
 
+    it('fails, and says so honestly, when it cannot read the setting back after the patch', () => {
+      // A blip on the read-back is not "still off": the write may well have worked.
+      const r = run(shell, ['enable'], { STUB_SQL_DP_READ_FAILS_AFTER_PATCH: '1' });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('could not read the setting back to check');
+      expect(r.out).not.toContain('still reads back as off');
+    });
+
     it('fails loudly if Cloud SQL still reads as unprotected after the patch', () => {
       const r = run(shell, ['enable'], { STUB_SQL_PATCH_IS_NOOP: '1' });
       expect(r.status).toBe(1);
@@ -496,9 +504,11 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
         'apply', // pvc (workspace)
         'apply', // pv (facts)
         'apply', // pvc (facts)
+        'apply', // deny-all network policy
         'apply', // pod
-        'kdelete', // pod,pvc,configmap
-        'kdelete', // pv
+        'kdelete', // pod,pvc,configmap,networkpolicy
+        'kdelete', // pv (workspace)
+        'kdelete', // pv (facts)
         'disk-delete',
         'disk-delete',
       ]);
@@ -510,7 +520,11 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       // No scratch disk left in the pretend cloud.
       expect(stateFiles().filter((f) => f.startsWith('scratch-'))).toEqual([]);
       // The cleanup names its own run, never a bare "delete everything".
-      expect(r.writes.find((w) => w.includes(' delete pod,pvc,configmap'))).toMatch(/-l ax-restore-drill=\d{8}-\d{6}/);
+      expect(r.writes.find((w) => w.includes(' delete pod,pvc,configmap,networkpolicy'))).toMatch(/-l ax-restore-drill=\d{8}-\d{6}/);
+      // PersistentVolumes are deleted one by one, by the names the drill created.
+      const pvDeletes = r.writes.filter((w) => / delete persistentvolume\//.test(w));
+      expect(pvDeletes).toHaveLength(2);
+      for (const d of pvDeletes) expect(d).toMatch(/delete persistentvolume\/ax-restore-drill-(workspace|facts)-\d{8}-\d{6} /);
     });
 
     it('NEVER attaches a production disk: no volume, claim or command names one', () => {
@@ -568,6 +582,24 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       );
     });
 
+    it('gives the checking pod no network and a restricted namespace: restored repos are untrusted', () => {
+      readyToDrill();
+      const r = run(shell, ['drill']);
+      const ns = r.applied.find((m) => m.kind === 'Namespace');
+      expect(ns.metadata.labels['pod-security.kubernetes.io/enforce']).toBe('restricted');
+      const np = r.applied.find((m) => m.kind === 'NetworkPolicy');
+      expect(np.spec.policyTypes.sort()).toEqual(['Egress', 'Ingress']);
+      // No rules at all => deny everything...
+      expect(np.spec.ingress).toBeUndefined();
+      expect(np.spec.egress).toBeUndefined();
+      // ...and it selects ONLY our pod, so it is safe in any namespace, including the live one.
+      const pod = r.applied.find((m) => m.kind === 'Pod');
+      expect(np.spec.podSelector).toEqual({ matchLabels: { 'ax-restore-drill': pod.metadata.labels['ax-restore-drill'] } });
+      expect(Object.keys(np.spec.podSelector.matchLabels)).toEqual(['ax-restore-drill']);
+      // The policy exists before the pod does.
+      expect(r.applied.map((m) => m.kind).indexOf('NetworkPolicy')).toBeLessThan(r.applied.map((m) => m.kind).indexOf('Pod'));
+    });
+
     it('a FAILING drill exits 1, shows why, and still cleans up', () => {
       readyToDrill();
       writeFileSync(podLogs, 'FAIL: ws-x.git fsck failed: missing blob\nDRILL-RESULT: FAIL 1 check(s) failed\n');
@@ -621,13 +653,13 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       expect(r.writes).toEqual([]);
     });
 
-    it('--keep leaves everything in place and says how to remove it', () => {
+    it('--keep leaves everything in place and says how to remove it, namespace included', () => {
       readyToDrill();
-      const r = run(shell, ['drill', '--keep']);
+      const r = run(shell, ['drill', '--keep', '--drill-namespace', 'ax-next']);
       expect(r.status).toBe(0);
       expect(r.writes.filter((w) => w.includes('disks delete') || w.includes(' delete '))).toEqual([]);
       expect(stateFiles().filter((f) => f.startsWith('scratch-'))).toHaveLength(2);
-      expect(r.out).toContain('drill-cleanup');
+      expect(r.out).toContain(`drill-cleanup --context ${CTX} --drill-namespace ax-next`);
     });
 
     it('reports a cleanup that could not finish, and how to finish it, without hiding a PASS', () => {
@@ -681,6 +713,7 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
         'PersistentVolumeClaim',
         'PersistentVolume',
         'PersistentVolumeClaim',
+        'NetworkPolicy',
         'Pod',
       ]);
       // The claims land next to the live ones (a pod can only mount its own namespace's claims).
@@ -689,7 +722,7 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       }
       // ...and the cleanup is scoped to this run's label even there, never the whole namespace.
       const del = r.writes.find((w) => w.includes(' delete pod,pvc,configmap'));
-      expect(del).toContain('-n ax-next delete pod,pvc,configmap -l ax-restore-drill=');
+      expect(del).toContain('-n ax-next delete pod,pvc,configmap,networkpolicy -l ax-restore-drill=');
     });
 
     it('uses --image instead of reading the host deployment', () => {
@@ -717,8 +750,45 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       for (const d of deletes) expect(d).toMatch(/disks delete ax-restore-drill-/);
       expect(r.writes.some((w) => w.includes('someones-data-disk'))).toBe(false);
       // Kubernetes side: by label existence, in the drill namespace and for PVs.
-      expect(r.writes.some((w) => / -n ax-restore-drill delete pod,pvc,configmap -l ax-restore-drill /.test(w))).toBe(true);
-      expect(r.writes.some((w) => / delete pv -l ax-restore-drill /.test(w))).toBe(true);
+      expect(r.writes.some((w) => / -n ax-restore-drill delete pod,pvc,configmap,networkpolicy -l ax-restore-drill /.test(w))).toBe(true);
+    });
+
+    it('deletes leftover PersistentVolumes one by one, and only those with the drill name prefix', () => {
+      // Carries our label (the stub ignores selectors) but not our name: hands off.
+      writeFileSync(join(stateDir, 'pvs'), 'persistentvolume/somebodys-volume\npersistentvolume/ax-restore-drill-workspace-20260929-101500\n');
+      const r = run(shell, ['drill-cleanup']);
+      expect(r.status).toBe(0);
+      const pvDeletes = r.writes.filter((w) => / delete persistentvolume\//.test(w));
+      expect(pvDeletes).toHaveLength(1);
+      expect(pvDeletes[0]).toContain('persistentvolume/ax-restore-drill-workspace-20260929-101500');
+      expect(r.writes.some((w) => w.includes('somebodys-volume'))).toBe(false);
+      expect(r.out).toContain('not deleting persistentvolume/somebodys-volume');
+    });
+
+    it('reports, and exits 1, when it cannot list the volumes to clean', () => {
+      const r = run(shell, ['drill-cleanup'], { STUB_GET_PV_FAILS: '1' });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain("could not list the drill's PersistentVolumes");
+    });
+
+    it('with --project it works after the deployment is gone: no PVC lookup at all', () => {
+      seed.scratch('ax-restore-drill-workspace-20260929-101500', 'us-central1-a', '20260929-101500');
+      // The claims are gone (a deleted deployment is exactly when scratch disks get forgotten).
+      const r = run(shell, ['drill-cleanup', '--project', PROJECT], { STUB_PVC_MISSING: '1' });
+      expect(r.status).toBe(0);
+      expect(r.log.some((l) => l.includes('get pvc'))).toBe(false);
+      expect(r.out).toContain('not looked up (the project came from --project)');
+      expectPinned(r);
+      const deletes = r.writes.filter((w) => w.includes('disks delete'));
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]).toContain(`--project ${PROJECT} compute disks delete ax-restore-drill-workspace-20260929-101500`);
+    });
+
+    it('without --project it still needs the PVCs, and says why it stopped', () => {
+      const r = run(shell, ['drill-cleanup'], { STUB_PVC_MISSING: '1' });
+      expect(r.status).toBe(2);
+      expect(r.out).toContain('cannot read PVC');
+      expect(r.writes).toEqual([]);
     });
 
     it('is not confused by a notice on stderr while listing disks', () => {

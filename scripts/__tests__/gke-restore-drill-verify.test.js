@@ -13,6 +13,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -226,6 +227,33 @@ describe.each(['sh', ...(HAS_DASH ? ['dash'] : [])])('restore-drill-verify.sh un
     expect(r.out).not.toContain('memory_facts_fts: ');
     expect(r.out).not.toContain('FAIL');
     expect(r.status).toBe(0);
+  });
+
+  it('never lets a restored repository make git run a program: every git call carries the lockdown flags', () => {
+    // The repos are written by agents, so they are untrusted. fsck and log on a
+    // bare repo do not consult these settings today, which is exactly why a
+    // behavioural test would pass either way: check the invocations instead.
+    makeRepo('ws-aaa.git');
+    makeRepo('ws-bbb.git');
+    makeFactsDb();
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).trim();
+    const bin = join(root, 'gitbin');
+    mkdirSync(bin);
+    const calls = join(root, 'git-calls.log');
+    writeFileSync(
+      join(bin, 'git'),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\nexec "${realGit}" "$@"\n`,
+    );
+    chmodSync(join(bin, 'git'), 0o755);
+    const r = verify({ PATH: `${bin}:${process.env.PATH}` });
+    expect(r.status).toBe(0);
+    const lines = readFileSync(calls, 'utf-8').split('\n').filter(Boolean);
+    expect(lines.length).toBeGreaterThanOrEqual(4); // fsck + log, for two repos
+    for (const l of lines) {
+      expect(l).toContain('core.hooksPath=/dev/null');
+      expect(l).toContain('core.fsmonitor=false');
+      expect(l).toContain('core.pager=cat');
+    }
   });
 
   it('checks only MAX_REPOS repositories but still counts them all', () => {

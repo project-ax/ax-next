@@ -73,9 +73,10 @@ describe('the backup runbook quotes the script, not its memory of it', () => {
   it('creates the database the way the runbook says it is protected (Step 1b)', () => {
     // The "14 kept" and "7 days" claims in the table are only true if a fresh
     // install creates the instance with these flags.
-    const days = constant('DEFAULT_RETENTION_DAYS');
+    // The database's own retention is a separate number from the disk snapshots'
+    // (both happen to be 14), so it is pinned here on its own.
     expect(gke).toContain('--enable-point-in-time-recovery');
-    expect(gke).toContain(`--retained-backups-count=${days}`);
+    expect(gke).toContain('--retained-backups-count=14');
     expect(backupSection()).toContain('automated backup (14 kept)');
   });
 
