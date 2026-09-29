@@ -16,6 +16,8 @@
 set -u
 : "${STUB_LOG:?}" "${STUB_STATE:?}"
 printf 'gcloud %s\n' "$*" >>"$STUB_LOG"
+# STUB_NOTICE: the real CLI adds "update available" notices on stderr, even on success.
+[ -z "${STUB_NOTICE:-}" ] || echo "Updates are available for some Google Cloud CLI components." >&2
 
 zone=""
 region=""

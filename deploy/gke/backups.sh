@@ -430,10 +430,15 @@ region_of() { printf '%s' "${1%-*}"; }
 ENSURED_REGIONS=" "
 
 ensure_policy() {
-  local region="$1" out rc=0 got_days got_time
+  local region="$1" out err errfile rc=0 got_days got_time
   case "$ENSURED_REGIONS" in *" $region "*) return 0 ;; esac
   ENSURED_REGIONS="$ENSURED_REGIONS$region "
-  out="$("${GC[@]}" compute resource-policies describe "$SCHEDULE_NAME" --region "$region" --format='value(snapshotSchedulePolicy.retentionPolicy.maxRetentionDays,snapshotSchedulePolicy.schedule.dailySchedule.startTime)' 2>&1)" || rc=$?
+  # stdout and stderr apart: on success gcloud may still add an "update available"
+  # notice on stderr, and that must not end up in the values we compare.
+  errfile="$(mktemp)"
+  out="$("${GC[@]}" compute resource-policies describe "$SCHEDULE_NAME" --region "$region" --format='value(snapshotSchedulePolicy.retentionPolicy.maxRetentionDays,snapshotSchedulePolicy.schedule.dailySchedule.startTime)' 2>"$errfile")" || rc=$?
+  err="$(cat "$errfile")"
+  rm -f "$errfile"
   if [ "$rc" -eq 0 ]; then
     # Tab-separated: days, then start time.
     got_days="${out%%"$TAB"*}"
@@ -444,9 +449,9 @@ ensure_policy() {
     fi
     return 0
   fi
-  case "$out" in
+  case "$err" in
     *"was not found"* | *"not found"*) : ;;
-    *) die "could not look up schedule $SCHEDULE_NAME in $region: $out" ;;
+    *) die "could not look up schedule $SCHEDULE_NAME in $region: $err" ;;
   esac
   note "creating schedule $SCHEDULE_NAME in $region: daily at $START_TIME UTC, keep $RETENTION_DAYS days"
   run_write "${GC[@]}" compute resource-policies create snapshot-schedule "$SCHEDULE_NAME" \

@@ -270,6 +270,16 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       expect(r.out).toContain('differs from what was asked for');
     });
 
+    it('is not confused by the update notices gcloud prints on stderr, even on success', () => {
+      const first = run(shell, ['enable'], { STUB_NOTICE: '1' });
+      expect(first.status).toBe(0);
+      writeFileSync(logFile, '');
+      const second = run(shell, ['enable'], { STUB_NOTICE: '1' });
+      expect(second.status).toBe(0);
+      expect(second.writes).toEqual([]);
+      expect(second.out).not.toContain('differs from what was asked for');
+    });
+
     it('honours --schedule-name, --retention-days and --start-time', () => {
       const r = run(shell, ['enable', '--schedule-name', 'nightly', '--retention-days', '30', '--start-time', '03:00']);
       expect(r.status).toBe(0);
@@ -709,6 +719,15 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       // Kubernetes side: by label existence, in the drill namespace and for PVs.
       expect(r.writes.some((w) => / -n ax-restore-drill delete pod,pvc,configmap -l ax-restore-drill /.test(w))).toBe(true);
       expect(r.writes.some((w) => / delete pv -l ax-restore-drill /.test(w))).toBe(true);
+    });
+
+    it('is not confused by a notice on stderr while listing disks', () => {
+      seed.scratch('ax-restore-drill-workspace-20260929-101500', 'us-central1-a', '20260929-101500');
+      const r = run(shell, ['drill-cleanup'], { STUB_NOTICE: '1' });
+      expect(r.status).toBe(0);
+      const deletes = r.writes.filter((w) => w.includes('disks delete'));
+      expect(deletes).toHaveLength(1);
+      expect(deletes[0]).toContain('ax-restore-drill-workspace-20260929-101500');
     });
 
     it('--dry-run lists what it would remove and removes nothing', () => {
