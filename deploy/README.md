@@ -131,7 +131,7 @@ The commands below assume release `ax-next` in namespace `ax-next`, which is wha
 
 **The order matters.** First we switch, then we stop the host, then we erase everything, then we start it again. While the host is down, nothing can re-export or re-record stale memory in the middle of the reset.
 
-**Check which cluster you are pointed at before step 1.** The commands below name no context, so they act on your *current* one, and this runbook scales things to zero and deletes volumes. Run `kubectl config current-context` and read the answer. On kind, add `--context kind-ax-next-dev` to every command; anywhere else, name the context of the cluster you mean. Do not run it against whatever your default happens to be.
+**Check which cluster you are pointed at before step 1.** The blocks labelled **kind** already name `--context kind-ax-next-dev`. Every other command below (the shared ones, and the GKE ones) names no context, so it acts on your *current* one, and this runbook scales things to zero and deletes volumes. Run `kubectl config current-context` and read the answer. On kind, add `--context kind-ax-next-dev` to the shared commands; anywhere else, name the context of the cluster you mean. Do not run it against whatever your default happens to be.
 
 ### Step 1 — Switch the preset
 
@@ -166,7 +166,7 @@ END $$;
 kind:
 
 ```bash
-kubectl -n ax-next exec -i statefulset/ax-next-postgresql -- \
+kubectl --context kind-ax-next-dev -n ax-next exec -i statefulset/ax-next-postgresql -- \
   sh -c 'PGPASSWORD="${POSTGRES_PASSWORD:-$(cat "$POSTGRES_PASSWORD_FILE")}" psql -U ax_next -d ax_next -v ON_ERROR_STOP=1' <<'SQL'
 DROP TABLE IF EXISTS memory_strata_index_v2_docs;
 DO $$ BEGIN
@@ -250,7 +250,7 @@ If you don't use `memory.exports`, drop the `exports` mount, the `exports` volum
 **kind:**
 
 ```bash
-kubectl -n ax-next apply -f - <<'YAML'
+kubectl --context kind-ax-next-dev -n ax-next apply -f - <<'YAML'
 apiVersion: v1
 kind: Pod
 metadata:
@@ -267,12 +267,12 @@ spec:
     - name: facts
       persistentVolumeClaim: { claimName: ax-next-memory-facts }
 YAML
-kubectl -n ax-next wait --for=jsonpath='{.status.phase}'=Succeeded pod/memory-reset --timeout=180s
-kubectl -n ax-next delete pod memory-reset
+kubectl --context kind-ax-next-dev -n ax-next wait --for=jsonpath='{.status.phase}'=Succeeded pod/memory-reset --timeout=180s
+kubectl --context kind-ax-next-dev -n ax-next delete pod memory-reset
 
 # The dev NFS export: deleting the pod empties its emptyDir.
-kubectl -n ax-next delete pod -l app.kubernetes.io/name=ax-next-memory-nfs
-kubectl -n ax-next rollout status deploy/ax-next-memory-nfs
+kubectl --context kind-ax-next-dev -n ax-next delete pod -l app.kubernetes.io/name=ax-next-memory-nfs
+kubectl --context kind-ax-next-dev -n ax-next rollout status deploy/ax-next-memory-nfs
 ```
 
 ### Step 5 — Reset workspace storage (⚠ deletes ALL agents' workspace repos and files)
@@ -282,11 +282,11 @@ Old memory also lives in each agent's workspace repo and its history (`memory/**
 **`workspace.backend: git-protocol` (kind dev).** The repos live on the git-server StatefulSet's volume. We delete its PVCs, one per shard, named after the `volumeClaimTemplate` called `repo`. When the StatefulSet scales back up, it recreates them empty.
 
 ```bash
-kubectl -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-'
-kubectl -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-' \
-  | xargs kubectl -n ax-next delete
-kubectl -n ax-next scale statefulset/ax-next-git-server-experimental --replicas=<gitServer.shards, default 1>
-kubectl -n ax-next rollout status statefulset/ax-next-git-server-experimental
+kubectl --context kind-ax-next-dev -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-'
+kubectl --context kind-ax-next-dev -n ax-next get pvc -o name | grep '^persistentvolumeclaim/repo-ax-next-git-server-experimental-' \
+  | xargs kubectl --context kind-ax-next-dev -n ax-next delete
+kubectl --context kind-ax-next-dev -n ax-next scale statefulset/ax-next-git-server-experimental --replicas=<gitServer.shards, default 1>
+kubectl --context kind-ax-next-dev -n ax-next rollout status statefulset/ax-next-git-server-experimental
 ```
 
 **`workspace.backend: local` (GKE and production; there is no git-server).** The repos are `ws-*.git` directories on the host's workspace PVC, `ax-next-workspace`. **Don't delete that PVC.** It also holds the blob store (`blobs/`, which has attachments and published artifacts) and `skill-bundles/`. We delete only the repos:

@@ -146,6 +146,10 @@ kube-guard:
 	  echo "  This Makefile never falls back to your current context: that is how a bare command reaches the wrong cluster."; \
 	  exit 1; }
 
+# The empty-context check below is a BACKSTOP, not the message you will normally see: make expands a
+# whole recipe before running it, and the third line uses $(GKE_KUBECTL), so with no context
+# GKE_REQUIRE's $(error REFUSING: …) stops make first. The check stays so this guard still refuses
+# if that third line is ever rewritten.
 gke-guard:
 	@test -n "$$GKE_CONTEXT" || { \
 	  echo "REFUSING: say which cluster to deploy to:  make gke-deploy GKE_CONTEXT=<context>"; \

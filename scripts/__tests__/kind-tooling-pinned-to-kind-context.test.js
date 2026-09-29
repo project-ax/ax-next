@@ -122,22 +122,28 @@ describe('Makefile text: kubectl/helm appear only in the pinned definitions', ()
 
 /**
  * Every target whose recipe uses the pinned variables, with the prerequisites it declares.
- * A rule line is `name: prereqs` at column 0 (an assignment is `name := …`, excluded by the
- * `(?!=)`); a recipe line starts with a tab.
+ *
+ * What it understands: a rule line `a b: prereqs` at column 0 (an assignment is `name := …`,
+ * excluded by the `(?![=:])`), and recipe lines that START WITH A TAB. What it does not: a recipe
+ * continued past a backslash onto a non-tab line, `define` blocks, or a target that reaches the
+ * cluster only through `$(MAKE) other-target` (the two such targets, `image` and `dev-fast`, are
+ * asserted by name above). None of those hide a wrong-cluster call: the pin itself is enforced by
+ * `bareToolLines`, independently of this. What this adds is "the guard runs before the slow work".
  */
 function clusterTargets(makefileText) {
   const found = new Map();
-  let current = null;
+  let current = [];
   for (const line of makefileText.split('\n')) {
-    const rule = /^([A-Za-z0-9_.-]+)\s*:(?!=)\s*(.*)$/.exec(line);
+    const rule = /^([A-Za-z0-9_.%-]+(?:\s+[A-Za-z0-9_.%-]+)*)\s*:(?![=:])\s*(.*)$/.exec(line);
     if (rule && !line.startsWith('\t')) {
-      current = rule[1];
       const prereqs = rule[2].split('#')[0].trim().split(/\s+/).filter(Boolean);
-      found.set(current, { kind: false, gke: false, prereqs });
+      const record = { kind: false, gke: false, prereqs };
+      current = rule[1].split(/\s+/);
+      for (const name of current) found.set(name, record); // `a b:` shares one recipe
       continue;
     }
-    if (current === null || !line.startsWith('\t') || /^\s*#/.test(line)) continue;
-    const t = found.get(current);
+    if (current.length === 0 || !line.startsWith('\t') || /^\s*#/.test(line)) continue;
+    const t = found.get(current[0]);
     if (/\$\((KUBECTL|HELM)\)/.test(line)) t.kind = true;
     if (/\$\((GKE_KUBECTL|GKE_HELM)\)/.test(line)) t.gke = true;
   }
@@ -190,8 +196,13 @@ describe('Makefile: every cluster-touching target lists its guard, and the behav
       'c: gke-guard',
       '\t$(KUBECTL) get pods',
       'PATCH_ADD := [{"a":"b"}]',
+      'd e:',
+      '\t$(KUBECTL) get pods',
+      'f g: kube-guard',
+      '\t$(KUBECTL) get pods',
     ].join('\n');
-    expect(unguardedClusterTargets(synthetic)).toEqual(['nuke', 'c']);
+    // `d e:` is a multi-target rule with no guard: both names are reported, once each.
+    expect(unguardedClusterTargets(synthetic)).toEqual(['nuke', 'c', 'd', 'e']);
   });
 });
 
@@ -431,21 +442,25 @@ describe('gke-deploy names its cluster explicitly and never follows the default 
 
 // Files whose commands are meant for the local kind cluster. A string is a file, or a directory
 // scanned whole. `deploy/GKE.md` is NOT here: it is a real-cluster runbook whose own Step 0 sets
-// the context. `deploy/README.md` is here for its "Deploy to a local kind cluster" SECTION only
-// (that is where the incident's `rollout restart` was sitting bare); the rest of that file
-// interleaves kind and real-cluster runbooks, where a fixed kind name would be wrong, so the
-// destructive ones tell the reader to check their context first instead.
+// the context. `deploy/README.md` is here for two kinds of part only: its "Deploy to a local kind
+// cluster" SECTION (that is where the incident's `rollout restart` was sitting bare), and the fenced
+// blocks of its memory-reset runbook that are LABELLED kind-only (`kind:`, `**kind:**`, `(kind dev)`),
+// which hold the most destructive commands in the repo. The rest of that file interleaves kind and
+// real-cluster commands, where a fixed kind name would be wrong, so the runbook tells the reader to
+// check their context first instead.
+const KIND_LABEL = /^(?:\*\*)?kind:(?:\*\*)?\s*$|\(kind dev\)/;
 const DOC_ROOTS = [
   '.claude/skills/k8s-acceptance-loop',
   '.claude/skills/chat-qa-sweep',
   'deploy/kind',
   'deploy/MANUAL-ACCEPTANCE.md',
   { file: 'deploy/README.md', section: '## Deploy to a local kind cluster' },
+  { file: 'deploy/README.md', blocksAfter: KIND_LABEL },
 ];
 
 // Subcommands that talk to a cluster. `helm template` / `lint` / `dependency` /
 // `repo` are offline and need no context.
-const HELM_CLUSTER_VERBS = 'install|upgrade|uninstall|delete|list|ls|status|get|history|rollback|test';
+const HELM_CLUSTER_VERBS = 'install|upgrade|uninstall|delete|list|ls|status|get|history|rollback|test|diff';
 const KUBECTL_VERBS =
   'get|describe|logs|exec|delete|apply|patch|rollout|scale|port-forward|create|wait|run|edit|top|label|annotate|cp|config|set|expose|drain|cordon|uncordon|taint|auth|explain|diff|replace|attach|proxy|debug|events';
 
@@ -534,8 +549,42 @@ function onlySection(text, heading) {
     .join('\n');
 }
 
+/**
+ * Keep only the fenced blocks whose opening fence is directly preceded (blank lines aside) by a
+ * line matching `labelRe`; blank everything else, keeping the line numbers.
+ */
+function onlyLabelledBlocks(text, labelRe) {
+  const lines = text.split('\n');
+  const keep = lines.map(() => false);
+  let labelled = false; // the last prose line before the next fence matched the label
+  let inFence = false;
+  let keepFence = false;
+  lines.forEach((line, i) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      if (!inFence) keepFence = labelled; // an opening fence decides for the whole block
+      keep[i] = keepFence;
+      inFence = !inFence;
+      if (!inFence) {
+        keepFence = false;
+        labelled = false; // a label covers ONE block, not every block after it
+      }
+      return;
+    }
+    if (inFence) {
+      keep[i] = keepFence;
+      return;
+    }
+    if (line.trim() === '') return; // blank lines do not reset the label
+    labelled = labelRe.test(line);
+  });
+  return lines.map((l, i) => (keep[i] ? l : '')).join('\n');
+}
+
 function docEntries(root) {
-  if (typeof root !== 'string') return [{ label: `${root.file} (${root.section})`, ...root }];
+  if (typeof root !== 'string') {
+    const what = root.section ?? 'blocks labelled kind-only';
+    return [{ label: `${root.file} (${what})`, ...root }];
+  }
   const abs = join(REPO_ROOT, root);
   if (statSync(abs).isFile()) return [{ label: root, file: root }];
   return readdirSync(abs, { withFileTypes: true }).flatMap((e) => {
@@ -553,14 +602,23 @@ describe('kind-facing docs: every kubectl/helm command carries the pin', () => {
     expect(labels).toContain('.claude/skills/k8s-acceptance-loop/SKILL.md');
     expect(labels).toContain('deploy/MANUAL-ACCEPTANCE.md');
     expect(labels).toContain('deploy/README.md (## Deploy to a local kind cluster)');
-    expect(entries.length).toBeGreaterThanOrEqual(5);
+    expect(labels).toContain('deploy/README.md (blocks labelled kind-only)');
+    expect(entries.length).toBeGreaterThanOrEqual(6);
   });
 
   it.each(entries.map((e) => [e.label, e]))('%s has no unpinned command', (_label, entry) => {
     const whole = readFileSync(join(REPO_ROOT, entry.file), 'utf8');
-    const text = entry.section ? onlySection(whole, entry.section) : whole;
-    // A section that was renamed would blank to nothing and pass; insist the scan saw commands.
+    const text = entry.section
+      ? onlySection(whole, entry.section)
+      : entry.blocksAfter
+        ? onlyLabelledBlocks(whole, entry.blocksAfter)
+        : whole;
+    // A section or label that was renamed would blank to nothing and pass; insist the scan saw commands.
     if (entry.section) expect(text, `${entry.file} has no "${entry.section}" section any more`).toMatch(/\bkubectl\b/);
+    if (entry.blocksAfter) {
+      const blocks = (text.match(/^\s*```/gm) ?? []).length / 2;
+      expect(blocks, `${entry.file}: fewer kind-labelled blocks than the 3 the runbook had (label renamed?)`).toBeGreaterThanOrEqual(3);
+    }
     expect(unpinnedInMarkdown(text, entry.file)).toEqual([]);
   });
 
@@ -606,6 +664,31 @@ describe('kind-facing docs: every kubectl/helm command carries the pin', () => {
       'x.md:21: helm -n ax-next uninstall ax-next',
       'x.md:24: helm --namespace x list',
       'x.md:25: helm --kube-context some-other-cluster upgrade x',
+    ]);
+  });
+
+  it('self-test: onlyLabelledBlocks keeps only the blocks a matching label introduces, one block per label', () => {
+    const md = [
+      'intro',
+      'kind:', //                      2  label
+      '',
+      '```bash', //                    4
+      'kubectl a',
+      '```', //                        6
+      '```bash', //                    7  a second block: the label covered ONE
+      'kubectl b',
+      '```',
+      'GKE:', //                       10
+      '```bash',
+      'kubectl c',
+      '```',
+      '**`workspace.backend: git-protocol` (kind dev).** The repos live on the git-server.', // 14
+      '```bash',
+      'kubectl d',
+      '```',
+    ].join('\n');
+    expect(onlyLabelledBlocks(md, KIND_LABEL).split('\n')).toEqual([
+      '', '', '', '```bash', 'kubectl a', '```', '', '', '', '', '', '', '', '', '```bash', 'kubectl d', '```',
     ]);
   });
 
