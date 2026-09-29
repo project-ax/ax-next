@@ -135,8 +135,10 @@ recording**, because the same reasoning is load-bearing for Tier 3.
 
 The callback thread really was the same one-callback move, and it really was
 small. But *routing to the create flow* is not the same as routing to the
-**conversational** create flow, and the conversational half — the kickoff `'hi'`
-that makes a bare bootstrap agent wake up and introduce itself — was being
+**conversational** create flow, and the conversational half — the kickoff turn
+(`'hi'` when this was written; since TASK-689 a reserved sentence the thread
+hides, see `lib/bootstrap-kickoff.ts`) that makes a bare bootstrap agent wake up
+and introduce itself — was being
 dropped on this surface by two independent mechanisms neither this document nor
 the card mentioned:
 
@@ -485,11 +487,14 @@ What a first run actually is, read out of `App.tsx`,
 2. `NewAgentDialog`, non-dismissible (`dismissible={!isFirstRun}` — TASK-340 /
    audit B4). It already answers the question the struck bullet was asking:
    "An agent is your personal assistant in ax. Give it a name to get started —
-   it'll introduce itself in a moment." (audit B5).
+   it'll introduce itself in a moment." (audit B5). *(TASK-689: this step is now
+   `NewAgentCard`, a `SetupShell` card — "Welcome to ax" — not a modal; the
+   copy above is what it replaced.)*
 3. `FirstRunAutoCreate` → `SetupShell` — "Setting up your agent…" over
    "Bringing your agent online…".
 4. `onDone(agentId)` → on the workspace path `App` sets `kickoffAgentId`, and
-   `WorkspaceShell`'s kickoff effect calls `startTurn`, which POSTs the `'hi'`
+   `WorkspaceShell`'s kickoff effect calls `startTurn`, which POSTs the kickoff
+   (a `'hi'` bubble when this was written; hidden since TASK-689)
    and then `navigate({ kind: 'agent', id, tab: 'chat' })`. **A first run ends
    in the new agent's chat tab** — watching it introduce itself, when the
    POST and the board read both land.
@@ -498,7 +503,7 @@ There are **three** end-states, not one, and only the first has an agent
 talking in it. The POST can fail (the `.catch` toasts and lands on the same
 chat tab with no turns in it), and the board read can fail independently —
 the kickoff effect sits above the shell's early returns on purpose, so the
-`'hi'` is sent and the route moves **under the error screen** ("We could not
+kickoff is sent and the route moves **under the error screen** ("We could not
 load your workspace."), with a turn that is real, server-side, and not being
 streamed to anyone. `WorkspaceShell`'s own comment accepts that trade
 deliberately; it is named here because a walk that only exercises the happy
@@ -531,8 +536,9 @@ for one. Three questions replace it, none of them the one the bullet asked:
   possible answer ("Auto picked … — it's your only agent"), and `HomeComposer`
   now renders the sole agent as a label instead. One control, one screen.
 
-Not stale, and worth stating so nobody re-derives it: `NewAgentDialog` and
-`FirstRunAutoCreate` are mounted **above** the `rendersWorkspace` branch in
+Not stale, and worth stating so nobody re-derives it: `NewAgentDialog`
+(`NewAgentCard` since TASK-689) and `FirstRunAutoCreate` are mounted **above**
+the `rendersWorkspace` branch in
 `App.tsx` and are shared by both shells, so walking them is not work that Tier
 5 #4's deletion takes back.
 

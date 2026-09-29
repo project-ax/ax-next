@@ -210,6 +210,13 @@ interface Props {
     conversationId: string;
     /** The files that message carried — see `WorkspaceShell`'s own field. */
     attachments: readonly SendableAttachment[];
+    /**
+     * TASK-689 — the person did not type this (the kickoff that wakes a new
+     * agent). We stream the reply as usual but draw no bubble for it, and a
+     * failure of it reads as the agent's hello not arriving rather than as a
+     * message of theirs that was lost.
+     */
+    hidden?: boolean;
   } | null;
   onPendingReplyConsumed?: () => void;
 }
@@ -264,6 +271,53 @@ const TURN_COPY: Record<ReadOutcome, string> = {
   // dropped socket, and naming the connection states a cause we do not know.
   failed: 'That reply didn’t finish. Nothing you sent was lost.',
 };
+
+/*
+  TASK-689 — when the KICKOFF's reply fails. The person sent nothing, so "Nothing
+  you sent was lost" would describe a message they never wrote; and there is no
+  Resend, because a second kickoff can land visibly (see `SentTurn.hidden`). The
+  way forward is the composer beneath the strip: the bootstrap script runs on
+  whatever the first message is, so the agent still introduces itself. Blameless
+  and short, per the house voice.
+*/
+const KICKOFF_FAILED_COPY =
+  'Your agent’s hello didn’t come through. That’s on us, not you — say something below and it will pick up from there.';
+
+/*
+  TASK-689 — IS THE MESSAGE IN FLIGHT ALREADY IN THE DURABLE THREAD?
+
+  The optimistic bubble is appended to `detail.thread`, so when a re-read lands
+  mid-turn with the person's own turn already committed (a first message from
+  Today, a re-read on a raised decision), the same words draw twice until the
+  turn ends.
+
+  The test is the TAIL of the transcript, on purpose. An in-flight message has
+  no reply after it yet, so its durable copy — if it has landed — is the last
+  `user`/`agent`/`steps` message. An OLDER identical message ("yes", already
+  answered) sits behind an agent reply, so it cannot suppress the new one.
+  Approval cards, errors and status rows are appended AFTER the transcript by
+  the read, so they are skipped rather than mistaken for the tail.
+
+  The failure direction is the cosmetic one: a miss leaves the doubling we had
+  before; a false hit needs an unanswered identical message directly above the
+  new one, and still shows that message once. Same words AND the same number of
+  files, because a message that carried a file is not the file-less one before it.
+*/
+function hasDurableCopy(
+  thread: readonly ThreadMessage[],
+  sent: { text: string; attachments: readonly unknown[] },
+): boolean {
+  for (let i = thread.length - 1; i >= 0; i -= 1) {
+    const m = thread[i]!;
+    if (m.kind !== 'user' && m.kind !== 'agent' && m.kind !== 'steps') continue;
+    return (
+      m.kind === 'user' &&
+      m.text === sent.text &&
+      (m.attachments?.length ?? 0) === sent.attachments.length
+    );
+  }
+  return false;
+}
 
 const PAST_COPY: Record<ReadOutcome, string> = {
   expired: HTTP_SESSION_ENDED,
@@ -441,8 +495,25 @@ export function AgentView({
      * could never work. False from that moment on; the words alone go back.
      */
     resendable: boolean;
+    /**
+     * TASK-689 — a turn the person did not type: the shell's kickoff for a
+     * just-created agent. Only the BUBBLE is dropped; the record stays, because
+     * this is also what the failure strip reads, and a kickoff that fails must
+     * not leave a silent, empty pane. It is never offered a Resend (see the
+     * strip): the first kickoff may already be turn 0 in the transcript, and a
+     * second one would land at turn 2, where the builder draws it.
+     */
+    hidden?: boolean;
   }
   const [sent, setSent] = useState<SentTurn | null>(null);
+  /**
+   * TASK-689 — a finished turn's re-read is in flight. Between `onDone` (which
+   * clears the streamed text and the bubble) and the re-read landing, the
+   * durable thread can still be empty — always so for a hidden kickoff, whose
+   * turn the builder skips — and an empty thread says "Nothing here yet — send
+   * something below" a beat after the agent said hello.
+   */
+  const [rereading, setRereading] = useState(false);
   const [streamed, setStreamed] = useState('');
   const [streaming, setStreaming] = useState(false);
   /**
@@ -803,8 +874,11 @@ export function AgentView({
           resetLiveTurn();
           if (stoppedIn !== null) setStopNotice(stoppedIn);
           // The durable thread is the source of truth — re-read it rather than
-          // keeping our transient copy around to drift.
-          void load();
+          // keeping our transient copy around to drift. `rereading` bridges the
+          // gap until it lands (TASK-689): `load` settles after BOTH of its
+          // outcomes have written state, so `finally` is the honest "landed".
+          setRereading(true);
+          void load().finally(() => setRereading(false));
           onChanged();
         },
         onError: (message) => {
@@ -1025,6 +1099,7 @@ export function AgentView({
       text: pendingReply.text,
       attachments: pendingReply.attachments,
       resendable: false,
+      ...(pendingReply.hidden === true ? { hidden: true } : {}),
     });
     onPendingReplyConsumed?.();
     void streamFrom(pendingReply.reqId);
@@ -1238,7 +1313,14 @@ export function AgentView({
     of the same two messages.
   */
   const liveThread: ThreadMessage[] = [...detail.thread];
-  if (sent !== null) {
+  // A hidden turn (TASK-689) is not the person's words, so it gets no bubble —
+  // but `sent` stays set, because the failure strip below reads it. Nor does a
+  // turn whose committed copy the read already returned: that would draw twice.
+  if (
+    sent !== null &&
+    sent.hidden !== true &&
+    !hasDurableCopy(detail.thread, sent)
+  ) {
     /*
       TASK-424 — the person's file goes into the bubble with their words.
 
@@ -1635,10 +1717,20 @@ export function AgentView({
                   <Alert variant={readAlertVariant(turnError.kind)}>
                     <AlertDescription className="flex flex-col items-start gap-2">
                       <span>
+                        {/*
+                          WHICH SENTENCE, in order of how specific it is:
+                          a refusal the server worded itself; then a failed
+                          STOP (its copy is about stopping, and must outrank
+                          the kickoff's, or a Stop pressed during the greeting
+                          would say "your agent's hello didn't come through");
+                          then the kickoff's own copy; then the turn's.
+                        */}
                         {turnError.refusal ??
-                          (turnError.source === 'stop' ? STOP_COPY : TURN_COPY)[
-                            turnError.kind
-                          ]}
+                          (turnError.source === 'stop'
+                            ? STOP_COPY[turnError.kind]
+                            : sent?.hidden === true && turnError.kind === 'failed'
+                              ? KICKOFF_FAILED_COPY
+                              : TURN_COPY[turnError.kind])}
                       </span>
                       {/*
                         UNTRUSTED PLAIN TEXT, deliberately rendered as a text
@@ -1664,6 +1756,7 @@ export function AgentView({
                           reader may want to carry on reading.
                         */}
                         {sent !== null &&
+                          sent.hidden !== true &&
                           turnError.kind === 'failed' &&
                           turnError.source === 'turn' && (
                           <Button
@@ -1758,6 +1851,14 @@ export function AgentView({
                 busy={streaming}
                 onStop={() => void stop()}
                 stopping={stopping}
+                settling={rereading}
+                /*
+                  The failure strip above renders on `turnError !== null &&
+                  !past`; this pane's own empty copy is already off for a past
+                  conversation (`readOnly`), so `turnError` alone is the right
+                  mirror of it (TASK-695).
+                */
+                failureStripShown={turnError !== null}
                 onSend={(text, attachments) => void send(text, attachments)}
                 onApprove={onApprove}
                 onDismiss={onDismiss}

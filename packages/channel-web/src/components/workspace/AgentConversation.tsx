@@ -222,6 +222,25 @@ interface Props {
    */
   stopping?: boolean;
   /**
+   * TASK-689 — a turn has just finished and the thread's re-read has not
+   * landed, so an empty `thread` is not yet the durable truth. It suppresses
+   * ONLY the "Nothing here yet" copy (the composer is untouched — `busy` is
+   * the composer's, and extending it would disable every send for the length of
+   * a re-read). Without it a new agent's greeting vanishes, the pane says it is
+   * empty, and the greeting reappears.
+   */
+  settling?: boolean;
+  /**
+   * TASK-695 — a failure strip for the last turn is on screen above this pane.
+   * When the thread is empty (a hidden kickoff failed: the person sent nothing
+   * and the hello never came) that strip already says what to do and where to
+   * do it, so the empty-thread copy stands down rather than saying the same
+   * thing in a second voice. Like `settling` it touches ONLY that copy, and it
+   * comes back the moment the strip is dismissed, so the pane is never left
+   * with nothing on it.
+   */
+  failureStripShown?: boolean;
+  /**
    * `attachments` are the uploaded files this message carries, in pick order,
    * each carrying the id the wire needs AND the name and type the transcript
    * needs (TASK-424 — the caller has to draw the person's own file in their
@@ -313,6 +332,8 @@ export function AgentConversation({
   busy = false,
   onStop,
   stopping = false,
+  settling = false,
+  failureStripShown = false,
   onSend,
   onApprove,
   onDismiss,
@@ -712,7 +733,11 @@ export function AgentConversation({
             can do. It names where the reader is and what the box below is
             for, and stops there.
           */}
-          {thread.length === 0 && !readOnly && grants.length === 0 && (
+          {thread.length === 0 &&
+            !readOnly &&
+            !settling &&
+            !failureStripShown &&
+            grants.length === 0 && (
             <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon">

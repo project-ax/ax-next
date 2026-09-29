@@ -117,6 +117,45 @@ describe('AgentConversation — the zero-turn thread', () => {
     expect(copy).not.toMatch(/session/i);
   });
 
+  it('(TASK-689) stays silent while a finished turn\'s re-read is still landing — the thread is not yet the durable truth', () => {
+    /*
+      THE THIRD GUARD. A new agent's kickoff turn is hidden, so between the
+      greeting finishing and the re-read landing the durable thread really is
+      empty — and "Nothing here yet — send something below" a beat after the
+      agent said hello contradicts what the reader just watched. `settling` is
+      the parent saying "that emptiness is not final".
+
+      VACUITY: against the code before TASK-689 (no `settling` prop) this
+      FAILS — the empty copy renders. It is not the composer's `busy`, which is
+      deliberately untouched, and the negative case below pins that the copy
+      comes straight back when the flag is off.
+    */
+    const { rerender } = renderConversation({ thread: [], settling: true });
+    expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
+    expect(document.querySelector('[data-slot="empty"]')).toBeNull();
+
+    rerender(
+      <AgentConversation
+        agent={quill}
+        thread={[]}
+        conversationId="c1"
+        decisions={[]}
+        readOnly={false}
+        settling={false}
+        onSend={vi.fn()}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+        approvalRead="ok"
+        onRetryApprovals={vi.fn()}
+        grants={[]}
+        onGrantResolved={vi.fn()}
+        onGranted={vi.fn(async () => true)}
+      />,
+    );
+    expect(screen.getByText(EMPTY_TITLE)).toBeTruthy();
+  });
+
   it('stays silent on a read-only empty thread — an empty excerpt may be a failed read', () => {
     /*
       THE GUARD. `readOnly` is true for every past-conversation excerpt, and a

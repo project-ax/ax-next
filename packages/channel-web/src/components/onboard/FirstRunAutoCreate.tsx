@@ -5,6 +5,7 @@ import { SetupShell } from '../setup/SetupShell';
 import { autoCreateBareAgent } from '../../lib/auto-create-agent';
 import { hydrateAgentsOnce } from '../../lib/hydrate-agents';
 import { agentStoreActions } from '../../lib/agent-store';
+import { logRequestFailure } from '../../lib/http';
 
 /**
  * First-run: no form (TASK-140, conversational-agent-identity). We create a
@@ -13,6 +14,10 @@ import { agentStoreActions } from '../../lib/agent-store';
  * control to the workspace. The new agent wakes up in bootstrap mode and
  * figures out who it is through conversation (the runner injects BOOTSTRAP.md).
  * This replaces the retired 3-field name→soul→purpose wizard.
+ *
+ * Despite the name it also runs the explicit "+ New agent…" create (`mode`
+ * says which) — one create path, two framings. The name comes from
+ * `NewAgentCard` first; this is what happens after it.
  *
  * A `ran` ref makes the create idempotent: once it has fired, a re-invocation
  * of the effect returns early, so we never create two agents from one mount.
@@ -25,9 +30,24 @@ import { agentStoreActions } from '../../lib/agent-store';
  */
 export function FirstRunAutoCreate({
   agentName,
+  mode,
+  onBack,
   onDone,
 }: {
   agentName: string;
+  /**
+   * Which flow this is. The two used to share one failure card, which told
+   * someone adding their fifth agent that we were setting up their "first"
+   * (TASK-689).
+   */
+  mode: 'first-run' | 'add';
+  /**
+   * The way out of a failed create: first run goes back to the name card
+   * ("Change name"), adding goes back to the workspace ("Cancel"). Only ever
+   * offered on the failure card — going back while the POST is still running
+   * would abandon a create that may yet succeed.
+   */
+  onBack: () => void;
   // Hands back the new agent's id: the workspace's send is explicit about
   // which agent it's talking to, so the caller needs the id to hand the
   // kickoff to the right agent.
@@ -36,6 +56,21 @@ export function FirstRunAutoCreate({
   const ran = useRef(false);
   const [err, setErr] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const isAdd = mode === 'add';
+  const failed = err !== null;
+
+  // Escape is the same "out" as Cancel, but only when adding and only once the
+  // create has failed. First run has nothing to go back to that Escape should
+  // promise; a running create is not something to walk away from.
+  useEffect(() => {
+    if (!isAdd || !failed) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing) return;
+      onBack();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isAdd, failed, onBack]);
 
   useEffect(() => {
     if (ran.current) return;
@@ -78,10 +113,17 @@ export function FirstRunAutoCreate({
           be resting on.
         */
         onDone(agent.agentId);
-      } catch {
+      } catch (e) {
+        // The operator's half (TASK-695): the person is told below, but a real
+        // bootstrap failure used to leave nothing in the console to start from.
+        // Before the `cancelled` check on purpose — the breadcrumb is not this
+        // component's state, so it must not depend on anyone still watching.
+        logRequestFailure(e, 'agent-bootstrap');
         if (!cancelled) {
+          // Names the agent: it is the one thing on this card the person typed,
+          // and it says WHICH create failed when they are adding another.
           setErr(
-            "We couldn't set up your agent just now. This one's on us, not you — give it another go.",
+            `We couldn't set up ${agentName} just now. That's on us, not you — give it another go.`,
           );
         }
       }
@@ -98,23 +140,35 @@ export function FirstRunAutoCreate({
   if (err !== null) {
     return (
       <SetupShell
-        title="Let's get you started"
-        description="We're setting up your first agent so you can start chatting."
+        title={isAdd ? 'New agent' : "Let's get you started"}
+        description={
+          isAdd
+            ? `We're setting up ${agentName}.`
+            : "We're setting up your first agent so you can start chatting."
+        }
       >
         <div className="flex flex-col gap-4">
           <Alert variant="destructive">
             <AlertDescription>{err}</AlertDescription>
           </Alert>
-          <Button
-            type="button"
-            onClick={() => {
-              ran.current = false;
-              setErr(null);
-              setAttempt((a) => a + 1);
-            }}
-          >
-            Try again
-          </Button>
+          {/* TASK-689: the card used to offer only "Try again". When the
+              failure is not a blip that is a trap, and here `App.tsx`'s gate
+              has replaced the workspace, so the page had no other exit. */}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={onBack}>
+              {isAdd ? 'Cancel' : 'Change name'}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                ran.current = false;
+                setErr(null);
+                setAttempt((a) => a + 1);
+              }}
+            >
+              Try again
+            </Button>
+          </div>
         </div>
       </SetupShell>
     );

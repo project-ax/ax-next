@@ -13,7 +13,7 @@ export interface CreatedAgent {
  * on writes.
  *
  * `displayName` is required — callers must collect a name from the user before
- * creating an agent (see NewAgentDialog) so the DB column is correct from the start.
+ * creating an agent (see NewAgentCard) so the DB column is correct from the start.
  */
 import { HttpError, httpFetch } from './http';
 

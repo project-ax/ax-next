@@ -41,7 +41,9 @@ display strings only.
   secondary mono text beside a humanized label. (E1, E3, A1, E2)
 - **agent** stays — it is the product's noun. But it is explained once, at first
   run, where the user meets it: "An agent is your personal assistant in ax." (B5)
-  Everywhere after that, plain use is fine.
+  Everywhere after that, plain use is fine. *(TASK-689 shortened the first-run
+  line to "First, let's create your personal AI assistant." on the "Welcome to
+  ax" card — still one plain sentence, still once, still at first run.)*
 
 `skill`, `connector`, and `tool` likewise stay as product nouns.
 
