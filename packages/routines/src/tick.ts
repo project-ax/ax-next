@@ -20,6 +20,12 @@ export interface FireResult {
    * rendering.
    */
   renderedPrompt: string | null;
+  /**
+   * TASK-680 — true when the fire found that the agent itself no longer
+   * exists. Terminal: the tick prunes every routine of that agent instead of
+   * scheduling the next fire. Absent on every other outcome, errors included.
+   */
+  agentGone?: true;
 }
 
 export type FireRoutineFn = (
@@ -123,6 +129,20 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       result = { status: 'error', error: msg, conversationId: null, renderedPrompt: null };
+    }
+
+    // TASK-680 — the agent was deleted. Nothing will ever make this fire
+    // succeed, and on its own the row would be claimed again every interval,
+    // forever (prod had deleted agents' heartbeats failing daily since June).
+    // Forget all of the agent's routines — this also heals rows orphaned
+    // before the `agents:deleted` subscriber existed, for which no event will
+    // ever fire again. No fire row and no advance: the rows are gone.
+    if (result.agentGone === true) {
+      const { paths } = await input.store.deleteAllForAgent(row.agentId);
+      process.stderr.write(
+        `[ax/routines] agent ${row.agentId} no longer exists; removed ${paths.length} routine(s)\n`,
+      );
+      continue;
     }
 
     await input.store.recordFire({

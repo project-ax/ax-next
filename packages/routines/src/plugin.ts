@@ -3,7 +3,12 @@ import { makeAgentContext, PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
-import { handleWorkspaceApplied, mountAllWebhookRoutesOnStartup, rebindWebhooksForAgent } from './sync.js';
+import {
+  handleAgentDeleted,
+  handleWorkspaceApplied,
+  mountAllWebhookRoutesOnStartup,
+  rebindWebhooksForAgent,
+} from './sync.js';
 import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
@@ -97,7 +102,12 @@ export function createRoutinesPlugin(
         'http:register-route',
         'workspace:apply',
       ],
-      subscribes: ['workspace:applied', 'chat:turn-end', 'agents:webhook-token-rotated'],
+      subscribes: [
+        'workspace:applied',
+        'chat:turn-end',
+        'agents:webhook-token-rotated',
+        'agents:deleted',
+      ],
     },
     async init({ bus }) {
       const initCtx = makeAgentContext({
@@ -136,6 +146,31 @@ export function createRoutinesPlugin(
           } catch (err) {
             // K10: subscriber must not propagate — log and swallow.
             ctx.logger.warn('routines_rebind_after_rotation_failed', {
+              agentId: payload.agentId,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return undefined;
+        },
+      );
+
+      // TASK-680 — a deleted agent's routines must stop with it. @ax/agents
+      // fires this AFTER the agent row is gone; payload is `{ agentId,
+      // ownerId, ownerType }` and only `agentId` is needed here. Rows orphaned
+      // before this subscriber existed are healed by the tick instead (see
+      // `agentGone` in tick.ts).
+      bus.subscribe<{ agentId: string }>(
+        'agents:deleted', PLUGIN_NAME,
+        async (ctx, payload) => {
+          try {
+            await handleAgentDeleted(
+              { store: localStore, bus, webhookRoutes, fireRoutine },
+              ctx, payload.agentId,
+            );
+          } catch (err) {
+            // K10: subscriber must not propagate — log and swallow. The tick's
+            // `agentGone` path removes the rows on the agent's next due fire.
+            ctx.logger.warn('routines_remove_for_deleted_agent_failed', {
               agentId: payload.agentId,
               err: err instanceof Error ? err.message : String(err),
             });

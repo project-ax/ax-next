@@ -689,7 +689,8 @@ async function deleteAgent(
   // Fire `agents:deleted` AFTER the row is gone so subscribers reclaim per-agent
   // state owned in other tiers (filestore-user-files design §11: the sandbox
   // provider's user-files cleanup `rm -rf`s the agent's durable `/workspace`
-  // subtree). Payload is minimal + storage-agnostic (L4) — `agentId` is the
+  // subtree; @ax/routines drops the agent's routines so its heartbeat stops,
+  // TASK-680). Payload is minimal + storage-agnostic (L4) — `agentId` is the
   // subtree key; `ownerId`/`ownerType` come from the row we already loaded
   // (re-resolving would 404 now). Subscriber failures are isolated by
   // HookBus.fire and never affect the (already-committed) delete (L6). Fired

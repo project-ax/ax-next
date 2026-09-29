@@ -9,7 +9,7 @@ import pg from 'pg';
 import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore } from '../store.js';
-import { handleWorkspaceApplied } from '../sync.js';
+import { handleAgentDeleted, handleWorkspaceApplied } from '../sync.js';
 
 pg.types.setTypeParser(20, (v) => Number(v));
 
@@ -25,7 +25,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterEach(async () => {
-  await sql`TRUNCATE routines_v1_definitions, routines_v1_fires`.execute(db);
+  await sql`TRUNCATE routines_v1_definitions, routines_v1_fires, agent_default_routine_overrides_v1`.execute(db);
 });
 
 afterAll(async () => {
@@ -376,5 +376,60 @@ describe('rebindWebhooksForAgent — Finding #5 rotation re-bind', () => {
 
     // Second routine still registered.
     expect(registeredPaths).toHaveLength(1);
+  });
+});
+
+// TASK-680 — deleting an agent must take its routines with it: every row
+// (workspace-authored and materialized defaults), its per-agent default
+// overrides, and any live webhook route. Leaving them is what kept four
+// deleted agents' heartbeats firing daily in prod.
+describe('handleAgentDeleted (TASK-680)', () => {
+  it('removes every routine of the deleted agent and unmounts its webhook routes, leaving other agents alone', async () => {
+    const captured: Captured = { routes: [], unregisters: [], ensures: 0 };
+    const bus = makeBus({ initialToken: 'tok', captured });
+    const store = createRoutinesStore(db);
+    const webhookRoutes = new Map<string, () => void>();
+    const deps = { store, bus, webhookRoutes, fireRoutine: noopFire };
+    const version = 'v1' as unknown as ReturnType<typeof import('@ax/core').asWorkspaceVersion>;
+
+    for (const agentId of ['agt_del', 'agt_keep']) {
+      await handleWorkspaceApplied(deps, ctx(), {
+        before: null, after: version,
+        author: { agentId, userId: 'u1' },
+        changes: [
+          { path: '.ax/routines/hook.md', kind: 'added', contentAfter: async () => webhookFile() },
+          { path: '.ax/routines/tick.md', kind: 'added', contentAfter: async () => intervalFile() },
+        ],
+      }, new Date());
+    }
+    // The heartbeat default, materialized for both agents, plus an explicit
+    // opt-out row for the agent being deleted.
+    await store.materializeMissing({
+      agents: [
+        { agentId: 'agt_del', ownerUserId: 'u1' },
+        { agentId: 'agt_keep', ownerUserId: 'u1' },
+      ],
+      now: new Date(),
+    });
+    const defaults = await store.listDefaults();
+    expect(defaults.length).toBeGreaterThanOrEqual(1);
+    await store.setAgentDefaultEnabled({
+      agentId: 'agt_del', defaultRoutineId: defaults[0]!.defaultRoutineId,
+      ownerUserId: 'u1', enabled: false,
+    });
+    expect(webhookRoutes.size).toBe(2);
+
+    await handleAgentDeleted(deps, ctx(), 'agt_del');
+
+    expect(await store.list({ agentId: 'agt_del' })).toEqual([]);
+    expect(await store.disabledDefaultIdsForAgent('agt_del')).toEqual([]);
+    expect(captured.unregisters).toEqual(['/webhooks/tok/r/x']);
+    expect([...webhookRoutes.keys()]).toEqual(['agt_keep::.ax/routines/hook.md']);
+
+    const kept = await store.list({ agentId: 'agt_keep' });
+    expect(kept.map((r) => r.path).sort()).toEqual(
+      expect.arrayContaining(['.ax/routines/hook.md', '.ax/routines/tick.md']),
+    );
+    expect(kept.some((r) => r.path.startsWith('default:'))).toBe(true);
   });
 });

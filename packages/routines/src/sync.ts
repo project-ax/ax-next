@@ -244,6 +244,33 @@ async function bindWebhookRouteFor(
 }
 
 /**
+ * TASK-680 — an agent was deleted: stop everything it had scheduled. Removes
+ * every routine row of the agent (workspace-authored and materialized
+ * defaults) plus its default overrides, then unmounts the webhook route of
+ * any removed row. Called by the `agents:deleted` subscriber in plugin.ts.
+ *
+ * Rows are removed BEFORE routes are unmounted: the route is only an entry
+ * point, and a request that slips in between finds no row to fire.
+ */
+export async function handleAgentDeleted(
+  deps: HandleWorkspaceAppliedDeps,
+  ctx: AgentContext,
+  agentId: string,
+): Promise<void> {
+  const { paths } = await deps.store.deleteAllForAgent(agentId);
+  for (const path of paths) {
+    const key = webhookKey(agentId, path);
+    const unreg = deps.webhookRoutes.get(key);
+    if (unreg === undefined) continue;
+    try { unreg(); } catch { /* idempotent per http-server */ }
+    deps.webhookRoutes.delete(key);
+  }
+  ctx.logger.info('routines_removed_for_deleted_agent', {
+    agentId, removed: paths.length,
+  });
+}
+
+/**
  * Re-binds every webhook routine for the given agent against the current
  * token. Called by the `agents:webhook-token-rotated` subscriber in plugin.ts
  * so that stale routes (pointing at the old token URL) are torn down and fresh

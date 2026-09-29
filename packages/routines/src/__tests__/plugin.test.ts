@@ -161,6 +161,43 @@ describe('routines plugin manifest', () => {
     const p = createRoutinesPlugin();
     expect(p.manifest.calls).toContain('agents:resolve');
   });
+
+  it('manifest.subscribes includes agents:deleted (TASK-680)', () => {
+    const p = createRoutinesPlugin();
+    expect(p.manifest.subscribes).toContain('agents:deleted');
+  });
+});
+
+// TASK-680 — deleting an agent stops its routines. @ax/agents fires
+// `agents:deleted` after the row is gone; the routines plugin must drop that
+// agent's routine rows so the tick never claims them again.
+describe('agents:deleted subscriber (TASK-680)', () => {
+  it('drops the deleted agent\'s materialized heartbeat and leaves other agents\' rows alone', async () => {
+    const h = await harness();
+    const k = new Kysely<RoutinesDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+    });
+    try {
+      const store = createRoutinesStore(k);
+      await store.materializeMissing({
+        agents: [
+          { agentId: 'agt_del', ownerUserId: 'u1' },
+          { agentId: 'agt_keep', ownerUserId: 'u1' },
+        ],
+        now: new Date(),
+      });
+      expect((await store.list({ agentId: 'agt_del' })).length).toBeGreaterThanOrEqual(1);
+
+      await h.bus.fire('agents:deleted', h.ctx({ userId: 'u1' }), {
+        agentId: 'agt_del', ownerId: 'u1', ownerType: 'user',
+      });
+
+      expect(await store.list({ agentId: 'agt_del' })).toEqual([]);
+      expect((await store.list({ agentId: 'agt_keep' })).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await k.destroy();
+    }
+  });
 });
 
 describe('routines:list-defaults', () => {
