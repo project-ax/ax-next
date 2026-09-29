@@ -10,6 +10,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { workspaceApi } from '../lib/workspace-api';
 import { HttpError } from '../lib/http';
+import { StorageFullError } from '../lib/storage-full';
+import { STORAGE_FULL_SEND } from '../lib/storage-copy';
 
 const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
@@ -78,5 +80,65 @@ describe('workspaceApi.sendMessage — attachment threading', () => {
         text: 'hi',
       }),
     ).rejects.toBeInstanceOf(HttpError);
+  });
+});
+
+/*
+  TASK-690 — the send route can now answer 413 `{ error: 'storage-full',
+  message }` when committing an attachment would put the person over their
+  storage limit. `sendMessage` used to flatten every refusal to a bare
+  `HttpError` (status only), so this arrived as "we could not reach the server".
+  It must arrive as an error that carries the kind sentence, and ONLY this one
+  refusal may: the other 413 stays what it was.
+*/
+describe('workspaceApi.sendMessage — storage-full refusal', () => {
+  const send = () =>
+    workspaceApi.sendMessage({
+      agentId: 'agt_a',
+      conversationId: null,
+      text: 'have a look',
+      attachmentIds: ['att-1'],
+    });
+
+  it("rejects with a StorageFullError wearing the server's sentence", async () => {
+    mockJson(413, {
+      error: 'storage-full',
+      message: 'Your storage is full, so that file could not be saved.',
+    });
+    const err = await send().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageFullError);
+    expect((err as StorageFullError).sentence).toBe(
+      'Your storage is full, so that file could not be saved.',
+    );
+    // Still an HttpError: the 401 latch and `toReadOutcome` see what they saw.
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(413);
+  });
+
+  it('uses our own sentence when the server sent none', async () => {
+    mockJson(413, { error: 'storage-full' });
+    const err = await send().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StorageFullError);
+    expect((err as StorageFullError).sentence).toBe(STORAGE_FULL_SEND);
+  });
+
+  it('leaves the other 413 (too many bytes in one message) a plain HttpError', async () => {
+    mockJson(413, { error: 'attachment-total-too-large' });
+    const err = await send().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect(err).not.toBeInstanceOf(StorageFullError);
+  });
+
+  it('is not fooled by a 413 whose body it cannot read', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 413,
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    } as unknown as Response);
+    const err = await send().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect(err).not.toBeInstanceOf(StorageFullError);
   });
 });
