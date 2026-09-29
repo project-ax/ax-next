@@ -269,7 +269,10 @@ describe('canary — default-sourced fire passes agents:resolve under real bus',
     bus.registerService<unknown, unknown>('agent:invoke', '@ax/orchestrator', async () => ({}));
 
     const pending: PendingFires = new Map();
-    const fire = createFireRoutine({ bus, pending });
+    const fire = createFireRoutine({
+      bus, pending,
+      recordFire: (input) => store.recordFire(input),
+    });
 
     const t0 = new Date('2030-01-01T00:00:00Z');
 
@@ -303,17 +306,19 @@ describe('canary — default-sourced fire passes agents:resolve under real bus',
       getAgents: async () => [{ agentId: 'agt_x', ownerUserId: 'u_owner_of_agt_x' }],
     });
 
-    // 3) The fire row must record status='ok' with no error. On the
-    // buggy main, fire.ts would catch the forbidden PluginError and
-    // return status='error' with error='forbidden: agent ...'.
+    // 3) The fire must have been DISPATCHED, not refused. On the buggy
+    // main, fire.ts would catch the forbidden PluginError and return
+    // status='error' — which the tick records at once, as an error row.
+    // A dispatched fire gets no row from the tick at all (TASK-679): its
+    // one row is written when its turn ends, and this bare bus has no
+    // turn, so the fire is still pending here.
     const fires = await db
       .selectFrom('routines_v1_fires')
       .selectAll()
       .where('agent_id', '=', 'agt_x')
       .execute();
-    expect(fires).toHaveLength(1);
-    expect(fires[0]!.status).toBe('ok');
-    expect(fires[0]!.error).toBeNull();
+    expect(fires).toEqual([]);
+    expect(pending.size).toBe(1);
   });
 
   it('materializeMissing on the store writes a.owner_user_id per row', async () => {

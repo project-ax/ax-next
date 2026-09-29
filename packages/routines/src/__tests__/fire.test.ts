@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, type AgentContext } from '@ax/core';
 import { createFireRoutine, type FireDeps, type PendingFires } from '../fire.js';
 import type { RoutineRow } from '../types.js';
+import type { RecordFireInput } from '../store.js';
 
 function row(over: Partial<RoutineRow> = {}): RoutineRow {
   return {
@@ -235,5 +236,108 @@ describe('createFireRoutine — webhook payload templating (Phase C)', () => {
     await fire(r, 'webhook', { other: 'value' });
     await new Promise(r => setImmediate(r));
     expect(captured[0]!.content).toBe('event=[]');
+  });
+
+  // TASK-679: a dispatched fire's ONE row is written by whoever takes its
+  // pending entry. On the ordinary path that is the chat:turn-end subscriber;
+  // when the invoke fails before any turn ends, it is fire.ts, as an error.
+  describe('one row per fire when the invoke settles without a turn (TASK-679)', () => {
+    it('reports the fire as dispatched — the caller must not write a row of its own', async () => {
+      const bus = await makeBus({});
+      const recorded: RecordFireInput[] = [];
+      const fire = createFireRoutine({
+        bus, pending: new Map(), recordFire: async (i) => { recorded.push(i); },
+      });
+      const result = await fire(row(), 'tick');
+      expect(result).toMatchObject({ status: 'ok', recordedAtTurnEnd: true });
+    });
+
+    it('a rejected invoke records exactly one error row and drops the pending entry', async () => {
+      const bus = await makeBus({ invoke: async () => { throw new Error('sandbox died'); } });
+      const pending: PendingFires = new Map();
+      const recorded: RecordFireInput[] = [];
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
+        await fire(row(), 'manual');
+        await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(recorded[0]).toMatchObject({
+        agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'manual',
+        conversationId: 'cnv_perfire', status: 'error', renderedPrompt: 'do work',
+      });
+      expect(recorded[0]!.error).toContain('sandbox died');
+      expect(pending.size).toBe(0);
+    });
+
+    it('a terminated outcome with no turn end records exactly one error row', async () => {
+      const bus = await makeBus({ invoke: async () => ({ kind: 'terminated', reason: 'chat-timeout' }) });
+      const pending: PendingFires = new Map();
+      const recorded: RecordFireInput[] = [];
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
+        await fire(row(), 'tick');
+        await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(recorded[0]).toMatchObject({ status: 'error', triggerSource: 'tick' });
+      expect(recorded[0]!.error).toContain('chat-timeout');
+      expect(pending.size).toBe(0);
+    });
+
+    it('records NOTHING when the turn end already took the pending entry', async () => {
+      const pending: PendingFires = new Map();
+      const bus = await makeBus({
+        invoke: async (ctx) => {
+          // Stands in for the chat:turn-end subscriber, which removes the
+          // entry and writes the fire's row before the invoke settles.
+          pending.delete(ctx.reqId);
+          return { kind: 'terminated', reason: 'cancelled after turn' };
+        },
+      });
+      const recorded: RecordFireInput[] = [];
+      const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
+      await fire(row(), 'tick');
+      // Let the invoke's settle handlers run.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(recorded).toEqual([]);
+    });
+
+    it('a complete outcome with no turn end records one error row once the grace runs out', async () => {
+      const pending: PendingFires = new Map();
+      const bus = await makeBus({});
+      const recorded: RecordFireInput[] = [];
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const fire = createFireRoutine({
+          bus, pending, recordFire: async (i) => { recorded.push(i); }, turnEndGraceMs: 0,
+        });
+        await fire(row(), 'tick');
+        await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(recorded[0]).toMatchObject({ status: 'error', triggerSource: 'tick' });
+      expect(pending.size).toBe(0);
+    });
+
+    it('a complete outcome leaves the row to the turn end', async () => {
+      const pending: PendingFires = new Map();
+      const bus = await makeBus({});
+      const recorded: RecordFireInput[] = [];
+      const fire = createFireRoutine({
+        bus, pending, recordFire: async (i) => { recorded.push(i); }, turnEndGraceMs: 60_000,
+      });
+      await fire(row(), 'tick');
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(recorded).toEqual([]);
+      expect(pending.size).toBe(1);
+    });
   });
 });

@@ -13,6 +13,7 @@ import { asWorkspaceVersion, type WorkspaceDelta } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import type { RoutinesDatabase } from '../migrations.js';
+import { systemClock, type Clock } from '../clock.js';
 import type { HttpRequest, HttpResponse, HttpRouteHandler, HttpRegisterRouteInput } from '@ax/http-server';
 
 pg.types.setTypeParser(20, (v) => Number(v));
@@ -43,7 +44,17 @@ interface Captured {
   createInputs: Array<{ hidden?: boolean }>;
 }
 
-async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: unknown[] }) {
+interface TickOpts {
+  /** Personal agents the tick materializes default routines for. */
+  agents: Array<{ agentId: string; ownerUserId: string }>;
+  clock: Clock;
+}
+
+async function makeHarness(
+  captured: Captured,
+  replyOnInvoke: { contentBlocks: unknown[] },
+  tick?: TickOpts,
+) {
   let nextConvId = 1;
   // Cache by externalKey so the shared-conversation routine sees the same
   // conversationId across fires (mirrors the real find-or-create handler).
@@ -58,7 +69,7 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
         token: `tok-${(input as { agentId: string }).agentId}`,
       }),
       'agents:resolve-by-webhook-token': async () => ({ agent: null }),
-      'agents:list-personal-owners': async () => ({ agents: [] }),
+      'agents:list-personal-owners': async () => ({ agents: tick?.agents ?? [] }),
       'credentials:get': async () => 'secret',
       'http:register-route': async () => ({ unregister: () => {} }),
       'workspace:apply': async () => ({
@@ -108,7 +119,9 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createRoutinesPlugin({ tickIntervalMs: 60_000 /* loop effectively idle */ }),
+      tick === undefined
+        ? createRoutinesPlugin({ tickIntervalMs: 60_000 /* loop effectively idle */ })
+        : createRoutinesPlugin({ tickIntervalMs: 20, electionRetryMs: 20 }, tick.clock),
     ],
   });
   busRef.current = h;
@@ -133,6 +146,32 @@ afterEach(async () => {
 });
 
 afterAll(async () => { if (container) await stopPostgresContainer(container); }, 60_000);
+
+const HEARTBEAT_PATH = 'default:default-heartbeat-2026-05-19';
+
+/**
+ * Every fire row for `agentId`, oldest first, once the turn-end write has
+ * landed. Waits for at least one row whose status came from the turn (the
+ * turn-end subscriber runs in the background of a fire), then reads the whole
+ * set — so a second row written by the dispatcher is counted, not missed.
+ */
+async function settledFireStatuses(agentId: string): Promise<string[]> {
+  const k = new Kysely<RoutinesDatabase>({
+    dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+  });
+  try {
+    let statuses: string[] = [];
+    await vi.waitFor(async () => {
+      const fires = await k.selectFrom('routines_v1_fires').selectAll()
+        .where('agent_id', '=', agentId).orderBy('id', 'asc').execute();
+      statuses = fires.map((f) => f.status);
+      expect(statuses.length).toBeGreaterThan(0);
+    }, { timeout: 5_000, interval: 25 });
+    return statuses;
+  } finally {
+    await k.destroy();
+  }
+}
 
 describe('Phase B canary — routine creates → fires → silence path closes window', () => {
   it('indexes a routine when workspace:applied carries .ax/routines/r.md', async () => {
@@ -219,6 +258,98 @@ describe('Phase B canary — routine creates → fires → silence path closes w
     expect(captured.invokes).toHaveLength(1);
     expect(captured.drops).toEqual([]);
     expect(captured.hides).toEqual([]);
+  });
+
+  // TASK-679: a fire used to be recorded TWICE — once by
+  // whoever dispatched it (`routines:fire-now`, the tick) with `ok`, meaning
+  // only "agent:invoke was started", and again by the chat:turn-end
+  // subscriber with the real outcome. A silent fire therefore left an `ok`
+  // row beside its `silenced` one, and the Activity tab rendered the `ok`
+  // twin as "Ran heartbeat" every day. One fire, one row.
+  it('fire-now: a silent fire writes exactly ONE fire row, and it is silenced (TASK-679)', async () => {
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
+    });
+
+    // Awaiting the call means the dispatcher's own write (if any) has landed.
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+    });
+
+    const statuses = await settledFireStatuses('agt_a');
+    expect(statuses).toEqual(['silenced']);
+  });
+
+  it('fire-now: a fire with a real reply writes exactly ONE fire row, and it is ok (TASK-679)', async () => {
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'real reply text' }] });
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
+    });
+
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+    });
+
+    const statuses = await settledFireStatuses('agt_a');
+    expect(statuses).toEqual(['ok']);
+  });
+
+  // The prod report, end to end: the seeded daily heartbeat, materialized and
+  // fired by the plugin's OWN tick loop (not a hand-called runTickOnce), for an
+  // agent whose reply is the silence token.
+  it.each([
+    { reply: 'HEARTBEAT_OK', want: 'silenced' },
+    { reply: 'Two things need your attention today.', want: 'ok' },
+  ])('tick: the default heartbeat replying "$reply" writes exactly ONE row, $want (TASK-679)', async ({ reply, want }) => {
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const t0 = new Date('2031-03-01T00:00:00Z');
+    let now = t0;
+    const clock: Clock = { now: () => now, sleep: systemClock.sleep };
+    await makeHarness(
+      captured,
+      { contentBlocks: [{ type: 'text', text: reply }] },
+      { agents: [{ agentId: 'agt_hb', ownerUserId: 'u1' }], clock },
+    );
+
+    const k = new Kysely<RoutinesDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+    });
+    try {
+      // Tick 1 materializes the heartbeat (created_at = t0; not yet due).
+      await vi.waitFor(async () => {
+        const rows = await k.selectFrom('routines_v1_definitions').selectAll()
+          .where('agent_id', '=', 'agt_hb').execute();
+        expect(rows.map((r) => r.path)).toContain(HEARTBEAT_PATH);
+      }, { timeout: 10_000, interval: 25 });
+
+      // A day and an hour later it is due; the next tick fires it once. The
+      // clock then stands still, so it is not due again.
+      const t1 = new Date(t0.getTime() + 25 * 3600 * 1000);
+      now = t1;
+
+      // `advance` (last_run_at) is the tick's LAST write for a fire, after any
+      // recordFire of its own — so once it lands, every row that fire will
+      // ever get from the tick is in the table.
+      await vi.waitFor(async () => {
+        const row = await k.selectFrom('routines_v1_definitions').selectAll()
+          .where('agent_id', '=', 'agt_hb').where('path', '=', HEARTBEAT_PATH)
+          .executeTakeFirstOrThrow();
+        expect(row.last_run_at?.getTime()).toBe(t1.getTime());
+      }, { timeout: 10_000, interval: 25 });
+    } finally {
+      await k.destroy();
+    }
+
+    expect(captured.invokes).toHaveLength(1);
+    const statuses = await settledFireStatuses('agt_hb');
+    expect(statuses).toEqual([want]);
   });
 
   it('shared routine reuses the same conversation across fires (find-or-create)', async () => {

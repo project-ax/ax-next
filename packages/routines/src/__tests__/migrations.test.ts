@@ -330,6 +330,50 @@ describe('runRoutinesMigration', () => {
     });
   });
 
+  it('drops the ok twin of a silenced fire, keeps everything else, and is a no-op on re-run (TASK-679)', async () => {
+    await runRoutinesMigration(db);
+    const t = (s: string) => new Date(`2031-01-01T${s}Z`);
+    const HB = 'default:default-heartbeat-2026-05-19';
+    const rows = [
+      // 1: pre-fix silent heartbeat — ok twin (DROP) + silenced (keep)
+      { id: 1, agent_id: 'a1', path: HB, fired_at: t('10:00:00'), trigger_source: 'tick', conversation_id: 'c1', status: 'ok' },
+      { id: 2, agent_id: 'a1', path: HB, fired_at: t('10:00:11'), trigger_source: 'tick', conversation_id: 'c1', status: 'silenced' },
+      // 2: silenced row more than a minute later — not a twin (keep both)
+      { id: 3, agent_id: 'a1', path: HB, fired_at: t('11:00:00'), trigger_source: 'tick', conversation_id: 'c1', status: 'ok' },
+      { id: 4, agent_id: 'a1', path: HB, fired_at: t('11:02:00'), trigger_source: 'tick', conversation_id: 'c1', status: 'silenced' },
+      // 3: another agent's silenced row — not a twin (keep)
+      { id: 5, agent_id: 'a2', path: HB, fired_at: t('12:00:00'), trigger_source: 'tick', conversation_id: 'c2', status: 'ok' },
+      { id: 6, agent_id: 'a3', path: HB, fired_at: t('12:00:05'), trigger_source: 'tick', conversation_id: 'c2', status: 'silenced' },
+      // 4: webhook never wrote a dispatch row — its ok is real (keep)
+      { id: 7, agent_id: 'a1', path: 'w.md', fired_at: t('13:00:00'), trigger_source: 'webhook', conversation_id: 'c3', status: 'ok' },
+      { id: 8, agent_id: 'a1', path: 'w.md', fired_at: t('13:00:05'), trigger_source: 'webhook', conversation_id: 'c3', status: 'silenced' },
+      // 5: pre-fix NON-silent fire — ok + ok; not cleaned (keep both)
+      { id: 9, agent_id: 'a1', path: 'r.md', fired_at: t('14:00:00'), trigger_source: 'manual', conversation_id: 'c4', status: 'ok' },
+      { id: 10, agent_id: 'a1', path: 'r.md', fired_at: t('14:00:09'), trigger_source: 'manual', conversation_id: 'c4', status: 'ok' },
+      // 6: a different conversation (per-fire) — not a twin (keep)
+      { id: 11, agent_id: 'a1', path: 'p.md', fired_at: t('15:00:00'), trigger_source: 'tick', conversation_id: 'c5', status: 'ok' },
+      { id: 12, agent_id: 'a1', path: 'p.md', fired_at: t('15:00:05'), trigger_source: 'tick', conversation_id: 'c6', status: 'silenced' },
+      // 7: pre-fix silent manual fire — ok twin (DROP) + silenced (keep)
+      { id: 13, agent_id: 'a1', path: 'm.md', fired_at: t('16:00:00'), trigger_source: 'manual', conversation_id: 'c7', status: 'ok' },
+      { id: 14, agent_id: 'a1', path: 'm.md', fired_at: t('16:00:03'), trigger_source: 'manual', conversation_id: 'c7', status: 'silenced' },
+    ] as const;
+    for (const r of rows) {
+      await sql`
+        INSERT INTO routines_v1_fires (id, agent_id, path, fired_at, trigger_source, conversation_id, status)
+        VALUES (${r.id}, ${r.agent_id}, ${r.path}, ${r.fired_at}, ${r.trigger_source}, ${r.conversation_id}, ${r.status})
+      `.execute(db);
+    }
+
+    await runRoutinesMigration(db);
+    const ids = async () => (await db.selectFrom('routines_v1_fires').select('id')
+      .orderBy('id').execute()).map((r) => Number(r.id));
+    const after = rows.map((r) => r.id).filter((id) => id !== 1 && id !== 13);
+    expect(await ids()).toEqual(after);
+
+    await runRoutinesMigration(db);
+    expect(await ids()).toEqual(after);
+  });
+
   it('routines_v1_definitions_default_idx exists', async () => {
     await runRoutinesMigration(db);
     const r = await sql<{ indexname: string }>`

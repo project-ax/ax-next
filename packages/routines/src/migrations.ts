@@ -385,4 +385,39 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
      WHERE owner_user_id = '@ax/routines/defaults'
        AND definition_id IS NOT NULL
   `.execute(db);
+
+  // TASK-679 cleanup: drop the `ok` twin of every silenced fire written
+  // before the fix. The tick and `routines:fire-now` used to write an `ok`
+  // row at dispatch ("agent:invoke was started") and the chat:turn-end
+  // subscriber a second row with the real outcome ~10s later; for a silent
+  // fire the `ok` twin rendered in Activity as "Ran heartbeat". Idempotent by
+  // construction: fixed code never writes the dispatch row, so once the old
+  // twins are gone this matches nothing.
+  //
+  // A twin is the `ok` row followed within a minute by a `silenced` row of
+  // the same routine, conversation and trigger. `webhook` is excluded — that
+  // path never wrote a dispatch row, so an `ok` there is always real. What
+  // the data cannot tell apart: a manual fire with a real reply followed
+  // within the minute by a SECOND manual fire that went silent, on a shared
+  // conversation. That `ok` row goes too; the cost is one lost log line.
+  // Cost: like every statement here it re-runs on each boot; the silenced
+  // side is served by routines_v1_fires_by_routine, the `ok` side is a scan
+  // of the fires table — one pass per host start, and deleting nothing after
+  // the first.
+  // Not cleaned: the `ok` + `ok` pairs a non-silent fire left. Those are
+  // harder to tell from two real fires, and neither is hidden by the bug.
+  await sql`
+    DELETE FROM routines_v1_fires f
+     USING routines_v1_fires s
+     WHERE f.status = 'ok'
+       AND s.status = 'silenced'
+       AND f.trigger_source IN ('tick', 'manual')
+       AND s.trigger_source = f.trigger_source
+       AND s.agent_id = f.agent_id
+       AND s.path = f.path
+       AND s.conversation_id IS NOT DISTINCT FROM f.conversation_id
+       AND s.id > f.id
+       AND s.fired_at >= f.fired_at
+       AND s.fired_at < f.fired_at + interval '60 seconds'
+  `.execute(db);
 }

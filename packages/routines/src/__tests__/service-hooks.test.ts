@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
@@ -25,6 +25,7 @@ const harnesses: TestHarness[] = [];
 const AGENT_OWNERS: Record<string, string> = { 'agt_a': 'u1', 'agt_owned': 'owner-1' };
 
 async function harness(): Promise<TestHarness> {
+  const busRef: { current: TestHarness | undefined } = { current: undefined };
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_ctx, input: unknown) => {
@@ -50,7 +51,15 @@ async function harness(): Promise<TestHarness> {
       'conversations:create': async () => ({ conversationId: 'cnv_y' }),
       'conversations:drop-turn': async () => undefined,
       'conversations:hide': async () => undefined,
-      'agent:invoke': async () => ({ kind: 'complete', messages: [] }),
+      // A real turn ends before its invoke settles, and a fire's one row is
+      // written at that turn end (TASK-679) — so the stub ends one.
+      'agent:invoke': async (ctx) => {
+        await busRef.current!.bus.fire('chat:turn-end', ctx, {
+          reqId: ctx.reqId, turnId: 'turn-1',
+          contentBlocks: [{ type: 'text', text: 'done' }],
+        });
+        return { kind: 'complete', messages: [] };
+      },
       'credentials:get': async () => 'secret',
       'http:register-route': async () => ({ unregister: () => {} }),
       'workspace:apply': async () => ({
@@ -63,6 +72,7 @@ async function harness(): Promise<TestHarness> {
       createRoutinesPlugin({ tickIntervalMs: 60_000 }),
     ],
   });
+  busRef.current = h;
   harnesses.push(h);
   return h;
 }
@@ -127,10 +137,18 @@ describe('routines:fire-now', () => {
       agentId: 'agt_a', path: '.ax/routines/r.md',
     });
     expect((out as { status: string }).status).toBe('ok');
-    const fires = await k.selectFrom('routines_v1_fires').selectAll().execute();
-    expect(fires).toHaveLength(1);
-    expect(fires[0]!.trigger_source).toBe('manual');
-    await k.destroy();
+    try {
+      // The row lands when the fire's turn ends, in the background of the
+      // call — poll for it rather than counting microtasks.
+      await vi.waitFor(async () => {
+        const fires = await k.selectFrom('routines_v1_fires').selectAll().execute();
+        expect(fires).toHaveLength(1);
+        expect(fires[0]!.trigger_source).toBe('manual');
+        expect(fires[0]!.status).toBe('ok');
+      }, { timeout: 5_000, interval: 25 });
+    } finally {
+      await k.destroy();
+    }
   });
 
   it('throws not-found for an unknown routine', async () => {
