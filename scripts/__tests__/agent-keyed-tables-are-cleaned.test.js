@@ -226,18 +226,32 @@ function scan() {
 /** Does this package delete rows from `table` outside its migration/schema files? */
 export function deletesFrom(files, table) {
   const kysely = new RegExp(`deleteFrom\\(\\s*['"\`]${table}(?:\\s+as\\s+\\w+)?['"\`]`);
-  const sql = new RegExp(`DELETE\\s+FROM\\s+${table}\\b`, 'i');
+  // A raw DELETE counts only where it is EXECUTED: inside a `sql\`...\`` tag or
+  // handed to `prepare(` / `exec(` / `query(`. The bare words "DELETE FROM <table>"
+  // also turn up in error messages (@ax/session-postgres names its inbox delete in
+  // a corruption message), and a guard that counts prose passes with the real
+  // delete removed -- a mutant proved it.
+  const raw = new RegExp(
+    `(?:\\bsql|\\.prepare\\(|\\.exec\\(|\\.query\\()\\s*\`[^\`]*?DELETE\\s+FROM\\s+${table}\\b`,
+    'i',
+  );
   // `const table = 'decisions_v1_decisions'; ... db.deleteFrom(table)`: the store
   // names its table once and passes the name around.
   const named = new RegExp(`\\bconst\\s+(\\w+)(?::\\s*[\\w.]+)?\\s*=\\s*['"\`]${table}['"\`]`, 'g');
   return files.some(({ rel, text }) => {
     if (/(^|\/)(migrations?|schema)\.[a-z]+$/.test(rel)) return false;
-    if (kysely.test(text) || sql.test(text)) return true;
-    for (const m of text.matchAll(named)) {
-      if (new RegExp(`deleteFrom\\(\\s*${m[1]}\\s*\\)`).test(text)) return true;
+    const code = stripComments(text);
+    if (kysely.test(code) || raw.test(code)) return true;
+    for (const m of code.matchAll(named)) {
+      if (new RegExp(`deleteFrom\\(\\s*${m[1]}\\s*\\)`).test(code)) return true;
     }
     return false;
   });
+}
+
+/** Drop block comments and `//` line comments (not the `//` of a URL). */
+function stripComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
 }
 
 /** Does this package react to the agent, or its conversations, going away? */
@@ -367,6 +381,16 @@ describe('agent-scoped tables are cleaned when their agent is deleted (TASK-718)
       expect(deletesFrom([file('p/store.ts', 'await sql`DELETE FROM t_v1 WHERE x`')], 't_v1')).toBe(true);
       expect(deletesFrom([file('p/migrations.ts', "deleteFrom('t_v1')")], 't_v1')).toBe(false);
       expect(deletesFrom([file('p/store.ts', "db.deleteFrom('t_v1_other')")], 't_v1')).toBe(false);
+      // Prose that merely NAMES the statement is not a cleanup (the session-postgres
+      // inbox carries such a message), and neither is a delete that is commented out.
+      expect(
+        deletesFrom([file('p/inbox.ts', 'throw new Error(`corrupt row (DELETE FROM t_v1 WHERE id = 1).`)')], 't_v1'),
+      ).toBe(false);
+      expect(deletesFrom([file('p/store.ts', "// db.deleteFrom('t_v1').execute()")], 't_v1')).toBe(false);
+      expect(deletesFrom([file('p/store.ts', "/* db.deleteFrom('t_v1') */")], 't_v1')).toBe(false);
+      // The executed raw forms: a better-sqlite3 prepare, and a pg query string.
+      expect(deletesFrom([file('p/purge.ts', 'db.prepare(`DELETE FROM t_v1 WHERE k = ?`).run(k)')], 't_v1')).toBe(true);
+      expect(deletesFrom([file('p/purge.ts', 'await c.query(`DELETE FROM t_v1 WHERE k = $1`, [k])')], 't_v1')).toBe(true);
       // The table named once in a const, the way @ax/decisions does it...
       expect(
         deletesFrom([file('p/store.ts', "const table = 't_v1';\nawait db.deleteFrom(table).execute();")], 't_v1'),
