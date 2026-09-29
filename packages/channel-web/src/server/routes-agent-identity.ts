@@ -170,13 +170,22 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
       // and it has to be a real user — putting a teamId there mints a
       // synthetic actor in the audit trail.
       //
-      // Lifting this is a product decision, not a code cleanup, and it has
-      // two halves nobody has answered: (a) whom do we attribute a team
-      // agent's identity edit to — presumably the acting member, `userId`
-      // above, which agents:resolve has already proven is a member — and
-      // (b) may ANY team member rewrite a shared agent's identity, or does
-      // that need its own grant? Until both have an answer, refuse. See
-      // TASK-414.
+      // Lifting this is a product decision, not a code cleanup. It was made
+      // (TASK-465, 2026-09-28): KEEP the refusal. The two halves now have
+      // answers, but the second one depends on something that does not
+      // exist yet:
+      //   (a) Attribution — credit the ACTING member (`userId` above, which
+      //       agents:resolve has already proven is a member), never the
+      //       team id. Never route `out.agent.ownerId` into ctx.userId here.
+      //   (b) Authority — owners/admins of the team only (or an explicit
+      //       grant), NOT any member. A shared agent's name and persona are
+      //       how every other member recognises it.
+      // Revisit when a team ROLE model exists (today agents:resolve only
+      // answers "is a member", with no owner/admin distinction). Then allow
+      // team owners/admins (or an explicit grant) and pass the acting
+      // member through as the workspace ctx's userId. Until then, refuse —
+      // `returns 403 for a team agent` in routes-agent-identity.test.ts pins
+      // this for both GET and PUT. See TASK-414, TASK-465.
       if (out.agent.ownerType !== 'user') {
         res.status(403).json({ error: 'forbidden' });
         return null;

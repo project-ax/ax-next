@@ -159,7 +159,9 @@ describe('GET /admin/agents/:id/identity', () => {
     expect(captured.statusCode).toBe(403);
   });
 
-  it('returns 403 for a team agent (no single-owner workspace ctx)', async () => {
+  // Kept on purpose (TASK-465): a team agent's ownerId is a teamId, so there is
+  // no real user to attribute an edit to until a team role model exists.
+  it('returns 403 for a team agent (ownerId is a teamId — no real actor to attribute)', async () => {
     const { bus } = busWith({ resolve: { ownerId: 't1', ownerType: 'team' } });
     const h = makeAgentIdentityHandlers({ bus, initCtx });
     const { res, captured } = fakeRes();
@@ -270,5 +272,24 @@ describe('PUT /admin/agents/:id/identity', () => {
     const { res, captured } = fakeRes();
     await h.save(fakeReq({ params: { id: 'agt-1' }, body: { identity: 'x', soul: 'y' } }), res);
     expect(captured.statusCode).toBe(401);
+  });
+
+  // The write path is where the refusal matters: without it, the edit would be
+  // committed with ctx.userId = the TEAM id, a synthetic actor in the audit
+  // trail. Kept on purpose until a team role model exists (TASK-465).
+  it('returns 403 for a team agent and never writes (ownerId is a teamId)', async () => {
+    const { bus, applies } = busWith({
+      user: { id: 'member-1', isAdmin: false },
+      resolve: { ownerId: 't1', ownerType: 'team' },
+    });
+    const h = makeAgentIdentityHandlers({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await h.save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'I am Ada.', soul: 'I value clarity.' } }),
+      res,
+    );
+    expect(captured.statusCode).toBe(403);
+    expect(captured.body).toEqual({ error: 'forbidden' });
+    expect(applies).toHaveLength(0);
   });
 });
