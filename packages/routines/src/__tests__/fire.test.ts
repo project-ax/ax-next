@@ -308,11 +308,31 @@ describe('createFireRoutine — webhook payload templating (Phase C)', () => {
       expect(recorded).toEqual([]);
     });
 
+    it('a complete outcome with no turn end records one error row once the grace runs out', async () => {
+      const pending: PendingFires = new Map();
+      const bus = await makeBus({});
+      const recorded: RecordFireInput[] = [];
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const fire = createFireRoutine({
+          bus, pending, recordFire: async (i) => { recorded.push(i); }, turnEndGraceMs: 0,
+        });
+        await fire(row(), 'tick');
+        await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(recorded[0]).toMatchObject({ status: 'error', triggerSource: 'tick' });
+      expect(pending.size).toBe(0);
+    });
+
     it('a complete outcome leaves the row to the turn end', async () => {
       const pending: PendingFires = new Map();
       const bus = await makeBus({});
       const recorded: RecordFireInput[] = [];
-      const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
+      const fire = createFireRoutine({
+        bus, pending, recordFire: async (i) => { recorded.push(i); }, turnEndGraceMs: 60_000,
+      });
       await fire(row(), 'tick');
       await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));

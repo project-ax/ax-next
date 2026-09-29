@@ -24,7 +24,18 @@ export interface FireDeps {
    * `Map#delete` returns true to exactly one of them.
    */
   recordFire: (input: RecordFireInput) => Promise<unknown>;
+  /**
+   * How long after an invoke settles `complete` to wait for its turn end
+   * before giving up and recording the fire as an error. Default 60s. The
+   * turn end normally arrives BEFORE the invoke settles; the grace only
+   * absorbs callback ordering, and the backstop means a turn end that never
+   * matches (a runner bug, a lost reqId) can't make a fire vanish from the
+   * log or leave its pending entry behind forever.
+   */
+  turnEndGraceMs?: number;
 }
+
+const DEFAULT_TURN_END_GRACE_MS = 60_000;
 
 let nextReqIdCounter = 0;
 function makeReqId(): string {
@@ -169,7 +180,8 @@ export function createFireRoutine(deps: FireDeps) {
     // The invoke settles AFTER its turn in the ordinary case, so on success
     // the chat:turn-end subscriber has already taken the pending entry and
     // written the row. Only when the entry is still ours — the invoke threw,
-    // or came back `terminated` without a turn ever ending — is this the
+    // came back `terminated` without a turn ever ending, or came back
+    // `complete` and no turn end claimed it within the grace — is this the
     // fire's one row, and then it is an error: a fire that never produced a
     // turn must not vanish from the log (routines design §5.2, "errors are
     // visible").
@@ -201,6 +213,12 @@ export function createFireRoutine(deps: FireDeps) {
       (outcome) => {
         if (outcome?.kind === 'terminated') {
           return settleWithoutTurn(`terminated: ${String(outcome.reason ?? 'unknown')}`);
+        }
+        if (deps.pending.has(reqId)) {
+          const timer = setTimeout(() => {
+            void settleWithoutTurn('the run finished without reporting a result');
+          }, deps.turnEndGraceMs ?? DEFAULT_TURN_END_GRACE_MS);
+          timer.unref?.();
         }
         return undefined;
       },

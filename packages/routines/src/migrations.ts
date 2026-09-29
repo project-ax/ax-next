@@ -400,6 +400,10 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
   // the data cannot tell apart: a manual fire with a real reply followed
   // within the minute by a SECOND manual fire that went silent, on a shared
   // conversation. That `ok` row goes too; the cost is one lost log line.
+  // Cost: like every statement here it re-runs on each boot; the silenced
+  // side is served by routines_v1_fires_by_routine, the `ok` side is a scan
+  // of the fires table — one pass per host start, and deleting nothing after
+  // the first.
   // Not cleaned: the `ok` + `ok` pairs a non-silent fire left. Those are
   // harder to tell from two real fires, and neither is hidden by the bug.
   await sql`

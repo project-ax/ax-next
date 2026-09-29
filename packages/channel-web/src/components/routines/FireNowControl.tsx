@@ -7,9 +7,13 @@
  *     Submit. This avoids a nested-Dialog which would create
  *     focus-trap / aria headaches when a modal is open over the Routines tab.
  *
- * Any fire that reaches the store — success or failure — bumps the parent's
- * refresh key so the routine's last_status / last_run_at reflect the new row
- * immediately.
+ * Any response — success or failure — bumps the parent's refresh key. A fire
+ * that failed to START has its fire row by then; one that started gets its row
+ * only when the agent's turn ends, seconds later (TASK-679: the row used to be
+ * written twice, once here at dispatch as `ok`), so the refetch right after a
+ * successful click may not show it yet. The success copy says "running it
+ * now" for exactly that reason. Manual fires never touch last_status /
+ * last_run_at (only the tick advances those).
  *
  * The inline confirmation is driven by the returned `status` alone. It used to
  * interpolate a `fireId`, which was the store's `BIGSERIAL` row id; that is
@@ -43,12 +47,12 @@ export function FireNowControl({ routine, onFired }: Props) {
         path: routine.path,
         ...(parsedPayload !== undefined ? { payload: parsedPayload } : {}),
       });
-      // Every branch that RETURNS a response has already recorded its fire
-      // row, the failures included, so the parent refetches either way —
-      // otherwise the routine's last_status and the recent-fires list stay
-      // stale on exactly the runs worth looking at. A thrown failure (an
-      // unknown routine, a network error) writes no row and never reaches
-      // here, which is correct.
+      // A failure to start has already recorded its fire row by the time it
+      // returns, so the parent refetches — otherwise the recent-fires list
+      // stays stale on exactly the runs worth looking at. A started fire's
+      // row lands when its turn ends (TASK-679), after this refetch; see the
+      // header. A thrown failure (an unknown routine, a network error)
+      // writes no row and never reaches here, which is correct.
       onFired();
       if (out.status === 'ok') {
         setStatus({ kind: 'ok', text: 'Started — the agent is running it now.' });
