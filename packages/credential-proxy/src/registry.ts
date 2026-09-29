@@ -23,13 +23,19 @@ import type { Replacer } from './request-framer.js';
 
 /**
  * Canonical form of a host for binding comparison. Exact-match semantics
- * (mirrors the listener's allowlist): case-folded and trimmed, nothing else — no
- * wildcards, no port, no trailing-dot folding. A host that cannot be matched
- * exactly simply never matches, which fails toward "placeholder forwarded
- * verbatim", never toward an over-broad substitution.
+ * (mirrors the listener's allowlist): ASCII-case-folded and trimmed, nothing
+ * else — no wildcards, no port, no trailing-dot folding. A host that cannot be
+ * matched exactly simply never matches, which fails toward "placeholder
+ * forwarded verbatim", never toward an over-broad substitution.
+ *
+ * The fold is ASCII-only ON PURPOSE. `String.prototype.toLowerCase` applies
+ * Unicode case mapping, under which a non-ASCII look-alike collapses onto an
+ * ASCII letter (U+212A KELVIN SIGN lowercases to `k`), so a hostname spelled
+ * with one could be made to equal a bound host it is not. Hostnames are ASCII
+ * (LDH) by the time they reach the proxy; anything else must not match.
  */
 function normalizeHost(host: string): string {
-  return host.trim().toLowerCase();
+  return host.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
 }
 
 /** A replacer that substitutes nothing. Returned when there is nothing to bind. */

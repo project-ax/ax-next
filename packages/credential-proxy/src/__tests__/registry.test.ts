@@ -69,6 +69,22 @@ describe('CredentialPlaceholderMap', () => {
       expect(m.forHost('api.provider.test.evil.test').replaceAll(ph)).toBe(ph);
     });
 
+    it('folds case for ASCII ONLY: a Unicode look-alike (U+212A KELVIN SIGN) never equals the ASCII letter', () => {
+      // 'K'.toLowerCase() === 'k' under Unicode case mapping, so a lookup host
+      // spelled with a Kelvin sign would collide with a bound host that has a
+      // plain 'k'. Hostnames are ASCII by the time they reach the proxy; a
+      // non-ASCII spelling must never match, on either side.
+      const kelvin = 'K';
+      expect(kelvin.toLowerCase()).toBe('k'); // the premise of this test
+      const m = new CredentialPlaceholderMap();
+      const ph = m.register('K', 'v', ['api.kagi.test']);
+      expect(m.forHost('api.kagi.test').replaceAll(ph)).toBe('v');
+      expect(m.forHost(`api.${kelvin}agi.test`).replaceAll(ph)).toBe(ph);
+      const m2 = new CredentialPlaceholderMap();
+      const ph2 = m2.register('K', 'v', [`api.${kelvin}agi.test`]);
+      expect(m2.forHost('api.kagi.test').replaceAll(ph2)).toBe(ph2);
+    });
+
     it('trims surrounding whitespace on the binding and the lookup', () => {
       const m = new CredentialPlaceholderMap();
       const ph = m.register('K', 'v', ['  api.provider.test  ']);
