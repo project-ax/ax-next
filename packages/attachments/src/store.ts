@@ -96,7 +96,23 @@ export interface AttachmentsStore {
   upsertArtifact(input: FileRowInsert): Promise<void>;
   /** Resolve a published artifact by (conversationId, path). Null if absent. */
   getArtifactByPath(conversationId: string, path: string): Promise<FileRow | null>;
+
+  // --- TASK-718: conversation purge ---
+  /**
+   * Delete every committed-upload (`attachments_v1_files`) and published-artifact
+   * (`attachments_v1_artifacts`) row that belongs to one of `conversationIds`, in
+   * one transaction. Returns how many rows went from each table. An empty list
+   * is a no-op. Never touches `attachments_v1_temps` (pre-commit uploads carry
+   * no conversation id; the TTL janitor owns them) and never touches blob bytes.
+   */
+  purgeForConversations(
+    conversationIds: string[],
+  ): Promise<{ files: number; artifacts: number }>;
 }
+
+// Postgres caps one statement at 65535 bind parameters. The plugin already caps
+// what it accepts far below that; this keeps the store safe for any caller.
+const PURGE_ID_CHUNK = 1000;
 
 export function createAttachmentsStore(
   db: Kysely<AttachmentsDatabase>,
@@ -323,6 +339,39 @@ export function createAttachmentsStore(
         mediaType: row.media_type,
         sizeBytes: Number(row.size_bytes),
       };
+    },
+
+    async purgeForConversations(conversationIds) {
+      if (conversationIds.length === 0) return { files: 0, artifacts: 0 };
+      // Files and artifacts go together or not at all: a half-purged
+      // conversation would leave downloads resolving for one namespace and 404ing
+      // for the other.
+      return db.transaction().execute(async (trx) => {
+        let files = 0;
+        let artifacts = 0;
+        for (let i = 0; i < conversationIds.length; i += PURGE_ID_CHUNK) {
+          const chunk = conversationIds.slice(i, i + PURGE_ID_CHUNK);
+          // Rows only. The blob bytes these rows pointed at are deliberately
+          // left in place: blobs are content-addressed and shared across users
+          // (one sha256 can back another tenant's file), so deleting by sha256
+          // would need a cross-plugin reference authority, and a
+          // check-then-delete would race a concurrent commit of the same bytes.
+          // With the rows gone no path maps to the sha, so the bytes are
+          // unreachable, not leaked-and-readable. Reclaiming them is a
+          // follow-up card, not this delete.
+          const f = await trx
+            .deleteFrom('attachments_v1_files')
+            .where('conversation_id', 'in', chunk)
+            .executeTakeFirst();
+          const a = await trx
+            .deleteFrom('attachments_v1_artifacts')
+            .where('conversation_id', 'in', chunk)
+            .executeTakeFirst();
+          files += Number(f.numDeletedRows);
+          artifacts += Number(a.numDeletedRows);
+        }
+        return { files, artifacts };
+      });
     },
   };
 }
