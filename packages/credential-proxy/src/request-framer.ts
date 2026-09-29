@@ -65,11 +65,50 @@ export function transformBasicAuthHead(
 
 const DEFAULT_MAX_HEAD = 64 * 1024;
 
+/**
+ * What the framer knows about one request head, handed to a metered tunnel's
+ * policy BEFORE anything is forwarded or substituted.
+ */
+export interface RequestHeadInfo {
+  /** Request method as written (upper-case letters only). */
+  method: string;
+  /** Request target as written, e.g. `/v1/messages?beta=true`. */
+  target: string;
+  /** `HTTP/1.1` is the only version a metered request may use. */
+  version: string;
+  /** Body length from `Content-Length`, or null when the body is chunked. */
+  contentLength: number | null;
+}
+
+/** What a metered tunnel decides for one request head (TASK-715). */
+export type RequestVerdict =
+  /** Splice the credential (it matches an allowed request and the gate admitted it). */
+  | { kind: 'splice' }
+  /** Not an allowed request: forward it with NO substitution (the placeholder stays inert). */
+  | { kind: 'plain' }
+  /** Refuse it: nothing is forwarded, the caller answers `status` and closes the tunnel. */
+  | { kind: 'deny'; status: number; reason: string; message: string };
+
+/**
+ * Per-tunnel policy for a tunnel to a metered host. The framer asks it once per
+ * request head; `splice` is the ONLY verdict under which a credential is
+ * substituted, so the gate, the endpoint allowlist and the meter cannot be
+ * walked around by any request the framer sees.
+ */
+export interface MeteredRequestPolicy {
+  onRequestHead(info: RequestHeadInfo): RequestVerdict;
+}
+
 export interface FramerOptions {
   /** Cap on a single buffered request head; exceeding it falls back to verbatim passthrough. */
   maxHeadBytes?: number;
   /** Called once when a head exceeds `maxHeadBytes` (for logging). */
   onOversizedHead?: () => void;
+  /**
+   * Set only for a tunnel to a metered host. Without it the framer behaves
+   * exactly as it always has (substitute every head with the tunnel's replacer).
+   */
+  metered?: MeteredRequestPolicy;
 }
 
 export interface FramerOutput {
@@ -83,9 +122,63 @@ export interface FramerOutput {
    * reframing a buffered multi-chunk head also changes the bytes but injects nothing.
    */
   injected: boolean;
+  /**
+   * Set when a metered policy refused a request head. `out` then holds only the
+   * bytes of requests admitted BEFORE it; the refused request and everything
+   * after it are dropped and the framer accepts no more input. The caller must
+   * answer the client and close the tunnel.
+   */
+  denied?: { status: number; reason: string; message: string };
 }
 
-type Phase = 'head' | 'body-counted' | 'passthrough';
+type Phase = 'head' | 'body-counted' | 'passthrough' | 'dead';
+
+const NOOP_REPLACER: Replacer = Object.freeze({
+  replaceAll: (input: string): string => input,
+  replaceAllBuffer: (input: Buffer): Buffer => input,
+});
+
+const REQUEST_LINE_RE = /^([A-Z]{1,16}) (\S{1,8192}) (HTTP\/1\.[01])$/;
+
+/**
+ * Parse the request line and body framing of a complete request head. Null when
+ * the request line is not `METHOD SP target SP HTTP/1.x`: a metered tunnel
+ * refuses such a head outright (a real client never sends one, and a head the
+ * framer and the upstream might read differently is how request/response
+ * pairing gets skewed).
+ */
+export function parseRequestHead(head: Buffer): RequestHeadInfo | null {
+  const text = head.toString('latin1');
+  const eol = text.indexOf('\r\n');
+  const m = REQUEST_LINE_RE.exec(eol < 0 ? '' : text.slice(0, eol));
+  if (m === null) return null;
+  const f = parseBodyFraming(head);
+  return {
+    method: m[1]!,
+    target: m[2]!,
+    version: m[3]!,
+    contentLength: f.chunked ? null : f.contentLength,
+  };
+}
+
+/**
+ * Replace whatever `Accept-Encoding` the client sent with `identity`, so the
+ * response comes back readable by the usage meter. A head with an obsolete
+ * folded header line is returned untouched: editing around a fold could attach
+ * its continuation to the wrong header, and an encoded response is merely
+ * charged as unmeasured (never free).
+ */
+export function forceIdentityEncoding(head: Buffer): Buffer {
+  const lines = head.toString('latin1').split('\r\n');
+  // A complete head ends `...\r\n\r\n`, so the last two entries are empty.
+  if (lines.length < 3 || lines[lines.length - 1] !== '' || lines[lines.length - 2] !== '') return head;
+  for (let i = 1; i < lines.length - 2; i++) {
+    if (/^[ \t]/.test(lines[i]!)) return head;
+  }
+  const kept = lines.filter((l, i) => i === 0 || !/^accept-encoding[ \t]*:/i.test(l));
+  kept.splice(kept.length - 2, 0, 'Accept-Encoding: identity');
+  return Buffer.from(kept.join('\r\n'), 'latin1');
+}
 
 function indexOfCrlfCrlf(buf: Buffer): number {
   return buf.indexOf('\r\n\r\n', 0, 'latin1');
@@ -160,13 +253,27 @@ export class RequestFramer {
     // changes the bytes without injecting anything). Bodies are NEVER passed
     // through this — see the class docstring (framing integrity + leak
     // containment).
-    const subHead = (b: Buffer): Buffer => {
-      const r = this.replacer.replaceAllBuffer(b);
+    const subHead = (b: Buffer, replacer: Replacer = this.replacer): Buffer => {
+      const r = replacer.replaceAllBuffer(b);
       if (r !== b) injected = true;
       return r;
     };
+    const policy = this.opts.metered;
+    const refuse = (status: number, reason: string, message: string): FramerOutput => {
+      // Nothing from the refused request is forwarded, and nothing after it is
+      // read: the caller answers the client and closes the tunnel.
+      this.phase = 'dead';
+      this.headBuf = Buffer.alloc(0);
+      return {
+        out: Buffer.concat(parts),
+        canaryToken: null,
+        injected,
+        denied: { status, reason, message },
+      };
+    };
     let working = chunk;
     for (;;) {
+      if (this.phase === 'dead') break;
       if (this.phase === 'passthrough') {
         // Body bytes (chunked / oversized-head tail) forwarded verbatim — no
         // substitution, so chunk-size framing and content stay byte-exact.
@@ -191,6 +298,11 @@ export class RequestFramer {
       const idx = indexOfCrlfCrlf(this.headBuf);
       if (idx < 0) {
         if (this.headBuf.length > this.maxHead) {
+          // A metered tunnel never lets an oversized head anywhere near the key.
+          if (policy !== undefined) {
+            this.opts.onOversizedHead?.();
+            return refuse(400, 'malformed-request', 'This request head is too large to forward.');
+          }
           // Oversized head = pre-terminator header bytes → header substitution.
           parts.push(subHead(this.headBuf));
           this.headBuf = Buffer.alloc(0);
@@ -203,7 +315,24 @@ export class RequestFramer {
       const head = this.headBuf.subarray(0, headEnd);
       const rest = this.headBuf.subarray(headEnd);
       this.headBuf = Buffer.alloc(0);
-      const t = transformBasicAuthHead(head, this.replacer, this.canaryTokens);
+      // Metered tunnel (TASK-715): the canary scan runs FIRST, so a request that
+      // is about to be blocked for a canary never takes a slot from the gate; then
+      // the policy decides whether THIS head may carry the credential at all.
+      let replacer: Replacer = this.replacer;
+      let identity = false;
+      if (policy !== undefined) {
+        const pre = transformBasicAuthHead(head, NOOP_REPLACER, this.canaryTokens);
+        if (pre.canaryToken) return { out: Buffer.concat(parts), canaryToken: pre.canaryToken, injected };
+        const info = parseRequestHead(head);
+        if (info === null) {
+          return refuse(400, 'malformed-request', 'This request could not be read as an HTTP/1.1 request.');
+        }
+        const verdict = policy.onRequestHead(info);
+        if (verdict.kind === 'deny') return refuse(verdict.status, verdict.reason, verdict.message);
+        if (verdict.kind === 'plain') replacer = NOOP_REPLACER;
+        else identity = true;
+      }
+      const t = transformBasicAuthHead(head, replacer, this.canaryTokens);
       if (t.canaryToken) return { out: Buffer.concat(parts), canaryToken: t.canaryToken, injected };
       if (t.head !== head) injected = true; // a Basic placeholder was substituted
       // Verbatim substitution over the Basic-transformed head too, so a
@@ -211,7 +340,9 @@ export class RequestFramer {
       // Bearer ax-cred:…`) is still replaced. Scoped to the HEAD (headers only):
       // the Basic line already holds the re-encoded real value, so this can't
       // double-substitute it, and body bytes never reach the replacer.
-      parts.push(subHead(t.head));
+      const sent = subHead(t.head, replacer);
+      // A spliced request asks for an unencoded response so the meter can read it.
+      parts.push(identity ? forceIdentityEncoding(sent) : sent);
       const framing = parseBodyFraming(head);
       if (framing.chunked) {
         this.phase = 'passthrough';

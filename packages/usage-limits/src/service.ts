@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { AgentContext } from '@ax/core';
 import type { LimitsStore } from './config.js';
 import { costMicros } from './pricing.js';
-import type { AdmitRefusal, UsageStore } from './store.js';
+import type { AdmitRefusal, ProviderVerdict, UsageStore } from './store.js';
 
 // ---------------------------------------------------------------------------
 // The gate and the meter, kept apart from the plugin wiring so they can be
@@ -11,11 +11,19 @@ import type { AdmitRefusal, UsageStore } from './store.js';
 //   admitTurn       — `chat:start`: refuse before a token is spent.
 //   recordTurnEnd   — `chat:turn-end`: charge what an agent turn cost.
 //   recordLlmUsage  — `llm:usage`: charge a host-side helper call.
+//   providerStatus  — `usage:provider-status`: may the credential proxy still
+//                     unlock this user's provider key?
+//   providerRecord  — `usage:provider-record`: charge what the proxy measured
+//                     on one model response, and answer the same question.
 //
 // Error posture is deliberately lopsided:
 //   - The GATE fails CLOSED. HookBus.fire isolates a throwing subscriber and
 //     carries on, which on a money control would mean "database down = no
 //     limits". So admitTurn never throws; any failure becomes a refusal.
+//   - The PROVIDER VERDICT fails closed the same way: providerStatus and
+//     providerRecord never throw, and any failure (no user, database down,
+//     limits unreadable) answers `blocked: true`. The proxy retries a 429, so
+//     a blip heals itself; "cannot tell" must never mean "keep the key".
 //   - The METERS never throw. A metering hiccup is one error line, never a
 //     failed turn or a failed helper call.
 // ---------------------------------------------------------------------------
@@ -54,14 +62,75 @@ const LlmUsageSchema = z.object({
   }),
 });
 
+/**
+ * One model response as the credential proxy measured it. The proxy runs on
+ * the host, but it parsed bytes that came from the provider (and, for the
+ * request size, from the sandbox), so this is parsed defensively too. `usage`
+ * is `null` when the response was billable but could not be read; a payload
+ * that does not match this at all is treated exactly like that.
+ */
+const ProviderRecordSchema = z.object({
+  model: z.string().max(200).optional().catch(undefined),
+  usage: z
+    .object({
+      inputTokens: TokenCount,
+      outputTokens: TokenCount,
+      cacheReadTokens: TokenCount,
+      cacheWriteTokens: TokenCount,
+    })
+    .nullable(),
+  requestBytes: z.number().finite().nonnegative().nullable(),
+});
+
+/**
+ * The stand-in for a billable response nobody could read ("unknown is never
+ * free"): the request's size over ~3 bytes per token, or a large flat guess
+ * when even that is unknown, plus a generous output. Always priced at the top
+ * tier whatever the model claims to be.
+ */
+const UNMEASURED_INPUT_TOKENS_UNKNOWN_SIZE = 200_000;
+const UNMEASURED_OUTPUT_TOKENS = 4096;
+const UNMEASURED_BYTES_PER_TOKEN = 3;
+
+function unmeasuredCostMicros(requestBytes: number | null): number {
+  const inputTokens =
+    requestBytes === null
+      ? UNMEASURED_INPUT_TOKENS_UNKNOWN_SIZE
+      : Math.min(MAX_TOKENS, Math.ceil(requestBytes / UNMEASURED_BYTES_PER_TOKEN));
+  return costMicros(undefined, { inputTokens, outputTokens: UNMEASURED_OUTPUT_TOKENS });
+}
+
 export interface UsageService {
   admitTurn(ctx: AgentContext): Promise<AdmitDecision>;
   recordTurnEnd(ctx: AgentContext, payload: unknown): Promise<void>;
   recordLlmUsage(ctx: AgentContext, event: unknown): Promise<void>;
+  /** Read-only verdict for `ctx.userId`. Never throws; fails closed. */
+  providerStatus(ctx: AgentContext): Promise<ProviderVerdict>;
+  /** Charge one proxy-measured response to `ctx.userId`, then return the verdict. Never throws; fails closed. */
+  providerRecord(ctx: AgentContext, payload: unknown): Promise<ProviderVerdict>;
 }
+
+const PROVIDER_UNAVAILABLE: ProviderVerdict = {
+  blocked: true,
+  reason: 'usage-check-unavailable',
+};
 
 function hasUser(ctx: AgentContext): boolean {
   return typeof ctx.userId === 'string' && ctx.userId.length > 0;
+}
+
+/** Log without ever throwing: a broken logger must not change a money decision. */
+function logQuietly(
+  ctx: AgentContext,
+  level: 'info' | 'error',
+  msg: string,
+  bindings?: Record<string, unknown>,
+): void {
+  try {
+    ctx.logger[level](msg, bindings);
+  } catch {
+    /* a broken logger must not change the answer */
+  }
 }
 
 export function createUsageService(deps: {
@@ -162,7 +231,10 @@ export function createUsageService(deps: {
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
         };
-        await store.record({
+        // Helper calls never cross the credential proxy, so their cost is kept
+        // apart from the runner-reported column: the spend expression adds it
+        // OUTSIDE the "larger of runner / proxy" comparison.
+        await store.recordHelper({
           userId: ctx.userId,
           usage: { ...u, costMicros: costMicros(parsed.data.model, u) },
           now: now(),
@@ -173,6 +245,46 @@ export function createUsageService(deps: {
         } catch {
           /* never throw from a meter */
         }
+      }
+    },
+
+    async providerStatus(ctx) {
+      try {
+        if (!hasUser(ctx)) return PROVIDER_UNAVAILABLE;
+        const current = await limits.get();
+        return await store.providerStatus({ userId: ctx.userId, limits: current, now: now() });
+      } catch (err) {
+        logQuietly(ctx, 'error', 'usage_provider_status_failed', { err });
+        return PROVIDER_UNAVAILABLE;
+      }
+    },
+
+    async providerRecord(ctx, payload) {
+      try {
+        if (!hasUser(ctx)) return PROVIDER_UNAVAILABLE;
+
+        const parsed = ProviderRecordSchema.safeParse(payload);
+        let cost: number;
+        if (parsed.success && parsed.data.usage !== null) {
+          cost = costMicros(parsed.data.model, parsed.data.usage);
+        } else {
+          // Billable but unread, or not a payload we understand: charge the
+          // estimate rather than nothing. An unparseable payload also forgets
+          // its requestBytes (we cannot trust any of it), so it pays the flat
+          // guess, never a cheaper one.
+          const requestBytes = parsed.success ? parsed.data.requestBytes : null;
+          cost = unmeasuredCostMicros(requestBytes);
+          logQuietly(ctx, 'info', 'usage_provider_unmeasured', {
+            cause: parsed.success ? 'unreadable' : 'invalid',
+          });
+        }
+        await store.recordProvider({ userId: ctx.userId, costMicros: cost, now: now() });
+        // Written BEFORE the verdict is read, so the verdict includes this call.
+        const current = await limits.get();
+        return await store.providerStatus({ userId: ctx.userId, limits: current, now: now() });
+      } catch (err) {
+        logQuietly(ctx, 'error', 'usage_provider_record_failed', { err });
+        return PROVIDER_UNAVAILABLE;
       }
     },
   };

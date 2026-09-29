@@ -50,6 +50,8 @@ import { resolveAndCheck, BlockedIPError, type Resolver } from './private-ip.js'
 import type { SharedCredentialRegistry } from './registry.js';
 import { generateDomainCert, type CAKeyPair } from './ca.js';
 import { RequestFramer, findCanaryHit } from './request-framer.js';
+import { MeteredTunnel } from './metered-tunnel.js';
+import type { ProviderMeter } from './provider-usage.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -128,6 +130,16 @@ export interface SessionConfig {
    * plugin's onAudit callback defaults to `'other'` if missing.
    */
   classification?: 'llm' | 'mcp' | 'other';
+  /**
+   * The operator's model-provider key is spent through this session, so its
+   * traffic is counted and limited (TASK-715). Set by the plugin only when
+   * `proxy:open-session` marked a credential `metered`; absent for every other
+   * session (and in tests that build a SessionConfig directly), which then
+   * behaves exactly as before. A tunnel to one of `providerMeter.hosts` splices
+   * the credential only into the meter's allowed requests, asks the meter's gate
+   * before each one, and reads the usage out of the responses.
+   */
+  providerMeter?: ProviderMeter;
   /**
    * Per-session proxy token (TASK-52 minted it for attribution; TASK-158 made
    * it the AUTHENTICATION credential). Clients send it as
@@ -212,6 +224,12 @@ export interface ProxyListenerOptions {
    * MITM path is backpressure-bounded, so this only governs plain-HTTP uploads.
    */
   maxHttpRequestBodyBytes?: number;
+  /**
+   * How long a metered tunnel (TASK-715) may be silent in both directions before
+   * it is torn down and its outstanding requests settled. Defaults to 15 minutes,
+   * longer than a model provider's own request timeout; tests shorten it.
+   */
+  meteredTunnelIdleMs?: number;
 }
 
 export interface ProxyListener {
@@ -252,6 +270,40 @@ function allowlistMissBody(hostname: string): string {
     `or ask an admin to approve it. ` +
     `(Heads-up: some CLIs download a prebuilt binary from a GitHub release — ` +
     `those need github.com AND release-assets.githubusercontent.com in allowedHosts.)`
+  );
+}
+
+/**
+ * How long a metered tunnel may be silent, in both directions, before it is
+ * torn down (and its outstanding requests settled). A provider answers or gives
+ * up well inside this; it exists only for a peer that disappears without a word.
+ */
+const METERED_TUNNEL_IDLE_MS = 15 * 60_000;
+
+/**
+ * The response a metered tunnel gives when it refuses a request (TASK-715): a
+ * complete HTTP/1.1 message in the error shape both model APIs' SDKs parse
+ * (`{ "type": "error", "error": { "type", "message" } }`), so the person or agent
+ * on the other end reads the sentence instead of a bare status. A 429 carries
+ * `Retry-After` and is retried by both SDKs, which is what lets a transient
+ * refusal (the usage check hiccupped, a burst of calls) heal itself. The message
+ * is written by the host; the JSON encoder is what keeps it from breaking out of
+ * the body.
+ */
+function refusalResponse(status: number, message: string): string {
+  const errorType =
+    status === 429 ? 'rate_limit_error' : status === 400 ? 'invalid_request_error' : 'api_error';
+  const body = JSON.stringify({ type: 'error', error: { type: errorType, message } });
+  const reasonPhrase =
+    status === 429 ? 'Too Many Requests' : status === 400 ? 'Bad Request' : 'Forbidden';
+  return (
+    `HTTP/1.1 ${status} ${reasonPhrase}\r\n` +
+    `Content-Type: application/json\r\n` +
+    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+    (status === 429 ? `Retry-After: 5\r\n` : '') +
+    `Connection: close\r\n` +
+    `\r\n` +
+    body
   );
 }
 
@@ -471,6 +523,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   const { listen, sessions, onAudit, resolver, registry, ca } = opts;
   const maxHttpRequestBodyBytes =
     opts.maxHttpRequestBodyBytes ?? DEFAULT_MAX_HTTP_REQUEST_BODY_BYTES;
+  const meteredTunnelIdleMs = opts.meteredTunnelIdleMs ?? METERED_TUNNEL_IDLE_MS;
   const activeSockets = new Set<net.Socket>();
 
   function audit(entry: ProxyAuditEntry): void {
@@ -746,8 +799,46 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // `Host: api.anthropic.com` still delivers to the host it controls. The view
     // is live (looked up per call), so closing the session stops substitution on
     // an already-open keep-alive tunnel.
+    // Bytes that arrived in the SAME segment as the CONNECT (`head`) are refused.
+    // A real client waits for the 200 below before it sends its ClientHello, so a
+    // non-empty `head` is either a client that jumped the gun (already broken:
+    // these bytes used to be written to the UPSTREAM socket, not to the TLS
+    // terminator that should read them) or someone using it as a side door — they
+    // were also run through the replacer and sent upstream around the request
+    // framer, so a plaintext HTTP request written after the CONNECT reached the
+    // provider with the real key spliced in, outside the endpoint allowlist, the
+    // gate, the meter and the canary scan (TASK-715). Nothing here reads them.
+    if (head.length > 0) {
+      clientSocket.on('error', () => { /* client already gone */ });
+      clientSocket.write(
+        'HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
+      );
+      clientSocket.end();
+      audit(stampSession({
+        action: 'proxy_request',
+        method: 'CONNECT',
+        url: target,
+        status: 400,
+        requestBytes: head.length,
+        responseBytes: 0,
+        durationMs: Date.now() - startTime,
+        blocked: 'unexpected_bytes_after_connect',
+      }, callerSession));
+      return;
+    }
+
     const replacer = registry.replacerFor(callerSessionKey, hostname);
     const domainCert = generateDomainCert(hostname, ca);
+
+    // A tunnel to a host the session's model-provider key is spent on is METERED
+    // (TASK-715): the framer asks this tunnel about every request head, and the
+    // upstream bytes are read for usage. `hostname` is the same authenticated,
+    // resolved CONNECT target the binding above keys on.
+    const meter = callerSession.providerMeter;
+    const metered =
+      meter !== undefined && meter.hosts.has(hostname.replace(/[A-Z]/g, (c) => c.toLowerCase()))
+        ? new MeteredTunnel(meter)
+        : undefined;
 
     // Tell the client the tunnel is established before kicking off TLS.
     clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -798,9 +889,12 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       }
     });
 
-    let requestBytes = head.length;
+    let requestBytes = 0;
     let responseBytes = 0;
     let credentialInjected = false;
+    // Set once a metered tunnel's refusal has been audited, so the close that
+    // follows it does not log a second, misleading 200 for the same tunnel.
+    let refusalAudited = false;
 
     // canaryTokens are computed once per connection — sessions don't change
     // mid-tunnel under our model.
@@ -816,7 +910,29 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // Oversized head → verbatim passthrough. Log the event only; never the
       // bytes (no-secret-logging, I7 / §4.5).
       onOversizedHead: () => { /* bounded-head fallback engaged — no value logged */ },
+      // A metered tunnel consults the meter before every request head.
+      ...(metered !== undefined ? { metered } : {}),
     });
+
+    // A metered tunnel refused a request (over the limit, too many in flight, a
+    // head it will not forward). Answer in the provider's own error shape so the
+    // SDK on the other end shows the message and, for a 429, retries, then close.
+    const refuseMetered = (denied: { status: number; reason: string; message: string }) => {
+      refusalAudited = true;
+      audit(stampSession({
+        action: 'proxy_request',
+        method: 'CONNECT',
+        url: target,
+        status: denied.status,
+        requestBytes,
+        responseBytes,
+        durationMs: Date.now() - startTime,
+        blocked: `provider_call_refused: ${denied.reason}`,
+      }, callerSession));
+      clientTls.write(refusalResponse(denied.status, denied.message));
+      clientTls.end();
+      targetTls.destroy();
+    };
 
     // Shared canary-block path — used by both the raw-chunk scan (parity with
     // the pre-framer behavior) and the framer's decoded-Basic-blob hit. Emits
@@ -850,7 +966,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         return;
       }
 
-      const { out, canaryToken, injected } = framer.process(chunk);
+      const { out, canaryToken, injected, denied } = framer.process(chunk);
       if (canaryToken) {
         blockCanary();
         return;
@@ -865,6 +981,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       if (out.length > 0) {
         writeWithBackpressure(clientTls, targetTls, out);
       }
+      if (denied !== undefined) refuseMetered(denied);
     });
 
     // upstream → client (no substitution on response — placeholders should
@@ -874,19 +991,11 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     targetTls.on('data', (chunk: Buffer) => {
       responseBytes += chunk.length;
       writeWithBackpressure(targetTls, clientTls, chunk);
+      // A metered tunnel READS the response for usage after forwarding it. The
+      // tap is passive and swallows its own errors; it can never hold up or
+      // alter what the client receives.
+      metered?.onResponseBytes(chunk);
     });
-
-    // Flush any inner-TLS bytes the client sent before our upstream socket
-    // existed. MUST happen BEFORE we'd otherwise let a clientTls 'data'
-    // listener race ahead — same lesson as the Task 7 head-buffer fix.
-    // ClientHello bytes won't typically contain placeholders, but run them
-    // through the host-bound replacer anyway in case the head straddles a
-    // request boundary on a long-lived tunnel.
-    if (head.length > 0) {
-      const replaced = replacer.replaceAllBuffer(head);
-      if (replaced !== head) credentialInjected = true;
-      targetTls.write(replaced);
-    }
 
     // Cleanup once — first close/error wins, downstream events become no-ops.
     let cleaned = false;
@@ -897,9 +1006,13 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       activeSockets.delete(targetTls);
       clientTls.destroy();
       targetTls.destroy();
+      // Settle whatever a metered tunnel still owes (an unanswered or truncated
+      // request is charged as unmeasured, never as free).
+      metered?.end();
 
-      // Skip the 200 audit if a TLS handshake error already logged 502.
-      if (!tlsFailed) {
+      // Skip the 200 audit if a TLS handshake error already logged 502, or a
+      // refusal already logged its own status.
+      if (!tlsFailed && !refusalAudited) {
         audit(stampSession({
           action: 'proxy_request',
           method: 'CONNECT',
@@ -917,8 +1030,27 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
 
     clientTls.on('close', cleanup);
     clientTls.on('error', cleanup);
+    clientSocket.on('close', cleanup);
     targetTls.on('close', cleanup);
     targetTls.on('error', cleanup);
+
+    // A metered tunnel must always END, because ending is what settles its
+    // outstanding requests and frees the user's in-flight slots (TASK-715): a
+    // tunnel that never ends leaks a slot until the user is stuck at their cap.
+    // Two ways one used to hang on forever, both closed here for metered tunnels
+    // only (the rest of the proxy keeps its behaviour):
+    //  - The client hangs up (a pod killed mid-request, an aborted fetch). The TLS
+    //    wrapper reports 'end' but, being half-open, never 'close'. Pass the EOF on
+    //    to the upstream, the way any proxy does; the upstream then closes and the
+    //    normal cleanup runs.
+    //  - A peer that vanishes without a FIN or RST (a node lost outright). Nothing
+    //    ever arrives to tell us, so a tunnel that has been silent this long is
+    //    torn down. Longer than a provider's own request timeout.
+    if (metered !== undefined) {
+      clientTls.on('end', () => targetTls.end());
+      clientTls.setTimeout(meteredTunnelIdleMs, cleanup);
+      targetTls.setTimeout(meteredTunnelIdleMs, cleanup);
+    }
   }
 
   // ── HTTPS CONNECT — MITM (default) or raw TCP tunnel (bypassMITM hosts) ──

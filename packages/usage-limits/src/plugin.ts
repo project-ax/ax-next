@@ -4,9 +4,12 @@ import { createLimitsStore } from './config.js';
 import { runUsageLimitsMigration, type UsageLimitsDatabase } from './migrations.js';
 import { createUsageRouteHandlers, registerUsageRoutes } from './routes.js';
 import { createUsageService } from './service.js';
-import { createUsageStore } from './store.js';
+import { createUsageStore, type ProviderVerdict } from './store.js';
 
 const PLUGIN_NAME = '@ax/usage-limits';
+
+const SERVICE_PROVIDER_STATUS = 'usage:provider-status';
+const SERVICE_PROVIDER_RECORD = 'usage:provider-record';
 
 const DEFAULT_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** Keep 8 days of buckets: the 24h window plus a week of look-back. */
@@ -31,7 +34,22 @@ const SUBSCRIBED = ['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage'] a
 //     `llm:usage`.
 //   - Mounts an admin view + kill switch under /admin/usage.
 //
-// Registers no service hooks. See docs/plans/2026-09-29-usage-limits.md.
+// The runner-reported figure never sees a model call that user code in the
+// sandbox makes on its own through the credential proxy (TASK-715). So the
+// proxy measures every provider response itself and reports it here through
+// two SERVICE hooks, both acting for `ctx.userId`:
+//
+//   usage:provider-status  {}                                   -> ProviderVerdict
+//   usage:provider-record  { model?, usage | null, requestBytes | null }
+//                                                               -> ProviderVerdict
+//
+// The verdict says whether the proxy may keep splicing the operator's key into
+// this user's requests: blocked when suspended, or when estimated spend passes
+// PROVIDER_CEILING_MULTIPLE x the daily limit. The proxy's measurement is a
+// second ledger column beside the runner's; spend takes the LARGER of the two
+// (never their sum, they describe the same traffic). Both hooks fail closed and
+// never throw. See docs/plans/2026-09-29-provider-call-metering.md and
+// docs/plans/2026-09-29-usage-limits.md.
 // ---------------------------------------------------------------------------
 
 export interface UsageLimitsPluginConfig {
@@ -73,7 +91,7 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [],
+      registers: [SERVICE_PROVIDER_STATUS, SERVICE_PROVIDER_RECORD],
       calls: [
         'database:get-instance',
         'storage:get',
@@ -167,6 +185,22 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
         await prune();
         pruneTimer = setInterval(() => void prune(), pruneIntervalMs);
         pruneTimer.unref?.();
+
+        // Last, on purpose: the bus has no way to unregister a service, so
+        // anything that can still throw has to run before these. A failed init
+        // then leaves no half-registered service behind. (A handler left on a
+        // bus after shutdown reaches a closed database and answers "blocked",
+        // never "not blocked".)
+        bus.registerService<Record<string, never>, ProviderVerdict>(
+          SERVICE_PROVIDER_STATUS,
+          PLUGIN_NAME,
+          async (ctx) => service.providerStatus(ctx),
+        );
+        bus.registerService<unknown, ProviderVerdict>(
+          SERVICE_PROVIDER_RECORD,
+          PLUGIN_NAME,
+          async (ctx, payload) => service.providerRecord(ctx, payload),
+        );
       } catch (err) {
         teardown();
         throw err;
