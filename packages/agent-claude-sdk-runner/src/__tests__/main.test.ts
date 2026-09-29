@@ -403,6 +403,16 @@ function resultSuccess(): SDKMessage {
   } as unknown as SDKMessage;
 }
 
+// The assistant fixtures above carry an all-zero `usage` block, so a turn built
+// from them reports zero tokens on the model the test configures (TASK-692).
+const ZERO_USAGE = {
+  model: 'anthropic/claude-sonnet-4-7',
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
+
 const userEntry = (
   content: string,
   reqId: string = 'req-test',
@@ -554,6 +564,7 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      usage: ZERO_USAGE,
       // reqId carries the inbox message's reqId so host-side per-request
       // subscribers (e.g., @ax/routines `pending.get(reqId)`) can correlate
       // back. Without this, fire rows never write and silence-token /
@@ -1455,6 +1466,7 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      usage: ZERO_USAGE,
       reqId: 'req-test',
       contentBlocks: [
         { type: 'thinking', thinking: 'plan', signature: 'sig-1' },
@@ -1551,6 +1563,7 @@ describe('main()', () => {
     expect(turnEnds[1]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      usage: ZERO_USAGE,
       reqId: 'req-test',
       contentBlocks: [
         {
@@ -2056,10 +2069,136 @@ describe('main()', () => {
         (c[1] as { role?: string }).role !== 'user',
     );
     expect(turnEnds).toHaveLength(1);
+    // TASK-692: no assistant message means nothing was observed, so the loop
+    // reports `usage: null` and the shell sends NO usage key at all (the host
+    // then charges its flat assumed cost) — never a zero-filled "free" turn.
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
       reqId: 'req-test',
+    });
+  });
+
+  it('reports each turn\'s usage on the assistant turn-end: one API response counted once, sub-agents included, reset per turn (TASK-692)', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-6',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([
+      userEntry('first', 'req-1'),
+      userEntry('second', 'req-2'),
+      cancelEntry,
+    ]);
+
+    /** An SDK assistant message for API response `id`, one content block of it. */
+    const response = (
+      id: string,
+      usage: Record<string, number | null>,
+      parentToolUseId: string | null = null,
+    ): SDKMessage => {
+      const base = assistantText('x') as unknown as {
+        message: Record<string, unknown>;
+      } & Record<string, unknown>;
+      return {
+        ...base,
+        parent_tool_use_id: parentToolUseId,
+        message: { ...base.message, id, usage },
+      } as unknown as SDKMessage;
+    };
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // Turn 1. Response m-A arrives as THREE SDK messages (one per block)
+          // sharing an id and usage; the last carries the final output count.
+          const a = {
+            input_tokens: 100,
+            cache_read_input_tokens: 4000,
+            cache_creation_input_tokens: 250,
+          };
+          yield response('m-A', { ...a, output_tokens: 5 });
+          yield response('m-A', { ...a, output_tokens: 5 });
+          yield response('m-A', { ...a, output_tokens: 60 });
+          // A sub-agent's response (parent_tool_use_id set) is billed too.
+          yield response(
+            'm-sub',
+            { input_tokens: 30, output_tokens: 20, cache_read_input_tokens: null, cache_creation_input_tokens: null },
+            'toolu_task',
+          );
+          // A second round trip of the main agent.
+          yield response('m-B', {
+            input_tokens: 7,
+            output_tokens: 15,
+            cache_read_input_tokens: 4250,
+            cache_creation_input_tokens: 0,
+          });
+          yield resultSuccess();
+
+          // Turn 2 starts clean, and may legitimately reuse nothing from turn 1.
+          await it.next();
+          yield response('m-A', {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_input_tokens: 3,
+            cache_creation_input_tokens: 4,
+          });
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    const assistantEnds = fakeClient.event.mock.calls
+      .filter(
+        (c) =>
+          c[0] === 'event.turn-end' &&
+          (c[1] as { role?: string }).role === 'assistant',
+      )
+      .map((c) => c[1] as { reqId?: string; usage?: unknown });
+    expect(assistantEnds).toHaveLength(2);
+    expect(assistantEnds[0]).toMatchObject({
+      reqId: 'req-1',
+      usage: {
+        model: 'anthropic/claude-sonnet-4-6',
+        inputTokens: 100 + 30 + 7,
+        outputTokens: 60 + 20 + 15,
+        cacheReadTokens: 4000 + 4250,
+        cacheWriteTokens: 250,
+      },
+    });
+    expect(assistantEnds[1]).toMatchObject({
+      reqId: 'req-2',
+      usage: {
+        model: 'anthropic/claude-sonnet-4-6',
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 3,
+        cacheWriteTokens: 4,
+      },
     });
   });
 
@@ -2174,6 +2313,7 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      usage: ZERO_USAGE,
       reqId: 'r42',
       contentBlocks: [
         { type: 'thinking', thinking: 'pondering', signature: 'sig-1' },

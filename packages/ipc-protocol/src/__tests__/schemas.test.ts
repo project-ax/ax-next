@@ -544,6 +544,105 @@ describe('events', () => {
     ).toBe(false);
   });
 
+  describe('EventTurnEnd usage (TASK-692 spend metering)', () => {
+    const full = {
+      model: 'anthropic/claude-sonnet-4-6',
+      inputTokens: 1200,
+      outputTokens: 340,
+      cacheReadTokens: 9000,
+      cacheWriteTokens: 500,
+    };
+
+    it('accepts the full usage shape and round-trips every field', () => {
+      const parsed = EventTurnEndSchema.parse({
+        reason: 'user-message-wait',
+        role: 'assistant',
+        usage: full,
+      });
+      expect(parsed.usage).toEqual(full);
+    });
+
+    it('still accepts the old shape (only inputTokens/outputTokens)', () => {
+      const parsed = EventTurnEndSchema.parse({
+        reason: 'complete',
+        usage: { inputTokens: 1, outputTokens: 2 },
+      });
+      expect(parsed.usage).toEqual({ inputTokens: 1, outputTokens: 2 });
+    });
+
+    it('accepts an empty usage object and an absent one', () => {
+      expect(EventTurnEndSchema.safeParse({ reason: 'complete', usage: {} }).success).toBe(true);
+      expect(EventTurnEndSchema.safeParse({ reason: 'complete' }).success).toBe(true);
+    });
+
+    it.each(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'] as const)(
+      'rejects a negative %s',
+      (field) => {
+        expect(
+          EventTurnEndSchema.safeParse({ reason: 'complete', usage: { ...full, [field]: -1 } })
+            .success,
+        ).toBe(false);
+      },
+    );
+
+    it.each(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'] as const)(
+      'rejects a non-integer %s',
+      (field) => {
+        expect(
+          EventTurnEndSchema.safeParse({ reason: 'complete', usage: { ...full, [field]: 1.5 } })
+            .success,
+        ).toBe(false);
+      },
+    );
+
+    it.each(['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens'] as const)(
+      'accepts %s at the 1e9 ceiling and rejects one above it',
+      (field) => {
+        expect(
+          EventTurnEndSchema.safeParse({
+            reason: 'complete',
+            usage: { ...full, [field]: 1_000_000_000 },
+          }).success,
+        ).toBe(true);
+        expect(
+          EventTurnEndSchema.safeParse({
+            reason: 'complete',
+            usage: { ...full, [field]: 1_000_000_001 },
+          }).success,
+        ).toBe(false);
+      },
+    );
+
+    it('rejects an empty model and an over-long model', () => {
+      expect(
+        EventTurnEndSchema.safeParse({ reason: 'complete', usage: { ...full, model: '' } })
+          .success,
+      ).toBe(false);
+      expect(
+        EventTurnEndSchema.safeParse({
+          reason: 'complete',
+          usage: { ...full, model: 'm'.repeat(201) },
+        }).success,
+      ).toBe(false);
+      expect(
+        EventTurnEndSchema.safeParse({
+          reason: 'complete',
+          usage: { ...full, model: 'm'.repeat(200) },
+        }).success,
+      ).toBe(true);
+    });
+
+    it('strips an unknown usage key rather than passing it through', () => {
+      const parsed = EventTurnEndSchema.parse({
+        reason: 'complete',
+        usage: { ...full, costUsd: 0, sneaky: 'x' },
+      });
+      expect(parsed.usage).toEqual(full);
+      expect(parsed.usage).not.toHaveProperty('costUsd');
+      expect(parsed.usage).not.toHaveProperty('sneaky');
+    });
+  });
+
   it('EventChatEnd round-trips a complete outcome', () => {
     const parsed = EventChatEndSchema.parse({
       outcome: {

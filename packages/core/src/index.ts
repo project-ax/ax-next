@@ -13,7 +13,12 @@ export {
   type WireResponse,
 } from './ipc/wire.js';
 export { encodeFrame, FrameDecoder, MAX_FRAME } from './ipc/framing.js';
-export { LlmCallOutputSchema } from './llm.js';
+export {
+  LlmCallOutputSchema,
+  LLM_USAGE_HOOK,
+  fireLlmUsage,
+  type LlmUsageEvent,
+} from './llm.js';
 export {
   asWorkspaceVersion,
   WorkspaceReadOutputSchema,
