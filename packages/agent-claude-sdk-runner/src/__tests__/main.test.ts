@@ -4725,10 +4725,23 @@ describe('main()', () => {
         return Object.assign(gen, { interrupt });
       });
 
-      const { main } = await import('../main.js');
-      // The turn ends on its own result; the failed interrupt is logged, not thrown.
-      expect(await main()).toBe(0);
-      expect(interrupt).toHaveBeenCalledTimes(1);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const { main } = await import('../main.js');
+        // The turn ends on its own result; the failed interrupt is logged, not thrown.
+        expect(await main()).toBe(0);
+        expect(interrupt).toHaveBeenCalledTimes(1);
+        // Logged, not swallowed: an operator reading the pod log can see that
+        // Stop was pressed and the SDK refused. (Without a `.catch` this is an
+        // unhandled rejection instead — and nothing in the log.)
+        expect(
+          stderr.mock.calls.some((c) =>
+            String(c[0]).includes('query.interrupt() failed: control channel closed'),
+          ),
+        ).toBe(true);
+      } finally {
+        stderr.mockRestore();
+      }
     });
   });
 });
