@@ -23,8 +23,9 @@ import { sql, type Kysely } from 'kysely';
  *   attachments owned by @ax/agents: a user activates a catalog skill on
  *   THEIR agent without affecting others. Keyed by the compound primary key
  *   (owner_user_id, agent_id, skill_id). `agent_id` is an opaque scoping key
- *   — no FK to agents_v1_agents (cross-plugin FKs are banned; a dangling row
- *   to a deleted agent simply never resolves at session open).
+ *   — no FK to agents_v1_agents (cross-plugin FKs are banned), so deleting an
+ *   agent does not cascade: this plugin subscribes to `agents:deleted` and
+ *   removes the agent's rows itself (TASK-718, agent-purge-store.ts).
  */
 // Schema-agnostic: the executor only needs to issue raw DDL.
 export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
@@ -159,7 +160,7 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // (Phase 2). Set by the @ax/validator-skill commit scan (accept-but-annotate),
   // read by the host discovery projection (Phase 3) to OMIT a quarantined draft.
   // `agent_id` is an opaque scoping key — no FK to agents_v1_agents (cross-plugin
-  // FKs are banned; a dangling row to a deleted agent simply never resolves).
+  // FKs are banned; `agents:deleted` deletes the agent's rows, TASK-718).
   // Additive-only.
   await sql`
     CREATE TABLE IF NOT EXISTS skills_v1_quarantine (
@@ -237,7 +238,7 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // the quarantine + approved_caps side-tables — because an authored skill is a
   // per-(user, AGENT) concept (the agent composed it in its own draft scratch).
   // `agent_id` is an opaque scoping key — no FK to agents_v1_agents (cross-plugin
-  // FKs are banned). `manifest_yaml` is the caps-PROPOSAL source of truth (the
+  // FKs are banned; `agents:deleted` deletes the agent's rows, TASK-718). `manifest_yaml` is the caps-PROPOSAL source of truth (the
   // frontmatter the agent wrote); `bundle_tree_sha` is the content-addressed blob
   // pointer to the EXTRA (non-SKILL.md) files (NULL = single-file). `origin` ∈
   // 'authored' (the runner only ever proposes this) | 'imported' | 'attached'
@@ -311,8 +312,7 @@ export interface UserSkillsRow {
  * Per-(user, agent) skill activation. Self-serve layer that sits ABOVE the
  * admin-managed agent-global attachments owned by @ax/agents. `agent_id` is
  * an opaque scoping key — no FK to agents_v1_agents (cross-plugin FKs are
- * banned; a dangling row to a deleted agent simply never resolves at session
- * open). `credential_bindings` is a JSONB slot → opaque-ref map (never a
+ * banned; `agents:deleted` deletes the agent's rows, TASK-718). `credential_bindings` is a JSONB slot → opaque-ref map (never a
  * secret), mirroring the agent-global attachment shape.
  */
 export interface UserAttachmentRow {

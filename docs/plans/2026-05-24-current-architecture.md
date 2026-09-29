@@ -361,6 +361,24 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
 - **Conversations:** `conversations:get-metadata`,
   `conversations:store-runner-session` (and the `conversations:bind-session` /
   `:get` / `:list` family).
+- **Deleting an agent (TASK-718).** `agents:deleted { agentId, ownerId, ownerType }`
+  is a subscriber hook `@ax/agents` fires once the agent row is gone; each
+  subscriber gets 150 s before the next one runs, so a wedged one cannot hold the
+  rest hostage. There is no foreign key from any table to `agents_v1_agents` (a
+  plugin owns its own rows), so **every plugin that keeps rows keyed on an agent
+  subscribes and deletes its own**: conversations (+ events + transcripts, hard
+  delete, no retention), sessions (terminated first, which revokes the runner's
+  token), skills, connectors, host grants, decisions, MCP handshakes, remembered
+  facts, routines, the durable-files directory (a reclaim pod that runs as root
+  with `DAC_OVERRIDE` + `FOWNER` only) and the orchestrator's warm sandboxes.
+  Rows keyed only on a conversation id are cleaned by a second hook,
+  `conversations:purged { conversationIds }`, which `@ax/conversations` fires
+  after its purge commits (at most 500 ids per fire; today `@ax/attachments`
+  subscribes). `scripts/__tests__/agent-keyed-tables-are-cleaned.test.js` fails
+  the PR that adds an agent-scoped table with no cleanup. **Not covered yet**
+  (no delete hook exists, or the store is shared): the agent's git workspace
+  repository, blob bytes behind attachments, `routines_v1_fires` history (kept on
+  purpose), and key-value leftovers.
 - **Credentials:** `credentials:get`, `credentials:resolve:<kind>`,
   `credentials:list`, `credentials:list-kinds`, plus the `credentials:store-blob:*`
   storage seam.

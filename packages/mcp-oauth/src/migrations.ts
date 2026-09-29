@@ -15,7 +15,9 @@ import { sql, type Kysely } from 'kysely';
  *
  *   mcp_oauth_v1_pending  — single-use pending authorizations, keyed by
  *     `state`. TTL enforced at read time (consumePending). Deleted on first
- *     successful read, or purged once older than the TTL (purgeExpiredPending).
+ *     successful read, purged once older than the TTL (purgeExpiredPending), or
+ *     dropped when its agent is deleted (`agents:deleted` → deleteAllForAgent;
+ *     TASK-718 — there is no FK to the agents table, deliberately).
  *     Carries the OAuth client the authorization started with (`client_id`,
  *     nullable `client_secret`) so the callback redeems the code as that client;
  *     both are NULL on a row written before TASK-696.

@@ -1,7 +1,8 @@
 /**
  * @ax/host-grants store. Every query is scoped to (owner_user_id, agent_id):
  * the scope-isolation boundary — user A's queries MUST NEVER touch user B's
- * rows, and agent a1's grants never bleed into a2.
+ * rows, and agent a1's grants never bleed into a2. The single exception is
+ * `deleteAllForAgent` (agent deletion), which is keyed on `agent_id` alone.
  */
 import { PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
@@ -32,6 +33,14 @@ export interface HostGrantsStore {
    *  user's rows are never returned. Backs the Settings one-list view. */
   listForUser(ownerUserId: string): Promise<HostGrantForUser[]>;
   revoke(input: { ownerUserId: string; agentId: string; host: string }): Promise<{ revoked: boolean }>;
+  /**
+   * Delete EVERY grant for `agentId`, under every owner (TASK-718). The one
+   * method here that is NOT owner-scoped, on purpose: it backs the
+   * `agents:deleted` subscriber, and a team agent has grants under several
+   * owner users, so scoping to one would strand the rest. Throws on an empty
+   * `agentId` — a delete must never run with an empty key.
+   */
+  deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
 }
 
 export function createHostGrantsStore(db: Kysely<HostGrantsDatabase>): HostGrantsStore {
@@ -106,6 +115,21 @@ export function createHostGrantsStore(db: Kysely<HostGrantsDatabase>): HostGrant
         .where('host', '=', host)
         .executeTakeFirst();
       return { revoked: Number(res.numDeletedRows ?? 0n) > 0 };
+    },
+
+    async deleteAllForAgent(agentId) {
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        throw new PluginError({
+          code: 'missing-field',
+          plugin: PLUGIN_NAME,
+          message: 'agentId is required',
+        });
+      }
+      const res = await db
+        .deleteFrom('host_grants_v1_grants')
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return { deleted: Number(res.numDeletedRows ?? 0n) };
     },
   };
 }

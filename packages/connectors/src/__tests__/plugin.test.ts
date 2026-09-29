@@ -7,7 +7,7 @@ import { createConnectorsPlugin } from '../plugin.js';
 // ---------------------------------------------------------------------------
 
 describe('@ax/connectors plugin manifest', () => {
-  it('registers the connectors:* hooks (CRUD + list-defaults + authored lifecycle), calls database:get-instance, subscribes to nothing', () => {
+  it('registers the connectors:* hooks (CRUD + list-defaults + authored lifecycle), calls database:get-instance, subscribes to agents:deleted', () => {
     const plugin = createConnectorsPlugin();
     expect(plugin.manifest).toEqual({
       name: '@ax/connectors',
@@ -48,7 +48,8 @@ describe('@ax/connectors plugin manifest', () => {
             'workspace-keyed (company) connector credentials are never authorized for reading, because the connector owner cannot be proven to be an admin; personal keys are unaffected (fail closed)',
         },
       ],
-      subscribes: [],
+      // TASK-718 — a deleted agent's authored connector drafts go with it.
+      subscribes: ['agents:deleted'],
     });
   });
 });

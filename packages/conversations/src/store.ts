@@ -511,6 +511,39 @@ export interface ConversationStore {
    * delta append returned resync-required.
    */
   replaceTranscript(conversationId: string, lines: string[]): Promise<number>;
+
+  // -------------------------------------------------------------------------
+  // TASK-718 — deleting an agent deletes its conversations.
+  // -------------------------------------------------------------------------
+
+  /**
+   * HARD-delete every conversation of `agentId` together with its display
+   * events and resume-transcript rows, in ONE transaction (children first, so
+   * a failure part-way rolls everything back rather than stranding orphans).
+   * This is the only hard-delete path for `conversations_v1_*` — the
+   * `conversations:delete` hook is a soft delete.
+   *
+   * Keyed on `agent_id` ALONE. A team agent's conversations belong to many
+   * users, and the agent is going away for all of them, so there is
+   * deliberately no user scope. Soft-deleted and hidden rows are included:
+   * tombstones are still that agent's data.
+   *
+   * Returns the purged conversation ids — exactly the rows removed (taken from
+   * the RETURNING of the final delete), so a caller announcing "these are gone"
+   * cannot over- or under-report. `[]` when the agent has none (idempotent).
+   * An empty/non-string `agentId` throws `invalid-payload` BEFORE any SQL
+   * runs: a delete keyed on an empty string must never be issued.
+   */
+  purgeForAgent(agentId: string): Promise<string[]>;
+
+  /**
+   * Does a `conversations_v1_conversations` row exist for this id? PK lookup
+   * that IGNORES `deleted_at` — a soft-deleted conversation still exists (its
+   * transcript is still appended to by a turn that outlives the sidebar
+   * delete). Used by the append-path guards to tell "purged with its agent"
+   * apart from "merely tombstoned".
+   */
+  conversationExists(conversationId: string): Promise<boolean>;
 }
 
 /** TASK-66 — args for ConversationStore.appendEvent. */
@@ -1112,6 +1145,60 @@ export function createConversationStore(
         }
         return lines.length;
       });
+    },
+
+    async purgeForAgent(agentId) {
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        throw invalid('agentId must be a non-empty string');
+      }
+      // Default isolation (READ COMMITTED) on purpose. REPEATABLE READ would pin
+      // one snapshot for all three statements, but then a concurrent UPDATE of a
+      // victim row (an in-flight turn's last_activity bump) would abort the whole
+      // purge with a serialization failure. Under READ COMMITTED that UPDATE just
+      // makes the delete wait and then delete the updated row.
+      return db.transaction().execute(async (trx) => {
+        // Children first, addressed through the parent's agent_id so no id list
+        // ever crosses the wire (an agent can hold tens of thousands of rows, and
+        // a bound-parameter list caps at 65535). The conversations rows go last
+        // so their RETURNING is the authoritative "what was removed".
+        await trx
+          .deleteFrom('conversations_v1_events')
+          .where(
+            'conversation_id',
+            'in',
+            trx
+              .selectFrom('conversations_v1_conversations')
+              .select('conversation_id')
+              .where('agent_id', '=', agentId),
+          )
+          .execute();
+        await trx
+          .deleteFrom('conversations_v1_transcripts')
+          .where(
+            'conversation_id',
+            'in',
+            trx
+              .selectFrom('conversations_v1_conversations')
+              .select('conversation_id')
+              .where('agent_id', '=', agentId),
+          )
+          .execute();
+        const removed = await trx
+          .deleteFrom('conversations_v1_conversations')
+          .where('agent_id', '=', agentId)
+          .returning('conversation_id')
+          .execute();
+        return removed.map((r) => r.conversation_id);
+      });
+    },
+
+    async conversationExists(conversationId) {
+      const row = await db
+        .selectFrom('conversations_v1_conversations')
+        .select('conversation_id')
+        .where('conversation_id', '=', conversationId)
+        .executeTakeFirst();
+      return row !== undefined;
     },
   };
 }
