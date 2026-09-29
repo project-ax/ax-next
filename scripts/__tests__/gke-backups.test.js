@@ -585,6 +585,17 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       expect(r.writes.filter((w) => w.includes('disks delete'))).toHaveLength(2);
     });
 
+    it('a drill that dies half way (a refused apply, after the disks exist) still deletes its scratch disks', () => {
+      readyToDrill();
+      // The 4th apply is the first claim: the disks and the first volume exist by then.
+      const r = run(shell, ['drill'], { STUB_APPLY_FAILS: '4' });
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('kubectl apply failed');
+      expect(r.writes.filter((w) => w.includes('disks create'))).toHaveLength(2);
+      expect(r.writes.filter((w) => w.includes('disks delete'))).toHaveLength(2);
+      expect(stateFiles().filter((f) => f.startsWith('scratch-'))).toEqual([]);
+    });
+
     it('waits for a scratch disk to detach before deleting it', () => {
       readyToDrill();
       const r = run(shell, ['drill']);

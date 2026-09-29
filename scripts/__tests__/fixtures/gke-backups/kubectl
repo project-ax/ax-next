@@ -65,6 +65,11 @@ case "$rest" in
   "apply -f -")
     n=$(find "$STUB_STATE" -name 'applied-*.yaml' | wc -l | tr -d ' ')
     cat >"$STUB_STATE/applied-$(printf '%02d' "$((n + 1))").yaml"
+    # STUB_APPLY_FAILS=<n>: the n-th apply is refused (after its manifest is recorded).
+    if [ "${STUB_APPLY_FAILS:-0}" = "$((n + 1))" ]; then
+      echo "Error from server (Forbidden): stub refuses this apply" >&2
+      exit 1
+    fi
     ;;
   "get pod ax-restore-drill -o jsonpath={.status.phase}")
     printf '%s' "${STUB_POD_PHASE-Succeeded}"
