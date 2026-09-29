@@ -32,7 +32,7 @@ import { shouldShowAgentBootstrap } from './lib/agent-bootstrap-gate';
 import { useSessionExpired } from './lib/session-expired-store';
 import { useHydrateAgents } from './lib/hydrate-agents';
 import { FirstRunAutoCreate } from './components/onboard/FirstRunAutoCreate';
-import { NewAgentDialog } from './components/onboard/NewAgentDialog';
+import { NewAgentCard } from './components/onboard/NewAgentCard';
 import { BootScreen } from './components/BootScreen';
 import { LoginPage } from './components/LoginPage';
 import { WorkspaceShell } from './components/workspace/WorkspaceShell';
@@ -242,20 +242,21 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
   // TASK-510 — closing the new-agent flow must not drop the keyboard on
   // `<body>`. Same shape as the Settings restore above: the bootstrap gate
-  // below REPLACES the workspace with the dialog, so the "New agent…" row is
-  // destroyed on open and re-created on close, and the dialog's own node
-  // restore bails on the detached opener. Restore by identity, after the
-  // remount — see `lib/new-agent-return-focus.ts`.
+  // below REPLACES the workspace with the new-agent card, so the "New agent…"
+  // row is destroyed on open and re-created on close — there is no opener node
+  // left for anything to restore to. Restore by identity, after the remount —
+  // see `lib/new-agent-return-focus.ts`.
   //
   // Keyed on `createAgentOpen` going true → false, which is every way out of
-  // the explicit flow: Escape and the ✕ (the dialog's `onOpenChange`) and a
-  // finished create (`FirstRunAutoCreate`'s `onDone`). First run never sets
-  // `createAgentOpen`, so it arms nothing — nobody opened it from a control.
+  // the explicit flow: the card's Cancel or Escape, the failure card's Cancel
+  // or Escape (TASK-689), and a finished create (`FirstRunAutoCreate`'s
+  // `onDone`). First run never sets `createAgentOpen`, so it arms nothing —
+  // nobody opened it from a control.
   //
-  // TASK-533 — a finished create is not the same exit as the other two. By
-  // the time focus can land the screen shows the NEW agent, so focus goes into
-  // its conversation instead of back to the row. `onDone` records the id here
-  // before it closes the flow; Escape and ✕ leave it null.
+  // TASK-533 — a finished create is not the same exit as the others. By the
+  // time focus can land the screen shows the NEW agent, so focus goes into its
+  // conversation instead of back to the row. `onDone` records the id here
+  // before it closes the flow; every cancel leaves it null.
   //
   // TASK-547 — on the workspace, the route only moves to the new agent once
   // the kickoff's send returns, and nothing keyed by the new id can be on
@@ -297,9 +298,16 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     cancelKickoffFocus.current = refocusNewAgentViewWhenReady(agentId);
   }, []);
   useEffect(() => () => cancelKickoffFocus.current?.(), []);
-  // `bootstrapAgentName` holds the name the user enters in the NewAgentDialog
-  // before the bootstrap starts. null = dialog not yet submitted.
+  // `bootstrapAgentName` holds the name the user enters in the NewAgentCard
+  // before the bootstrap starts. null = card not yet submitted.
   const [bootstrapAgentName, setBootstrapAgentName] = useState<string | null>(null);
+  // (TASK-689) The last name typed, kept ACROSS a failed create so "Change
+  // name" on the first-run failure card returns to a card that still says
+  // what they typed. `bootstrapAgentName` cannot do that job: going back
+  // means setting it to null, which is what routes the render to the card.
+  // Cleared each time "+ New agent…" opens the flow — someone who walked away
+  // from an add attempt should not find its name waiting the next time.
+  const [lastAgentName, setLastAgentName] = useState('');
   // The new agent the workspace still has to greet. `WorkspaceShell` sends
   // the kickoff itself once it has the id.
   const [kickoffAgentId, setKickoffAgentId] = useState<string | null>(null);
@@ -319,32 +327,35 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // remains available from the workspace.
   //
   // Two-phase bootstrap:
-  //   Phase 1 (bootstrapAgentName === null): show NewAgentDialog so the user
-  //     picks a name before anything is created. For first-run the dialog is
-  //     non-dismissible (Escape / outside click is ignored — they must create
-  //     an agent). For the explicit "New agent…" path the dialog can be
-  //     cancelled, which closes the gate.
+  //   Phase 1 (bootstrapAgentName === null): show NewAgentCard so the user
+  //     picks a name before anything is created. It is a `SetupShell` card, not
+  //     a modal: this gate REPLACES the workspace, so there is no app behind it.
+  //     For first-run it offers no way back (they must create an agent). For
+  //     the explicit "New agent…" path it has a Cancel (and Escape), which
+  //     closes the gate.
   //   Phase 2 (bootstrapAgentName !== null): auto-create with the chosen name,
-  //     then hand the new agent to the workspace to greet.
+  //     then hand the new agent to the workspace to greet. If the create fails
+  //     the card offers a way out: first run goes back to Phase 1, adding goes
+  //     back to the workspace.
   if (shouldShowAgentBootstrap({ agentsStatus, agentCount: agents.length, createAgentOpen })) {
     const isFirstRun = agents.length === 0 && !createAgentOpen;
     if (bootstrapAgentName === null) {
       return (
         <UserProvider value={user}>
-          <NewAgentDialog
-            open={true}
-            // (TASK-340 / audit B4) On first run the dialog now declines to
-            // OFFER an exit, rather than rendering a ✕ and an Escape key that
-            // quietly do nothing. The guard below stays as the backstop.
-            dismissible={!isFirstRun}
-            onOpenChange={(open) => {
-              if (!open && !isFirstRun) {
-                // Explicit "New agent…" path — allow cancel
-                setCreateAgentOpen(false);
-              }
-              // First-run: ignore close attempts — the user must create an agent
+          <NewAgentCard
+            mode={isFirstRun ? 'first-run' : 'add'}
+            // (TASK-689) Add mode's way back — its Cancel button and Escape.
+            // What the old dialog's `onOpenChange(false)` did, and the one
+            // exit the focus restore above is keyed on. First run passes the
+            // prop too and the card ignores it: there is nothing to go back to.
+            onCancel={() => setCreateAgentOpen(false)}
+            // Only ever non-empty when "Change name" brought a failed first-run
+            // create back here (see `lastAgentName`); otherwise a blank field.
+            initialName={lastAgentName}
+            onCreate={(name) => {
+              setLastAgentName(name);
+              setBootstrapAgentName(name);
             }}
-            onCreate={(name) => setBootstrapAgentName(name)}
           />
           <ToastStack />
         </UserProvider>
@@ -354,6 +365,16 @@ const AppContent = ({ user }: { user: AuthUser }) => {
       <UserProvider value={user}>
         <FirstRunAutoCreate
           agentName={bootstrapAgentName}
+          mode={isFirstRun ? 'first-run' : 'add'}
+          // (TASK-689) The way out of a failed create. First run: back to the
+          // name card, name kept (`lastAgentName`), and still no
+          // `createAgentOpen` — first run never sets it. Adding: back to the
+          // workspace, by the same `setCreateAgentOpen(false)` a Cancel on the
+          // name card uses, so the focus restore treats the two identically.
+          onBack={() => {
+            setBootstrapAgentName(null);
+            if (!isFirstRun) setCreateAgentOpen(false);
+          }}
           // A bare agent that is never greeted never introduces itself, which
           // is the conversational half of the create flow — so the new id goes
           // to `WorkspaceShell`, which sends the kickoff
@@ -423,7 +444,11 @@ const AppContent = ({ user }: { user: AuthUser }) => {
               setAdminSettingsTab(tab);
               setAdminSettingsOpen(true);
             }}
-            onCreateAgent={() => { setBootstrapAgentName(null); setCreateAgentOpen(true); }}
+            onCreateAgent={() => {
+              setBootstrapAgentName(null);
+              setLastAgentName('');
+              setCreateAgentOpen(true);
+            }}
             kickoffAgentId={kickoffAgentId}
             onKickoffConsumed={() => setKickoffAgentId(null)}
             onKickoffRouted={onKickoffRouted}

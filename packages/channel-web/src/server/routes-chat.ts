@@ -584,6 +584,15 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
               res.status(400).json({ error: 'attachment-foreign-user' });
               return;
             }
+            // TASK-690: committing the file writes its bytes through `blob:put`,
+            // which throws code 'rejected' when the per-person storage limit
+            // says no. `message` is the host-authored, person-facing sentence
+            // (the UI prefers it and has its own fallback for the code); an
+            // opaque 500 here would tell the person nothing they can act on.
+            if (err.code === 'rejected') {
+              res.status(413).json({ error: 'storage-full', message: err.message });
+              return;
+            }
           }
           throw err;
         }

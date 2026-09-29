@@ -6,7 +6,7 @@
  * a divergence in either producer shows up as a failure here rather than as an
  * attendance answer that is quietly wrong forever.
  */
-import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext, reject, type AgentContext } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { attendanceFor, conversationChannel } from '../attendance.js';
 import { deliverResolution } from '../delivery.js';
@@ -346,5 +346,63 @@ describe('deliverResolution', () => {
     expect(
       await deliverResolution({ bus, ctx: ctx(), decision: decision(), outcome: 'approved' }),
     ).toEqual({ delivered: false, reason: 'no-session-plugin' });
+  });
+
+  // TASK-692. A `decision-resolved` entry wakes the agent into a NEW turn without
+  // ever passing `agent:invoke`, so `chat:start` (where usage limits and the kill
+  // switch live) never sees it. `chat:resume` is the veto that closes that door.
+  describe('chat:resume (a wake-up is a turn, so it can be refused)', () => {
+    it('asks first, as the decision’s OWNER, and still delivers when nobody objects', async () => {
+      const bus = new HookBus();
+      withConversations(bus, { 'conv-web': { origin: 'web', activeSessionId: 'sess-1' } });
+      const queued = withSessionQueue(bus);
+      const asked: Array<{ userId: string; agentId: string; payload: unknown }> = [];
+      bus.subscribe<unknown>('chat:resume', 'test-gate', async (c, payload) => {
+        asked.push({ userId: c.userId, agentId: c.agentId, payload });
+        return undefined;
+      });
+
+      // The APPROVER is somebody else; the gate must judge the owner.
+      expect(
+        await deliverResolution({
+          bus,
+          ctx: ctx({ userId: 'someone-else' }),
+          decision: decision({ ownerUserId: 'u1' }),
+          outcome: 'approved',
+        }),
+      ).toEqual({ delivered: true, streamReqId: null });
+      expect(asked).toEqual([
+        { userId: 'u1', agentId: 'a1', payload: { decisionId: 'dec_1', outcome: 'approved' } },
+      ]);
+      expect(queued).toHaveLength(1);
+    });
+
+    it('does NOT wake the agent when the gate says no, for a dismissal as well', async () => {
+      const bus = new HookBus();
+      withConversations(bus, { 'conv-web': { origin: 'web', activeSessionId: 'sess-1' } });
+      const queued = withSessionQueue(bus);
+      bus.subscribe<unknown>('chat:resume', 'test-gate', async () => reject({ reason: 'usage-suspended' }));
+
+      for (const outcome of ['approved', 'dismissed'] as const) {
+        expect(await deliverResolution({ bus, ctx: ctx(), decision: decision(), outcome })).toEqual({
+          delivered: false,
+          reason: 'refused',
+        });
+      }
+      expect(queued).toHaveLength(0);
+    });
+
+    it('does not ask at all when there is no live session to wake', async () => {
+      const bus = new HookBus();
+      withConversations(bus, { 'conv-web': { origin: 'web', activeSessionId: null } });
+      withSessionQueue(bus);
+      let asked = 0;
+      bus.subscribe<unknown>('chat:resume', 'test-gate', async () => {
+        asked++;
+        return undefined;
+      });
+      await deliverResolution({ bus, ctx: ctx(), decision: decision(), outcome: 'approved' });
+      expect(asked).toBe(0);
+    });
   });
 });

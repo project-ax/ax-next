@@ -1715,3 +1715,69 @@ describe('decisions store — one OPEN question per (agent, call shape)', () => 
     expect(await s.list({ ownerUserId: 'u1' })).toHaveLength(1);
   });
 });
+
+// TASK-718 — deleting an agent must take its decisions with it. `agent_id` here
+// is an opaque key with no FK to the agents table, so nothing else ever removes
+// the rows. The method keys on `agent_id` ALONE: a team agent raises holds for
+// several people, and an owner-scoped delete would strand the rest.
+describe('decisions store — deleteAllForAgent (TASK-718)', () => {
+  /**
+   * One row per status for `agentId`, spread over two owners and two
+   * conversations. Fingerprints are unique per row so the standing-authorisation
+   * index never gets in the way of seeding.
+   */
+  async function seedAgent(s: DecisionStore, agentId: string): Promise<string[]> {
+    const ids: string[] = [];
+    let i = 0;
+    for (const status of DecisionStatusSchema.options) {
+      const id = `dec_${agentId}_${status}`;
+      ids.push(id);
+      await s.create(
+        base({
+          id,
+          agentId,
+          status,
+          ownerUserId: i % 2 === 0 ? 'u1' : 'u2',
+          conversationId: i % 2 === 0 ? 'c1' : 'c2',
+          callFingerprint: `fp-${agentId}-${status}`,
+        }),
+      );
+      i += 1;
+    }
+    return ids;
+  }
+
+  it('deletes every decision for the agent — any status, any owner, any conversation — and nothing else', async () => {
+    const s = await freshStore();
+    const gone = await seedAgent(s, 'agt_gone');
+    const kept = await seedAgent(s, 'agt_kept');
+    // The roll-call really did cover every status, so "regardless of status" is
+    // asserted rather than assumed.
+    expect(gone.length).toBe(DecisionStatusSchema.options.length);
+    expect(gone.length).toBeGreaterThanOrEqual(7);
+
+    expect(await s.deleteAllForAgent('agt_gone')).toEqual({ deleted: gone.length });
+
+    for (const id of gone) expect(await s.get(id)).toBeNull();
+    for (const id of kept) expect(await s.get(id)).not.toBeNull();
+  });
+
+  it('is a no-op the second time', async () => {
+    const s = await freshStore();
+    await seedAgent(s, 'agt_gone');
+    const kept = await seedAgent(s, 'agt_kept');
+    await s.deleteAllForAgent('agt_gone');
+
+    expect(await s.deleteAllForAgent('agt_gone')).toEqual({ deleted: 0 });
+    for (const id of kept) expect(await s.get(id)).not.toBeNull();
+  });
+
+  it('refuses an empty agentId — never runs a delete with an empty key', async () => {
+    const s = await freshStore();
+    const kept = await seedAgent(s, 'agt_kept');
+    for (const bad of ['', undefined as unknown as string, null as unknown as string]) {
+      await expect(s.deleteAllForAgent(bad)).rejects.toThrow(/agentId is required/);
+    }
+    for (const id of kept) expect(await s.get(id)).not.toBeNull();
+  });
+});

@@ -402,6 +402,61 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
     expect((result.body as { discardPaths?: unknown }).discardPaths).toBeUndefined();
   });
 
+  it('TASK-690: pre-apply is told how big the write is, and a size veto reaches the runner verbatim', async () => {
+    // The disk-quota subscriber decides on `sizeBytes`. The policy-visible
+    // `changes` are only the `.ax/**` / `.claude/**` slice, so they cannot say
+    // how big the whole write is; the decoded bundle length can, and the host
+    // (not the runner) derives it. The refusal must come back as
+    // recoverable:false with NO discardPaths: the runner then hands the reason
+    // to the agent (it only does that for recoverable:false) and clears the
+    // tree, so the refused files are not re-submitted every turn.
+    prepareScratchRepoMock.mockResolvedValueOnce({
+      ...DEFAULT_SCRATCH,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([
+      { path: 'big/file.bin', kind: 'put', content: new Uint8Array(10) },
+    ]);
+
+    const probe = makePhase3Probe('@ax/test-size-veto-probe');
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    let seen: { sizeBytes?: unknown; changes?: unknown } | undefined;
+    bus.subscribe<{ sizeBytes?: unknown; changes?: unknown }>(
+      'workspace:pre-apply',
+      '@ax/test-size-veto-subscriber',
+      async (_ctx, payload) => {
+        seen = payload;
+        return reject({ reason: 'Storage for this workspace is full.' });
+      },
+    );
+    const ctx = makeAgentContext({
+      sessionId: 'wcn-test-size',
+      agentId: 'wcn-agent-size',
+      userId: 'wcn-user-size',
+    });
+    const bundle = Buffer.alloc(3000, 7);
+
+    const result = await workspaceCommitNotifyHandler(
+      { parentVersion: null, reason: 'turn', bundleBytes: bundle.toString('base64') },
+      ctx,
+      bus,
+    );
+
+    // Decoded length, not the base64 length (which is 4000).
+    expect(seen?.sizeBytes).toBe(3000);
+    // `big/file.bin` is not policy-visible: the size must still cover it.
+    expect(seen?.changes).toEqual([]);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      accepted: false,
+      recoverable: false,
+      reason: 'Storage for this workspace is full.',
+    });
+    expect((result.body as { discardPaths?: unknown }).discardPaths).toBeUndefined();
+  });
+
   it('TASK-287: a veto that names its path scopes the discard to that path', async () => {
     // The realistic trigger: an agent writes CLAUDE.md (a policy-visible exact
     // path, and one @ax/validator-skill refuses unconditionally) in the same

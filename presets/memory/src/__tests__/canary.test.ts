@@ -195,6 +195,12 @@ let tmp = '';
 let container: StartedPostgreSqlContainer | null = null;
 let memoryPlugin: Plugin | undefined;
 let exportHostRoot = '';
+// TASK-717: the assembly mounts the SPA catchall exactly as the production
+// host does (AX_STATIC_FILES_DIR), and reads the durable user-files tier from
+// a host path, so the Files-tab routes can be exercised over the real socket.
+let userFilesRoot = '';
+let pluginNames: string[] = [];
+const SPA_SHELL = '<!doctype html><html><body>AX-SPA-SHELL</body></html>';
 
 const savedEnv: Record<string, string | undefined> = {};
 function setEnv(k: string, v: string): void {
@@ -220,6 +226,11 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
   const connectionString = container.getConnectionUri();
   tmp = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-memory-preset-')));
   exportHostRoot = path.join(tmp, 'exports');
+  userFilesRoot = path.join(tmp, 'user-files');
+  const spaDir = path.join(tmp, 'spa');
+  await fsp.mkdir(userFilesRoot, { recursive: true });
+  await fsp.mkdir(spaDir, { recursive: true });
+  await fsp.writeFile(path.join(spaDir, 'index.html'), SPA_SHELL);
 
   setEnv('AX_CREDENTIALS_KEY', '42'.repeat(32));
   setEnv('AX_BOOTSTRAP_TOKEN', 'stub-bootstrap-token');
@@ -230,7 +241,15 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
     eventbus: { connectionString },
     session: { connectionString },
     workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo') },
-    sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+    sandbox: {
+      namespace: 'ax-next',
+      image: 'ax-next/agent:stub',
+      userFilesHostReadRoot: userFilesRoot,
+    },
+    // The durable per-agent tier: without a filestore the deployment has no
+    // user-files tier at all and the durable routes (correctly) answer 503.
+    filestore: { server: 'filestore.example.invalid', exportPath: '/exports/ax-user-files' },
+    staticFiles: { dir: spaDir },
     ipc: {
       host: '127.0.0.1',
       port: 0,
@@ -277,11 +296,13 @@ async function boot(opts: { withVolume: boolean } = { withVolume: true }): Promi
     runtimeClassName: '',
     namespace: 'ax-next',
     image: 'ax-next/agent:stub',
+    userFilesHostReadRoot: userFilesRoot,
   });
   const all = [...plugins, fakeSandbox, authStub(), llmStub()];
 
   const names = all.map((p) => p.manifest.name);
   expect(new Set(names).size).toBe(names.length);
+  pluginNames = names;
   memoryPlugin = all.find((p) => p.manifest.name === '@ax/memory');
 
   const httpPlugin = all.find((p) => p.manifest.name === '@ax/http-server') as
@@ -1376,6 +1397,269 @@ describe('@ax/preset-memory canary', () => {
     await bus.call('memory:export:flush', ctxFor(aliceAgentId, ALICE), {});
 
     expect(await read()).toBe(beforeBytes);
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-717 — the Files tab, composed.
+  //
+  // In production `createMemoryPlugins` re-appends @ax/channel-web AFTER the
+  // k8s base, whose last plugin is @ax/static-files. Both own a trailing-`*`
+  // splat (`/*` and `/api/workspace/agents/:agentId/files/*`), the router used
+  // to break that tie by registration order, and so every path-taking Files
+  // route answered 200 with the SPA's index.html: the tab LISTED, and opening
+  // any folder or file died on a JSON SyntaxError over `<!DOCTYPE`. Every unit
+  // test in channel-web passed, because none of them had a catchall next to
+  // the routes. This block is the one that does, on the real assembly, over a
+  // real socket.
+  // -------------------------------------------------------------------------
+  describe('TASK-717: Files-tab splat routes behind the SPA catchall', () => {
+    let aliceFiles = '';
+    let bobFiles = '';
+
+    async function mkAgent(userId: string, displayName: string): Promise<string> {
+      const out = await bus.call<
+        { actor: { userId: string; isAdmin: boolean }; input: Record<string, unknown> },
+        { agent: { id: string } }
+      >('agents:create', ctxFor('seed', userId), {
+        actor: { userId, isAdmin: false },
+        input: {
+          displayName,
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'anthropic/claude-sonnet-4-6',
+          visibility: 'personal',
+        },
+      });
+      return out.agent.id;
+    }
+
+    async function putGoverned(agentId: string, userId: string, rel: string, text: string) {
+      await bus.call('workspace:apply', ctxFor(agentId, userId), {
+        parent: null,
+        changes: [{ path: rel, kind: 'put', content: new TextEncoder().encode(text) }],
+        reason: 'TASK-717 seed',
+      });
+    }
+
+    async function raw(p: string, user: string | null = ALICE) {
+      const r = await fetch(url(p), {
+        headers: user === null ? {} : { 'x-test-user': user },
+      });
+      const text = await r.text();
+      return { status: r.status, type: r.headers.get('content-type') ?? '', text, headers: r.headers };
+    }
+
+    /** JSON, never the shell. The one assertion that would have caught it. */
+    async function json(p: string, user: string | null = ALICE) {
+      const r = await raw(p, user);
+      expect(r.text, `${p} answered with the SPA shell`).not.toContain('AX-SPA-SHELL');
+      expect(r.type, `${p} content-type`).toContain('application/json');
+      return { status: r.status, body: JSON.parse(r.text) as Record<string, unknown> };
+    }
+
+    beforeAll(async () => {
+      aliceFiles = await mkAgent(ALICE, 'Alice files');
+      bobFiles = await mkAgent(BOB, 'Bob files');
+      await putGoverned(aliceFiles, ALICE, 'docs/inner.txt', 'governed-inner\n');
+      await putGoverned(bobFiles, BOB, 'secret.txt', 'BOB-GOVERNED-SECRET\n');
+
+      const aliceDurable = path.join(userFilesRoot, aliceFiles);
+      const bobDurable = path.join(userFilesRoot, bobFiles);
+      await fsp.mkdir(path.join(aliceDurable, 'docs'), { recursive: true });
+      await fsp.mkdir(bobDurable, { recursive: true });
+      await fsp.writeFile(path.join(aliceDurable, 'docs', 'inner.txt'), 'durable-inner\n');
+      await fsp.writeFile(path.join(bobDurable, 'secret.txt'), 'BOB-DURABLE-SECRET\n');
+      // An agent-planted symlink out of its own subtree and into a neighbour's.
+      await fsp.symlink(bobDurable, path.join(aliceDurable, 'link-to-bob'));
+    }, 60_000);
+
+    it('has the shape that broke: the SPA catchall is mounted, and registers before channel-web', async () => {
+      const staticAt = pluginNames.indexOf('@ax/static-files');
+      const channelAt = pluginNames.indexOf('@ax/channel-web');
+      expect(staticAt, '@ax/static-files is in the assembly').toBeGreaterThanOrEqual(0);
+      expect(channelAt, '@ax/channel-web is in the assembly').toBeGreaterThanOrEqual(0);
+      // The precondition of the bug. If a preset change ever puts channel-web
+      // first this test no longer exercises the hazard; it should be said so
+      // loudly rather than passing for the wrong reason.
+      expect(staticAt, 'static-files registers before channel-web in this preset').toBeLessThan(
+        channelAt,
+      );
+      // And the catchall really is live: the SPA still owns what the API does not.
+      for (const p of ['/', '/settings/agents', '/some/client/route']) {
+        const r = await raw(p, null);
+        expect(r.status, p).toBe(200);
+        expect(r.type, p).toContain('text/html');
+        expect(r.text, p).toContain('AX-SPA-SHELL');
+      }
+    });
+
+    it('the governed tier: read and download answer, not index.html', async () => {
+      const listing = await json(`/api/workspace/agents/${aliceFiles}/files`);
+      expect(listing.status).toBe(200);
+
+      const file = await json(`/api/workspace/agents/${aliceFiles}/files/docs/inner.txt`);
+      expect(file.status).toBe(200);
+      expect(file.body).toMatchObject({ path: 'docs/inner.txt', body: 'governed-inner\n', clipped: null });
+
+      const dl = await raw(`/api/workspace/agents/${aliceFiles}/download/files/docs/inner.txt`);
+      expect(dl.status).toBe(200);
+      expect(dl.type).toContain('application/octet-stream');
+      expect(dl.headers.get('content-disposition')).toContain('attachment; filename="inner.txt"');
+      expect(dl.text).toBe('governed-inner\n');
+      expect(dl.text).not.toContain('AX-SPA-SHELL');
+    });
+
+    it('the durable tier: folder, file and download answer, not index.html', async () => {
+      const root = await json(`/api/workspace/agents/${aliceFiles}/user-files`);
+      expect(root.status).toBe(200);
+      expect(root.body.kind).toBe('dir');
+
+      const dir = await json(`/api/workspace/agents/${aliceFiles}/user-files/docs`);
+      expect(dir.status).toBe(200);
+      expect(dir.body).toMatchObject({ kind: 'dir', path: 'docs' });
+      expect((dir.body.entries as Array<{ path: string }>).map((e) => e.path)).toContain('docs/inner.txt');
+
+      const file = await json(`/api/workspace/agents/${aliceFiles}/user-files/docs/inner.txt`);
+      expect(file.status).toBe(200);
+      expect(file.body).toMatchObject({ kind: 'file', path: 'docs/inner.txt', body: 'durable-inner\n' });
+
+      const dl = await raw(`/api/workspace/agents/${aliceFiles}/download/user-files/docs/inner.txt`);
+      expect(dl.status).toBe(200);
+      expect(dl.type).toContain('application/octet-stream');
+      expect(dl.text).toBe('durable-inner\n');
+    });
+
+    it('an unauthenticated caller gets the routes own JSON 401 on every splat route, not the shell', async () => {
+      for (const p of [
+        `/api/workspace/agents/${aliceFiles}/files/docs/inner.txt`,
+        `/api/workspace/agents/${aliceFiles}/user-files/docs`,
+        `/api/workspace/agents/${aliceFiles}/download/files/docs/inner.txt`,
+        `/api/workspace/agents/${aliceFiles}/download/user-files/docs/inner.txt`,
+      ]) {
+        const r = await json(p, null);
+        expect(r.status, p).toBe(401);
+      }
+    });
+
+    it('an unknown /api path is a JSON 404, not the SPA', async () => {
+      for (const p of [
+        '/api/no-such-route',
+        '/api/workspace/no/such/thing',
+        `/api/workspace/agents/${aliceFiles}/no-such-tab/deeper`,
+      ]) {
+        const r = await json(p);
+        expect(r.status, p).toBe(404);
+        expect(r.body, p).toEqual({ error: 'not-found' });
+      }
+    });
+
+    describe('traversal', () => {
+      // Every splat route, and the attempts a browser (or an attacker with curl)
+      // can actually put on the wire. `..` and `%2e%2e` as WHOLE segments are
+      // collapsed by the URL parser before the router sees them; what survives
+      // is the encoded-slash family, which the handler must decode exactly once.
+      const ROUTES = [
+        (a: string, tail: string) => `/api/workspace/agents/${a}/files/${tail}`,
+        (a: string, tail: string) => `/api/workspace/agents/${a}/user-files/${tail}`,
+        (a: string, tail: string) => `/api/workspace/agents/${a}/download/files/${tail}`,
+        (a: string, tail: string) => `/api/workspace/agents/${a}/download/user-files/${tail}`,
+      ];
+
+      it('encoded ../ is refused on every splat route (400 invalid-path), never a file', async () => {
+        for (const route of ROUTES) {
+          for (const tail of ['..%2Fsecret.txt', '%2e%2e%2fsecret.txt', 'docs%2F..%2F..%2Fsecret.txt']) {
+            const p = route(aliceFiles, tail);
+            const r = await json(p);
+            expect(r.status, p).toBe(400);
+            expect(r.body, p).toEqual({ error: 'invalid-path' });
+          }
+        }
+      });
+
+      it('an encoded traversal to a neighbour by id is refused, and leaks nothing', async () => {
+        for (const route of ROUTES) {
+          const p = route(aliceFiles, `..%2F${bobFiles}%2Fsecret.txt`);
+          const r = await raw(p);
+          expect(r.status, p).toBe(400);
+          expect(r.text, p).not.toContain('BOB-');
+        }
+      });
+
+      it('double-encoded traversal is decoded once, so it is a literal filename that does not exist', async () => {
+        for (const route of ROUTES) {
+          const p = route(aliceFiles, '%252e%252e%252fsecret.txt');
+          const r = await raw(p);
+          expect([400, 404], p).toContain(r.status);
+          expect(r.text, p).not.toContain('BOB-');
+          expect(r.text, p).not.toContain('AX-SPA-SHELL');
+        }
+      });
+
+      it('a plain ../ the URL parser collapses lands on no route and gets a JSON 404, not a file or the shell', async () => {
+        const r = await json(
+          `/api/workspace/agents/${aliceFiles}/user-files/../${bobFiles}/user-files/secret.txt`,
+        );
+        expect(r.status).toBe(404);
+        expect(JSON.stringify(r.body)).not.toContain('BOB-');
+      });
+
+      it('the durable-tier download of the root is a 400, not the shell', async () => {
+        const r = await json(`/api/workspace/agents/${aliceFiles}/download/user-files/`);
+        expect(r.status).toBe(400);
+      });
+
+      it('an agent-planted symlink into a neighbours subtree does not read through', async () => {
+        for (const p of [
+          `/api/workspace/agents/${aliceFiles}/user-files/link-to-bob/secret.txt`,
+          `/api/workspace/agents/${aliceFiles}/download/user-files/link-to-bob/secret.txt`,
+          `/api/workspace/agents/${aliceFiles}/user-files/link-to-bob`,
+        ]) {
+          const r = await raw(p);
+          expect(r.status, p).toBe(404);
+          expect(r.text, p).not.toContain('BOB-');
+        }
+      });
+    });
+
+    describe('cross-tenant', () => {
+      it("Alice cannot open Bob's agent on any splat route, and cannot tell it from an agent that does not exist", async () => {
+        const missing = 'agt_does_not_exist';
+        const tails = [
+          ['files', 'secret.txt'],
+          ['user-files', 'secret.txt'],
+          ['download/files', 'secret.txt'],
+          ['download/user-files', 'secret.txt'],
+          // A MALFORMED path must not read differently from a well-formed one
+          // on someone else's agent: 400-vs-404 there is a free oracle.
+          ['files', '..%2Fsecret.txt'],
+          ['user-files', '..%2Fsecret.txt'],
+          ['download/files', '..%2Fsecret.txt'],
+          ['download/user-files', '..%2Fsecret.txt'],
+        ] as const;
+        for (const [seg, tail] of tails) {
+          const theirs = await json(`/api/workspace/agents/${bobFiles}/${seg}/${tail}`);
+          const nowhere = await json(`/api/workspace/agents/${missing}/${seg}/${tail}`);
+          expect(theirs.status, `${seg}/${tail}`).toBe(404);
+          expect(theirs.status).toBe(nowhere.status);
+          expect(theirs.body).toEqual(nowhere.body);
+          expect(JSON.stringify(theirs.body)).not.toContain('BOB-');
+        }
+      });
+
+      it('a third user sees Alice as absent too, and Bob still reads his own files', async () => {
+        const eve = await json(`/api/workspace/agents/${aliceFiles}/files/docs/inner.txt`, EVE);
+        expect(eve.status).toBe(404);
+        const eveDurable = await json(`/api/workspace/agents/${aliceFiles}/user-files/docs`, EVE);
+        expect(eveDurable.status).toBe(404);
+
+        const bob = await json(`/api/workspace/agents/${bobFiles}/files/secret.txt`, BOB);
+        expect(bob.status).toBe(200);
+        expect(bob.body).toMatchObject({ body: 'BOB-GOVERNED-SECRET\n' });
+        const bobDurable = await json(`/api/workspace/agents/${bobFiles}/user-files/secret.txt`, BOB);
+        expect(bobDurable.status).toBe(200);
+        expect(bobDurable.body).toMatchObject({ kind: 'file', body: 'BOB-DURABLE-SECRET\n' });
+      });
+    });
   });
 });
 

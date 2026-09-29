@@ -17,6 +17,7 @@
  * plugin always does. User A's queries must never touch user B's rows.
  */
 import { createHash } from 'node:crypto';
+import { PluginError } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
 import type { DecisionRow, DecisionsDatabase } from './migrations.js';
 import { RECEIPT_STATUSES } from './receipts.js';
@@ -495,6 +496,23 @@ export interface DecisionStore {
     callFingerprint: string,
     nowIso: string,
   ): Promise<Decision | null>;
+
+  /**
+   * DELETE EVERY DECISION FOR AN AGENT, whatever its status and whoever owns it
+   * (TASK-718). Backs the `agents:deleted` subscriber: `agent_id` is an opaque
+   * key with no FK to the agents table, so without this the rows outlive the
+   * agent forever.
+   *
+   * The one method here that is deliberately NOT owner-scoped. A team agent
+   * raises holds for several people, and a delete scoped to one owner would
+   * strand the rest. Terminal rows go too: with the agent gone there is nobody
+   * left for a receipt to be filed under, and a decision's `call_json` is the
+   * model's own words, held verbatim.
+   *
+   * THROWS on an empty `agentId`: a delete keyed on nothing is never what a
+   * caller meant, so it is refused rather than run.
+   */
+  deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
 }
 
 export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionStore {
@@ -1045,6 +1063,18 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .returningAll()
         .executeTakeFirst();
       return row === undefined ? null : toDecision(row);
+    },
+
+    async deleteAllForAgent(agentId) {
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        throw new PluginError({
+          code: 'missing-field',
+          plugin: '@ax/decisions',
+          message: 'agentId is required',
+        });
+      }
+      const res = await db.deleteFrom(table).where('agent_id', '=', agentId).executeTakeFirst();
+      return { deleted: Number(res.numDeletedRows ?? 0n) };
     },
   };
 }

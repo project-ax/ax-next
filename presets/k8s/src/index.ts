@@ -27,6 +27,8 @@ import { createAdminSettingsRoutesPlugin } from '@ax/admin-settings-routes';
 import { createBrandingPlugin } from '@ax/branding';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentActivityPlugin } from '@ax/agent-activity';
+import { createUsageLimitsPlugin } from '@ax/usage-limits';
+import { createDiskQuotaPlugin } from '@ax/disk-quota';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
@@ -90,8 +92,14 @@ import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
 //   7. mcp-client (catalog + tool descriptors + tool:register/tool:list)
 //   8. agents (admin endpoints + agents:resolve gate)
 //
-// (Host-side LLM plugins were deleted in Phase 6 — the SDK runner reaches
-// Anthropic via the credential-proxy, not through a host `llm:call` hook.)
+// Two kinds of model traffic, and they take different roads:
+//   - AGENT traffic goes runner (in the sandbox) -> credential proxy ->
+//     provider. It never goes through a host `llm:call` hook.
+//   - The host's own helper calls (conversation titles, memory extraction,
+//     the skill safety scan) use `llm:call:<provider>`, served by
+//     @ax/llm-anthropic and @ax/llm-openrouter, which this preset loads.
+// Both are metered by @ax/usage-limits: agent turns via the runner-reported
+// `usage` on `chat:turn-end`, helper calls via `llm:usage`.
 // ---------------------------------------------------------------------------
 
 const requireFromPreset = createRequire(import.meta.url);
@@ -1015,6 +1023,37 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // an agent the caller cannot resolve.
   plugins.push(createAgentActivityPlugin());
 
+  // ----- 7c. per-user spend + rate limits (TASK-692) ----------------------
+  // GATES every turn on `chat:start` (veto; fired by agent:invoke before a
+  // sandbox spawns): a suspended user, one over the rolling daily spend cap,
+  // or one over the hourly turn cap is refused with a stable reason code
+  // (`chat:start:usage-*`). Fails CLOSED if the check itself breaks.
+  // METERS each agent turn on `chat:turn-end` (runner-reported usage,
+  // untrusted, or a flat assumed cost when absent) and each host-side helper
+  // call on `llm:usage`. Reuses the shared postgres pool via
+  // `database:get-instance` (tables `usage_limits_v1_*`); limits live in the
+  // `settings:usage-limits` storage key. Mounts the admin-only
+  // /admin/usage* routes (view, limits, suspend/resume), so it hard-depends
+  // on http:register-route + auth:require-user.
+  plugins.push(createUsageLimitsPlugin());
+
+  // ----- 7d. per-owner storage limit (TASK-690) ---------------------------
+  // Prod keeps every agent workspace (bare git repos) and every uploaded or
+  // published file on ONE shared volume; this is the per-person limit on it.
+  // GATES the two places bytes are written: `workspace:pre-apply` (veto; fires
+  // on the runner's commit AND on every in-process workspace:apply) and
+  // `blob:pre-put` (veto; fired by the `blob:put` facade every blob backend
+  // registers behind). Fails CLOSED. METERS `blob:stored` (a ledger row per
+  // owner and sha256) and `workspace:applied` (re-measures that agent's
+  // workspace through the optional `workspace:usage`, which only the local git
+  // backend registers today), plus a periodic sweep that backfills every
+  // personal agent. Reuses the shared postgres pool (tables
+  // `disk_quota_v1_*`); the limit lives in the admin-editable
+  // `settings:disk-quota` storage key. Mounts GET /settings/storage (a person's
+  // own numbers) and GET /admin/storage + PUT /admin/storage/limits, so it
+  // hard-depends on http:register-route + auth:require-user.
+  plugins.push(createDiskQuotaPlugin());
+
   // ----- 8. agents -------------------------------------------------------
   // Registers `agents:resolve` (the ACL gate the chat-orchestrator hard-
   // depends on as of Week 9.5) AND mounts /admin/agents* routes. The
@@ -1441,15 +1480,20 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     }),
   );
 
-  // ----- 11. static-files (optional, MUST be last) ----------------------
+  // ----- 11. static-files (optional; kept last for readability) ---------
   // Serves channel-web's bundle from the same listener so cookies and
   // CSRF stay same-origin in production. The plugin registers a `/*`
   // splat catchall — the http-server router does SPECIFICITY-based
-  // matching (exact > non-splat patterns > splats; see
-  // packages/http-server/src/router.ts:137-163), so /api/chat/* and
-  // /admin/* always win over /* regardless of registration order. We
-  // still push static-files LAST so the visual order matches the intent
-  // and a future reader doesn't read this as a shadowing bug.
+  // matching (exact > `:param` patterns > splats, and among splats the
+  // longest fixed prefix wins; see Router.match in
+  // packages/http-server/src/router.ts), so /api/chat/*, /admin/* and
+  // /api/workspace/agents/:agentId/files/* win over /* whichever plugin
+  // registered first. That was NOT true of splat-vs-splat until TASK-717:
+  // registration order broke that tie, and the memory preset (which
+  // re-appends @ax/channel-web after this plugin) shipped a Files tab whose
+  // every path-taking route answered with index.html. We still push
+  // static-files LAST so the visual order matches the intent. Unknown
+  // /api/* paths get a JSON 404 from the plugin, never the SPA shell.
   //
   // When `staticFiles` is unset, no catchall is mounted and unknown
   // paths return 404 — the dev workflow uses Vite's proxy instead.

@@ -24,6 +24,12 @@
  * (multi-slot) vault row the host resolver reads, reusing the existing
  * `setDestinationCredential` write (no new wire surface).
  *
+ * DISCLOSURE (TASK-700 / TASK-328): wherever a key is entered here, an inline
+ * `ConnectorAccessNotice` says what it hands the assistant — the same access the
+ * key has, with no per-call approval. It renders WITH the key form (so for a
+ * shared key, after the consent gate, not behind it), never where no key is being
+ * entered (no-key connector, non-admin on a shared connector, load error).
+ *
  * SECURITY (invariant #5): the shared-key consent gate is BLOCKING — the
  * key-entry form is not rendered until the user accepts. The workspace write
  * targets `scope:'global'`, which the server admin-gates (`requireAdmin` on
@@ -45,6 +51,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { CredentialSlotForm } from '@/components/credentials/CredentialSlotForm';
+import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConnect';
 import {
   getConnector,
@@ -53,6 +60,7 @@ import {
   sharedKeyConsentMessage,
   type Connector,
   type ConnectorCredentialPlanEntry,
+  type ConnectorRouteBase,
 } from '@/lib/connectors';
 import {
   myCredentials,
@@ -89,6 +97,12 @@ export function ConnectorConnectDialog({
   onOpenChange,
   onConnected,
 }: ConnectorConnectDialogProps) {
+  // The route bundle the connector load targets: `/admin/connectors*` is
+  // admin-only server-side (non-admins get 403), so a non-admin reads the same
+  // owner-scoped connector through `/settings/connectors` (same as ConnectorsTab).
+  const base: ConnectorRouteBase = isAdmin
+    ? '/admin/connectors'
+    : '/settings/connectors';
   const [connector, setConnector] = useState<Connector | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The shared-key consent moment must be accepted BEFORE the key form renders.
@@ -137,7 +151,7 @@ export function ConnectorConnectDialog({
     setConsented(false);
     setUserCreds([]);
     setGlobalCreds([]);
-    getConnector(connectorId)
+    getConnector(connectorId, base)
       .then((c) => {
         if (!cancelled) setConnector(c);
       })
@@ -148,7 +162,7 @@ export function ConnectorConnectDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, connectorId, loadCreds]);
+  }, [open, connectorId, base, loadCreds]);
 
   // Whether a slot's derived (scope, ref) already has a stored key.
   const hasCred = useCallback(
@@ -317,8 +331,17 @@ function ConnectKeyForms({
     [connector],
   );
 
+  // (TASK-700) Does anything below take an API key? A sign-in slot renders
+  // `ConnectorOAuthConnect`, which carries its own (sign-in) notice, so this one
+  // is for the key forms only — and it is ONE notice for the dialog, not one per
+  // slot: a multi-key connector is still a single decision to hand the assistant
+  // access. Same test the renderer below uses: anything that is not an OAuth slot
+  // gets the key form.
+  const takesAnApiKey = plan.some((entry) => slotByName(entry.slot)?.kind !== 'oauth');
+
   return (
     <div className="flex flex-col gap-5">
+      {takesAnApiKey && <ConnectorAccessNotice kind="key" />}
       {plan.map((entry) => {
         const slotMeta = slotByName(entry.slot);
 

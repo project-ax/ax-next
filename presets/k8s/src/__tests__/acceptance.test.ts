@@ -274,6 +274,22 @@ const PLUGINS_TO_DROP = new Set<string>([
   // pinned in retire-strata-index.test.ts, and prod-bootstrap.test.ts proves
   // it drops a real seeded table.
   '@ax/preset-k8s/retire-strata-index',
+  // Per-user spend + rate limits (TASK-692): postgres-backed (calls
+  // database:get-instance in init) and hard-calls http:register-route +
+  // auth:require-user for its /admin/usage* routes, all dropped above, so
+  // leaving it in would fail the kernel's verifyCalls. Its static wiring is
+  // pinned in preset.test.ts, and the real loop (runner turn-end -> meter ->
+  // chat:start refusal, per-user isolation, restart survival) is pinned by the
+  // usage-limits-acceptance.test.ts canary against a real postgres.
+  '@ax/usage-limits',
+  // Per-owner storage limit (TASK-690): postgres-backed (calls
+  // database:get-instance in init) and hard-calls http:register-route +
+  // auth:require-user for its storage routes, all dropped above, so leaving it
+  // in would fail the kernel's verifyCalls. Its static wiring is pinned in
+  // preset.test.ts and the real gates (commit-notify + blob:put against a real
+  // postgres, real git backend and real fs blob store) are pinned by the
+  // disk-quota-acceptance.test.ts canary.
+  '@ax/disk-quota',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

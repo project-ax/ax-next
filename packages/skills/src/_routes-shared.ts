@@ -111,6 +111,14 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       res.status(404).json({ error: err.message });
       return true;
     }
+    // TASK-690: writing a bundle goes through `blob:put`, which throws code
+    // 'rejected' with a host-authored, person-facing sentence when a
+    // `blob:pre-put` subscriber (the per-person storage limit) refuses. That is
+    // an answer, not a fault: say so with 413 and pass the sentence along.
+    if (err.code === 'rejected') {
+      res.status(413).json({ error: err.message, code: 'storage-full' });
+      return true;
+    }
     if (err.code === 'request-already-decided') {
       res.status(409).json({ error: err.message, code: 'request-already-decided' });
       return true;

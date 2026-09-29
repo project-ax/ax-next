@@ -1,14 +1,16 @@
 /**
- * Where keyboard focus goes when the new-agent dialog closes (TASK-510).
+ * Where keyboard focus goes when the new-agent flow closes (TASK-510).
  *
  * THE BUG THIS EXISTS FOR. The "New agent…" row does not open an overlay on
  * top of the workspace. `App.tsx`'s bootstrap gate REPLACES the whole tree
- * with the dialog (and, after a create, with the "Setting up your agent…"
- * screen), so the row that opened it is destroyed on open and a fresh
- * workspace is mounted on close. The dialog's own restore
- * (`components/ui/use-opener-restore.ts`) captures a node, finds it detached,
- * and correctly bails — so Escape, Close and a finished create all used to
- * leave focus on `<body>`.
+ * with the new-agent card (and, after a create, with the "Setting up your
+ * agent…" screen), so the row that opened it is destroyed on open and a fresh
+ * workspace is mounted on close. When that card was still a Radix dialog, the
+ * dialog's own restore (`components/ui/use-opener-restore.ts`) captured a
+ * node, found it detached, and correctly bailed — so Escape, Close and a
+ * finished create all used to leave focus on `<body>`. (TASK-689 made it a
+ * card with its own Cancel and Escape; the reason this module exists is the
+ * same either way: nothing is left to restore TO.)
  *
  * It is the same shape as Settings (`./settings-return-focus.ts`), so it uses
  * the same mechanism: restore by IDENTITY, after the remount, with
@@ -17,7 +19,7 @@
  * THE TARGETS, in order:
  *
  *   1. The "New agent…" row itself ({@link NEW_AGENT_OPENER_ATTR}) — the
- *      control that really opened the dialog. On desktop it is always on the
+ *      control that really opened the flow. On desktop it is always on the
  *      rail, so this is where focus lands.
  *   2. The compact nav's hamburger (`NAV_TRIGGER_ATTR`). Below `md` the row
  *      lives inside the nav `Sheet`, which is closed (and so unmounted) when
@@ -36,7 +38,7 @@ import {
 } from './focus-when-ready';
 
 /**
- * Marks the control a person opens the new-agent dialog from.
+ * Marks the control a person opens the new-agent flow from.
  *
  * At most one rendered node should carry it — the restore takes the first
  * match in document order.
@@ -50,7 +52,7 @@ const NEW_AGENT_RETURN_TARGETS = [
 
 /**
  * Put focus back on the "New agent…" row — or its compact stand-in — as soon
- * as one exists. Call it once, right after the dialog's close; return the
+ * as one exists. Call it once, right after the flow closes; return the
  * canceller from the effect that called it.
  *
  * `windowMs` is a parameter so a test can close the window without waiting
@@ -158,7 +160,7 @@ export function focusNewAgentViewWhenReady(
  * than the first window still ends with focus in the new agent.
  *
  * It yields to a person up front, which the first call does not need to: that
- * one runs straight after the dialog's close, when the keyboard is on
+ * one runs straight after the flow closes, when the keyboard is on
  * `<body>` by construction. This one runs seconds later, and
  * `focusFirstWhenReady`'s immediate try does not check the keyboard — so if
  * the new view has already painted by now, a person who tabbed somewhere

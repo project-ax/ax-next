@@ -684,6 +684,26 @@ export interface TitleUpdatedEvent {
   title: string;
 }
 
+/**
+ * Fired on the in-process bus (`conversations:purged`) AFTER this plugin has
+ * hard-deleted conversations because their agent was deleted (TASK-718) — the
+ * transaction has committed by the time any subscriber runs. Other plugins that
+ * keep rows keyed on a conversation id (attachments today) subscribe to delete
+ * their own; they hold no agent id for it, only conversation ids.
+ *
+ * `conversationIds` are the ids that no longer exist, in chunks of at most
+ * `CONVERSATIONS_PURGED_CHUNK_SIZE` per fire (an agent can have tens of
+ * thousands, and a subscriber turns each fire into a bounded query). Domain
+ * vocabulary only — no table, key or storage names (invariant #1). Subscribers
+ * duck-type this shape (no cross-plugin import); it is not an IPC action.
+ */
+export interface ConversationsPurgedEvent {
+  conversationIds: string[];
+}
+
+/** Upper bound on `ConversationsPurgedEvent.conversationIds` per fire. */
+export const CONVERSATIONS_PURGED_CHUNK_SIZE = 500;
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------

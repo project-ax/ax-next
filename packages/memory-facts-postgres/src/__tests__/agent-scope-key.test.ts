@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { agentScopeKey } from '../agent-scope-key.js';
+import { agentScopeKey, agentScopeKeyForAgentId } from '../agent-scope-key.js';
 
 // ---------------------------------------------------------------------------
 // The lockstep tripwire (TASK-257 pattern, applied to TASK-423).
@@ -71,6 +71,30 @@ describe('agentScopeKey — partitions on agentId ALONE', () => {
   it('is 16 lowercase hex chars', () => {
     for (const [agentId] of PINNED) {
       expect(agentScopeKey({ agentId })).toMatch(/^[0-9a-f]{16}$/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-718 — `agents:deleted` carries an agent id and NO ctx worth deriving a
+// key from (the ctx belongs to whoever issued the delete). The bare-id helper
+// is the same derivation, exposed; `agentScopeKey(ctx)` delegates to it, so
+// there is exactly one place the digest is computed.
+//
+// Against a helper that drifted from `agentScopeKey` (a different truncation,
+// a different key material), the pinned comparisons below go red: they are
+// checked against the LITERAL digests, not merely against `agentScopeKey`, so
+// a helper and a ctx-form that drift TOGETHER are caught by the pins above and
+// a helper that drifts ALONE is caught here.
+// ---------------------------------------------------------------------------
+describe('agentScopeKeyForAgentId — the bare-id form of the same derivation', () => {
+  it.each(PINNED)('agentScopeKeyForAgentId(%j) === %j', (agentId, expected) => {
+    expect(agentScopeKeyForAgentId(agentId)).toBe(expected);
+  });
+
+  it('is exactly what agentScopeKey(ctx) returns for the same id', () => {
+    for (const [agentId] of PINNED) {
+      expect(agentScopeKeyForAgentId(agentId)).toBe(agentScopeKey({ agentId }));
     }
   });
 });

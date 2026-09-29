@@ -501,6 +501,62 @@ describe('aisdk runner — Stop (TASK-688)', () => {
     expect(shippedEntries().map((e) => e.role)).toEqual(['user', 'assistant', 'tool']);
   });
 
+  it('bills the steps that FINISHED when the next step is the one that gets stopped (TASK-692)', async () => {
+    // Step one ran and finished (a paid model call); step two is cut off. The
+    // stopped turn reports step one's usage: the person stopped the reply, not
+    // the bill. The cut-off step has no usage to read, so it adds nothing.
+    const stepOne: Chunk[] = toolStep('Bash', { command: 'echo hi' }).map((c) =>
+      c.type === 'finish'
+        ? {
+            ...c,
+            usage: {
+              inputTokens: { total: 1000, noCache: 100, cacheRead: 850, cacheWrite: 50 },
+              outputTokens: { total: 30, text: 10, reasoning: 20 },
+            },
+          }
+        : c,
+    );
+    let call = 0;
+    scriptedModel.mockReturnValue(
+      new MockLanguageModelV4({
+        doStream: async ({ prompt, abortSignal }) => {
+          sentPrompts.push(prompt);
+          call += 1;
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                if (call === 1) {
+                  for (const c of stepOne) controller.enqueue(c as never);
+                  controller.close();
+                  return;
+                }
+                for (const c of head()) controller.enqueue(c as never);
+                abortSignal?.addEventListener('abort', () =>
+                  controller.error(new DOMException('aborted', 'AbortError')),
+                );
+              },
+            }),
+          };
+        },
+      }),
+    );
+    const done = main();
+    inbox.push(userMessage('look around'));
+    await until(() => sentPrompts.length === 2, 'the second model call to start');
+    inbox.push({ type: 'interrupt' } as InboxLoopEntry);
+    await until(() => assistantEnds().length === 1, 'the stopped turn to end');
+    inbox.push({ type: 'cancel' } as InboxLoopEntry);
+    await expect(done).resolves.toBe(0);
+
+    expect(assistantEnds()[0]!.usage).toEqual({
+      model: 'anthropic/claude-sonnet-4-6',
+      inputTokens: 100,
+      outputTokens: 30,
+      cacheReadTokens: 850,
+      cacheWriteTokens: 50,
+    });
+  });
+
   it('a Stop pressed before the first word still ends the turn cleanly (nothing to keep)', async () => {
     scriptedModel.mockReturnValue(modelThatHangsThen([...head()], [textStep('hello')]));
     const done = main();
@@ -511,6 +567,9 @@ describe('aisdk runner — Stop (TASK-688)', () => {
     await until(() => turnEnds().length >= 1, 'the stopped turn to end');
     // An empty assistant turn is a heartbeat: no contentBlocks, no invented text.
     expect(assistantEnds()[0]!.contentBlocks).toBeUndefined();
+    // No step finished, so there is nothing to bill: `usage` is ABSENT (the host
+    // then charges its flat assumption), not a zero-filled "free" turn (TASK-692).
+    expect(assistantEnds()[0]).not.toHaveProperty('usage');
 
     inbox.push(userMessage('hi again', 'req-2'));
     await until(() => assistantEnds().length === 2, 'the next turn to run');

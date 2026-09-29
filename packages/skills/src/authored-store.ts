@@ -132,8 +132,11 @@ export function createAuthoredSkillsStore(
       // Write the extra-file tree FIRST (content-addressed; identical bytes
       // dedup against any other skill's bundle). A draft with no extra files
       // gets a NULL pointer.
+      // Charged to the agent owner's storage limit (TASK-690).
       const treeSha =
-        input.files.length > 0 ? await bundleStore.writeTree(input.files) : null;
+        input.files.length > 0
+          ? await bundleStore.writeTree(input.files, input.ownerUserId)
+          : null;
 
       const existing = await db
         .selectFrom('skills_v1_authored')

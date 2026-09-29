@@ -119,6 +119,13 @@ export DB_PASSWORD=$(openssl rand -base64 24)   # SAVE THIS (goes in a Secret be
 # --storage-auto-increase-limit=N is beta-only on create — add it later via
 # `gcloud beta sql instances patch ax-next-db --storage-auto-increase-limit=N`
 # or the Console. Storage only ever grows; it can't shrink in place.
+#
+# The last three flags are the database's side of "Backups and disaster recovery"
+# below: a daily automated backup (on by default; we pin the time to 09:00 UTC and
+# keep 14 of them instead of the default 7) plus point-in-time recovery, which
+# is OFF unless you ask for it. Deletion protection is turned on later, by
+# `deploy/gke/backups.sh enable`, so the delete-and-retry advice in
+# Troubleshooting still works while you are building this.
 gcloud sql instances create ax-next-db \
   --project=$PROJECT_ID --region=$REGION \
   --database-version=POSTGRES_17 \
@@ -126,7 +133,10 @@ gcloud sql instances create ax-next-db \
   --storage-auto-increase \
   --network=projects/$PROJECT_ID/global/networks/$VPC \
   --no-assign-ip \
-  --ssl-mode=ENCRYPTED_ONLY
+  --ssl-mode=ENCRYPTED_ONLY \
+  --backup-start-time=09:00 \
+  --retained-backups-count=14 \
+  --enable-point-in-time-recovery
 
 gcloud sql databases create ax_next --instance=ax-next-db --project=$PROJECT_ID
 gcloud sql users create ax_next --instance=ax-next-db --password="$DB_PASSWORD" --project=$PROJECT_ID
@@ -611,22 +621,218 @@ curl -sSI https://$DOMAIN/health   # expect HTTP/2 200
 - [ ] `https://$DOMAIN/setup` returns **410 Gone** after the wizard (one-shot).
 - [ ] No `level >= warn` host logs (the kind-only gVisor-disabled warning should
       be **absent** here — you're actually running gVisor).
+- [ ] `bash deploy/gke/backups.sh status` exits 0, and one restore drill has passed
+      and been written in the drill log
+      ([Backups and disaster recovery](#backups-and-disaster-recovery-do-not-skip)).
+      Do this before real users arrive, not after.
 
 ---
 
-## Disaster recovery (do not skip)
+## Backups and disaster recovery (do not skip)
 
-The host PVC holds both the workspace git repos **and** the blobs, and the chart
-ships **zero** backup primitives. Pick at least one before real users arrive:
+Three places hold data worth keeping. The database is a managed service and backs
+itself up. The other two are ordinary Compute Engine disks, and **out of the box
+nothing backs them up**: the chart ships no backup tooling, and the
+`helm.sh/resource-policy: keep` annotation on their claims only stops *Helm* from
+deleting them. It does not protect the disk.
 
-- **PD snapshots** via a `VolumeSnapshot` schedule (a `VolumeSnapshotClass` for
-  pd.csi.storage.gke.io + a CronJob, or GCE's scheduled snapshots on the
-  underlying disk).
-- A `git bundle` cron that ships the bare repos to off-cluster storage.
+One script, [`gke/backups.sh`](gke/backups.sh), turns the protection on, checks that
+it is still working, and rehearses a restore. It finds the disks from the PVCs at
+run time, so there is no project id, zone or disk name to edit. Every command that
+writes takes `--dry-run`, and every one is safe to run twice.
 
-Cloud SQL has its own automated backups — make sure they're enabled on the
-instance (`--backup-start-time` / the console). That covers the database; it does
-**not** cover the PVC.
+### What is protected, and what a bad day costs
+
+| Store | What is in it | Protected by | Worst-case data loss |
+|---|---|---|---|
+| **Cloud SQL** (`ax-next-db`) | accounts, conversations, encrypted credentials, agent settings | a daily automated backup (14 kept) and point-in-time recovery (7 days of logs) | Recovering to a moment in the last 7 days: minutes. We have not measured how far behind the log shipping runs, so we won't quote a number. With point-in-time recovery off: up to 24 hours. |
+| **Workspace disk** (PVC `ax-next-workspace`) | every agent's git workspace, plus attachments, artifacts and skill bundles | a daily disk snapshot, kept 14 days | **Up to 24 hours** of changes. Up to 48 if one night's snapshot fails; `status` raises the alarm once a schedule has gone 36 hours without one. |
+| **Facts disk** (PVC `ax-next-memory-facts`) | the memory database, `facts.db` | a daily disk snapshot, kept 14 days | **Up to 24 hours** of newly learned facts. There is no supported command that rebuilds them from chat history, so treat lost facts as lost. |
+
+What is **not** covered, so nobody assumes it is:
+
+- **Filestore.** If you enabled `sandbox.filestore` (durable user files) or
+  `memory.exports`, that data lives on a Filestore share. Neither the schedule nor
+  the drill touches it. Filestore has its own backup feature; we haven't set it up.
+- **The keys.** A database backup restored without `AX_CREDENTIALS_KEY` cannot
+  decrypt the stored credentials. Step 4b puts all three keys in Secret Manager;
+  that is their backup.
+- **Anything outside this project.** Snapshots live in the same project as the
+  disks. Anyone who can delete disks there can delete the snapshots too, and a
+  compromised account with that reach can take both. This is protection against
+  mistakes and failures, not against a hostile insider.
+
+Three things worth knowing about the disk snapshots themselves:
+
+- **They are crash-consistent, not application-consistent.** A snapshot is what the
+  disk looked like at one instant, like pulling the plug. SQLite (which recovers
+  from its write-ahead log) and git (which writes objects before it moves a branch)
+  cope with that, and the drill below checks that they do. A passing drill is
+  evidence about *that* snapshot, not a promise about every future one.
+- **The disks and the database are backed up separately.** Restore both and they
+  may disagree by up to a day: a conversation in the database can point at
+  workspace history the older disk never saw. Restore the disks from a snapshot,
+  then restore Cloud SQL to the moment that snapshot was taken (point-in-time
+  recovery lets you choose it), and they line up.
+- **Deleting a claim deletes its disk.** The default storage class reclaims (deletes)
+  the disk when its claim goes away. The schedule keeps the automatic snapshots
+  even then (`keep-auto-snapshots`), and that is deliberate: it is the safety net for
+  exactly this mistake. It also means they cost money until somebody deletes them.
+
+### Turn it on
+
+You need permission to create Compute Engine resource policies and to edit the Cloud
+SQL instance, and `kubectl` must point at the GKE cluster (Step 0).
+
+```bash
+# 1. See the plan. Reads from the cluster and GCP, changes nothing.
+bash deploy/gke/backups.sh enable --dry-run --project $PROJECT_ID
+
+# 2. Do it. --snapshot-now also takes one snapshot of each disk right away, so you
+#    have a restore point today instead of waiting for tonight's run.
+bash deploy/gke/backups.sh enable --project $PROJECT_ID --snapshot-now
+
+# 3. Check. Exits non-zero if anything is wrong.
+bash deploy/gke/backups.sh status --project $PROJECT_ID
+```
+
+`--project` is a guard, not a setting: if the disks behind your current `kubectl`
+context are in a different project, the script stops before it writes anything. It
+also prints the context, project, zone and disk names first, so read that header.
+
+What `enable` does, and nothing else:
+
+1. Creates one snapshot schedule, `ax-next-daily`: **daily at 09:00 UTC** (overnight
+   in the Americas), **keep 14 days**, in the disks' region. If it already exists it
+   is left alone (a schedule can't be edited in place; to change the numbers, pass a
+   new `--schedule-name`, attach that, and delete the old one).
+2. Attaches it to the workspace disk and the facts disk. A disk takes only one
+   schedule: if one is already attached that isn't ours, the script says so and
+   leaves it.
+3. Turns on Cloud SQL **deletion protection**, so `gcloud sql instances delete`
+   fails until somebody turns it off on purpose. (If you ever do mean to delete the
+   instance: `gcloud sql instances patch ax-next-db --no-deletion-protection`, and
+   consider `--final-backup` first.)
+4. Reports whether the database's own automated backups and point-in-time recovery
+   are on, and exits non-zero with the fix if not. It never edits those settings.
+
+`--snapshot-now` snapshots are **not** covered by the 14-day rule. Delete them
+(`gcloud compute snapshots delete`) once you no longer need them.
+
+The first scheduled snapshot lands at the next 09:00 UTC. Until then `status` says
+the first one is still due; after a day, a schedule with no snapshot is a failure.
+Run `status` now and then (before a release, or from a cron or CI job whose failure
+somebody sees). A backup that quietly stopped working is worse than none.
+
+### The restore drill
+
+A backup nobody has restored is a hope. The drill restores the newest snapshot of
+each disk **to scratch disks**, mounts them in a throwaway pod, and checks that the
+workspace's git repos pass `git fsck` and that `facts.db` opens and passes SQLite's
+`integrity_check`. It never attaches, reads or writes the production disks.
+
+You need: at least one snapshot of each disk (`enable --snapshot-now` makes one) and
+rights to create disks, namespaces and PersistentVolumes. The script waits up to 20
+minutes for the checks (`--timeout` changes that). The scratch disks are billed only
+for the minutes they exist.
+
+```bash
+# See exactly what it would create, including every manifest. Changes nothing.
+bash deploy/gke/backups.sh drill --dry-run --project $PROJECT_ID
+
+# Run it.
+bash deploy/gke/backups.sh drill --project $PROJECT_ID
+```
+
+What it does, in order (so you can do it by hand if the script is unavailable):
+
+1. Picks the newest snapshot of each disk (or the ones you name with
+   `--workspace-snapshot` and `--facts-snapshot`) and prints when it was taken.
+2. `gcloud compute disks create` a scratch disk from each, named
+   `ax-restore-drill-<workspace|facts>-<timestamp>` and labelled `ax_restore_drill`.
+3. Creates the namespace `ax-restore-drill` (Pod Security level `restricted`) unless
+   it already exists, a ConfigMap holding
+   [`gke/restore-drill-verify.sh`](gke/restore-drill-verify.sh), and for each scratch
+   disk a PersistentVolume (pinned to the disk's zone, `Retain`) and a claim.
+4. Starts one pod, running the same image as the host, as UID 1000 with a read-only
+   root filesystem. The restored repositories were written by agents, so they are
+   treated as untrusted: the pod gets a deny-all NetworkPolicy (it needs no network;
+   the node pulls the image; both cluster types in this runbook run Dataplane V2, so
+   it is enforced, but on a cluster that doesn't enforce policies it is a no-op),
+   and every `git` call it makes switches off hooks,
+   filesystem monitors and pagers. It runs the checks and exits.
+5. Prints the pod's report and the verdict, deletes the pod, policy, claims, volumes
+   and scratch disks, and prints how long each stage took.
+
+**PASS** means: at least one `ws-*.git` repo, every one checked (up to 25, newest
+first) passes `git fsck`; and `facts.db` opens, passes `integrity_check`, and has
+rows. A valid but empty `facts.db` passes with a warning: if the live memory has
+facts in it, an empty copy is wrong. **FAIL** exits 1 and the report says which
+check.
+
+If the drill dies half way (your laptop sleeps, you hit Ctrl-C twice), it may leave
+scratch disks behind. `bash deploy/gke/backups.sh drill-cleanup` removes what the drill
+made: disks and volumes only if they carry the drill's label *and* its name prefix,
+and everything else only by the drill's label inside the drill's namespace. Nothing
+else. Add `--project $PROJECT_ID` and it also works when the deployment (and so its
+claims) no longer exists, which is exactly when forgotten scratch disks get expensive.
+`drill --keep` skips the cleanup on purpose, if you want to poke at the restored
+disks; run `drill-cleanup` (with the same `--drill-namespace`) when you're done.
+
+Record every drill here, including the ones that fail:
+
+| Date | Snapshot age | Restore to disks | Attach and check | Result | Notes |
+|---|---|---|---|---|---|
+| 2026-09-29 | ~3 min (on-demand snapshots) | 0m44s | 0m22s | PASS | First drill, on prod (`ax-next-std`), right after `backups.sh enable --snapshot-now`. Workspace disk (100 GB, 1 repo): fsck clean, `blobs/` present. Facts disk (10 GB): `facts.db` integrity_check ok; it held 0 fact rows because prod memory was empty at the time, so this drill did not prove a non-empty facts database restores. Cleanup 0m20s, total 1m26s. Not rehearsed yet: the copy-back step of a real restore, the Cloud SQL point-in-time clone, and Filestore (not backed up). |
+
+### Restoring for real
+
+The drill rehearses steps 2-4 below. Step 5 is the destructive one, and nobody has
+rehearsed it as written, so read it twice, ideally with a second pair of eyes.
+
+1. **Stop the writers.** The host is the only thing that writes to either disk:
+   `kubectl -n ax-next scale deploy/ax-next-host --replicas=0`.
+2. **Keep the evidence.** If the damaged disk still exists, snapshot it now
+   (`gcloud compute disks snapshot`). A bad copy can still hold files the good one
+   lacks.
+3. **Choose the snapshot.**
+   `gcloud compute snapshots list --filter="sourceDisk:<disk name>" --sort-by=~creationTimestamp`.
+   Take the newest one from before the damage started. If you're not sure when that
+   was, restore an older one too and compare.
+4. **Restore it to a scratch disk and check it,** with the drill:
+   `bash deploy/gke/backups.sh drill --keep --drill-namespace ax-next --workspace-snapshot <name> --facts-snapshot <name>`.
+   `--keep` leaves the restored disks, volumes and claims in place. `--drill-namespace ax-next`
+   puts the restored claims in the same namespace as the live ones, because a pod can
+   only mount claims from its own namespace. (Restoring only one disk? The drill
+   restores both anyway. Leave the other flag off, and ignore its scratch disk.)
+5. **Copy the good data over the live claim.** Start one pod, as UID 1000 like the
+   drill pod, that mounts the restored claim (`ax-restore-drill-workspace` or
+   `ax-restore-drill-facts`) and the live claim (`ax-next-workspace` or
+   `ax-next-memory-facts`). Empty the live one, then `cp -a` the restored files across.
+   Copying, rather than swapping disks under the release, keeps the PVC, the
+   PersistentVolume and the Helm release exactly as they are. The snapshot from
+   step 2 is your undo.
+6. **Start the host** (`kubectl -n ax-next scale deploy/ax-next-host --replicas=1`),
+   open an agent, and check its files and the Memory tab. Then
+   `bash deploy/gke/backups.sh drill-cleanup --drill-namespace ax-next`.
+
+If the database also needs restoring, do it into a **new** instance, never over the
+live one: for a moment in time,
+`gcloud sql instances clone ax-next-db ax-next-db-restored --point-in-time=<UTC timestamp>`,
+then point the `ax-next-db` DSN Secret (Step 4a) at the new instance's private IP.
+We have not rehearsed the database half of a restore.
+
+### Cloud SQL: one zone, on purpose
+
+The instance runs in a single zone (no standby), and we're leaving it that way for
+launch. The cluster, the host pod and both disks are also single-zone, so a standby
+database alone would not keep the product up through a zone outage; it would only add
+cost. The price of that choice is plain: **a zone outage takes the product down until
+Google restores the zone, or until we rebuild in another zone from the backups above.**
+We have not timed that rebuild, but it means a restored database, a new cluster and
+restored disks, not a restart. Revisit this when the
+cluster stops being single-zone, or when an outage of that length stops being
+acceptable.
 
 ---
 
@@ -734,6 +940,10 @@ Deliberately deferred. Each is a real next step, not a gap we missed:
 - **Multi-replica / HPA.** Chat streams SSE from an in-process buffer; the chart
   hard-pins `replicas: 1`. Horizontal scale is gated on a distributed stream
   broker that doesn't exist yet.
+- **Backups that survive losing the project, and Filestore backups.** The disk
+  snapshots and the database backups live in the same project as the data, and
+  Filestore shares are not covered at all. Both are spelled out under
+  [Backups and disaster recovery](#backups-and-disaster-recovery-do-not-skip).
 - **Host-pod hardening** (securityContext, restricted SA) and a `PodDisruptionBudget`.
 - **Automated image-publish CI.** Today the build is manual (Step 2).
 
@@ -786,9 +996,10 @@ it survives the move untouched. Only the cluster-scoped objects get rebuilt.
 Your **conversations, credentials, workspaces** are split between Cloud SQL (DB)
 and the host PVC (git repos + blobs). Cloud SQL is reused, so DB state is safe.
 The **host PVC does not migrate** — it's a new disk on the new cluster. If you
-have workspace/blob state worth keeping, snapshot/restore it per
-[Disaster recovery](#disaster-recovery-do-not-skip) before you decommission the
-old cluster. (For a fresh-ish deployment with nothing precious on the PVC yet,
+have workspace/blob state worth keeping, snapshot it and restore the snapshot into
+a disk in the new cluster's zone, following
+[Backups and disaster recovery](#backups-and-disaster-recovery-do-not-skip),
+before you decommission the old cluster. (For a fresh-ish deployment with nothing precious on the PVC yet,
 you can skip that and let the new cluster start clean.)
 
 ### Step M0 — Reuse your env vars

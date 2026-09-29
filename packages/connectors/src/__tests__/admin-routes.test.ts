@@ -20,6 +20,9 @@ import {
   type RouteResponse,
 } from '../admin-routes.js';
 import type { Capabilities } from '../types.js';
+import { createConnectorStore } from '../store.js';
+import type { ConnectorDatabase } from '../migrations.js';
+import type { Kysely } from 'kysely';
 
 // ---------------------------------------------------------------------------
 // Admin connector endpoints — GET/POST /admin/connectors,
@@ -428,7 +431,10 @@ describe('admin connector routes', () => {
       makeRes().res,
     );
 
-    currentActor = { id: 'userB', isAdmin: false };
+    // User B is an ADMIN too: `/admin/connectors*` 403s a non-admin before
+    // ownership is ever looked at (TASK-698, admin-route-gate.test.ts), so the
+    // cross-tenant 404 is only reachable — and only worth proving — for another admin.
+    currentActor = { id: 'userB', isAdmin: true };
     const { res: lRes, captured: lCap } = makeRes();
     await handlers.list(makeReq({}), lRes);
     expect((lCap.body as { connectors: Array<{ id: string }> }).connectors).toHaveLength(0);
@@ -1385,5 +1391,218 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
       res,
     );
     expect(captured.status).toBe(204);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-712 — an OAuth slot's `clientSecretRef` may name only THIS connector's own
+// account key (`account:<connectorId>:<tag>`).
+//
+// The ref is author-controlled and @ax/mcp-oauth's `begin` resolves it with
+// `credentials:get`, then posts the value to a token endpoint the same author chose.
+// Any signed-in user can author a connector, so `provider:anthropic` (the operator's
+// model key) or an env-fallback name would have been an exfiltration channel. It was
+// only closed on main by an accident in `begin`'s ctx; this is the authoring half of
+// the real control (mcp-oauth re-checks at `begin`).
+//
+// Enforced at `connectors:upsert`, so it binds the user route, the admin route, the
+// PATCH merge and the model-authored approve path alike. NOT enforced on READ: a row
+// stored before this check must stay openable so its owner can fix it.
+// ---------------------------------------------------------------------------
+describe('oauth clientSecretRef is the connector’s own account key (TASK-712)', () => {
+  function oauthCaps(clientSecretRef?: string): Record<string, unknown> {
+    return {
+      allowedHosts: ['mcp.example.com', 'auth.example.com'],
+      credentials: [
+        {
+          slot: 'oauth-main',
+          kind: 'oauth',
+          server: 'srv',
+          scopes: ['read'],
+          clientId: 'client-a',
+          ...(clientSecretRef !== undefined ? { clientSecretRef } : {}),
+          authServerUrl: 'https://auth.example.com',
+        },
+      ],
+      mcpServers: [
+        {
+          name: 'srv',
+          transport: 'http',
+          url: 'https://mcp.example.com/mcp',
+          allowedHosts: ['mcp.example.com'],
+          credentials: [],
+        },
+      ],
+      packages: { npm: [], pypi: [] },
+    };
+  }
+
+  const create = (id: string, clientSecretRef?: string, keyMode = 'personal') => ({
+    connectorId: id,
+    name: id,
+    keyMode,
+    visibility: 'private',
+    capabilities: oauthCaps(clientSecretRef),
+  });
+
+  /** Everything a non-admin could name that is NOT their own connector's account key. */
+  const FOREIGN_REFS = [
+    'provider:anthropic', // the operator's model key: the onboarding wizard's ref
+    'provider:probe',
+    'mcp:srv:env:API_KEY',
+    'skill:some-skill:SLOT',
+    'anthropic-api', // an env-fallback name as wired in the k8s preset
+    'account:opskey', // someone else's company key
+    'account:zendesk:oauth-client-secret',
+    'account:mine-x:oauth-client-secret', // another connector of ours
+    'account:mine', // our own TOKEN ref: bare, never a client secret
+    'account:mine:a:b',
+  ];
+
+  it.each(FOREIGN_REFS)('user route POST refuses %j (400) and stores nothing', async (ref) => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'mallory-712', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.create(makeReq({ body: create('mine', ref) }), res);
+    expect(captured.status).toBe(400);
+    // A fixed message naming the slot and the allowed shape: the rejected ref (author
+    // text, possibly a pasted credential) is not echoed back.
+    expect(captured.body).toEqual({
+      error:
+        "oauth slot 'oauth-main': clientSecretRef must be this connector's own account key, 'account:mine:<name>'",
+    });
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'mine' } }), gRes);
+    expect(gCap.status).toBe(404);
+  });
+
+  it('user route POST accepts the connector’s own ref and it round-trips', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'own-712', isAdmin: false };
+    const own = 'account:mine:oauth-client-secret';
+    const { res, captured } = makeRes();
+    await handlers.create(makeReq({ body: create('mine', own) }), res);
+    expect(captured.status).toBe(201);
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'mine' } }), gRes);
+    const slot = (
+      gCap.body as { connector: { capabilities: { credentials: Array<Record<string, unknown>> } } }
+    ).connector.capabilities.credentials[0]!;
+    expect(slot.clientSecretRef).toBe(own);
+  });
+
+  it('a connector without a clientSecretRef (DCR) is unaffected', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'dcr-712', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.create(makeReq({ body: create('mine') }), res);
+    expect(captured.status).toBe(201);
+  });
+
+  it('user route PATCH cannot introduce a foreign ref; the stored row is untouched', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'patch-712', isAdmin: false };
+    const own = 'account:mine:oauth-client-secret';
+    const { res: cRes, captured: cCap } = makeRes();
+    await handlers.create(makeReq({ body: create('mine', own) }), cRes);
+    expect(cCap.status).toBe(201);
+
+    const { res, captured } = makeRes();
+    await handlers.update(
+      makeReq({
+        params: { id: 'mine' },
+        body: { capabilities: oauthCaps('provider:anthropic') },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'mine' } }), gRes);
+    const slot = (
+      gCap.body as { connector: { capabilities: { credentials: Array<Record<string, unknown>> } } }
+    ).connector.capabilities.credentials[0]!;
+    expect(slot.clientSecretRef).toBe(own);
+  });
+
+  it('the admin route enforces it too (an admin’s connector is not a different rule)', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'admin-712', isAdmin: true };
+    for (const [ref, status] of [
+      ['provider:anthropic', 400],
+      ['account:opskey', 400],
+      ['account:ws:oauth-client-secret', 201],
+    ] as const) {
+      const { res, captured } = makeRes();
+      await handlers.create(makeReq({ body: create('ws', ref, 'workspace') }), res);
+      expect(captured.status).toBe(status);
+    }
+  });
+
+  it('the connectors:upsert hook itself refuses a foreign ref, wherever the call comes from', async () => {
+    // The model-authored approve path and the skill-capability migration call the
+    // hook directly, with no route in front of them.
+    const h = await makeHarness();
+    await expect(
+      h.bus.call('connectors:upsert', h.ctx({ userId: 'hook-712' }), {
+        userId: 'hook-712',
+        connectorId: 'mine',
+        name: 'mine',
+        keyMode: 'personal',
+        visibility: 'private',
+        capabilities: oauthCaps('provider:anthropic'),
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('a row stored BEFORE this check stays readable, and its owner can fix it', async () => {
+    // Write-time only, on purpose: were this a refine in CapabilitiesSchema (which
+    // also parses on read), an existing row with a foreign ref would fail to load
+    // and its owner could not even open it. @ax/mcp-oauth refuses it at `begin`.
+    const h = await makeHarness();
+    const { db } = await h.bus.call<unknown, { db: Kysely<ConnectorDatabase> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const legacyCaps = oauthCaps('provider:anthropic') as unknown as Capabilities;
+    await createConnectorStore(db).upsert({
+      userId: 'legacy-712',
+      connectorId: 'mine',
+      name: 'mine',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: legacyCaps,
+    });
+
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'legacy-712', isAdmin: false };
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'mine' } }), gRes);
+    expect(gCap.status).toBe(200);
+    const { res: lRes, captured: lCap } = makeRes();
+    await handlers.list(makeReq({}), lRes);
+    expect(lCap.status).toBe(200);
+
+    // Re-saving it as-is is refused (it would re-store the foreign ref)...
+    const { res: sRes, captured: sCap } = makeRes();
+    await handlers.update(makeReq({ params: { id: 'mine' }, body: { name: 'renamed' } }), sRes);
+    expect(sCap.status).toBe(400);
+    // ...and pointing it at its own key repairs it.
+    const { res: fRes, captured: fCap } = makeRes();
+    await handlers.update(
+      makeReq({
+        params: { id: 'mine' },
+        body: { capabilities: oauthCaps('account:mine:oauth-client-secret') },
+      }),
+      fRes,
+    );
+    expect(fCap.status).toBe(200);
   });
 });

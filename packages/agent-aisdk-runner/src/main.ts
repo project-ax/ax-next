@@ -14,6 +14,7 @@ import {
   type Loop,
   type LoopContext,
   type RunnerDeps,
+  type TurnUsage,
 } from '@ax/agent-runner-core';
 import {
   ToolLoopAgent,
@@ -43,6 +44,7 @@ import { assertAllToolsWrapped, mergeToolSets } from './tools/policy-wrap.js';
 import { buildSandboxTools } from './tools/sandbox-tools.js';
 import { buildSkillTool } from './tools/skill-tool.js';
 import { toTurnBlocks } from './turn-blocks.js';
+import { sumStepUsage, type StepUsageLike } from './turn-usage.js';
 import { toUserModelMessage } from './user-message.js';
 
 // ---------------------------------------------------------------------------
@@ -414,7 +416,13 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         // `ai@7` calls `onStepEnd` once a step is complete INCLUDING its tool
         // results, so an in-flight step — a model call cut off mid-sentence, a
         // tool still running — is never in here.
-        const finishedSteps: Array<{ response: { messages: ModelMessage[] } }> = [];
+        //
+        // It also carries each finished step's `usage`, which is what a Stopped
+        // turn reports (TASK-692): those model calls were paid for.
+        const finishedSteps: Array<{
+          response: { messages: ModelMessage[] };
+          usage: StepUsageLike;
+        }> = [];
         // Text the CURRENT step has streamed so far. Reset at every step
         // boundary, so after a Stop it is exactly the words the person watched
         // appear that no finished step accounts for.
@@ -533,6 +541,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         offInterrupt();
 
         let newMessages: ModelMessage[];
+        // What the turn cost (TASK-692, per-user spend limits), summed from the
+        // steps that FINISHED. `null` when there is nothing to sum, and the host
+        // then charges a flat assumed cost rather than treating it as free.
+        let turnUsage: TurnUsage | null;
         if (stop.signal.aborted) {
           // TASK-688. The person pressed Stop. The turn ends HERE, on the same
           // path as any other turn — `endTurn` below still ships the transcript
@@ -552,6 +564,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
           // A Stop that lands after the last step already finished simply finds
           // the turn complete, and that is fine: the two lists agree.
           newMessages = finishedSteps.flatMap((s) => s.response.messages);
+          // Bill what finished. The step that was cut off has no usage to read
+          // (its model request was aborted mid-stream), so its tokens go
+          // uncounted; a Stop before ANY step finished reports `null`.
+          turnUsage = sumStepUsage(agentConfig.model, finishedSteps);
           if (stepText.length > 0) {
             newMessages.push({
               role: 'assistant',
@@ -585,6 +601,9 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             throw modelCallError(err, streamError);
           }
           newMessages = steps.flatMap((s) => s.response.messages);
+          // `ai@7` reports usage per step; a tool-using turn is several billed
+          // round trips, so the turn's cost is the sum over EVERY step.
+          turnUsage = sumStepUsage(agentConfig.model, steps);
         }
         transcript.append(newMessages);
 
@@ -600,6 +619,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         await ctx.endTurn({
           contentBlocks,
           toolResultBlocks,
+          usage: turnUsage,
           // NO `beforeCommit`. Its absence is the point: the claude-sdk loop
           // must wait for the SDK to flush its jsonl before the shell can ship
           // (the TASK-11 / PR #163 / F-1-F-2 lineage). Here the messages are

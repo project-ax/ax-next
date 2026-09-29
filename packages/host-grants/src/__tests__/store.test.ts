@@ -133,3 +133,46 @@ describe('host-grants store', () => {
     // headroom — this is a throughput test, not a latency one.
   }, 30_000);
 });
+
+// TASK-718 — deleting an agent must take its rows with it. The store method
+// keys on `agent_id` ALONE: a team agent has grants under several owners, and a
+// delete scoped to one owner would strand the rest.
+describe('host-grants store — deleteAllForAgent (TASK-718)', () => {
+  it('deletes the agent’s grants under EVERY owner and leaves other agents’ rows alone', async () => {
+    const s = await freshStore();
+    for (const [ownerUserId, agentId, host] of [
+      ['u1', 'gone', 'a.example.com'],
+      ['u1', 'gone', 'b.example.com'],
+      ['u2', 'gone', 'a.example.com'],
+      ['u3', 'gone', 'c.example.com'],
+      ['u1', 'kept', 'a.example.com'],
+      ['u2', 'kept', 'z.example.com'],
+    ] as const) {
+      await s.grant({ ownerUserId, agentId, host });
+    }
+
+    expect(await s.deleteAllForAgent('gone')).toEqual({ deleted: 4 });
+
+    for (const u of ['u1', 'u2', 'u3']) {
+      expect((await s.listForUser(u)).filter((g) => g.agentId === 'gone')).toEqual([]);
+    }
+    expect((await s.list('u1', 'kept')).map((h) => h.host)).toEqual(['a.example.com']);
+    expect((await s.list('u2', 'kept')).map((h) => h.host)).toEqual(['z.example.com']);
+  });
+
+  it('is a no-op the second time (nothing left to delete, nothing thrown)', async () => {
+    const s = await freshStore();
+    await s.grant({ ownerUserId: 'u1', agentId: 'gone', host: 'a.example.com' });
+    expect(await s.deleteAllForAgent('gone')).toEqual({ deleted: 1 });
+    expect(await s.deleteAllForAgent('gone')).toEqual({ deleted: 0 });
+  });
+
+  it('refuses an empty agentId — never runs a delete with an empty key', async () => {
+    const s = await freshStore();
+    await s.grant({ ownerUserId: 'u1', agentId: 'kept', host: 'a.example.com' });
+    for (const bad of ['', undefined as unknown as string, null as unknown as string]) {
+      await expect(s.deleteAllForAgent(bad)).rejects.toThrow(/agentId is required/);
+    }
+    expect((await s.list('u1', 'kept')).map((h) => h.host)).toEqual(['a.example.com']);
+  });
+});

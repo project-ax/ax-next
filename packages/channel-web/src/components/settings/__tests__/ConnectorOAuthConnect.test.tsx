@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ConnectorOAuthConnect } from '../ConnectorOAuthConnect';
 import * as oauthLib from '@/lib/connectors-oauth';
 import { OAUTH_MESSAGE_TYPE } from '@/lib/oauth-callback-bridge';
+import { connectorAccessCopy } from '@/lib/connector-access-copy';
 
 beforeEach(() => {
   vi.spyOn(oauthLib, 'getOAuthStatus').mockResolvedValue('not-connected');
@@ -449,5 +450,64 @@ describe('beginOAuth error', () => {
     await screen.findByText(/couldn't start the sign-in/i);
     // Must not show a "Connected" badge.
     expect(screen.queryByText('Connected')).toBeNull();
+  });
+});
+
+// ── (TASK-700) access disclosure ──────────────────────────────────────────────
+//
+// The launch disclosure for TASK-328: signing in gives the assistant the access
+// the sign-in allows, with no per-call approval. It sits with the action it is
+// about — above the Connect button — and follows the button into every state the
+// button can be in.
+
+describe('access disclosure (TASK-700)', () => {
+  const NOTICE = 'connector-access-notice';
+
+  it('shows the sign-in notice above the Connect button', async () => {
+    render(<ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" />);
+    const button = await screen.findByRole('button', { name: /Connect with MyService/i });
+    const notice = screen.getByTestId(NOTICE);
+    expect(notice).toHaveTextContent(connectorAccessCopy('sign-in').headline);
+    expect(notice).toHaveTextContent(connectorAccessCopy('sign-in').details);
+    expect(notice.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('is still there on Reconnect (re-granting is granting)', async () => {
+    vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('needs-reconnect');
+    render(<ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" />);
+    await screen.findByRole('button', { name: 'Reconnect' });
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  it('shows alongside the shared-agent consent gate, once, before either button', async () => {
+    render(
+      <ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" requiresConsent />,
+    );
+    const continueBtn = await screen.findByRole('button', { name: /^Continue$/i });
+    const notices = screen.getAllByTestId(NOTICE);
+    expect(notices).toHaveLength(1);
+    expect(
+      notices[0]!.compareDocumentPosition(continueBtn) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // After Continue the notice is still exactly one, not re-stacked.
+    fireEvent.click(continueBtn);
+    await screen.findByRole('button', { name: /Connect with MyService/i });
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  it('a host that already shows a wider notice can turn it off', async () => {
+    render(
+      <ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" showAccessNotice={false} />,
+    );
+    await screen.findByRole('button', { name: /Connect with MyService/i });
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
+  });
+
+  it('is not an alert, so a sign-in error is still the only alert on screen', async () => {
+    vi.mocked(oauthLib.beginOAuth).mockRejectedValue(new Error('boom'));
+    render(<ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    await screen.findByText(/couldn't start the sign-in/i);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
   });
 });

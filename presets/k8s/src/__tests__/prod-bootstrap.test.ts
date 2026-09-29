@@ -239,6 +239,14 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     // TASK-608 — drops the retired Strata index tables at init. The boot test
     // below seeds one and proves it is gone.
     '@ax/preset-k8s/retire-strata-index',
+    // TASK-692 — per-user spend + rate limits. Unconditional (every turn is
+    // gated). The boot test below proves its migration ran on the shared
+    // database next to everyone else's.
+    '@ax/usage-limits',
+    // TASK-690 — per-owner storage limit. Unconditional (every write is
+    // gated). The boot test below proves its migration ran on the shared
+    // database next to everyone else's.
+    '@ax/disk-quota',
   ] as const;
 
   it(
@@ -308,6 +316,20 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
             "SELECT to_regclass('public.memory_strata_index_v2_docs')::text AS t",
           );
           expect(rows[0]?.t).toBeNull();
+          // TASK-692: @ax/usage-limits' init ran against the shared database
+          // in the full production graph (both of its tables exist).
+          const usage = await probe.query<{ b: string | null; s: string | null }>(
+            "SELECT to_regclass('public.usage_limits_v1_buckets')::text AS b, " +
+              "to_regclass('public.usage_limits_v1_suspensions')::text AS s",
+          );
+          expect(usage.rows[0]?.b).toBe('usage_limits_v1_buckets');
+          expect(usage.rows[0]?.s).toBe('usage_limits_v1_suspensions');
+          // TASK-690: @ax/disk-quota's init ran against the shared database
+          // in the full production graph.
+          const quota = await probe.query<{ t: string | null }>(
+            "SELECT to_regclass('public.disk_quota_v1_usage')::text AS t",
+          );
+          expect(quota.rows[0]?.t).toBe('disk_quota_v1_usage');
         } finally {
           await probe.end();
         }

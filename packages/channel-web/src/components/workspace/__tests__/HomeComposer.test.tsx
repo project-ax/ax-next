@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { HomeComposer } from '../HomeComposer';
 import { ATTACHMENT_NEEDS_MESSAGE } from '@/lib/workspace-attachments';
+import { StorageFullError } from '@/lib/storage-full';
+import { STORAGE_FULL_SEND } from '@/lib/storage-copy';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import {
   ATTACHMENT_ACCEPT,
@@ -315,6 +317,41 @@ describe('when the send does not go through', () => {
 
     expect(await screen.findByText(/could not get that to/i)).toBeTruthy();
     expect((composer() as HTMLInputElement).value).toBe('draft the reply to Dana');
+  });
+
+  /*
+    TASK-690 — a full storage is not a blip. The generic sentence promises
+    "try again in a moment", which is a false hope when the fix is an admin
+    giving more room; the refusal carries its own sentence and that is the one
+    the person must read. The draft still survives (same rule as any failed
+    send).
+  */
+  it('says the storage is full, in the refusal\'s own words, and keeps the draft', async () => {
+    const onSend = vi
+      .fn()
+      .mockRejectedValue(
+        new StorageFullError('/api/chat/messages', 'Your storage is full. Ask an admin for more room.'),
+      );
+    render(<HomeComposer agents={oneAgent} onSend={onSend} />);
+
+    ask('here is the big file');
+
+    expect(await screen.findByText('Your storage is full. Ask an admin for more room.')).toBeTruthy();
+    // Not the blip sentence, and not its false promise.
+    expect(screen.queryByText(/could not get that to/i)).toBeNull();
+    expect(screen.queryByText(/try again in a moment/i)).toBeNull();
+    expect((composer() as HTMLInputElement).value).toBe('here is the big file');
+  });
+
+  it('falls back to our own storage-full sentence when the refusal has none of its own', async () => {
+    const onSend = vi
+      .fn()
+      .mockRejectedValue(new StorageFullError('/api/chat/messages', STORAGE_FULL_SEND));
+    render(<HomeComposer agents={oneAgent} onSend={onSend} />);
+
+    ask('here is the big file');
+
+    expect(await screen.findByText(STORAGE_FULL_SEND)).toBeTruthy();
   });
 
   it('keeps the draft when the send fails after an Auto confirmation', async () => {

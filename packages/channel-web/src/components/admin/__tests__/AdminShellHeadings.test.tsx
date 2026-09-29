@@ -17,6 +17,10 @@
  * a body that still opens at `h3` under the new `h1`) would each pass a
  * presence check. See `test-utils/heading-outline.ts` for the four rules and
  * why "no headings at all" is one of them.
+ *
+ * ("Nine" is the count when that was measured. There are eleven tabs now — the
+ * Usage tab (TASK-692) is the tenth, Storage (TASK-690) the eleventh — and
+ * `TABS` below is the live list.)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -52,6 +56,37 @@ function emptyResponse(url: string): Response {
   if (/\/admin\/catalog\/requests(\?|$)/.test(url)) return json({ requests: [] });
   if (/\/api\/chat\/connections\//.test(url)) return json({ agentId: 'a1', skills: [] });
   if (/\/api\/chat\/agents(\?|$)/.test(url)) return json([]);
+  // UsageTab (TASK-692) reads a usage report; an empty day is a valid one.
+  if (/\/admin\/usage(\?|$)/.test(url)) {
+    return json({
+      windowHours: 24,
+      truncated: false,
+      limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 },
+      totals: { turns: 0, spendUsd: 0, users: 0 },
+      users: [],
+    });
+  }
+  // StorageTab (TASK-690): the person's own reading, and the admin report.
+  if (/\/settings\/storage(\?|$)/.test(url)) {
+    return json({
+      usedBytes: 1_048_576,
+      limitBytes: 1_073_741_824,
+      warnBytes: 858_993_459,
+      workspaceBytes: 1_048_576,
+      fileBytes: 0,
+      status: 'ok',
+    });
+  }
+  if (/\/admin\/storage(\?|$)/.test(url)) {
+    return json({
+      limits: { limitMb: 1024, warnPercent: 80 },
+      defaults: { limitMb: 1024, warnPercent: 80 },
+      bounds: { limitMb: { min: 64, max: 10_485_760 }, warnPercent: { min: 1, max: 99 } },
+      owners: [],
+      ownerCount: 0,
+      totalBytes: 0,
+    });
+  }
   return json({ providers: [], agents: [], teams: [], connectors: [] });
 }
 
@@ -79,8 +114,10 @@ function renderShell() {
 }
 
 /**
- * Every tab in the nav, by the word on its button — which is also the pane
- * title, and therefore the `h1` each one must produce.
+ * Every tab in the nav, as `[the word on its button, the `h1` it must produce]`.
+ * For all but one the two are the same word; Usage is the exception (the nav
+ * says "Usage", the page says "Usage and limits"), which is why this is a pair
+ * and not a bare name.
  *
  * `Connectors` and `Routines` are absent DELIBERATELY. Both bodies throw in
  * jsdom under a bare `fetch` stub (they read through `lib/*` modules that this
@@ -89,28 +126,30 @@ function renderShell() {
  * properly — carries the outline assertion for the Connectors body instead, and
  * `RoutinesTab` has no headings of its own to place.
  */
-const TABS = [
-  'Skills',
-  'Agents',
-  'AI model keys',
-  'Helper model',
-  'Sign-in methods',
-  'Teams',
-  'Branding',
+const TABS: ReadonlyArray<readonly [nav: string, title: string]> = [
+  ['Skills', 'Skills'],
+  ['Agents', 'Agents'],
+  ['AI model keys', 'AI model keys'],
+  ['Helper model', 'Helper model'],
+  ['Sign-in methods', 'Sign-in methods'],
+  ['Teams', 'Teams'],
+  ['Branding', 'Branding'],
+  ['Usage', 'Usage and limits'],
+  ['Storage', 'Storage'],
 ];
 
 describe('AdminShell heading outline', () => {
-  for (const tab of TABS) {
-    it(`heads the ${tab} tab with a single h1 and no skipped levels`, async () => {
+  for (const [nav, title] of TABS) {
+    it(`heads the ${nav} tab with a single h1 and no skipped levels`, async () => {
       renderShell();
-      fireEvent.click(screen.getByRole('button', { name: tab }));
+      fireEvent.click(screen.getByRole('button', { name: nav }));
 
       await waitFor(() => expect(headingOutlineProblems()).toEqual([]));
 
       const h1s = screen.getAllByRole('heading', { level: 1 });
       expect(h1s).toHaveLength(1);
-      // The `h1` is the pane title, so it says which of the nine you are on.
-      expect(h1s[0]?.textContent).toBe(tab);
+      // The `h1` is the pane title, so it says which tab you are on.
+      expect(h1s[0]?.textContent).toBe(title);
     });
   }
 
@@ -131,6 +170,66 @@ describe('AdminShell heading outline', () => {
         'h2: Not installed · available in your workspace',
       ]),
     );
+  });
+
+  /*
+    USAGE, spelled out (TASK-692). Its two cards are `div`s with
+    `role="heading"` at level 2, so the outline steps h1 -> h2 -> h2. The trap
+    it avoids is `AlertTitle`, which is hard-coded to `<h5>` and would have put
+    an h2 -> h5 jump into the outline the first time the load-error Alert grew a
+    title. Pinning the exact outline (rather than "no problems") also stops a
+    future edit from passing the generic guard by deleting the card headings.
+  */
+  it('gives Usage and limits one h1 and its two cards as h2s', async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Usage' }));
+
+    await waitFor(() =>
+      expect(headingOutline()).toEqual([
+        'h1: Usage and limits',
+        'h2: Limits',
+        'h2: Last 24 hours',
+      ]),
+    );
+    expect(headingOutlineProblems()).toEqual([]);
+  });
+
+  /*
+    STORAGE, spelled out (TASK-690). Same construction as Usage: card titles are
+    `div`s at `role="heading"` level 2, so the outline steps h1 -> h2 and never
+    borrows the `h5` in `AlertTitle`. An admin's tab has three cards; an
+    ordinary person's has one, and that one is the same card. Pinning both
+    outlines exactly (rather than "no problems") also stops an edit from
+    passing the generic guard by deleting the card headings, and pins that the
+    admin half is ADDED to the person's card rather than replacing it.
+  */
+  it('gives an admin Storage one h1 and its three cards as h2s', async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Storage' }));
+
+    await waitFor(() =>
+      expect(headingOutline()).toEqual([
+        'h1: Storage',
+        'h2: Your storage',
+        'h2: Storage limits',
+        "h2: Everyone's storage",
+      ]),
+    );
+    expect(headingOutlineProblems()).toEqual([]);
+  });
+
+  it('gives an ordinary person Storage one h1 and just their own card', async () => {
+    render(
+      <UserProvider value={{ ...fakeUser, role: 'user' }}>
+        <AdminShell isAdmin={false} onClose={vi.fn()} />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Storage' }));
+
+    await waitFor(() =>
+      expect(headingOutline()).toEqual(['h1: Storage', 'h2: Your storage']),
+    );
+    expect(headingOutlineProblems()).toEqual([]);
   });
 
   /*

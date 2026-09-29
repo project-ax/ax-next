@@ -8,6 +8,8 @@ import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
 import { TeamList } from './TeamList';
 import { BrandingTab } from './BrandingTab';
+import { UsageTab } from './UsageTab';
+import { StorageTab } from './StorageTab';
 import { SkillsTab } from '../settings/SkillsTab';
 import { ConnectorsTab } from '../settings/ConnectorsTab';
 import { RoutinesTab } from '../routines/RoutinesTab';
@@ -53,11 +55,13 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   'connectors-user': { eyebrow: 'Settings', title: 'Connectors' },
   agents: { eyebrow: 'Settings', title: 'Agents' },
   routines: { eyebrow: 'Settings', title: 'Routines' },
+  storage: { eyebrow: 'Settings', title: 'Storage' },
   providers: { eyebrow: 'Admin', title: 'AI model keys' },
   'model-config': { eyebrow: 'Admin', title: 'Helper model' },
   'auth-providers': { eyebrow: 'Admin', title: 'Sign-in methods' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
   branding: { eyebrow: 'Admin', title: 'Branding' },
+  usage: { eyebrow: 'Admin', title: 'Usage and limits' },
 };
 
 export function AdminShell({
@@ -120,6 +124,8 @@ export function AdminShell({
         {activeTab === 'routines' && <RoutinesTab isAdmin={isAdmin} />}
         {activeTab === 'teams' && <TeamList />}
         {activeTab === 'branding' && <BrandingTab />}
+        {activeTab === 'usage' && <UsageTab />}
+        {activeTab === 'storage' && <StorageTab isAdmin={isAdmin} />}
       </AdminPane>
     </div>
   );

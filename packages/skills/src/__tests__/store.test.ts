@@ -12,6 +12,7 @@ import pg from 'pg';
 import { runSkillsMigration, type SkillsDatabase } from '../migrations.js';
 import { createSkillsStore } from '../store.js';
 import { createUserSkillsStore } from '../user-store.js';
+import { createAuthoredSkillsStore } from '../authored-store.js';
 import { createInMemoryBundleStore } from '../blob-bundle-store.js';
 
 let container: StartedPostgreSqlContainer;
@@ -569,6 +570,55 @@ connectors:
     expect((await userStore.get('alice', 'demo'))?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
     const [resolved] = await userStore.resolve('alice', ['demo']);
     expect(resolved?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+  });
+
+  it('TASK-690: a user skill bundle is written on behalf of its owner; a global one is not attributed', async () => {
+    // The storage limit charges whoever `blob:put` is called for. The user
+    // store knows the owner; the admin-managed global store has none.
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const inner = createInMemoryBundleStore();
+    const owners: Array<string | undefined> = [];
+    const bundleStore: typeof inner = {
+      readTree: (sha) => inner.readTree(sha),
+      writeTree: (files, owner) => {
+        owners.push(owner);
+        return inner.writeTree(files, owner);
+      },
+    };
+    const userStore = createUserSkillsStore(db, bundleStore);
+    const store = createSkillsStore(db, bundleStore);
+    await userStore.upsert({
+      ownerUserId: 'alice', id: 'demo', description: 'd',
+      manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
+      files: [{ path: 'a.txt', contents: 'A' }],
+    });
+    await store.upsert({
+      id: 'global', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY,
+      version: 1, files: [{ path: 'b.txt', contents: 'B' }],
+    });
+    expect(owners).toEqual(['alice', undefined]);
+  });
+
+  it('TASK-690: an agent-authored draft bundle is written on behalf of the agent owner', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const inner = createInMemoryBundleStore();
+    const owners: Array<string | undefined> = [];
+    const store = createAuthoredSkillsStore(db, {
+      readTree: (sha) => inner.readTree(sha),
+      writeTree: (files, owner) => {
+        owners.push(owner);
+        return inner.writeTree(files, owner);
+      },
+    });
+    await store.upsert({
+      ownerUserId: 'alice', agentId: 'agent-1', skillId: 'draft', description: 'd',
+      manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, origin: 'authored',
+      status: 'pending', scanVerdict: null,
+      files: [{ path: 'a.txt', contents: 'A' }],
+    });
+    expect(owners).toEqual(['alice']);
   });
 
   it('global + user stores sharing one bundle repo dedup identical bytes', async () => {

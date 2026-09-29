@@ -47,6 +47,29 @@ Two iteration modes. Picking the right one on each failure dominates loop speed:
 
 ---
 
+## 0. Which cluster am I about to touch? (read this before any command below)
+
+On a dev machine that also talks to real clusters, the **default** kubectl context is often **not** kind — it can be a live production cluster. A bare rollout restart, copied from an earlier version of these snippets, once restarted the production host (2026-09-29). So every command in this skill names its cluster **on the command line** (`kubectl --context kind-ax-next-dev …`, `helm --kube-context kind-ax-next-dev …`) and none of them depends on your default. The `make` targets (`make rollout`, `make image`, `make dev-fast`, …) are pinned the same way and refuse, before doing any work, if that context does not exist.
+
+Keep it that way when you adapt a snippet: never write a bare `kubectl`/`helm` here, and spell the command out rather than hiding it in a variable — a variable is exactly how a missing pin escapes review (and the worktree sandbox refuses computed command names anyway). `scripts/__tests__/kind-tooling-pinned-to-kind-context.test.js` fails if a snippet in this skill loses its pin.
+
+Before the first mutation of a session, look (both are read-only):
+
+```bash
+# What would a BARE kubectl hit on this machine? `config` subcommands ignore --context, so this
+# prints your DEFAULT context, not kind's. Read it. It is often not kind — that is fine, nothing
+# below relies on it.
+kubectl --context kind-ax-next-dev config current-context
+
+# Does the kind context exist? Nothing below works without it.
+kubectl --context kind-ax-next-dev config get-contexts -o name | grep -x kind-ax-next-dev \
+  || echo "no kind-ax-next-dev context: create the cluster (§3 step 1) or run: kind export kubeconfig --name ax-next-dev"
+```
+
+If the default is not kind, **leave it alone**. Don't switch your default context (`use-context`) to get a "safe" one: that is global state other terminals and other people's scripts share, and the pins make it irrelevant.
+
+---
+
 ## 1. The loop
 
 Before each run, write down:
@@ -97,18 +120,18 @@ What to look for:
 
 ```bash
 # Host pod
-kubectl -n ax-next get pods -l app.kubernetes.io/component=ax-next-host
-kubectl -n ax-next describe pod -l app.kubernetes.io/component=ax-next-host | tail -60
-kubectl -n ax-next logs deploy/ax-next-host --tail=200
+kubectl --context kind-ax-next-dev -n ax-next get pods -l app.kubernetes.io/component=ax-next-host
+kubectl --context kind-ax-next-dev -n ax-next describe pod -l app.kubernetes.io/component=ax-next-host | tail -60
+kubectl --context kind-ax-next-dev -n ax-next logs deploy/ax-next-host --tail=200
 
 # Runner pods (if the scenario should have spawned one)
-kubectl -n ax-next-runners get pods
-kubectl -n ax-next-runners logs -l app.kubernetes.io/component=ax-next-runner \
+kubectl --context kind-ax-next-dev -n ax-next-runners get pods
+kubectl --context kind-ax-next-dev -n ax-next-runners logs -l app.kubernetes.io/component=ax-next-runner \
   --tail=200 --all-containers --prefix
 
 # If first install or schema change
-kubectl -n ax-next get jobs
-kubectl -n ax-next logs job/ax-next-postgres-init --tail=100
+kubectl --context kind-ax-next-dev -n ax-next get jobs
+kubectl --context kind-ax-next-dev -n ax-next logs job/ax-next-postgres-init --tail=100
 ```
 
 ### Classification
@@ -162,12 +185,12 @@ kind load docker-image ax-next/git-server:dev --name ax-next-dev
 make kind-prune
 
 # 4. Runner namespace (chart deliberately does NOT create it)
-kubectl get ns ax-next-runners >/dev/null 2>&1 || kubectl create namespace ax-next-runners
+kubectl --context kind-ax-next-dev get ns ax-next-runners >/dev/null 2>&1 || kubectl --context kind-ax-next-dev create namespace ax-next-runners
 
 # 5. Install or upgrade. `upgrade --install` is idempotent.
 #    The flags below are the kind canary set; layer scenario-specific
 #    --set flags on top (replicas, workspace.backend, channel-web, etc.).
-helm upgrade --install ax-next deploy/charts/ax-next \
+helm --kube-context kind-ax-next-dev upgrade --install ax-next deploy/charts/ax-next \
   --namespace ax-next --create-namespace \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --set image.repository=ax-next/agent \
@@ -178,7 +201,7 @@ helm upgrade --install ax-next deploy/charts/ax-next \
   --set auth.devBootstrap.token="$(openssl rand -hex 16)"
 
 # 6. Wait for host
-kubectl wait -n ax-next --for=condition=Ready pod \
+kubectl --context kind-ax-next-dev wait -n ax-next --for=condition=Ready pod \
   -l app.kubernetes.io/component=ax-next-host --timeout=180s
 ```
 
@@ -205,7 +228,7 @@ The chart doesn't ship an Ingress on kind, so reach the public surface via port-
 ```bash
 # The SPA (/, /workspace) + /health + /auth/* + /api/* live on the public-http port (9090).
 # The Service's :80 is the runner-IPC back-channel — NOT for browser traffic.
-kubectl -n ax-next port-forward svc/ax-next-host 9090:9090 >/tmp/pf.log 2>&1 &
+kubectl --context kind-ax-next-dev -n ax-next port-forward svc/ax-next-host 9090:9090 >/tmp/pf.log 2>&1 &
 echo $! > /tmp/pf.pid
 
 # Sanity-check before launching the browser
@@ -259,20 +282,20 @@ kind load docker-image ax-next/agent:dev --name ax-next-dev
 make kind-prune
 
 # If the chart changed, helm upgrade. If only image changed, restart is enough.
-helm upgrade --install ax-next deploy/charts/ax-next \
+helm --kube-context kind-ax-next-dev upgrade --install ax-next deploy/charts/ax-next \
   --namespace ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --reuse-values
-kubectl rollout restart -n ax-next deployment/ax-next-host
-kubectl rollout status  -n ax-next deployment/ax-next-host --timeout=120s
+kubectl --context kind-ax-next-dev rollout restart -n ax-next deployment/ax-next-host
+kubectl --context kind-ax-next-dev rollout status  -n ax-next deployment/ax-next-host --timeout=120s
 
 # Force any stale runner pods to recycle
-kubectl -n ax-next-runners delete pod -l app.kubernetes.io/component=ax-next-runner --wait=false || true
+kubectl --context kind-ax-next-dev -n ax-next-runners delete pod -l app.kubernetes.io/component=ax-next-runner --wait=false || true
 ```
 
 Refresh the browser (or `browser_navigate` again) and re-drive the scenario.
 
-**Why `rollout restart`, not `helm uninstall + install`:** uninstall regenerates `credentials.key`, which invalidates any encrypted credentials stored in postgres during this loop. Restart preserves the secret + PVC.
+**Why `rollout restart`, not an uninstall + reinstall:** uninstall regenerates `credentials.key`, which invalidates any encrypted credentials stored in postgres during this loop. Restart preserves the secret + PVC.
 
 ---
 
@@ -303,17 +326,17 @@ pnpm --filter @ax/cli deploy --prod --legacy .dev-mount/host
 docker cp .dev-mount/host/. ax-next-dev-control-plane:/mnt/ax-dev/
 
 # 3. Patch the host Deployment to mount /mnt/ax-dev over /opt/ax-next/host.
-kubectl -n ax-next patch deployment ax-next-host --type=json -p='[
+kubectl --context kind-ax-next-dev -n ax-next patch deployment ax-next-host --type=json -p='[
   {"op":"add","path":"/spec/template/spec/volumes/-",
    "value":{"name":"dev-dist","hostPath":{"path":"/mnt/ax-dev","type":"Directory"}}},
   {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-",
    "value":{"name":"dev-dist","mountPath":"/opt/ax-next/host"}}
 ]'
-kubectl -n ax-next rollout status deployment/ax-next-host --timeout=120s
+kubectl --context kind-ax-next-dev -n ax-next rollout status deployment/ax-next-host --timeout=120s
 
 # Verify the mount is live
-kubectl -n ax-next exec deploy/ax-next-host -- ls /opt/ax-next/host/dist/main.js
-kubectl -n ax-next exec deploy/ax-next-host -- stat -c %Y /opt/ax-next/host/dist/main.js
+kubectl --context kind-ax-next-dev -n ax-next exec deploy/ax-next-host -- ls /opt/ax-next/host/dist/main.js
+kubectl --context kind-ax-next-dev -n ax-next exec deploy/ax-next-host -- stat -c %Y /opt/ax-next/host/dist/main.js
 ```
 
 ### Per-iteration
@@ -323,8 +346,8 @@ pnpm --filter @ax/cli build
 rm -rf .dev-mount/host
 pnpm --filter @ax/cli deploy --prod --legacy .dev-mount/host
 docker cp .dev-mount/host/. ax-next-dev-control-plane:/mnt/ax-dev/
-kubectl -n ax-next rollout restart deployment/ax-next-host
-kubectl -n ax-next rollout status  deployment/ax-next-host --timeout=120s
+kubectl --context kind-ax-next-dev -n ax-next rollout restart deployment/ax-next-host
+kubectl --context kind-ax-next-dev -n ax-next rollout status  deployment/ax-next-host --timeout=120s
 ```
 
 Then re-drive the scenario in the browser. Remember: refresh / re-navigate so cached JS doesn't mask the change.
@@ -332,13 +355,13 @@ Then re-drive the scenario in the browser. Remember: refresh / re-navigate so ca
 ### Tearing down the fast loop
 
 ```bash
-kubectl -n ax-next patch deployment ax-next-host --type=json -p='[
-  {"op":"remove","path":"/spec/template/spec/volumes/'$(kubectl -n ax-next get deploy/ax-next-host -o json | jq '.spec.template.spec.volumes | map(.name == "dev-dist") | index(true)')'"},
-  {"op":"remove","path":"/spec/template/spec/containers/0/volumeMounts/'$(kubectl -n ax-next get deploy/ax-next-host -o json | jq '.spec.template.spec.containers[0].volumeMounts | map(.name == "dev-dist") | index(true)')'"}
+kubectl --context kind-ax-next-dev -n ax-next patch deployment ax-next-host --type=json -p='[
+  {"op":"remove","path":"/spec/template/spec/volumes/'$(kubectl --context kind-ax-next-dev -n ax-next get deploy/ax-next-host -o json | jq '.spec.template.spec.volumes | map(.name == "dev-dist") | index(true)')'"},
+  {"op":"remove","path":"/spec/template/spec/containers/0/volumeMounts/'$(kubectl --context kind-ax-next-dev -n ax-next get deploy/ax-next-host -o json | jq '.spec.template.spec.containers[0].volumeMounts | map(.name == "dev-dist") | index(true)')'"}
 ]'
 ```
 
-Or simpler: `helm upgrade ... --reuse-values --recreate-pods` to reset the deployment to the chart's rendered shape.
+Or simpler: `helm --kube-context kind-ax-next-dev upgrade ... --reuse-values --recreate-pods` to reset the deployment to the chart's rendered shape.
 
 **Always tear down the fast loop before claiming the fix passes acceptance.** A passing scenario against a hostPath-mounted dist isn't the same as one against the published image — the image build could still be broken. The last cycle of any fix must be against the rebuilt image.
 

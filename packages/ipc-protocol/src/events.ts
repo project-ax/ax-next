@@ -83,6 +83,13 @@ export const EventToolPostCallSchema = z.object({
 export type EventToolPostCall = z.infer<typeof EventToolPostCallSchema>;
 
 /**
+ * Upper bound on any one reported token count. Runner data is untrusted; a
+ * billion tokens is far beyond any real turn (context windows are ~1e6), so
+ * this only ever rejects garbage, never a legitimate report.
+ */
+const TokenCountSchema = z.number().int().nonnegative().max(1_000_000_000);
+
+/**
  * End of one agent turn. `reason` distinguishes "waiting on the user" from
  * "fully done" from "terminated abnormally" — the orchestrator branches on
  * this to decide whether to keep the session alive.
@@ -96,10 +103,32 @@ export type EventToolPostCall = z.infer<typeof EventToolPostCallSchema>;
 export const EventTurnEndSchema = z.object({
   reqId: z.string().optional(),
   reason: z.enum(['user-message-wait', 'error', 'complete']),
+  /**
+   * What the turn cost (TASK-692, per-user spend limits). Runner-reported and
+   * therefore UNTRUSTED: every count is a bounded nonnegative integer, and the
+   * host stamps WHOSE usage it is from its own session record, never from this
+   * payload. Only the ASSISTANT turn-end carries it (not the role='tool' one).
+   *
+   * Field semantics (the host's price table depends on them; do not blur them):
+   *   - `model`: the `provider/model-id` ref the turn ran on (the agent's
+   *     configured model, e.g. `anthropic/claude-sonnet-4-6`).
+   *   - `inputTokens`: input tokens billed at the STANDARD input rate, i.e.
+   *     EXCLUDING cache reads and cache writes.
+   *   - `outputTokens`: all output tokens, including reasoning/thinking.
+   *   - `cacheReadTokens` / `cacheWriteTokens`: cached-input tokens read /
+   *     written (billed at their own rates).
+   *
+   * Absent `usage` means "this runner could not tell"; the host then charges a
+   * conservative flat assumed cost (unknown is never free). Unknown keys inside
+   * the object are stripped (zod's object default), never passed through.
+   */
   usage: z
     .object({
-      inputTokens: z.number().int().nonnegative().optional(),
-      outputTokens: z.number().int().nonnegative().optional(),
+      model: z.string().min(1).max(200).optional(),
+      inputTokens: TokenCountSchema.optional(),
+      outputTokens: TokenCountSchema.optional(),
+      cacheReadTokens: TokenCountSchema.optional(),
+      cacheWriteTokens: TokenCountSchema.optional(),
     })
     .optional(),
   /** The turn's content blocks, in emission order. Optional until Task 3. */

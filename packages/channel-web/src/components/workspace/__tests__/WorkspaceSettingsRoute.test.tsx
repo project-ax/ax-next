@@ -5,8 +5,9 @@
  * menu item was still there and still clickable — `UserMenu` renders it
  * unconditionally — and the handler behind it was `onOpenAdminSettings?.()`,
  * which resolved to undefined. So Settings silently did nothing, which is the
- * failure `hideClose` was added to stop (TASK-340 / audit B4): a control that
- * cannot work reads as a broken product, not as a door somewhere else.
+ * failure TASK-340 / audit B4 fixed on the first-run dialog (a ✕ that silently
+ * did nothing): a control that cannot work reads as a broken product, not as a
+ * door somewhere else.
  *
  * It is load-bearing for what comes next. `AdminShell` mounts in exactly one
  * place, `App.tsx`, and until now only in the chat branch — so with the

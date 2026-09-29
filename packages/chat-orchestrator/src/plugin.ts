@@ -149,6 +149,7 @@ export function createChatOrchestratorPlugin(
         'skills:proposed',
         'connectors:proposed',
         'system-prompt:augment-changed',
+        'agents:deleted',
       ],
     },
     init({ bus }) {
@@ -310,6 +311,20 @@ export function createChatOrchestratorPlugin(
         PLUGIN_NAME,
         async (ctx, payload) => {
           orch.onSystemPromptAugmentChanged(ctx, payload);
+          return undefined;
+        },
+      );
+
+      // TASK-718 — `agents:deleted` (fired by @ax/agents after the row is gone).
+      // Kills the deleted agent's warm keepalive sandboxes at once rather than
+      // leaving them to the idle reaper. Observation-only: the delete already
+      // committed, so this never vetoes, and it never throws (a failed kill is
+      // logged inside).
+      bus.subscribe<{ agentId: string }>(
+        'agents:deleted',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          await orch.onAgentDeleted(ctx, payload);
           return undefined;
         },
       );

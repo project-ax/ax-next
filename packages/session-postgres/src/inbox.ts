@@ -1,5 +1,5 @@
 import pg from 'pg';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { PluginError, type AgentMessage } from '@ax/core';
 import type { SessionDatabase } from './migrations.js';
 
@@ -634,4 +634,25 @@ function deliver(entry: InboxEntry, cursor: number): ClaimResult {
     return { type: 'interrupt', cursor: cursor + 1 };
   }
   return { type: 'cancel', cursor: cursor + 1 };
+}
+
+/**
+ * Delete every inbox row of the given sessions and return how many went.
+ * Takes a Kysely OR a Transaction (a Transaction is-a Kysely) so the caller
+ * decides the atomicity boundary — TASK-718's purge runs this in the same
+ * transaction as the v1/v2 session-row deletes.
+ *
+ * `= ANY($1)` with one array parameter, not `IN (...)`: an agent with a long
+ * history can own more sessions than Postgres' 65535-bind-parameter cap.
+ */
+export async function deleteInboxEntries(
+  db: Kysely<SessionDatabase>,
+  sessionIds: readonly string[],
+): Promise<number> {
+  if (sessionIds.length === 0) return 0;
+  const res = await db
+    .deleteFrom('session_postgres_v1_inbox')
+    .where(sql<boolean>`session_id = ANY(${sessionIds as string[]})`)
+    .executeTakeFirst();
+  return Number(res.numDeletedRows);
 }

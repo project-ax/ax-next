@@ -10,6 +10,8 @@ import {
   Wrench,
   ListChecks,
   Palette,
+  Gauge,
+  HardDrive,
 } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
 import { SidebarSectionLabel } from '../SidebarSectionLabel';
@@ -26,6 +28,9 @@ export type AdminTabId =
   | 'connectors-user'
   | 'agents'
   | 'routines'
+  // TASK-690 — every person's own storage bar; an admin also sees the limit
+  // form and everyone's usage inside the same tab, so the admin nav stays put.
+  | 'storage'
   // Admin tabs (admins only) — genuinely workspace-level config with no user
   // counterpart. The former catalog / admit-queue / connector-registry surfaces
   // were folded out of the nav (settings-unified epic); their admin curation
@@ -34,7 +39,8 @@ export type AdminTabId =
   | 'model-config'
   | 'auth-providers'
   | 'teams'
-  | 'branding';
+  | 'branding'
+  | 'usage';
 
 type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
 
@@ -43,6 +49,7 @@ const USER_NAV: NavItem[] = [
   { id: 'connectors-user', label: 'Connectors', icon: Plug },
   { id: 'agents', label: 'Agents', icon: User },
   { id: 'routines', label: 'Routines', icon: ListChecks },
+  { id: 'storage', label: 'Storage', icon: HardDrive },
 ];
 
 export const ADMIN_NAV: NavItem[] = [
@@ -51,6 +58,8 @@ export const ADMIN_NAV: NavItem[] = [
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'teams', label: 'Teams', icon: UsersRound },
   { id: 'branding', label: 'Branding', icon: Palette },
+  // TASK-692 — who used what, the two per-person limits, and the pause switch.
+  { id: 'usage', label: 'Usage', icon: Gauge },
 ];
 
 export interface AdminSidebarProps {

@@ -306,7 +306,7 @@ describe('first-run agent create on a dead session', () => {
     globalThis.fetch = (async () => res(401)) as unknown as typeof fetch;
     render(
       <Gate>
-        <FirstRunAutoCreate agentName="Scout" onDone={() => undefined} />
+        <FirstRunAutoCreate agentName="Scout" mode="first-run" onBack={() => undefined} onDone={() => undefined} />
       </Gate>,
     );
     await waitFor(() =>
@@ -323,7 +323,7 @@ describe('first-run agent create on a dead session', () => {
     globalThis.fetch = (async () => res(500)) as unknown as typeof fetch;
     render(
       <Gate>
-        <FirstRunAutoCreate agentName="Scout" onDone={() => undefined} />
+        <FirstRunAutoCreate agentName="Scout" mode="first-run" onBack={() => undefined} onDone={() => undefined} />
       </Gate>,
     );
     expect(await screen.findByText(/give it another go/i)).toBeTruthy();

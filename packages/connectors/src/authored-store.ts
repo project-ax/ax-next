@@ -87,6 +87,19 @@ export interface AuthoredConnectorsStore {
     agentId: string;
     connectorId: string;
   }): Promise<{ cleared: boolean }>;
+  /**
+   * Delete EVERY draft keyed on `agentId`, for all owner users and connector
+   * ids, in any status (TASK-718 — the `agents:deleted` purge). Keyed on
+   * `agent_id` alone: a team agent has drafts for several owners, and scoping
+   * by owner would strand the rest. Only this table is touched — the live
+   * `connectors_v1_connectors` registry has no agent dimension (it is the
+   * user's own connector, not the agent's data). Idempotent: an agent with no
+   * drafts removes zero rows.
+   *
+   * Throws on an empty `agentId` BEFORE any statement runs: an empty key must
+   * never reach a `DELETE`.
+   */
+  deleteAllForAgent(agentId: string): Promise<{ removed: number }>;
 }
 
 function rowToDraft(row: ConnectorsAuthoredRow): AuthoredConnectorDraft {
@@ -200,6 +213,21 @@ export function createAuthoredConnectorsStore(
         .where('connector_id', '=', connectorId)
         .executeTakeFirst();
       return { cleared: Number(res.numDeletedRows ?? 0n) > 0 };
+    },
+
+    async deleteAllForAgent(agentId) {
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        throw new PluginError({
+          code: 'invalid-payload',
+          plugin: PLUGIN_NAME,
+          message: 'deleteAllForAgent requires a non-empty agentId',
+        });
+      }
+      const res = await db
+        .deleteFrom('connectors_v1_authored')
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return { removed: Number(res.numDeletedRows ?? 0n) };
     },
   };
 }

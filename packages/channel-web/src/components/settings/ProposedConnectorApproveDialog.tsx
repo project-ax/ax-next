@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import {
   approveAuthoredConnector,
   serviceTagForSlot,
@@ -190,6 +191,11 @@ export function ProposedConnectorApproveDialog({
               </div>
             ),
           )}
+          {/* (TASK-700) What the key lets the assistant do — the same words, in the
+              same place (after the key, before Connect), as the in-chat grant row
+              this dialog is the twin of. Keyed on the key, like the row: a
+              proposal that takes no key hands over none. */}
+          {slots.length > 0 && <ConnectorAccessNotice kind="key" />}
           {(npm.length > 0 || pypi.length > 0) && (
             <p className="text-sm text-muted-foreground" data-testid="proposed-packages">
               It will download some extra software it needs from the internet to

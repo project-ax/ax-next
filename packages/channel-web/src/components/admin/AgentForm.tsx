@@ -52,6 +52,7 @@ type OAuthStatusOrError = OAuthStatus | typeof OAUTH_STATUS_ERROR;
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import { AuthoredSkillsSection } from './AuthoredSkillsSection';
 import { ConnectorOAuthConnect } from '../settings/ConnectorOAuthConnect';
+import { ConnectorAccessNotice } from '../credentials/ConnectorAccessNotice';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -63,6 +64,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -640,13 +642,19 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
               <DialogHeader>
                 <DialogTitle>Delete agent?</DialogTitle>
               </DialogHeader>
-              <p className="text-sm text-muted-foreground">
+              {/* TASK-718: say what goes with the agent. Every item named here
+                  is really deleted (conversations and their attachments, the
+                  agent's saved files, its routines) -- do not add a claim
+                  without the code behind it, and do not promise anything is
+                  kept. Data loss, so plain and direct: no jokes. */}
+              <DialogDescription>
                 Delete{' '}
                 <span className="font-medium text-foreground">
                   {pendingDelete.displayName}
                 </span>
-                ? This cannot be undone.
-              </p>
+                ? We will delete its conversations, the files in them, the files
+                it saved and its routines along with it. This cannot be undone.
+              </DialogDescription>
               <div className="flex justify-end gap-2">
                 <Button
                   variant="outline"
@@ -889,6 +897,12 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
           {/* Connectors — attach the services this agent can reach. */}
           <div className="flex flex-col gap-2">
             <span className="text-sm font-medium leading-none">Connectors</span>
+            {/* (TASK-700) Attaching is the decision, so the disclosure sits above
+                the checkboxes — one notice for the list, and only when there is
+                something to attach. The team-agent OAuth connect widget below is
+                told not to add a second one (`showAccessNotice={false}`): same
+                decision, one notice. */}
+            {connectors.length > 0 && <ConnectorAccessNotice kind="attach" />}
             {connectors.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No connectors yet. Create one under Connectors, then attach it
@@ -943,6 +957,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
                               serviceName={oauthEntry.serviceName}
                               agentId={editing.id}
                               requiresConsent
+                              showAccessNotice={false}
                             />
                           ) : (
                             /* Personal agent: read-only status hint. The connection

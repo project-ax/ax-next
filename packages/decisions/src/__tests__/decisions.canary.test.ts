@@ -25,6 +25,7 @@ import {
   isHold,
   isRejection,
   PluginError,
+  reject,
   type AgentContext,
   type Hold,
   type ToolCall,
@@ -1636,6 +1637,45 @@ describe('decisions canary — attendance and delivery', () => {
     // One approval, one execution: the fallback replay spent the yes.
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
     expect(executor.calls).toHaveLength(1);
+  });
+
+  it('a wake-up the chat:resume gate refuses leaves the agent parked, and the person’s approved call still runs (TASK-692)', async () => {
+    // The gate (per-user usage limits / the kill switch) decides whether the
+    // AGENT may start another turn: model spend. It does not decide whether a
+    // human-approved tool call may run. So a refused wake-up is treated like
+    // any other delivery that found nobody home: the agent is NOT woken, and the
+    // host replay makes the call the person already said yes to, so the yes is
+    // never stranded. (A suspended account can still spend exactly one approval
+    // per hold created before it was suspended; no model spend, no new turn.)
+    const lines: string[] = [];
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, liveChannels());
+    h.bus.subscribe<unknown>('chat:resume', 'test-usage-gate', async () =>
+      reject({ reason: 'usage-suspended' }),
+    );
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, userCtx(h), CALL);
+    const sweeper = h.ctx({
+      agentId: 'a1',
+      userId: 'u1',
+      conversationId: 'conv-web',
+      sessionId: 's1',
+      logger: createLogger({ reqId: 'req-sweep', writer: (line) => lines.push(line) }),
+    });
+
+    await approve(h, userCtx(h), id);
+    clock.pastWindow();
+    await sweepNow(h, sweeper);
+
+    // The agent was never woken...
+    expect(h.delivered).toHaveLength(0);
+    const log = lines.join('\n');
+    expect(log).toContain('decision_delivery_refused');
+    // ...and the approved call ran once, through the replay fallback.
+    expect(log).toContain('decision_delivery_fell_back_to_replay');
+    expect(executor.calls).toEqual([CALL]);
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.replayedAt).not.toBeNull();
   });
 
   it('the fallback parks a sandbox-only tool rather than leaving the row reading executed', async () => {

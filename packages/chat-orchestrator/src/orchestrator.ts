@@ -521,7 +521,25 @@ interface ProxyOpenSessionInput {
    * deny). The orchestrator fills it only from sources the model/user cannot
    * set for the session — never from the (user-widenable) allowlist.
    */
-  credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
+  credentials: Record<string, ProxyCredentialEntry>;
+}
+
+/**
+ * One credential in the `proxy:open-session` input.
+ *
+ * `metered` (TASK-715) marks the MODEL-PROVIDER key: the operator pays for what
+ * it spends, and code in the sandbox can drive it just as the runner does. When
+ * present, the proxy (a) splices this credential only into requests matching
+ * `requests` (`"METHOD /path"`, from the provider table) and (b) counts what
+ * those calls use and stops splicing once the user is over their limit. Only the
+ * provider-default path sets it, from `PROVIDER_ENDPOINTS` (code, not a store
+ * row); nothing the model or the user typed can add or widen it.
+ */
+interface ProxyCredentialEntry {
+  ref: string;
+  kind: string;
+  allowedHosts?: string[];
+  metered?: { requests: string[] };
 }
 interface ProxyOpenSessionOutput {
   /** `unix:///path/to/sock` OR `tcp://127.0.0.1:<port>` — translated below. */
@@ -1177,6 +1195,7 @@ export function createOrchestrator(
   onSkillsProposed(ctx: AgentContext, event: SkillsProposedLike): Promise<void>;
   onConnectorProposed(ctx: AgentContext, event: ConnectorProposedLike): Promise<void>;
   onSystemPromptAugmentChanged(ctx: AgentContext, payload: unknown): void;
+  onAgentDeleted(ctx: AgentContext, payload: unknown): Promise<void>;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -1574,6 +1593,9 @@ export function createOrchestrator(
   // (Task 5), the runner floor, the force-kill, or the pod ceiling.
   interface WarmEntry {
     handle: OpenSessionHandle;
+    // The agent this runner serves (`ctx.agentId` at spawn). `agents:deleted`
+    // (TASK-718) finds a deleted agent's warm runners by it.
+    agentId: string;
     idleTimer: ReturnType<typeof setTimeout> | null;
     graceTimer: ReturnType<typeof setTimeout> | null;
   }
@@ -1649,8 +1671,9 @@ export function createOrchestrator(
   // the reasons the k8s chart refuses to render replicas > 1
   // (`ax-next.validateHostReplicas`, TASK-617). Lifting that guard means
   // routing this event (and the warm-session map) across replicas first.
-  // `augmentGenByAgent` is never pruned: one small
-  // entry per agent that ever had a change, bounded by the agent population.
+  // `augmentGenByAgent` is pruned only when the agent is deleted
+  // (`onAgentDeleted`): one small entry per live agent that ever had a change,
+  // bounded by the agent population.
   const augmentGenByAgent = new Map<string, number>();
   const augmentGenBySession = new Map<string, number>();
 
@@ -1665,6 +1688,60 @@ export function createOrchestrator(
     const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
     if (typeof agentId !== 'string' || agentId.length === 0) return;
     augmentGenByAgent.set(agentId, (augmentGenByAgent.get(agentId) ?? 0) + 1);
+  }
+
+  // TASK-718 — `agents:deleted`: take the deleted agent's WARM sandboxes down
+  // now, instead of letting them idle out. In keepalive mode a runner outlives
+  // its turn by the idle window (5 minutes by default), keeping the agent's
+  // durable-files mount and its credential-proxy session; after a delete there
+  // is nobody left to serve, and the durable-files reclaim wants the mount free.
+  //
+  // Kill only. Everything else follows from the `handle.exited` watcher armed
+  // at spawn — it drops the registry entry, closes the proxy session and clears
+  // the per-session bookkeeping — so this must not repeat any of it. Revoking
+  // the runner's IPC token / session rows is the session store's own
+  // `agents:deleted` subscriber; this one does not wait on it.
+  //
+  // Never throws: the delete has already committed, and a failure here must not
+  // hide the remaining kills.
+  async function onAgentDeleted(ctx: AgentContext, payload: unknown): Promise<void> {
+    const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+    if (typeof agentId !== 'string' || agentId.length === 0) return;
+    // A deleted agent's generation counter can never be read again.
+    augmentGenByAgent.delete(agentId);
+
+    // Snapshot first: an exit that lands during the awaits below mutates the map.
+    const doomed: Array<[string, WarmEntry]> = [];
+    for (const [sessionId, entry] of warmSessions) {
+      if (entry.agentId === agentId) doomed.push([sessionId, entry]);
+    }
+    if (doomed.length === 0) return;
+
+    let killed = 0;
+    await Promise.all(
+      doomed.map(async ([sessionId, entry]) => {
+        // The idle reaper must not race the kill: its graceful cancel and forced
+        // second kill would only add noise to a teardown already under way.
+        clearReapTimers(sessionId);
+        try {
+          await entry.handle.kill();
+          killed += 1;
+        } catch (err) {
+          ctx.logger.warn('agent_deleted_kill_failed', {
+            agentId,
+            sessionId,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+          // The kill did not take. With the timers cleared nothing else would
+          // ever retire this runner short of the runner floor / pod ceiling, so
+          // hand it back to the idle reaper as the retry.
+          if (warmSessions.get(sessionId) === entry) {
+            armReapTimer({ ...ctx, sessionId });
+          }
+        }
+      }),
+    );
+    if (killed > 0) ctx.logger.info('agent_deleted_warm_sessions_killed', { agentId, count: killed });
   }
 
   // The agent:invoke entrypoint. Thin wrapper whose only job is the TASK-688
@@ -2244,7 +2321,7 @@ export function createOrchestrator(
     let providerDefaults:
       | {
           allowlist: string[];
-          credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
+          credentials: Record<string, ProxyCredentialEntry>;
         }
       | undefined;
     if (useProviderDefaults) {
@@ -2280,6 +2357,10 @@ export function createOrchestrator(
             ref: endpoint.credentialRef,
             kind: 'api-key',
             allowedHosts: [endpoint.egressHost],
+            // TASK-715 — and metered: this is the operator's model key, which
+            // sandbox code can drive as freely as the runner can. The proxy
+            // splices it only into these requests and counts what they use.
+            metered: { requests: [...endpoint.inferenceRequests] },
           },
         },
       };
@@ -2387,7 +2468,7 @@ export function createOrchestrator(
     // can never override it). Only the CLI dev-agents-stub produces this
     // explicit shape; production @ax/agents returns neither field, so it always
     // takes the provider-default path.
-    const baseCreds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }> =
+    const baseCreds: Record<string, ProxyCredentialEntry> =
       providerDefaults
         ? { ...providerDefaults.credentials }
         : Object.fromEntries(
@@ -2920,7 +3001,9 @@ export function createOrchestrator(
         // floor, ceiling): close the proxy session once and drop the registry
         // entry. This is also why the per-invoke finally must NOT close the
         // proxy in keepalive mode (see the finally below).
-        warmSessions.set(sessionId, { handle, idleTimer: null, graceTimer: null });
+        warmSessions.set(sessionId, {
+          handle, agentId: ctx.agentId, idleTimer: null, graceTimer: null,
+        });
         proxyCloseDeferredToHandle = proxyOpened;
         const warmCtx = ctx;
         void handle.exited
@@ -3793,6 +3876,7 @@ export function createOrchestrator(
     onSkillsProposed,
     onConnectorProposed,
     onSystemPromptAugmentChanged,
+    onAgentDeleted,
   };
 }
 

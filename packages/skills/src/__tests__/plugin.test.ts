@@ -184,7 +184,8 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
             'the migration cannot pre-check for an existing connector and falls back to creating one (still owner+id scoped, never cross-tenant)',
         },
       ],
-      subscribes: [],
+      // TASK-718 — a deleted agent's skills rows go with it.
+      subscribes: ['agents:deleted'],
     });
   });
 });

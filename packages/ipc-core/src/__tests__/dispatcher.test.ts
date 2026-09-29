@@ -691,6 +691,66 @@ describe('dispatcher', () => {
     expect(received).toEqual(body);
   });
 
+  it('POST /event.turn-end — the runner-reported usage reaches chat:turn-end whole; unknown keys are stripped (TASK-692)', async () => {
+    // The host meter reads `usage` off the chat:turn-end payload, so every field
+    // the runner reports must survive validation. Before TASK-692 the schema
+    // silently DROPPED `model` and the cache buckets on the way through.
+    let resolved: (v: unknown) => void;
+    const firePromise = new Promise<unknown>((resolve) => {
+      resolved = resolve;
+    });
+    const s = await setup({
+      subscribers: [
+        {
+          hook: 'chat:turn-end',
+          handler: async (_ctx, payload) => {
+            resolved(payload);
+            return undefined;
+          },
+        },
+      ],
+    });
+    setups.push(s);
+    const usage = {
+      model: 'anthropic/claude-sonnet-4-6',
+      inputTokens: 100,
+      outputTokens: 30,
+      cacheReadTokens: 850,
+      cacheWriteTokens: 50,
+    };
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.turn-end',
+      s.token,
+      JSON.stringify({
+        reqId: 'r-1',
+        reason: 'user-message-wait',
+        role: 'assistant',
+        usage: { ...usage, costUsd: 0 },
+      }),
+    );
+    expect(res.status).toBe(202);
+    const received = (await firePromise) as { usage?: unknown };
+    expect(received.usage).toEqual(usage);
+  });
+
+  it('POST /event.turn-end — a usage count over the ceiling is a 400, not a metered turn (TASK-692)', async () => {
+    const s = await setup({});
+    setups.push(s);
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.turn-end',
+      s.token,
+      JSON.stringify({
+        reason: 'complete',
+        usage: { inputTokens: 1_000_000_001, outputTokens: 1 },
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
   // Helper: open a conversation-bound session + its own listener so the
   // listener stamps ctx.conversationId (the persist guard keys off it).
   async function setupConvSession(

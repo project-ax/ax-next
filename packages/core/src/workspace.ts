@@ -185,3 +185,26 @@ export interface WorkspaceDiffOutput {
 export const WorkspaceDiffOutputSchema = z.object({
   delta: WorkspaceDeltaSchema as unknown as ZodType<WorkspaceDelta>,
 }) as unknown as ZodType<WorkspaceDiffOutput>;
+
+// ---------------------------------------------------------------------------
+// `workspace:usage` -- how much storage the caller's workspace occupies.
+// OPTIONAL service hook (TASK-690): a backend that can measure registers it, a
+// backend that cannot simply does not, and callers probe with
+// `bus.hasService('workspace:usage')` before calling.
+// ---------------------------------------------------------------------------
+export type WorkspaceUsageInput = Record<string, never>;
+
+/**
+ * Routes by `ctx.agentId` like every workspace hook: the answer is for THAT
+ * agent's workspace, never a deployment-wide total.
+ *
+ * `bytes` is the storage the workspace occupies on the backend, history
+ * included -- history is what fills a disk. An agent with no workspace yet
+ * reports 0.
+ */
+export interface WorkspaceUsageOutput {
+  bytes: number;
+}
+export const WorkspaceUsageOutputSchema = z.object({
+  bytes: z.number().int().nonnegative(),
+}) as unknown as ZodType<WorkspaceUsageOutput>;

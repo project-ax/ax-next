@@ -103,3 +103,47 @@ describe('blob-bundle-store', () => {
     await expect(store.readTree(missing)).rejects.toThrow(/not found|missing/i);
   });
 });
+
+// TASK-690: the blob store is where a person's storage is charged, and it
+// charges `ctx.userId` of the `blob:put` call. The stores hold a fixed `system`
+// ctx (blob:* is content-addressed), which would make every skill bundle an
+// unowned, uncharged write and leave "make a lot of skills" as a way to fill the
+// shared volume. The owner therefore rides on the write.
+describe('blob-bundle-store — who the write is charged to (TASK-690)', () => {
+  function makeCapturingBus(): { bus: HookBus; putCtxUserIds: string[] } {
+    const putCtxUserIds: string[] = [];
+    const bus = {
+      hasService: () => true,
+      async call(name: string, callCtx: { userId: string }, input: unknown): Promise<unknown> {
+        if (name === 'blob:put') {
+          putCtxUserIds.push(callCtx.userId);
+          const bytes = (input as { bytes: Uint8Array }).bytes;
+          const sha = createHash('sha256').update(bytes).digest('hex');
+          return { sha256: sha, size: bytes.byteLength };
+        }
+        throw new Error(`unexpected hook ${name}`);
+      },
+    } as unknown as HookBus;
+    return { bus, putCtxUserIds };
+  }
+
+  it('charges the owning person when an owner is given', async () => {
+    const { bus, putCtxUserIds } = makeCapturingBus();
+    const store = createBlobBundleStore(
+      bus,
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'system' }),
+    );
+    await store.writeTree([{ path: 'a.txt', contents: 'x' }], 'user-42');
+    expect(putCtxUserIds).toEqual(['user-42']);
+  });
+
+  it('falls back to the store ctx (an unattributed system write) when no owner is given', async () => {
+    const { bus, putCtxUserIds } = makeCapturingBus();
+    const store = createBlobBundleStore(
+      bus,
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'system' }),
+    );
+    await store.writeTree([{ path: 'a.txt', contents: 'x' }]);
+    expect(putCtxUserIds).toEqual(['system']);
+  });
+});

@@ -27,9 +27,10 @@ const PLUGIN_NAME = '@ax/mcp-oauth';
 // @ax/mcp-oauth plugin factory.
 //
 // Wires the package's three runtime surfaces together:
-//   1. The per-plugin migration (mcp_oauth_v1_clients + mcp_oauth_v1_pending),
-//      run on init against the shared postgres instance (Invariant I4 — this
-//      plugin owns those tables; nothing else reaches into them).
+//   1. The per-plugin migration (mcp_oauth_v1_pending, plus mcp_oauth_v1_clients
+//      as a read-only legacy fallback), run on init against the shared postgres
+//      instance (Invariant I4 — this plugin owns those tables; nothing else
+//      reaches into them).
 //   2. The `credentials:resolve:mcp-oauth` sub-service — a refresh-on-read
 //      resolver that @ax/credentials dispatches to when a stored credential's
 //      `kind` is `mcp-oauth`. Registered ALWAYS: registering the sub-service is
@@ -142,7 +143,10 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       // Registered ALWAYS — harmless when @ax/credentials isn't loaded.
       registers: ['credentials:resolve:mcp-oauth'],
       calls,
-      subscribes: [],
+      // TASK-718: `@ax/agents` fires this after the agent row is gone; an
+      // in-flight handshake for it can never complete. Subscribed whether or
+      // not the routes are mounted — the pending table exists either way.
+      subscribes: ['agents:deleted'],
     },
 
     async init({ bus }) {
@@ -160,6 +164,29 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       const db = shared as Kysely<McpOAuthDatabase>;
       await runMcpOAuthMigration(db);
       const store = createMcpOAuthStore(db);
+
+      // TASK-718 — a deleted agent's in-flight OAuth handshakes must go with it.
+      // Payload (declared locally, no cross-plugin import): `{ agentId, ownerId,
+      // ownerType }`; only `agentId` matters, and it is keyed on ALONE because a
+      // team agent's connect can be started by several people. Tokens live in the
+      // credentials store and are purged there, not here. K10: a subscriber must
+      // never throw — a failed purge is logged loudly and swallowed.
+      bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+        if (typeof agentId !== 'string' || agentId.length === 0) {
+          ctx.logger.warn('mcp_oauth_purge_for_deleted_agent_skipped', {
+            reason: 'agents:deleted payload has no non-empty string agentId',
+          });
+          return undefined;
+        }
+        try {
+          const { deleted } = await store.deleteAllForAgent(agentId);
+          ctx.logger.info('mcp_oauth_purged_for_deleted_agent', { agentId, deleted });
+        } catch (err) {
+          ctx.logger.error('mcp_oauth_purge_for_deleted_agent_failed', { agentId, err });
+        }
+        return undefined;
+      });
 
       // The refresh-on-read resolver. `refresh` is injected so the resolver unit
       // stays offline; here we wire it to oauth-flow.refresh, constructing the

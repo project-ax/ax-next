@@ -7,7 +7,7 @@ import { createConversationsPlugin } from '../plugin.js';
 // ---------------------------------------------------------------------------
 
 describe('@ax/conversations plugin manifest', () => {
-  it('declares all conversations:* registers, agents:resolve + database:get-instance calls, and chat:turn-end + session:terminate subscriptions', () => {
+  it('declares all conversations:* registers, agents:resolve + database:get-instance calls, and chat:turn-end + session:terminate + agents:deleted subscriptions', () => {
     const plugin = createConversationsPlugin();
     expect(plugin.manifest).toEqual({
       name: '@ax/conversations',
@@ -68,11 +68,13 @@ describe('@ax/conversations plugin manifest', () => {
       // turn's display frame (TASK-66). session:terminate clears bound rows
       // (Task 14). chat:turn-error + chat:permission-request persist the
       // host-only display events the jsonl never sees (TASK-66).
+      // agents:deleted hard-deletes the agent's conversations (TASK-718).
       subscribes: [
         'chat:turn-end',
         'session:terminate',
         'chat:turn-error',
         'chat:permission-request',
+        'agents:deleted',
       ],
     });
   });

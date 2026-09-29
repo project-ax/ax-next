@@ -81,6 +81,15 @@ const PLUGIN_NAME = '@ax/agents';
 
 const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
 
+/**
+ * How long `agents:delete` waits on one `agents:deleted` subscriber before it
+ * moves on to the next. The slowest legitimate one is the Filestore reclaim pod
+ * (`activeDeadlineSeconds` 120 in @ax/sandbox-k8s, plus create and poll), so this
+ * sits just above that: a healthy delete is never cut short, a wedged one is
+ * bounded.
+ */
+export const AGENTS_DELETED_SUBSCRIBER_TIMEOUT_MS = 150_000;
+
 export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
   let db: Kysely<AgentsDatabase> | undefined;
   // store ref is kept for shutdown symmetry only; the actual closure
@@ -89,6 +98,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
   let _store: AgentStore | undefined;
   let busRef: HookBus | undefined;
   const allowedModels = resolveAllowedModels(config.allowedModels);
+  const deletedSubscriberTimeoutMs =
+    config.deletedSubscriberTimeoutMs ?? AGENTS_DELETED_SUBSCRIBER_TIMEOUT_MS;
   const unregisterRoutes: Array<() => void> = [];
 
   return {
@@ -195,7 +206,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       bus.registerService<DeleteInput, DeleteOutput>(
         'agents:delete',
         PLUGIN_NAME,
-        async (ctx, input) => deleteAgent(localStore, bus, ctx, input),
+        async (ctx, input) =>
+          deleteAgent(localStore, bus, ctx, input, { deletedSubscriberTimeoutMs }),
       );
 
       bus.registerService<ResolveByWebhookTokenInput, ResolveByWebhookTokenOutput>(
@@ -651,6 +663,7 @@ async function deleteAgent(
   bus: HookBus,
   ctx: AgentContext,
   input: DeleteInput,
+  cfg: { deletedSubscriberTimeoutMs: number },
 ): Promise<DeleteOutput> {
   const existing = await store.getById(input.agentId);
   if (existing === null) {
@@ -687,20 +700,35 @@ async function deleteAgent(
   await store.deleteById(input.agentId);
 
   // Fire `agents:deleted` AFTER the row is gone so subscribers reclaim per-agent
-  // state owned in other tiers (filestore-user-files design §11: the sandbox
-  // provider's user-files cleanup `rm -rf`s the agent's durable `/workspace`
-  // subtree; @ax/routines drops the agent's routines so its heartbeat stops,
-  // TASK-680). Payload is minimal + storage-agnostic (L4) — `agentId` is the
-  // subtree key; `ownerId`/`ownerType` come from the row we already loaded
-  // (re-resolving would 404 now). Subscriber failures are isolated by
-  // HookBus.fire and never affect the (already-committed) delete (L6). Fired
-  // after the credential purge above so a single delete cascades both reclaims.
+  // state owned in other tiers. Each plugin that keeps rows keyed on an agent id
+  // deletes ITS OWN (there is no FK to this table, on purpose, and no plugin may
+  // reach into another's tables): the sandbox provider `rm -rf`s the durable
+  // `/workspace` subtree (filestore-user-files design §11); @ax/routines drops the
+  // routines so the heartbeat stops (TASK-680); and, since TASK-718, conversations
+  // (which then announce `conversations:purged` for attachments), sessions,
+  // skills, connectors, host grants, decisions, MCP handshakes and remembered
+  // facts, plus the orchestrator killing the agent's warm sandboxes.
+  // scripts/__tests__/agent-keyed-tables-are-cleaned.test.js fails when a new
+  // agent-keyed table appears with no owner cleaning it up.
+  //
+  // Payload is minimal + storage-agnostic (L4) — `agentId` is the subtree key;
+  // `ownerId`/`ownerType` come from the row we already loaded (re-resolving would
+  // 404 now). Subscriber failures are isolated by HookBus.fire and never affect
+  // the (already-committed) delete (L6). Fired after the credential purge above
+  // so a single delete cascades both reclaims.
   const deletedEvent: AgentsDeletedEvent = {
     agentId: input.agentId,
     ownerId: existing.ownerId,
     ownerType: existing.ownerType,
   };
-  await bus.fire('agents:deleted', ctx, deletedEvent);
+  //
+  // Bounded (TASK-718): the subscribers run one after another, and they now
+  // include a Filestore reclaim pod that waits on the apiserver. Without a bound
+  // one that never settles holds this request open and keeps every later
+  // subscriber from ever running.
+  await bus.fire('agents:deleted', ctx, deletedEvent, {
+    subscriberTimeoutMs: cfg.deletedSubscriberTimeoutMs,
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -434,6 +434,13 @@ describe('SkillEditor (form-first)', () => {
     expect(screen.getByLabelText(/Advanced — edit raw/i)).toBeChecked();
   });
 
+  it('loads connector suggestions from /settings/connectors (non-admins get 403 from /admin/connectors)', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByLabelText('Name');
+    await waitFor(() => expect(mockListConnectors).toHaveBeenCalled());
+    expect(mockListConnectors).toHaveBeenCalledWith('/settings/connectors');
+  });
+
   it('keeps working when the connector list fails to load (free-entry still works)', async () => {
     mockListConnectors.mockRejectedValueOnce(new Error('offline'));
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);

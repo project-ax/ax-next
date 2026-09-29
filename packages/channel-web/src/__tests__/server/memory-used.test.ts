@@ -121,6 +121,46 @@ describe('attachMemoryUsed (TASK-628)', () => {
     expect(out.some((m) => 'memoryUsed' in m)).toBe(false);
   });
 
+  /*
+    TASK-689 — a thread that OPENS WITH THE AGENT.
+
+    The kickoff turn is in the raw `turns` but not in the thread (the builder
+    skips it), and "person turn" is decided by the thread. So the kickoff opens
+    no exchange: a receipt taken during the agent's greeting attaches to
+    nothing (nobody asked anything), and the first real exchange still gets its
+    own chip.
+
+    VACUITY: this passes against the code before TASK-689 as well — the
+    attribution function did not change. It is a characterization of the shape
+    a hidden kickoff makes common, and it fails for the tempting wrong fix of
+    re-deriving person turns from the raw `turns` (the greeting would then hang
+    off the kickoff's exchange and grow a chip).
+  */
+  it('(TASK-689) a hidden kickoff opens no exchange: the greeting gets no chip, the first real answer still does', () => {
+    const rawTurns: MemoryUsedTurn[] = [
+      { turnId: 'kick', role: 'user', createdAt: '2026-09-27T10:00:00.000Z' },
+      { turnId: 'greet', role: 'assistant', createdAt: '2026-09-27T10:00:04.000Z' },
+      { turnId: 'u1', role: 'user', createdAt: '2026-09-27T10:02:00.000Z' },
+      { turnId: 'a1', role: 'assistant', createdAt: '2026-09-27T10:02:05.000Z' },
+    ];
+    const opensWithAgent: ThreadMessage[] = [
+      { kind: 'agent', id: 'greet', text: 'Hey — I just came online.', at: '2026-09-27T10:00:04.000Z' },
+      { kind: 'user', id: 'u1', text: 'hello Juniper' },
+      { kind: 'agent', id: 'a1', text: 'Nice to meet you.', at: '2026-09-27T10:02:05.000Z' },
+    ];
+    const out = attachMemoryUsed(
+      opensWithAgent,
+      rawTurns,
+      [
+        { at: '2026-09-27T10:00:02.000Z', statements: [stmt('during-greeting')] },
+        { at: '2026-09-27T10:02:02.000Z', statements: [stmt('m1')] },
+      ],
+      undefined,
+    );
+    expect(used(out, 'greet')).toBeUndefined();
+    expect((used(out, 'a1') as { statements: Array<{ id: string }> }).statements.map((s) => s.id)).toEqual(['m1']);
+  });
+
   it('merges two receipts in one exchange in order, deduped by id (first wins)', () => {
     const out = attachMemoryUsed(
       thread(),

@@ -66,7 +66,13 @@ interface AgentsResolveInputLike {
 // ONLY inside the opaque `capabilities` object in request/response bodies — the
 // same posture the bus hooks keep.
 //
-// All endpoints require auth:require-user (401 on miss). Connectors are
+// All endpoints require auth:require-user (401 on miss). The `/admin/connectors*`
+// bundle (mode 'admin') is ADMIN-ONLY: a signed-in non-admin gets 403 on every one
+// of its routes, exactly like the other `/admin/*` surfaces (TASK-698) — it is the
+// curation surface (shared / default-on / workspace-keyed connectors, the Test
+// probe), and before the gate it was a bypass of the `/settings/connectors`
+// rejections. The `/settings/connectors*` bundle (mode 'user') stays open to any
+// signed-in user. Connectors are
 // owner-scoped by the calling user's id — the actor id is forced from the
 // authenticated session, never read from the client body, so a client can never
 // create / read / mutate a connector in a foreign namespace. A read or mutate of
@@ -296,9 +302,10 @@ export interface AdminRouteDeps {
  *     non-admins" — never UI-only.
  *
  * Both modes share the read paths (list/show) and the owner-forced-from-session
- * posture verbatim; mode only gates the write policy. There is NO role gate on
- * the user routes — any authenticated user may author their own private
- * connectors (the human is the granting authority for their own agents; no
+ * posture verbatim; mode gates the write policy AND who may call at all: the
+ * `'admin'` bundle requires an admin (403 otherwise — TASK-698), while there is NO
+ * role gate on the user routes — any authenticated user may author their own
+ * private connectors (the human is the granting authority for their own agents; no
  * approval wall is on this path — that gates MODEL-authored reach only).
  */
 export type ConnectorRouteMode = 'admin' | 'user';
@@ -349,10 +356,35 @@ export function createConnectorRouteHandlers(
     userId: mode,
   });
 
+  /**
+   * Authenticate the caller, then enforce the bundle's role policy. 401 when
+   * signed out (checked first, so an anonymous caller learns nothing about roles),
+   * then 403 `{ error: 'forbidden' }` when the bundle is admin-only and the actor
+   * is not an admin — the same status/body every other `/admin/*` route answers.
+   * Returns null once a response has been written (caller must early-return).
+   *
+   * `adminOnly` forces the role check regardless of mode: the Test probe is a
+   * curation action (and reads global-scope credential PRESENCE), so it stays
+   * admin-only even if a future change bundles it into a user-mode registration.
+   */
+  async function authenticate(
+    req: RouteRequest,
+    res: RouteResponse,
+    opts: { adminOnly?: boolean } = {},
+  ): Promise<{ id: string; isAdmin: boolean } | null> {
+    const actor = await requireUser(deps.bus, ctx, req, res);
+    if (actor === null) return null;
+    if ((mode === 'admin' || opts.adminOnly === true) && !actor.isAdmin) {
+      res.status(403).json({ error: 'forbidden' });
+      return null;
+    }
+    return actor;
+  }
+
   return {
     /** GET /admin/connectors */
     async list(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res);
       if (actor === null) return;
       const out = await deps.bus.call<ListInput, ListOutput>(
         'connectors:list',
@@ -364,7 +396,7 @@ export function createConnectorRouteHandlers(
 
     /** GET /admin/connectors/:id */
     async show(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res);
       if (actor === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
@@ -385,7 +417,7 @@ export function createConnectorRouteHandlers(
 
     /** POST /admin/connectors — create (or update an owned connector). */
     async create(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res);
       if (actor === null) return;
       const parsed = parseAndValidateBody(req.body);
       if (!parsed.ok) {
@@ -449,7 +481,7 @@ export function createConnectorRouteHandlers(
 
     /** PATCH /admin/connectors/:id — owner only. */
     async update(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res);
       if (actor === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
@@ -530,7 +562,7 @@ export function createConnectorRouteHandlers(
 
     /** DELETE /admin/connectors/:id — owner only. */
     async destroy(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res);
       if (actor === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
@@ -580,12 +612,15 @@ export function createConnectorRouteHandlers(
 
     /**
      * POST /admin/connectors/:id/test — probe an owned connector for setup
-     * completeness (TASK-108). 200 `{ status, detail? }` where status is
+     * completeness (TASK-108). ADMIN-ONLY in every mode (TASK-698): the verdict
+     * (`needs-key` / `reachable`) reveals whether a GLOBAL-scope key exists for the
+     * connector's derived ref, which a non-admin must not be able to probe.
+     * 200 `{ status, detail? }` where status is
      * `reachable` | `unreachable` | `needs-key`. A foreign / missing connector
      * 404s (same leak posture as the owner-scoped read). No request body.
      */
     async test(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
@@ -621,7 +656,7 @@ export function createConnectorRouteHandlers(
      * surface (hosts / slot names / packages), never a secret.
      */
     async listAuthoredPending(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res);
       if (actor === null) return;
       if (!deps.bus.hasService('connectors:list-authored-pending')) {
         // The preset doesn't expose authored drafts — surface an empty list
@@ -657,7 +692,7 @@ export function createConnectorRouteHandlers(
      * id is `not-authored` → 409 (nothing approved). No secret crosses this route.
      */
     async approveAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res);
       if (actor === null) return;
       const connectorId = req.params.id;
       if (typeof connectorId !== 'string' || connectorId.length === 0) {
@@ -751,7 +786,7 @@ export function createConnectorRouteHandlers(
      * un-dismissable orphan. No secret crosses this route.
      */
     async rejectAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await authenticate(req, res);
       if (actor === null) return;
       const connectorId = req.params.id;
       if (typeof connectorId !== 'string' || connectorId.length === 0) {

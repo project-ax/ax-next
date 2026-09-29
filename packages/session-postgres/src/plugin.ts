@@ -1,4 +1,10 @@
-import { createLogger, PluginError, type Logger, type Plugin } from '@ax/core';
+import {
+  createLogger,
+  PluginError,
+  type AgentContext,
+  type Logger,
+  type Plugin,
+} from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import { z, type ZodType } from 'zod';
@@ -642,7 +648,9 @@ export function createSessionPostgresPlugin(
       // comment. session-postgres opens its own pool + listen client
       // because LISTEN can't share a pool.
       calls: [],
-      subscribes: [],
+      // TASK-718: a deleted agent takes its session data with it. Payload is
+      // `{ agentId, ownerId, ownerType }`; only `agentId` is read.
+      subscribes: ['agents:deleted'],
     },
 
     async init({ bus }) {
@@ -851,6 +859,25 @@ export function createSessionPostgresPlugin(
       // active_session_id, J6) observe the teardown without coupling through
       // a service-call dependency. Fire-and-forget — subscriber failures are
       // logged by HookBus and don't bubble back to the caller.
+      //
+      // The body lives in one local function because the `agents:deleted`
+      // subscriber below must run EXACTLY this teardown for a deleted agent's
+      // live sessions (TASK-718) — a second copy would be a second place for
+      // "what does terminating a session mean" to drift.
+      const terminateSession = async (
+        ctx: AgentContext,
+        sessionId: string,
+      ): Promise<void> => {
+        // Idempotent — store.terminate is a no-op on unknown.
+        await store!.terminate(sessionId);
+        // Wake any in-flight claims for this session; they'll see
+        // terminated and resolve as `timeout` with echo cursor.
+        await inbox!.terminate(sessionId);
+        // Broadcast to subscribers. Same hookName is used for both service
+        // and subscriber lanes; the bus keeps them separate.
+        await bus.fire('session:terminate', ctx, { sessionId });
+      };
+
       bus.registerService<SessionTerminateInput, SessionTerminateOutput>(
         'session:terminate',
         PLUGIN_NAME,
@@ -858,17 +885,78 @@ export function createSessionPostgresPlugin(
           const hookName = 'session:terminate';
           const sessionId = (input as { sessionId?: unknown })?.sessionId;
           requireString(sessionId, 'sessionId', hookName);
-          // Idempotent — store.terminate is a no-op on unknown.
-          await store!.terminate(sessionId);
-          // Wake any in-flight claims for this session; they'll see
-          // terminated and resolve as `timeout` with echo cursor.
-          await inbox!.terminate(sessionId);
-          // Broadcast to subscribers. Same hookName is used for both service
-          // and subscriber lanes; the bus keeps them separate.
-          await bus.fire('session:terminate', ctx, { sessionId });
+          await terminateSession(ctx, sessionId);
           return {};
         },
         { returns: SessionTerminateOutputSchema },
+      );
+
+      // ----- agents:deleted (TASK-718) -----
+      //
+      // @ax/agents fires this AFTER the agent row is gone. Two jobs, in order:
+      //
+      //   1. Terminate the agent's still-live sessions the way any terminate
+      //      does (flag, wake blocked long-polls, fire `session:terminate` so
+      //      @ax/conversations and @ax/chat-orchestrator react as usual). A
+      //      deleted agent can have a warm sandbox idling for minutes, or one
+      //      mid-turn; nothing else stops it.
+      //   2. Hard-delete every row we hold for the agent — inbox, v1 sessions
+      //      (which carry the bearer token) and v2 owner rows (a frozen
+      //      agent-config snapshot). Nothing else ever deletes them:
+      //      `session:terminate` only sets a flag.
+      //
+      // Deleting the rows also revokes the runner's IPC token on the spot,
+      // which is intended: a deleted agent's runner must lose access at once.
+      // A runner that is still polling then gets `unknown-session` (its
+      // in-flight long-poll is woken by step 1 and resolves as a timeout).
+      //
+      // K10: a subscriber must not propagate. One session failing to terminate
+      // must not stop the others or the delete; a failure of the purge itself
+      // is logged at error and swallowed — the rows stay, so a re-fire (or an
+      // operator) can finish the job.
+      bus.subscribe<{ agentId?: unknown }>(
+        'agents:deleted',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          const agentId = (payload as { agentId?: unknown } | undefined)?.agentId;
+          if (typeof agentId !== 'string' || agentId.length === 0) {
+            ctx.logger.warn('session_postgres_agents_deleted_invalid_payload', {});
+            return undefined;
+          }
+          try {
+            const sessions = await store!.listForAgent(agentId);
+            let terminated = 0;
+            let terminateFailed = 0;
+            for (const session of sessions) {
+              if (session.terminated) continue;
+              try {
+                await terminateSession(ctx, session.sessionId);
+                terminated += 1;
+              } catch (err) {
+                terminateFailed += 1;
+                ctx.logger.warn('session_postgres_terminate_for_deleted_agent_failed', {
+                  agentId,
+                  sessionId: session.sessionId,
+                  err: err instanceof Error ? err : new Error(String(err)),
+                });
+              }
+            }
+            const purged = await store!.deleteForAgent(agentId);
+            ctx.logger.info('session_postgres_purged_for_deleted_agent', {
+              agentId,
+              sessions: purged.sessions,
+              inboxEntries: purged.inboxEntries,
+              terminated,
+              terminateFailed,
+            });
+          } catch (err) {
+            ctx.logger.error('session_postgres_purge_for_deleted_agent_failed', {
+              agentId,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
+          }
+          return undefined;
+        },
       );
 
       // ----- session:is-alive -----

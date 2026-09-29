@@ -20,6 +20,13 @@ or the host's bootstrap path changes.
 - `kind` (or any k8s cluster you trust to receive a chart that creates pods).
 - `kubectl`.
 - `helm` 3.x.
+- **Which cluster:** every `kubectl` / `helm` command in this file names
+  `--context kind-ax-next-dev` (helm: `--kube-context`) explicitly, so pasting one can
+  only ever act on the kind cluster — never on whatever your *default* context is,
+  which on a machine that also talks to a real cluster may be production. Walking a
+  real cluster on purpose? Replace `kind-ax-next-dev` with that cluster's context name
+  in the commands you run, deliberately; don't just switch your default. (That test is
+  enforced by `scripts/__tests__/kind-tooling-pinned-to-kind-context.test.js`.)
 - `docker` (running) for building the runner image.
 - An Anthropic API key (we don't ship a default — you bring it).
 
@@ -37,7 +44,7 @@ kind load docker-image ax-next/agent:dev --name ax-next-dev
 # 3. Create the runner namespace. The chart does NOT create it (that's
 #    intentional — the host's RBAC binding is scoped here, and we don't
 #    want `helm uninstall` to take the namespace with it).
-kubectl create namespace ax-next-runners
+kubectl --context kind-ax-next-dev create namespace ax-next-runners
 
 # 4. Install (or re-install) the chart into the ax-next namespace.
 #    `upgrade --install` is idempotent — safe to re-run after a partial
@@ -52,7 +59,7 @@ kubectl create namespace ax-next-runners
 # `http.cookieKey` is required (issue #39). Bootstrap token is optional —
 # if omitted, @ax/onboarding generates one and prints it to host stdout
 # on first boot.
-helm upgrade --install ax-next deploy/charts/ax-next \
+helm --kube-context kind-ax-next-dev upgrade --install ax-next deploy/charts/ax-next \
   --namespace ax-next --create-namespace \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --set image.repository=ax-next/agent \
@@ -62,14 +69,14 @@ helm upgrade --install ax-next deploy/charts/ax-next \
 
 # 5. Wait for the host pod to be Ready (postgres init job runs first; the
 #    host Deployment waits on it).
-kubectl wait -n ax-next --for=condition=Ready pod \
+kubectl --context kind-ax-next-dev wait -n ax-next --for=condition=Ready pod \
   -l app.kubernetes.io/component=ax-next-host --timeout=180s
 
 # 6. Port-forward the host's public-http port (where /chat + /setup + /health
 #    + /admin/* + /auth/* live). The host Service also exposes :80 for the
 #    runner-IPC back-channel — that's not for human use, runner pods reach
 #    it cluster-internally.
-kubectl port-forward -n ax-next svc/ax-next-host 9090:9090 &
+kubectl --context kind-ax-next-dev port-forward -n ax-next svc/ax-next-host 9090:9090 &
 
 # 7. Walk the first-use wizard at http://localhost:9090/setup. See the
 #    "First-use wizard" scenario below for the full operator-facing
@@ -87,7 +94,7 @@ path to a chat-capable state on a fresh cluster.
       whose output is the actual file listing of the agent's working directory
       (which is empty by default — `ls /files` returns no entries, the
       assistant should say so coherently).
-- [ ] `kubectl get pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner`
+- [ ] `kubectl --context kind-ax-next-dev get pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner`
       shows a runner pod was created and (after the chat ends) terminated
       within ~60s of the chat finishing.
 - [ ] No stuck runner pods: 60s after the chat ends, the runner-namespace pod
@@ -96,7 +103,7 @@ path to a chat-capable state on a fresh cluster.
 ### State persistence
 - [ ] A row landed in `session_postgres_v1_sessions`:
       ```bash
-      kubectl exec -n ax-next deploy/ax-next-host -- \
+      kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
         psql -U ax-next -d ax-next \
         -c "SELECT count(*) FROM session_postgres_v1_sessions;"
       ```
@@ -104,14 +111,14 @@ path to a chat-capable state on a fresh cluster.
 - [ ] pgvector is enabled on the embedded postgres (the `pg-init` hook Job fails the
       install if it is not, so this should never be empty — TASK-458):
       ```bash
-      kubectl exec -n ax-next deploy/ax-next-host -- \
+      kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
         psql -U ax-next -d ax-next \
         -tAc "SELECT extversion FROM pg_extension WHERE extname = 'vector';"
       ```
       Prints a version (0.8.0 on the default image), not an empty line.
 - [ ] A row landed in storage (audit log + chat-event log both write here):
       ```bash
-      kubectl exec -n ax-next deploy/ax-next-host -- \
+      kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
         psql -U ax-next -d ax-next \
         -c "SELECT count(*) FROM storage_postgres_v1_kv;"
       ```
@@ -126,7 +133,7 @@ path to a chat-capable state on a fresh cluster.
       # `workspace.mountPath` (values.yaml) = /var/lib/ax-next/workspaces.
       # This line used to say /workspace-data/, which no chart has ever
       # mounted; TASK-412 measured the real path on a live cluster.
-      kubectl exec -n ax-next deploy/ax-next-host -- \
+      kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
         sh -c 'ls -d /var/lib/ax-next/workspaces/ws-*.git/refs/heads/main'
       ```
       At least one file exists. If you see a
@@ -135,19 +142,22 @@ path to a chat-capable state on a fresh cluster.
       the deployment. Salvage anything you want from it and delete it.
 
 ### Logs / hygiene
-- [ ] No `level >= warn` lines in `kubectl logs -n ax-next deploy/ax-next-host`
+- [ ] No `level >= warn` lines in `kubectl --context kind-ax-next-dev logs -n ax-next deploy/ax-next-host`
       other than the expected gVisor-disabled warning if you're on a kind
       cluster without gVisor (the kind values.yaml turns gVisor off — that
       warning is OK; nothing else should be).
 
 ### Cleanup
-- [ ] `helm uninstall ax-next -n ax-next` completes successfully.
-- [ ] 60s after uninstall: `kubectl get pods -n ax-next` and
-      `kubectl get pods -n ax-next-runners` both show zero `ax-next-*` pods.
+- [ ] `helm --kube-context kind-ax-next-dev uninstall ax-next -n ax-next` completes successfully.
+- [ ] 60s after uninstall: `kubectl --context kind-ax-next-dev get pods -n ax-next` and
+      `kubectl --context kind-ax-next-dev get pods -n ax-next-runners` both show zero `ax-next-*` pods.
 
 ## Real-cluster acceptance
 
 Same procedure as kind, but:
+- Name the cluster yourself: replace `kind-ax-next-dev` in every command with the
+  target's context name (see **Which cluster** under Prerequisites). Do not lean on
+  your current context.
 - Use a cluster with gVisor available (or accept the documented degradation —
   see `packages/sandbox-k8s/SECURITY.md`).
 - Don't pass `kind-dev-values.yaml`; tune resources for the cluster.
@@ -180,7 +190,7 @@ Default Agent. After completion, every `/setup/*` path returns 410 Gone (I11)
 1. **Scrape the bootstrap token from host pod stdout.**
 
    ```bash
-   kubectl -n ax-next logs deploy/ax-next-host | grep -E 'token: ax_bs_|open:  http' | head -2
+   kubectl --context kind-ax-next-dev -n ax-next logs deploy/ax-next-host | grep -E 'token: ax_bs_|open:  http' | head -2
    # [ax-onboarding] First-run bootstrap:
    #   token: ax_bs_<base64url>
    #   open:  http://0.0.0.0:9090/setup?token=ax_bs_<...>
@@ -319,11 +329,11 @@ The wizard is one-shot. To re-walk it on the same cluster, either:
 - Wipe the row directly:
 
   ```bash
-  PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+  PGPASS=$(kubectl --context kind-ax-next-dev get secret -n ax-next ax-next-postgresql \
     -o jsonpath='{.data.postgres-password}' | base64 -d)
-  kubectl -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
+  kubectl --context kind-ax-next-dev -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
     psql -U postgres -d ax_next -c "DELETE FROM bootstrap_state;"
-  kubectl -n ax-next rollout restart deployment/ax-next-host
+  kubectl --context kind-ax-next-dev -n ax-next rollout restart deployment/ax-next-host
   # New token printed in fresh stdout.
   ```
 
@@ -362,9 +372,9 @@ token, but you never recorded it. `bootstrap_state.status` is still
 1. **Confirm the lost-token scenario.**
 
    ```bash
-   PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+   PGPASS=$(kubectl --context kind-ax-next-dev get secret -n ax-next ax-next-postgresql \
      -o jsonpath='{.data.postgres-password}' | base64 -d)
-   kubectl -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
+   kubectl --context kind-ax-next-dev -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
      psql -U postgres -d ax_next \
      -c "SELECT id, status FROM bootstrap_state;"
    # id | status
@@ -380,13 +390,13 @@ token, but you never recorded it. `bootstrap_state.status` is still
    (skip if you already have one, e.g., via a bastion):
 
    ```bash
-   kubectl -n ax-next port-forward pod/ax-next-postgresql-0 5432:5432 &
+   kubectl --context kind-ax-next-dev -n ax-next port-forward pod/ax-next-postgresql-0 5432:5432 &
    ```
 
 3. **Run the recovery CLI.** From the ax-next checkout:
 
    ```bash
-   PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+   PGPASS=$(kubectl --context kind-ax-next-dev get secret -n ax-next ax-next-postgresql \
      -o jsonpath='{.data.postgres-password}' | base64 -d)
    DATABASE_URL="postgres://postgres:${PGPASS}@127.0.0.1:5432/ax_next" \
    AX_PUBLIC_BASE_URL="http://localhost:9090" \
@@ -418,9 +428,9 @@ existing admin first.
 ```bash
 # 1. Drop existing admin users so the wizard's create-bootstrap-user
 #    guard doesn't reject the second walk.
-PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+PGPASS=$(kubectl --context kind-ax-next-dev get secret -n ax-next ax-next-postgresql \
   -o jsonpath='{.data.postgres-password}' | base64 -d)
-kubectl -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
+kubectl --context kind-ax-next-dev -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
   psql -U postgres -d ax_next \
   -c "DELETE FROM auth_better_v1_users WHERE role = 'admin';"
 
@@ -476,7 +486,7 @@ the right layer to enforce that.
   IPC listener:
 
   ```bash
-  kubectl logs -n ax-next deploy/ax-next-host | grep ipc-http
+  kubectl --context kind-ax-next-dev logs -n ax-next deploy/ax-next-host | grep ipc-http
   # expect: [ax/ipc-http] listening on http://0.0.0.0:8080
   ```
 
@@ -484,7 +494,7 @@ the right layer to enforce that.
   simplest probe: launch a one-shot debug pod in the runner namespace:
 
   ```bash
-  kubectl run debug --rm -it -n ax-next-runners \
+  kubectl --context kind-ax-next-dev run debug --rm -it -n ax-next-runners \
     --image curlimages/curl --restart=Never -- \
     curl -sS http://ax-next-host.ax-next.svc.cluster.local/healthz
   # expect: {"ok":true}
@@ -557,7 +567,7 @@ small HTTP front door:
    # added at runtime via /admin/auth (Phase 3) — no helm flag needed.
    # onboarding.bootstrapToken pre-shares the wizard's claim token; if
    # omitted, @ax/onboarding generates one on first boot and prints it.
-   helm upgrade --install ax-next deploy/charts/ax-next \
+   helm --kube-context kind-ax-next-dev upgrade --install ax-next deploy/charts/ax-next \
      --namespace ax-next --create-namespace \
      --set replicas=2 \
      --set workspace.backend=git-protocol \
@@ -573,7 +583,7 @@ small HTTP front door:
 2. Wait for both host pods, the git-server pod, and postgres to be Ready:
 
    ```bash
-   kubectl -n ax-next get pods -w
+   kubectl --context kind-ax-next-dev -n ax-next get pods -w
    ```
 
    Expected: 2 host pods (`ax-next-host-...`), `gitServer.shards` git-server
@@ -586,7 +596,7 @@ small HTTP front door:
    the runner-IPC back-channel and not for human traffic.
 
    ```bash
-   kubectl -n ax-next port-forward svc/ax-next-host 9090:9090 &
+   kubectl --context kind-ax-next-dev -n ax-next port-forward svc/ax-next-host 9090:9090 &
    ```
 
 4. Fire two concurrent chat requests against the host Service. The
@@ -640,7 +650,7 @@ small HTTP front door:
    The git-server is a **StatefulSet**, not a Deployment, and the chart names
    it `<release>-<chart>-git-server-experimental` (see
    `ax-next.gitServerExperimentalComponentName` in `_helpers.tpl`). On a default
-   `helm install ax-next` that is `ax-next-git-server-experimental`, and the
+   install (release name `ax-next`) that is `ax-next-git-server-experimental`, and the
    pods are `<that>-<ordinal>`.
 
    Note the label you'd reach for does NOT work on pods:
@@ -649,14 +659,14 @@ small HTTP front door:
    and Service *metadata* but not on the pods. Select pods by name:
 
    ```bash
-   GSPOD=$(kubectl -n ax-next get pods -o name | grep git-server-experimental | head -1)
+   GSPOD=$(kubectl --context kind-ax-next-dev -n ax-next get pods -o name | grep git-server-experimental | head -1)
    ```
 
    ```bash
    # Probe A: count commits directly from the git-server pod, per workspace.
    # The pod ships the real `git` binary — that is the whole point of this
    # tier — so use it rather than a JS git library.
-   kubectl -n ax-next exec "$GSPOD" -- sh -c \
+   kubectl --context kind-ax-next-dev -n ax-next exec "$GSPOD" -- sh -c \
      'for d in /var/lib/ax-next/repo/ws-*.git; do \
         printf "%s %s\n" "$d" "$(git --git-dir="$d" rev-list --count refs/heads/main)"; \
       done'
@@ -672,11 +682,11 @@ small HTTP front door:
    # `GET /repos/<workspaceId>` → {workspaceId, exists, headOid}.
    # The token Secret is `<release>-<chart>-git-server-auth`; on a default
    # `helm install ax-next` that is `ax-next-git-server-auth`.
-   SECRET=$(kubectl -n ax-next get secret -o name | grep git-server-auth | head -1)
-   GSSVC=$(kubectl -n ax-next get svc -o name | grep git-server-experimental | grep -v headless | head -1)
-   kubectl -n ax-next port-forward "$GSSVC" 7780:7780 &
+   SECRET=$(kubectl --context kind-ax-next-dev -n ax-next get secret -o name | grep git-server-auth | head -1)
+   GSSVC=$(kubectl --context kind-ax-next-dev -n ax-next get svc -o name | grep git-server-experimental | grep -v headless | head -1)
+   kubectl --context kind-ax-next-dev -n ax-next port-forward "$GSSVC" 7780:7780 &
    curl http://localhost:7780/repos/<workspaceId> \
-     -H "Authorization: Bearer $(kubectl -n ax-next get $SECRET \
+     -H "Authorization: Bearer $(kubectl --context kind-ax-next-dev -n ax-next get $SECRET \
         -o jsonpath='{.data.token}' | base64 -d)" | jq .
    ```
 
@@ -689,7 +699,7 @@ small HTTP front door:
 - [ ] Both concurrent `curl` calls return HTTP 200.
 - [ ] The git-server pod's `main` ref shows ≥ 2 new commits after the
       requests complete.
-- [ ] No host pod restarts during the run (`kubectl get pods -n ax-next`
+- [ ] No host pod restarts during the run (`kubectl --context kind-ax-next-dev get pods -n ax-next`
       shows `RESTARTS = 0` for the host pods).
 - [ ] No `level >= warn` lines in either host pod's logs other than the
       expected gVisor-disabled warning on kind.
@@ -697,7 +707,7 @@ small HTTP front door:
 ### Cleanup
 
 ```bash
-helm uninstall ax-next -n ax-next
+helm --kube-context kind-ax-next-dev uninstall ax-next -n ax-next
 ```
 
 The git-server PVC and its auth Secret persist on purpose — they carry
@@ -710,9 +720,9 @@ clean slate is wanted:
 # so Kubernetes names the claims `repo-<sts-name>-<ordinal>` — NOT
 # `ax-next-git-server-repo`, which this line used to say and which never
 # existed. List before you delete.
-kubectl -n ax-next get pvc | grep git-server
-kubectl -n ax-next delete pvc repo-ax-next-git-server-experimental-0
-kubectl -n ax-next delete secret ax-next-git-server-auth
+kubectl --context kind-ax-next-dev -n ax-next get pvc | grep git-server
+kubectl --context kind-ax-next-dev -n ax-next delete pvc repo-ax-next-git-server-experimental-0
+kubectl --context kind-ax-next-dev -n ax-next delete secret ax-next-git-server-auth
 ```
 
 ## Scenario: Credentials admin UI
@@ -721,7 +731,7 @@ This scenario walks the end-to-end credentials admin surface that landed
 in the Week 10–12 admin-UI slice. We want to prove three things:
 
 1. An admin can seed an `api-key` credential through the browser, no
-   `kubectl edit secret` required.
+   hand-editing the Secret required.
 2. A real chat actually picks that credential up — meaning the v2 scope
    axis (user → agent → global) is wired all the way through to the
    credential-proxy that the runner pod talks to.
@@ -792,10 +802,10 @@ Expected:
       "admin-seeded credentials work" in that case. We recommend doing
       this scenario without the env-var set, on a fresh kind cluster,
       for the strongest proof.)
-- [ ] A runner pod was spawned (`kubectl get pods -n ax-next-runners`)
+- [ ] A runner pod was spawned (`kubectl --context kind-ax-next-dev get pods -n ax-next-runners`)
       and exited cleanly within ~60s.
 - [ ] No `level >= warn` lines about credentials in
-      `kubectl logs -n ax-next deploy/ax-next-host`.
+      `kubectl --context kind-ax-next-dev logs -n ax-next deploy/ax-next-host`.
 
 ### Steps — non-admin: My credentials
 
@@ -866,7 +876,7 @@ postgres data by default (the PVCs hang around). To wipe seeded
 credentials:
 
 ```bash
-kubectl exec -n ax-next deploy/ax-next-host -- \
+kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
   psql -U ax-next -d ax-next \
   -c "DELETE FROM storage_postgres_v1_kv WHERE key LIKE 'credential:v2:%';"
 ```
@@ -905,7 +915,7 @@ direct DB query.
 2. Read the agent's webhook token directly from postgres:
 
    ```bash
-   kubectl exec -n ax-next deploy/ax-next-host -- \
+   kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
      psql -U ax-next -d ax-next -c \
      "SELECT agent_id, webhook_token FROM agents_v1_agents WHERE webhook_token IS NOT NULL;"
    ```
@@ -998,7 +1008,7 @@ direct DB query.
 - HMAC missing header → 401, no conversation.
 - HMAC wrong signature → 401, no conversation.
 - HMAC correct signature → 202, new conversation.
-- All four cases observable via `kubectl logs -n ax-next deploy/ax-next-host | grep routines` (routines plugin logs each fire with status).
+- All four cases observable via `kubectl --context kind-ax-next-dev logs -n ax-next deploy/ax-next-host | grep routines` (routines plugin logs each fire with status).
 
 ### Cleanup
 
@@ -1033,9 +1043,9 @@ manual fire.
    the new agent at `.ax/routines/heartbeat.md`:
 
    ```bash
-   POD=$(kubectl get pod -n ax-next -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
-   PASS=$(kubectl get secret -n ax-next ax-next-postgresql -o jsonpath='{.data.postgres-password}' | base64 -d)
-   kubectl exec -n ax-next $POD -- env PGPASSWORD=$PASS \
+   POD=$(kubectl --context kind-ax-next-dev get pod -n ax-next -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
+   PASS=$(kubectl --context kind-ax-next-dev get secret -n ax-next ax-next-postgresql -o jsonpath='{.data.postgres-password}' | base64 -d)
+   kubectl --context kind-ax-next-dev exec -n ax-next $POD -- env PGPASSWORD=$PASS \
      psql -U postgres -d ax_next -c \
      "SELECT agent_id, path, name FROM routines_v1_definitions WHERE path = '.ax/routines/heartbeat.md';"
    ```
@@ -1059,7 +1069,7 @@ manual fire.
    `conversations_v1_conversations` with `hidden=t`:
 
    ```bash
-   kubectl exec -n ax-next $POD -- env PGPASSWORD=$PASS \
+   kubectl --context kind-ax-next-dev exec -n ax-next $POD -- env PGPASSWORD=$PASS \
      psql -U postgres -d ax_next -c \
      "SELECT conversation_id, hidden FROM conversations_v1_conversations WHERE title LIKE 'heartbeat @%' ORDER BY created_at DESC LIMIT 3;"
    ```
@@ -1560,7 +1570,7 @@ covering authentication for everyone who isn't the bootstrap admin.
 - The chart must be installed with a stable `http.cookieKey` value. Better-auth
   uses it to sign session cookies. If the value rotates between restarts,
   existing sessions break — that's expected and correct, but jarring mid-walk.
-  For kind, the goldenpath `helm upgrade --install` generates a fresh key on
+  For kind, the goldenpath install (`upgrade --install`) generates a fresh key on
   each run, so start a fresh port-forward after any reinstall.
 - `AX_AUTH_SECRET` must be stable across restarts. Better-auth uses it to
   encrypt the OAuth tokens it stores. The chart generates it independently —
@@ -1632,7 +1642,7 @@ Expected:
       by `user_id` — `auth_better_v1_users` itself has no `provider` column):
 
   ```bash
-  kubectl exec -n ax-next deploy/ax-next-host -- \
+  kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
     psql -U ax-next -d ax-next \
     -c "SELECT u.email, a.provider_id, u.role \
         FROM auth_better_v1_users u \
@@ -1665,7 +1675,7 @@ Expected:
 - [ ] No user row was created for the rejected email:
 
   ```bash
-  kubectl exec -n ax-next deploy/ax-next-host -- \
+  kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
     psql -U ax-next -d ax-next \
     -c "SELECT count(*) FROM auth_better_v1_users WHERE email = '<rejected-email>';"
   ```
@@ -1676,7 +1686,7 @@ Expected:
 - [ ] No auth session row was created:
 
   ```bash
-  kubectl exec -n ax-next deploy/ax-next-host -- \
+  kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
     psql -U ax-next -d ax-next \
     -c "SELECT count(*) FROM auth_better_v1_sessions WHERE user_id IN \
         (SELECT id FROM auth_better_v1_users WHERE email = '<rejected-email>');"
@@ -1740,7 +1750,7 @@ manager (not in the repo).
 # To remove it: Admin → Auth → Delete on the google provider row.
 # The Google-authenticated user rows persist in auth_better_v1_users;
 # delete them via psql if a clean slate is needed:
-kubectl exec -n ax-next deploy/ax-next-host -- \
+kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
   psql -U ax-next -d ax-next \
   -c "DELETE FROM auth_better_v1_users WHERE id IN (SELECT user_id FROM auth_better_v1_accounts WHERE provider_id = 'google');"
 ```
@@ -1785,11 +1795,11 @@ browser path (`/api/chat/messages`) with a hand-minted cookie:
 
 ```bash
 # 1. A live session token + the cookie-signing key.
-PASS=$(kubectl get secret -n ax-next ax-next-postgresql -o jsonpath='{.data.postgres-password}' | base64 -d)
-TOKEN=$(kubectl exec -n ax-next ax-next-postgresql-0 -- env PGPASSWORD="$PASS" \
+PASS=$(kubectl --context kind-ax-next-dev get secret -n ax-next ax-next-postgresql -o jsonpath='{.data.postgres-password}' | base64 -d)
+TOKEN=$(kubectl --context kind-ax-next-dev exec -n ax-next ax-next-postgresql-0 -- env PGPASSWORD="$PASS" \
   psql -U postgres -d ax_next -t -A \
   -c "SELECT token FROM auth_better_v1_sessions WHERE expires_at > now() ORDER BY expires_at DESC LIMIT 1;")
-CKEY=$(kubectl get secret -n ax-next ax-next-secrets -o jsonpath='{.data.http-cookie-key}' | base64 -d)
+CKEY=$(kubectl --context kind-ax-next-dev get secret -n ax-next ax-next-secrets -o jsonpath='{.data.http-cookie-key}' | base64 -d)
 
 # 2. Sign it the way @ax/http-server does. The cookie is named
 #    `ax_auth_session` (a custom http-server-signed bridge, NOT better-auth's
@@ -1832,8 +1842,8 @@ cookie is a live admin session.
 2. **(Optional) Catch the runner pod** while the turn runs and confirm the
    real pod-spec env + mount:
    ```bash
-   POD=$(kubectl get pods -n ax-next-runners --no-headers | awk '{print $1}' | head -1)
-   kubectl get pod -n ax-next-runners "$POD" \
+   POD=$(kubectl --context kind-ax-next-dev get pods -n ax-next-runners --no-headers | awk '{print $1}' | head -1)
+   kubectl --context kind-ax-next-dev get pod -n ax-next-runners "$POD" \
      -o jsonpath='{range .spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | grep AX_EPHEMERAL_ROOT
    ```
 3. **Turn 2 — round-trip + prompt check.** Same conversation: ask the agent,
@@ -1863,7 +1873,7 @@ path from the prompt, not the env.
 ### Cleanup
 
 ```bash
-kubectl delete pod ax-walk-ephemeral -n ax-next-runners --ignore-not-found  # if you applied a synthetic probe pod
+kubectl --context kind-ax-next-dev delete pod ax-walk-ephemeral -n ax-next-runners --ignore-not-found  # if you applied a synthetic probe pod
 curl -s -X DELETE http://localhost:9090/api/chat/conversations/cnv_... \
   -H "Cookie: $COOKIE" -H 'X-Requested-With: ax-admin'   # delete the test conversation
 ```
@@ -1988,8 +1998,8 @@ pod death — that's the signal the host keys off.
 1. Start a new chat and send a message that takes a few seconds (e.g. "write
    a 300-word story"). While the "Thinking…" spinner is showing:
 2. Kill the serving runner pod:
-   `kubectl -n ax-next-runners delete pod <serving-pod> --now`
-   (find it: `kubectl -n ax-next-runners get pods`).
+   `kubectl --context kind-ax-next-dev -n ax-next-runners delete pod <serving-pod> --now`
+   (find it: `kubectl --context kind-ax-next-dev -n ax-next-runners get pods`).
 3. Within a second or two, observe the `AgentStatus` row flip from
    "Thinking…" (blue, breathing) to a **red error row** reading "The agent
    stopped unexpectedly. Retry to continue." with a **retry** button — NOT
@@ -2012,7 +2022,7 @@ pod death — that's the signal the host keys off.
 - Host logs confirm the orchestrator detected the death and signalled the
   client (not just the UI):
   ```bash
-  kubectl logs -n ax-next deploy/ax-next-host | grep -E 'pod_(exited|killed)|chat_turn_error'
+  kubectl --context kind-ax-next-dev logs -n ax-next deploy/ax-next-host | grep -E 'pod_(exited|killed)|chat_turn_error'
   ```
   Expect `pod_exited`/`pod_killed` (the sandbox watcher saw the death) AND a
   `chat_turn_error` line with `reason` `sandbox-terminated` (routed/warm path)
@@ -2052,8 +2062,8 @@ happened 45 s later). Then the same conversation keeps working, warm.
 4. Wait 60 s, then check the pod:
 
    ```bash
-   kubectl -n ax-next-runners get pods
-   kubectl -n ax-next-runners exec <sandbox-pod> -- ls /agent/cancel-probe.txt
+   kubectl --context kind-ax-next-dev -n ax-next-runners get pods
+   kubectl --context kind-ax-next-dev -n ax-next-runners exec <sandbox-pod> -- ls /agent/cancel-probe.txt
    ```
 
 5. Send "say hi". The same sandbox answers (no cold start), and the transcript

@@ -4,6 +4,24 @@ import { AdminShell } from '../AdminShell';
 import { UserProvider } from '../../../lib/user-context';
 import type { AuthUser } from '../../../lib/auth';
 
+const MB = 1_048_576;
+const MY_STORAGE = {
+  usedBytes: 512 * MB,
+  limitBytes: 1024 * MB,
+  warnBytes: 819 * MB,
+  workspaceBytes: 500 * MB,
+  fileBytes: 12 * MB,
+  status: 'ok',
+};
+const ADMIN_STORAGE = {
+  limits: { limitMb: 1024, warnPercent: 80 },
+  defaults: { limitMb: 1024, warnPercent: 80 },
+  bounds: { limitMb: { min: 64, max: 10_485_760 }, warnPercent: { min: 1, max: 99 } },
+  owners: [],
+  ownerCount: 0,
+  totalBytes: 0,
+};
+
 // ProvidersPanel and ModelConfigTab fetch on mount — stub to avoid leaking
 // unhandled promise rejections.
 const fetchMock = vi.fn();
@@ -60,6 +78,33 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
+  // UsageTab reads GET /admin/usage on mount (an empty day is a valid report).
+  if (/\/admin\/usage(\?|$)/.test(url)) {
+    return new Response(
+      JSON.stringify({
+        windowHours: 24,
+        truncated: false,
+        limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 },
+        totals: { turns: 0, spendUsd: 0, users: 0 },
+        users: [],
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  }
+  // StorageTab (TASK-690) reads the person's own storage, and an admin's also
+  // reads the limits and the biggest owners.
+  if (/\/settings\/storage(\?|$)/.test(url)) {
+    return new Response(JSON.stringify(MY_STORAGE), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/admin\/storage(\?|$)/.test(url)) {
+    return new Response(JSON.stringify(ADMIN_STORAGE), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   return new Response(JSON.stringify({ providers: [], agents: [], teams: [], connectors: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -100,11 +145,13 @@ describe('AdminShell', () => {
     // own agents), no longer in the Admin group.
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
     // Admin tabs (Admin section) — present for admins. The Admin group is now
-    // keys / model / sign-in / teams; the duplicate Catalog / Connector-catalog
-    // surfaces are gone.
+    // keys / model / sign-in / teams / branding / usage; the duplicate Catalog /
+    // Connector-catalog surfaces are gone.
     expect(screen.getByRole('button', { name: 'AI model keys' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Helper model' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Branding' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Usage' })).toBeTruthy();
     // Skills is the default active tab for everyone.
     expect(
       screen.getByRole('button', { name: 'Skills' }).getAttribute('data-active'),
@@ -118,6 +165,61 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Teams' })).toBeNull();
+    // Usage is money and a pause switch: an admin's tab, never offered to a user.
+    expect(screen.queryByRole('button', { name: 'Usage' })).toBeNull();
+  });
+
+  it('opens Usage and limits from the Usage nav item (admins only)', async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Usage' }));
+    expect(
+      screen.getByRole('button', { name: 'Usage' }).getAttribute('data-active'),
+    ).toBeTruthy();
+    // The nav says "Usage"; the page says what it is for.
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Usage and limits' }),
+    ).toBeTruthy();
+    // …and the tab really mounted and read its data, not just a title.
+    expect(await screen.findByText('No usage in the last 24 hours')).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/admin\/usage$/.test(String(url))),
+    ).toBe(true);
+  });
+
+  it('offers Storage to everyone, admin or not', () => {
+    const { unmount } = renderShell(vi.fn(), true);
+    expect(screen.getByRole('button', { name: 'Storage' })).toBeTruthy();
+    unmount();
+    renderShell(vi.fn(), false);
+    expect(screen.getByRole('button', { name: 'Storage' })).toBeTruthy();
+  });
+
+  it('opens Storage for an ordinary person: their own bar, and no admin request', async () => {
+    renderShell(vi.fn(), false);
+    fireEvent.click(screen.getByRole('button', { name: 'Storage' }));
+    expect(
+      screen.getByRole('button', { name: 'Storage' }).getAttribute('data-active'),
+    ).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Storage' })).toBeTruthy();
+    // …and the tab really mounted and read their data, not just a title.
+    expect(await screen.findByText('512 MB of 1 GB used')).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/settings\/storage$/.test(String(url))),
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/admin\/storage/.test(String(url))),
+    ).toBe(false);
+    expect(screen.queryByLabelText('Limit per person (MB)')).toBeNull();
+  });
+
+  it('opens Storage for an admin with the limits form beside their own bar', async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Storage' }));
+    expect(await screen.findByText('512 MB of 1 GB used')).toBeTruthy();
+    expect(await screen.findByLabelText('Limit per person (MB)')).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/admin\/storage$/.test(String(url))),
+    ).toBe(true);
   });
 
   it('clicking Default AI model makes it the active tab', () => {
@@ -162,6 +264,43 @@ describe('AdminShell — initialTab (TASK-627)', () => {
     );
     expect(active('AI model keys')).toBe(true);
     expect(active('Skills')).toBe(false);
+  });
+
+  it('opens on Usage and limits when asked, for an admin', async () => {
+    render(
+      <UserProvider value={fakeUser}>
+        <AdminShell isAdmin onClose={vi.fn()} initialTab="usage" />
+      </UserProvider>,
+    );
+    expect(active('Usage')).toBe(true);
+    expect(await screen.findByText('No usage in the last 24 hours')).toBeTruthy();
+  });
+
+  it('never opens Usage for someone who is not an admin, and never asks the server for it', () => {
+    render(
+      <UserProvider value={{ ...fakeUser, role: 'user' }}>
+        <AdminShell isAdmin={false} onClose={vi.fn()} initialTab="usage" />
+      </UserProvider>,
+    );
+    expect(active('Skills')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Usage' })).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/admin\/usage/.test(String(url))),
+    ).toBe(false);
+  });
+
+  it('opens on Storage when asked, for someone who is not an admin, without touching /admin/storage', async () => {
+    render(
+      <UserProvider value={{ ...fakeUser, role: 'user' }}>
+        <AdminShell isAdmin={false} onClose={vi.fn()} initialTab="storage" />
+      </UserProvider>,
+    );
+    // Storage is a Settings tab, not an admin-only one: it is honoured.
+    expect(active('Storage')).toBe(true);
+    expect(await screen.findByText('512 MB of 1 GB used')).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/admin\/storage/.test(String(url))),
+    ).toBe(false);
   });
 
   it('ignores an admin-only tab for someone who is not an admin', () => {

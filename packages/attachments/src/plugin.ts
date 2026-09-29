@@ -22,6 +22,29 @@ import {
 
 const PLUGIN_NAME = '@ax/attachments';
 
+// `conversations:purged` (fired by @ax/conversations after it commits a hard
+// delete) carries at most 500 ids per fire. Allow twice that before treating the
+// payload as malformed, so a future bump on the producer side does not silently
+// turn every purge into a warning.
+const MAX_PURGED_IDS = 1000;
+
+/**
+ * Validate a `conversations:purged` payload. It arrives over the hook bus from
+ * another plugin, so its shape is untrusted: anything other than
+ * `{ conversationIds: string[] }` (non-empty strings, at most MAX_PURGED_IDS)
+ * is rejected WHOLE. We never delete "the valid part" of a payload we do not
+ * recognise. Returns undefined when malformed.
+ */
+function parsePurgedIds(payload: unknown): string[] | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const ids = (payload as { conversationIds?: unknown }).conversationIds;
+  if (!Array.isArray(ids) || ids.length > MAX_PURGED_IDS) return undefined;
+  for (const id of ids) {
+    if (typeof id !== 'string' || id.length === 0) return undefined;
+  }
+  return ids as string[];
+}
+
 // ---------------------------------------------------------------------------
 // @ax/attachments plugin (Phase 1 — host-side temp store + commit + download).
 //
@@ -43,7 +66,9 @@ const PLUGIN_NAME = '@ax/attachments';
 //     blob hooks. TASK-68 moved attachment bytes out of git and into the
 //     content-addressed blob store; the `calls:` array was updated, this
 //     paragraph was not.
-//   - subscribes: none. Still service-hook-only.
+//   - subscribes: `conversations:purged` (TASK-718). A hard-deleted
+//     conversation (agent delete) takes its files/artifacts metadata rows with
+//     it. The blob bytes are left in place (content-addressed + shared).
 // ---------------------------------------------------------------------------
 
 export function createAttachmentsPlugin(
@@ -75,7 +100,7 @@ export function createAttachmentsPlugin(
         'blob:get',
         'conversations:get',
       ],
-      subscribes: [],
+      subscribes: ['conversations:purged'],
     },
 
     async init({ bus }) {
@@ -135,7 +160,42 @@ export function createAttachmentsPlugin(
         { returns: ArtifactsPublishBlobOutputSchema },
       );
 
-      // 5) Start the janitor. The interval defaults to 5 minutes; tests
+      // 5) TASK-718: a purged conversation's files/artifacts rows go with it.
+      //    Rows only — see the comment in `store.purgeForConversations` for why
+      //    the blob bytes stay. K10: a subscriber must never propagate, so every
+      //    failure is logged and swallowed; a missed purge leaves dead rows,
+      //    not readable ones (attachments:download's owner gate calls
+      //    `conversations:get`, which answers not-found once the conversation
+      //    row is gone).
+      bus.subscribe<{ conversationIds: unknown }>(
+        'conversations:purged',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          const ids = parsePurgedIds(payload);
+          if (ids === undefined) {
+            ctx.logger.warn('attachments_purge_ignored_malformed_payload', {
+              max: MAX_PURGED_IDS,
+            });
+            return undefined;
+          }
+          if (ids.length === 0) return undefined;
+          try {
+            const counts = await store.purgeForConversations(ids);
+            ctx.logger.info('attachments_purged_for_conversations', {
+              conversations: ids.length,
+              ...counts,
+            });
+          } catch (err) {
+            ctx.logger.error('attachments_purge_for_purged_conversations_failed', {
+              count: ids.length,
+              err,
+            });
+          }
+          return undefined;
+        },
+      );
+
+      // 6) Start the janitor. The interval defaults to 5 minutes; tests
       //    can override via `janitorIntervalSeconds`.
       janitor = startJanitor({
         store,

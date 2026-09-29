@@ -1974,6 +1974,9 @@ describe('chat-orchestrator', () => {
       ref: 'provider:openrouter',
       kind: 'api-key',
       allowedHosts: ['openrouter.ai'],
+      // TASK-715 — and metered, to the model-call endpoint only. Spelled out
+      // (not read back from the table) so widening it is a visible test edit.
+      metered: { requests: ['POST /api/v1/chat/completions'] },
     });
     // The Anthropic slot must NOT ride along: an unused ANTHROPIC_API_KEY here
     // would mint a real Anthropic credential into a session that never asked
@@ -2022,6 +2025,17 @@ describe('chat-orchestrator', () => {
         ref: 'provider:anthropic',
         kind: 'api-key',
         allowedHosts: ['api.anthropic.com'],
+        // TASK-715 — metered, to the model-call endpoints only (no Batch,
+        // Managed Agents, Files, Skills). Spelled out so widening it is a
+        // visible test edit.
+        metered: {
+          requests: [
+            'POST /v1/messages',
+            'POST /v1/messages/count_tokens',
+            'GET /v1/models',
+            'GET /v1/models/*',
+          ],
+        },
       },
     });
   });

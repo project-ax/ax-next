@@ -41,6 +41,7 @@ import {
   waitForTranscriptUuid,
 } from './turn-end-uuid.js';
 import { createJsonlTranscriptSource } from './jsonl-transcript-source.js';
+import { createTurnUsageAccumulator } from './turn-usage.js';
 
 // ---------------------------------------------------------------------------
 // Runner entry binary (claude-sdk variant).
@@ -190,6 +191,12 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
       // each `result` boundary; the gate skips the wait when the turn produced no
       // assistant message. See waitForTranscriptUuid (TASK-11).
       let turnLastAssistantUuid: string | undefined;
+      // What the current turn has cost so far (TASK-692, per-user spend limits).
+      // Fed by every `assistant` message (sub-agents included), drained into
+      // `endTurn({ usage })` at the `result` boundary — draining is also the
+      // reset, so a turn never inherits the previous one's tokens. `model` is
+      // the agent's full `provider/model-id` ref, which is what the host prices.
+      const turnUsage = createTurnUsageAccumulator(agentConfig.model);
 
       // Inbox → SDK user-message generator. Closing via `return` on cancel
       // tells the SDK no more user messages are coming, which lets the outer
@@ -640,6 +647,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
         }
         if (msg.type === 'assistant') {
           const assistant: SDKAssistantMessage = msg;
+          // Meter it before anything else in this branch can throw or `continue`
+          // past it: a response the runner paid for must be counted.
+          turnUsage.observeAssistant(assistant);
           // Record this assistant message's uuid as the turn's latest — the
           // per-turn commit waits for the LAST one's jsonl line before staging
           // (the SDK flushes the final assistant line after `result`). On a
@@ -889,6 +899,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           await ctx.endTurn({
             contentBlocks,
             toolResultBlocks,
+            // `null` (nothing observed this turn) makes the host charge its flat
+            // assumed cost. Drained HERE, at the boundary, so it also resets.
+            usage: turnUsage.drain(),
             ...(lastAssistantUuid !== undefined ? { lastAssistantUuid } : {}),
             beforeCommit: async () => {
               // Wait for the SDK's delayed FINAL-assistant-jsonl write to land so

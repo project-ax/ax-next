@@ -1051,6 +1051,21 @@ version: 1
     ).rejects.toThrow();
   });
 
+  it('TASK-690: maps a refused bundle write (storage limit) to a 413 carrying the reason, not a 500', () => {
+    // `blob:put` throws PluginError code 'rejected' when a `blob:pre-put`
+    // subscriber (the per-person storage limit) says no. It propagates up
+    // through skills:upsert; an unmapped code would surface as an opaque 500.
+    const reason = "You've used all of your storage (1 GB of 1 GB), so that file wasn't saved.";
+    const { res, statusOf, bodyOf } = mkRes();
+    const handled = writeServiceError(
+      res,
+      new PluginError({ code: 'rejected', plugin: '@ax/blob-store-fs', message: reason }),
+    );
+    expect(handled).toBe(true);
+    expect(statusOf()).toBe(413);
+    expect(bodyOf()).toEqual({ error: reason, code: 'storage-full' });
+  });
+
   it('maps catalog admit error codes to HTTP statuses', () => {
     const cases: Array<[string, number]> = [
       ['request-not-found', 404],

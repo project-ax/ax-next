@@ -205,6 +205,16 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Retired Strata index cleanup (TASK-608): same reason — it `calls`
   // database:get-instance. Real boot in prod-bootstrap.test.ts.
   '@ax/preset-k8s/retire-strata-index',
+  // Per-user spend + rate limits (TASK-692): postgres-backed (calls
+  // database:get-instance) and hard-calls http:register-route +
+  // auth:require-user, all dropped above. Not on the multi-tenant ACL canary's
+  // path; static wiring is pinned in preset.test.ts and the real loop in
+  // usage-limits-acceptance.test.ts.
+  '@ax/usage-limits',
+  // Per-owner storage limit (TASK-690): same reason (postgres-backed, hard-calls
+  // the dropped http/auth plugins). Static wiring in preset.test.ts, real gates
+  // in disk-quota-acceptance.test.ts.
+  '@ax/disk-quota',
 ]);
 
 // Stub producer for the dispatcher's REQUIRED dep this canary drops.

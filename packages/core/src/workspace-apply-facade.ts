@@ -33,7 +33,8 @@ import type {
 //
 //   1. fires `workspace:pre-apply` with `filterToPolicy(input.changes)`
 //      (subscribers see only the policy-visible `.ax/**` + `.claude/**`
-//      subset). A veto throws `PluginError{ code: 'rejected' }`.
+//      subset) plus `sizeBytes`, the bytes the FULL set adds. A veto throws
+//      `PluginError{ code: 'rejected' }`.
 //   2. calls `workspace:apply-internal` with the FULL change set (pre-apply
 //      is veto-only — transformed payloads are ignored, exactly like the
 //      commit-notify path).
@@ -51,10 +52,31 @@ import type {
 // ---------------------------------------------------------------------------
 
 /** Veto-only payload for `workspace:pre-apply`. Mirrors commit-notify. */
-interface WorkspacePreApplyPayload {
+export interface WorkspacePreApplyPayload {
   changes: FileChange[];
   parent: WorkspaceVersion | null;
   reason?: string;
+  /**
+   * Roughly how many bytes this write adds to the workspace. Lets a
+   * subscriber that meters storage refuse a write before it lands without
+   * reading `changes` (which carries only the policy-visible subset).
+   *
+   * On this in-process path it is the sum of `content.byteLength` over the
+   * `put` entries of the FULL change set — deletes add nothing. It is a size
+   * hint, not an exact on-disk cost: the runner commit path reports the
+   * decoded bundle length instead. Optional so existing payload builders (and
+   * subscribers that ignore it) keep working.
+   */
+  sizeBytes?: number;
+}
+
+/** Bytes the `put` entries of `changes` add (deletes add none). */
+function putBytes(changes: FileChange[]): number {
+  let total = 0;
+  for (const c of changes) {
+    if (c.kind === 'put') total += c.content.byteLength;
+  }
+  return total;
 }
 
 /**
@@ -76,9 +98,12 @@ export function registerWorkspaceApplyFacade(
     async (ctx, input) => {
       // 1. pre-apply (veto-only). Subscribers see only policy-visible paths;
       //    a transformed payload is ignored — we apply the FULL set below.
+      //    `sizeBytes` counts the FULL set, not the filtered subset: a size
+      //    gate must see every byte the write lands, policy-visible or not.
       const preApplyPayload: WorkspacePreApplyPayload = {
         changes: filterToPolicy(input.changes),
         parent: input.parent,
+        sizeBytes: putBytes(input.changes),
       };
       if (input.reason !== undefined) preApplyPayload.reason = input.reason;
 
