@@ -48,6 +48,32 @@ describe('PROVIDER_ENDPOINTS', () => {
     expect(ep.description.length).toBeGreaterThan(0);
   });
 
+  it.each(entries)(
+    '%s: inferenceRequests are "METHOD /path" entries under the baseUrl path',
+    (_key, ep) => {
+      expect(ep.inferenceRequests.length).toBeGreaterThan(0);
+      const base = new URL(ep.baseUrl).pathname.replace(/\/$/, '');
+      for (const r of ep.inferenceRequests) {
+        expect(r).toMatch(/^(GET|POST) \/[A-Za-z0-9._\-/*]*$/);
+        // A trailing `/*` is the only wildcard (one extra path segment).
+        expect(r.replace(/\/\*$/, '')).not.toContain('*');
+        expect(r.split(' ')[1]!.startsWith(`${base}/`)).toBe(true);
+      }
+    },
+  );
+
+  // The operator's key is spliced ONLY into these requests (TASK-715). The rest
+  // of a provider's API (Batch, Managed Agents, Files, Skills, ...) is billable
+  // or data-bearing, so it must never come back into this list by accident.
+  it.each(entries)(
+    '%s: inferenceRequests do not reach the batch / agents / files / skills surfaces',
+    (_key, ep) => {
+      for (const r of ep.inferenceRequests) {
+        expect(r).not.toMatch(/batch|agents|sessions|environments|files|skills|vaults|memory|organizations|admin/i);
+      }
+    },
+  );
+
   it('anthropic description matches the orchestrator KNOWN_PROVIDERS wording', () => {
     expect(PROVIDER_ENDPOINTS.anthropic.description).toBe(
       'API key from console.anthropic.com.',
