@@ -181,7 +181,10 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
 
   useEffect(() => {
     let cancelled = false;
-    listConnectors()
+    // Always the owner-scoped `/settings/connectors` bundle: this editor serves
+    // admins AND regular users, and `/admin/connectors` 403s for non-admins. The
+    // list is owner-scoped either way, so both bundles return the same rows.
+    listConnectors('/settings/connectors')
       .then((cs) => {
         if (!cancelled) setConnectorOptions(cs.map((c) => c.id));
       })

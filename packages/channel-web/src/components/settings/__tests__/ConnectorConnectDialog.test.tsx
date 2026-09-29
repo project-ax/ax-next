@@ -418,6 +418,45 @@ describe('ConnectorConnectDialog', () => {
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
+  // TASK-698 — `/admin/connectors*` is admin-only server-side. A non-admin must
+  // load the connector through the owner-scoped `/settings/connectors` bundle or
+  // the dialog would 403 on open.
+  it('non-admin loads the connector via the /settings/connectors route bundle', async () => {
+    const getConnector = vi
+      .spyOn(connectorsLib, 'getConnector')
+      .mockResolvedValue(PERSONAL);
+    render(
+      <ConnectorConnectDialog
+        connectorId="my-notion"
+        connectorName="My Notion"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    await waitFor(() => expect(getConnector).toHaveBeenCalled());
+    expect(getConnector).toHaveBeenCalledWith('my-notion', '/settings/connectors');
+  });
+
+  it('admin loads the connector via the /admin/connectors route bundle', async () => {
+    const getConnector = vi
+      .spyOn(connectorsLib, 'getConnector')
+      .mockResolvedValue(PERSONAL);
+    render(
+      <ConnectorConnectDialog
+        connectorId="my-notion"
+        connectorName="My Notion"
+        isAdmin
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    await waitFor(() => expect(getConnector).toHaveBeenCalled());
+    expect(getConnector).toHaveBeenCalledWith('my-notion', '/admin/connectors');
+  });
+
   it('surfaces a load error', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockRejectedValue(new Error('get boom'));
     render(
