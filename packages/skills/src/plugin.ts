@@ -19,6 +19,7 @@ import { createCatalogRequestsStore } from './catalog-requests-store.js';
 import { createSkillsQuarantineStore } from './quarantine-store.js';
 import { createApprovedCapsStore, type ApprovedCapSubject } from './approved-caps-store.js';
 import { createAuthoredSkillsStore } from './authored-store.js';
+import { createAgentPurgeStore } from './agent-purge-store.js';
 import { classifyProposal } from './propose-gate.js';
 import { validateAttachmentBindings } from './attachment-validation.js';
 import { mergeUserWins, compareById } from './_merge.js';
@@ -271,7 +272,10 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
             'the migration cannot pre-check for an existing connector and falls back to creating one (still owner+id scoped, never cross-tenant)',
         },
       ],
-      subscribes: [],
+      // TASK-718 — `@ax/agents` fires `agents:deleted` after the agent row is
+      // gone. The four agent-keyed tables have no FK to it, so this plugin
+      // deletes its own rows keyed on the agent.
+      subscribes: ['agents:deleted'],
     },
 
     async init({ bus }) {
@@ -1341,6 +1345,37 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         }
         throw err;
       }
+
+      // TASK-718 — a deleted agent's skills rows must go with it. Fired AFTER
+      // the agent row is gone; payload is `{ agentId, ownerId, ownerType }` and
+      // only `agentId` is needed (a team agent has rows for several owners, so
+      // the purge keys on the agent alone). K10: a subscriber must never
+      // propagate — log and swallow. The purge is one transaction, so a failure
+      // leaves every row in place and a re-delivered event retries cleanly.
+      const purgeStore = createAgentPurgeStore(db);
+      bus.subscribe<{ agentId?: unknown } | null>(
+        'agents:deleted',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          const agentId = payload?.agentId;
+          if (typeof agentId !== 'string' || agentId.length === 0) {
+            ctx.logger.warn('skills_purge_invalid_agents_deleted_payload', {
+              agentIdType: typeof agentId,
+            });
+            return undefined;
+          }
+          try {
+            const removed = await purgeStore.deleteAllForAgent(agentId);
+            ctx.logger.info('skills_purged_for_deleted_agent', { agentId, ...removed });
+          } catch (err) {
+            ctx.logger.error('skills_purge_for_deleted_agent_failed', {
+              agentId,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return undefined;
+        },
+      );
     },
 
     async shutdown() {

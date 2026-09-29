@@ -188,7 +188,10 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
             'workspace-keyed (company) connector credentials are never authorized for reading, because the connector owner cannot be proven to be an admin; personal keys are unaffected (fail closed)',
         },
       ],
-      subscribes: [],
+      // TASK-718 — `@ax/agents` fires `agents:deleted` after the agent row is
+      // gone. `connectors_v1_authored` has no FK to it, so this plugin deletes
+      // its own drafts keyed on the agent.
+      subscribes: ['agents:deleted'],
     },
 
     async init({ bus }) {
@@ -318,6 +321,36 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         const userUnregisters = await registerUserConnectorRoutes(bus, initCtx);
         unregisterRoutes.push(...userUnregisters);
       }
+
+      // TASK-718 — a deleted agent's authored connector drafts must go with it.
+      // Fired AFTER the agent row is gone; payload is `{ agentId, ownerId,
+      // ownerType }` and only `agentId` is needed (a team agent has drafts for
+      // several owners, so the purge keys on the agent alone). K10: a subscriber
+      // must never propagate — log and swallow. A failure leaves the drafts in
+      // place and a re-delivered event retries cleanly.
+      bus.subscribe<{ agentId?: unknown } | null>(
+        'agents:deleted',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          const agentId = payload?.agentId;
+          if (typeof agentId !== 'string' || agentId.length === 0) {
+            ctx.logger.warn('connectors_purge_invalid_agents_deleted_payload', {
+              agentIdType: typeof agentId,
+            });
+            return undefined;
+          }
+          try {
+            const { removed } = await localAuthored.deleteAllForAgent(agentId);
+            ctx.logger.info('connectors_purged_for_deleted_agent', { agentId, removed });
+          } catch (err) {
+            ctx.logger.error('connectors_purge_for_deleted_agent_failed', {
+              agentId,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return undefined;
+        },
+      );
     },
 
     async shutdown() {
