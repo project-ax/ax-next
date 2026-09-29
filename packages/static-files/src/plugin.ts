@@ -41,9 +41,10 @@ export interface StaticFilesConfig {
   /** Absolute path to the directory to serve. Resolved at init. */
   dir: string;
   /**
-   * URL pattern, defaults to `'/*'` (serve everything not claimed by an
-   * earlier exact-match or :param route). Use `/static/*` if you only
-   * want to serve under a prefix.
+   * URL pattern, defaults to `'/*'` (serve everything no MORE SPECIFIC route
+   * claims: exact and :param routes first, then the longest-prefix splat, no
+   * matter which plugin registered first). Use `/static/*` if you only want to
+   * serve under a prefix.
    */
   mountPath?: string;
   /**
@@ -53,6 +54,18 @@ export interface StaticFilesConfig {
    *   - string: serve `<dir>/<that file>`
    */
   spaFallback?: boolean | string;
+  /**
+   * Path prefixes that belong to an API, not to the SPA. A GET under one of
+   * these that no real route claimed gets a JSON 404 — never `index.html` (and
+   * never a file off disk). Without this a missing or misspelled API route
+   * answers 200 with HTML, and the browser reports a JSON `SyntaxError` on
+   * `<!DOCTYPE` instead of "not found" (TASK-717 hid behind exactly that).
+   *
+   * A prefix matches on a segment boundary: `/api` covers `/api`, `/api/` and
+   * `/api/x`, not `/apiary`. Each entry must start with `/` and name at least
+   * one segment. Defaults to `['/api']`; passing a list REPLACES the default.
+   */
+  apiPathPrefixes?: readonly string[];
 }
 
 interface RegisterRouteResult {
@@ -62,6 +75,8 @@ interface RegisterRouteResult {
 // Structural minimum we need from @ax/http-server's adapter. I2 forbids
 // importing from @ax/http-server, so we duck-type the surface here.
 interface HttpRequestLike {
+  /** The full request path, as `@ax/http-server` matched it (query stripped). */
+  readonly path: string;
   readonly headers: Record<string, string>;
   readonly params: Record<string, string>;
 }
@@ -85,8 +100,43 @@ interface RegisterRouteInput {
   handler: HttpRouteHandlerLike;
 }
 
+const DEFAULT_API_PATH_PREFIXES: readonly string[] = ['/api'];
+
+/**
+ * Trim trailing slashes and refuse anything that would swallow the whole site
+ * (`/`, `//`) or is not an absolute path (`api`, ``). Returns bare prefixes
+ * like `/api`.
+ */
+function normalizeApiPrefixes(prefixes: readonly string[]): string[] {
+  return prefixes.map((raw) => {
+    // A scan, not `/\/+$/`: CodeQL flags that regex as polynomial on a long
+    // run of slashes, and a loop is as short.
+    let end = raw.length;
+    while (end > 0 && raw.charCodeAt(end - 1) === 47 /* '/' */) end -= 1;
+    const trimmed = raw.slice(0, end);
+    if (!raw.startsWith('/') || trimmed === '') {
+      throw new PluginError({
+        code: 'invalid-config',
+        plugin: PLUGIN_NAME,
+        message: `static-files apiPathPrefixes entry must start with '/' and name a segment, got ${JSON.stringify(raw)}`,
+      });
+    }
+    return trimmed;
+  });
+}
+
 export function createStaticFilesPlugin(config: StaticFilesConfig): Plugin {
   const root = resolve(config.dir);
+  const apiPrefixes = normalizeApiPrefixes(
+    config.apiPathPrefixes ?? DEFAULT_API_PATH_PREFIXES,
+  );
+  // An error-SHAPE choice (JSON 404 instead of the SPA shell), not a security
+  // boundary: nothing may gate access on it. A raw-path spelling it misses
+  // (`/%61pi/x`, `//api`) just gets the shell, and no API handler matches those
+  // spellings either. A GET on a POST-only /api route also lands here (404, not
+  // 405), because this GET catchall matches it.
+  const isApiPath = (path: string): boolean =>
+    apiPrefixes.some((p) => path === p || path.startsWith(`${p}/`));
   const mountPath = config.mountPath ?? '/*';
   const fallbackFile =
     config.spaFallback === true
@@ -135,6 +185,13 @@ export function createStaticFilesPlugin(config: StaticFilesConfig): Plugin {
       });
 
       const handler: HttpRouteHandlerLike = async (req, res) => {
+        // An API path that reached this catchall is one nobody registered.
+        // Say so in JSON; the SPA shell would only make the caller's
+        // `res.json()` explode somewhere far from the cause.
+        if (isApiPath(req.path)) {
+          res.status(404).json({ error: 'not-found' });
+          return;
+        }
         const splat = req.params['*'] ?? '';
         const ifNoneMatch = req.headers['if-none-match'];
 

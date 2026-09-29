@@ -182,6 +182,13 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
         ? { onObserverDetached: config.onObserverDetached }
         : {}),
     }),
+    // Re-appended here (it is filtered out of the k8s base above), so it
+    // registers AFTER the base's trailing @ax/static-files `/*` catchall. That
+    // is fine because the http-server router picks the most specific splat, not
+    // the first one. It used to pick the first, and every path-taking Files-tab
+    // route answered with the SPA's index.html (TASK-717). The canary's
+    // TASK-717 block pins this ordering on the real assembly, so a change here
+    // has to keep passing it rather than reason about route order by eye.
     createChannelWebServerPlugin({ chatTimeoutMs }),
   ];
 }
