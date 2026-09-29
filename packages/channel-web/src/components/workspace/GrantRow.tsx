@@ -38,6 +38,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import {
   RESOLUTION_FOCUS_RING,
   returnFocusToConsentRegion,
@@ -622,6 +623,20 @@ export function GrantRow({
           </div>
         );
       })}
+
+      {/*
+        (TASK-700) WHAT THE KEY LETS THE AGENT DO — the launch disclosure for
+        TASK-328, right under the field that takes it and above the button that
+        sends it. Keyed on the KEY, not the kind: a grant with key slots (typed
+        or already saved — Connect attaches either) is handing access over, and
+        a grant with none (reach only) is not, so a notice there would be about
+        something that is not happening. One notice however many slots there are.
+        Words in `lib/connector-access-copy.ts`; `KEY_SAFETY` above says where the
+        key goes, this says what the agent can do with it.
+      */}
+      {request.slots.length > 0 && (
+        <ConnectorAccessNotice kind="key" className="mt-3 max-w-[660px]" />
+      )}
 
       {/*
         Same shape of bug as `description` above, one field over: `npm` and

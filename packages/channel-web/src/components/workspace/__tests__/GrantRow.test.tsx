@@ -22,6 +22,7 @@ import {
   KEY_SAFETY,
   SLOT_HINT,
 } from '@/lib/grant-copy';
+import { connectorAccessCopy } from '@/lib/connector-access-copy';
 import type { PermissionRequest } from '@/server/types';
 
 function row(
@@ -693,6 +694,93 @@ describe('a half-typed value surviving the row leaving and re-entering the threa
 
     expect(getGrantDraft(grantKey(skillReq))).toEqual({});
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+  });
+});
+
+/*
+  TASK-700 — the launch disclosure (TASK-328) on the surface the assistant itself
+  raises: it proposed a connector or a skill and asks for the key to make it work.
+  This is the most likely place for a first-time person to hand an assistant a key,
+  in the middle of a conversation, so it says — next to the key, before Connect —
+  what that key lets the assistant do.
+
+  It follows the KEY, not the kind: a grant with key slots (typed OR already saved)
+  is handing access over; a grant with none (reach only, e.g. a connector that
+  needs no key) is not, and a notice there would be about something that is not
+  happening.
+*/
+describe('access disclosure (TASK-700)', () => {
+  const NOTICE = 'connector-access-notice';
+
+  const connectorWithKey: PermissionRequest = {
+    ...connectorReq,
+    slots: [{ slot: 'api_key', kind: 'api-key' }],
+  };
+
+  test.each([
+    ['skill', skillReq],
+    ['connector', connectorWithKey],
+  ] as const)('a %s grant asking for a key shows the key notice, between the key and Connect', (_k, req) => {
+    row(req);
+    const notice = screen.getByTestId(NOTICE);
+    expect(notice).toHaveTextContent(connectorAccessCopy('key').headline);
+    expect(notice).toHaveTextContent(connectorAccessCopy('key').details);
+    const keySafety = screen.getByText(KEY_SAFETY);
+    const reassurance = screen.getByText(GRANT_REASSURANCE);
+    const connect = screen.getByRole('button', { name: /^connect$/i });
+    const follows = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    // Reads top to bottom: where the key goes -> what it lets the agent do ->
+    // the reassurance about the button -> the button.
+    expect(follows(keySafety, notice)).toBe(true);
+    expect(follows(notice, reassurance)).toBe(true);
+    expect(follows(notice, connect)).toBe(true);
+  });
+
+  test('a grant whose key is already saved still shows it: Connect attaches that key', () => {
+    row({ ...skillReq, slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true }] });
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  test('one notice however many keys the grant asks for', () => {
+    row({
+      ...connectorWithKey,
+      slots: [
+        { slot: 'client_id', kind: 'api-key' },
+        { slot: 'client_secret', kind: 'api-key' },
+      ],
+    });
+    expect(screen.getAllByLabelText(/api key|client/i).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  test('a connector that needs no key hands over no key, so shows no notice', () => {
+    row(connectorReq);
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
+  });
+
+  test('a host grant is about a site, not a key: no notice', () => {
+    row(hostReq);
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
+  });
+
+  test('once the grant has landed and the row only reports the stopped agent, the notice is gone', async () => {
+    okFetch();
+    // The agent did not start again -> the row stays, wearing one sentence.
+    row({ ...skillReq, slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true }] }, 'cnv-1', vi.fn(async () => false));
+    expect(screen.getByTestId(NOTICE)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await screen.findByTestId('grant-not-resumed');
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
+  });
+
+  test('it is a note, so a failed connect is still the only alert on the row', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 500 }));
+    row({ ...skillReq, slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: true }] });
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await screen.findByRole('alert');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByTestId(NOTICE)).toBeInTheDocument();
   });
 });
 

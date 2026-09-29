@@ -5,6 +5,7 @@ import * as connectorsLib from '@/lib/connectors';
 import * as credLib from '@/lib/credentials';
 import * as connectorsOauth from '@/lib/connectors-oauth';
 import type { Connector } from '@/lib/connectors';
+import { connectorAccessCopy } from '@/lib/connector-access-copy';
 
 function fullConnector(overrides: Partial<Connector>): Connector {
   return {
@@ -511,5 +512,113 @@ describe('ConnectorConnectDialog', () => {
     expect(
       screen.queryByRole('button', { name: /Connect with/i }),
     ).toBeNull();
+  });
+});
+
+// TASK-700 — the launch disclosure (TASK-328): wherever this dialog takes a key or
+// a sign-in, it says what that hands the assistant. And ONLY there: a notice on a
+// dialog where nothing is being attached would teach people to skim it.
+describe('ConnectorConnectDialog — access disclosure (TASK-700)', () => {
+  beforeEach(() => {
+    vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([]);
+    vi.spyOn(credLib.adminCredentials, 'list').mockResolvedValue([]);
+    vi.spyOn(connectorsOauth, 'getOAuthStatus').mockResolvedValue('not-connected');
+    vi.spyOn(connectorsOauth, 'beginOAuth').mockResolvedValue({
+      authorizationUrl: 'https://example.com/auth',
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const NOTICE = 'connector-access-notice';
+
+  function renderDialog(
+    connectorId: string,
+    connectorName: string,
+    extra: { isAdmin?: boolean; mode?: 'connect' | 'manage' } = {},
+  ) {
+    return render(
+      <ConnectorConnectDialog
+        connectorId={connectorId}
+        connectorName={connectorName}
+        isAdmin={extra.isAdmin ?? false}
+        {...(extra.mode !== undefined ? { mode: extra.mode } : {})}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+  }
+
+  it('an API-key connector shows the key notice, above the field where the key goes', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
+    renderDialog('my-notion', 'My Notion');
+    const field = await screen.findByLabelText(/API key/i);
+    const notice = screen.getByTestId(NOTICE);
+    expect(notice).toHaveTextContent(connectorAccessCopy('key').headline);
+    expect(notice).toHaveTextContent(connectorAccessCopy('key').details);
+    // The decision is made at the field, so the disclosure comes first.
+    expect(
+      notice.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('shows on the Update-your-key path too (the key is being replaced, the access is the same)', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
+    renderDialog('my-notion', 'My Notion', { mode: 'manage' });
+    await screen.findByLabelText(/API key/i);
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  it('a multi-key connector shows ONE notice, not one per key', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(MULTI_SLOT);
+    renderDialog('oauthsvc', 'OAuth Service');
+    expect(await screen.findAllByLabelText(/API key/i)).toHaveLength(2);
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  it('a shared (workspace) key: no notice behind the consent gate, notice with the key form after it', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(WORKSPACE);
+    renderDialog('company-sf', 'Salesforce', { isAdmin: true });
+    // The consent gate stands alone: the key form is not reachable yet, and the
+    // disclosure belongs to the decision that is not being made yet.
+    await screen.findByText(/Sharing this key lets their assistant act as you on Salesforce/i);
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /I understand/i }));
+    await screen.findByLabelText(/API key/i);
+    expect(screen.getByTestId(NOTICE)).toHaveTextContent(connectorAccessCopy('key').headline);
+  });
+
+  it('a non-admin on a shared connector enters no key, so sees no notice', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(WORKSPACE);
+    renderDialog('company-sf', 'Salesforce');
+    await screen.findByText(/an admin/i);
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
+  });
+
+  it('a connector that needs no key shows no notice', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(NO_KEY);
+    renderDialog('plain-mcp', 'Plain MCP');
+    await screen.findByText(/needs no key/i);
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
+  });
+
+  it('a sign-in connector shows the sign-in notice once, next to the Connect button', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(OAUTH_PERSONAL);
+    renderDialog('my-github', 'GitHub');
+    const button = await screen.findByRole('button', { name: /Connect with GitHub/i });
+    const notices = screen.getAllByTestId(NOTICE);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toHaveTextContent(connectorAccessCopy('sign-in').headline);
+    expect(
+      notices[0]!.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('a failed load shows the error and no notice', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockRejectedValue(new Error('get boom'));
+    renderDialog('my-notion', 'My Notion');
+    await screen.findByText('get boom');
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import { ConnectorEditDialog } from '../ConnectorEditDialog';
 import * as connectorsLib from '@/lib/connectors';
 import * as credentialsLib from '@/lib/credentials';
 import type { ConnectorSummary, Connector, ConnectorOAuthSlot } from '@/lib/connectors';
+import { connectorAccessCopy } from '@/lib/connector-access-copy';
 
 const SUMMARY: ConnectorSummary = {
   id: 'gdrive',
@@ -705,5 +706,80 @@ describe('ConnectorEditDialog', () => {
     );
     // The raw secret must NOT appear anywhere in the connector body.
     expect(JSON.stringify(body)).not.toContain('super-secret-value');
+  });
+});
+
+// TASK-700 — the launch disclosure (TASK-328) on the authoring form. Defining a
+// connector that takes a key is where the access is set up, so the form says what
+// a key added for it will hand the assistant. It appears with the FIRST key row
+// (a connector that needs no key hands over nothing to disclose) and goes when the
+// last row does.
+describe('ConnectorEditDialog — access disclosure (TASK-700)', () => {
+  const NOTICE = 'connector-access-notice';
+
+  beforeEach(() => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(FULL);
+    vi.spyOn(connectorsLib, 'createConnector').mockResolvedValue(FULL);
+    vi.spyOn(connectorsLib, 'patchConnector').mockResolvedValue(FULL);
+    vi.spyOn(credentialsLib, 'setDestinationCredential').mockResolvedValue(undefined);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    ['admin', true],
+    ['user', false],
+  ])('%s variant, editing a connector that takes a key: shows the author notice above the key rows', async (_l, isAdmin) => {
+    render(
+      <ConnectorEditDialog target={SUMMARY} open isAdmin={isAdmin} onOpenChange={() => {}} onSaved={() => {}} />,
+    );
+    // FULL declares one key, loaded asynchronously into the form.
+    const keyRow = await screen.findByText('Key 1');
+    const notice = screen.getByTestId(NOTICE);
+    expect(notice).toHaveTextContent(connectorAccessCopy('author').headline);
+    expect(notice).toHaveTextContent(connectorAccessCopy('author').details);
+    expect(
+      notice.compareDocumentPosition(keyRow) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  it('a new connector with no keys yet shows no notice; adding a key brings it, removing the key takes it away', async () => {
+    render(
+      <ConnectorEditDialog target="new" open isAdmin={false} onOpenChange={() => {}} onSaved={() => {}} />,
+    );
+    await screen.findByLabelText(/service name/i);
+    expect(screen.getByText(/No keys needed/i)).toBeInTheDocument();
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^add (key|secret)$/i }));
+    expect(await screen.findByTestId(NOTICE)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /remove key 1/i }));
+    await waitFor(() => expect(screen.queryByTestId(NOTICE)).toBeNull());
+  });
+
+  it('two key rows still get ONE notice', async () => {
+    render(
+      <ConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+    );
+    await screen.findByLabelText(/service name/i);
+    const add = screen.getByRole('button', { name: /^add (key|secret)$/i });
+    fireEvent.click(add);
+    fireEvent.click(add);
+    await screen.findByText('Key 2');
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  it('a notice is not a save error: the destructive alert stays the only role=alert', async () => {
+    vi.mocked(connectorsLib.createConnector).mockRejectedValue(new Error('nope'));
+    render(
+      <ConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+    );
+    fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Stripe' } });
+    fireEvent.click(screen.getByRole('button', { name: /^add (key|secret)$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await screen.findByText(/couldn't save this connector/i);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByTestId(NOTICE)).toBeInTheDocument();
   });
 });

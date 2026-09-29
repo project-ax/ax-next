@@ -86,6 +86,7 @@ import {
   CardTitle,
   CardDescription,
 } from '@/components/ui/card';
+import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Select,
@@ -930,6 +931,11 @@ export function ConnectorEditDialog({
                   {form.mechanism === 'direct-api' ? 'Add key' : 'Add secret'}
                 </Button>
               </div>
+              {/* (TASK-700) Once a key exists for this connector the assistant acts
+                  with it, so the form that DEFINES that says so — one notice for
+                  the section, from the first key row, gone with the last. No key
+                  rows → nothing to disclose (the line below says so). */}
+              {form.credentialSlots.length > 0 && <ConnectorAccessNotice kind="author" />}
               {form.credentialSlots.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
                   No keys needed — this connector reaches its service without one.

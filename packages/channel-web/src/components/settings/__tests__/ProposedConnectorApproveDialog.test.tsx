@@ -17,9 +17,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ProposedConnectorApproveDialog } from '../ProposedConnectorApproveDialog';
 import type { PendingAuthoredConnector } from '@/lib/connectors';
+import { connectorAccessCopy } from '@/lib/connector-access-copy';
 
+// `hoisted` so a test can make the vault report a key already saved (TASK-700).
+const vault = vi.hoisted(() => ({
+  list: vi.fn(async (): Promise<Array<{ ref: string; scope: string }>> => []),
+}));
 vi.mock('@/lib/credentials', () => ({
-  myCredentials: { list: async () => [] },
+  myCredentials: { list: vault.list },
   setDestinationCredential: vi.fn(),
 }));
 
@@ -63,5 +68,48 @@ describe('ProposedConnectorApproveDialog — parity with the in-chat card', () =
       await screen.findByText(/download some extra software/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/registry\.npmjs\.org/)).toBeNull();
+  });
+});
+
+// TASK-700 — the launch disclosure (TASK-328). This is the Settings twin of the
+// in-chat grant row, so it says the SAME thing in the same place (after the key,
+// before Connect) — `GrantRow.test.tsx` pins the other half of that parity.
+describe('ProposedConnectorApproveDialog — access disclosure (TASK-700)', () => {
+  const NOTICE = 'connector-access-notice';
+  const renderDraft = (d: PendingAuthoredConnector) =>
+    render(
+      <ProposedConnectorApproveDialog draft={d} open onOpenChange={vi.fn()} onApproved={vi.fn()} />,
+    );
+
+  it('shows the key notice between the key field and the Connect button', async () => {
+    vault.list.mockResolvedValueOnce([]);
+    renderDraft(draft);
+    const field = await screen.findByLabelText('Linear API key');
+    const notice = screen.getByTestId(NOTICE);
+    const connect = screen.getByRole('button', { name: /^connect$/i });
+    expect(notice).toHaveTextContent(connectorAccessCopy('key').headline);
+    expect(notice).toHaveTextContent(connectorAccessCopy('key').details);
+    const follows = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(field, notice)).toBe(true);
+    expect(follows(notice, connect)).toBe(true);
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  it('still shows it when the key is already saved: approving attaches that key', async () => {
+    vault.list.mockResolvedValueOnce([{ ref: 'account:linear', scope: 'user' }]);
+    renderDraft(draft);
+    await screen.findByText(/you already saved/i);
+    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
+  });
+
+  it('a proposal that needs no key hands over no key, so shows no notice', async () => {
+    const noKey = {
+      ...draft,
+      proposal: { ...draft.proposal, credentials: [], packages: { npm: [], pypi: [] } },
+    } as unknown as PendingAuthoredConnector;
+    renderDraft(noKey);
+    await screen.findByText(/it needs to reach:/i);
+    expect(screen.queryByTestId(NOTICE)).toBeNull();
   });
 });
