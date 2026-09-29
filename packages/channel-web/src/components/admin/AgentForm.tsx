@@ -52,6 +52,7 @@ type OAuthStatusOrError = OAuthStatus | typeof OAUTH_STATUS_ERROR;
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import { AuthoredSkillsSection } from './AuthoredSkillsSection';
 import { ConnectorOAuthConnect } from '../settings/ConnectorOAuthConnect';
+import { ConnectorAccessNotice } from '../credentials/ConnectorAccessNotice';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -889,6 +890,12 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
           {/* Connectors — attach the services this agent can reach. */}
           <div className="flex flex-col gap-2">
             <span className="text-sm font-medium leading-none">Connectors</span>
+            {/* (TASK-700) Attaching is the decision, so the disclosure sits above
+                the checkboxes — one notice for the list, and only when there is
+                something to attach. The team-agent OAuth connect widget below is
+                told not to add a second one (`showAccessNotice={false}`): same
+                decision, one notice. */}
+            {connectors.length > 0 && <ConnectorAccessNotice kind="attach" />}
             {connectors.length === 0 ? (
               <p className="text-xs text-muted-foreground">
                 No connectors yet. Create one under Connectors, then attach it
@@ -943,6 +950,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
                               serviceName={oauthEntry.serviceName}
                               agentId={editing.id}
                               requiresConsent
+                              showAccessNotice={false}
                             />
                           ) : (
                             /* Personal agent: read-only status hint. The connection

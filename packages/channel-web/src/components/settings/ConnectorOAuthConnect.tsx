@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import {
   beginOAuth,
   getOAuthStatus,
@@ -36,6 +37,13 @@ export interface ConnectorOAuthConnectProps {
    * The Connect button is not reachable until the user accepts.
    */
   requiresConsent?: boolean;
+  /**
+   * (TASK-700) Show the access disclosure — what signing in hands the assistant —
+   * above the Connect button. Defaults ON, so a new caller can never forget it;
+   * a host that already shows a wider notice for the same decision (the agent
+   * editor's connector list) turns it off rather than stack two.
+   */
+  showAccessNotice?: boolean;
   /** Called after a successful connect so the parent can refresh. */
   onConnected?: () => void;
 }
@@ -45,6 +53,7 @@ export function ConnectorOAuthConnect({
   agentId,
   serviceName,
   requiresConsent = false,
+  showAccessNotice = true,
   onConnected,
 }: ConnectorOAuthConnectProps) {
   // 'checking' while the status request is in flight; 'error' if the fetch threw.
@@ -235,6 +244,11 @@ export function ConnectorOAuthConnect({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
+
+      {/* (TASK-700) What signing in hands the assistant. Above the consent gate AND
+          the Connect button, so it is on screen in every state the decision can
+          be in — and one notice, not one per state. */}
+      {showAccessNotice && <ConnectorAccessNotice kind="sign-in" />}
 
       {/* Consent gate — blocks the Connect button until accepted */}
       {showConsentGate ? (
