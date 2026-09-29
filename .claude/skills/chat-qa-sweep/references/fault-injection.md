@@ -53,10 +53,10 @@ which one is busy, kill that one. If you kill an idle warm pod, the fault never 
 **Inject:**
 ```bash
 # 1. Note current runners.
-kubectl -n ax-next-runners get pods -l app.kubernetes.io/component=ax-next-runner
+kubectl --context kind-ax-next-dev -n ax-next-runners get pods -l app.kubernetes.io/component=ax-next-runner
 # 2. In the UI send: "count slowly from 1 to 50, one number per line, pausing between each."
 # 3. While it's streaming, delete the serving runner pod:
-kubectl -n ax-next-runners delete pod <serving-pod> --now
+kubectl --context kind-ax-next-dev -n ax-next-runners delete pod <serving-pod> --now
 ```
 
 **Expected UI:** the in-flight turn stops and an error surfaces (`AgentStatus` error /
@@ -89,7 +89,7 @@ a down host and a dead port-forward — the contaminated baseline this skill war
 
 **Inject** — start a turn, then bounce the host mid-stream:
 ```bash
-kubectl -n ax-next rollout restart deployment/ax-next-host
+kubectl --context kind-ax-next-dev -n ax-next rollout restart deployment/ax-next-host
 ```
 
 **Expected UI:** a connection-lost / network error surfaces (`Failed to fetch` in the
@@ -104,7 +104,7 @@ returns.
 
 **RESTORE:**
 ```bash
-kubectl -n ax-next rollout status deployment/ax-next-host --timeout=180s
+kubectl --context kind-ax-next-dev -n ax-next rollout status deployment/ax-next-host --timeout=180s
 ```
 The port-forward died with the old pod — **restart it via the background-run mechanism**
 (not a bare `&`), then `curl -fsS http://localhost:9090/health`. If `rollout status` times
@@ -134,7 +134,7 @@ to restore to.
 ```bash
 # Field/secret name may differ — verify against the chart if this comes back empty:
 #   kubectl -n ax-next get secret -o yaml | grep -i anthropic
-kubectl -n ax-next get secret ax-next-secrets \
+kubectl --context kind-ax-next-dev -n ax-next get secret ax-next-secrets \
   -o jsonpath='{.data.anthropic-api-key}' | base64 -d > /tmp/ax-orig-anthropic-key
 test -s /tmp/ax-orig-anthropic-key || { echo "ABORT: could not capture current key — do NOT inject"; exit 1; }
 ```
@@ -148,10 +148,10 @@ back. Default path marker: `echo helm > /tmp/ax-fault-c-path`.
 ### Step 2 — inject the bad key
 
 ```bash
-helm upgrade ax-next deploy/charts/ax-next --namespace ax-next --reuse-values \
+helm --kube-context kind-ax-next-dev upgrade ax-next deploy/charts/ax-next --namespace ax-next --reuse-values \
   --set anthropic.apiKey='sk-ant-DELIBERATELY-INVALID-000'
-kubectl -n ax-next rollout restart deployment/ax-next-host
-kubectl -n ax-next rollout status  deployment/ax-next-host --timeout=180s
+kubectl --context kind-ax-next-dev -n ax-next rollout restart deployment/ax-next-host
+kubectl --context kind-ax-next-dev -n ax-next rollout status  deployment/ax-next-host --timeout=180s
 # restart the port-forward (background-run mechanism), then verify the lever TOOK:
 curl -fsS http://localhost:9090/health
 ```
@@ -172,10 +172,10 @@ in the UI.
 ```bash
 ORIG=$(cat /tmp/ax-orig-anthropic-key)
 test -n "$ORIG" || { echo "REFUSING to restore an empty key — recover the real key manually"; exit 1; }
-helm upgrade ax-next deploy/charts/ax-next --namespace ax-next --reuse-values \
+helm --kube-context kind-ax-next-dev upgrade ax-next deploy/charts/ax-next --namespace ax-next --reuse-values \
   --set anthropic.apiKey="$ORIG"
-kubectl -n ax-next rollout restart deployment/ax-next-host
-kubectl -n ax-next rollout status  deployment/ax-next-host --timeout=180s
+kubectl --context kind-ax-next-dev -n ax-next rollout restart deployment/ax-next-host
+kubectl --context kind-ax-next-dev -n ax-next rollout status  deployment/ax-next-host --timeout=180s
 # restart port-forward, then prove recovery:
 curl -fsS http://localhost:9090/health
 ```
