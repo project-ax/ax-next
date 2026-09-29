@@ -874,6 +874,39 @@ describe('runRunner', () => {
       expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
     });
 
+    it('fires the handlers once per turn however many times Stop is pressed', async () => {
+      // A double click queues two entries. The second must not reach a loop
+      // that has already been told: for the SDK that is a second interrupt()
+      // landing after the turn it meant, on whatever turn started next.
+      const first = deferred();
+      const second = deferred();
+      gatedInbox([
+        async () => userMsg('go', 'req-1'),
+        async () => {
+          await first.promise;
+          return { type: 'interrupt', cursor: 2 };
+        },
+        async () => {
+          await second.promise;
+          return { type: 'interrupt', cursor: 3 };
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          const fired = vi.fn();
+          ctx.onInterrupt(fired); // registered BEFORE either press lands
+          first.resolve();
+          await flush();
+          second.resolve();
+          await flush();
+          expect(fired).toHaveBeenCalledTimes(1);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
     it('a late interrupt for a finished turn does not stop the NEXT turn', async () => {
       const late = deferred();
       gatedInbox([
