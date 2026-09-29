@@ -69,6 +69,18 @@ interface Outstanding {
 }
 
 /** A call that costs nothing however it ends: reads, and token counting. */
+/**
+ * Compressed bytes stand for about this many raw ones (English JSON gzips 3-5x);
+ * over-counting a body we could not read is the safe direction.
+ */
+const ENCODED_EXPANSION = 4;
+
+function partialOf(r: TapResponse, meta: ResponseMeta): { bytes: number; streamed: boolean } {
+  return r.encoded
+    ? { bytes: meta.bodyBytes * ENCODED_EXPANSION, streamed: false }
+    : { bytes: meta.bodyBytes, streamed: meta.streamed };
+}
+
 function isFree(o: Outstanding): boolean {
   return o.method === 'GET' || o.path.endsWith('/count_tokens');
 }
@@ -86,10 +98,19 @@ export class MeteredTunnel implements MeteredRequestPolicy {
   }
 
   onRequestHead(info: RequestHeadInfo): RequestVerdict {
+    // Never track a request after the tunnel has ended: it would take a slot that no
+    // `end()` is left to give back.
+    if (this.ended) {
+      return { kind: 'deny', status: 429, reason: 'busy', message: 'This connection has closed.' };
+    }
     const path = pathOf(info.target);
     const requestBytes = info.contentLength;
+    // A folded head cannot be forced to an unencoded response, so it never carries the
+    // key: an encoded answer to a keyed request would be unreadable.
     const spliceable =
-      info.version === 'HTTP/1.1' && requestAllowed(info.method, info.target, this.meter.requests);
+      info.version === 'HTTP/1.1' &&
+      !info.folded &&
+      requestAllowed(info.method, info.target, this.meter.requests);
     // A client that pipelines request after request without reading a response
     // must not grow this list without bound.
     if (this.outstanding.length >= MAX_OUTSTANDING) {
@@ -158,9 +179,12 @@ export class MeteredTunnel implements MeteredRequestPolicy {
         // with usage null: the meter charges an estimate, never zero.
         usage: r?.usage ?? null,
         requestBytes: o.requestBytes,
-        // The response ended early: what arrived is evidence of what was generated.
-        ...(r !== undefined && !r.complete && meta !== undefined
-          ? { partial: { bytes: meta.bodyBytes, streamed: meta.streamed } }
+        // A response that ended early, or that arrived whole but could not be read (encoded,
+        // or no counter in it), still tells how much was generated: by its size. Without
+        // this, the counters being the last thing in a response would make hanging up just
+        // before them, or a body the meter cannot read, cost almost nothing.
+        ...(r !== undefined && meta !== undefined && (!r.complete || r.usage === null)
+          ? { partial: partialOf(r, meta) }
           : {}),
       };
     }

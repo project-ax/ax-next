@@ -63,7 +63,15 @@ describe('parseRequestHead', () => {
       target: '/v1/messages?beta=true',
       version: 'HTTP/1.1',
       contentLength: 12,
+      folded: false,
     });
+  });
+
+  it('reports an obsolete folded header line, which a metered tunnel cannot normalise', () => {
+    const info = parseRequestHead(
+      head('POST /v1/messages HTTP/1.1', 'Accept-Encoding: gzip,', '  br', 'Host: h'),
+    );
+    expect(info?.folded).toBe(true);
   });
 
   it('reports a chunked body as null, not as a length', () => {

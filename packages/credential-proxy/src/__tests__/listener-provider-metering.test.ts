@@ -630,6 +630,26 @@ describe('the endpoint allowlist: the key is spliced into model calls and nothin
     expect(provider.received()).not.toContain(REAL);
   });
 
+  it('a request with an obsolete folded header is never spliced (it cannot be forced to an unencoded response)', async () => {
+    const provider = await startUpstream(PROVIDER);
+    const registry = new SharedCredentialRegistry();
+    const ph = registerSession(registry, 's1');
+    const m = fakeMeter();
+    const { port } = await start(registry, [session('s1', [PROVIDER], m.meter)]);
+    const inner = await openTunnel(port, PROVIDER, provider.port, tokenFor('s1'));
+    const got = collect(inner);
+    // The fold hides the client's Accept-Encoding from a rewrite that must not guess.
+    inner.write(
+      `POST /v1/messages HTTP/1.1\r\nHost: ${PROVIDER}\r\nx-api-key: ${ph}\r\n` +
+        `Accept-Encoding: gzip,\r\n br\r\nContent-Length: 2\r\n\r\n{}`,
+    );
+    await waitFor(() => got().includes('OK'), 'response');
+    expect(provider.received()).not.toContain(REAL);
+    expect(provider.requests[0]!.headers['x-api-key']).toBe(ph);
+    expect(m.admits()).toBe(0);
+    inner.destroy();
+  });
+
   it('an absolute-form request target is never spliced', async () => {
     const provider = await startUpstream(PROVIDER);
     const registry = new SharedCredentialRegistry();
@@ -775,6 +795,8 @@ describe('what a settled call is worth', () => {
       billable: true,
       usage: null,
       requestBytes: Buffer.byteLength(MODEL_BODY),
+      // …and floors the output at what arrived (see the two COMPLETE-but-unreadable tests below).
+      partial: { bytes: Buffer.byteLength(JSON.stringify({ id: 'x', content: [] })), streamed: false },
     });
     inner.destroy();
   });
@@ -786,6 +808,33 @@ describe('what a settled call is worth', () => {
     );
     await waitFor(() => m.settled.length === 1, 'settle');
     expect(m.settled[0]).toMatchObject({ billable: true, usage: null });
+    inner.destroy();
+  });
+
+  it('a COMPLETE response the meter could not read is still charged for the bytes that arrived, not a flat guess', async () => {
+    // Encoded despite the request for identity (or in a shape no counter matches): the response is
+    // complete, so `usage` is null and there is no early ending to trigger the floor. The body
+    // size is the only evidence of how much was generated, and it must be used.
+    const body = 'z'.repeat(300_000);
+    const { m, inner } = await one(
+      `HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: ${body.length}\r\n\r\n${body}`,
+    );
+    await waitFor(() => m.settled.length === 1, 'settle');
+    expect(m.settled[0]).toMatchObject({ billable: true, usage: null });
+    // Compressed bytes stand for roughly 4x as many raw ones.
+    expect(m.settled[0]!.partial).toEqual({ bytes: 1_200_000, streamed: false });
+    inner.destroy();
+  });
+
+  it('a complete plain response with no counters is floored by its size too (an unknown wire format is not free)', async () => {
+    const payload = { id: 'x', content: 'y'.repeat(9_000) };
+    const { m, inner } = await one(jsonResponse(200, payload));
+    await waitFor(() => m.settled.length === 1, 'settle');
+    expect(m.settled[0]).toMatchObject({ billable: true, usage: null });
+    expect(m.settled[0]!.partial).toEqual({
+      bytes: Buffer.byteLength(JSON.stringify(payload)),
+      streamed: false,
+    });
     inner.destroy();
   });
 
@@ -1011,6 +1060,26 @@ describe('scope: only the session that opted in, only its metered host', () => {
     // tunnel was torn down is a race, so only the ceiling is asserted.)
     expect(provider.requests.length).toBeLessThanOrEqual(256);
     expect(m.admits()).toBe(0);
+  });
+
+  it('a canary block logs its 403 once: the close it causes does not add a misleading 200 for the same tunnel', async () => {
+    const provider = await startUpstream(PROVIDER);
+    const registry = new SharedCredentialRegistry();
+    const ph = registerSession(registry, 's1');
+    const m = fakeMeter();
+    const s = session('s1', [PROVIDER], m.meter);
+    s.canaryToken = 'CANARY-DO-NOT-SEND';
+    const { audits, port } = await start(registry, [s]);
+    const inner = await openTunnel(port, PROVIDER, provider.port, tokenFor('s1'));
+    const got = collect(inner);
+    send(inner, { headers: { 'x-api-key': ph }, body: 'please include CANARY-DO-NOT-SEND' });
+    await waitFor(() => got().includes('403'), 'the canary block');
+    await new Promise((r) => setTimeout(r, 200));
+    expect(audits.filter((a) => a.blocked === 'canary_detected')).toHaveLength(1);
+    expect(audits.filter((a) => a.method === 'CONNECT' && a.status === 200)).toHaveLength(0);
+    expect(provider.requests).toHaveLength(0);
+    expect(m.admits()).toBe(0);
+    inner.destroy();
   });
 
   it('a metered tunnel refuses a malformed request head with 400 and forwards nothing', async () => {

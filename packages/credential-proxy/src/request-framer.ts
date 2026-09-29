@@ -78,6 +78,11 @@ export interface RequestHeadInfo {
   version: string;
   /** Body length from `Content-Length`, or null when the body is chunked. */
   contentLength: number | null;
+  /**
+   * A header line uses obsolete line folding (it begins with a space or tab). Such
+   * a head cannot be safely rewritten, so a metered tunnel never splices into it.
+   */
+  folded: boolean;
 }
 
 /** What a metered tunnel decides for one request head (TASK-715). */
@@ -158,23 +163,31 @@ export function parseRequestHead(head: Buffer): RequestHeadInfo | null {
     target: m[2]!,
     version: m[3]!,
     contentLength: f.chunked ? null : f.contentLength,
+    folded: hasFoldedLine(text.split('\r\n')),
   };
+}
+
+/** Any header line (not the request line) that starts with a space or tab. */
+function hasFoldedLine(lines: readonly string[]): boolean {
+  for (let i = 1; i < lines.length; i++) {
+    if (/^[ \t]/.test(lines[i]!)) return true;
+  }
+  return false;
 }
 
 /**
  * Replace whatever `Accept-Encoding` the client sent with `identity`, so the
  * response comes back readable by the usage meter. A head with an obsolete
  * folded header line is returned untouched: editing around a fold could attach
- * its continuation to the wrong header, and an encoded response is merely
- * charged as unmeasured (never free).
+ * its continuation to the wrong header. A metered tunnel therefore never SPLICES
+ * into such a head (it goes out plain, with the placeholder inert), so an
+ * encoded response can only come from a request that carried no key.
  */
 export function forceIdentityEncoding(head: Buffer): Buffer {
   const lines = head.toString('latin1').split('\r\n');
   // A complete head ends `...\r\n\r\n`, so the last two entries are empty.
   if (lines.length < 3 || lines[lines.length - 1] !== '' || lines[lines.length - 2] !== '') return head;
-  for (let i = 1; i < lines.length - 2; i++) {
-    if (/^[ \t]/.test(lines[i]!)) return head;
-  }
+  if (hasFoldedLine(lines.slice(0, -2))) return head;
   const kept = lines.filter((l, i) => i === 0 || !/^accept-encoding[ \t]*:/i.test(l));
   kept.splice(kept.length - 2, 0, 'Accept-Encoding: identity');
   return Buffer.from(kept.join('\r\n'), 'latin1');

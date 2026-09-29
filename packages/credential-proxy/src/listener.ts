@@ -938,6 +938,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // the pre-framer behavior) and the framer's decoded-Basic-blob hit. Emits
     // the SAME 403 audit + tears down the tunnel. Never logs the decoded value.
     const blockCanary = () => {
+      // The 403 below is this tunnel's audit entry; the close it causes must not add a 200.
+      refusalAudited = true;
       audit(stampSession({
         action: 'proxy_request',
         method: 'CONNECT',
