@@ -20,11 +20,13 @@ import {
   AlertTriangle,
   ArrowUp,
   ChevronRight,
+  CircleStop,
   Hand,
   Layers,
   ListChecks,
   MessageSquare,
   Paperclip,
+  Square,
   type LucideIcon,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -159,6 +161,7 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         case 'agent':
         case 'status':
         case 'fold':
+        case 'stopped':
           return `${m.kind}:${m.id}:${m.text.length}`;
         /*
           A replayed failure (TASK-498). The id is NOT enough on its own: the
@@ -203,6 +206,21 @@ interface Props {
   readOnly: boolean;
   /** True while a reply is streaming — the composer waits it out. */
   busy?: boolean;
+  /**
+   * Stop the reply that is streaming (TASK-688). While `busy`, a Stop button
+   * takes the Send button's slot; without a handler there is no Stop at all,
+   * and the composer is exactly what it was — Send, quiet, until the reply
+   * ends. OPTIONAL, because a Stop that swallows the click is worse than none,
+   * and most callers of this component (every test that renders it bare) have
+   * no turn to stop.
+   */
+  onStop?: () => void;
+  /**
+   * A Stop has been sent and the turn has not wound down yet. The button goes
+   * quiet rather than vanishing — the person just clicked it, and a control
+   * that disappears under the cursor reads as having done nothing.
+   */
+  stopping?: boolean;
   /**
    * `attachments` are the uploaded files this message carries, in pick order,
    * each carrying the id the wire needs AND the name and type the transcript
@@ -293,6 +311,8 @@ export function AgentConversation({
   decisions,
   readOnly,
   busy = false,
+  onStop,
+  stopping = false,
   onSend,
   onApprove,
   onDismiss,
@@ -378,6 +398,42 @@ export function AgentConversation({
     // on the next message too.
     clear();
   };
+
+  /*
+    TASK-688 — STOP TAKES SEND'S SLOT WHILE A REPLY RUNS.
+
+    Not beside it: two icon buttons side by side would move the field on every
+    turn, and the Send that would be left sitting there is disabled for the
+    whole reply anyway, so it has nothing to say. One slot, one 40px square, the
+    one job that makes sense right now.
+
+    Held or not, Stop is offered: an approval hold parks the turn server-side,
+    that turn is still running, and taking the way out away because a question
+    is open would strand someone with an agent they cannot stop.
+
+    FOCUS. Both buttons are the same element (React reuses the node — same
+    type, same position), so a keyboard user who pressed Stop is still standing
+    on it when the turn ends, now as Send; and where the browser drops focus
+    from a button that has just gone disabled, they are on <body>. Either way
+    the next thing they want is to type, so the field takes focus back — but
+    ONLY from those two places and ONLY if Stop was clicked: someone who moved
+    on while the reply finished is standing where they chose to.
+  */
+  const showStop = busy && onStop !== undefined;
+  // Read off the thread it is drawn in, so the announcement and the note can
+  // never disagree about whether a stop is on screen.
+  const stoppedShown = thread.some((m) => m.kind === 'stopped');
+  const fieldRef = useRef<HTMLInputElement>(null);
+  const actionRef = useRef<HTMLButtonElement>(null);
+  const stopClicked = useRef(false);
+  useEffect(() => {
+    if (busy || !stopClicked.current) return;
+    stopClicked.current = false;
+    const at = document.activeElement;
+    if (at === null || at === document.body || at === actionRef.current) {
+      fieldRef.current?.focus();
+    }
+  }, [busy]);
 
   /*
     TASK-354 — finding something in a long thread.
@@ -840,15 +896,24 @@ export function AgentConversation({
             `getByRole('status')` matches both and fails for a reason that has
             nothing to do with whichever of the two a test meant.
           */}
+          {/*
+            TASK-688 — the same node says "Stopping." while a Stop is on its way
+            and "Stopped." once the note is in the thread, rather than the note
+            carrying a live role of its own: a region inserted WITH its text is
+            the announcement screen readers drop most often, and this one has
+            been in the DOM the whole time.
+          */}
           <span
             data-testid="composer-announcer"
             className="sr-only"
             role="status"
             aria-live="polite"
           >
-            {held
-              ? 'Your agent is waiting for your approval.'
-              : (attachBlock ?? '')}
+            {stopping
+              ? 'Stopping.'
+              : held
+                ? 'Your agent is waiting for your approval.'
+                : (attachBlock ?? (stoppedShown ? 'Stopped.' : ''))}
           </span>
           <div className="flex max-w-[720px] items-center gap-2">
             {/*
@@ -884,6 +949,7 @@ export function AgentConversation({
               <Paperclip strokeWidth={1.5} aria-hidden="true" />
             </Button>
             <Input
+              ref={fieldRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && send()}
@@ -897,14 +963,32 @@ export function AgentConversation({
               */
               disabled={busy || held}
             />
-            <Button
-              size="icon"
-              onClick={send}
-              aria-label="Send"
-              disabled={busy || held || attachBlock !== null}
-            >
-              <ArrowUp size={15} />
-            </Button>
+            {showStop ? (
+              <Button
+                ref={actionRef}
+                type="button"
+                size="icon"
+                onClick={() => {
+                  stopClicked.current = true;
+                  onStop();
+                }}
+                aria-label={stopping ? 'Stopping' : 'Stop'}
+                disabled={stopping}
+              >
+                {/* Filled, the way every player draws it. Decorative: the name is on the button. */}
+                <Square fill="currentColor" aria-hidden="true" />
+              </Button>
+            ) : (
+              <Button
+                ref={actionRef}
+                size="icon"
+                onClick={send}
+                aria-label="Send"
+                disabled={busy || held || attachBlock !== null}
+              >
+                <ArrowUp size={15} />
+              </Button>
+            )}
           </div>
           {/*
             No suggestion chips. They were authored prose in the prototype and
@@ -1123,6 +1207,31 @@ function Message({
         </span>
         <Separator className="flex-1" />
       </div>
+    );
+  }
+
+  if (m.kind === 'stopped') {
+    /*
+      "You stopped this reply" (TASK-688) — a neutral note at the foot of the
+      thread, where the reply it is about ends.
+
+      NOT the `error` row's register: a stop the person asked for is not a
+      failure, so no destructive tokens, and NOT `Alert`'s default
+      `role="alert"` either — that is an assertive announcement, and this one
+      is made politely through the composer's announcer (see there). `note`
+      because it IS a note about the thread, and a tree that says so is worth
+      more than a bare `div`.
+
+      No control on it. The composer beneath is live again, and "send another
+      message to carry on" is the whole instruction.
+    */
+    return (
+      <Alert role="note" className="max-w-[600px]">
+        <CircleStop size={14} aria-hidden="true" />
+        <AlertDescription className="text-[13px] leading-relaxed">
+          {m.text}
+        </AlertDescription>
+      </Alert>
     );
   }
 

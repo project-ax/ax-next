@@ -229,8 +229,21 @@ interface OpenSessionInput {
   agentId: string;
   /** Hostnames this session is allowed to reach (exact match). */
   allowlist: string[];
-  /** envName → { ref to credentials store, kind hint for downstream policy }. */
-  credentials: Record<string, { ref: string; kind: string }>;
+  /**
+   * envName → { ref to credentials store, kind hint for downstream policy,
+   * hosts this credential may be sent to }.
+   *
+   * `allowedHosts` (TASK-687) is the credential's BINDING: its placeholder is
+   * substituted only on egress to one of these hostnames (exact match,
+   * case-insensitive), and only for this session. It is independent of
+   * `allowlist` — a host being reachable does not make it a valid destination
+   * for any credential. Absent or empty ⟹ the placeholder is registered (the
+   * sandbox env still gets it) but is NEVER substituted. The caller must derive
+   * it from a trusted source (the provider table, an operator-curated agent row,
+   * a connector's declared hosts) — never from anything the model or the user
+   * typed for this session.
+   */
+  credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
   /** Hostnames whose CONNECT bypasses MITM (cert-pinning escape hatch). */
   bypassMITM?: string[];
   /** Optional canary token; chunks containing it trip a 403. */
@@ -307,6 +320,25 @@ interface DrainEgressBlocksOutput {
 type SessionCredentialRefs = Record<string, { ref: string; kind: string }>;
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Validate a credential's `allowedHosts` binding. Absent is legal (⟹ unbound,
+ * never substituted); anything present must be an array of strings. A malformed
+ * binding throws rather than being coerced: guessing what a broken payload meant
+ * is how a credential ends up bound somewhere nobody chose. Entries are matched
+ * exactly (case-insensitively) by the registry, so nothing is rewritten here.
+ */
+function parseAllowedHosts(envName: string, raw: unknown): readonly string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.some((h) => typeof h !== 'string')) {
+    throw new PluginError({
+      code: 'invalid-credential-hosts',
+      plugin: PLUGIN_NAME,
+      message: `credential '${envName}': allowedHosts must be an array of hostnames`,
+    });
+  }
+  return raw as string[];
+}
 
 function buildEndpointString(
   listen: CredentialProxyConfig['listen'],
@@ -471,13 +503,28 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
 
           // Resolve every credential ref via credentials:get (Phase 3 shape:
           // `({ ref, userId }) → string`).
+          //
+          // Each placeholder is registered with the hosts its credential is
+          // bound to (TASK-687). Validate the binding BEFORE resolving any
+          // secret, so a malformed payload fails without touching the vault.
           const map = new CredentialPlaceholderMap();
+          const bindings = new Map<string, readonly string[]>();
+          for (const [envName, cred] of Object.entries(input.credentials)) {
+            bindings.set(envName, parseAllowedHosts(envName, cred.allowedHosts));
+          }
           for (const [envName, { ref }] of Object.entries(input.credentials)) {
+            const allowedHosts = bindings.get(envName) ?? [];
+            if (allowedHosts.length === 0) {
+              // Default-deny made visible: an unbound credential is inert on the
+              // wire, which a caller that forgot the field would otherwise only
+              // discover as an upstream 401. Env NAME only — never a value.
+              ctx.logger.warn('credential_unbound', { envName });
+            }
             const value = await bus.call<
               { ref: string; userId: string },
               string
             >('credentials:get', ctx, { ref, userId: input.userId });
-            map.register(envName, value);
+            map.register(envName, value, allowedHosts);
           }
 
           // Register the placeholder map with the shared registry so the

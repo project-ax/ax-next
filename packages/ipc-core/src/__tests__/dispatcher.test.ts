@@ -517,6 +517,29 @@ describe('dispatcher', () => {
     }
   });
 
+  it('GET /session.next-message — delivers an interrupt entry as { type: interrupt, cursor } (TASK-688)', async () => {
+    // The handler re-validates the claim result against the wire schema (its
+    // own outbound drift guard). An `interrupt` missing from that closed union
+    // would come back as a 500 INTERNAL here — and Stop would silently do
+    // nothing, because the runner never receives the entry.
+    const s = await setup({ sessionId: 's-interrupt' });
+    setups.push(s);
+    const ctx = s.harness.ctx({ sessionId: 's-interrupt' });
+    await s.harness.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+      'session:queue-work',
+      ctx,
+      { sessionId: 's-interrupt', entry: { type: 'interrupt' } },
+    );
+    const res = await doRequest(
+      s.socketPath,
+      'GET',
+      '/session.next-message?cursor=0',
+      s.token,
+    );
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ type: 'interrupt', cursor: 1 });
+  });
+
   it('GET /session.next-message — missing cursor → 400 VALIDATION', async () => {
     const s = await setup({});
     setups.push(s);

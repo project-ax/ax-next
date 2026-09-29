@@ -17,14 +17,17 @@
 // sandbox env stamp.
 //
 // WHY THE BARE ENV-VAR NAME STILL WORKS FOR THE SKILL. The credential-proxy
-// substitution is VALUE-based: it replaces the opaque `ax-cred:<hex>`
+// substitution is VALUE-based: it matches the opaque `ax-cred:<hex>`
 // placeholder wherever it appears in egress, regardless of which env-var name
-// carried it (see @ax/credential-proxy registry.ts replaceAll). So the env-var
-// NAME in the sandbox is only a vehicle for the placeholder. After the proxy
-// resolves the namespaced credential map and returns a namespaced envMap, we
-// PROJECT it back to BARE env-var names for the flat sandbox env — so the skill
-// reads `$LINEAR_API_KEY`, not `$skill:linear:LINEAR_API_KEY` (which isn't even
-// a valid env-var name).
+// carried it, so the env-var NAME in the sandbox is only a vehicle for the
+// placeholder. It is also BOUND (TASK-687): a placeholder is substituted only
+// for the session that owns it, and only on egress to a host in that
+// credential's own `allowedHosts` (the binding the orchestrator hands
+// `proxy:open-session` per credential; absent/empty = never substituted). See
+// @ax/credential-proxy registry.ts. After the proxy resolves the namespaced
+// credential map and returns a namespaced envMap, we PROJECT it back to BARE
+// env-var names for the flat sandbox env — so the skill reads `$LINEAR_API_KEY`,
+// not `$skill:linear:LINEAR_API_KEY` (which isn't even a valid env-var name).
 //
 // SECURITY (invariant I5 — capabilities explicit and minimized). A skill slot
 // whose bare name matches a TRUSTED base name (e.g. a skill declaring

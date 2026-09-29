@@ -112,7 +112,7 @@ describe('session return schemas', () => {
     expect(SessionQueueWorkOutputSchema.safeParse({ cursor: 'x' }).success).toBe(false);
   });
 
-  it('SessionClaimWorkOutputSchema round-trips all four variants', () => {
+  it('SessionClaimWorkOutputSchema round-trips all five variants', () => {
     const um: SessionClaimWorkOutput = {
       type: 'user-message',
       payload: { role: 'user', content: 'hi', contentBlocks: [{ x: 1 }], turnId: 'T1' },
@@ -123,6 +123,13 @@ describe('session return schemas', () => {
 
     const cancel: SessionClaimWorkOutput = { type: 'cancel', cursor: 6 };
     expect(SessionClaimWorkOutputSchema.parse(cancel)).toEqual(cancel);
+
+    // TASK-688. The `returns` contract the bus validates `session:claim-work`
+    // against: a discriminated union REFUSES an undeclared discriminator, so an
+    // interrupt missing here would fail at the hook boundary (never reaching the
+    // runner) instead of being delivered.
+    const interrupt: SessionClaimWorkOutput = { type: 'interrupt', cursor: 12 };
+    expect(SessionClaimWorkOutputSchema.parse(interrupt)).toEqual(interrupt);
 
     const timeout: SessionClaimWorkOutput = { type: 'timeout', cursor: 7 };
     expect(SessionClaimWorkOutputSchema.parse(timeout)).toEqual(timeout);

@@ -163,6 +163,23 @@ export type ApproveAuthoredSkillRequest = z.infer<
   typeof ApproveAuthoredSkillRequest
 >;
 
+// ---------------------------------------------------------------------------
+// POST /api/chat/conversations/:id/interrupt — the Stop button (TASK-688).
+//
+// NO request body: the conversation is the path param and the user is the
+// authenticated session's user. The route never reads the body, so there is no
+// request schema to validate — and nothing a client could smuggle a `userId`
+// into. The response says whether a stop is on its way to a running turn:
+// `interrupted:true` (queued now, or deferred behind a message that is still
+// being queued), `interrupted:false` (nothing was in flight, or its session was
+// already gone). Errors: 401 `unauthenticated`, 404 `conversation-not-found`
+// (unknown AND foreign — no existence leak), 503 `interrupt-unavailable`.
+// ---------------------------------------------------------------------------
+export const InterruptTurnResponse = z.object({
+  interrupted: z.boolean(),
+});
+export type InterruptTurnResponse = z.infer<typeof InterruptTurnResponse>;
+
 /**
  * Pull the first text block's `text` out of a content-blocks array. Used
  * by the route handler to feed `agent:invoke`'s flat-string `message` field

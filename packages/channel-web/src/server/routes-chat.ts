@@ -25,6 +25,7 @@ import {
 //   - GET    /api/chat/conversations         — list user's conversations (Task 10)
 //   - GET    /api/chat/conversations/:id     — load with turns (Task 11)
 //   - DELETE /api/chat/conversations/:id     — soft delete (Task 12, J5)
+//   - POST   /api/chat/conversations/:id/interrupt — Stop the in-flight turn (TASK-688)
 //   - GET    /api/chat/agents                — list user's agents (Task 13)
 //
 // All endpoints require auth (auth:require-user → 401 on rejection). All
@@ -176,6 +177,16 @@ type ConversationsListOutput = ConversationSummary[];
 interface ConversationsDeleteInput {
   conversationId: string;
   userId: string;
+}
+
+// TASK-688 — `agent:interrupt`, registered by @ax/chat-orchestrator. Duck-typed
+// here (Invariant I2 — no cross-plugin import).
+interface AgentInterruptInput {
+  conversationId: string;
+  userId: string;
+}
+interface AgentInterruptOutput {
+  interrupted: boolean;
 }
 
 interface AgentsListForUserInput {
@@ -1215,6 +1226,107 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
     },
 
+    /**
+     * POST /api/chat/conversations/:id/interrupt — the Stop button (TASK-688).
+     * Stops the conversation's in-flight turn; the runner stays warm for the
+     * next message (this is NOT `cancel`/terminate).
+     *
+     * Auth-gated and ACL'd against the AUTHENTICATED user only: the route never
+     * reads the request body or query, so nothing a client sends can name
+     * another user. An unknown conversation and one that isn't yours are the
+     * same 404 (no existence leak, same posture as getConversation), and
+     * `agent:interrupt` is not called for either. The orchestrator re-checks
+     * with the same userId. CSRF is enforced by @ax/http-server for POST.
+     * Nothing untrusted reaches the session inbox: the queued entry has no
+     * payload.
+     */
+    async postInterrupt(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+
+      const conversationId = req.params.id;
+      if (typeof conversationId !== 'string' || conversationId.length === 0) {
+        res.status(400).json({ error: 'missing-conversation-id' });
+        return;
+      }
+
+      // 1) Ownership. conversations:get filters by userId (then agents:resolve),
+      // so foreign and unknown both throw; both collapse to the same 404.
+      let agentId: string;
+      try {
+        const got = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+          'conversations:get',
+          initCtx,
+          { conversationId, userId },
+        );
+        agentId = got.conversation.agentId;
+      } catch (err) {
+        if (
+          err instanceof PluginError &&
+          (err.code === 'not-found' || err.code === 'forbidden')
+        ) {
+          res.status(404).json({ error: 'conversation-not-found' });
+          return;
+        }
+        throw err;
+      }
+
+      // 2) The agent must still be reachable by this user. A revoked or deleted
+      // agent is the same 404 — the conversation is not something they can act
+      // on any more, and 403 vs 404 would only tell them which.
+      try {
+        await bus.call<AgentsResolveInput, AgentsResolveOutput>(
+          'agents:resolve',
+          initCtx,
+          { agentId, userId },
+        );
+      } catch (err) {
+        if (
+          err instanceof PluginError &&
+          (err.code === 'not-found' || err.code === 'forbidden')
+        ) {
+          res.status(404).json({ error: 'conversation-not-found' });
+          return;
+        }
+        throw err;
+      }
+
+      // 3) Interrupt. `agent:interrupt` is hasService-gated (optionalCalls, not
+      // `calls`): a preset without the orchestrator answers 503 rather than a
+      // 200 that stopped nothing.
+      if (!bus.hasService('agent:interrupt')) {
+        res.status(503).json({ error: 'interrupt-unavailable' });
+        return;
+      }
+      const interruptCtx = makeAgentContext({
+        sessionId: makeReqId(),
+        agentId,
+        userId,
+        conversationId,
+        reqId: makeReqId(),
+      });
+      try {
+        const out = await bus.call<AgentInterruptInput, AgentInterruptOutput>(
+          'agent:interrupt',
+          interruptCtx,
+          { conversationId, userId },
+        );
+        res.status(200).json({ interrupted: out.interrupted });
+      } catch (err) {
+        // The hook re-checks ownership with the same userId; its not-found /
+        // forbidden is the same 404. Anything else is a real failure and must
+        // not read as "stopped".
+        if (
+          err instanceof PluginError &&
+          (err.code === 'not-found' || err.code === 'forbidden')
+        ) {
+          res.status(404).json({ error: 'conversation-not-found' });
+          return;
+        }
+        throw err;
+      }
+    },
+
     /** GET /api/chat/agents — list user's agents for the AgentMenu. */
     async listAgents(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -1296,6 +1408,7 @@ function filterThinking(
  *   - GET    /api/chat/conversations         (Task 10)
  *   - GET    /api/chat/conversations/:id     (Task 11)
  *   - DELETE /api/chat/conversations/:id     (Task 12)
+ *   - POST   /api/chat/conversations/:id/interrupt (TASK-688)
  *   - GET    /api/chat/agents                (Task 13)
  */
 export async function registerChatRoutes(
@@ -1355,6 +1468,11 @@ export async function registerChatRoutes(
       method: 'DELETE',
       path: '/api/chat/conversations/:id',
       handler: handlers.deleteConversation as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/chat/conversations/:id/interrupt',
+      handler: handlers.postInterrupt as unknown as RouteHandler,
     },
     {
       method: 'GET',

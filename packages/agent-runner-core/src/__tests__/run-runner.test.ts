@@ -724,6 +724,380 @@ describe('runRunner', () => {
     });
   });
 
+  // ---- ctx.onInterrupt (TASK-688: the Stop button) ------------------------
+  //
+  // `interrupt` means "stop the turn that is running, and stay warm" — it is
+  // NOT `cancel` (which ends the session). The wrinkle these tests pin: only
+  // ONE reader may hold the inbox cursor, and the aisdk loop does not pull
+  // during a turn at all. So the shell keeps a read outstanding while a turn is
+  // active and routes `interrupt` to whoever registered for it; the loops never
+  // see the entry.
+  describe('onInterrupt', () => {
+    const userMsg = (content: string, reqId: string) => ({
+      type: 'user-message',
+      payload: { role: 'user', content },
+      reqId,
+      cursor: 1,
+    });
+    const closeInput = {
+      contentBlocks: [],
+      toolResultBlocks: [],
+      readTurnId: async () => undefined,
+    } as unknown as Parameters<LoopContext['endTurn']>[0];
+
+    function deferred<T = void>() {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    }
+    /** Let every already-settled promise chain run. Events, not sleeps. */
+    const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+    /** A hand-rolled inbox: each entry is released by the test. Exhausted → cancel. */
+    function gatedInbox(entries: Array<() => Promise<unknown>>) {
+      const queue = [...entries];
+      const next = vi.fn(async () => {
+        const e = queue.shift();
+        return e !== undefined ? e() : { type: 'cancel' };
+      });
+      (createInboxLoop as unknown as Mock).mockReturnValueOnce({ next, cursor: 0 });
+      return next;
+    }
+
+    it('reaches a loop that is NOT pulling: the shell reads the inbox during the turn (aisdk shape)', async () => {
+      const stop = deferred();
+      gatedInbox([
+        async () => userMsg('long task', 'req-1'),
+        async () => {
+          await stop.promise;
+          return { type: 'interrupt', cursor: 2 };
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          expect(await ctx.nextMessage()).not.toBeNull();
+          const fired = deferred();
+          const off = ctx.onInterrupt(() => fired.resolve());
+          stop.resolve(); // Stop is pressed while the loop is busy streaming
+          await fired.promise; // never settles if nothing reads the inbox mid-turn
+          off();
+          await ctx.endTurn(closeInput);
+          // The queued `cancel` is still there for the pull that follows, and
+          // is still what ends the session: interrupt did not swallow it.
+          expect(await ctx.nextMessage()).toBeNull();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('routes an interrupt that lands on a PENDING pull without resolving that pull (claude-sdk shape)', async () => {
+      const stop = deferred();
+      const end = deferred();
+      gatedInbox([
+        async () => userMsg('long task', 'req-1'),
+        async () => {
+          await stop.promise;
+          return { type: 'interrupt', cursor: 2 };
+        },
+        async () => {
+          await end.promise;
+          return { type: 'cancel', cursor: 3 };
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          const pull = ctx.nextMessage(); // the SDK's pull-ahead
+          let pullSettled = false;
+          void pull.then(() => {
+            pullSettled = true;
+          });
+          const fired = vi.fn();
+          ctx.onInterrupt(fired);
+          stop.resolve();
+          await flush();
+          expect(fired).toHaveBeenCalledTimes(1);
+          // The entry was consumed by the router, not handed to the pull as if
+          // it were a message or a cancel.
+          expect(pullSettled).toBe(false);
+          end.resolve();
+          expect(await pull).toBeNull();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('drops an interrupt that arrives while nothing is running', async () => {
+      const inbox = gatedInbox([
+        async () => ({ type: 'interrupt', cursor: 1 }),
+        async () => userMsg('hello', 'req-1'),
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          // The interrupt precedes the message in the inbox: an idle runner has
+          // no turn to stop, so it is skipped and the message still arrives.
+          const m = await ctx.nextMessage();
+          expect(m).not.toBeNull();
+          const fired = vi.fn();
+          ctx.onInterrupt(fired);
+          await flush();
+          expect(fired).not.toHaveBeenCalled();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      expect(inbox).toHaveBeenCalled();
+    });
+
+    it('latches an interrupt read before the loop registered, and fires it on registration', async () => {
+      // Cold-spawn deferral queues `[user-message, interrupt]` back to back, so
+      // the interrupt can be read before the loop gets as far as `onInterrupt`.
+      gatedInbox([
+        async () => userMsg('go', 'req-1'),
+        async () => ({ type: 'interrupt', cursor: 2 }),
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await flush(); // the shell routes the interrupt now — nobody is listening
+          const fired = vi.fn();
+          ctx.onInterrupt(fired);
+          await flush();
+          expect(fired).toHaveBeenCalledTimes(1);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('fires the handlers once per turn however many times Stop is pressed', async () => {
+      // A double click queues two entries. The second must not reach a loop
+      // that has already been told: for the SDK that is a second interrupt()
+      // landing after the turn it meant, on whatever turn started next.
+      const first = deferred();
+      const second = deferred();
+      gatedInbox([
+        async () => userMsg('go', 'req-1'),
+        async () => {
+          await first.promise;
+          return { type: 'interrupt', cursor: 2 };
+        },
+        async () => {
+          await second.promise;
+          return { type: 'interrupt', cursor: 3 };
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          const fired = vi.fn();
+          ctx.onInterrupt(fired); // registered BEFORE either press lands
+          first.resolve();
+          await flush();
+          second.resolve();
+          await flush();
+          expect(fired).toHaveBeenCalledTimes(1);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('a handler registered once for the whole session (claude-sdk) is not fired by an idle interrupt', async () => {
+      // The Claude loop registers ONE handler up front and keeps it, so unlike
+      // the aisdk loop it is listening when an idle press arrives. Firing it
+      // then would be `query.interrupt()` with no turn to stop.
+      const late = deferred();
+      gatedInbox([
+        async () => ({ type: 'interrupt', cursor: 1 }), // before any message: idle
+        async () => userMsg('first', 'req-1'),
+        async () => {
+          await late.promise;
+          return { type: 'interrupt', cursor: 3 }; // after turn one has ended
+        },
+        async () => userMsg('second', 'req-2'),
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          const fired = vi.fn();
+          ctx.onInterrupt(fired);
+          await ctx.nextMessage();
+          await flush();
+          expect(fired).not.toHaveBeenCalled(); // the idle press was dropped
+          await ctx.endTurn(closeInput);
+          late.resolve();
+          await ctx.nextMessage();
+          await flush();
+          expect(fired).not.toHaveBeenCalled(); // and so was the late one
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('a read that outlived a long turn does not shorten the idle floor for the wait that follows', async () => {
+      // aisdk shape: the watcher's read started at turn start; the turn ended
+      // 14 minutes later; the runner then waits. That read's idle floor is a
+      // minute from firing — and must NOT be honoured as "the host is gone",
+      // or every long turn leaves a runner that exits before the reaper would.
+      const floor = deferred();
+      const real = deferred();
+      gatedInbox([
+        async () => userMsg('long task', 'req-1'),
+        async () => {
+          await floor.promise;
+          return { type: 'idle-timeout' };
+        },
+        async () => {
+          await real.promise;
+          return userMsg('after', 'req-2');
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.endTurn(closeInput);
+          const pull = ctx.nextMessage(); // waiting now, on a read that predates the wait
+          floor.resolve();
+          await flush();
+          real.resolve();
+          expect(await pull).not.toBeNull();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('a late interrupt for a finished turn does not stop the NEXT turn', async () => {
+      const late = deferred();
+      gatedInbox([
+        async () => userMsg('first', 'req-1'),
+        async () => {
+          await late.promise;
+          return { type: 'interrupt', cursor: 2 };
+        },
+        async () => userMsg('second', 'req-2'),
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.endTurn(closeInput); // turn one is over ...
+          late.resolve(); // ... and THEN the Stop press lands
+          expect(await ctx.nextMessage()).not.toBeNull(); // turn two starts
+          const fired = vi.fn();
+          ctx.onInterrupt(fired);
+          await flush();
+          expect(fired).not.toHaveBeenCalled();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('reads ahead during a turn without losing or reordering what it buffers', async () => {
+      const next = gatedInbox([
+        async () => userMsg('one', 'req-1'),
+        async () => userMsg('two', 'req-2'),
+        async () => ({ type: 'cancel', cursor: 3 }),
+      ]);
+      const seen: string[] = [];
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          const a = await ctx.nextMessage();
+          seen.push(String(a?.content));
+          await flush(); // the shell has already pulled `two` and `cancel` off the wire
+          await ctx.endTurn(closeInput);
+          const b = await ctx.nextMessage();
+          seen.push(String(b?.content));
+          const c = await ctx.nextMessage();
+          seen.push(String(c));
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      expect(seen).toEqual(['one', 'two', 'null']);
+      // Not re-polled past the cancel: nothing after it is deliverable.
+      expect(next).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not mistake a long turn for an idle runner (idle-timeout with nobody waiting is discarded)', async () => {
+      gatedInbox([
+        async () => userMsg('long task', 'req-1'),
+        async () => ({ type: 'idle-timeout' }), // the watcher's read hit its 15-minute floor
+        async () => userMsg('after', 'req-2'),
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await flush();
+          await ctx.endTurn(closeInput);
+          // null here would mean the runner exits right after every turn that
+          // outlived the idle floor, and the person's next message cold-starts.
+          expect(await ctx.nextMessage()).not.toBeNull();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('still honours a real idle-timeout when the runner is waiting', async () => {
+      gatedInbox([async () => ({ type: 'idle-timeout' }), () => new Promise(() => {})]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          expect(await ctx.nextMessage()).toBeNull();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    }, 2000);
+
+    it('surfaces a terminal inbox error at the next pull, not as an unhandled rejection mid-turn', async () => {
+      gatedInbox([
+        async () => userMsg('go', 'req-1'),
+        async () => {
+          throw new Error('session gone');
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await flush(); // the watcher's read fails while the turn is running
+          await ctx.endTurn(closeInput);
+          await ctx.nextMessage(); // ... and the loop learns of it here
+          return 0;
+        }),
+      };
+      // A loop that throws is an abnormal end (exit 1) — exactly what an inbox
+      // error was before the shell read ahead.
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(1);
+    });
+
+    it('a handler that throws does not take the runner down or block the others', async () => {
+      gatedInbox([
+        async () => userMsg('go', 'req-1'),
+        async () => ({ type: 'interrupt', cursor: 2 }),
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          const good = vi.fn();
+          ctx.onInterrupt(() => {
+            throw new Error('handler blew up');
+          });
+          ctx.onInterrupt(good);
+          await flush();
+          expect(good).toHaveBeenCalledTimes(1);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+  });
+
   // ---- ctx.replaceTranscript (design §5 / §7 rung 3) --------------------
   //
   // The shell's only "the loop rewrote its own transcript" path. It exists

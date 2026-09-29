@@ -223,6 +223,28 @@ describe('inbox corruption: malformed JSONB throws corrupt-inbox-row', () => {
     await inbox.shutdown();
   }, 15000);
 
+  it('round-trips an interrupt entry through the JSONB column and the claim path (TASK-688)', async () => {
+    // An interrupt stores JSONB null like a cancel, so the reader has to know
+    // the type by name: without an `interrupt` branch in fetchEntry this row is
+    // "unknown type" and the claim throws corrupt-inbox-row — which kills the
+    // runner, i.e. Stop would end the session instead of the turn.
+    const { db, inbox } = await makeInbox();
+    await inbox.queue('s-int-pg', {
+      type: 'user-message',
+      payload: { role: 'user', content: 'go' },
+      reqId: 'r-1',
+    });
+    const { cursor } = await inbox.queue('s-int-pg', { type: 'interrupt' });
+    expect(cursor).toBe(1);
+    expect(await inbox.claim('s-int-pg', 1, 1000)).toEqual({ type: 'interrupt', cursor: 2 });
+    const row = await sql<{ type: string; payload: unknown }>`
+      SELECT type, payload FROM session_postgres_v1_inbox
+      WHERE session_id = 's-int-pg' AND cursor = 1
+    `.execute(db);
+    expect(row.rows[0]).toEqual({ type: 'interrupt', payload: null });
+    await inbox.shutdown();
+  }, 15000);
+
   it('round-trips a well-formed decision-resolved entry', async () => {
     const { inbox } = await makeInbox();
     const { cursor } = await inbox.queue('s-dec-pg', {

@@ -262,7 +262,7 @@ describe('event.http-egress emission', () => {
           agentId: 'a1',
           allowlist: ['127.0.0.1'],
           allowedIPs: ['127.0.0.1'],
-          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] } },
         },
       );
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
@@ -315,7 +315,7 @@ describe('event.http-egress emission', () => {
         agentId: 'a1',
         allowlist: ['127.0.0.1'],
         allowedIPs: ['127.0.0.1'],
-        credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+        credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] } },
       });
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
       const placeholder = opened.envMap.ANTHROPIC_API_KEY!;
@@ -382,7 +382,7 @@ describe('event.http-egress emission', () => {
           userId: 'u1',
           agentId: 'a1',
           allowlist: ['other.example.com'],
-          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] } },
         },
       );
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
@@ -430,7 +430,7 @@ describe('event.http-egress emission', () => {
           userId: 'u1',
           agentId: 'a1',
           allowlist: ['other.example.com'], // 127.0.0.1 NOT allowed → block
-          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] } },
         },
       );
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
@@ -481,7 +481,7 @@ describe('event.http-egress emission', () => {
           userId: 'u1',
           agentId: 'a1',
           allowlist: ['127.0.0.1'], // host allowed; the PRIVATE-IP gate blocks it
-          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] } },
         },
       );
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
@@ -528,7 +528,7 @@ describe('event.http-egress emission', () => {
           agentId: 'a1',
           allowlist: ['127.0.0.1'],
           allowedIPs: ['127.0.0.1'],
-          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] } },
         },
       );
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
@@ -568,7 +568,7 @@ describe('event.http-egress emission', () => {
           agentId: 'a1',
           allowlist: ['127.0.0.1'], // host allowed
           // allowedIPs intentionally omitted — private-IP block fires.
-          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] } },
         },
       );
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
@@ -636,7 +636,7 @@ describe('event.http-egress emission', () => {
           agentId: 'a1',
           allowlist: ['127.0.0.1'],
           allowedIPs: ['127.0.0.1'],
-          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] } },
         },
       );
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);

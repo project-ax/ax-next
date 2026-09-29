@@ -72,6 +72,7 @@ import { isOpenDecision } from '@/lib/workspace-types';
 import { continuationActions } from '@/lib/continuation-actions';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
+import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
@@ -497,10 +498,54 @@ export function AgentView({
   const [turnError, setTurnError] = useState<{
     kind: ReadOutcome;
     sentence: string | null;
+    /**
+     * WHOSE failure it is (TASK-688). `turn` is the reply itself failing —
+     * `TURN_COPY`, and a Resend where resending can work. `stop` is the STOP
+     * request failing while the reply carries on: different sentence
+     * (`STOP_COPY` — "may still be running", not "didn’t finish"), no Resend
+     * (re-firing the message on top of a live turn), and it retires by itself
+     * when the reply ends, since "may still be running" is then untrue.
+     */
+    source: 'turn' | 'stop';
   } | null>(null);
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  /*
+    TASK-688 — STOP.
+
+    THREE THINGS, because one boolean cannot say them:
+
+      - `stopping` is what the PERSON sees: the Stop button gone quiet, the
+        polite "Stopping." Cleared the moment the turn is over, however it ended.
+      - `stopRef` is the bookkeeping for the request in flight (see
+        `PendingStop`). Its IDENTITY is the guard: every continuation of a Stop
+        compares against the object it started with, so an answer that lands
+        after the turn ended, the agent changed or the view unmounted finds a
+        different object (or none) and does nothing. It is also the
+        double-click guard: two clicks in one React batch both see a button that
+        has not re-rendered as disabled yet, and only the ref is up to date.
+      - `stopNotice` is the "you stopped this" note, holding the id of the
+        conversation it was earned in so it is only drawn there.
+  */
+  const [stopping, setStopping] = useState(false);
+  const [stopNotice, setStopNotice] = useState<string | null>(null);
+  interface PendingStop {
+    conversationId: string;
+    /** The host answered `interrupted: true` — a stop really was queued. */
+    confirmed: boolean;
+    /**
+     * The reply stream ended (`done`) BEFORE the host's answer came back. That
+     * race is real — the two travel separately — and it is why the note is
+     * decided when the ANSWER lands in that case: `done` alone cannot tell "our
+     * stop worked" from "it happened to finish".
+     */
+    turnEnded: boolean;
+    /** The never-stuck fallback, once armed. */
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+  const stopRef = useRef<PendingStop | null>(null);
 
   /*
     The queue's rows as of the latest render, for `load` below (TASK-536). A
@@ -621,6 +666,32 @@ export function AgentView({
     onChanged();
   }, [onChanged]);
 
+  /*
+    Forget a Stop: cancel its fallback timer, drop the bookkeeping, and let the
+    button stand down. Touches refs and setters only, so it is stable.
+  */
+  const cancelStop = useCallback(() => {
+    if (stopRef.current?.timer != null) clearTimeout(stopRef.current.timer);
+    stopRef.current = null;
+    setStopping(false);
+  }, []);
+
+  /*
+    The in-flight turn is over: every transient piece of it goes. One list,
+    used by the stream's `done` AND by the Stop fallback, so the two cannot
+    disagree about what "the turn ended" clears. The durable thread (`load`) is
+    what replaces it.
+  */
+  const resetLiveTurn = useCallback(() => {
+    setStreaming(false);
+    setSent(null);
+    setStreamed('');
+    setLiveCalls([]);
+    setWitnessed(new Set());
+    setStreamConversation(null);
+    setPhase(null);
+  }, []);
+
   useEffect(() => {
     setPastId(null);
     setSent(null);
@@ -631,7 +702,11 @@ export function AgentView({
     setPhase(null);
     setStreaming(false);
     setTurnError(null);
-  }, [agentId]);
+    // TASK-688 — a Stop, its note and its timer belong to the agent they were
+    // pressed on.
+    cancelStop();
+    setStopNotice(null);
+  }, [agentId, cancelStop]);
 
   /*
     How many questions in the in-flight turn's conversation are still open, or
@@ -655,14 +730,22 @@ export function AgentView({
   // Abort any live stream when we unmount or switch agents — a reader left
   // running would keep writing into a component nobody is looking at.
   useEffect(() => {
-    return () => abortRef.current?.abort();
-  }, [agentId]);
+    return () => {
+      abortRef.current?.abort();
+      // A pending fallback would abort and re-read into a view nobody has.
+      cancelStop();
+    };
+  }, [agentId, cancelStop]);
 
   const streamFrom = useCallback(
     async (reqId: string) => {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
+      // A new turn supersedes any Stop still pending on the old one, and the
+      // old turn's note.
+      cancelStop();
+      setStopNotice(null);
       setStreaming(true);
       setStreamed('');
       setLiveCalls([]);
@@ -690,13 +773,25 @@ export function AgentView({
         */
         onPhase: (next) => setPhase(next),
         onDone: () => {
-          setStreaming(false);
-          setSent(null);
-          setStreamed('');
-          setLiveCalls([]);
-          setWitnessed(new Set());
-          setStreamConversation(null);
-          setPhase(null);
+          /*
+            TASK-688 — was this turn ended BY a Stop? Only if the host said it
+            queued one (`confirmed`). A Stop whose answer has not landed yet is
+            left standing with `turnEnded` set: `done` cannot tell "our stop
+            worked" from "it happened to finish", and the answer can.
+          */
+          const stop = stopRef.current;
+          const stoppedIn =
+            stop !== null && stop.confirmed ? stop.conversationId : null;
+          if (stop !== null && !stop.confirmed) {
+            stop.turnEnded = true;
+            setStopping(false);
+          } else {
+            cancelStop();
+          }
+          // "Couldn’t stop it — may still be running" is no longer true.
+          setTurnError((prev) => (prev?.source === 'stop' ? null : prev));
+          resetLiveTurn();
+          if (stoppedIn !== null) setStopNotice(stoppedIn);
           // The durable thread is the source of truth — re-read it rather than
           // keeping our transient copy around to drift.
           void load();
@@ -705,6 +800,7 @@ export function AgentView({
         onError: (message) => {
           // Never leave the spinner up. A stale answer is a state we can
           // render; an absence is not (design H7).
+          cancelStop();
           setStreaming(false);
           /*
             ALWAYS `failed`, and the stream's own sentence is KEPT.
@@ -726,7 +822,7 @@ export function AgentView({
             which our own `failed` sentence would have replaced with an
             invitation to Resend forever.
           */
-          setTurnError({ kind: 'failed', sentence: message });
+          setTurnError({ kind: 'failed', sentence: message, source: 'turn' });
         },
         /*
           The agent stopped to ask for something. NON-TERMINAL: the stream
@@ -773,8 +869,87 @@ export function AgentView({
         },
       });
     },
-    [agentId, load, onChanged, onDecisionRaised],
+    [agentId, load, onChanged, onDecisionRaised, cancelStop, resetLiveTurn],
   );
+
+  /*
+    STOP (TASK-688). Ask the host to cancel the turn running in this
+    conversation, then wait for the reply stream to say it is over.
+
+    `interrupted: true` means QUEUED, not finished: the runner still has to
+    notice, kill what it is running and wind the transcript up, and the stream's
+    own `done` is the only frame that says it has. So the button goes quiet
+    ("Stopping") and the note waits for that frame.
+
+    THE FALLBACK. A Stop button that never comes back is a worse failure than a
+    reply that trails off, and there is no reload re-attach to rescue one. So a
+    confirmed Stop that the stream has not answered in `STOP_FALLBACK_MS`
+    aborts the reader itself — which fires no callback, by design — and does by
+    hand exactly what `done` does: clear the live turn, re-read the thread, hand
+    the composer back, show the note.
+  */
+  const stop = useCallback(async () => {
+    const conversationId = conversationRef.current;
+    if (!streaming || conversationId === null || stopRef.current !== null) return;
+    const mine: PendingStop = {
+      conversationId,
+      confirmed: false,
+      turnEnded: false,
+      timer: null,
+    };
+    stopRef.current = mine;
+    setStopping(true);
+    // A complaint about the LAST attempt is stale the moment they try again.
+    setTurnError((prev) => (prev?.source === 'stop' ? null : prev));
+    try {
+      const { interrupted } = await workspaceApi.interruptTurn(conversationId);
+      // The turn ended, the agent changed or the view went away while we
+      // waited: whatever cleaned up owns the story now.
+      if (stopRef.current !== mine) return;
+      if (!interrupted) {
+        // Nothing was running (it finished first). Not a failure and nothing
+        // to report — the stream delivers its own `done`.
+        cancelStop();
+        return;
+      }
+      if (mine.turnEnded) {
+        // `done` beat this answer here. Now we know it was our stop.
+        cancelStop();
+        setStopNotice(conversationId);
+        return;
+      }
+      mine.confirmed = true;
+      mine.timer = setTimeout(() => {
+        if (stopRef.current !== mine) return;
+        stopRef.current = null;
+        abortRef.current?.abort();
+        resetLiveTurn();
+        setStopping(false);
+        setStopNotice(conversationId);
+        void load();
+        onChanged();
+      }, STOP_FALLBACK_MS);
+    } catch (e) {
+      logRequestFailure(e, 'workspace-agent-stop');
+      if (stopRef.current !== mine) return;
+      cancelStop();
+      // It ended on its own while the request was failing: nothing to report.
+      if (mine.turnEnded) return;
+      const kind = toReadOutcome(e);
+      if (kind === 'gone') {
+        /*
+          Same ruling as the send path: the conversation we aimed at is not
+          there, so the next message must not re-aim at it. And the stream
+          behind a conversation that no longer exists cannot be trusted to
+          finish, so it is closed here rather than left holding the composer.
+        */
+        conversationRef.current = null;
+        abortRef.current?.abort();
+        setStreaming(false);
+      }
+      setTurnError({ kind, sentence: null, source: 'stop' });
+    }
+  }, [streaming, cancelStop, resetLiveTurn, load, onChanged]);
 
   /*
     THE POST-APPROVAL CONTINUATION (TASK-542). Approving a hold that a warm
@@ -850,6 +1025,8 @@ export function AgentView({
       const files = attachments ?? [];
       setSent({ text, attachments: files, resendable: true });
       setTurnError(null);
+      // The last turn's "you stopped this" is history the moment they say more.
+      setStopNotice(null);
       try {
         const { conversationId, reqId } = await workspaceApi.sendMessage({
           agentId,
@@ -887,7 +1064,7 @@ export function AgentView({
           to the control nobody thinks of as one.
         */
         if (kind === 'gone') conversationRef.current = null;
-        setTurnError({ kind, sentence: null });
+        setTurnError({ kind, sentence: null, source: 'turn' });
       }
     },
     [agentId, streamFrom],
@@ -1112,6 +1289,17 @@ export function AgentView({
         text: phase === 'sandbox-starting' ? 'Getting set up…' : 'Thinking…',
       });
     }
+  }
+
+  /*
+    "You stopped this reply" (TASK-688), at the very end: after the reply it is
+    about, after any approval pointers the server appended. Only in the
+    conversation it was earned in — a read that came back with a different one
+    (a new chat, a compaction) leaves it behind — and never while a turn is
+    running: the next `send`/`streamFrom` clears it anyway.
+  */
+  if (stopNotice !== null && stopNotice === detail.conversationId) {
+    liveThread.push({ kind: 'stopped', id: 'stopped-notice', text: STOPPED_NOTICE });
   }
 
   /*
@@ -1431,7 +1619,11 @@ export function AgentView({
                 <div className="px-6 pt-4">
                   <Alert variant={readAlertVariant(turnError.kind)}>
                     <AlertDescription className="flex flex-col items-start gap-2">
-                      <span>{TURN_COPY[turnError.kind]}</span>
+                      <span>
+                        {(turnError.source === 'stop' ? STOP_COPY : TURN_COPY)[
+                          turnError.kind
+                        ]}
+                      </span>
                       {/*
                         UNTRUSTED PLAIN TEXT, deliberately rendered as a text
                         node and never as markup — the contract in
@@ -1455,7 +1647,9 @@ export function AgentView({
                           branch: the strip sits over a live conversation the
                           reader may want to carry on reading.
                         */}
-                        {sent !== null && turnError.kind === 'failed' && (
+                        {sent !== null &&
+                          turnError.kind === 'failed' &&
+                          turnError.source === 'turn' && (
                           <Button
                             size="sm"
                             /*
@@ -1546,6 +1740,8 @@ export function AgentView({
                 decisions={decisions}
                 readOnly={past !== null}
                 busy={streaming}
+                onStop={() => void stop()}
+                stopping={stopping}
                 onSend={(text, attachments) => void send(text, attachments)}
                 onApprove={onApprove}
                 onDismiss={onDismiss}

@@ -238,6 +238,8 @@ export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
     cursor: z.number(),
   }),
   z.object({ type: z.literal('cancel'), cursor: z.number() }),
+  // TASK-688. Same `returns`-contract rule as the AW-6 arm below.
+  z.object({ type: z.literal('interrupt'), cursor: z.number() }),
   // AW-6. Must appear here as well as on the wire schema: this is the
   // `returns` contract the bus validates the handler against, and a variant
   // missing from it is refused at the hook boundary before it ever reaches
@@ -529,6 +531,8 @@ function requireInboxEntry(
     return;
   }
   if (type === 'cancel') return;
+  // TASK-688. Payload-free: nothing to validate, and `inboxPayload` stores null.
+  if (type === 'interrupt') return;
   // AW-6. `decision-resolved` is HOST-INTERNAL: it is produced only by
   // @ax/decisions after a human answered, and no IPC action routes to
   // `session:queue-work`. The checks below are the trust-boundary belt anyway
@@ -586,7 +590,7 @@ function requireInboxEntry(
     code: 'invalid-payload',
     plugin: PLUGIN_NAME,
     hookName,
-    message: `'entry.type' must be 'user-message', 'cancel' or 'decision-resolved'`,
+    message: `'entry.type' must be 'user-message', 'cancel', 'interrupt' or 'decision-resolved'`,
   });
 }
 

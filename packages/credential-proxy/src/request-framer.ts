@@ -1,4 +1,10 @@
-/** Minimal substitution surface, satisfied by SharedCredentialRegistry. */
+/**
+ * Minimal substitution surface. The listener hands the framer a replacer that is
+ * already scoped to ONE tunnel (TASK-687): the authenticated session's own
+ * placeholders that are bound to that tunnel's destination host
+ * (`SharedCredentialRegistry.replacerFor`). The framer never sees a host or a
+ * session, so it cannot substitute anything the tunnel is not entitled to.
+ */
 export interface Replacer {
   replaceAll(input: string): string;
   replaceAllBuffer(input: Buffer): Buffer;
@@ -123,9 +129,12 @@ function parseBodyFraming(head: Buffer): BodyFraming {
  *      HEADER (Anthropic `x-api-key`, git `Authorization: Basic`, Bash `curl -H`).
  *      A placeholder appearing in a BODY only happens when it leaked into the
  *      conversation transcript (e.g. the model dumped its env). Resolving it
- *      there would write the real secret into outbound message content — to the
- *      intended host AND any other allowlisted host. Leaving bodies verbatim
+ *      there would write the real secret into outbound message content, where
+ *      the destination can store, echo or log it. Leaving bodies verbatim
  *      keeps a leaked placeholder an inert fake token wherever it travels.
+ *      (Host binding, TASK-687, is the complementary guard for the HEADER case:
+ *      even a deliberately placed header is only resolved for the credential's
+ *      own hosts.)
  */
 export class RequestFramer {
   private phase: Phase = 'head';

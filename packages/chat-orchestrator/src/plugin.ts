@@ -7,6 +7,8 @@ import {
   type AgentInvokeInput,
   type ApplyCapabilityGrantInput,
   type ApplyCapabilityGrantOutput,
+  type AgentInterruptInput,
+  type AgentInterruptOutput,
   type ApplyAuthoredCapabilityGrantInput,
   type ApplyAuthoredCapabilityGrantOutput,
   type ApplyAuthoredConnectorGrantInput,
@@ -35,6 +37,12 @@ export function createChatOrchestratorPlugin(
       registers: [
         'agent:invoke',
         'agent:apply-capability-grant',
+        // TASK-688 — Stop. Interrupts the conversation's in-flight turn
+        // (`{type:'interrupt'}` into the live session's inbox). Its
+        // conversations:get / session:is-alive peers are bus.hasService-gated
+        // (same convention as the conversations:* peers above), so they stay
+        // OUT of `calls`.
+        'agent:interrupt',
         'agent:apply-authored-capability-grant',
         // TASK-94 — authored-CONNECTOR approval grant. Twin of the authored-
         // skill grant; host-side only (NOT an IPC action). Its
@@ -196,6 +204,19 @@ export function createChatOrchestratorPlugin(
         'agent:apply-capability-grant',
         PLUGIN_NAME,
         async (ctx, input) => orch.applyCapabilityGrant(ctx, input),
+      );
+
+      // TASK-688 — Stop cancels the in-flight turn. Channel-web's
+      // `POST /api/chat/conversations/:id/interrupt` calls this after its own
+      // ACL check; the hook re-checks with the same userId (conversations:get
+      // throws not-found/forbidden, which propagate). Host-side only; NOT an IPC
+      // action. It queues `interrupt` (NOT `cancel`): stop the turn, keep the
+      // runner warm. A Stop during a cold spawn is deferred behind the user
+      // message — see pendingMessageReqIds in orchestrator.ts.
+      bus.registerService<AgentInterruptInput, AgentInterruptOutput>(
+        'agent:interrupt',
+        PLUGIN_NAME,
+        async (ctx, input) => orch.interruptTurn(ctx, input),
       );
 
       // Phase 4 PR-B — authored-skill approval grant. The host re-derives

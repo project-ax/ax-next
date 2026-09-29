@@ -5,6 +5,8 @@ export type {
   AgentInvokeInput,
   ApplyCapabilityGrantInput,
   ApplyCapabilityGrantOutput,
+  AgentInterruptInput,
+  AgentInterruptOutput,
   ApplyAuthoredCapabilityGrantInput,
   ApplyAuthoredCapabilityGrantOutput,
 } from './orchestrator.js';

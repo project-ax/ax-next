@@ -117,6 +117,28 @@ describe('createInboxLoop', () => {
     expect(entry).toEqual({ type: 'cancel' });
     expect(loop.cursor).toBe(5);
   });
+
+  it('on interrupt (TASK-688): returns {type: interrupt}, advances the cursor, and is NOT a cancel', async () => {
+    // Without an `interrupt` branch the wire variant falls into the
+    // defence-in-depth "unknown delivery" arm: it would be reported and
+    // skipped, and Stop would do nothing. It must also not collapse into
+    // `cancel`, which the shell reads as "end the session".
+    const { client } = makeMockClient([
+      { type: 'interrupt', cursor: 8 },
+      { type: 'cancel', cursor: 9 },
+    ]);
+    const seen: string[] = [];
+    const loop = createInboxLoop({
+      client,
+      initialCursor: 7,
+      onUnknownDelivery: (t) => seen.push(t),
+    });
+    const entry = await loop.next();
+    expect(entry).toEqual({ type: 'interrupt' });
+    expect(loop.cursor).toBe(8);
+    expect(seen).toEqual([]);
+    expect(await loop.next()).toEqual({ type: 'cancel' });
+  });
 });
 
 // A fake IpcClient whose callGet always reports a host long-poll timeout, so

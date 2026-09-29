@@ -2612,6 +2612,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * on the same frame that puts the failure on screen, which is the coupling
    * this card needed and the probe could never have.
    *
+   * AND ON THE TURN'S OWN `chat:turn-end` (TASK-686). Forgetting on `chat:end`
+   * alone was the warm-sandbox bug over again, one layer down: under keepAlive
+   * (the k8s preset) a turn completes on `chat:turn-end` and `chat:end` waits
+   * for the idle reaper, so an agent that had already replied read "Working"
+   * for up to the whole idle window. The record now tracks each turn by its
+   * reqId and goes when the last one's turn-end arrives — before the SSE done
+   * frame is written, since the per-connection subscriber is registered long
+   * after the plugin's.
+   *
    * ABSENCE STILL READS `resting`, on every branch: no activity producer
    * wired, a failed read, or a host that restarted and lost its in-memory
    * record. That is the route's standing rule — "we don't know" must never
@@ -2627,7 +2636,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    *
    * WHAT THIS SIGNAL IS NOT, said here rather than left to be discovered.
    * `@ax/agent-activity` keys ONE record per agent and deletes it on the FIRST
-   * `chat:end` it sees for that agent — there is no refcount. So an agent
+   * `chat:end` it sees for that agent. Its per-turn ids (TASK-686) only govern
+   * `chat:turn-end`, which ends just its own turn; they never hold the record
+   * past an end, so this is still no refcount. So an agent
    * running two turns at once (a routine fire beside a chat, two open threads)
    * reads `resting` from the moment the first of them ends until the other's
    * next tool call re-creates the record.

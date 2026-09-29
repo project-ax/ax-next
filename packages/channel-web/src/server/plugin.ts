@@ -378,6 +378,17 @@ export function createChannelWebServerPlugin(
           degradation:
             'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
         },
+        {
+          // TASK-688 — the Stop button. POST /api/chat/conversations/:id/
+          // interrupt asks the orchestrator to stop the conversation's
+          // in-flight turn (an `interrupt` inbox entry — the runner stays warm).
+          // Optional so a preset that wires channel-web without the
+          // orchestrator still boots; the route answers 503 instead of a 200
+          // that stopped nothing.
+          hook: 'agent:interrupt',
+          degradation:
+            'the Stop button cannot stop a running turn; POST /api/chat/conversations/:id/interrupt answers 503 and the turn runs to completion',
+        },
       ],
       subscribes: [
         'chat:stream-chunk',
