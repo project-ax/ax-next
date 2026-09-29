@@ -69,6 +69,7 @@
     "@ax/tool-connector-propose": "workspace:*",
     "@ax/tool-policy": "workspace:*",
     "@ax/tool-skill-propose": "workspace:*",
+    "@ax/usage-limits": "workspace:*",
     "@ax/validator-identity": "workspace:*",
     "@ax/validator-routine": "workspace:*",
     "@ax/validator-service": "workspace:*",
