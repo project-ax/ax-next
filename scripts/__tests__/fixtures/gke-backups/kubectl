@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Stub `kubectl` for scripts/__tests__/gke-backups.test.js.
+#
+# NEVER talks to a cluster. It records every call to $STUB_LOG and answers the
+# handful of questions deploy/gke/backups.sh asks, from files in $STUB_STATE and
+# a few STUB_* environment variables. Anything it does not recognise is logged
+# as UNHANDLED and fails loudly (exit 99), so a new kubectl call in the script
+# cannot slip past the tests unseen.
+set -u
+: "${STUB_LOG:?}" "${STUB_STATE:?}"
+printf 'kubectl %s\n' "$*" >>"$STUB_LOG"
+
+if [ "${1:-}" = config ] && [ "${2:-}" = current-context ]; then
+  printf '%s\n' "${STUB_CONTEXT-gke_example-proj-1_us-central1-a_example-cluster}"
+  exit 0
+fi
+
+args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --context | -n)
+      shift 2
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+rest="${args[*]}"
+
+case "$rest" in
+  "get pvc ax-next-workspace -o jsonpath={.spec.volumeName}")
+    [ -z "${STUB_PVC_MISSING:-}" ] || {
+      echo 'Error from server (NotFound): persistentvolumeclaims "ax-next-workspace" not found' >&2
+      exit 1
+    }
+    echo pv-ws
+    ;;
+  "get pvc ax-next-memory-facts -o jsonpath={.spec.volumeName}")
+    echo pv-facts
+    ;;
+  "get pv pv-ws -o jsonpath={.spec.csi.driver}|{.spec.csi.volumeHandle}")
+    if [ -n "${STUB_REGIONAL:-}" ]; then
+      echo "pd.csi.storage.gke.io|projects/${STUB_PROJECT:-example-proj-1}/regions/us-central1/disks/pvc-ws-1111"
+    else
+      echo "${STUB_DRIVER:-pd.csi.storage.gke.io}|projects/${STUB_PROJECT:-example-proj-1}/zones/${STUB_ZONE:-us-central1-a}/disks/pvc-ws-1111"
+    fi
+    ;;
+  "get pv pv-facts -o jsonpath={.spec.csi.driver}|{.spec.csi.volumeHandle}")
+    echo "${STUB_DRIVER:-pd.csi.storage.gke.io}|projects/${STUB_PROJECT:-example-proj-1}/zones/${STUB_ZONE:-us-central1-a}/disks/pvc-facts-2222"
+    ;;
+  "get deployment ax-next-host -o jsonpath={.spec.template.spec.containers[0].image}")
+    echo "example.invalid/ax-next/agent:v1"
+    ;;
+  "apply -f -")
+    n=$(find "$STUB_STATE" -name 'applied-*.yaml' | wc -l | tr -d ' ')
+    cat >"$STUB_STATE/applied-$(printf '%02d' "$((n + 1))").yaml"
+    ;;
+  "get pod ax-restore-drill -o jsonpath={.status.phase}")
+    printf '%s' "${STUB_POD_PHASE-Succeeded}"
+    ;;
+  "logs ax-restore-drill")
+    cat "${STUB_POD_LOGS:?}"
+    ;;
+  "describe pod ax-restore-drill")
+    echo "Events: (stub) 0/2 nodes are available: volume node affinity conflict"
+    ;;
+  "delete "*)
+    [ -z "${STUB_KUBECTL_DELETE_FAILS:-}" ] || {
+      echo "Error from server (Forbidden): stub refuses to delete" >&2
+      exit 1
+    }
+    ;;
+  *)
+    echo "UNHANDLED kubectl: $rest" >&2
+    printf 'UNHANDLED kubectl: %s\n' "$rest" >>"$STUB_LOG"
+    exit 99
+    ;;
+esac

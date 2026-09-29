@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Stub `gcloud` for scripts/__tests__/gke-backups.test.js.
+#
+# NEVER talks to Google Cloud. Records every call to $STUB_LOG and answers from
+# files in $STUB_STATE plus a few STUB_* environment variables:
+#
+#   $STUB_STATE/policy-<region>       exists => that schedule exists (contents: "<days>\t<start>")
+#   $STUB_STATE/attached-<disk>       contents => the disk's resourcePolicies value
+#   $STUB_STATE/sql-dp                exists => Cloud SQL deletion protection is on
+#   $STUB_STATE/scratch-<disk>        a scratch disk created by the drill ("<zone>\t<run id>")
+#   $STUB_STATE/users-<disk>          contents => who still has the disk attached
+#   $STUB_STATE/snapshots             "<name>\t<timestamp>\t<disk>" lines, newest first
+#   $STUB_STATE/fresh                 exists => snapshots count as fresh (< 36h)
+#
+# Anything it does not recognise is logged as UNHANDLED and exits 99.
+set -u
+: "${STUB_LOG:?}" "${STUB_STATE:?}"
+printf 'gcloud %s\n' "$*" >>"$STUB_LOG"
+
+zone=""
+region=""
+format=""
+filter=""
+project=""
+words=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --project)
+      project="$2"
+      shift 2
+      ;;
+    --zone)
+      zone="$2"
+      shift 2
+      ;;
+    --region)
+      region="$2"
+      shift 2
+      ;;
+    --format=*)
+      format="${1#--format=}"
+      shift
+      ;;
+    --filter=*)
+      filter="${1#--filter=}"
+      shift
+      ;;
+    --quiet)
+      shift
+      ;;
+    *)
+      words+=("$1")
+      shift
+      ;;
+  esac
+done
+[ -n "$project" ] || [ "${words[0]}" = config ] || echo "MISSING --project on: ${words[*]}" >>"$STUB_LOG"
+w="${words[*]:0:4}"
+
+case "$w" in
+  "config get-value account"*)
+    echo "operator@example.invalid"
+    ;;
+  "compute disks describe"*)
+    disk="${words[3]}"
+    case "$format" in
+      "value(sizeGb)")
+        case "$disk" in pvc-ws-1111) echo 100 ;; *) echo 10 ;; esac
+        ;;
+      "value(type.basename())") echo pd-balanced ;;
+      "value(resourcePolicies)")
+        [ ! -f "$STUB_STATE/attached-$disk" ] || cat "$STUB_STATE/attached-$disk"
+        ;;
+      "value(users)")
+        [ ! -f "$STUB_STATE/users-$disk" ] || cat "$STUB_STATE/users-$disk"
+        ;;
+      *) echo "UNHANDLED disks describe format: $format" >>"$STUB_LOG"; exit 99 ;;
+    esac
+    ;;
+  "compute resource-policies describe"*)
+    if [ -f "$STUB_STATE/policy-$region" ]; then
+      cat "$STUB_STATE/policy-$region"
+    else
+      echo "ERROR: (gcloud.compute.resource-policies.describe) Could not fetch resource:
+ - The resource 'projects/$project/regions/$region/resourcePolicies/${words[3]}' was not found" >&2
+      exit 1
+    fi
+    ;;
+  "compute resource-policies create"*)
+    printf '14\t09:00\n' >"$STUB_STATE/policy-$region"
+    ;;
+  "compute resource-policies list"*)
+    [ -z "${STUB_POLICY_RECENT:-}" ] || echo "ax-next-daily"
+    ;;
+  "compute disks add-resource-policies"*)
+    disk="${words[3]}"
+    echo "https://www.googleapis.com/compute/v1/projects/$project/regions/${zone%-*}/resourcePolicies/ax-next-daily" >"$STUB_STATE/attached-$disk"
+    ;;
+  "compute disks snapshot"*) : ;;
+  "compute snapshots list"*)
+    disk="$(printf '%s' "$filter" | sed -n 's/^sourceDisk:\([a-z0-9-]*\).*/\1/p')"
+    case "$filter" in
+      *"creationTimestamp>-"*) [ -f "$STUB_STATE/fresh" ] || exit 0 ;;
+    esac
+    [ -f "$STUB_STATE/snapshots" ] || exit 0
+    # The server-side filter is a substring match, so hand back everything that
+    # CONTAINS the disk name, like the real thing. The script must pick the exact one.
+    grep -F -e "$disk" "$STUB_STATE/snapshots" || true
+    ;;
+  "compute disks create"*)
+    disk="${words[3]}"
+    labels=""
+    prev=""
+    for a in "${words[@]}"; do
+      [ "$prev" = "--labels" ] && labels="$a"
+      prev="$a"
+    done
+    # `--labels` was not stripped above (only the flags above are), so it is a word.
+    printf '%s\t%s\n' "$zone" "${labels#ax_restore_drill=}" >"$STUB_STATE/scratch-$disk"
+    ;;
+  "compute disks list"*)
+    for f in "$STUB_STATE"/scratch-*; do
+      [ -f "$f" ] || continue
+      name="${f##*/scratch-}"
+      z="$(cut -f1 "$f")"
+      r="$(cut -f2 "$f")"
+      printf '%s\t%s\t%s\n' "$name" "$z" "$r"
+    done
+    [ ! -f "$STUB_STATE/decoy-disk" ] || cat "$STUB_STATE/decoy-disk"
+    ;;
+  "compute disks delete"*)
+    disk="${words[3]}"
+    [ -z "${STUB_DISK_DELETE_FAILS:-}" ] || {
+      echo "ERROR: stub refuses to delete $disk" >&2
+      exit 1
+    }
+    rm -f "$STUB_STATE/scratch-$disk"
+    ;;
+  "sql instances describe"*)
+    case "$format" in
+      "value(state)") echo RUNNABLE ;;
+      "value(settings.deletionProtectionEnabled)")
+        if [ -f "$STUB_STATE/sql-dp" ]; then echo True; fi
+        ;;
+      "value(settings.backupConfiguration.enabled)") echo "${STUB_SQL_BACKUPS-True}" ;;
+      "value(settings.backupConfiguration.pointInTimeRecoveryEnabled)") echo "${STUB_SQL_PITR-True}" ;;
+      "value(settings.backupConfiguration.startTime)") echo "09:00" ;;
+      "value(settings.backupConfiguration.backupRetentionSettings.retainedBackups)") echo 14 ;;
+      "value(settings.availabilityType)") echo ZONAL ;;
+      *) echo "UNHANDLED sql describe format: $format" >>"$STUB_LOG"; exit 99 ;;
+    esac
+    ;;
+  "sql instances patch"*)
+    [ -n "${STUB_SQL_PATCH_IS_NOOP:-}" ] || touch "$STUB_STATE/sql-dp"
+    ;;
+  *)
+    echo "UNHANDLED gcloud: ${words[*]}" >&2
+    printf 'UNHANDLED gcloud: %s\n' "${words[*]}" >>"$STUB_LOG"
+    exit 99
+    ;;
+esac
