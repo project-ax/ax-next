@@ -30,7 +30,7 @@ export interface TestProxyPluginOpts {
     userId: string;
     agentId: string;
     allowlist: string[];
-    credentials: Record<string, { ref: string; kind: string }>;
+    credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
   }) => void;
 }
 

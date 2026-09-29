@@ -310,7 +310,7 @@ describe('resolveSkillReferencedConnectors (TASK-111)', () => {
 describe('foldConnectorCaps', () => {
   it('folds hosts into the allowlist + namespaces credential slots', () => {
     const allow = new Set<string>(['api.anthropic.com']);
-    const creds: Record<string, { ref: string; kind: string }> = {};
+    const creds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }> = {};
     const owners = new Map<string, string>();
     const connectors: ResolvedConnectorForOrch[] = [
       {
@@ -328,9 +328,13 @@ describe('foldConnectorCaps', () => {
     // The env-NAME is namespaced under the CONNECTOR namespace; the untagged
     // slot's REF is the `account:<connectorId>` vault key TASK-96's connect flow
     // writes (one source of truth — matches serviceTagForSlot's id fallback).
+    // TASK-687 — the slot's credential is also BOUND to the connector's own
+    // declared hosts (NOT the session allowlist, which here also holds
+    // api.anthropic.com).
     expect(creds[connectorCredentialEnvName('gh', 'GITHUB_TOKEN')]).toEqual({
       ref: 'account:gh',
       kind: 'api-key',
+      allowedHosts: ['api.github.com'],
     });
     expect(r.connectorSlotEnvNames).toEqual([
       { envName: 'connector:gh:GITHUB_TOKEN', bareSlot: 'GITHUB_TOKEN' },
@@ -482,6 +486,149 @@ describe('foldConnectorCaps', () => {
     expect(entry).toBeDefined();
     expect(entry!.ref).toBe('account:example'); // single-slot connector ⇒ collapsed ref
     expect(entry!.kind).toBe('mcp-oauth');
+  });
+
+  // TASK-687 — CREDENTIAL BINDING. Each folded credential is bound to the hosts
+  // of the connector that OWNS the slot, never the union across connectors and
+  // never the session allowlist. The proxy substitutes a placeholder only on
+  // egress to a host in its own credential's `allowedHosts`, so a cross-connector
+  // union here would let connector A's key be sent to connector B's host.
+  describe('credential binding (allowedHosts)', () => {
+    type Creds = Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
+
+    it('binds each connector slot to ONLY its own connector hosts (not the union)', () => {
+      const allow = new Set<string>();
+      const creds: Creds = {};
+      foldConnectorCaps(
+        [
+          {
+            id: 'alpha',
+            capabilities: {
+              allowedHosts: ['api.alpha.example', 'cdn.alpha.example'],
+              credentials: [{ slot: 'ALPHA_KEY', kind: 'api-key' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+          {
+            id: 'beta',
+            capabilities: {
+              allowedHosts: ['api.beta.example'],
+              credentials: [{ slot: 'BETA_KEY', kind: 'api-key' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+        ],
+        allow,
+        creds,
+        new Map(),
+      );
+      // The session allowlist IS the union...
+      expect([...allow].sort()).toEqual([
+        'api.alpha.example',
+        'api.beta.example',
+        'cdn.alpha.example',
+      ]);
+      // ...but each credential is bound to its own connector's hosts only.
+      expect(creds[connectorCredentialEnvName('alpha', 'ALPHA_KEY')]!.allowedHosts).toEqual([
+        'api.alpha.example',
+        'cdn.alpha.example',
+      ]);
+      expect(creds[connectorCredentialEnvName('beta', 'BETA_KEY')]!.allowedHosts).toEqual([
+        'api.beta.example',
+      ]);
+    });
+
+    it('binds every slot of a multi-slot connector to that connector hosts', () => {
+      const creds: Creds = {};
+      foldConnectorCaps(
+        [
+          {
+            id: 'multi',
+            capabilities: {
+              allowedHosts: ['api.multi.example'],
+              credentials: [
+                { slot: 'CLIENT_ID', kind: 'api-key' },
+                { slot: 'CLIENT_SECRET', kind: 'api-key' },
+              ],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+        ],
+        new Set(),
+        creds,
+        new Map(),
+      );
+      expect(creds[connectorCredentialEnvName('multi', 'CLIENT_ID')]!.allowedHosts).toEqual([
+        'api.multi.example',
+      ]);
+      expect(creds[connectorCredentialEnvName('multi', 'CLIENT_SECRET')]!.allowedHosts).toEqual([
+        'api.multi.example',
+      ]);
+    });
+
+    it('an oauth slot folds to mcp-oauth WITH its connector hosts', () => {
+      const creds: Creds = {};
+      foldConnectorCaps(
+        [
+          {
+            id: 'mcpsvc',
+            capabilities: {
+              allowedHosts: ['mcp.svc.example'],
+              credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'mcpsvc' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+        ],
+        new Set(),
+        creds,
+        new Map(),
+      );
+      expect(creds[connectorCredentialEnvName('mcpsvc', 'MCP_TOKEN')]).toEqual({
+        ref: 'account:mcpsvc',
+        kind: 'mcp-oauth',
+        allowedHosts: ['mcp.svc.example'],
+      });
+    });
+
+    it('a connector with no hosts yields an EMPTY binding (default deny), not undefined', () => {
+      const creds: Creds = {};
+      foldConnectorCaps(
+        [
+          {
+            id: 'nohosts',
+            capabilities: {
+              allowedHosts: [],
+              credentials: [{ slot: 'NOHOST_KEY', kind: 'api-key' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+        ],
+        new Set(['unrelated.example']),
+        creds,
+        new Map(),
+      );
+      // Present-and-empty, and NOT inherited from the pre-existing allowlist.
+      expect(creds[connectorCredentialEnvName('nohosts', 'NOHOST_KEY')]!.allowedHosts).toEqual([]);
+    });
+
+    it('stamps a COPY of the hosts: mutating the binding cannot change the connector caps', () => {
+      const caps = {
+        allowedHosts: ['api.copy.example'],
+        credentials: [{ slot: 'COPY_KEY', kind: 'api-key' as const }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      };
+      const creds: Creds = {};
+      foldConnectorCaps([{ id: 'copy', capabilities: caps }], new Set(), creds, new Map());
+      const bound = creds[connectorCredentialEnvName('copy', 'COPY_KEY')]!.allowedHosts!;
+      bound.push('evil.example');
+      expect(caps.allowedHosts).toEqual(['api.copy.example']);
+    });
   });
 
   it('detects npm/pypi package needs', () => {

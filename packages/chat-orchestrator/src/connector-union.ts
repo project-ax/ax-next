@@ -428,7 +428,7 @@ export interface FoldConnectorResult {
 export function foldConnectorCaps(
   connectors: ResolvedConnectorForOrch[],
   baseAllowSet: Set<string>,
-  baseCreds: Record<string, { ref: string; kind: string }>,
+  baseCreds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>,
   slotOwners: Map<string, string>,
 ): FoldConnectorResult {
   const installedEntries: FoldConnectorResult['installedEntries'] = [];
@@ -479,7 +479,11 @@ export function foldConnectorCaps(
       // classification/materialization, not resolution. The `api-key` path is
       // unchanged (identity map).
       const credKind = slotDef.kind === 'oauth' ? 'mcp-oauth' : slotDef.kind;
-      baseCreds[envName] = { ref, kind: credKind };
+      // TASK-687 — bind this slot's credential to THIS connector's OWN declared
+      // hosts (not the union across connectors): the proxy substitutes the
+      // placeholder only on egress to one of them, and a connector with no
+      // hosts binds to none (default deny). Applies to api-key and oauth alike.
+      baseCreds[envName] = { ref, kind: credKind, allowedHosts: [...c.capabilities.allowedHosts] };
       slotOwners.set(envName, `connector:${c.id}`);
       connectorSlotEnvNames.push({ envName, bareSlot: slotDef.slot });
     }
