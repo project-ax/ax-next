@@ -50,9 +50,11 @@ export interface RegisterRouteOptions {
 /**
  * Route table.
  *
- * Two-tier lookup: exact-match (fast, O(1) Map) is checked first; pattern
- * routes (`/admin/agents/:id`) fall through to a linear scan of the same
- * METHOD's pattern list. We keep patterns segregated by method so a GET
+ * Three-tier lookup, most specific first: exact-match (fast, O(1) Map);
+ * then `:param` patterns (`/admin/agents/:id`); then trailing-`*` splats,
+ * where the LONGEST fixed prefix wins (`/api/workspace/agents/:agentId/files/*`
+ * beats `/*`), NOT the first plugin to register. Patterns are a linear scan of
+ * the same METHOD's list. We keep patterns segregated by method so a GET
  * never accidentally matches a POST pattern, and so the 405 disambiguation
  * (`methodsFor(path)`) reports the methods that COULD handle this path —
  * including patterns.
@@ -176,9 +178,9 @@ export class Router {
     const patterns = this.patternsByMethod.get(method);
     if (patterns === undefined) return undefined;
     const requestSegments = splitPathSegments(path);
-    // Try non-splat patterns first (more specific). Splats are
-    // catchalls — they should only fire when nothing more specific
-    // matched. Within each tier, registration order is the tiebreaker.
+    // Tier 2: non-splat patterns (`/admin/agents/:id`). Two of these can only
+    // both match a request when they have the same shape, so registration
+    // order is a fine tiebreaker here.
     for (const entry of patterns) {
       if (isSplatPattern(entry)) continue;
       const params = matchPattern(entry.segments, requestSegments);
@@ -191,19 +193,32 @@ export class Router {
         };
       }
     }
+    // Tier 3: splats. Unlike tier 2, several DIFFERENT splats routinely match
+    // one request (`/*` and `/api/workspace/agents/:agentId/files/*` both match
+    // a file read), so registration order is NOT a safe tiebreaker: it is init
+    // order, and a preset that re-orders plugins silently changes the winner
+    // (TASK-717: the memory preset re-appended @ax/channel-web AFTER
+    // @ax/static-files, and every file route answered with the SPA's
+    // index.html). The most specific splat wins, whenever it registered.
+    // Registration order only settles splats that are equally specific.
+    let best: PatternRouteEntry | undefined;
+    let bestParams: Record<string, string> | undefined;
     for (const entry of patterns) {
       if (!isSplatPattern(entry)) continue;
       const params = matchPattern(entry.segments, requestSegments);
-      if (params !== null) {
-        return {
-          handler: entry.handler,
-          params,
-          bypassCsrf: entry.bypassCsrf,
-          maxBodyBytes: entry.maxBodyBytes,
-        };
+      if (params === null) continue;
+      if (best === undefined || isMoreSpecificSplat(entry, best)) {
+        best = entry;
+        bestParams = params;
       }
     }
-    return undefined;
+    if (best === undefined || bestParams === undefined) return undefined;
+    return {
+      handler: best.handler,
+      params: bestParams,
+      bypassCsrf: best.bypassCsrf,
+      maxBodyBytes: best.maxBodyBytes,
+    };
   }
 
   /**
@@ -288,6 +303,25 @@ function compilePathPattern(
 function isSplatPattern(entry: PatternRouteEntry): boolean {
   const last = entry.segments[entry.segments.length - 1];
   return last !== undefined && (last as { isSplat?: boolean }).isSplat === true;
+}
+
+/**
+ * Is splat `a` strictly more specific than splat `b`? Both already matched the
+ * same request, so they share a prefix as far as the shorter one goes; the
+ * longer fixed prefix (segments before the `*`) is the narrower claim. At equal
+ * length, a literal segment is narrower than a `:param` one, so
+ * `/things/special/*` beats `/things/:id/*`. Anything still tied is NOT more
+ * specific, which leaves the earlier registration in place.
+ */
+function isMoreSpecificSplat(a: PatternRouteEntry, b: PatternRouteEntry): boolean {
+  const aFixed = a.segments.length - 1;
+  const bFixed = b.segments.length - 1;
+  if (aFixed !== bFixed) return aFixed > bFixed;
+  return literalCount(a) > literalCount(b);
+}
+
+function literalCount(entry: PatternRouteEntry): number {
+  return entry.segments.filter((s) => s.paramName === null).length;
 }
 
 function splitPathSegments(path: string): string[] {
