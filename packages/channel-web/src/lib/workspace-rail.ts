@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { userFacingMessage } from './http';
 import { workspaceApi } from './workspace-api';
+import { useOptionalWorkspace } from './workspace-context';
 import type { AgentRailData, GrantRef } from './workspace-types';
 
 export interface AgentRailState {
@@ -73,7 +74,31 @@ export function useAgentRail(agentId: string | null): AgentRailState {
     })();
   }, [agentId]);
 
+  /**
+   * The roster's working/resting word for this agent (TASK-686).
+   *
+   * The rail's "Right now" line is the same server signal as that word, but
+   * this hook used to read it once per agent. A finished reply refreshes the
+   * roster — the header pill, the sidebar row and the Today strip all re-read
+   * — and the rail kept the "Working on your request" line it read when the
+   * turn began. Re-reading whenever the word CHANGES keeps the four surfaces
+   * saying the same thing without a poll: one extra read per transition.
+   * `null` outside a provider, where there is no roster to follow.
+   */
+  const rosterWord =
+    useOptionalWorkspace()?.board?.agents.find((a) => a.id === agentId)?.state ?? null;
+  const lastRosterWord = useRef({ agentId, word: rosterWord });
+
   useEffect(load, [load]);
+
+  useEffect(() => {
+    const last = lastRosterWord.current;
+    lastRosterWord.current = { agentId, word: rosterWord };
+    // A new agent is the effect above's read; only a change of word for the
+    // SAME agent is this one's.
+    if (last.agentId !== agentId || last.word === rosterWord) return;
+    load();
+  }, [agentId, rosterWord, load]);
 
   const revoke = useCallback(
     async (ref: GrantRef): Promise<'revoked' | 'already-gone' | 'failed'> => {

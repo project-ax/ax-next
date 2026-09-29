@@ -1,4 +1,4 @@
-import type { ToolDescriptor } from '@ax/core';
+import { HookBus, makeAgentContext, type ToolDescriptor } from '@ax/core';
 import { REQUEST_CAPABILITY_DESCRIPTOR, SEARCH_CATALOG_DESCRIPTOR } from '@ax/skill-broker';
 import { ARTIFACT_PUBLISH_DESCRIPTOR } from '@ax/tool-artifact-publish';
 import { CONNECTOR_PROPOSE_DESCRIPTOR } from '@ax/tool-connector-propose';
@@ -606,6 +606,9 @@ describe('@ax/preset-k8s wiring', () => {
     expect(activity!.manifest.registers).toEqual(['agent-activity:get']);
     expect(activity!.manifest.subscribes).toEqual([
       'chat:start',
+      // TASK-686: this preset runs the orchestrator in keepAlive, where a turn
+      // completes on chat:turn-end and chat:end waits for the idle reaper.
+      'chat:turn-end',
       'chat:end',
       'chat:turn-error',
       'tool:pre-call',
@@ -614,6 +617,37 @@ describe('@ax/preset-k8s wiring', () => {
     // to boot: no catalog means the line falls to its T0 floor.
     expect(activity!.manifest.calls).toEqual([]);
     expect(activity!.manifest.optionalCalls?.map((o) => o.hook)).toEqual(['tool:list']);
+  });
+
+  it("reads resting once a turn's reply is done, while the runner stays warm (TASK-686)", async () => {
+    // The preset's OWN agent-activity instance on a real bus, driven the way
+    // keepAlive drives it: chat:start, then the runner's turn-end (IPC-restamped
+    // ctx.reqId, the turn's reqId in the payload) and NO chat:end — the idle
+    // reaper would send that minutes later.
+    const plugins = createK8sPlugins(stubConfig);
+    const activity = plugins.find((p) => p.manifest.name === '@ax/agent-activity')!;
+    const bus = new HookBus();
+    await activity.init({ bus, config: undefined });
+    const at = (reqId: string) =>
+      makeAgentContext({ sessionId: 's1', userId: 'u1', agentId: 'a1', reqId });
+    const read = async () =>
+      (
+        await bus.call<{ agentId: string }, { activity: unknown }>(
+          'agent-activity:get',
+          at('reader'),
+          { agentId: 'a1' },
+        )
+      ).activity;
+
+    await bus.fire('chat:start', at('r1'), {});
+    expect(await read()).not.toBeNull();
+    await bus.fire('chat:turn-end', at('ipc-restamped'), {
+      reason: 'user-message-wait',
+      role: 'assistant',
+      reqId: 'r1',
+    });
+    expect(await read()).toBeNull();
+    await activity.shutdown?.();
   });
 
   it('loads @ax/connectors and registers the connectors:* hooks (CRUD TASK-91 + list-defaults TASK-97 + authored lifecycle TASK-94)', () => {

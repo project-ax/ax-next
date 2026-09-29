@@ -10,6 +10,13 @@ import type {
 
 const PLUGIN_NAME = '@ax/agent-activity';
 const PLUGIN_VERSION = '0.0.0';
+const SUBSCRIBES = [
+  'chat:start',
+  'chat:turn-end',
+  'chat:end',
+  'chat:turn-error',
+  'tool:pre-call',
+];
 
 // ---------------------------------------------------------------------------
 // ARCH-13 `returns` contract. A zod object strips keys it does not declare, so
@@ -71,6 +78,23 @@ interface ActivityRecord {
    * gates a call, it only names one.
    */
   catalog: Map<string, DeriveToolInput> | null;
+  /**
+   * The turns this record stands for, by the `agent:invoke` reqId each
+   * `chat:start` carried (TASK-686). A turn leaves this set on its
+   * `chat:turn-end`, and the record goes when the set is empty.
+   *
+   * This is NOT a refcount that gates forgetting, and that is what keeps it
+   * safe. `chat:end` and `chat:turn-error` still forget the whole record
+   * exactly as before, so an id stranded here (a start whose turn-end never
+   * came) can never outlive the end that used to clear it. The set only lets
+   * the record go EARLIER — on the turn-end under keepAlive, where the runner
+   * stays warm and `chat:end` trails the reply by the whole idle window —
+   * never later.
+   *
+   * Empty for a record a `tool:pre-call` started with no `chat:start` behind
+   * it; such a record closes on the next turn-end for its agent.
+   */
+  turns: Set<string>;
 }
 
 /**
@@ -79,7 +103,7 @@ interface ActivityRecord {
  * Reads the tool catalog's in-repo `activityPhrase` and the context's
  * human-authored trigger label, and answers "what is this agent doing" without
  * ever asking a model. Observe-only: it registers one read hook and subscribes
- * to four, and it never votes on anything.
+ * to five, and it never votes on anything.
  *
  * Keyed by `agentId` alone. Two conversations running on one agent share the
  * line and the later step wins — the rail this feeds is per-agent, so there is
@@ -108,7 +132,7 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
             'without a tool catalog the activity line cannot read a tool\'s activityPhrase, so it resolves to its T0 floor (the trigger label, else "Working on your request") instead of naming the running tool',
         },
       ],
-      subscribes: ['chat:start', 'chat:end', 'chat:turn-error', 'tool:pre-call'],
+      subscribes: [...SUBSCRIBES],
     },
 
     async init({ bus }) {
@@ -137,13 +161,48 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
       bus.subscribe<unknown>('chat:start', PLUGIN_NAME, async (ctx) => {
         observe(ctx, () => {
           const at = now();
+          // The line is still one per agent and the later start still wins
+          // it; only the turn ids carry over, so a start beside a running turn
+          // does not make the first turn's turn-end read as the last one.
+          const turns = byAgent.get(ctx.agentId)?.turns ?? new Set<string>();
+          turns.add(ctx.reqId);
           byAgent.set(ctx.agentId, {
             startedAt: at,
             lastStepAt: at,
             trigger: ctx.triggerLabel ?? null,
             tool: null,
             catalog: null,
+            turns,
           });
+        });
+        return undefined;
+      });
+
+      // A turn's reply is done (TASK-686). Under keepAlive this — not
+      // `chat:end` — is when a turn completes: the runner is left warm and
+      // `chat:end` only fires when the idle reaper takes it, minutes later.
+      //
+      // The turn is named by `payload.reqId`, NOT `ctx.reqId`: the IPC
+      // boundary stamps a fresh `ctx.reqId` on every runner request, and the
+      // runner echoes the originating `agent:invoke` reqId in the payload —
+      // the same id the orchestrator resolves its per-turn waiter by.
+      //
+      // One user message emits two turn-ends (tool, then assistant) under one
+      // reqId; the second finds nothing left to remove, which is a no-op.
+      bus.subscribe<unknown>('chat:turn-end', PLUGIN_NAME, async (ctx, payload) => {
+        observe(ctx, () => {
+          const record = byAgent.get(ctx.agentId);
+          if (record === undefined) return;
+          const reqId = (payload as { reqId?: unknown } | null | undefined)?.reqId;
+          // A turn-end that names no turn cannot be matched to one, so it
+          // ends them all — the coarse answer `chat:end` gives, in the
+          // under-report direction ("we don't know" reads resting).
+          if (typeof reqId !== 'string' || reqId.length === 0) {
+            byAgent.delete(ctx.agentId);
+            return;
+          }
+          record.turns.delete(reqId);
+          if (record.turns.size === 0) byAgent.delete(ctx.agentId);
         });
         return undefined;
       });
@@ -187,7 +246,7 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
     // empty map is too.
     shutdown() {
       if (busRef !== null) {
-        for (const hook of ['chat:start', 'chat:end', 'chat:turn-error', 'tool:pre-call']) {
+        for (const hook of SUBSCRIBES) {
           busRef.unsubscribe(hook, PLUGIN_NAME);
         }
         busRef = null;
@@ -218,6 +277,8 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
       trigger: ctx.triggerLabel ?? null,
       tool: null,
       catalog: null,
+      // No turn ids: `ctx.reqId` here is the IPC boundary's, not a turn's.
+      turns: new Set<string>(),
     };
     // Record the STEP before looking anything up. A catalog read that fails
     // should cost us the phrase, not the fact that the agent is alive — the

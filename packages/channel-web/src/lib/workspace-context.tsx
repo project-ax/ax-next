@@ -73,6 +73,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
+/**
+ * The roster when there is one, `null` outside a `WorkspaceProvider` — for a
+ * hook that only FOLLOWS the roster and must keep working where there is none
+ * (a component rendered on its own, in a test or elsewhere).
+ */
+export function useOptionalWorkspace(): WorkspaceContextValue | null {
+  return useContext(Ctx);
+}
+
 export function useWorkspace(): WorkspaceContextValue {
   const v = useContext(Ctx);
   if (!v) throw new Error('useWorkspace outside WorkspaceProvider');
