@@ -36,4 +36,5 @@ export {
   GetConversationQuery,
   GetConversationResponse,
   ListAgentsResponse,
+  InterruptTurnResponse,
 } from '../wire/chat.js';
