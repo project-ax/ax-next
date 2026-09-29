@@ -178,8 +178,8 @@ export function byVerdict<T extends { verdict: CapabilityVerdict }>(rows: readon
  * immediately — and the fetch still cannot be un-made, because the URL's owner
  * has already seen the request. "No grace period" and "cannot be taken back"
  * are both true of that one call. (Whether that rule SHOULD also set
- * `irreversible` is TASK-409, and deliberately not settled here — this card
- * changes description, never approval timing.)
+ * `irreversible` was settled by TASK-409: no. See
+ * `.claude/memory/decisions/2026-09-28-TASK-409.md`.)
  *
  * What the guard still forbids, and now forbids for a stated reason, is either
  * entry making a claim about THE CONTROL: the undo window, the grace period,
