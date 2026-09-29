@@ -300,6 +300,18 @@ function parseProxyToken(headerValue: string | string[] | undefined): string | u
 }
 
 /**
+ * The result of authenticating a caller: the session's config AND the key it is
+ * registered under in the shared `sessions` Map. The key is what the credential
+ * registry is keyed by too (the plugin registers both under the same session
+ * id), so credential substitution is scoped through it (TASK-687) rather than
+ * through `SessionConfig.sessionId`, which is optional.
+ */
+interface AuthenticatedCaller {
+  sessionKey: string;
+  session: SessionConfig;
+}
+
+/**
  * AUTHENTICATE the caller (TASK-158): resolve the request's proxy token to the
  * one registered session that owns it. `undefined` — a missing, malformed or
  * unknown token — means the request MUST be denied; there is deliberately no
@@ -316,15 +328,17 @@ function parseProxyToken(headerValue: string | string[] | undefined): string | u
 function authenticateCaller(
   proxyAuthHeader: string | string[] | undefined,
   sessions: Map<string, SessionConfig>,
-): SessionConfig | undefined {
+): AuthenticatedCaller | undefined {
   const token = parseProxyToken(proxyAuthHeader);
   if (token === undefined) return undefined;
   const presented = Buffer.from(token, 'utf8');
-  let owner: SessionConfig | undefined;
-  for (const session of sessions.values()) {
+  let owner: AuthenticatedCaller | undefined;
+  for (const [sessionKey, session] of sessions) {
     const expected = Buffer.from(String(session.proxyToken), 'utf8');
     if (expected.length !== presented.length) continue;
-    if (timingSafeEqual(expected, presented) && owner === undefined) owner = session;
+    if (timingSafeEqual(expected, presented) && owner === undefined) {
+      owner = { sessionKey, session };
+    }
   }
   return owner;
 }
@@ -496,8 +510,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // this request. Missing, malformed or unknown → 407, nothing else runs. A
     // keep-alive connection is re-checked per request (each carries its own
     // Proxy-Authorization); nothing about a connection is trusted.
-    const callerSession = authenticateCaller(req.headers['proxy-authorization'], sessions);
-    if (callerSession === undefined) {
+    const caller = authenticateCaller(req.headers['proxy-authorization'], sessions);
+    if (caller === undefined) {
       audit({
         action: 'proxy_request',
         method,
@@ -516,6 +530,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       res.end(PROXY_AUTH_REQUIRED_BODY);
       return;
     }
+    const callerSession = caller.session;
 
     try {
       // The bridge forwards the absolute URL in `req.url` (HTTP-proxy convention).
@@ -693,12 +708,16 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   //
   // Ported from v1 ~/dev/ai/ax/src/host/web-proxy.ts:497-620 with adaptations:
   //  - `options.mitm.credentials` → the shared `SharedCredentialRegistry`
-  //    already passed to the listener. One tunnel substitutes ANY active
-  //    session's placeholder; cross-session collision is statistically
-  //    infeasible (16 random bytes per placeholder). NOTE (TASK-158): egress
-  //    REACH is per-session (the CONNECT was gated on the caller's own
-  //    allowlist), but placeholder SUBSTITUTION is not yet bound to the owning
-  //    session or to a destination host — that is the sibling card TASK-687.
+  //    already passed to the listener. Substitution is bound (TASK-687) on two
+  //    axes, both fixed at the moment the tunnel is granted: WHO — only the
+  //    authenticated caller's own placeholders (the CONNECT was gated on the
+  //    caller's own allowlist, TASK-158, and its placeholders are looked up by
+  //    the same session key); and WHERE — only placeholders whose credential is
+  //    bound to this tunnel's destination host. A placeholder for any other
+  //    host, or owned by any other session, is forwarded verbatim as an inert
+  //    fake token. Being on the session allowlist is NOT enough: `proxy:add-host`
+  //    and private connectors let a user allowlist a host they control, and that
+  //    must never make an operator-paid key substitutable there.
   //  - `generateDomainCert` static-imported (no longer dynamic).
   //  - `canaryToken` aggregated across sessions (per-session field, not
   //    a single global option). A chunk matches if any session's token is in it.
@@ -715,7 +734,19 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     startTime: number,
     target: string,
     callerSession: SessionConfig,
+    callerSessionKey: string,
   ): Promise<void> {
+    // The substitution surface for THIS tunnel (TASK-687): the authenticated
+    // caller's placeholders bound to `hostname`. `hostname` is the CONNECT target
+    // that passed the caller's allowlist gate, was resolved by resolveAndCheck,
+    // and is the host `targetTls` below actually dials (by resolved IP, SNI =
+    // hostname) — so it is the only destination these bytes can reach. It is
+    // deliberately NOT read from the inner `Host` header or SNI the client wrote
+    // inside the tunnel: a client that CONNECTs to a host it controls and writes
+    // `Host: api.anthropic.com` still delivers to the host it controls. The view
+    // is live (looked up per call), so closing the session stops substitution on
+    // an already-open keep-alive tunnel.
+    const replacer = registry.replacerFor(callerSessionKey, hostname);
     const domainCert = generateDomainCert(hostname, ca);
 
     // Tell the client the tunnel is established before kicking off TLS.
@@ -778,10 +809,10 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // One framer per connection: it frames the decrypted client→upstream byte
     // stream into HTTP/1.1 requests so each request head's Basic-auth value can
     // be decoded → canary-scanned → placeholder-substituted → re-base64-encoded.
-    // Bodies keep the existing per-chunk verbatim substitution (registry is a
-    // valid Replacer). Re-encoding base64 cannot emit CR/LF, so a substituted
-    // value can't inject headers (I1/§4.5).
-    const framer = new RequestFramer(registry, canaryTokens, {
+    // Only request HEADS are substituted (bodies are forwarded byte-exact — see
+    // RequestFramer), through the host-bound `replacer` above. Re-encoding base64
+    // cannot emit CR/LF, so a substituted value can't inject headers (I1/§4.5).
+    const framer = new RequestFramer(replacer, canaryTokens, {
       // Oversized head → verbatim passthrough. Log the event only; never the
       // bytes (no-secret-logging, I7 / §4.5).
       onOversizedHead: () => { /* bounded-head fallback engaged — no value logged */ },
@@ -849,10 +880,10 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // existed. MUST happen BEFORE we'd otherwise let a clientTls 'data'
     // listener race ahead — same lesson as the Task 7 head-buffer fix.
     // ClientHello bytes won't typically contain placeholders, but run them
-    // through replaceAllBuffer anyway in case the head straddles a request
-    // boundary on a long-lived tunnel.
+    // through the host-bound replacer anyway in case the head straddles a
+    // request boundary on a long-lived tunnel.
     if (head.length > 0) {
-      const replaced = registry.replaceAllBuffer(head);
+      const replaced = replacer.replaceAllBuffer(head);
       if (replaced !== head) credentialInjected = true;
       targetTls.write(replaced);
     }
@@ -924,8 +955,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // the ONE session whose policy governs this tunnel. Missing, malformed or
     // unknown → 407, no DNS lookup, no upstream connection. (Bytes after the
     // CONNECT headers, `head`, are never read on this path.)
-    const callerSession = authenticateCaller(req.headers['proxy-authorization'], sessions);
-    if (callerSession === undefined) {
+    const caller = authenticateCaller(req.headers['proxy-authorization'], sessions);
+    if (caller === undefined) {
       clientSocket.write(
         `HTTP/1.1 407 Proxy Authentication Required\r\n` +
           `Proxy-Authenticate: ${PROXY_AUTHENTICATE}\r\n` +
@@ -948,6 +979,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       });
       return;
     }
+    const callerSession = caller.session;
 
     // Parse host:port from CONNECT target ("host:port")
     const [hostname, portStr] = target.split(':');
@@ -1025,6 +1057,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           startTime,
           target,
           callerSession,
+          caller.sessionKey,
         );
         return;
       }
