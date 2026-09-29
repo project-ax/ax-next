@@ -27,7 +27,7 @@ The kind canary uses `auth.devBootstrap.token` as a pre-shared bearer. The token
 
 ```
 # 1. POST the token from the host shell. The cookie comes back in Set-Cookie.
-TOKEN=$(kubectl -n ax-next get secret ax-next-secrets \
+TOKEN=$(kubectl --context kind-ax-next-dev -n ax-next get secret ax-next-secrets \
   -o jsonpath='{.data.dev-bootstrap-token}' | base64 -d)
 curl -i -X POST http://localhost:9090/auth/dev-bootstrap \
   -H 'Content-Type: application/json' \
@@ -96,7 +96,7 @@ What to assert on:
 
 Common failure modes specific to this recipe:
 
-- Assistant message stays empty / spinner never resolves → runner pod didn't spawn or didn't connect back. Check `kubectl get pods -n ax-next-runners` and the host's `[ax/ipc-http]` log lines.
+- Assistant message stays empty / spinner never resolves → runner pod didn't spawn or didn't connect back. Check `kubectl --context kind-ax-next-dev get pods -n ax-next-runners` and the host's `[ax/ipc-http]` log lines.
 - Tool block missing entirely → the assistant chose not to use a tool. Either the prompt was too vague or the tool wasn't registered. Check host logs for `tool:execute` entries.
 - Tool output present but wrong → real bug; this is the case the loop exists for.
 
@@ -123,7 +123,7 @@ browser_wait_for({ textGone: 'Generating' })
 browser_snapshot()
 ```
 
-If the partial state is wrong but the final state is right, the bug is in the chat-surface streaming code, not the orchestrator. If the partial state never appears at all, the streaming protocol is dropping chunks — check `browser_network_requests` for the SSE / chunked response and `kubectl logs deploy/ax-next-host` for `chat:stream` entries.
+If the partial state is wrong but the final state is right, the bug is in the chat-surface streaming code, not the orchestrator. If the partial state never appears at all, the streaming protocol is dropping chunks — check `browser_network_requests` for the SSE / chunked response and `kubectl --context kind-ax-next-dev logs deploy/ax-next-host` for `chat:stream` entries.
 
 ---
 
@@ -144,7 +144,7 @@ browser_press_key('Enter')
 browser_wait_for({ text: '47' })
 
 # Cross-check server state
-kubectl exec -n ax-next deploy/ax-next-host -- \
+kubectl --context kind-ax-next-dev exec -n ax-next deploy/ax-next-host -- \
   psql -U ax_next -d ax_next \
   -c "SELECT count(*) FROM session_postgres_v1_sessions WHERE id = '$SESSION_ID';"
 ```
@@ -164,10 +164,10 @@ browser_console_messages()                           # all errors + warnings
 browser_network_requests()                           # full request log
 
 # Then jump to cluster-side
-kubectl -n ax-next logs deploy/ax-next-host --tail=300 > /tmp/host.log
-kubectl -n ax-next-runners logs -l app.kubernetes.io/component=ax-next-runner \
+kubectl --context kind-ax-next-dev -n ax-next logs deploy/ax-next-host --tail=300 > /tmp/host.log
+kubectl --context kind-ax-next-dev -n ax-next-runners logs -l app.kubernetes.io/component=ax-next-runner \
   --tail=300 --all-containers --prefix > /tmp/runner.log
-kubectl -n ax-next describe pod -l app.kubernetes.io/component=ax-next-host \
+kubectl --context kind-ax-next-dev -n ax-next describe pod -l app.kubernetes.io/component=ax-next-host \
   | tail -80 > /tmp/host-describe.log
 ```
 

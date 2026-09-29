@@ -52,7 +52,7 @@ kubectl --context kind-ax-next-dev -n ax-next exec deploy/ax-next-host -c host -
 
 ## Things that will bite
 
-- **`helm upgrade --reuse-values` fails** with `nil pointer evaluating
+- **An upgrade with `--reuse-values` fails** with `nil pointer evaluating
   interface {}.storage` if the release was installed before the `memory.facts`
   values existed. `--reuse-values` keeps the OLD release's values and skips the
   new chart defaults. Pass the old values as a file instead (step 3).
