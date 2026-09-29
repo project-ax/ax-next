@@ -40,6 +40,7 @@ import {
   toWireDecision,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
+import { KICKOFF_TEXT } from '../../lib/bootstrap-kickoff.js';
 
 function mkReq(
   params: Record<string, string> = {},
@@ -926,6 +927,120 @@ describe('channel-web agent-workspace BFF', () => {
     const foreign = mkRes();
     await h.saveRules(mkReq({ agentId: 'a2' }, { body: 'x' }), foreign.res);
     expect(foreign.captured.statusCode).toBe(404);
+  });
+
+  /*
+    TASK-689 — THE KICKOFF TURN IS THE AGENT'S OPENING, NOT SOMETHING THE PERSON
+    SAID.
+
+    A freshly created agent is woken with `KICKOFF_TEXT` as its first user turn
+    (the runner can only start a turn from one). Drawn as a bubble it read as a
+    message the person never typed. The thread builder therefore skips it — but
+    ONLY as turn 0, and ONLY when the text is exactly the reserved sentence:
+
+      - skipped        → the agent's greeting is the first thing in the thread;
+      - an ordinary `hi` as turn 0 (an admin-made agent, the person's own
+        opener) must still be drawn — over-skipping loses a real message;
+      - the same sentence LATER in a conversation is somebody pasting it, and
+        it is theirs to see.
+
+    VACUITY, against the unfixed code: the first case FAILS (the builder has no
+    such rule, so the kickoff renders as a user row). The other two PASS either
+    way — they are guards against an over-broad fix (skip every turn-0 user
+    message / skip the sentence anywhere), and were mutation-checked for that.
+  */
+  it('(TASK-689) skips the reserved kickoff turn: the agent\'s greeting opens the thread', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: KICKOFF_TEXT }],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'assistant',
+        contentBlocks: [{ type: 'text', text: 'Hey — I just came online.' }],
+        createdAt: '2026-08-01T10:00:04.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    expect(body.thread.map((m) => m.kind)).toEqual(['agent']);
+    expect(JSON.stringify(body.thread)).not.toContain(KICKOFF_TEXT);
+  });
+
+  it('(TASK-689) still draws an ordinary `hi` as turn 0 — only the reserved sentence is hidden', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'hi' }],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'assistant',
+        contentBlocks: [{ type: 'text', text: 'Hello!' }],
+        createdAt: '2026-08-01T10:00:04.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    expect(body.thread.map((m) => m.kind)).toEqual(['user', 'agent']);
+    expect(body.thread[0]).toMatchObject({ kind: 'user', text: 'hi' });
+  });
+
+  it('(TASK-689) still draws the reserved sentence when it is NOT turn 0 — a person pasting it sees their own message', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'c1', agentId: 'a1' })];
+    turnsByConversation.set('c1', [
+      {
+        turnId: 't1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'what is on today' }],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+      {
+        turnId: 't2',
+        turnIndex: 1,
+        role: 'assistant',
+        contentBlocks: [{ type: 'text', text: 'Four things.' }],
+        createdAt: '2026-08-01T10:00:04.000Z',
+      },
+      {
+        turnId: 't3',
+        turnIndex: 2,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: KICKOFF_TEXT }],
+        createdAt: '2026-08-01T10:05:00.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+    const body = captured.body as { thread: Array<Record<string, unknown>> };
+
+    expect(body.thread.map((m) => m.kind)).toEqual(['user', 'agent', 'user']);
+    expect(body.thread[2]).toMatchObject({ kind: 'user', text: KICKOFF_TEXT });
   });
 
   /*

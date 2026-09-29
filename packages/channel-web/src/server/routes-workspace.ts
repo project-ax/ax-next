@@ -146,6 +146,7 @@ import type {
 import { isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceLine } from '../lib/fence-line.js';
+import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 // The renderer's own ceiling for the untrusted `detail` line. Imported rather
 // than restated so the host and the browser cannot drift about where that
 // sentence ends (invariant 4) — the module is pure constants and one pure
@@ -2403,6 +2404,17 @@ function buildThread(
         already does since TASK-352.
       */
       if (text.length === 0 && attachments.length === 0) continue;
+      /*
+        TASK-689 — the kickoff is the agent's opening, not something the person
+        said. A new agent is woken with `KICKOFF_TEXT` because the runner can
+        only start a turn from a user message; drawn here it reads as a message
+        they never typed, so the agent's own greeting opens the thread instead.
+
+        TURN 0 ONLY, and only the exact sentence: the same words later in a
+        conversation are somebody pasting them, and that message is theirs to
+        see. (Titles are unaffected either way — they read the raw transcript.)
+      */
+      if (turn.turnIndex === 0 && text === KICKOFF_TEXT) continue;
       dated.push({
         at: turn.createdAt,
         msg: {

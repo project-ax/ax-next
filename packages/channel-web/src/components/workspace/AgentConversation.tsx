@@ -222,6 +222,15 @@ interface Props {
    */
   stopping?: boolean;
   /**
+   * TASK-689 — a turn has just finished and the thread's re-read has not
+   * landed, so an empty `thread` is not yet the durable truth. It suppresses
+   * ONLY the "Nothing here yet" copy (the composer is untouched — `busy` is
+   * the composer's, and extending it would disable every send for the length of
+   * a re-read). Without it a new agent's greeting vanishes, the pane says it is
+   * empty, and the greeting reappears.
+   */
+  settling?: boolean;
+  /**
    * `attachments` are the uploaded files this message carries, in pick order,
    * each carrying the id the wire needs AND the name and type the transcript
    * needs (TASK-424 — the caller has to draw the person's own file in their
@@ -313,6 +322,7 @@ export function AgentConversation({
   busy = false,
   onStop,
   stopping = false,
+  settling = false,
   onSend,
   onApprove,
   onDismiss,
@@ -712,7 +722,7 @@ export function AgentConversation({
             can do. It names where the reader is and what the box below is
             for, and stops there.
           */}
-          {thread.length === 0 && !readOnly && grants.length === 0 && (
+          {thread.length === 0 && !readOnly && !settling && grants.length === 0 && (
             <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon">

@@ -196,6 +196,30 @@ describe('workspace create-agent door', () => {
   });
 
   /**
+   * TASK-689 — the kickoff is the agent's opening, not something the person
+   * said, so its sentence must never be drawn as their bubble. This is the
+   * whole seam, end to end, with the real `AgentView` mounted: the shell sends
+   * the kickoff, marks it hidden, and the agent's greeting is the first thing
+   * on screen.
+   *
+   * VACUITY: against the code before TASK-689 the shell hands `AgentView` a
+   * plain pending reply, which draws the kickoff sentence as a user bubble —
+   * `queryByText(KICKOFF_TEXT)` finds it and this goes red.
+   */
+  it('(TASK-689) sends the kickoff hidden: the reply streams, the sentence is never drawn', async () => {
+    sendMessageMock.mockResolvedValue({ reqId: 'r1', conversationId: 'c1' });
+    vi.mocked(workspaceApi.streamReply).mockImplementationOnce(async (_r, h) => {
+      h.onText?.('Hey — I just came online.');
+      await new Promise(() => {}); // still streaming
+    });
+
+    renderShell({ kickoffAgentId: 'a-new' });
+
+    expect(await screen.findByText('Hey — I just came online.')).toBeInTheDocument();
+    expect(screen.queryByText(KICKOFF_TEXT)).not.toBeInTheDocument();
+  });
+
+  /**
    * VACUITY: against unfixed code, same as above — no effect exists at all,
    * so a rejecting `sendMessage` cannot be observed either way, `pathname`
    * never changes, and no toast is raised. This test goes red until the

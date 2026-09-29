@@ -492,6 +492,12 @@ function Inner({
      * grant raised on it would arrive unanswerable (TASK-350 review).
      */
     conversationId: string;
+    /**
+     * TASK-689 — the person did not type this: it is the kickoff that wakes a
+     * just-created agent. `AgentView` streams its reply but draws no bubble for
+     * it. Absent for every message a person actually wrote.
+     */
+    hidden?: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -511,15 +517,18 @@ function Inner({
    * needs it to keep the user's draft on a failed send (its own comment on
    * `dispatch` documents the past bug where a swallowed rejection lost the
    * draft), and the kickoff effect needs it to decide whether to toast.
+   *
+   * `hidden` is the kickoff's alone (TASK-689): the words are not the person's,
+   * so `AgentView` streams the reply and draws no bubble for them.
    */
   const startTurn = useCallback(
-    // `attachments` is optional so the TASK-249 kickoff effect's existing
-    // two-arg call (`startTurn(id, KICKOFF_TEXT)`) keeps compiling and
-    // behaving exactly as before — a plain text-only send.
+    // `attachments` and `opts` are optional so a plain text-only send — the
+    // home composer's, and the kickoff's before TASK-689 — keeps its short form.
     async (
       agentId: string,
       text: string,
       attachments?: readonly SendableAttachment[],
+      opts?: { hidden?: boolean },
     ): Promise<void> => {
       const files = attachments ?? [];
       const { reqId, conversationId } = await workspaceApi.sendMessage({
@@ -530,7 +539,14 @@ function Inner({
           ? { attachmentIds: files.map((a) => a.attachmentId) }
           : {}),
       });
-      setPendingReply({ agentId, reqId, text, conversationId, attachments: files });
+      setPendingReply({
+        agentId,
+        reqId,
+        text,
+        conversationId,
+        attachments: files,
+        ...(opts?.hidden === true ? { hidden: true } : {}),
+      });
       navigate({ kind: 'agent', id: agentId, tab: 'chat' });
     },
     [navigate],
@@ -625,7 +641,10 @@ function Inner({
    * TASK-249 — the kickoff for an agent just created from THIS surface.
    *
    * Sends `KICKOFF_TEXT` (see `lib/bootstrap-kickoff.ts`) through the same
-   * `startTurn` a person's own first message uses.
+   * `startTurn` a person's own first message uses — but HIDDEN (TASK-689): the
+   * words are the agent's cue to open the conversation, not something the
+   * person said, so `AgentView` streams the greeting and draws no bubble for
+   * them, and the thread builder skips the stored turn on reload.
    *
    * Ref-guarded on the id, mirroring `AgentView`'s `consumedReqId` /
    * `onPendingReplyConsumed` pattern, so a re-render with the same
@@ -639,7 +658,7 @@ function Inner({
    * once the board — and it — eventually mount.
    *
    * One rare consequence, accepted (review): if the board read FAILS while a
-   * kickoff is pending, the `'hi'` is still POSTed and the route still moves,
+   * kickoff is pending, the kickoff is still POSTed and the route still moves,
    * under the error screen. The turn is real and server-side, so nothing is
    * lost; it just is not streamed, and a refresh shows it. Holding the kickoff
    * back until the board lands would trade that for the worse failure — a
@@ -652,9 +671,11 @@ function Inner({
     kickedOffId.current = kickoffAgentId;
     const id = kickoffAgentId;
     onKickoffConsumed?.();
-    startTurn(id, KICKOFF_TEXT)
+    startTurn(id, KICKOFF_TEXT, undefined, { hidden: true })
       .catch(() => {
-        // The agent exists, it just has not been greeted — never silently.
+        // The agent exists, it just has not been greeted — never silently. The
+        // words below are the way forward, not a claim we said anything for
+        // them: the person types, and the bootstrap script runs on that.
         toastActions.error(
           'Your agent is ready, but we could not say hello for you.',
           'Send it a message to get started — it will introduce itself.',
@@ -1008,6 +1029,7 @@ function Inner({
                       text: pendingReply.text,
                       conversationId: pendingReply.conversationId,
                       attachments: pendingReply.attachments,
+                      ...(pendingReply.hidden === true ? { hidden: true } : {}),
                     }
                   : null
               }

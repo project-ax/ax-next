@@ -30,6 +30,7 @@ import {
 } from '../decision-copy';
 import { uploadAttachment } from '@/lib/attachment-upload';
 import { StorageFullError } from '@/lib/storage-full';
+import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { rail as railFixture } from './rail-fixture';
 import {
   getWorkspaceGrantSnapshot,
@@ -1083,5 +1084,256 @@ describe('handing this agent a file', () => {
     const resent = sendMock.mock.calls[0]?.[0];
     expect(resent?.text).toBe('have a look at this');
     expect(Object.keys(resent ?? {})).not.toContain('attachmentIds');
+  });
+});
+
+/*
+  TASK-689 — THE HIDDEN KICKOFF.
+
+  A just-created agent is woken with `KICKOFF_TEXT`, sent by the shell on the
+  person's behalf. They never typed it, so the pane must not draw it — the
+  agent's own greeting is what they should see first. `pendingReply.hidden` is
+  how the shell says so.
+
+  `sent` is NOT dropped for a hidden turn, only its bubble: `sent` is also what
+  the failure strip reads, and a kickoff that fails must not leave the person
+  looking at a silent, empty pane. What that strip offers differs, though —
+  see the third case.
+
+  VACUITY, against the code before TASK-689 (which has no `hidden` and draws
+  every pending reply): cases 1, 3 and 4 FAIL — the kickoff sentence renders as
+  a bubble; the strip says "Resend" and reads "Nothing you sent was lost"; the
+  emptied pane says "Nothing here yet". Case 2 passes either way: it is the
+  guard against over-hiding (a person's OWN first message from Today must keep
+  its bubble), and was mutation-checked for that.
+*/
+describe('a kickoff the shell sent on the person\'s behalf (TASK-689)', () => {
+  type StreamHandlers = Parameters<typeof workspaceApi.streamReply>[1];
+  const EMPTY_TITLE = 'Nothing here yet';
+  const hiddenKickoff = {
+    reqId: 'r-kick',
+    text: KICKOFF_TEXT,
+    conversationId: 'c-new',
+    attachments: [],
+    hidden: true,
+  } as const;
+
+  it('draws no bubble for it, but still streams the agent\'s reply', async () => {
+    // The mount-time read lands with NOTHING durable to show (the builder skips
+    // the kickoff turn), and the greeting streams in behind it.
+    agentMock.mockResolvedValue(detail({ conversationId: 'c-new', thread: [] }));
+    streamMock.mockImplementation(async (_r: string, h: StreamHandlers) => {
+      h.onText?.('Hey — I just came online.');
+      await new Promise(() => {}); // still streaming
+    });
+
+    renderView({ pendingReply: hiddenKickoff });
+
+    expect(await screen.findByText('Hey — I just came online.')).toBeTruthy();
+    expect(screen.queryByText(KICKOFF_TEXT)).toBeNull();
+    expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
+  });
+
+  it('still draws a person\'s OWN first message (only a hidden one is skipped)', async () => {
+    agentMock.mockResolvedValue(detail({ conversationId: 'c-new', thread: [] }));
+    streamMock.mockImplementation(async (_r: string, h: StreamHandlers) => {
+      h.onText?.('On it.');
+      await new Promise(() => {});
+    });
+
+    renderView({
+      pendingReply: {
+        reqId: 'r-own',
+        text: 'what is on today',
+        conversationId: 'c-new',
+        attachments: [],
+      },
+    });
+
+    expect(await screen.findByText('what is on today')).toBeTruthy();
+    expect(await screen.findByText('On it.')).toBeTruthy();
+  });
+
+  it('when the kickoff FAILS, says so and points at the composer — no Resend, no kickoff sentence', async () => {
+    agentMock.mockResolvedValue(detail({ conversationId: 'c-new', thread: [] }));
+    streamMock.mockImplementation(async (_r: string, h: StreamHandlers) => {
+      h.onError?.('The runner went away.');
+    });
+
+    renderView({ pendingReply: hiddenKickoff });
+
+    // A failure the person can act on: what happened, and the one next step.
+    expect(await screen.findByText(/hello didn’t come through/)).toBeTruthy();
+    expect(screen.getByPlaceholderText('Message Quill')).toBeTruthy();
+    // RESEND WOULD BE WRONG HERE. The first kickoff may already be turn 0 in the
+    // transcript; a second one would land at turn 2, where the builder (turn 0
+    // only) draws it as a message the person never typed. The composer works
+    // fine — the bootstrap script runs on any first message.
+    expect(screen.queryByRole('button', { name: 'Resend' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+    expect(screen.queryByText(KICKOFF_TEXT)).toBeNull();
+    expect(screen.queryByText(/Nothing you sent was lost/)).toBeNull();
+  });
+
+  it('never claims the pane is empty in the gap between the reply finishing and the re-read landing', async () => {
+    // First read: nothing durable. Second read (the one `onDone` fires): held
+    // open, so the pane is exactly as the person sees it in that gap — streamed
+    // text cleared, bubble skipped, durable thread still empty.
+    let releaseReread: (d: AgentDetail) => void = () => {};
+    agentMock
+      .mockResolvedValueOnce(detail({ conversationId: 'c-new', thread: [] }))
+      .mockImplementationOnce(
+        () => new Promise<AgentDetail>((resolve) => { releaseReread = resolve; }),
+      );
+    streamMock.mockImplementation(async (_r: string, h: StreamHandlers) => {
+      h.onText?.('Hey — I just came online.');
+      h.onDone?.();
+    });
+
+    renderView({ pendingReply: hiddenKickoff });
+
+    await waitFor(() => expect(agentMock).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
+
+    releaseReread(
+      detail({
+        conversationId: 'c-new',
+        thread: [{ kind: 'agent', id: 'a1', text: 'Hey — I just came online.', at: '' }],
+      }),
+    );
+    expect(await screen.findByText('Hey — I just came online.')).toBeTruthy();
+    expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
+  });
+});
+
+/*
+  TASK-689 (T3) — A MESSAGE DRAWN TWICE WHILE ITS REPLY STREAMS.
+
+  `AgentView` draws the person's message optimistically (`sent` → a
+  `pending-user` bubble appended to the durable thread). When the durable read
+  ALREADY contains that same turn — the pane re-read while the reply runs, which
+  the live walk showed happening on a first message — the text rendered twice
+  until the turn finished and `sent` cleared. Seen in the browser as `hi` `hi`
+  for the whole wait on a new agent; the kickoff and the home composer share
+  `startTurn` → `pendingReply` → `sent`, so this is not the kickoff's alone.
+
+  The rule: the optimistic bubble stands down when the durable thread's TAIL is
+  already a user message with the same text and the same number of files. The
+  tail, not "anywhere": an in-flight message has no reply after it yet, so the
+  tail is where its durable copy would be — while an OLDER identical message
+  ("yes", answered) sits behind an agent reply and must not suppress the new one.
+
+  VACUITY: the first case FAILS against the code before this rule (the text is
+  found twice). The other two PASS either way; they are the guards against an
+  over-broad rule (dedupe against any earlier message / ignore the attachment
+  count) and were mutation-checked for that.
+*/
+describe('a first message whose committed turn is already in the re-read (TASK-689)', () => {
+  type StreamHandlers = Parameters<typeof workspaceApi.streamReply>[1];
+  const holdStreaming = async (_r: string, h: StreamHandlers) => {
+    h.onText?.('On it.');
+    await new Promise(() => {});
+  };
+
+  it('draws it once, not once for the durable turn and once for the optimistic bubble', async () => {
+    agentMock.mockResolvedValue(
+      detail({
+        conversationId: 'c-new',
+        thread: [{ kind: 'user', id: 't1', text: 'what is on today' }],
+      }),
+    );
+    streamMock.mockImplementation(holdStreaming);
+
+    renderView({
+      pendingReply: {
+        reqId: 'r-own',
+        text: 'what is on today',
+        conversationId: 'c-new',
+        attachments: [],
+      },
+    });
+
+    await screen.findByText('On it.');
+    expect(screen.getAllByText('what is on today')).toHaveLength(1);
+  });
+
+  it('still draws the new message when an OLDER identical one sits behind an agent reply', async () => {
+    agentMock.mockResolvedValue(
+      detail({
+        conversationId: 'c-now',
+        thread: [
+          { kind: 'user', id: 't1', text: 'yes' },
+          { kind: 'agent', id: 't2', text: 'Done.', at: '2026-09-27T10:00:05.000Z' },
+        ],
+      }),
+    );
+    streamMock.mockImplementation(holdStreaming);
+
+    renderView({
+      pendingReply: {
+        reqId: 'r-yes',
+        text: 'yes',
+        conversationId: 'c-now',
+        attachments: [],
+      },
+    });
+
+    await screen.findByText('On it.');
+    // The old `yes` AND the new in-flight one — the person said it twice.
+    expect(screen.getAllByText('yes')).toHaveLength(2);
+  });
+
+  it('still draws a DIFFERENT message under an earlier one that never got a reply', async () => {
+    // The previous turn failed, so the transcript ends on the person's own
+    // message. What they type next is not that message and must not be
+    // swallowed as though its durable copy had landed.
+    agentMock.mockResolvedValue(
+      detail({
+        conversationId: 'c-now',
+        thread: [{ kind: 'user', id: 't1', text: 'summarise my inbox' }],
+      }),
+    );
+    streamMock.mockImplementation(holdStreaming);
+
+    renderView({
+      pendingReply: {
+        reqId: 'r-next',
+        text: 'never mind, what is on today',
+        conversationId: 'c-now',
+        attachments: [],
+      },
+    });
+
+    await screen.findByText('On it.');
+    expect(screen.getByText('summarise my inbox')).toBeTruthy();
+    expect(screen.getByText('never mind, what is on today')).toBeTruthy();
+  });
+
+  it('still draws it when the durable copy has the same words but the sent one carried a file', async () => {
+    agentMock.mockResolvedValue(
+      detail({
+        conversationId: 'c-now',
+        thread: [{ kind: 'user', id: 't1', text: 'notes' }],
+      }),
+    );
+    streamMock.mockImplementation(holdStreaming);
+
+    renderView({
+      pendingReply: {
+        reqId: 'r-file',
+        text: 'notes',
+        conversationId: 'c-now',
+        attachments: [
+          {
+            attachmentId: 'att-1',
+            displayName: 'notes.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      },
+    });
+
+    await screen.findByText('On it.');
+    expect(screen.getAllByText('notes')).toHaveLength(2);
   });
 });
