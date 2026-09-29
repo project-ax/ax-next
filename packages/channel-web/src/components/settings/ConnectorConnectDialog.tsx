@@ -53,6 +53,7 @@ import {
   sharedKeyConsentMessage,
   type Connector,
   type ConnectorCredentialPlanEntry,
+  type ConnectorRouteBase,
 } from '@/lib/connectors';
 import {
   myCredentials,
@@ -89,6 +90,12 @@ export function ConnectorConnectDialog({
   onOpenChange,
   onConnected,
 }: ConnectorConnectDialogProps) {
+  // The route bundle the connector load targets: `/admin/connectors*` is
+  // admin-only server-side (non-admins get 403), so a non-admin reads the same
+  // owner-scoped connector through `/settings/connectors` (same as ConnectorsTab).
+  const base: ConnectorRouteBase = isAdmin
+    ? '/admin/connectors'
+    : '/settings/connectors';
   const [connector, setConnector] = useState<Connector | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The shared-key consent moment must be accepted BEFORE the key form renders.
@@ -137,7 +144,7 @@ export function ConnectorConnectDialog({
     setConsented(false);
     setUserCreds([]);
     setGlobalCreds([]);
-    getConnector(connectorId)
+    getConnector(connectorId, base)
       .then((c) => {
         if (!cancelled) setConnector(c);
       })
@@ -148,7 +155,7 @@ export function ConnectorConnectDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, connectorId, loadCreds]);
+  }, [open, connectorId, base, loadCreds]);
 
   // Whether a slot's derived (scope, ref) already has a stored key.
   const hasCred = useCallback(

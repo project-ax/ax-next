@@ -20,10 +20,14 @@
  *   DELETE <base>/:id    → 204
  *
  * `base` defaults to `/admin/connectors` for back-compat; the user surface
- * passes `/settings/connectors`. (The Test probe is admin-only — it lives only
- * under `/admin/connectors/:id/test`, never the user base.)
+ * passes `/settings/connectors`. `/admin/connectors*` is ADMIN-ONLY server-side
+ * (403 for a signed-in non-admin, TASK-698) — so a caller a non-admin can reach
+ * MUST pass `/settings/connectors` (the default is a trap for them). (The Test
+ * probe is admin-only — it lives only under `/admin/connectors/:id/test`, never
+ * the user base.)
  *
- * SECURITY — every endpoint is guarded server-side by `auth:require-user`; the
+ * SECURITY — every endpoint is guarded server-side by `auth:require-user` (the
+ * admin bundle additionally by an admin-role check); the
  * connector is owner-scoped to the calling user. The actor id is forced from the
  * session server-side, never the body. The user routes additionally force
  * `visibility: private` + reject admin-only fields server-side, so the UI
@@ -49,7 +53,8 @@ export type { ServiceDescriptor };
 /** Which owner-scoped route bundle a call targets (TASK-129). */
 export type ConnectorRouteBase = '/admin/connectors' | '/settings/connectors';
 
-/** Default route bundle — the admin registry (back-compat). */
+/** Default route bundle — the admin registry (back-compat). Admin-only server-side:
+ *  a non-admin caller must pass `'/settings/connectors'` explicitly. */
 const DEFAULT_BASE: ConnectorRouteBase = '/admin/connectors';
 
 const writeHeaders = {
