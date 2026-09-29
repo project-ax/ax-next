@@ -111,6 +111,26 @@
 //       detectable duplicate. Documented behaviour with no test is a preference, not a
 //       property.
 //
+// TASK-672 BATTERY (2026-09-28): archived cards and the floor. Each mutant was applied
+// to the committed script and restored with `git checkout HEAD --`, with `git status`
+// asserted clean between mutants. Baseline was 47 collected, 47 passed, and every mutant
+// still COLLECTED 47.
+//
+//   M9.  Drop `archivedStates:[ARCHIVED, NOT_ARCHIVED]` from the page query. That makes
+//        the read the API default, live cards only -> 4 red: `next counts ARCHIVED
+//        cards`, `check flags a live card that reuses an archived card id`, and both
+//        archived-keeper settle tests. This is the bug the card was filed for.
+//   M10. Drop the floor from `next_num` (back to `(max // 0) + 1`) -> 2 red: `a board
+//        whose highest cards are gone still answers above the floor` and `claim
+//        stamps a number above the floor`. This is the card's own acceptance mutant.
+//   M11. Accept any `BOARD_TASK_ID_FLOOR` without validating it -> 1 red, `a floor
+//        that is not a number fails closed`.
+//   M12. Keeper rule back to plain `sort_by(.item)` -> 2 red, both archived-keeper
+//        tests. With it, a new card that sorts before an archived holder waits out
+//        every attempt for a yield that never comes.
+//   M13. Committed floor lowered to 600 -> 2 red: `the committed floor is at least
+//        TASK-672` and `a board whose highest cards are gone`.
+//
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no
 // network, no build.
 
@@ -222,7 +242,19 @@ if (argv[0] === 'api' && argv[1] === 'graphql') {
     process.exit(0);
   }
   barrier();
-  const all = process.env.STUB_READ_EMPTY === '1' ? [] : cards();
+  // ARCHIVED CARDS, modelled on the real API (TASK-672). \`ProjectV2.items\` takes an
+  // \`archivedStates\` argument that "defaults to only returning items that are not
+  // archived" — measured 2026-09-28: totalCount 621 by default, 82 with [ARCHIVED],
+  // 703 with [ARCHIVED, NOT_ARCHIVED]. So a query that does not ASK for archived cards
+  // does not see them, and that is exactly how an allocator re-issues their numbers.
+  let queryText = '';
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '-f' && String(argv[i + 1]).startsWith('query=')) queryText = String(argv[i + 1]);
+  }
+  const statesArg = /archivedStates\\s*:\\s*\\[([^\\]]*)\\]/.exec(queryText);
+  const states = statesArg ? statesArg[1].split(/[\\s,]+/).filter(Boolean) : ['NOT_ARCHIVED'];
+  const visible = (c) => states.includes(c.archived ? 'ARCHIVED' : 'NOT_ARCHIVED');
+  const all = process.env.STUB_READ_EMPTY === '1' ? [] : cards().filter(visible);
   const size = Number(process.env.STUB_PAGE_SIZE || '100');
   let after = undefined;
   for (let i = 0; i < argv.length; i++) {
@@ -244,7 +276,11 @@ if (argv[0] === 'api' && argv[1] === 'graphql') {
                 hasNextPage: hasNext,
                 endCursor: page.length ? page[page.length - 1].item : null,
               },
-              nodes: page.map((c) => ({ id: c.item, content: { id: c.draft, title: c.title } })),
+              nodes: page.map((c) => ({
+                id: c.item,
+                isArchived: Boolean(c.archived),
+                content: { id: c.draft, title: c.title },
+              })),
             },
           },
         },
@@ -303,11 +339,11 @@ beforeEach(() => {
 });
 
 /** Put a card on the fake board. `item` doubles as the file name and the sort key. */
-function seed(item, title) {
+function seed(item, title, { archived = false } = {}) {
   mkdirSync(boardDir, { recursive: true });
   writeFileSync(
     join(boardDir, `${item}.json`),
-    JSON.stringify({ item, draft: item.replace(/^PVTI_/, 'DI_'), title }),
+    JSON.stringify({ item, draft: item.replace(/^PVTI_/, 'DI_'), title, archived }),
   );
 }
 
@@ -326,6 +362,11 @@ function run(args, { shell = 'bash', env = {} } = {}) {
       PATH: `${STUB_DIR}:${process.env.PATH}`,
       STUB_BOARD_DIR: boardDir,
       BOARD_TASK_ID_BACKOFF_MS: '30',
+      // The committed floor (672+) sits above every fixture number in this file, so the
+      // fixtures that assert an exact `max+1` opt out of it here. The `floor` tests below
+      // pass `BOARD_TASK_ID_FLOOR: undefined` to run against the COMMITTED value — Node
+      // drops an undefined env entry instead of exporting the string "undefined".
+      BOARD_TASK_ID_FLOOR: '0',
       ...env,
     },
     cwd: REPO_ROOT,
@@ -613,6 +654,131 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
   });
 
   // -------------------------------------------------------------------------------
+  // Archived cards and the floor (TASK-672).
+  //
+  // The board hit 701 items on 2026-09-28 and Done cards started being ARCHIVED to stay
+  // under the read limit. An archived card drops out of a default `items` read, so a
+  // `max + 1` computed from what is left re-issues the number of whichever card was
+  // archived last. Two defences, tested separately so each one has to earn its keep:
+  // the read asks for archived cards too, and a committed floor catches anything that
+  // leaves the read entirely (a DELETED card is gone from every query there is).
+  // -------------------------------------------------------------------------------
+
+  it.runIf(HAS_JQ)('next counts ARCHIVED cards, not only the live ones', () => {
+    seed('PVTI_a', '[TASK-100] a live card');
+    seed('PVTI_b', '[TASK-900] a Done card that was archived to make room', {
+      archived: true,
+    });
+    const { code, out } = run(['next']);
+    expect(code).toBe(0);
+    expect(
+      out.trim(),
+      'the read did not ask for archived cards, so it re-issued an archived card number',
+    ).toBe('901');
+  });
+
+  it.runIf(HAS_JQ)('check flags a live card that reuses an archived card id', () => {
+    seed('PVTI_a', '[TASK-420] archived, and cited by memory shards and commits', {
+      archived: true,
+    });
+    seed('PVTI_b', '[TASK-420] a new card handed the same number');
+    const { code, out } = run(['check']);
+    expect(code, 'an archived holder of TASK-420 was invisible to the duplicate guard').toBe(1);
+    expect(out).toMatch(/TASK-420 is held by 2 cards/);
+  });
+
+  it.runIf(HAS_JQ)('settle yields to an archived card even when the new card has the lower item id', () => {
+    // An archived card has no session that will ever settle it, so under the plain
+    // "lowest item id keeps it" rule a new card that happens to sort FIRST would wait
+    // for a yield that never comes, burn every attempt and fail. The archived holder
+    // must be the keeper regardless of id order. PVTI_a (live) sorts before PVTI_z
+    // (archived) on purpose: with the ids the other way round this test is vacuous.
+    // §8.2's triage stamp computes its max from `gh project item-list`, which does not
+    // return archived cards, so this is the collision it will actually produce.
+    seed('PVTI_z', '[TASK-420] archived long ago', { archived: true });
+    seed('PVTI_a', '[TASK-420] mine, created seconds ago');
+    const { code, out } = run(['settle', '--item', 'PVTI_a'], {
+      env: { BOARD_TASK_ID_MAX_ATTEMPTS: '2' },
+    });
+    expect(code, out).toBe(0);
+    expect(boardTitles()).toEqual([
+      '[TASK-420] archived long ago',
+      '[TASK-421] mine, created seconds ago',
+    ]);
+  });
+
+  it.runIf(HAS_JQ)('an archived keeper does not wait for a live card to yield', () => {
+    // The mirror: settling the ARCHIVED card itself (a human re-checking it) must see
+    // that it keeps its number and that the live one is the one to move — it must not
+    // rename an archived card that commits and memory rows already cite.
+    seed('PVTI_z', '[TASK-420] archived long ago', { archived: true });
+    seed('PVTI_a', '[TASK-420] a live card');
+    const { code } = run(['settle', '--item', 'PVTI_z'], {
+      env: { BOARD_TASK_ID_MAX_ATTEMPTS: '2' },
+    });
+    expect(code, 'the live card never yields in this test, so settle must fail loud').toBe(1);
+    expect(boardTitles()).toEqual(['[TASK-420] a live card', '[TASK-420] archived long ago']);
+  });
+
+  // The committed floor, read out of the script rather than restated here, so bumping it
+  // does not need a test edit — but it must never drop below the id this card was filed
+  // under.
+  const COMMITTED_FLOOR = Number(
+    /^TASK_ID_FLOOR_DEFAULT=(\d+)$/m.exec(readFileSync(SCRIPT, 'utf8'))?.[1],
+  );
+
+  it('the committed floor is at least TASK-672, the highest id when archiving began', () => {
+    expect(
+      Number.isInteger(COMMITTED_FLOOR),
+      'no `TASK_ID_FLOOR_DEFAULT=<n>` line in board-task-id.sh — this guard went vacuous',
+    ).toBe(true);
+    expect(COMMITTED_FLOOR).toBeGreaterThanOrEqual(672);
+  });
+
+  it.runIf(HAS_JQ)('a board whose highest cards are gone still answers above the floor', () => {
+    // The acceptance case, stated as the worst one: the high-numbered cards are absent
+    // from EVERY read (deleted, or archived by a reader that did not ask for them), so
+    // the board alone says the next number is 6. Only the floor stands between that and
+    // re-issuing a number that commits, memory shards and `Depends on` already cite.
+    seed('PVTI_a', '[TASK-4] an early card');
+    seed('PVTI_b', '[TASK-5] another early card');
+    const { code, out } = run(['next'], { env: { BOARD_TASK_ID_FLOOR: undefined } });
+    expect(code).toBe(0);
+    expect(Number(out.trim()), 'the floor was ignored — this number is already taken').toBe(
+      COMMITTED_FLOOR + 1,
+    );
+    expect(Number(out.trim())).toBeGreaterThan(672);
+  });
+
+  it.runIf(HAS_JQ)('the floor is a floor, not a ceiling', () => {
+    seed('PVTI_a', `[TASK-${COMMITTED_FLOOR + 50}] a card numbered above the floor`);
+    const { code, out } = run(['next'], { env: { BOARD_TASK_ID_FLOOR: undefined } });
+    expect(code).toBe(0);
+    expect(Number(out.trim())).toBe(COMMITTED_FLOOR + 51);
+  });
+
+  it.runIf(HAS_JQ)('claim stamps a number above the floor onto the new card', () => {
+    seed('PVTI_a', '[TASK-5] an early card');
+    const { code, out } = run(['claim', '--title', 'a new card', '--body', 'x'], {
+      env: { BOARD_TASK_ID_FLOOR: undefined },
+    });
+    expect(code, out).toBe(0);
+    expect(boardTitles()).toContain(`[TASK-${COMMITTED_FLOOR + 1}] a new card`);
+  });
+
+  it.runIf(HAS_JQ)('a floor that is not a number fails closed', () => {
+    // An unset-looking or garbled floor must not quietly become 0 — that is the
+    // pre-floor behaviour, and silently reverting to it is the failure this guards.
+    seed('PVTI_a', '[TASK-5] an early card');
+    for (const bad of ['', 'abc', '-3', '6 7', '007', '5\n6']) {
+      const { code, out } = run(['next'], { env: { BOARD_TASK_ID_FLOOR: bad } });
+      expect(code, `floor '${bad}' was accepted`).toBe(2);
+      expect(out).toMatch(/FATAL/);
+      expect(out).not.toMatch(/^\s*\d+\s*$/m);
+    }
+  });
+
+  // -------------------------------------------------------------------------------
   // `settle`.
   // -------------------------------------------------------------------------------
 
@@ -677,6 +843,7 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
         PATH: `${STUB_DIR}:${process.env.PATH}`,
         STUB_BOARD_DIR: boardDir,
         BOARD_TASK_ID_BACKOFF_MS: '30',
+        BOARD_TASK_ID_FLOOR: '0',
       },
       cwd: REPO_ROOT,
     });
@@ -745,6 +912,7 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
               STUB_BARRIER_N: '2',
               STUB_PARTY: name,
               BOARD_TASK_ID_BACKOFF_MS: '50',
+              BOARD_TASK_ID_FLOOR: '0',
             },
             cwd: REPO_ROOT,
           });
@@ -809,6 +977,7 @@ describe('board-task-id.sh — Task-ID allocation under concurrency', () => {
               STUB_BARRIER_N: '2',
               STUB_PARTY: name,
               BOARD_TASK_ID_BACKOFF_MS: '50',
+              BOARD_TASK_ID_FLOOR: '0',
             },
             cwd: REPO_ROOT,
           });

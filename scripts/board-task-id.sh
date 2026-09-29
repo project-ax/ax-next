@@ -63,7 +63,7 @@
 #   scripts/board-task-id.sh settle --item <PVTI_...>    # verify + yield a card's id
 #
 #   Any subcommand takes `--board <file|->` to read a normalized board from a file or
-#   stdin instead of GitHub: a JSON array of `{item, draft, title}`. `check` and `next`
+#   stdin instead of GitHub: a JSON array of `{item, draft, title, archived?}`. `check` and `next`
 #   are then completely offline.
 #
 # Exit codes:
@@ -76,6 +76,29 @@
 #   BOARD_PROJECT_NUMBER     default 1
 #   BOARD_TASK_ID_MAX_ATTEMPTS  default 6   settle rounds before giving up loudly
 #   BOARD_TASK_ID_BACKOFF_MS    default 400 base backoff between rounds (plus jitter)
+#   BOARD_TASK_ID_FLOOR         default TASK_ID_FLOOR_DEFAULT below; never issue <= this
+#
+# ARCHIVED AND DELETED CARDS (TASK-672).
+#
+# The board reached 701 items on 2026-09-28 and Done cards began to be ARCHIVED to keep
+# it readable. An archived card is not gone — its number is still cited by commits,
+# memory shards and `Depends on` — but a default `ProjectV2.items` read no longer returns
+# it. So `max + 1` over a default read re-issues the number of whichever card was
+# archived last. Two defences, and they cover different things:
+#
+#   1. The read ASKS for archived cards: `archivedStates: [ARCHIVED, NOT_ARCHIVED]`. That
+#      costs nothing extra (still ~1 point per 100 cards) and needs no upkeep, so
+#      archiving a card is safe by construction — no one has to remember anything.
+#   2. A committed FLOOR, TASK_ID_FLOOR_DEFAULT: the next number is
+#      `max(board max, floor) + 1`. It is the backstop for a card that leaves EVERY read —
+#      a deleted card is gone from all of them, archived or not. Bump it (in a PR) when you
+#      delete cards whose numbers are near the top. It lives in this file, not in a
+#      separate file or a board field, because this file is what every allocation already
+#      runs: a floor that lives somewhere else is a floor that can be missed.
+#
+# BOARD_TASK_ID_FLOOR overrides the committed value (the test suite sets it to 0 for its
+# small fixtures). A set-but-not-a-number override fails CLOSED, exit 2 — silently
+# treating it as 0 would quietly reinstate the pre-floor behaviour.
 
 set -uo pipefail
 
@@ -89,8 +112,13 @@ PNUM="${BOARD_PROJECT_NUMBER:-1}"
 MAX_ATTEMPTS="${BOARD_TASK_ID_MAX_ATTEMPTS:-6}"
 BACKOFF_MS="${BOARD_TASK_ID_BACKOFF_MS:-400}"
 
+# The highest id on the board when archiving began was TASK-672 (the card that added
+# this). Raise it, never lower it. See "ARCHIVED AND DELETED CARDS" in the header.
+TASK_ID_FLOOR_DEFAULT=672
+
 # A page cap so a misbehaving API cannot spin here forever. 60 pages x 100 = 6000 cards,
-# comfortably above a board that passed 300 in Aug 2026 and never sheds Done cards.
+# comfortably above a board of ~700 (live + archived) in Sep 2026. Archived cards are
+# read too, so this counts every card the board has ever kept, not just the live ones.
 MAX_PAGES=60
 
 fatal() {
@@ -116,17 +144,22 @@ usage() {
 # The DraftIssue `id` comes back in the SAME read, so renaming needs no second lookup
 # hop — `gh project item-edit --title` addresses the content node and refuses a `PVTI_`
 # id outright (measured, TASK-401).
+#
+# `archivedStates` lists BOTH states on purpose (TASK-672). The API default is
+# NOT_ARCHIVED only, and an archived card's number is still taken. Measured 2026-09-28 on
+# the real board: 621 items by default, 82 archived, 703 with both.
 PAGE_QUERY='query($o:String!,$n:Int!,$after:String){
-  organization(login:$o){ projectV2(number:$n){ items(first:100, after:$after){
+  organization(login:$o){ projectV2(number:$n){ items(first:100, after:$after, archivedStates:[ARCHIVED, NOT_ARCHIVED]){
     pageInfo{ hasNextPage endCursor }
     nodes{
       id
+      isArchived
       content{
         ... on DraftIssue{ id title }
         ... on Issue{ title }
         ... on PullRequest{ title } } } } } } }'
 
-# read_board — echo the board as a normalized JSON array of {item, draft, title}.
+# read_board — echo the board as a normalized JSON array of {item, draft, title, archived}.
 # Non-zero on ANY failure to read it completely. Callers must treat that as fatal; a
 # partial board is a board with cards you cannot see, and the max computed from it is a
 # number somebody already holds.
@@ -134,7 +167,7 @@ read_board() {
   if [ -n "${BOARD_FILE:-}" ]; then
     local raw
     if [ "$BOARD_FILE" = "-" ]; then raw=$(cat); else raw=$(cat "$BOARD_FILE") || return 1; fi
-    printf '%s' "$raw" | jq -ce '[.[] | {item, draft:(.draft // ""), title:(.title // "")}]' \
+    printf '%s' "$raw" | jq -ce '[.[] | {item, draft:(.draft // ""), title:(.title // ""), archived:(.archived == true)}]' \
       2>/dev/null || return 1
     return 0
   fi
@@ -171,7 +204,7 @@ read_board() {
     after="$cursor"
   done
 
-  printf '%s' "$all" | jq -c '[.[] | {item:.id, draft:(.content.id // ""), title:(.content.title // "")}]'
+  printf '%s' "$all" | jq -c '[.[] | {item:.id, draft:(.content.id // ""), title:(.content.title // ""), archived:(.isArchived == true)}]'
 }
 
 # board_or_die — read the board, or exit 2 saying which way it failed.
@@ -209,8 +242,11 @@ map(. as $c | ($c.title | parsed) as $m
 # ids, but handing out a fresh `TASK-7` next to a historical `ARCH-7` invites exactly the
 # human misreading the whole card is about. Numeric comparison, not lexical — `TASK-99`
 # sorts above `TASK-401` as a string, and the answer 100 is a number a live card holds.
+#
+# The floor is folded in HERE, not at the call sites, so `next`, `claim` and a yielding
+# `settle` cannot disagree about it: all three go through next_or_die.
 next_num() {
-  printf '%s' "$1" | jq -r "$JQ_WITH_IDS"' | [.[].num // empty] | (max // 0) + 1'
+  printf '%s' "$1" | jq -r --argjson floor "$FLOOR" "$JQ_WITH_IDS"' | [.[].num // empty] | ([(max // 0), $floor] | max) + 1'
 }
 
 # next_or_die — next_num, with the answer PROVEN to be a number before anyone stamps it
@@ -335,8 +371,14 @@ settle_item() {
 
     # Deterministic tiebreak: lowest item node id keeps the number. Both racers read the
     # same cohort and compute the same keeper, so exactly one of them moves.
+    #
+    # An ARCHIVED holder outranks every live one (TASK-672). It has no session that
+    # will ever settle it, so if a live card "kept" the number against it, the live card
+    # would wait out every attempt for a yield that never comes. And its number is the
+    # one commits and memory rows already cite. `false < true` in jq, so sorting on
+    # `(.archived | not)` puts archived holders first.
     keeper=$(printf '%s' "$board" | jq -r "$JQ_WITH_IDS"'
-      | map(select(.tid == $t)) | sort_by(.item) | .[0].item' --arg t "$tid")
+      | map(select(.tid == $t)) | sort_by([(.archived | not), .item]) | .[0].item' --arg t "$tid")
 
     if [ "$keeper" = "$item" ]; then
       # I keep the number; somebody else has to move. Wait and look again rather than
@@ -478,6 +520,21 @@ export BOARD_FILE
 
 if ! command -v jq >/dev/null 2>&1; then
   fatal "jq is not on PATH. Every path here parses board JSON, so this cannot run."
+  exit 2
+fi
+
+# Resolve the floor. `${VAR+set}` rather than `${VAR:-}`: an override that is SET but
+# empty is a mistake to report, not a request for the default. Plain decimal only, no
+# leading zero — the value is handed to `jq --argjson`, which rejects `007` as JSON — and
+# at most 9 digits, so no shell or jq arithmetic is near overflow.
+if [ -n "${BOARD_TASK_ID_FLOOR+set}" ]; then
+  FLOOR="$BOARD_TASK_ID_FLOOR"
+else
+  FLOOR="$TASK_ID_FLOOR_DEFAULT"
+fi
+FLOOR_RE='^(0|[1-9][0-9]{0,8})$'
+if ! [[ "$FLOOR" =~ $FLOOR_RE ]]; then
+  fatal "BOARD_TASK_ID_FLOOR='$FLOOR' is not a plain non-negative integer. Refusing rather than guessing a floor — a wrong one re-issues ids."
   exit 2
 fi
 
