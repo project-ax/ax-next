@@ -1,5 +1,7 @@
 # JIT Per-Session Proxy Token (Egress Attribution) Implementation Plan
 
+> **Historical (TASK-52). Superseded in part by TASK-158.** This plan built the token as an ATTRIBUTION-ONLY label and deliberately left the allow/deny gate (`findAllowingSession`, ORed across all sessions) alone. That gate is gone: the token is now the credential the proxy AUTHENTICATES the caller with, the request is gated on the allowlist of the session the token belongs to, and a missing / malformed / unknown token is refused (407). Read every "attribution-only" / "can never widen egress" / "`findAllowingSession` is untouched" statement below as the TASK-52 design, not the current behaviour. See `.claude/memory/decisions/2026-09-29-TASK-158.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the credential-proxy attribute **every** request — including an allowlist-miss **403** — to the session that made it, by minting a per-session **proxy token** that the sandbox carries as `Proxy-Authorization`, so `event.http-egress` carries a real `sessionId` on blocked egress (today it's an empty string — `plugin.ts:62`). This is the foundation the reactive egress wall (**TASK-37**) builds on, and it immediately improves blocked-egress audit attribution for `@ax/audit-log`.

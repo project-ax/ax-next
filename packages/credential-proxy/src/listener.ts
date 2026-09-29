@@ -69,16 +69,15 @@ export interface SessionConfig {
    * as a raw TLS tunnel. Used as the per-session opt-out for cert-pinning
    * hosts (e.g. some CLIs that ship a pinned trust store).
    *
-   * Aggregation is "any-bypass-wins": if ANY registered session declares
-   * bypass for the hostname, the listener takes the safer default and
-   * skips MITM for that host. Minting a cert for a pinned host would
-   * break the client; failing closed (raw tunnel, no credential injection)
-   * is the right call.
+   * Minting a cert for a pinned host would break the client; failing closed
+   * (raw tunnel, no credential injection) is the right call for a host THIS
+   * session declared.
    *
-   * Scope (TASK-158): applies to THIS session's own connections only. It used
-   * to be "any-bypass-wins" across every registered session, which let one
-   * session's config silently downgrade another session's inspection (no
-   * credential substitution, no canary scan) on a shared proxy.
+   * Scope (TASK-158): applies to THIS session's own connections only; another
+   * session's bypass never changes how this session's traffic is inspected.
+   * It used to be "any-bypass-wins" across every registered session, which
+   * let one session's config silently downgrade another session's inspection
+   * (no credential substitution, no canary scan) on a shared proxy.
    */
   bypassMITM?: Set<string>;
   /**
