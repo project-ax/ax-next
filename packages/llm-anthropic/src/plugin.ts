@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   LlmCallOutputSchema,
   PluginError,
+  fireLlmUsage,
   type AgentContext,
   type HookBus,
   type LlmCallInput,
@@ -9,7 +10,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { z, type ZodType } from 'zod';
-import { fromAnthropicResponse, toAnthropicRequest } from './translate.js';
+import { DEFAULT_MODEL, fromAnthropicResponse, toAnthropicRequest } from './translate.js';
 
 const PLUGIN_NAME = '@ax/llm-anthropic';
 const PLUGIN_VERSION = '0.0.0';
@@ -185,7 +186,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         bus.registerService<LlmCallInput, LlmCallOutput>(
           'llm:call:anthropic',
           PLUGIN_NAME,
-          async (_ctx, input) => callWithRetry(client, input, cfg),
+          async (ctx, input) => callAndReportUsage(bus, ctx, client, input, cfg),
           { returns: LlmCallOutputSchema, timeoutMs: 300_000, stallWarnMs: LLM_CALL_STALL_WARN_MS },
         );
       } else {
@@ -195,7 +196,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
           PLUGIN_NAME,
           async (ctx, input) => {
             const apiKey = await resolveApiKey(bus, ctx, cfg, credentialRef);
-            return callWithRetry(clientFor(apiKey), input, cfg);
+            return callAndReportUsage(bus, ctx, clientFor(apiKey), input, cfg);
           },
           { returns: LlmCallOutputSchema, timeoutMs: 300_000, stallWarnMs: LLM_CALL_STALL_WARN_MS },
         );
@@ -233,6 +234,29 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
       );
     },
   };
+}
+
+/**
+ * One `llm:call:anthropic`, then a report of what it cost on the `llm:usage`
+ * subscriber hook (TASK-692, per-user spend limits). These host-side calls
+ * (titles, memory extraction, the skill safety scan) spend the operator's key
+ * on a user's behalf, so a metering plugin can subscribe and count them. The
+ * report is fire-and-forget and only follows a SUCCESSFUL call; `fireLlmUsage`
+ * never throws, so metering can never turn an answer into a failure.
+ */
+async function callAndReportUsage(
+  bus: HookBus,
+  ctx: AgentContext,
+  client: Anthropic,
+  input: LlmCallInput,
+  cfg: LlmAnthropicConfig,
+): Promise<LlmCallOutput> {
+  const out = await callWithRetry(client, input, cfg);
+  await fireLlmUsage(bus, ctx, {
+    model: `anthropic/${input.model ?? cfg.defaultModel ?? DEFAULT_MODEL}`,
+    usage: out.usage,
+  });
+  return out;
 }
 
 async function callWithRetry(
