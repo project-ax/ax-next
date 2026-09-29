@@ -669,11 +669,28 @@ export type ThreadMessage =
    * (`AgentView`) alike. `error` GOT ONE IN TASK-498: `buildThread` now reads
    * the persisted `turn-error` display events off `conversations:get` and
    * interleaves them with the turns. `status` (AW-8) is the one still
-   * waiting, and `fold` above. This list is meant to be exhaustive — if you add a
-   * producer, say so here, because the next card scoped off this comment
-   * will believe it.
+   * waiting, and `fold` above. `stopped` (below) HAS A PRODUCER (TASK-688):
+   * `AgentView` appends it client-side after a Stop. This list is meant to be
+   * exhaustive — if you add a producer, say so here, because the next card
+   * scoped off this comment will believe it.
    */
-  | { kind: 'fold'; id: string; text: string };
+  | { kind: 'fold'; id: string; text: string }
+  /**
+   * "You stopped this reply" (TASK-688). CLIENT-ONLY: the server never sends
+   * one and nothing persists it. `AgentView` appends it to the end of the live
+   * thread after a turn ended because the person pressed Stop, and drops it on
+   * their next message, an agent switch, or a change of conversation. That is
+   * its whole lifetime, which is why it is not a display-event kind: a
+   * persisted "Stopped" marker (a new display-event kind plus a turn-end
+   * reason) was cut from TASK-688 as more machinery than the moment earns.
+   *
+   * A deliberate stop is not a failure, so this is NOT an `error` row —
+   * different register, no reason code, no retry. `text` is the authored
+   * sentence, produced by the one place that makes this row (as `status`'s is).
+   * Thread find does not index it: like `status` it is chrome, not something
+   * anyone said.
+   */
+  | { kind: 'stopped'; id: string; text: string };
 
 /**
  * The human's memory tier: `rules`, verbatim, always injected, safe to
