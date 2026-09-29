@@ -167,6 +167,11 @@ grow), the friendly sentence when a message with attachments is refused, and the
 - **Blobs uploaded before this ships are not counted** (no per-user index exists
   to backfill from without reading `@ax/attachments` tables). Workspace repos ARE
   backfilled by the sweep. Follow-up.
+- **A re-upload of something you already hold can be refused near the limit.**
+  `blob:pre-put` carries the size but not the sha256, so the gate cannot tell
+  that a blob is already in the owner's ledger and always adds one more unit.
+  It fails safe (a conservative refusal, only within one unit of the limit).
+  Threading the sha into `blob:pre-put` would fix it if anyone ever hits it.
 - **Team workspaces are not swept.** The periodic sweep enumerates
   `agents:list-personal-owners`, which excludes team agents, so a team workspace
   that pre-dates this feature is uncounted until its next write (per-write
