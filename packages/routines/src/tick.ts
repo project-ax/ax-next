@@ -97,7 +97,13 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     claimWindowMinutes: input.claimWindowMinutes,
   });
 
+  // TASK-680 — agents found gone earlier in THIS batch. Their other claimed
+  // rows were already deleted by `deleteAllForAgent`; skip them rather than
+  // resolving the agent again and pruning nothing.
+  const goneAgents = new Set<string>();
+
   for (const row of claimed) {
+    if (goneAgents.has(row.agentId)) continue;
     if (row.activeHours !== null) {
       const adjusted = advanceToNextActiveWindow(input.now, row.activeHours);
       if (adjusted.getTime() > input.now.getTime()) {
@@ -137,7 +143,13 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     // Forget all of the agent's routines — this also heals rows orphaned
     // before the `agents:deleted` subscriber existed, for which no event will
     // ever fire again. No fire row and no advance: the rows are gone.
+    //
+    // Unlike the `agents:deleted` subscriber, this path cannot unmount a
+    // webhook route the agent may still have mounted (the tick holds no route
+    // table). That leftover is inert: the webhook handler re-reads the row and
+    // 404s once it is gone, and nothing re-mounts it after a restart.
     if (result.agentGone === true) {
+      goneAgents.add(row.agentId);
       const { paths } = await input.store.deleteAllForAgent(row.agentId);
       process.stderr.write(
         `[ax/routines] agent ${row.agentId} no longer exists; removed ${paths.length} routine(s)\n`,

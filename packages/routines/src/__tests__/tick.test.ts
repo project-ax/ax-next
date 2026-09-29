@@ -508,7 +508,9 @@ describe('runTickOnce', () => {
       store, fire, now: new Date('2026-05-14T13:00:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5, getAgents: liveOnly,
     });
-    expect(firedFor.filter((a) => a === 'agt_gone').length).toBeGreaterThanOrEqual(1);
+    // Two rows of agt_gone were due in this batch; the first fire finds the
+    // agent gone and prunes both, so the second is never fired.
+    expect(firedFor.filter((a) => a === 'agt_gone')).toHaveLength(1);
     expect(firedFor).toContain('agt_live');
 
     // Every routine row of the deleted agent is gone; the live agent's stays.

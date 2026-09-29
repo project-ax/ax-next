@@ -96,6 +96,16 @@ describe('fireRoutine', () => {
     expect(result.agentGone).not.toBe(true);
   });
 
+  it('does not report agentGone for a not-found raised by a different hook and propagated through resolve (TASK-680)', async () => {
+    const bus = await makeBus({
+      resolve: async () => { throw new PluginError({ code: 'not-found', plugin: '@ax/teams', hookName: 'teams:is-member', message: "team 't1' not found" }); },
+    });
+    const fire = createFireRoutine({ bus, pending: new Map() } as FireDeps);
+    const result = await fire(row(), 'tick');
+    expect(result.status).toBe('error');
+    expect(result.agentGone).not.toBe(true);
+  });
+
   it('propagates an agents:resolve forbidden as error status', async () => {
     const bus = await makeBus({
       resolve: async () => { throw new PluginError({ code: 'forbidden', plugin: 'agents', hookName: 'agents:resolve', message: 'denied' }); },
