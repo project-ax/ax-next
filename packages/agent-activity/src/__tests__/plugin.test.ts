@@ -352,6 +352,21 @@ describe('a turn ends on chat:turn-end, even while the runner stays warm', () =>
     expect((await get(bus)).activity).toBeNull();
   });
 
+  it('keeps the EARLIER turn when the later one finishes first', async () => {
+    // A later chat:start re-writes the line; it must not drop the turn that
+    // was already running from the set, or that turn's survivor reads resting.
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'r2' }), {});
+
+    await turnEnd(bus, { reqId: 'r2' });
+    expect((await get(bus)).activity).not.toBeNull();
+
+    await turnEnd(bus, { reqId: 'r1' });
+    expect((await get(bus)).activity).toBeNull();
+  });
+
   it('is idempotent across the tool + assistant turn-ends one user message emits', async () => {
     const bus = new HookBus();
     await boot(bus);
