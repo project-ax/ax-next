@@ -164,6 +164,13 @@ const PROVIDERS: Record<string, ProviderEntry> = {
         // keeps a future upstream fallback from ever being reachable.
         apiKey,
         baseURL: OPENROUTER.baseUrl,
+        // Ask for token counts on a streamed call (`stream_options.include_usage`).
+        // The agent loop streams, and an OpenAI-compatible server only puts usage in a
+        // stream when asked. Two readers need it: this runner's own per-turn report,
+        // and the credential proxy's meter (TASK-715), which reads the same counts off
+        // the wire to charge the call. Without them every turn is "unreadable" and is
+        // charged a size-based over-estimate at the top price.
+        includeUsage: true,
         // Same `exactOptionalPropertyTypes` care as above.
         ...(fetchImpl !== undefined ? { fetch: fetchImpl } : {}),
       });

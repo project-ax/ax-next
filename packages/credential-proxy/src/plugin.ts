@@ -38,6 +38,12 @@ import {
 import { CredentialPlaceholderMap, SharedCredentialRegistry } from './registry.js';
 import { getOrCreateCA } from './ca.js';
 import { SessionEgressBlockBuffer } from './egress-block-buffer.js';
+import {
+  ProviderMeterHub,
+  type UsageLedgerPort,
+  type UsageRecordPayload,
+  type UsageVerdict,
+} from './provider-meter.js';
 
 const PLUGIN_NAME = '@ax/credential-proxy';
 
@@ -242,8 +248,21 @@ interface OpenSessionInput {
    * it from a trusted source (the provider table, an operator-curated agent row,
    * a connector's declared hosts) — never from anything the model or the user
    * typed for this session.
+   *
+   * `metered` (TASK-715) marks the operator's MODEL-PROVIDER key. The operator
+   * pays for whatever it spends, and code in the sandbox can drive it as freely
+   * as the runner can, so on the credential's `allowedHosts` the proxy (a) splices
+   * it only into requests matching `metered.requests` (`"METHOD /path"`; anything
+   * else on that host goes out with the placeholder inert), (b) asks the usage
+   * ledger before each one and refuses with a 429 once the user is over their
+   * limit, and (c) reads the usage out of each response and records it. Same
+   * trust rule as `allowedHosts`: the caller derives it from code (the provider
+   * table), never from anything the model or the user typed.
    */
-  credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
+  credentials: Record<
+    string,
+    { ref: string; kind: string; allowedHosts?: string[]; metered?: { requests: string[] } }
+  >;
   /** Hostnames whose CONNECT bypasses MITM (cert-pinning escape hatch). */
   bypassMITM?: string[];
   /** Optional canary token; chunks containing it trip a 403. */
@@ -340,6 +359,51 @@ function parseAllowedHosts(envName: string, raw: unknown): readonly string[] {
   return raw as string[];
 }
 
+/** `"GET|POST /path"`, with `*` allowed only as a final `/*` segment. */
+const METERED_REQUEST_RE = /^(GET|POST) \/[A-Za-z0-9._\-/*]*$/;
+
+/**
+ * Validate a credential's `metered` marker. Absent is legal (not metered);
+ * anything present must be `{ requests: string[] }` of well-formed
+ * `"METHOD /path"` entries. Malformed throws, like a malformed binding: guessing
+ * what a broken payload meant is how a key ends up spendable somewhere nobody
+ * chose. An EMPTY list is legal and means "the key is never spliced".
+ */
+function parseMeteredRequests(envName: string, raw: unknown): readonly string[] | undefined {
+  if (raw === undefined) return undefined;
+  const requests = (raw as { requests?: unknown } | null)?.requests;
+  if (
+    typeof raw !== 'object' ||
+    raw === null ||
+    !Array.isArray(requests) ||
+    requests.some(
+      (r) =>
+        typeof r !== 'string' || !METERED_REQUEST_RE.test(r) || r.replace(/\/\*$/, '').includes('*'),
+    )
+  ) {
+    throw new PluginError({
+      code: 'invalid-credential-metering',
+      plugin: PLUGIN_NAME,
+      message: `credential '${envName}': metered must be { requests: ["METHOD /path", ...] }`,
+    });
+  }
+  return requests as string[];
+}
+
+/**
+ * Anything that is not EXACTLY `{ blocked: false }` blocks. The usage ledger is
+ * in-process and trusted, but this is a money control: a malformed answer must
+ * never read as "go ahead".
+ */
+function asUsageVerdict(v: unknown): UsageVerdict {
+  if (typeof v === 'object' && v !== null) {
+    const o = v as { blocked?: unknown; reason?: unknown };
+    if (o.blocked === false) return { blocked: false };
+    if (o.blocked === true && typeof o.reason === 'string') return { blocked: true, reason: o.reason };
+  }
+  return { blocked: true, reason: 'usage-check-unavailable' };
+}
+
 function buildEndpointString(
   listen: CredentialProxyConfig['listen'],
   listener: ProxyListener,
@@ -377,6 +441,12 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
   // private state used only for rotation; the listener never reads it.
   const sessionCredentialRefs = new Map<string, SessionCredentialRefs>();
 
+  // TASK-715: the per-user provider meter cache, and the per-session "this
+  // session's meter is over" callbacks. Private state; the listener only ever
+  // sees the ProviderMeter object on a SessionConfig.
+  let meterHub: ProviderMeterHub | undefined;
+  const sessionMeterClosers = new Map<string, () => void>();
+
   // Per-session accumulator of allowlist-blocked hosts (agent-visible egress
   // note). onAudit records into it; proxy:drain-session-egress-blocks drains it;
   // close-session forgets the session. Lives on the plugin instance — it's
@@ -397,10 +467,44 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
         'proxy:drain-session-egress-blocks',
       ],
       calls: ['credentials:get'],
+      optionalCalls: [
+        {
+          hook: 'usage:provider-status',
+          degradation:
+            "Model calls made from inside a sandbox are not limited: a user's spend limit and the suspend switch apply to the agent's turns only.",
+        },
+        {
+          hook: 'usage:provider-record',
+          degradation:
+            "Model calls made from inside a sandbox are not counted against the user's usage; only the agent's own reported turns are.",
+        },
+      ],
       subscribes: [],
     },
 
     async init({ bus }) {
+      // The per-user cache between the byte path and the usage ledger (TASK-715).
+      // `@ax/usage-limits` may finish loading after this plugin, so the ledger is
+      // looked up when a session opens, not now; absent means model calls made from
+      // a sandbox are not counted or limited (the endpoint allowlist still applies).
+      const ledgerPort: UsageLedgerPort = {
+        status: async (ctx) =>
+          asUsageVerdict(
+            await bus.call<Record<string, never>, unknown>('usage:provider-status', ctx, {}),
+          ),
+        record: async (ctx, payload: UsageRecordPayload) =>
+          asUsageVerdict(await bus.call<UsageRecordPayload, unknown>('usage:provider-record', ctx, payload)),
+      };
+      meterHub = new ProviderMeterHub({
+        ledger: () =>
+          bus.hasService('usage:provider-status') && bus.hasService('usage:provider-record')
+            ? ledgerPort
+            : undefined,
+        log: (event, data) => {
+          makeAgentContext({ sessionId: '', agentId: PLUGIN_NAME, userId: '' }).logger.warn(event, data);
+        },
+      });
+
       // 1. Get/create the MITM CA.
       const ca = await getOrCreateCA(caDir);
       caCertPem = ca.cert;
@@ -509,8 +613,14 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           // secret, so a malformed payload fails without touching the vault.
           const map = new CredentialPlaceholderMap();
           const bindings = new Map<string, readonly string[]>();
+          // TASK-715: the metered credentials' allowed requests, validated up
+          // front for the same reason (a broken payload fails before any secret
+          // is read).
+          const meteredRequests = new Map<string, readonly string[]>();
           for (const [envName, cred] of Object.entries(input.credentials)) {
             bindings.set(envName, parseAllowedHosts(envName, cred.allowedHosts));
+            const requests = parseMeteredRequests(envName, cred.metered);
+            if (requests !== undefined) meteredRequests.set(envName, requests);
           }
           for (const [envName, { ref }] of Object.entries(input.credentials)) {
             const allowedHosts = bindings.get(envName) ?? [];
@@ -563,6 +673,32 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           }
           if (input.canaryToken) {
             sessionConfig.canaryToken = input.canaryToken;
+          }
+
+          // TASK-715: meter the operator's model-provider key. The hosts are the
+          // metered credentials' own bindings and the requests are theirs, so a
+          // tunnel to that host splices the key only into a model call, asks the
+          // usage ledger first, and reports what each call used. Attached BEFORE
+          // the session becomes reachable (sessions.set below), so there is no
+          // window in which the key can be spent unmetered.
+          sessionMeterClosers.get(input.sessionId)?.(); // a re-open ends the old meter
+          sessionMeterClosers.delete(input.sessionId);
+          if (meteredRequests.size > 0 && meterHub !== undefined) {
+            const hosts = new Set<string>();
+            const requests = new Set<string>();
+            for (const [envName, reqs] of meteredRequests) {
+              for (const h of bindings.get(envName) ?? []) hosts.add(h);
+              for (const r of reqs) requests.add(r);
+            }
+            const { meter, close } = await meterHub.forSession({
+              sessionId: input.sessionId,
+              userId: input.userId,
+              agentId: input.agentId,
+              hosts: [...hosts],
+              requests: [...requests],
+            });
+            sessionConfig.providerMeter = meter;
+            sessionMeterClosers.set(input.sessionId, close);
           }
           sessions.set(input.sessionId, sessionConfig);
 
@@ -663,6 +799,10 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           sessions.delete(sessionId);
           sessionCredentialRefs.delete(sessionId);
           egressBlocks.forget(sessionId);
+          // TASK-715: end the session's meter, so a tunnel that outlives the
+          // session stops being admitted.
+          sessionMeterClosers.get(sessionId)?.();
+          sessionMeterClosers.delete(sessionId);
           return {};
         },
       );

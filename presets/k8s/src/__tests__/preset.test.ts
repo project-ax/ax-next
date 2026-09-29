@@ -627,9 +627,11 @@ describe('@ax/preset-k8s wiring', () => {
     const plugins = createK8sPlugins(stubConfig);
     const usage = plugins.find((p) => p.manifest.name === '@ax/usage-limits');
     expect(usage).toBeDefined();
-    // Subscriber-only: no service hooks, so nothing can bypass the gate by
-    // calling around it, and no second source of truth for usage rows.
-    expect(usage!.manifest.registers).toEqual([]);
+    // Two service hooks, and only two (TASK-715): the credential proxy asks
+    // "may this user's model key stay unlocked?" and books what it measured.
+    // Neither can be used to read or write another plugin's rows, and nothing
+    // else about usage is callable from outside.
+    expect(usage!.manifest.registers).toEqual(['usage:provider-status', 'usage:provider-record']);
     expect(usage!.manifest.subscribes).toEqual([
       'chat:start',
       'chat:resume',
@@ -671,6 +673,30 @@ describe('@ax/preset-k8s wiring', () => {
     // agent:invoke, so without this producer a suspended user could keep an
     // agent running by approving what it asks for.
     expect(names).toContain('@ax/decisions');
+  });
+
+  it('wires the credential proxy to the usage ledger it meters into, both ways (TASK-715)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const proxy = plugins.find((p) => p.manifest.name === '@ax/credential-proxy')!;
+    const usage = plugins.find((p) => p.manifest.name === '@ax/usage-limits')!;
+    // The proxy calls exactly the hooks the ledger registers, as OPTIONAL calls:
+    // a preset without a ledger still runs (and says what that costs).
+    const optional = (proxy.manifest.optionalCalls ?? []).filter((c) =>
+      c.hook.startsWith('usage:'),
+    );
+    expect(optional.map((c) => c.hook).sort()).toEqual([
+      'usage:provider-record',
+      'usage:provider-status',
+    ]);
+    for (const c of optional) {
+      expect(usage.manifest.registers).toContain(c.hook);
+      expect(c.degradation.length).toBeGreaterThan(0);
+    }
+    // Someone marks the model key metered: the orchestrator is the only producer
+    // of proxy:open-session credentials in this preset.
+    const opener = plugins.find((p) => p.manifest.registers.includes('proxy:open-session'));
+    expect(opener?.manifest.name).toBe('@ax/credential-proxy');
+    expect(plugins.map((p) => p.manifest.name)).toContain('@ax/chat-orchestrator');
   });
 
   it('loads @ax/disk-quota next to BOTH gates it depends on: workspace:pre-apply and blob:put (TASK-690)', () => {

@@ -6,6 +6,7 @@ import {
 import { sql, type Kysely } from 'kysely';
 import { stopPostgresContainer, startTestContainer } from '@ax/test-harness';
 import { createUsageLimitsPlugin } from '../plugin.js';
+import type { ProviderVerdict } from '../store.js';
 import { bootUsageLimits, truncateUsageTables, type Booted } from './helpers.js';
 
 let container: StartedPostgreSqlContainer;
@@ -50,10 +51,10 @@ async function usageOf(b: Booted, userId: string) {
 }
 
 describe('manifest', () => {
-  it('subscribes to the gate + meters, registers nothing, declares its calls', () => {
+  it('subscribes to the gate + meters, registers the two provider hooks, declares its calls', () => {
     const m = createUsageLimitsPlugin().manifest;
     expect(m.name).toBe('@ax/usage-limits');
-    expect(m.registers).toEqual([]);
+    expect(m.registers).toEqual(['usage:provider-status', 'usage:provider-record']);
     expect(m.subscribes).toEqual(['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage']);
     expect(m.calls).toEqual([
       'database:get-instance',
@@ -253,6 +254,169 @@ describe('the llm:usage meter', () => {
       usage: { inputTokens: 1_000_000, outputTokens: 0 },
     });
     expect(await usageOf(b, 'alice')).toMatchObject({ spendUsd: 1, turnsLast24h: 0, inputTokens: 1_000_000 });
+  });
+
+  it('lands in helper_cost_micros, not cost_micros', async () => {
+    const b = await boot();
+    await b.harness.bus.fire('llm:usage', b.harness.ctx({ userId: 'alice' }), {
+      model: 'anthropic/claude-haiku-4-5',
+      usage: { inputTokens: 1_000_000, outputTokens: 0 },
+    });
+    const { db } = await b.harness.bus.call<unknown, { db: Kysely<unknown> }>(
+      'database:get-instance',
+      b.harness.ctx(),
+      {},
+    );
+    const r = await sql<{ cost_micros: string; helper_cost_micros: string; provider_cost_micros: string }>`
+      SELECT cost_micros, helper_cost_micros, provider_cost_micros
+      FROM usage_limits_v1_buckets WHERE user_id = 'alice'
+    `.execute(db);
+    expect(r.rows).toEqual([{ cost_micros: '0', helper_cost_micros: '1000000', provider_cost_micros: '0' }]);
+  });
+});
+
+// TASK-715: the two service hooks the credential proxy calls for every model
+// request that leaves the sandbox. Exercised through a real bus and a real
+// Postgres, the way the proxy plugin will call them.
+describe('the provider hooks (usage:provider-status / usage:provider-record)', () => {
+  const status = (b: Booted, userId: string) =>
+    b.harness.bus.call<unknown, ProviderVerdict>('usage:provider-status', b.harness.ctx({ userId }), {});
+  const record = (b: Booted, userId: string, payload: unknown) =>
+    b.harness.bus.call<unknown, ProviderVerdict>('usage:provider-record', b.harness.ctx({ userId }), payload);
+
+  /** Haiku, 1M input tokens: exactly $1.00 of estimated spend. */
+  const ONE_DOLLAR = {
+    model: 'anthropic/claude-haiku-4-5',
+    usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    requestBytes: 4_000_000,
+  };
+  const DAILY = { blocked: true, reason: 'usage-limit-daily' } as const;
+
+  it('registers both hooks on the bus', async () => {
+    const b = await boot();
+    expect(b.harness.bus.hasService('usage:provider-status')).toBe(true);
+    expect(b.harness.bus.hasService('usage:provider-record')).toBe(true);
+  });
+
+  it('is not blocked for a user with no usage', async () => {
+    const b = await boot();
+    expect(await status(b, 'alice')).toEqual({ blocked: false });
+  });
+
+  it('records, then flips to blocked once spend passes 2x the daily limit; other users unaffected', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 1, turnsPerHour: 100 });
+    expect(await record(b, 'alice', ONE_DOLLAR)).toEqual({ blocked: false });
+    // At 1x a NEW turn is already refused, but the sandbox keeps its key: an
+    // admitted turn may finish (this is the gap between the two ceilings).
+    expect(await start(b, 'alice')).toMatchObject({ rejected: true, reason: 'usage-limit-daily' });
+    expect(await status(b, 'alice')).toEqual({ blocked: false });
+    // The second dollar reaches exactly 2x.
+    expect(await record(b, 'alice', ONE_DOLLAR)).toEqual(DAILY);
+    expect(await status(b, 'alice')).toEqual(DAILY);
+    expect(await status(b, 'bob')).toEqual({ blocked: false });
+    expect(await record(b, 'bob', { ...ONE_DOLLAR, usage: { ...ONE_DOLLAR.usage, inputTokens: 1 } })).toEqual({
+      blocked: false,
+    });
+    // Proxy-measured spend is visible in the admin view.
+    expect(await usageOf(b, 'alice')).toMatchObject({ spendUsd: 2, turnsLast24h: 0 });
+  });
+
+  it('a spend only the proxy ever saw makes chat:start refuse the user', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 1, turnsPerHour: 100 });
+    await record(b, 'mallory', ONE_DOLLAR);
+    expect(await start(b, 'mallory')).toMatchObject({ rejected: true, reason: 'usage-limit-daily' });
+  });
+
+  it('does not double-count what the runner and the proxy both saw; helper calls add on top', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 100, turnsPerHour: 100 });
+    await turnEnd(b, 'alice', { role: 'assistant', usage: { ...ONE_DOLLAR.usage, model: ONE_DOLLAR.model } });
+    await record(b, 'alice', ONE_DOLLAR);
+    expect(await usageOf(b, 'alice')).toMatchObject({ spendUsd: 1 });
+    await b.harness.bus.fire('llm:usage', b.harness.ctx({ userId: 'alice' }), {
+      model: ONE_DOLLAR.model,
+      usage: { inputTokens: 1_000_000, outputTokens: 0 },
+    });
+    expect(await usageOf(b, 'alice')).toMatchObject({ spendUsd: 2 });
+  });
+
+  it('a suspended user is blocked with usage-suspended, on both hooks; others are not', async () => {
+    const b = await boot();
+    await b.request('PUT', '/admin/usage/users/:userId/suspension', { params: { userId: 'mallory' } });
+    expect(await status(b, 'mallory')).toEqual({ blocked: true, reason: 'usage-suspended' });
+    expect(await record(b, 'mallory', ONE_DOLLAR)).toEqual({ blocked: true, reason: 'usage-suspended' });
+    expect(await status(b, 'alice')).toEqual({ blocked: false });
+    // Lifting the suspension lifts the block (the spend recorded meanwhile is far under 2x of $5).
+    await b.request('DELETE', '/admin/usage/users/:userId/suspension', { params: { userId: 'mallory' } });
+    expect(await status(b, 'mallory')).toEqual({ blocked: false });
+  });
+
+  it('charges an unreadable response the conservative estimate, enough to trip the ceiling on its own', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 1, turnsPerHour: 100 });
+    // Unknown size, unknown usage: 200_000 x $15/M + 4096 x $75/M = $3.31 > $2.
+    expect(await record(b, 'alice', { usage: null, requestBytes: null })).toEqual(DAILY);
+    // A tiny unread request is far cheaper but never free: 10 input + 4096
+    // output tokens at the top tier = 307_350 micros = $0.3074 (4 d.p.).
+    expect(await record(b, 'bob', { usage: null, requestBytes: 30 })).toEqual({ blocked: false });
+    expect(await usageOf(b, 'bob')).toMatchObject({ spendUsd: 0.3074 });
+  });
+
+  it('a garbage payload is charged, not dropped, and never rejects the call', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 1, turnsPerHour: 100 });
+    expect(await record(b, 'alice', 'not-an-object')).toEqual(DAILY);
+  });
+
+  it('the window rolls: a day later the block is gone', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 1, turnsPerHour: 100 });
+    await record(b, 'alice', ONE_DOLLAR);
+    await record(b, 'alice', ONE_DOLLAR);
+    expect(await status(b, 'alice')).toEqual(DAILY);
+    b.clock.advance(25 * 60 * 60_000);
+    expect(await status(b, 'alice')).toEqual({ blocked: false });
+  });
+
+  it('a context with no user is blocked, and nothing is recorded for it', async () => {
+    const b = await boot();
+    expect(await status(b, '')).toEqual({ blocked: true, reason: 'usage-check-unavailable' });
+    expect(await record(b, '', ONE_DOLLAR)).toEqual({ blocked: true, reason: 'usage-check-unavailable' });
+    expect((await b.request('GET', '/admin/usage')).json).toMatchObject({ users: [] });
+  });
+
+  it('FAILS CLOSED: a broken database blocks instead of letting the sandbox keep the key', async () => {
+    const b = await boot();
+    const { db } = await b.harness.bus.call<unknown, { db: Kysely<unknown> }>(
+      'database:get-instance',
+      b.harness.ctx(),
+      {},
+    );
+    await db.destroy();
+    expect(await status(b, 'alice')).toEqual({ blocked: true, reason: 'usage-check-unavailable' });
+    expect(await record(b, 'alice', ONE_DOLLAR)).toEqual({ blocked: true, reason: 'usage-check-unavailable' });
+  });
+
+  it('the existing subscribers keep working alongside the hooks', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 1, turnsPerHour: 2 });
+    expect((await start(b, 'alice')).rejected).toBe(false);
+    await turnEnd(b, 'alice', { role: 'assistant', reason: 'complete' });
+    expect((await start(b, 'alice')).rejected).toBe(false);
+    expect(await start(b, 'alice')).toMatchObject({ rejected: true, reason: 'usage-limit-rate' });
+    expect(await status(b, 'alice')).toEqual({ blocked: false });
+  });
+
+  it('shutdown still completes with the hooks registered; a handler left on the bus then fails closed', async () => {
+    // The bus has no service unregister, so the two handlers outlive shutdown.
+    // With the database closed under them they must answer "blocked", never
+    // "not blocked" and never a throw.
+    const b = await boot();
+    await expect(b.harness.close({ onError: () => {} })).resolves.toBeUndefined();
+    expect(await status(b, 'alice')).toEqual({ blocked: true, reason: 'usage-check-unavailable' });
+    expect(await record(b, 'alice', ONE_DOLLAR)).toEqual({ blocked: true, reason: 'usage-check-unavailable' });
   });
 });
 

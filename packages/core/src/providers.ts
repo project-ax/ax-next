@@ -46,6 +46,21 @@ export interface ProviderEndpoint {
   credentialEnvVar: string;
   /** Credential-store ref. */
   credentialRef: string;
+  /**
+   * The requests the operator's key may be spliced into (TASK-715), as
+   * `"METHOD /path"` entries: the model-call endpoints and nothing else. The
+   * credential proxy substitutes the provider key ONLY into a request that
+   * matches one of these; every other request to `egressHost` is forwarded with
+   * the placeholder verbatim (an inert token), so the sandbox cannot use the key
+   * for the rest of the provider's API (batch jobs, hosted agents, files,
+   * skills, ...), which is billable or holds other people's data and which no
+   * per-call meter can bound.
+   *
+   * The path is matched exactly, query string ignored. A trailing `/*` means
+   * exactly one more path segment of `[A-Za-z0-9._:-]`. Keep it minimal: an entry
+   * added here is an endpoint the sandbox can spend money on.
+   */
+  inferenceRequests: readonly string[];
 }
 
 export const PROVIDER_ENDPOINTS: Readonly<Record<string, ProviderEndpoint>> =
@@ -60,6 +75,15 @@ export const PROVIDER_ENDPOINTS: Readonly<Record<string, ProviderEndpoint>> =
       egressHost: 'api.anthropic.com',
       credentialEnvVar: 'ANTHROPIC_API_KEY',
       credentialRef: 'provider:anthropic',
+      // `/v1/messages` is what both runners call (the Claude CLI adds
+      // `?beta=true`, ignored by the matcher); `count_tokens` and the read-only
+      // model list are the other authenticated calls the CLI makes.
+      inferenceRequests: Object.freeze([
+        'POST /v1/messages',
+        'POST /v1/messages/count_tokens',
+        'GET /v1/models',
+        'GET /v1/models/*',
+      ]),
     }),
     openrouter: Object.freeze({
       id: 'openrouter',
@@ -69,6 +93,8 @@ export const PROVIDER_ENDPOINTS: Readonly<Record<string, ProviderEndpoint>> =
       egressHost: 'openrouter.ai',
       credentialEnvVar: 'OPENROUTER_API_KEY',
       credentialRef: 'provider:openrouter',
+      // The aisdk runner's OpenAI-compatible provider posts here and nowhere else.
+      inferenceRequests: Object.freeze(['POST /api/v1/chat/completions']),
     }),
   });
 

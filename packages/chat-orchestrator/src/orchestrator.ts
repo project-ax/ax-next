@@ -521,7 +521,25 @@ interface ProxyOpenSessionInput {
    * deny). The orchestrator fills it only from sources the model/user cannot
    * set for the session — never from the (user-widenable) allowlist.
    */
-  credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
+  credentials: Record<string, ProxyCredentialEntry>;
+}
+
+/**
+ * One credential in the `proxy:open-session` input.
+ *
+ * `metered` (TASK-715) marks the MODEL-PROVIDER key: the operator pays for what
+ * it spends, and code in the sandbox can drive it just as the runner does. When
+ * present, the proxy (a) splices this credential only into requests matching
+ * `requests` (`"METHOD /path"`, from the provider table) and (b) counts what
+ * those calls use and stops splicing once the user is over their limit. Only the
+ * provider-default path sets it, from `PROVIDER_ENDPOINTS` (code, not a store
+ * row); nothing the model or the user typed can add or widen it.
+ */
+interface ProxyCredentialEntry {
+  ref: string;
+  kind: string;
+  allowedHosts?: string[];
+  metered?: { requests: string[] };
 }
 interface ProxyOpenSessionOutput {
   /** `unix:///path/to/sock` OR `tcp://127.0.0.1:<port>` — translated below. */
@@ -2303,7 +2321,7 @@ export function createOrchestrator(
     let providerDefaults:
       | {
           allowlist: string[];
-          credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
+          credentials: Record<string, ProxyCredentialEntry>;
         }
       | undefined;
     if (useProviderDefaults) {
@@ -2339,6 +2357,10 @@ export function createOrchestrator(
             ref: endpoint.credentialRef,
             kind: 'api-key',
             allowedHosts: [endpoint.egressHost],
+            // TASK-715 — and metered: this is the operator's model key, which
+            // sandbox code can drive as freely as the runner can. The proxy
+            // splices it only into these requests and counts what they use.
+            metered: { requests: [...endpoint.inferenceRequests] },
           },
         },
       };
@@ -2446,7 +2468,7 @@ export function createOrchestrator(
     // can never override it). Only the CLI dev-agents-stub produces this
     // explicit shape; production @ax/agents returns neither field, so it always
     // takes the provider-default path.
-    const baseCreds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }> =
+    const baseCreds: Record<string, ProxyCredentialEntry> =
       providerDefaults
         ? { ...providerDefaults.credentials }
         : Object.fromEntries(

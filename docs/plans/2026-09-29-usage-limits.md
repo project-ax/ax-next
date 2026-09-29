@@ -14,9 +14,11 @@ plugins)". They do not, for the traffic that matters:
   aisdk) run inside the sandbox and call the provider directly. The only host
   hop is the credential proxy, which swaps the `ax-cred:<hex>` placeholder for
   the real key on a raw MITM byte pipe (`packages/credential-proxy/src/listener.ts`,
-  `handleMITMConnect`). The proxy never parses a response, and its
-  `event.http-egress` audit fires once per CONNECT tunnel, not per request, so
-  it cannot count tokens or model requests.
+  `handleMITMConnect`). When this card was written the proxy never parsed a
+  response, and its `event.http-egress` audit fires once per CONNECT tunnel, not
+  per request, so it could not count tokens or model requests. (TASK-715 later
+  added a passive usage tap on the provider host's tunnels and a per-user gate;
+  see `2026-09-29-provider-call-metering.md`. The audit event is unchanged.)
 - **`llm:call:anthropic` / `llm:call:openrouter` serve only host-side helper
   calls** (conversation titles, memory extraction, the skill safety scan). They
   cost money too, but they are the minority of spend.
@@ -64,10 +66,12 @@ knows its usage. So the design splits the two jobs that the card bundled:
 ### Known gaps (stated, not hidden)
 
 - **Direct provider calls from user code in the sandbox** (`curl` with the
-  placeholder key) are gated at the door (a suspended or over-cap user cannot
-  start a turn) but their tokens are not counted: only the proxy sees those
-  bytes. Closing this means parsing responses in the credential proxy, which is
-  a bigger change in a file another card (TASK-687) is editing. Follow-up.
+  placeholder key) were gated only at the door and not counted (fixed in
+  TASK-715: the credential proxy now measures every model response, the ledger
+  takes the larger of the runner-reported and proxy-measured figures, and the
+  proxy stops splicing the key at 2x the daily limit). What that leaves is in
+  `2026-09-29-provider-call-metering.md` under "What stays unmetered or
+  unbounded".
 - **A single turn is not stopped mid-flight by the spend cap.** It is bounded
   by the runners' own step limits, and a suspension (kill switch) does
   interrupt in-flight turns. Overshoot is at most the turns already running.
@@ -125,8 +129,10 @@ blocks another's. Limits live in storage key `settings:usage-limits` (the
 
 ## Surface
 
-- Subscribes: `chat:start` (gate + count), `chat:turn-end` (record),
-  `llm:usage` (record). Registers no service hooks.
+- Subscribes: `chat:start` (gate + count), `chat:resume` (gate), `chat:turn-end`
+  (record), `llm:usage` (record). Registers two service hooks for the
+  credential proxy (TASK-715): `usage:provider-status` and
+  `usage:provider-record`.
 - HTTP (admin only): `GET /admin/usage`, `PUT /admin/usage/limits`,
   `PUT|DELETE /admin/usage/users/:userId/suspension`. Suspending also
   interrupts that user's in-flight turns (`conversations:list` +
