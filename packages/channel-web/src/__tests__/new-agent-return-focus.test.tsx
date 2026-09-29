@@ -1,13 +1,18 @@
 /**
- * TASK-510 — closing the new-agent dialog from the workspace must not drop
+ * TASK-510 — leaving the new-agent flow from the workspace must not drop
  * focus on `<body>`.
  *
  * THE DEFECT (measured on kind in walk TASK-358). The "New agent…" row opens
  * the create flow, and `App.tsx`'s bootstrap gate REPLACES the whole tree with
- * the dialog: the row is destroyed on open, and a brand-new workspace is
- * mounted on close. Escape, the ✕, and a finished create all left focus on
- * `<body>` — the dialog's own restore (`use-opener-restore.ts`) finds its
- * captured opener detached and correctly declines to focus it.
+ * it: the row is destroyed on open, and a brand-new workspace is mounted on
+ * close. Escape, the ✕, and a finished create all left focus on `<body>` — the
+ * old dialog's own restore (`use-opener-restore.ts`) found its captured opener
+ * detached and correctly declined to focus it.
+ *
+ * TASK-689 turned that dialog into a `SetupShell` card (`NewAgentCard`): the ✕
+ * became a "Cancel" button, and the failure card gained its own Cancel and
+ * Escape. Those are new ways out of the flow, and every one of them must land
+ * on the same restore — which is what the tests below pin.
  *
  * WHICH DIRECTION THIS FAILS IN. To `<body>`, and a detached-node restore
  * looks like a fix to any assertion that kept a handle on the old node. So
@@ -153,9 +158,18 @@ function newAgentDetail(agentId: string): AgentDetail {
   } as unknown as AgentDetail;
 }
 
-async function openNewAgentDialog(): Promise<void> {
+async function openNewAgentCard(): Promise<void> {
   fireEvent.click(await waitFor(newAgentRow));
-  await screen.findByRole('dialog', { name: /Name your agent/i });
+  // Exactly "New agent": the sidebar row it replaces reads "New agent…".
+  await screen.findByText('New agent');
+  await screen.findByLabelText(/Agent name/i);
+}
+
+/** Type a name and submit, then wait for the create to be attempted. */
+async function createNamed(name: string): Promise<void> {
+  fireEvent.change(screen.getByLabelText(/Agent name/i), { target: { value: name } });
+  fireEvent.click(screen.getByRole('button', { name: /Create agent/i }));
+  await waitFor(() => expect(mockAutoCreate).toHaveBeenCalledWith(name));
 }
 
 function expectFocusedAndConnected(target: () => HTMLElement): void {
@@ -164,7 +178,7 @@ function expectFocusedAndConnected(target: () => HTMLElement): void {
   expect((document.activeElement as HTMLElement).isConnected).toBe(true);
 }
 
-describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
+describe('leaving the new-agent flow from the workspace (TASK-510)', () => {
   it('really does start from <body> — the restore is doing the work', async () => {
     render(<App />);
     await waitFor(newAgentRow);
@@ -173,23 +187,60 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
 
   it('Escape returns focus to the "New agent…" row', async () => {
     render(<App />);
-    await openNewAgentDialog();
+    await openNewAgentCard();
 
     fireEvent.keyDown(document.activeElement ?? document.body, {
       key: 'Escape',
     });
 
     await waitFor(() => expectFocusedAndConnected(newAgentRow));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByLabelText(/Agent name/i)).toBeNull();
   });
 
-  it('the Close button returns focus to the "New agent…" row', async () => {
+  // The ✕ this used to click is gone (TASK-689): the card has a labelled Cancel.
+  it('the Cancel button returns focus to the "New agent…" row', async () => {
     render(<App />);
-    await openNewAgentDialog();
+    await openNewAgentCard();
 
-    fireEvent.click(screen.getByRole('button', { name: /^Close$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
 
     await waitFor(() => expectFocusedAndConnected(newAgentRow));
+  });
+
+  /**
+   * TASK-689 — a failed create used to be a dead end, so there was no exit to
+   * restore focus from. There are two now, and they must ride the same
+   * `createAgentOpen` true → false effect as every other way out.
+   *
+   * VACUITY: against an `App` whose failure card has no working exit the
+   * card just stays up — the row is never re-created and these time out.
+   */
+  describe('when the create FAILS (TASK-689)', () => {
+    async function openFailureCard(): Promise<void> {
+      mockAutoCreate.mockRejectedValue(new Error('boom'));
+      render(<App />);
+      await openNewAgentCard();
+      await createNamed('Quill');
+      await screen.findByText(/We couldn't set up Quill just now/);
+    }
+
+    it('Cancel on the failure card returns focus to the "New agent…" row', async () => {
+      await openFailureCard();
+
+      fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+
+      await waitFor(() => expectFocusedAndConnected(newAgentRow));
+    });
+
+    it('Escape on the failure card returns focus to the "New agent…" row', async () => {
+      await openFailureCard();
+
+      fireEvent.keyDown(document.activeElement ?? document.body, {
+        key: 'Escape',
+      });
+
+      await waitFor(() => expectFocusedAndConnected(newAgentRow));
+    });
   });
 
   it('a completed create moves focus into the NEW agent\'s conversation (TASK-533)', async () => {
@@ -204,7 +255,7 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
       newAgentDetail(agentId),
     );
     render(<App />);
-    await openNewAgentDialog();
+    await openNewAgentCard();
 
     fireEvent.change(screen.getByLabelText(/Agent name/i), {
       target: { value: 'Quill' },
@@ -236,7 +287,7 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
         return newAgentDetail(agentId);
       });
       render(<App />);
-      await openNewAgentDialog();
+      await openNewAgentCard();
       fireEvent.change(screen.getByLabelText(/Agent name/i), {
         target: { value: 'Quill' },
       });
@@ -299,7 +350,7 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
         return { reqId: 'r1', conversationId: 'c1' };
       });
       render(<App />);
-      await openNewAgentDialog();
+      await openNewAgentCard();
       fireEvent.change(screen.getByLabelText(/Agent name/i), {
         target: { value: 'Quill' },
       });
@@ -313,7 +364,7 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
 
     /**
      * VACUITY: against the unfixed code the only restore started at the
-     * dialog's close and gave up after `RESTORE_WINDOW_MS`, with the route
+     * flow's close and gave up after `RESTORE_WINDOW_MS`, with the route
      * still on the old view — so focus stays on `<body>` and the final
      * `waitFor` times out. The first `expect` pins the premise: the window
      * really did run out with focus nowhere.
@@ -361,7 +412,7 @@ describe('closing the new-agent dialog from the workspace (TASK-510)', () => {
     setViewport(true);
     render(<App />);
     fireEvent.click(await waitFor(navTrigger));
-    await openNewAgentDialog();
+    await openNewAgentCard();
 
     fireEvent.keyDown(document.activeElement ?? document.body, {
       key: 'Escape',

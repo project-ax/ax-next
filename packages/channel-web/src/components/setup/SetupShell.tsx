@@ -52,7 +52,14 @@ export function SetupShell({ title, description, step, children }: Props) {
               Step {step} of {SETUP_TOTAL_STEPS}
             </p>
           )}
-          <CardTitle className="text-xl font-semibold tracking-[-0.012em]">
+          {/* `CardTitle` is a <div>. Without the role this whole screen had no
+              heading, which the first-run name step (a dialog with an <h2>
+              until TASK-689) cannot afford: it is the first page anyone sees. */}
+          <CardTitle
+            role="heading"
+            aria-level={1}
+            className="text-xl font-semibold tracking-[-0.012em]"
+          >
             {title}
           </CardTitle>
           {description !== undefined && (

@@ -235,7 +235,7 @@ describe('retired /chat addresses land on / (TASK-360)', () => {
  * `expected null to be 'a-new'`.
  */
 describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
-  it('App supplies a working onCreateAgent, and calling it opens the name dialog', async () => {
+  it('App supplies a working onCreateAgent, and calling it opens the new-agent card', async () => {
     setLocation('/workspace');
     mockGetSession.mockResolvedValue(ALICE);
     // installShellFetch() (from the default beforeEach) already returns one
@@ -254,12 +254,12 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('Name your agent')).toBeTruthy();
+      expect(screen.getByText('New agent')).toBeTruthy();
     });
-    // This is the explicit "New agent…" path, not first run, so the dialog
-    // must be dismissible (dismissible={!isFirstRun}) — unlike the
-    // non-dismissible first-run dialog exercised in the next test.
-    expect(screen.getByRole('button', { name: /close/i })).toBeTruthy();
+    // This is the explicit "New agent…" path, not first run, so the card must
+    // offer a way back (mode="add") — unlike the first-run card exercised in
+    // the next test, which has none.
+    expect(screen.getByRole('button', { name: /^cancel$/i })).toBeTruthy();
   });
 
   it('hands the first-run kickoff to the workspace', async () => {
@@ -296,9 +296,9 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
 
     render(<App />);
 
-    // First-run: name dialog, non-dismissible.
+    // First-run: the welcome card, with no way back.
     await waitFor(() => {
-      expect(screen.getByText('Name your agent')).toBeTruthy();
+      expect(screen.getByText('Welcome to ax')).toBeTruthy();
     });
     fireEvent.change(screen.getByLabelText(/agent name/i), {
       target: { value: 'Scout' },
@@ -308,5 +308,165 @@ describe('workspace create-agent door + kickoff routing (TASK-249)', () => {
     await waitFor(() => {
       expect(lastWorkspaceShellProps?.kickoffAgentId).toBe('a-new');
     });
+  });
+});
+
+/**
+ * TASK-689 — the name card in BOTH flows, and the way out when a create fails.
+ *
+ * First run used to be a modal over an empty page (no product name, no welcome)
+ * and the add-agent failure card was a dead end: "your FIRST agent", one
+ * "Try again" button, Escape ignored, the workspace REPLACED by the gate — so
+ * the only exit was a page reload. Each test says what it does against the old
+ * `App`.
+ */
+describe('the name card in both flows (TASK-689)', () => {
+  /**
+   * `agents` is what `/api/chat/agents` answers; `bootstrap` decides whether
+   * the create succeeds. `bootstrapCalls` is returned so a test can prove a
+   * Cancel really did NOT create anything.
+   */
+  function installFlowFetch(opts: { agents: 'none' | 'one'; bootstrap: 'ok' | 'fail' }) {
+    const state = { bootstrapCalls: 0, created: false };
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/agents/bootstrap')) {
+        state.bootstrapCalls += 1;
+        if (opts.bootstrap === 'fail') {
+          return { ok: false, status: 500, json: async () => ({}) };
+        }
+        state.created = true;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            agent: { agentId: 'a-new', displayName: 'Scout', visibility: 'personal' },
+          }),
+        };
+      }
+      if (url.includes('/api/chat/agents')) {
+        const list =
+          opts.agents === 'one' || state.created
+            ? [{ agentId: 'a1', displayName: 'Scout', visibility: 'personal' }]
+            : [];
+        return { ok: true, status: 200, json: async () => list };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    return state;
+  }
+
+  const nameField = () => screen.getByLabelText(/agent name/i);
+
+  async function openAddFlow() {
+    setLocation('/workspace');
+    mockGetSession.mockResolvedValue(ALICE);
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+    act(() => {
+      lastWorkspaceShellProps?.onCreateAgent?.();
+    });
+    await screen.findByText('New agent');
+  }
+
+  it('first run shows a branded welcome card, not a dialog', async () => {
+    // OLD: a `role="dialog"` titled "Name your agent", with no product name.
+    installFlowFetch({ agents: 'none', bootstrap: 'ok' });
+    setLocation('/workspace');
+    mockGetSession.mockResolvedValue(ALICE);
+
+    render(<App />);
+
+    expect(await screen.findByText('Welcome to ax')).toBeTruthy();
+    expect(screen.getByText("First, let's create your personal AI assistant.")).toBeTruthy();
+    // The product name, from the shared brand mark (SetupShell).
+    expect(screen.getByText('ax')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // There is nothing to go back to on first run.
+    expect(screen.queryByRole('button', { name: /^cancel$/i })).toBeNull();
+    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
+  });
+
+  it('adding: Cancel goes back to the workspace and creates nothing', async () => {
+    // OLD: a ✕ button, no "Cancel".
+    const flow = installFlowFetch({ agents: 'one', bootstrap: 'ok' });
+    await openAddFlow();
+
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+    expect(screen.queryByText('New agent')).toBeNull();
+    expect(flow.bootstrapCalls).toBe(0);
+  });
+
+  it('adding: Escape goes back to the workspace', async () => {
+    // OLD: Radix handled it. The card is not a Radix dialog now, so this is
+    // the wiring from the card's listener to `setCreateAgentOpen(false)`.
+    installFlowFetch({ agents: 'one', bootstrap: 'ok' });
+    await openAddFlow();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+  });
+
+  it('adding: a failed create can be cancelled back to the workspace', async () => {
+    // OLD: the failure card had only "Try again" and said "your first agent";
+    // the workspace was gone and the only exit was a reload.
+    installFlowFetch({ agents: 'one', bootstrap: 'fail' });
+    await openAddFlow();
+    fireEvent.change(nameField(), { target: { value: 'Quill' } });
+    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
+
+    expect(
+      await screen.findByText(/We couldn't set up Quill just now/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/first agent/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+    expect(screen.queryByText(/We couldn't set up/)).toBeNull();
+  });
+
+  it('adding: after Cancel the next "+ New agent" opens an EMPTY card', async () => {
+    // A stale name from the abandoned attempt would be a small lie: the person
+    // chose to walk away. Only first run's "Change name" carries a name back.
+    installFlowFetch({ agents: 'one', bootstrap: 'fail' });
+    await openAddFlow();
+    fireEvent.change(nameField(), { target: { value: 'Quill' } });
+    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
+    await screen.findByText(/We couldn't set up Quill just now/);
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+
+    act(() => {
+      lastWorkspaceShellProps?.onCreateAgent?.();
+    });
+    await screen.findByText('New agent');
+
+    expect((nameField() as HTMLInputElement).value).toBe('');
+  });
+
+  it('first run: a failed create offers "Change name", which returns to the card with the name kept', async () => {
+    // OLD: only "Try again" — a name the server rejected could never be changed.
+    installFlowFetch({ agents: 'none', bootstrap: 'fail' });
+    setLocation('/workspace');
+    mockGetSession.mockResolvedValue(ALICE);
+    render(<App />);
+    await screen.findByText('Welcome to ax');
+    fireEvent.change(nameField(), { target: { value: 'Scout' } });
+    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
+
+    expect(await screen.findByText("Let's get you started")).toBeTruthy();
+    expect(screen.getByText(/We couldn't set up Scout just now/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /change name/i }));
+
+    expect(await screen.findByText('Welcome to ax')).toBeTruthy();
+    expect((nameField() as HTMLInputElement).value).toBe('Scout');
+    // Still first run: nothing to fall back to.
+    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^cancel$/i })).toBeNull();
   });
 });

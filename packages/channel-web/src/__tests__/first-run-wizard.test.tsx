@@ -1,63 +1,60 @@
 /**
- * TASK-340 / audit B4, B5, B7, B8, B9 — the first-run dialog and setup wizard.
+ * TASK-340 / audit B4, B5, B7, B8, B9 — the first-run name step and setup wizard.
  *
  * The B4 half is the one that matters most. The first-run "name your agent"
- * dialog already refused to close, but it kept rendering a live-looking ✕, and
- * Radix still fired Escape and outside-click. All three silently did nothing —
- * on the very first interaction a new user has with this product.
+ * step already refused to close, but it was a dialog that kept rendering a
+ * live-looking ✕, and Radix still fired Escape and outside-click. All three
+ * silently did nothing — on the very first interaction a new user has with this
+ * product.
  *
- * The fix is to stop OFFERING the exits rather than keep swallowing them, and
- * the test that matters is the pair: the non-dismissible case refuses, and the
- * ordinary case still works. A `hideClose` that quietly broke every other
- * dialog would be a worse bug than the one it fixed.
+ * The fix was to stop OFFERING the exits rather than keep swallowing them, and
+ * the test that matters is the pair: first run refuses, and the ordinary
+ * ("+ New agent") case still works. TASK-689 turned the dialog into a
+ * `SetupShell` card (`NewAgentCard`), so the pair is now "no Cancel, no Escape
+ * listener" against "a real Cancel and a real Escape" — same principle, and a
+ * card that quietly lost the add-mode exit would be as bad as a ✕ that lied.
+ * (The card's own behaviour is pinned in `components/__tests__/NewAgentCard`.)
  */
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { NewAgentDialog } from '../components/onboard/NewAgentDialog';
+import { NewAgentCard } from '../components/onboard/NewAgentCard';
 import { SetupShell, SETUP_UNEXPECTED } from '../components/setup/SetupShell';
 import { StepGate } from '../components/setup/StepGate';
 import { StepAdmin } from '../components/setup/StepAdmin';
 import { StepDone } from '../components/setup/StepDone';
 
-describe('NewAgentDialog — first run offers no exit it will not honour (B4)', () => {
-  it('renders no close button when it cannot be dismissed', () => {
-    render(
-      <NewAgentDialog open dismissible={false} onOpenChange={() => {}} onCreate={() => {}} />,
-    );
-    expect(screen.queryByRole('button', { name: /close/i })).toBeNull();
+describe('NewAgentCard — first run offers no exit it will not honour (B4)', () => {
+  it('renders no Cancel and no close button', () => {
+    render(<NewAgentCard mode="first-run" onCreate={() => {}} />);
+    expect(screen.queryByRole('button', { name: /cancel|close/i })).toBeNull();
   });
 
-  it('does not ask to close on Escape', () => {
-    const onOpenChange = vi.fn();
-    render(
-      <NewAgentDialog open dismissible={false} onOpenChange={onOpenChange} onCreate={() => {}} />,
-    );
+  it('does not ask to go back on Escape', () => {
+    const onCancel = vi.fn();
+    render(<NewAgentCard mode="first-run" onCancel={onCancel} onCreate={() => {}} />);
     fireEvent.keyDown(document.body, { key: 'Escape' });
-    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
   });
 
-  it('still dismisses normally when it is an ordinary dialog', () => {
-    // The control case. `hideClose` must not quietly disarm every other dialog
-    // in the product — that would be a worse bug than the one being fixed.
-    const onOpenChange = vi.fn();
-    render(<NewAgentDialog open onOpenChange={onOpenChange} onCreate={() => {}} />);
+  it('still lets you go back when it is just "+ New agent"', () => {
+    // The control case. Removing the first-run exit must not quietly remove
+    // the add-mode one — that would trap someone who only wanted to look.
+    const onCancel = vi.fn();
+    render(<NewAgentCard mode="add" onCancel={onCancel} onCreate={() => {}} />);
 
-    const close = screen.getByRole('button', { name: /close/i });
-    expect(close).toBeTruthy();
-    fireEvent.click(close);
-    expect(onOpenChange).toHaveBeenCalledWith(false);
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it('says what an agent IS before asking for its name (B5)', () => {
-    render(<NewAgentDialog open dismissible={false} onOpenChange={() => {}} onCreate={() => {}} />);
-    expect(screen.getByText(/an agent is your personal assistant/i)).toBeTruthy();
-    // The first-run-only reassurance: this is the last thing in the way.
-    expect(screen.getByText(/the one thing we need before you can chat/i)).toBeTruthy();
-  });
-
-  it('drops the first-run line when the dialog is just "+ New agent"', () => {
-    render(<NewAgentDialog open onOpenChange={() => {}} onCreate={() => {}} />);
-    expect(screen.queryByText(/the one thing we need before you can chat/i)).toBeNull();
+  it('says what this step is for before asking for a name (B5)', () => {
+    // B5 was "Name your agent" assuming the reader knows what an agent is.
+    // The answer used to be a definition plus a reassurance; the welcome card
+    // says it in one line and leads with the product name.
+    render(<NewAgentCard mode="first-run" onCreate={() => {}} />);
+    expect(screen.getByText('Welcome to ax')).toBeTruthy();
+    expect(
+      screen.getByText("First, let's create your personal AI assistant."),
+    ).toBeTruthy();
   });
 });
 
@@ -69,6 +66,21 @@ describe('SetupShell — say how long this is (B5)', () => {
       </SetupShell>,
     );
     expect(screen.getByTestId('setup-step').textContent).toBe('Step 2 of 3');
+  });
+
+  it('names the page with a real heading (TASK-689)', () => {
+    // `CardTitle` is a plain <div>, so this screen had no heading at all — a
+    // screen-reader user landed on a page with nothing to say what it was. It
+    // mattered more once the first-run name step moved here from a dialog,
+    // whose title was an <h2> and named the dialog.
+    render(
+      <SetupShell title="Create your admin account">
+        <div />
+      </SetupShell>,
+    );
+    expect(
+      screen.getByRole('heading', { name: 'Create your admin account', level: 1 }),
+    ).toBeTruthy();
   });
 
   it('numbers nothing on a screen that is not one of the three', () => {
