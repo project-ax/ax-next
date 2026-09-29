@@ -270,11 +270,12 @@ export async function main(argv = process.argv.slice(2)) {
     'credentials-file': { type: 'string', multiple: true }, models: { type: 'string', default: 'glm,deepseek' },
     report: { type: 'boolean', default: false }, only: { type: 'string' },
     fork: { type: 'string' }, prepared: { type: 'string' }, all: { type: 'boolean', default: false },
+    rejudge: { type: 'string' },
   } });
   if (!values['run-dir']) throw new Error('--run-dir is required');
   const runDir = resolve(values['run-dir']);
   if (values.report) return values.fork ? forkReport(runDir) : report(runDir);
-  if (!values.source || !values.links) throw new Error('--source and --links are required');
+  if (!values.rejudge && (!values.source || !values.links)) throw new Error('--source and --links are required');
   const [shardIndex, shardCount] = values.shard.split('/').map(Number);
   const models = values.models.split(',');
   for (const m of models) if (!MODELS[m]) throw new Error(`unknown model ${m}`);
@@ -292,7 +293,7 @@ export async function main(argv = process.argv.slice(2)) {
   // `--all`: every LongMemEval-S question (banks from `memory-bench-build-banks.mjs`);
   // otherwise rung 4's pinned 100.
   const samples = values.all ? await allSamples() : (await pinnedSamples()).samples;
-  const linkFile = JSON.parse(readFileSync(resolve(values.links), 'utf8'));
+  const linkFile = values.links ? JSON.parse(readFileSync(resolve(values.links), 'utf8')) : { links: [] };
   const linksFor = (qid) => linkFile.links.filter((l) => l.qid === qid);
   const only = values.only ? new Set(values.only.split(',')) : null;
   const mine = samples.filter((_, i) => i % shardCount === shardIndex).filter((s) => !only || only.has(s.question_id));
@@ -310,6 +311,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (typeof text !== 'string' || !/VERDICT:\s*\S/i.test(text)) throw new Error('Judge returned no usable verdict');
     return { text, usage: { in: response.usage.prompt_tokens, out: response.usage.completion_tokens } };
   } }, sample.question, sample.answer, answer, { unanswerable: sample.question_id.endsWith('_abs') });
+  if (values.rejudge) return rejudgeMain({ runDir, samples, n: Number(values.rejudge), judge, ledger });
   if (values.fork) return forkMain({ values, mine, models, linksFor, preparedRoot, runDir, shardIndex, env, clients, providerFetch, ledger, storage, request, judge });
   const resultsPath = join(runDir, `results-${shardIndex}.jsonl`);
   const done = new Set(readJsonl(resultsPath).map((r) => `${r.questionId}|${r.model}|${r.condition}`));
@@ -355,6 +357,35 @@ export async function main(argv = process.argv.slice(2)) {
       } finally { await bank.close(); }
     }
   }
+  return 0;
+}
+
+/**
+ * Judge-noise check (pre-registered): re-judge a seeded random sample of answers from the fork
+ * run once more and count verdict flips. The flip rate is a floor on what the judge alone moves.
+ */
+async function rejudgeMain({ runDir, samples, n, judge, ledger }) {
+  const rows = readdirSync(runDir).filter((f) => /^fork-\d+\.jsonl$/.test(f)).flatMap((f) => readJsonl(join(runDir, f)));
+  const answers = rows.flatMap((r) => (r.forked
+    ? [{ q: r.questionId, answer: r.offAnswer, verdict: r.offVerdict }, { q: r.questionId, answer: r.onAnswer, verdict: r.onVerdict }]
+    : [{ q: r.questionId, answer: r.answer, verdict: r.offVerdict }]))
+    .sort((a, b) => `${a.q}${a.answer}`.localeCompare(`${b.q}${b.answer}`));
+  let seed = 0x5eed2;
+  const pick = [];
+  const pool = [...answers];
+  while (pick.length < Math.min(n, pool.length)) {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    pick.push(...pool.splice(seed % pool.length, 1));
+  }
+  const byId = new Map(samples.map((s) => [s.question_id, s]));
+  const out = [];
+  for (const item of pick) {
+    const again = await judge(byId.get(item.q), item.answer);
+    out.push({ q: item.q, first: item.verdict, second: again.verdict });
+  }
+  const flips = out.filter((o) => isCorrect(o.first) !== isCorrect(o.second));
+  writeFileSync(join(runDir, 'rejudge.json'), JSON.stringify({ n: out.length, flips: flips.length, rows: out }, null, 1));
+  console.log(`re-judged ${out.length} answers: ${flips.length} changed correct/incorrect (${((flips.length / out.length) * 100).toFixed(1)}%); spend $${ledger.chargedUsd().toFixed(4)}`);
   return 0;
 }
 

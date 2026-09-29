@@ -109,3 +109,34 @@ three misses are arguable: a past residence against a current one, two contradic
 statements, two consecutive story directions labelled as one event. Labels are in
 `~/ax-bench-data/dem-lme500/gate2-labels-60.json`. The answer run uses the 305 links at
 p ≥ 0.9 (`fact-links-500-p90.json`, 204 questions).
+
+## Result — 2026-09-29
+
+**No detectable effect, for either model, by the pre-registered rule.**
+
+| | GLM | DeepSeek |
+|---|---|---|
+| runs (500 questions × 3) | 1,500 | 1,500 |
+| forked (a note would have reached the model) | 304 (20.3%) on 111 questions | 347 (23.1%) on 126 questions |
+| accuracy without notes | 86.0% | 86.3% |
+| **on − off, overall** | **+0.20 pp, 95% CI [−0.47, +0.93]** | **+0.13 pp, 95% CI [−0.60, +0.87]** |
+| forked runs gained / lost | 15 / 12 | 17 / 15 |
+| knowledge-update Δ | +0.43 pp | 0.00 pp |
+| multi-session Δ | +0.50 pp | +0.25 pp |
+
+**Judge noise:** 0 of 100 re-judged answers changed verdict, so the residual noise is the
+answer models, not the judge.
+
+**Harm check** (every forked run that lost, 27 in all, read):
+
+- **Two real harms from the notes.**
+  - `01493427` (3 runs): a note put "bought 8 more" beside the count of 25, and the models
+    hedged "25, or maybe 33".
+  - `031748ae_abs`, an unanswerable question (2 runs): a note saying "updated from 4 to 5
+    engineers" made the models answer confidently when the right move was to abstain.
+- **The rest look like branch divergence, the same kind as the gains:** counting and
+  ordering questions where the two branches reached different tallies, and temporal
+  arithmetic that came out differently. Neither kind is tied to what the note said.
+
+**Cost:** build $20.47, repair $0.16, links $11.63, answers and judging $9.68, re-judge
+$0.09 — **$42.03** in all.

@@ -178,6 +178,31 @@ answered that it didn't know where the user was staying.
 
 **Cost:** $2.41 (400 answers + judges + re-embedding), plus $0.35 for the abandoned `max` rows.
 
+## Phase 3 — all 500 questions, pre-registered: no detectable effect
+
+Pre-registration, amendment and full result:
+`docs/plans/2026-09-28-dem-jev-fact-links-500-preregistration.md`.
+
+- **Stores:** all 500 LongMemEval-S questions, rebuilt through the product slice
+  (`scripts/memory-bench-build-banks.mjs`) plus a repair pass for sessions that left no facts.
+- **Links:** vector and shared-rare-word candidates, then Jev at **0.9**. The pre-registered
+  0.8 gate failed (51/60); a fresh sample at 0.9 passed (57/60). That left 305 links on 204
+  questions.
+- **Design:** forked at the first note, 3 repeats per question and model.
+- **Result:**
+  - GLM **+0.20 pp [−0.47, +0.93]**, DeepSeek **+0.13 pp [−0.60, +0.87]** overall accuracy.
+  - Forked runs gained and lost at nearly the same rate (15/12 and 17/15).
+  - The judge was stable: 0/100 flips on re-judging.
+
+**Conclusion.** The phase-2 pattern of "4 fixed, 0 broken" did not survive a large, repeated,
+pre-registered test. Jev links are precise at 0.9, but annotating evidence with them does not
+move DEM's answer accuracy on LongMemEval-S. It fixes about as many answers as it breaks.
+Two of the breakages are real and instructive. A note that surfaces an adjacent number
+invites hedging, and a note that asserts a change can talk a model out of abstaining. Don't
+build a product version of evidence annotation on this basis. Precise links may still be
+useful for a *human* review queue ("Still true?"), where a wrong suggestion costs a click
+rather than an answer.
+
 ## What this does not show
 
 - **A significant accuracy gain.** Only 17–19 of 100 questions ever see a note, and the effect
