@@ -153,9 +153,9 @@ function assertSafeSubPath(subPath: string): void {
   }
 }
 
-/** Locked-down security context shared by every one-shot pod (mirrors the
- *  runner's CONTAINER_SECURITY in pod-spec.ts). uid/gid 1000 matches the
- *  runner so it can write/read the per-agent subtree the runner created. */
+/** Locked-down security context for the READ pod (mirrors the runner's
+ *  CONTAINER_SECURITY in pod-spec.ts). uid/gid 1000 matches the runner so it can
+ *  read the per-agent subtree the runner created. */
 const ONESHOT_CONTAINER_SECURITY = {
   runAsNonRoot: true,
   runAsUser: 1000,
@@ -165,6 +165,41 @@ const ONESHOT_CONTAINER_SECURITY = {
   capabilities: { drop: ['ALL'] },
 } as const;
 
+/**
+ * Security context for the RECLAIM pod (TASK-718). Root, with exactly two
+ * capabilities. Read this before "hardening" it back to uid 1000.
+ *
+ * Why not uid 1000. The runner's root chown init container hands the per-agent
+ * subtree `/export/<agentId>` to uid 1000, but the export ROOT stays root-owned
+ * and is not writable by uid 1000. A uid-1000 `rm -rf` therefore removes the
+ * agent's contents and is then refused the final unlink of the directory entry:
+ * `rm: cannot remove '/export/<agentId>': Permission denied`, exit 1, an empty
+ * directory left behind on every delete. Measured on prod (TASK-346 W8) and
+ * reproduced with the prod image against a root-owned volume.
+ *
+ * Why these two capabilities and nothing else (same shape as the runner's
+ * `buildUserFilesChownInit`: root, `drop: ALL`, add only what the one job needs;
+ * the managed export is `no_root_squash`, which is what makes root effective):
+ *   - DAC_OVERRIDE: write into and traverse directories owned by uid 1000,
+ *     including ones the agent chmod'd (`chmod 000 dir` would otherwise defeat
+ *     the reclaim for good).
+ *   - FOWNER: unlink inside a sticky directory the agent planted (sticky needs
+ *     owner-of-file, owner-of-dir or FOWNER, and root is neither).
+ *
+ * The reach did not grow in a way that matters: this pod already mounted the
+ * WHOLE export read-write as uid 1000, and every tenant's tree is 1000-owned.
+ * What is new is root's ability to touch root-owned entries, and the command is a
+ * fixed script whose only input is one validated single-segment env var.
+ */
+const RECLAIM_CONTAINER_SECURITY = {
+  runAsNonRoot: false,
+  runAsUser: 0,
+  runAsGroup: 0,
+  allowPrivilegeEscalation: false,
+  readOnlyRootFilesystem: true,
+  capabilities: { drop: ['ALL'], add: ['DAC_OVERRIDE', 'FOWNER'] },
+} as const;
+
 interface OneshotPodInput {
   podName: string;
   mount: NfsMountSpec;
@@ -172,6 +207,9 @@ interface OneshotPodInput {
   exportReadOnly: boolean;
   /** Shell command run as `sh -c <command>`. SUBPATH is passed via env. */
   command: string;
+  /** Non-root and capability-free for a read; root plus two capabilities for a
+   *  reclaim. Required, never defaulted, so a new caller has to choose. */
+  securityContext: typeof ONESHOT_CONTAINER_SECURITY | typeof RECLAIM_CONTAINER_SECURITY;
   config: ResolvedSandboxK8sConfig;
 }
 
@@ -222,7 +260,7 @@ function buildOneshotPod(input: OneshotPodInput): Record<string, unknown> {
             limits: { cpu: '500m', memory: '256Mi' },
             requests: { cpu: '50m', memory: '64Mi' },
           },
-          securityContext: ONESHOT_CONTAINER_SECURITY,
+          securityContext: input.securityContext,
           volumeMounts: [
             {
               name: 'export',
@@ -242,15 +280,76 @@ function buildOneshotPod(input: OneshotPodInput): Record<string, unknown> {
   };
 }
 
-/** Create a one-shot pod, wait for it to terminate, return its exit info, then
- *  delete it (idempotent). The pod is short-lived; we poll its phase with the
- *  shared `watchPodExit`. On a non-zero exit we throw. */
+// How much of a failed pod's own output we carry into the error. It is the tail
+// of what the container printed (kubelet copies it under
+// `terminationMessagePolicy: FallbackToLogsOnError`), and it names files an agent
+// chose the names of, so it is bounded, stripped of control characters and only
+// ever LOGGED — never parsed, never interpolated into a command or a prompt.
+const MAX_POD_OUTPUT_CHARS = 800;
+
+/** Keep printable characters only (one space for every run of anything else). */
+function printableOnly(raw: string): string {
+  let out = '';
+  let lastWasSpace = true;
+  for (const ch of raw) {
+    const code = ch.codePointAt(0) ?? 0;
+    const printable = code >= 0x20 && code !== 0x7f;
+    if (printable && ch !== ' ') {
+      out += ch;
+      lastWasSpace = false;
+    } else if (!lastWasSpace) {
+      out += ' ';
+      lastWasSpace = true;
+    }
+  }
+  return out.trim();
+}
+
+/**
+ * The last thing a FAILED one-shot container said, or `undefined`. Best effort:
+ * this runs while reporting a failure, so it can never be allowed to raise a
+ * second one. Read from the pod's status (no `pods/log` round trip, no extra
+ * RBAC) — the message is only present because the pod spec asks for
+ * `FallbackToLogsOnError`.
+ */
+async function readTerminationOutput(
+  api: K8sCoreApi,
+  podName: string,
+  namespace: string,
+): Promise<string | undefined> {
+  try {
+    const pod = (await api.readNamespacedPod({ name: podName, namespace })) as {
+      status?: {
+        containerStatuses?: Array<{ state?: { terminated?: { message?: unknown } } }>;
+      };
+    };
+    const raw = pod.status?.containerStatuses?.[0]?.state?.terminated?.message;
+    if (typeof raw !== 'string') return undefined;
+    const cleaned = printableOnly(raw);
+    if (cleaned.length === 0) return undefined;
+    // Keep the TAIL: the script's own verdict is the last thing it prints.
+    return cleaned.length > MAX_POD_OUTPUT_CHARS
+      ? `...${cleaned.slice(-MAX_POD_OUTPUT_CHARS)}`
+      : cleaned;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Create a one-shot pod, wait for it to terminate, then delete it
+ *  (idempotent). The pod is short-lived; we poll its phase with the shared
+ *  `watchPodExit`. A non-zero exit throws, carrying the pod's own output.
+ *
+ *  `requireExitCode`: for an operation whose SUCCESS must be positively known
+ *  (a delete), a pod that vanished or reported no exit code is a failure, not a
+ *  pass. A read leaves it off and lets its own output parser judge. */
 async function runOneshotPod(
   api: K8sCoreApi,
   pod: Record<string, unknown>,
   podName: string,
   namespace: string,
   log: Logger,
+  opts: { requireExitCode?: boolean } = {},
 ): Promise<void> {
   await api.createNamespacedPod({ namespace, body: pod });
   try {
@@ -261,16 +360,69 @@ async function runOneshotPod(
       pollIntervalMs: ONESHOT_POLL_MS,
       podLog: log,
     });
+    if (exit.code === null && opts.requireExitCode === true) {
+      throw new PluginError({
+        code: 'userfiles-oneshot-unknown-exit',
+        plugin: PLUGIN_NAME,
+        message: `user-files one-shot pod ${podName} ended without an exit code (reason=${exit.reason}); cannot tell whether it finished`,
+      });
+    }
     if (exit.code !== null && exit.code !== 0) {
+      const output = await readTerminationOutput(api, podName, namespace);
       throw new PluginError({
         code: 'userfiles-oneshot-failed',
         plugin: PLUGIN_NAME,
-        message: `user-files one-shot pod ${podName} exited code=${exit.code} reason=${exit.reason}`,
+        message:
+          `user-files one-shot pod ${podName} exited code=${exit.code} reason=${exit.reason}` +
+          (output !== undefined ? ` output=${JSON.stringify(output)}` : ''),
       });
     }
   } finally {
     await killPod({ api, podName, namespace, podLog: log }).catch(() => undefined);
   }
+}
+
+/**
+ * The reclaim script — exported so a shell test can run the SHIPPED text.
+ *
+ * Runs as `sh -c` inside the reclaim pod; `SUBPATH` arrives in the environment
+ * (never spliced into a word) and the host has already validated it as one safe
+ * segment (`assertSafeSubPath`). Everything below is a second lock on that door
+ * and a way to make a failure say what failed:
+ *
+ *   - `: "${SUBPATH:?}"` — refuses an empty or unset value. `rm -rf -- "/export/"`
+ *     would empty the whole export, every tenant's tree.
+ *   - `rm -rf -- "/export/$SUBPATH"` — `--` stops option parsing; `-f` makes a
+ *     subtree that was never written a no-op success; `rm` never follows a
+ *     symlink the agent planted, it unlinks the link.
+ *   - Three attempts, two seconds apart. A warm runner can still be writing into
+ *     its mount for a moment after the delete, and `rm -rf` then loses the race
+ *     with "Directory not empty". Bounded, well inside the pod's deadline.
+ *   - The post-condition. TASK-718: the reclaim used to "succeed" or fail with
+ *     the agent's directory still there; here the directory being GONE is the
+ *     thing checked, and the message names it. Its stderr is what kubelet copies
+ *     into the pod's termination message, which is what the operator's log line
+ *     quotes.
+ */
+export function buildCleanupCommand(): string {
+  const target = `${EXPORT_MOUNT}/$SUBPATH`;
+  return [
+    'set -eu',
+    ': "${SUBPATH:?SUBPATH is empty}"',
+    'attempt=1',
+    `until rm -rf -- "${target}"; do`,
+    '  if [ "$attempt" -ge 3 ]; then',
+    `    echo "reclaim: could not remove ${target} after $attempt attempts" >&2`,
+    '    exit 1',
+    '  fi',
+    '  attempt=$((attempt + 1))',
+    '  sleep 2',
+    'done',
+    `if [ -e "${target}" ] || [ -L "${target}" ]; then`,
+    `  echo "reclaim: ${target} still exists" >&2`,
+    '  exit 1',
+    'fi',
+  ].join('\n');
 }
 
 /**
@@ -299,27 +451,37 @@ export async function cleanupUserFiles(
     return;
   }
   if (mount === undefined) return; // nothing durable to reclaim
+  let podName: string | undefined;
   try {
     assertSafeSubPath(mount.subPath);
-    const podName = `ax-userfiles-rm-${randomUUID().slice(0, 8)}`;
+    podName = `ax-userfiles-rm-${randomUUID().slice(0, 8)}`;
     const cleanupLog = log.child({ podName });
-    // rm -rf -- "$EXPORT/$SUBPATH". `--` stops option parsing; SUBPATH is an
-    // env var (never spliced into the word) AND already validated as one safe
-    // segment, so neither traversal nor injection is reachable. `-f` makes a
-    // missing subtree (never written) a no-op success.
-    const command = `set -eu; rm -rf -- "${EXPORT_MOUNT}/$SUBPATH"`;
+    // See `buildCleanupCommand`: SUBPATH is an env var (never spliced into the
+    // word) AND already validated as one safe segment, so neither traversal nor
+    // injection is reachable.
     const pod = buildOneshotPod({
       podName,
       mount,
       exportReadOnly: false,
-      command,
+      command: buildCleanupCommand(),
+      securityContext: RECLAIM_CONTAINER_SECURITY,
       config,
     });
-    await runOneshotPod(api, pod, podName, config.namespace, cleanupLog);
+    await runOneshotPod(api, pod, podName, config.namespace, cleanupLog, {
+      requireExitCode: true,
+    });
     log.info('user_files_cleanup_done', { agentId: owner.agentId });
   } catch (err) {
-    log.warn('user_files_cleanup_failed', {
+    // ERROR, not warn (TASK-718). By the time this runs the agent row is gone
+    // and the user was told "deleted", so a failure here means their files are
+    // still on disk with nobody's name on them. Everything an operator needs to
+    // act is on this one line: which agent, which pod, which directory, and what
+    // the pod itself said (the `err` carries its output).
+    log.error('user_files_cleanup_failed', {
       agentId: owner.agentId,
+      subPath: mount.subPath,
+      exportPath: mount.exportPath,
+      podName,
       err: err instanceof Error ? err.message : String(err),
     });
   }
@@ -552,6 +714,7 @@ export async function readUserFiles(
     mount,
     exportReadOnly: true,
     command: buildReadCommand(),
+    securityContext: ONESHOT_CONTAINER_SECURITY,
     config,
   });
   // The script confines the realpath'd target under `$EXPORT/$SUBPATH` (the

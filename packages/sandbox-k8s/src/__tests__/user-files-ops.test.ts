@@ -10,6 +10,7 @@ import type {
 } from '@ax/sandbox-mount-protocol';
 import { resolveConfig } from '../config.js';
 import {
+  buildCleanupCommand,
   cleanupUserFiles,
   ownerFromAgentId,
   parseReadOutput,
@@ -76,8 +77,11 @@ interface InspectablePod {
       env: Array<{ name: string; value: string }>;
       securityContext: {
         runAsNonRoot: boolean;
+        runAsUser: number;
+        runAsGroup: number;
+        allowPrivilegeEscalation: boolean;
         readOnlyRootFilesystem: boolean;
-        capabilities: { drop: string[] };
+        capabilities: { drop: string[]; add?: string[] };
       };
       volumeMounts: Array<{ readOnly: boolean }>;
     }>;
@@ -118,9 +122,21 @@ describe('cleanupUserFiles (k8s one-shot rm pod)', () => {
     expect(pod.spec.restartPolicy).toBe('Never');
     expect(pod.spec.automountServiceAccountToken).toBe(false);
     const c = pod.spec.containers[0];
-    expect(c.securityContext.runAsNonRoot).toBe(true);
+    // TASK-718: the RECLAIM pod is root. The runner's chown init container hands
+    // `/export/<agentId>` to uid 1000, but the export ROOT stays root-owned, so a
+    // uid-1000 `rm -rf` removes the contents and is then refused the final unlink
+    // of the directory entry (`rm: cannot remove '/export/<id>': Permission
+    // denied`, exit 1, empty directory left behind — measured on prod, reproduced
+    // locally with the prod image). Root needs exactly two capabilities to remove
+    // a tree its agent owns: DAC_OVERRIDE (write into 1000-owned dirs, including
+    // ones the agent chmod'd) and FOWNER (unlink inside a sticky dir it planted).
+    expect(c.securityContext.runAsNonRoot).toBe(false);
+    expect(c.securityContext.runAsUser).toBe(0);
+    expect(c.securityContext.runAsGroup).toBe(0);
+    expect(c.securityContext.allowPrivilegeEscalation).toBe(false);
     expect(c.securityContext.readOnlyRootFilesystem).toBe(true);
     expect(c.securityContext.capabilities.drop).toEqual(['ALL']);
+    expect(c.securityContext.capabilities.add).toEqual(['DAC_OVERRIDE', 'FOWNER']);
     // Mounts the WHOLE export (read-WRITE for a delete), operates on the subPath.
     expect(pod.spec.volumes[0].nfs).toEqual({ server: '10.0.0.2', path: '/vol1/agents' });
     expect(c.volumeMounts[0].readOnly).toBe(false);
@@ -128,6 +144,8 @@ describe('cleanupUserFiles (k8s one-shot rm pod)', () => {
     expect(c.env).toEqual([{ name: 'SUBPATH', value: 'agent-abc' }]);
     const cmd = (c.command as string[]).join(' ');
     expect(cmd).toMatch(/rm -rf -- "\/export\/\$SUBPATH"/);
+    // ...and it is exactly the script the shell tests run.
+    expect(c.command).toEqual(['sh', '-c', buildCleanupCommand()]);
     // The one-shot pod is deleted after it completes.
     expect(api.deletes).toHaveLength(1);
   });
@@ -136,13 +154,15 @@ describe('cleanupUserFiles (k8s one-shot rm pod)', () => {
     const api = makeMockK8sApi();
     primeTerminal(api, undefined, exitCode);
     const { bus } = busWithNfs();
-    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(log, 'error').mockImplementation(() => undefined);
     const info = vi.spyOn(log, 'info').mockImplementation(() => undefined);
     try {
       await expect(
         cleanupUserFiles(ctx(), bus, api, CONFIG, ownerFromAgentId('agent-abc', 'u1'), log),
       ).resolves.toBeUndefined();
-      expect(warn).toHaveBeenCalledWith(
+      // TASK-718: a failed reclaim leaves a tenant's data on disk after their
+      // delete succeeded, so it is an ERROR an operator can alert on, not a warn.
+      expect(error).toHaveBeenCalledWith(
         'user_files_cleanup_failed',
         expect.objectContaining({
           agentId: 'agent-abc',
@@ -152,9 +172,112 @@ describe('cleanupUserFiles (k8s one-shot rm pod)', () => {
       expect(info).not.toHaveBeenCalledWith('user_files_cleanup_done', expect.anything());
       expect(api.deletes).toHaveLength(1);
     } finally {
-      warn.mockRestore();
+      error.mockRestore();
       info.mockRestore();
     }
+  });
+
+  it('a failed reclaim says WHAT failed: the pod name, the directory left behind and the pod\'s own output', async () => {
+    const api = makeMockK8sApi();
+    api.setReadResponses({
+      status: {
+        phase: 'Failed',
+        containerStatuses: [
+          {
+            name: 'userfiles',
+            state: {
+              terminated: {
+                exitCode: 1,
+                reason: 'Error',
+                // What kubelet copies from the log under FallbackToLogsOnError.
+                message:
+                  "rm: cannot remove '/export/agent-abc': Permission denied\nreclaim: /export/agent-abc still exists\n",
+              },
+            },
+          },
+        ],
+      },
+    });
+    const { bus } = busWithNfs();
+    const error = vi.spyOn(log, 'error').mockImplementation(() => undefined);
+    try {
+      await cleanupUserFiles(ctx(), bus, api, CONFIG, ownerFromAgentId('agent-abc', 'u1'), log);
+      expect(error).toHaveBeenCalledTimes(1);
+      const [event, fields] = error.mock.calls[0]! as [string, Record<string, unknown>];
+      expect(event).toBe('user_files_cleanup_failed');
+      expect(fields.agentId).toBe('agent-abc');
+      expect(fields.subPath).toBe('agent-abc');
+      expect(String(fields.podName)).toMatch(/^ax-userfiles-rm-/);
+      expect(String(fields.err)).toContain('Permission denied');
+      expect(String(fields.err)).toContain('exited code=1');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('bounds the pod output it carries into the log line (it names agent-written file names)', async () => {
+    const api = makeMockK8sApi();
+    api.setReadResponses({
+      status: {
+        phase: 'Failed',
+        containerStatuses: [
+          {
+            name: 'userfiles',
+            state: { terminated: { exitCode: 1, reason: 'Error', message: 'x'.repeat(50_000) } },
+          },
+        ],
+      },
+    });
+    const { bus } = busWithNfs();
+    const error = vi.spyOn(log, 'error').mockImplementation(() => undefined);
+    try {
+      await cleanupUserFiles(ctx(), bus, api, CONFIG, ownerFromAgentId('agent-abc', 'u1'), log);
+      const fields = error.mock.calls[0]![1] as Record<string, unknown>;
+      expect(String(fields.err).length).toBeLessThan(2_000);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it.each([
+    ['the pod vanished before it reported (404)', 'gone'],
+    ['the pod reported no exit code', 'nocode'],
+  ])('REGRESSION: %s is a FAILED reclaim, not a successful one', async (_label, mode) => {
+    /*
+      `runOneshotPod` treated `exit.code === null` as success. For a read that is
+      tolerable (the log is parsed and a bad one fails there); for a delete it
+      means "we do not know whether the data is gone" reported as "done".
+    */
+    const api = makeMockK8sApi();
+    if (mode === 'gone') {
+      api.setReadError(Object.assign(new Error('pods not found'), { code: 404 }));
+    } else {
+      api.setReadResponses({ status: { phase: 'Succeeded', containerStatuses: [{ name: 'userfiles' }] } });
+    }
+    const { bus } = busWithNfs();
+    const error = vi.spyOn(log, 'error').mockImplementation(() => undefined);
+    const info = vi.spyOn(log, 'info').mockImplementation(() => undefined);
+    try {
+      await cleanupUserFiles(ctx(), bus, api, CONFIG, ownerFromAgentId('agent-abc', 'u1'), log);
+      expect(error).toHaveBeenCalledWith('user_files_cleanup_failed', expect.anything());
+      expect(info).not.toHaveBeenCalledWith('user_files_cleanup_done', expect.anything());
+    } finally {
+      error.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  it('the READ pod stays non-root: only the reclaim pod is granted root', async () => {
+    const api = makeMockK8sApi();
+    primeTerminal(api, 'ABSENT');
+    const { bus } = busWithNfs();
+    await readUserFiles(ctx(), bus, api, CONFIG, log, {
+      owner: ownerFromAgentId('agent-abc', 'u1'),
+    });
+    const sc = (api.creates[0]!.body as InspectablePod).spec.containers[0].securityContext;
+    expect(sc.runAsNonRoot).toBe(true);
+    expect(sc.runAsUser).toBe(1000);
+    expect(sc.capabilities).toEqual({ drop: ['ALL'] });
   });
 
   it('CROSS-TENANT: the subPath in the rm target is EXACTLY the deleted agent id', async () => {
