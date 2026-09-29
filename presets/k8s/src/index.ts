@@ -1466,11 +1466,16 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // Serves channel-web's bundle from the same listener so cookies and
   // CSRF stay same-origin in production. The plugin registers a `/*`
   // splat catchall — the http-server router does SPECIFICITY-based
-  // matching (exact > non-splat patterns > splats; see
-  // packages/http-server/src/router.ts:137-163), so /api/chat/* and
-  // /admin/* always win over /* regardless of registration order. We
-  // still push static-files LAST so the visual order matches the intent
-  // and a future reader doesn't read this as a shadowing bug.
+  // matching (exact > `:param` patterns > splats, and among splats the
+  // longest fixed prefix wins; see Router.match in
+  // packages/http-server/src/router.ts), so /api/chat/*, /admin/* and
+  // /api/workspace/agents/:agentId/files/* win over /* whichever plugin
+  // registered first. That was NOT true of splat-vs-splat until TASK-717:
+  // registration order broke that tie, and the memory preset (which
+  // re-appends @ax/channel-web after this plugin) shipped a Files tab whose
+  // every path-taking route answered with index.html. We still push
+  // static-files LAST so the visual order matches the intent. Unknown
+  // /api/* paths get a JSON 404 from the plugin, never the SPA shell.
   //
   // When `staticFiles` is unset, no catchall is mounted and unknown
   // paths return 404 — the dev workflow uses Vite's proxy instead.
