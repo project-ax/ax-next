@@ -670,6 +670,9 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:list-authored-pending',
       'connectors:activate-authored',
       'connectors:clear-authored',
+      // TASK-697 — the read-authorization seam @ax/credentials consults before
+      // an `account:` ref may fall through to the global (company) scope.
+      'credentials:authorize-global:account',
     ]);
     // database:get-instance is the hard dependency — satisfied by
     // @ax/database-postgres in the real preset (the "every calls entry is

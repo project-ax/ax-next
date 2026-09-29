@@ -26,6 +26,9 @@ describe('@ax/connectors plugin manifest', () => {
         'connectors:list-authored-pending',
         'connectors:activate-authored',
         'connectors:clear-authored',
+        // TASK-697 — the read-authorization seam @ax/credentials consults before an
+        // `account:` ref may fall through to the global (company) scope.
+        'credentials:authorize-global:account',
       ],
       // database:get-instance is hard — the plugin runs its own migration on
       // init and can't function without a postgres instance.
@@ -37,6 +40,12 @@ describe('@ax/connectors plugin manifest', () => {
           hook: 'credentials:delete',
           degradation:
             'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
+        },
+        // TASK-697 — the admin check on a workspace-keyed connector's owner.
+        {
+          hook: 'auth:get-user',
+          degradation:
+            'workspace-keyed (company) connector credentials are never authorized for reading, because the connector owner cannot be proven to be an admin; personal keys are unaffected (fail closed)',
         },
       ],
       subscribes: [],

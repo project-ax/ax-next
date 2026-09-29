@@ -13,6 +13,11 @@ export type Destination =
   // standalone account key (ref stays `account:<service>` — back-compat by
   // construction); supply it for a ≥2-slot connector so each slot gets a
   // distinct `account:<service>:<slot>` row instead of colliding on one.
+  //
+  // The service is a connector id CHOSEN BY THE USER who authors the connector,
+  // so a GLOBAL-scope row at an `account:` ref is readable only through the
+  // `credentials:authorize-global:account` hook (TASK-697), never by the plain
+  // user -> agent -> global walk. User- and agent-scope rows are unaffected.
   | { kind: 'account'; service: string; slot?: string };
 
 function assertNoColon(field: string, value: string): void {

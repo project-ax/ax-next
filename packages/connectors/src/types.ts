@@ -501,6 +501,21 @@ export interface ClearAuthoredOutput {
   cleared: boolean;
 }
 
+/**
+ * `credentials:authorize-global:account` — the read-authorization seam
+ * @ax/credentials consults before it lets an `account:` ref fall through to the
+ * GLOBAL (company-wide) scope (TASK-697). Structural mirror of the contract
+ * @ax/credentials declares (I2 — no cross-plugin import). Storage- and
+ * mechanism-agnostic: a user id and an opaque ref in, a boolean out.
+ */
+export interface AuthorizeGlobalInput {
+  userId: string;
+  ref: string;
+}
+export interface AuthorizeGlobalOutput {
+  allowed: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Return schemas — registered with the hooks so the bus validates the response
 // shape (a mismatch becomes PluginError('invalid-return')).
@@ -620,3 +635,7 @@ export const ActivateAuthoredOutputSchema = z.object({
 export const ClearAuthoredOutputSchema = z.object({
   cleared: z.boolean(),
 }) as unknown as ZodType<ClearAuthoredOutput>;
+
+export const AuthorizeGlobalOutputSchema = z.object({
+  allowed: z.boolean(),
+}) as unknown as ZodType<AuthorizeGlobalOutput>;
