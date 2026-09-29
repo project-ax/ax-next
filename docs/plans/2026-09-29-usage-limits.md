@@ -44,9 +44,10 @@ knows its usage. So the design splits the two jobs that the card bundled:
    never passes `agent:invoke`, so `@ax/decisions` fires the new veto
    `chat:resume` first, as the decision's owner, and the same subscriber
    judges it (an independent review found this side door). A refused wake-up
-   leaves the agent parked, and the approved call is NOT then run by the host
-   replay fallback (refusal is a decision about the person, not evidence the
-   agent is gone).
+   leaves the agent parked. The gate stops MODEL TURNS, not a call a person
+   already approved: the sweep treats a refusal like any delivery nobody
+   received, so the host replay still makes the approved call and the yes is
+   never stranded. That is a stated residual, see the gaps below.
 2. **Meter (count what was spent): the runner's turn boundary.** Both runners
    are built on `@ax/agent-runner-core`, whose `LoopContext.endTurn` is the one
    seam a loop uses to close a turn. This PR makes `usage` a REQUIRED field of
@@ -72,6 +73,12 @@ knows its usage. So the design splits the two jobs that the card bundled:
   interrupt in-flight turns. Overshoot is at most the turns already running.
 - **A turn that ends abnormally** (runner crash, chat timeout) records no
   tokens; its turn still counts against the rate limit.
+- **The kill switch stops agents, not a call a person already approved.** A
+  paused account can still see one approved tool call run, by the host replay
+  (no model turn, no model spend), for each hold that existed before it was
+  paused: pausing stops new holds because it stops new turns. Gating the
+  replay too would mean a suspended or over-cap person's approval silently does
+  nothing, which is worse for everyone who is not abusing anything.
 - **A database that stalls past 60 seconds lets a turn through.** The
   orchestrator bounds every `chat:start` subscriber at 60 s and skips one that
   has not settled (TASK-514). The gate fails closed on any error it can see,

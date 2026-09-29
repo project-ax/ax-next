@@ -45,10 +45,11 @@ export const CHAT_RESUME_HOOK = 'chat:resume';
  * Bound on each `chat:resume` subscriber, in ms. `fire` puts no clock on
  * subscribers by default, and this runs on the approve/sweep path where a
  * subscriber that never settles would wedge every delivery behind it. Past the
- * bound the subscriber is skipped and the delivery proceeds (the same posture
- * `chat:start` takes, and for the same reason).
+ * bound the subscriber is skipped and the delivery proceeds. The same bound as
+ * the orchestrator's `chat:start` (60 s) and the same posture, so the two gates
+ * of one policy cannot disagree about how long a stalled check is waited on.
  */
-export const CHAT_RESUME_SUBSCRIBER_TIMEOUT_MS = 30_000;
+export const CHAT_RESUME_SUBSCRIBER_TIMEOUT_MS = 60_000;
 
 /** What a person said. Human vocabulary, deliberately not the row's status. */
 export type ResolutionOutcome = 'approved' | 'dismissed';
@@ -160,8 +161,10 @@ export async function deliverResolution({
   // closes that door: fired as the decision's OWNER (the person whose money it
   // is, never the approver), subscribers judge it exactly as they would a
   // `chat:start`. A refusal is not a failure of the approval: the click already
-  // succeeded and the standing authorisation stays on the row; the agent just is
-  // not woken. Bounded, and it proceeds past a subscriber that never settles.
+  // succeeded; the agent just is not woken, and the caller treats it like any
+  // other delivery nobody received (the sweep's replay fallback still makes the
+  // call the person approved). Bounded, and it proceeds past a subscriber that
+  // never settles.
   const gate = await bus.fire(
     CHAT_RESUME_HOOK,
     deliveryCtx,

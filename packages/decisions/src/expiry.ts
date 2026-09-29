@@ -223,13 +223,15 @@ export async function runDueDeliveries(args: {
       });
       if (delivery.delivered) continue;
 
-      // TASK-692 — REFUSED is not "nobody was there". A `chat:resume` gate (the
-      // per-user usage limits and kill switch) said this person's agent may not
-      // start another turn right now, and the host taking the approved call over
-      // itself would be the same act by another road. The standing authorisation
-      // stays on the row for the agent's next run, once the gate lets it.
-      if (delivery.reason === 'refused') continue;
-
+      // TASK-692 — a REFUSED wake-up (a `chat:resume` gate: per-user usage
+      // limits, the kill switch) lands here too, on purpose. The gate decides
+      // whether the AGENT may start another turn, which is model spend; it does
+      // not decide whether a call the person already said yes to may run. So the
+      // agent stays parked and the host makes the approved call, exactly as it
+      // does when nobody is home, and the yes is never stranded. Consequence,
+      // stated rather than hidden: a paused account can still see one approval
+      // through per hold that existed before it was paused (no model spend, no
+      // new turn).
       logCtx.logger.warn('decision_delivery_fell_back_to_replay', {
         plugin: PLUGIN_NAME,
         decisionId: decision.id,

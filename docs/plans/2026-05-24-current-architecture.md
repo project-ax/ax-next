@@ -376,8 +376,10 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     entry, because that wake-up starts a turn without passing `agent:invoke`
     (so `chat:start` never sees it). Payload `{ decisionId, outcome }`;
     `@ax/usage-limits` judges it exactly like a `chat:start`. A refusal makes
-    `deliverResolution` return `{ delivered: false, reason: 'refused' }`, and the
-    deferred-delivery sweep does **not** fall back to the host replay for it.
+    `deliverResolution` return `{ delivered: false, reason: 'refused' }`: the agent
+    is not woken, and the deferred-delivery sweep treats it like any delivery
+    nobody received, so the host replay still makes the call the person approved
+    (the gate stops model turns, not a human-approved call).
   - `llm:usage` (subscriber): fired by `@ax/llm-anthropic` / `@ax/llm-openrouter`
     after a successful host-side call; payload `{ model, usage }`. Fire-and-forget.
   - `event.turn-end`'s optional `usage` (`{ model, inputTokens, outputTokens,

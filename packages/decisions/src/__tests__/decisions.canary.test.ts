@@ -1639,12 +1639,14 @@ describe('decisions canary — attendance and delivery', () => {
     expect(executor.calls).toHaveLength(1);
   });
 
-  it('a wake-up the chat:resume gate refuses does NOT fall back to the host replay (TASK-692)', async () => {
-    // A suspended (or over-cap) user's agent must stay parked. The delivery is
-    // refused by a `chat:resume` subscriber, which is a decision about the
-    // PERSON, not evidence that the agent is gone — so the "nobody was there,
-    // the host runs the approved call itself" fallback must not fire, or the kill
-    // switch would be a way to make the host act for a paused account.
+  it('a wake-up the chat:resume gate refuses leaves the agent parked, and the person’s approved call still runs (TASK-692)', async () => {
+    // The gate (per-user usage limits / the kill switch) decides whether the
+    // AGENT may start another turn: model spend. It does not decide whether a
+    // human-approved tool call may run. So a refused wake-up is treated like
+    // any other delivery that found nobody home: the agent is NOT woken, and the
+    // host replay makes the call the person already said yes to, so the yes is
+    // never stranded. (A suspended account can still spend exactly one approval
+    // per hold created before it was suspended; no model spend, no new turn.)
     const lines: string[] = [];
     const clock = movableClock();
     const h = await boot({ now: clock.now }, undefined, liveChannels());
@@ -1665,13 +1667,15 @@ describe('decisions canary — attendance and delivery', () => {
     clock.pastWindow();
     await sweepNow(h, sweeper);
 
+    // The agent was never woken...
     expect(h.delivered).toHaveLength(0);
-    expect(executor.calls).toEqual([]);
     const log = lines.join('\n');
     expect(log).toContain('decision_delivery_refused');
-    expect(log).not.toContain('decision_delivery_fell_back_to_replay');
+    // ...and the approved call ran once, through the replay fallback.
+    expect(log).toContain('decision_delivery_fell_back_to_replay');
+    expect(executor.calls).toEqual([CALL]);
     const after = await readDecision(h, userCtx(h), id);
-    expect(after.replayedAt).toBeNull();
+    expect(after.replayedAt).not.toBeNull();
   });
 
   it('the fallback parks a sandbox-only tool rather than leaving the row reading executed', async () => {
