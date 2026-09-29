@@ -907,6 +907,71 @@ describe('runRunner', () => {
       expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
     });
 
+    it('a handler registered once for the whole session (claude-sdk) is not fired by an idle interrupt', async () => {
+      // The Claude loop registers ONE handler up front and keeps it, so unlike
+      // the aisdk loop it is listening when an idle press arrives. Firing it
+      // then would be `query.interrupt()` with no turn to stop.
+      const late = deferred();
+      gatedInbox([
+        async () => ({ type: 'interrupt', cursor: 1 }), // before any message: idle
+        async () => userMsg('first', 'req-1'),
+        async () => {
+          await late.promise;
+          return { type: 'interrupt', cursor: 3 }; // after turn one has ended
+        },
+        async () => userMsg('second', 'req-2'),
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          const fired = vi.fn();
+          ctx.onInterrupt(fired);
+          await ctx.nextMessage();
+          await flush();
+          expect(fired).not.toHaveBeenCalled(); // the idle press was dropped
+          await ctx.endTurn(closeInput);
+          late.resolve();
+          await ctx.nextMessage();
+          await flush();
+          expect(fired).not.toHaveBeenCalled(); // and so was the late one
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
+    it('a read that outlived a long turn does not shorten the idle floor for the wait that follows', async () => {
+      // aisdk shape: the watcher's read started at turn start; the turn ended
+      // 14 minutes later; the runner then waits. That read's idle floor is a
+      // minute from firing — and must NOT be honoured as "the host is gone",
+      // or every long turn leaves a runner that exits before the reaper would.
+      const floor = deferred();
+      const real = deferred();
+      gatedInbox([
+        async () => userMsg('long task', 'req-1'),
+        async () => {
+          await floor.promise;
+          return { type: 'idle-timeout' };
+        },
+        async () => {
+          await real.promise;
+          return userMsg('after', 'req-2');
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.endTurn(closeInput);
+          const pull = ctx.nextMessage(); // waiting now, on a read that predates the wait
+          floor.resolve();
+          await flush();
+          real.resolve();
+          expect(await pull).not.toBeNull();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    });
+
     it('a late interrupt for a finished turn does not stop the NEXT turn', async () => {
       const late = deferred();
       gatedInbox([
