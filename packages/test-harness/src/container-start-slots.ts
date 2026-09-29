@@ -107,9 +107,9 @@ async function readSlot(path: string): Promise<{ token: string; ageMs: number } 
  * Free a slot whose holder is gone. Two processes can find the same stale slot
  * at once, and the second must not delete the fresh slot the first one then
  * takes. So a reclaimer first claims `<slot>.reclaim`, re-reads the slot, and
- * deletes it only if it still names the same stale holder.
+ * deletes it only if it still names the same stale holder. Exported for tests.
  */
-async function reclaim(path: string, staleToken: string): Promise<void> {
+export async function reclaimStaleSlot(path: string, staleToken: string): Promise<void> {
   const marker = `${path}.reclaim`;
   try {
     await symlink(staleToken, marker);
@@ -142,7 +142,7 @@ async function tryAcquire(config: SlotConfig, token: string): Promise<string | u
     if (held === undefined) continue;
     const pid = holderPid(held.token);
     if (pid === undefined || !alive(pid) || held.ageMs > CONTAINER_START_SLOT_STALE_MS) {
-      await reclaim(path, held.token);
+      await reclaimStaleSlot(path, held.token);
     }
   }
   return undefined;

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CONTAINER_START_SLOTS_DEFAULT,
   CONTAINER_START_SLOT_WAIT_MS_DEFAULT,
+  reclaimStaleSlot,
   withContainerStartSlot,
 } from '../container-start-slots.js';
 
@@ -148,6 +149,18 @@ process.stdout.write(String(peak));
     await symlink(`${deadPid}:left-by-a-killed-run`, join(slots, 'slot-0'));
     await expect(withContainerStartSlot(async () => 'reclaimed', warn)).resolves.toBe('reclaimed');
     expect(readdirSync(slots)).toEqual([]);
+  });
+
+  it('a late reclaimer does not delete the fresh slot another process just took', async () => {
+    // Two processes can both see the same dead holder. The first reclaims and a new
+    // start takes the slot; the second, arriving late with the stale token, must
+    // leave the new holder's slot alone.
+    const slots = join(dir, 'slots');
+    await mkdir(slots, { recursive: true });
+    const slot = join(slots, 'slot-0');
+    await symlink(`${process.pid}:fresh-holder`, slot);
+    await reclaimStaleSlot(slot, '999999:the-dead-holder-it-saw');
+    expect(readdirSync(slots)).toEqual(['slot-0']);
   });
 
   it('does not reclaim a slot whose holder is alive', async () => {
