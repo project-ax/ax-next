@@ -292,3 +292,39 @@ describe('opening Settings moves focus into it (TASK-510)', () => {
     expect(document.activeElement).toBe(connectors);
   });
 });
+
+/**
+ * TASK-475 — Escape does NOT close Settings, and that is a decision, not a gap.
+ *
+ * Settings is a page (a pane swap), not an overlay, and Escape navigates
+ * nowhere else in the product; a stray Escape would also discard any unsaved
+ * edit a Settings surface ever grows. The reasoning lives next to the pane
+ * swap in `App.tsx`. This pins it, so a well-meaning keydown listener has to
+ * argue with a red test instead of slipping in.
+ *
+ * The key goes to the element that really has focus once Settings is open
+ * (its heading, TASK-510), so it bubbles through `AdminShell`, the document
+ * and the window: a listener at any of those levels would close the pane and
+ * redden this. The assertion waits a macrotask so a deferred close counts too.
+ */
+describe('Escape leaves Settings open (TASK-475)', () => {
+  it('keeps the Settings pane mounted and the workspace away', async () => {
+    render(<App />);
+    await openSettingsFromWorkspace();
+    const heading = await waitFor(() =>
+      screen.getByRole('heading', { level: 1, name: 'Skills' }),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+
+    fireEvent.keyDown(document.activeElement as HTMLElement, {
+      key: 'Escape',
+      code: 'Escape',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Skills' })).toBe(heading);
+    expect(screen.getByRole('button', { name: /^workspace$/i })).toBeTruthy();
+    // The workspace's user menu is what comes back when Settings closes.
+    expect(screen.queryByRole('button', { name: /Alice/ })).toBeNull();
+  });
+});
