@@ -18,8 +18,9 @@
  * presence check. See `test-utils/heading-outline.ts` for the four rules and
  * why "no headings at all" is one of them.
  *
- * ("Nine" is the count when that was measured. There are ten tabs now — the
- * Usage tab (TASK-692) is the tenth — and `TABS` below is the live list.)
+ * ("Nine" is the count when that was measured. There are eleven tabs now — the
+ * Usage tab (TASK-692) is the tenth, Storage (TASK-690) the eleventh — and
+ * `TABS` below is the live list.)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -63,6 +64,27 @@ function emptyResponse(url: string): Response {
       limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 },
       totals: { turns: 0, spendUsd: 0, users: 0 },
       users: [],
+    });
+  }
+  // StorageTab (TASK-690): the person's own reading, and the admin report.
+  if (/\/settings\/storage(\?|$)/.test(url)) {
+    return json({
+      usedBytes: 1_048_576,
+      limitBytes: 1_073_741_824,
+      warnBytes: 858_993_459,
+      workspaceBytes: 1_048_576,
+      fileBytes: 0,
+      status: 'ok',
+    });
+  }
+  if (/\/admin\/storage(\?|$)/.test(url)) {
+    return json({
+      limits: { limitMb: 1024, warnPercent: 80 },
+      defaults: { limitMb: 1024, warnPercent: 80 },
+      bounds: { limitMb: { min: 64, max: 10_485_760 }, warnPercent: { min: 1, max: 99 } },
+      owners: [],
+      ownerCount: 0,
+      totalBytes: 0,
     });
   }
   return json({ providers: [], agents: [], teams: [], connectors: [] });
@@ -113,6 +135,7 @@ const TABS: ReadonlyArray<readonly [nav: string, title: string]> = [
   ['Teams', 'Teams'],
   ['Branding', 'Branding'],
   ['Usage', 'Usage and limits'],
+  ['Storage', 'Storage'],
 ];
 
 describe('AdminShell heading outline', () => {
@@ -167,6 +190,44 @@ describe('AdminShell heading outline', () => {
         'h2: Limits',
         'h2: Last 24 hours',
       ]),
+    );
+    expect(headingOutlineProblems()).toEqual([]);
+  });
+
+  /*
+    STORAGE, spelled out (TASK-690). Same construction as Usage: card titles are
+    `div`s at `role="heading"` level 2, so the outline steps h1 -> h2 and never
+    borrows the `h5` in `AlertTitle`. An admin's tab has three cards; an
+    ordinary person's has one, and that one is the same card. Pinning both
+    outlines exactly (rather than "no problems") also stops an edit from
+    passing the generic guard by deleting the card headings, and pins that the
+    admin half is ADDED to the person's card rather than replacing it.
+  */
+  it('gives an admin Storage one h1 and its three cards as h2s', async () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Storage' }));
+
+    await waitFor(() =>
+      expect(headingOutline()).toEqual([
+        'h1: Storage',
+        'h2: Your storage',
+        'h2: Storage limits',
+        "h2: Everyone's storage",
+      ]),
+    );
+    expect(headingOutlineProblems()).toEqual([]);
+  });
+
+  it('gives an ordinary person Storage one h1 and just their own card', async () => {
+    render(
+      <UserProvider value={{ ...fakeUser, role: 'user' }}>
+        <AdminShell isAdmin={false} onClose={vi.fn()} />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Storage' }));
+
+    await waitFor(() =>
+      expect(headingOutline()).toEqual(['h1: Storage', 'h2: Your storage']),
     );
     expect(headingOutlineProblems()).toEqual([]);
   });

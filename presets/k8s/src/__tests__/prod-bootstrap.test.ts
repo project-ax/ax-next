@@ -243,6 +243,10 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     // gated). The boot test below proves its migration ran on the shared
     // database next to everyone else's.
     '@ax/usage-limits',
+    // TASK-690 — per-owner storage limit. Unconditional (every write is
+    // gated). The boot test below proves its migration ran on the shared
+    // database next to everyone else's.
+    '@ax/disk-quota',
   ] as const;
 
   it(
@@ -320,6 +324,12 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
           );
           expect(usage.rows[0]?.b).toBe('usage_limits_v1_buckets');
           expect(usage.rows[0]?.s).toBe('usage_limits_v1_suspensions');
+          // TASK-690: @ax/disk-quota's init ran against the shared database
+          // in the full production graph.
+          const quota = await probe.query<{ t: string | null }>(
+            "SELECT to_regclass('public.disk_quota_v1_usage')::text AS t",
+          );
+          expect(quota.rows[0]?.t).toBe('disk_quota_v1_usage');
         } finally {
           await probe.end();
         }

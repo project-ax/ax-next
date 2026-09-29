@@ -2,7 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { HookBus } from '../hook-bus.js';
 import { PluginError, reject } from '../errors.js';
 import { makeAgentContext, createLogger, type AgentContext } from '../context.js';
-import { registerWorkspaceApplyFacade } from '../workspace-apply-facade.js';
+import {
+  registerWorkspaceApplyFacade,
+  type WorkspacePreApplyPayload,
+} from '../workspace-apply-facade.js';
 import {
   asWorkspaceVersion,
   type FileChange,
@@ -163,6 +166,69 @@ describe('registerWorkspaceApplyFacade', () => {
       '.ax/draft-skills/foo/SKILL.md',
       'src/main.ts',
     ]);
+  });
+
+  it('(c2) pre-apply carries sizeBytes: the put-content sum over the FULL change set', async () => {
+    const bus = new HookBus();
+    bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply-internal',
+      FACADE_PLUGIN,
+      async () => makeOutput('v1'),
+    );
+    let seen: WorkspacePreApplyPayload | undefined;
+    bus.subscribe<WorkspacePreApplyPayload>(
+      'workspace:pre-apply',
+      'observer',
+      async (_ctx, payload) => {
+        seen = payload;
+        return undefined;
+      },
+    );
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+
+    // `nonPolicyChange` is outside the policy-visible paths, so `changes`
+    // carries only `policyChange` — but the bytes the write adds are both.
+    await bus.call('workspace:apply', silentCtx(), {
+      changes: [
+        policyChange,
+        nonPolicyChange,
+        { path: 'gone.txt', kind: 'delete' },
+      ],
+      parent: null,
+    });
+
+    expect(seen?.changes.map((c) => c.path)).toEqual(['.ax/draft-skills/foo/SKILL.md']);
+    expect(seen?.sizeBytes).toBe(
+      (policyChange.kind === 'put' ? policyChange.content.byteLength : 0) +
+        (nonPolicyChange.kind === 'put' ? nonPolicyChange.content.byteLength : 0),
+    );
+    expect(seen?.sizeBytes).toBeGreaterThan(0);
+  });
+
+  it('(c3) a delete-only apply reports sizeBytes 0', async () => {
+    const bus = new HookBus();
+    bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply-internal',
+      FACADE_PLUGIN,
+      async () => makeOutput('v1'),
+    );
+    let seen: WorkspacePreApplyPayload | undefined;
+    bus.subscribe<WorkspacePreApplyPayload>(
+      'workspace:pre-apply',
+      'observer',
+      async (_ctx, payload) => {
+        seen = payload;
+        return undefined;
+      },
+    );
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+
+    await bus.call('workspace:apply', silentCtx(), {
+      changes: [{ path: 'gone.txt', kind: 'delete' }],
+      parent: null,
+    });
+
+    expect(seen?.sizeBytes).toBe(0);
   });
 
   it('(e) workspace:applied fires with the internal delta', async () => {

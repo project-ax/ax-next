@@ -113,6 +113,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/preset-k8s/retire-strata-index',
   // Re-added below with an injected clock (manifest asserted identical).
   USAGE_PLUGIN,
+  // Per-owner storage limit (TASK-690): not on this canary's path (it gates
+  // writes, not turns); its own canary is disk-quota-acceptance.test.ts.
+  '@ax/disk-quota',
 ]);
 
 const AGENT_ID = 'usage-canary-agent';

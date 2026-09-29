@@ -27,11 +27,19 @@
  * Bus surface: the store talks to the blob store ONLY through `blob:put` /
  * `blob:get` service hooks (the inter-plugin API — NOT a cross-plugin import,
  * invariant I2). The bus AND a stable AgentContext are injected at construction.
- * Using a fixed store-owned ctx (not the request ctx) is CORRECT here: `blob:*`
- * is purely content-addressed and carries NO ownership/conversation scope (see
- * @ax/blob-store-fs and the ipc-core blob handler note), so the ctx only carries
- * the logger — the sha is the whole identity. This keeps the public
- * `BundleStore` interface ctx-free, a drop-in for the retired git-tree store.
+ * Using a fixed store-owned ctx (not the request ctx) is CORRECT for READS and
+ * for the STORE itself: `blob:*` is purely content-addressed and carries NO
+ * ownership/conversation scope (see @ax/blob-store-fs and the ipc-core blob
+ * handler note), so the ctx only carries the logger — the sha is the whole
+ * identity. This keeps the public `BundleStore` interface ctx-free, a drop-in
+ * for the retired git-tree store.
+ *
+ * ONE EXCEPTION, added by TASK-690: a WRITE may name the person it is for
+ * (`writeTree(files, ownerUserId)`), and then `blob:put` is called with that
+ * `userId`. The store still records no owner; the per-person storage limit
+ * (@ax/disk-quota, on the `blob:pre-put` / `blob:stored` hooks) is what reads
+ * it, so a person cannot fill the shared volume by authoring skills. Global,
+ * admin-managed skills pass no owner and stay unattributed.
  */
 import { createHash } from 'node:crypto';
 import type { AgentContext, HookBus } from '@ax/core';
@@ -56,8 +64,11 @@ export interface BlobBundleStore {
    * Canonicalize + write the extra files as ONE content-addressed blob; return
    * its sha256. An empty file set returns `null` (no blob, no row pointer).
    * Caller is responsible for the write-side `validateBundleFiles`.
+   *
+   * `ownerUserId` names the person the bytes are charged to (their storage
+   * limit); omit it for admin-managed global skills.
    */
-  writeTree(files: BundleFile[]): Promise<string | null>;
+  writeTree(files: BundleFile[], ownerUserId?: string): Promise<string | null>;
   /**
    * Read a bundle blob back into extra files. Re-validates paths at this trust
    * boundary and returns files sorted by path for determinism. Throws if the
@@ -116,10 +127,15 @@ function deserializeBundle(bytes: Uint8Array): BundleFile[] {
 
 export function createBlobBundleStore(bus: HookBus, ctx: AgentContext): BlobBundleStore {
   return {
-    async writeTree(files) {
+    async writeTree(files, ownerUserId) {
       if (files.length === 0) return null;
       const bytes = serializeBundle(files);
-      const out = await bus.call<{ bytes: Uint8Array }, BlobPutOutput>('blob:put', ctx, { bytes });
+      // Charge the write to the person it is for (TASK-690). Same ctx otherwise
+      // (logger, request id); only `userId` changes. Without an owner (the
+      // admin-managed global skills) the store's own `system` ctx goes through,
+      // which the storage limit deliberately does not attribute.
+      const putCtx = ownerUserId === undefined ? ctx : { ...ctx, userId: ownerUserId };
+      const out = await bus.call<{ bytes: Uint8Array }, BlobPutOutput>('blob:put', putCtx, { bytes });
       return out.sha256;
     },
 

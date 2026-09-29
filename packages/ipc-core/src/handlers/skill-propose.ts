@@ -2,7 +2,13 @@ import {
   SkillProposeRequestSchema,
   SkillProposeResponseSchema,
 } from '@ax/ipc-protocol';
-import { internalError, logInternalError, mapPluginError, validationError } from '../errors.js';
+import {
+  hookRejected,
+  internalError,
+  logInternalError,
+  mapPluginError,
+  validationError,
+} from '../errors.js';
 import { isOwnerlessId, PluginError } from '@ax/core';
 import type { ActionHandler } from './types.js';
 
@@ -100,6 +106,15 @@ export const skillProposeHandler: ActionHandler = async (rawPayload, ctx, bus) =
       // message (no plugin-message echo — I9). Other codes → mapPluginError.
       if (isStructuralRejectCode(err.code)) {
         return validationError('skill.propose: the skill bundle is malformed (re-draft the SKILL.md)');
+      }
+      // TASK-690: writing the bundle goes through `blob:put`, which throws code
+      // 'rejected' when the per-person storage limit refuses. Same redaction
+      // rule as above (the plugin's message is not echoed): a fixed sentence the
+      // agent can relay, instead of an opaque 500 that reads as a host fault.
+      if (err.code === 'rejected') {
+        return hookRejected(
+          'skill.propose: the skill was not saved because storage is full. Let the person know an admin can make more room.',
+        );
       }
       return mapPluginError(err);
     }

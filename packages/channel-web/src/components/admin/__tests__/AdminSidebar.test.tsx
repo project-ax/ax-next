@@ -95,6 +95,40 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     expect(screen.getByRole('button', { name: 'Usage' }).getAttribute('data-active')).toBeTruthy();
   });
 
+  // TASK-690 — everyone has a storage limit, so everyone gets the tab that
+  // shows it. (An admin's extra controls live INSIDE the tab: the nav does not
+  // grow a second entry.)
+  it('shows Storage to everyone, not just admins', () => {
+    render(
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBack={noop} backLabel="chat" />,
+    );
+    expect(screen.getByRole('button', { name: 'Storage' })).toBeInTheDocument();
+  });
+
+  it('lists Storage in the Settings group, right after Routines, and once for an admin', () => {
+    render(
+      <AdminSidebar activeTab="storage" isAdmin onTabChange={noop} onBack={noop} backLabel="chat" />,
+    );
+    const items = screen
+      .getAllByRole('button')
+      .map((b) => b.textContent?.trim() ?? '')
+      .filter((t) => t.length > 0);
+    expect(items.indexOf('Storage')).toBe(items.indexOf('Routines') + 1);
+    // Still in the Settings group: the Admin section starts after it.
+    expect(items.indexOf('Storage')).toBeLessThan(items.indexOf('AI model keys'));
+    expect(items.filter((t) => t === 'Storage')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Storage' }).getAttribute('data-active')).toBeTruthy();
+  });
+
+  it('routes the Storage tab to the storage tab id', () => {
+    const onTabChange = vi.fn();
+    render(
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
+    );
+    screen.getByText('Storage').click();
+    expect(onTabChange).toHaveBeenCalledWith('storage');
+  });
+
   it('folds the catalog / admit-queue / connector-registry surfaces out of the nav', () => {
     // settings-unified epic: the duplicate admin Skills/Connectors surfaces
     // (Catalog, Skills awaiting review, Connector catalog) no longer have nav

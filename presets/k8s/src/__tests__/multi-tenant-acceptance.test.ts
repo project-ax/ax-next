@@ -211,6 +211,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // path; static wiring is pinned in preset.test.ts and the real loop in
   // usage-limits-acceptance.test.ts.
   '@ax/usage-limits',
+  // Per-owner storage limit (TASK-690): same reason (postgres-backed, hard-calls
+  // the dropped http/auth plugins). Static wiring in preset.test.ts, real gates
+  // in disk-quota-acceptance.test.ts.
+  '@ax/disk-quota',
 ]);
 
 // Stub producer for the dispatcher's REQUIRED dep this canary drops.
