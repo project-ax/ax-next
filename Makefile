@@ -88,12 +88,24 @@ GKE_TAG           ?= $(shell git rev-parse --short HEAD)
 # takes the name explicitly:   make gke-deploy GKE_CONTEXT=<your context>
 # It is not a committed default because the name is specific to one deployment and this repo
 # is public (see scripts/__tests__/no-deployment-specifics-committed.test.js).
+#
+# Two properties the tests pin (scripts/__tests__/kind-tooling-pinned-to-kind-context.test.js):
+#  - The value reaches the shell through the ENVIRONMENT (`"$$GKE_CONTEXT"`, exported below), never
+#    pasted into shell text, so a quote or a space in it cannot be re-parsed as code.
+#  - GKE_KUBECTL / GKE_HELM HARD-STOP when no context was named, so a new target that forgets
+#    `gke-guard` gets a loud error, not `--context ''` (which kubectl reads as "the default").
 GKE_CONTEXT       ?=
-GKE_KUBECTL       = kubectl --context $(GKE_CONTEXT)
-GKE_HELM          = helm --kube-context $(GKE_CONTEXT)
+export GKE_CONTEXT
+GKE_REQUIRE       = $(if $(GKE_CONTEXT),,$(error REFUSING: say which cluster to deploy to: make gke-deploy GKE_CONTEXT=<context>))
+GKE_KUBECTL       = $(GKE_REQUIRE) kubectl --context "$$GKE_CONTEXT"
+GKE_HELM          = $(GKE_REQUIRE) helm --kube-context "$$GKE_CONTEXT"
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
+
+# Run prerequisites in the order they are written, even under `make -j`. `dev-fast: kube-guard
+# build-spa` is only "guard first" if nothing is allowed to start beside the guard.
+.NOTPARALLEL:
 
 .PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa kind-prune reset-bootstrap gke-deploy dev-kind-memory-nfs kube-guard gke-guard
 
@@ -135,14 +147,14 @@ kube-guard:
 	  exit 1; }
 
 gke-guard:
-	@test -n '$(GKE_CONTEXT)' || { \
+	@test -n "$$GKE_CONTEXT" || { \
 	  echo "REFUSING: say which cluster to deploy to:  make gke-deploy GKE_CONTEXT=<context>"; \
 	  echo "  (Your context names are listed by the 'config get-contexts' command of your kube CLI.)"; \
 	  echo "  This target does not follow your current context: a stale default would send the deploy to the wrong cluster."; \
 	  exit 1; }
-	@case '$(GKE_CONTEXT)' in kind-*) echo "REFUSING: '$(GKE_CONTEXT)' is a kind cluster, not GKE. Use the kind targets for kind."; exit 1;; esac
-	@$(GKE_KUBECTL) config get-contexts -o name | grep -Fxq -- '$(GKE_CONTEXT)' || { \
-	  echo "REFUSING: your kubeconfig has no context named '$(GKE_CONTEXT)'."; \
+	@case "$$GKE_CONTEXT" in kind-*) echo "REFUSING: '$$GKE_CONTEXT' is a kind cluster, not GKE. Use the kind targets for kind."; exit 1;; esac
+	@$(GKE_KUBECTL) config get-contexts -o name | grep -Fxq -- "$$GKE_CONTEXT" || { \
+	  echo "REFUSING: your kubeconfig has no context named '$$GKE_CONTEXT'."; \
 	  echo "  Fetch it with 'gcloud container clusters get-credentials ...' (deploy/GKE.md Step 0), or fix the name."; \
 	  exit 1; }
 
@@ -304,7 +316,7 @@ reset-bootstrap: kube-guard
 gke-deploy: gke-guard
 	@test -f "$(GKE_LOCAL_VALUES)" || { echo "ERROR: $(GKE_LOCAL_VALUES) missing — put your env overrides there (deploy/GKE.md Step 6)."; exit 1; }
 	@test -n "$(GKE_IMAGE_REPO)" || { echo "ERROR: image.repository not found in $(GKE_LOCAL_VALUES); set it there or pass GKE_IMAGE_REPO=..."; exit 1; }
-	@echo "==> Target kube context: $(GKE_CONTEXT)"
+	@echo "==> Target kube context: $$GKE_CONTEXT"
 	@git diff --quiet HEAD 2>/dev/null || echo "==> WARNING: working tree is dirty; tag $(GKE_TAG) is the last commit. Commit, or pass GKE_TAG=... for a unique image."
 	@echo "==> Building + pushing $(GKE_IMAGE_REPO):$(GKE_TAG) ($(GKE_PLATFORM))"
 	docker buildx build --platform $(GKE_PLATFORM) -t $(GKE_IMAGE_REPO):$(GKE_TAG) -f $(DOCKERFILE) --push .

@@ -66,8 +66,8 @@ helm dependency update deploy/charts/ax-next
 
 # 4. Create the runner namespace. The chart does NOT create it; the host
 #    pod's RBAC binding scopes there.
-kubectl create namespace ax-next-runners
-kubectl create namespace ax-next
+kubectl --context kind-ax-next-dev create namespace ax-next-runners
+kubectl --context kind-ax-next-dev create namespace ax-next
 
 # 5. Bring up the dev NFS server (TASK-576: `host.preset: memory` — facts
 #    memory — is the chart-wide default now, and `kind-dev-values.yaml`
@@ -86,17 +86,17 @@ kubectl --context kind-ax-next-dev -n ax-next rollout status deploy/ax-next-memo
 #    stored credential — see "Credentials key rotation" below).
 export AX_CREDENTIALS_KEY=$(openssl rand -base64 32)
 export AX_HTTP_COOKIE_KEY=$(openssl rand -hex 32)
-helm install ax-next deploy/charts/ax-next --namespace ax-next \
+helm --kube-context kind-ax-next-dev install ax-next deploy/charts/ax-next --namespace ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --set credentials.key="$AX_CREDENTIALS_KEY" \
   --set http.cookieKey="$AX_HTTP_COOKIE_KEY"
 
 # 7. Wait for the host pod and the postgres pod to come up.
-kubectl -n ax-next rollout status deployment/ax-next-host
-kubectl -n ax-next rollout status statefulset/ax-next-postgresql
+kubectl --context kind-ax-next-dev -n ax-next rollout status deployment/ax-next-host
+kubectl --context kind-ax-next-dev -n ax-next rollout status statefulset/ax-next-postgresql
 
 # 8. Port-forward to the host pod and poke at it.
-kubectl -n ax-next port-forward svc/ax-next-host 8080:80
+kubectl --context kind-ax-next-dev -n ax-next port-forward svc/ax-next-host 8080:80
 ```
 
 To pick up code changes:
@@ -104,8 +104,13 @@ To pick up code changes:
 ```bash
 docker build -t ax-next/agent:dev -f container/agent/Dockerfile .
 kind load docker-image ax-next/agent:dev --name ax-next-dev
-kubectl rollout restart deployment/ax-next-host
+kubectl --context kind-ax-next-dev rollout restart deployment/ax-next-host
 ```
+
+Every `kubectl` / `helm` command in this section names `--context kind-ax-next-dev`
+on purpose: on a machine that also talks to a real cluster your *default* context
+is often not kind, and a bare `rollout restart` acts on whatever it is. (One did,
+once, to a live host.) `make rollout` and friends are pinned the same way.
 
 ## Switching an existing deployment to facts memory (one-time operator runbook)
 
@@ -125,6 +130,8 @@ An **existing** deployment that ran the old Strata memory (`host.preset: k8s`, t
 The commands below assume release `ax-next` in namespace `ax-next`, which is what `deploy/README.md` and `deploy/GKE.md` install. If you named things differently, adjust the resource names (they follow the pattern `<release>-host`, `<release>-git-server-experimental`, …).
 
 **The order matters.** First we switch, then we stop the host, then we erase everything, then we start it again. While the host is down, nothing can re-export or re-record stale memory in the middle of the reset.
+
+**Check which cluster you are pointed at before step 1.** The commands below name no context, so they act on your *current* one, and this runbook scales things to zero and deletes volumes. Run `kubectl config current-context` and read the answer. On kind, add `--context kind-ax-next-dev` to every command; anywhere else, name the context of the cluster you mean. Do not run it against whatever your default happens to be.
 
 ### Step 1 — Switch the preset
 
@@ -435,7 +442,7 @@ The full threat-model walk is in
 
 ## Restarting the host pod: delete the runner pods FIRST
 
-The order is counter-intuitive, so here it is up front:
+The order is counter-intuitive, so here it is up front. (Both commands act on your *current* kube context: check it first with `kubectl config current-context`, or add `--context <name>` to each. On kind that is `--context kind-ax-next-dev`.)
 
 ```bash
 # 1. Evict any live runner pods.

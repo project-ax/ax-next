@@ -133,7 +133,7 @@ to restore to.
 
 ```bash
 # Field/secret name may differ — verify against the chart if this comes back empty:
-#   kubectl -n ax-next get secret -o yaml | grep -i anthropic
+#   kubectl --context kind-ax-next-dev -n ax-next get secret -o yaml | grep -i anthropic
 kubectl --context kind-ax-next-dev -n ax-next get secret ax-next-secrets \
   -o jsonpath='{.data.anthropic-api-key}' | base64 -d > /tmp/ax-orig-anthropic-key
 test -s /tmp/ax-orig-anthropic-key || { echo "ABORT: could not capture current key — do NOT inject"; exit 1; }
