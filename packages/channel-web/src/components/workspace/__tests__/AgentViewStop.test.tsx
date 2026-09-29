@@ -12,6 +12,7 @@
  * Nearly all fail at the first `getByRole('button', { name: 'Stop' })`: there
  * was no such control. The ones that could pass either way say so.
  */
+import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AgentView } from '../AgentView';
@@ -20,6 +21,7 @@ import type { AgentDetail, StreamHandlers, WorkspaceAgent } from '@/lib/workspac
 import { HttpError } from '@/lib/http';
 import { rail as railFixture } from './rail-fixture';
 import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from '../stop-copy';
+import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
@@ -67,13 +69,24 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
 let live: { h: StreamHandlers; signal: AbortSignal } | null = null;
 let onChanged = vi.fn();
 
-function renderView(agentId = 'a1'): ReturnType<typeof render> {
-  return render(<View agentId={agentId} />);
+function renderView(
+  agentId = 'a1',
+  pendingReply?: ComponentProps<typeof AgentView>['pendingReply'],
+): ReturnType<typeof render> {
+  return render(<View agentId={agentId} pendingReply={pendingReply ?? null} />);
 }
 
-function View({ agentId }: { agentId: string }) {
+function View({
+  agentId,
+  pendingReply = null,
+}: {
+  agentId: string;
+  pendingReply?: ComponentProps<typeof AgentView>['pendingReply'];
+}) {
   return (
     <AgentView
+      pendingReply={pendingReply}
+      onPendingReplyConsumed={vi.fn()}
       agentId={agentId}
       tab="chat"
       onTab={vi.fn()}
@@ -505,5 +518,77 @@ describe('when the Stop request itself fails', () => {
     await act(async () => fail(new HttpError('/api/chat/x/interrupt', 500)));
     expect(screen.queryByText(STOP_COPY.failed)).toBeNull();
     expect(note()).toBeNull();
+  });
+});
+
+/*
+  TASK-689 x TASK-688. The kickoff that wakes a new agent is HIDDEN (no bubble,
+  and a failure of it reads "your agent's hello didn't come through"), and a Stop
+  is a control on ANY streaming reply, this one included. The two were built in
+  parallel and meet in `AgentView`'s failure strip and its Resend gate; a textual
+  merge cannot tell you which sentence wins, so these do.
+
+  Against a merge that let the kickoff copy outrank the stop copy, the first test
+  fails: a Stop that could not be sent would say the greeting never arrived.
+*/
+describe('a Stop pressed while a new agent is greeting (hidden kickoff)', () => {
+  const hiddenKickoff = {
+    reqId: 'r-kick',
+    text: KICKOFF_TEXT,
+    conversationId: 'c1',
+    attachments: [],
+    hidden: true,
+  } as const;
+
+  async function startGreeting(): Promise<void> {
+    agentMock.mockResolvedValue(detail({ conversationId: 'c1', thread: [] }));
+    streamMock.mockImplementation(async (_reqId, h) => {
+      const signal = h.signal ?? new AbortController().signal;
+      live = { h, signal };
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        signal.addEventListener('abort', () => resolve());
+      });
+    });
+    renderView('a1', hiddenKickoff);
+    await waitFor(() => expect(stopBtn()).not.toBeNull());
+    await act(async () => {
+      live!.h.onText('Hey — I just came online.');
+    });
+  }
+
+  it('says the STOP failed, not that the hello never came, and offers no Resend', async () => {
+    await startGreeting();
+    interruptMock.mockRejectedValueOnce(new HttpError('/api/chat/x/interrupt', 500));
+    await clickStop();
+
+    expect(screen.getByText(STOP_COPY.failed)).toBeTruthy();
+    expect(screen.queryByText(/hello didn’t come through/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Resend' })).toBeNull();
+    // The greeting is still streaming; Stop is back and works.
+    expect(screen.getByRole('button', { name: 'Stop' })).not.toBeDisabled();
+  });
+
+  it('says it was stopped once the greeting ends, without claiming the pane is empty or showing the kickoff', async () => {
+    await startGreeting();
+    interruptMock.mockResolvedValue({ interrupted: true });
+    await clickStop();
+    await act(async () => live!.h.onDone());
+
+    await waitFor(() => expect(note()).not.toBeNull());
+    expect(note()).toHaveTextContent(STOPPED_NOTICE);
+    expect(screen.queryByText('Nothing here yet')).toBeNull();
+    expect(screen.queryByText(KICKOFF_TEXT)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(sendBtn()).not.toBeNull();
+  });
+
+  it('still says the HELLO failed when the greeting itself errors (no Stop involved)', async () => {
+    await startGreeting();
+    await act(async () => live!.h.onError('The runner went away.'));
+
+    expect(await screen.findByText(/hello didn’t come through/)).toBeTruthy();
+    expect(screen.queryByText(STOP_COPY.failed)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Resend' })).toBeNull();
   });
 });
