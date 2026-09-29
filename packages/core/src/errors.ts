@@ -35,6 +35,15 @@ export interface PluginErrorOptions {
    * renders it as untrusted text. Omitted for ordinary errors.
    */
   diagnosis?: Record<string, unknown>;
+  /**
+   * The machine-readable code a veto carried, when this error IS a veto
+   * (`code: 'rejected'`) — see {@link Rejection.code}. A separate field, not a
+   * new `code` value, on purpose: `code` says WHAT KIND of failure this is
+   * (a policy subscriber said no), `reasonCode` says WHICH policy said it, and
+   * every existing `code === 'rejected'` check keeps working unchanged.
+   * Omitted when the veto carried no code.
+   */
+  reasonCode?: string;
 }
 
 export class PluginError extends Error {
@@ -43,6 +52,16 @@ export class PluginError extends Error {
   readonly hookName?: string;
   /** See {@link PluginErrorOptions.diagnosis}. */
   readonly diagnosis?: Record<string, unknown>;
+  /**
+   * See {@link PluginErrorOptions.reasonCode}. Present only when set.
+   *
+   * `declare` matters here: at this repo's target (ES2023) a plain class-field
+   * declaration is emitted as an own property initialised to `undefined`, so
+   * `'reasonCode' in err` would be true for EVERY error. `declare` types the
+   * field without emitting it, so the constructor's conditional assignment is
+   * the only thing that can make the key exist.
+   */
+  declare readonly reasonCode?: string;
 
   constructor(opts: PluginErrorOptions) {
     super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
@@ -51,6 +70,7 @@ export class PluginError extends Error {
     this.plugin = opts.plugin;
     if (opts.hookName !== undefined) this.hookName = opts.hookName;
     if (opts.diagnosis !== undefined) this.diagnosis = opts.diagnosis;
+    if (opts.reasonCode !== undefined) this.reasonCode = opts.reasonCode;
   }
 
   // `cause` is intentionally omitted from toJSON() to keep stack traces out of
@@ -63,6 +83,7 @@ export class PluginError extends Error {
       message: this.message,
     };
     if (this.hookName !== undefined) out.hookName = this.hookName;
+    if (this.reasonCode !== undefined) out.reasonCode = this.reasonCode;
     return out;
   }
 }
@@ -90,19 +111,44 @@ export interface Rejection {
    * actually sent; nothing here is trusted input.
    */
   readonly offendingPaths?: readonly string[];
+  /**
+   * A short, stable, machine-readable name for WHY this was refused (e.g.
+   * `'storage-full'`), so a caller that must react differently to one kind of
+   * veto — say, turn it into a specific HTTP status — can key on the code
+   * instead of matching `reason` prose or the name of the plugin that vetoed.
+   *
+   * Purely a label. It grants nothing and relaxes nothing; the veto is exactly
+   * as strict with or without it, and a consumer that does not know a code
+   * treats the veto as the ordinary refusal it always was. `reason` stays the
+   * human-facing sentence. The bus spreads a rejection through `fire()` (see
+   * `HookBus.fire`), so this reaches the facades with no bus change; they lift
+   * it onto the thrown error as {@link PluginErrorOptions.reasonCode}.
+   *
+   * Optional, and non-empty when present: an empty string names nothing.
+   */
+  readonly code?: string;
 }
 
 export function reject(opts: {
   reason: string;
   source?: string;
   offendingPaths?: readonly string[];
+  code?: string;
 }): Rejection {
   // Build only the keys that are actually present. An explicit `undefined`
   // property is NOT the same as an absent one once this crosses a zod parse or
-  // a `toEqual`, and every existing caller passes neither optional field.
-  const r: { rejected: true; reason: string; source?: string; offendingPaths?: readonly string[] } =
-    { rejected: true, reason: opts.reason };
+  // a `toEqual`, and every existing caller passes none of the optional fields.
+  const r: {
+    rejected: true;
+    reason: string;
+    source?: string;
+    offendingPaths?: readonly string[];
+    code?: string;
+  } = { rejected: true, reason: opts.reason };
   if (opts.source !== undefined) r.source = opts.source;
+  // Same rule as `offendingPaths` below: an empty code carries no information,
+  // so absent and empty are the same thing.
+  if (opts.code !== undefined && opts.code.length > 0) r.code = opts.code;
   // An empty array carries no information and would read as "some paths, none
   // of them" downstream. Drop it so absent and empty are the same thing.
   if (opts.offendingPaths !== undefined && opts.offendingPaths.length > 0) {

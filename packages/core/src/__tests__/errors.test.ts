@@ -113,6 +113,61 @@ describe('hold', () => {
   });
 });
 
+describe('reject() code (TASK-719)', () => {
+  it('carries the machine-readable code a veto is about', () => {
+    const r = reject({ reason: 'over the limit', code: 'storage-full' });
+    expect(r.code).toBe('storage-full');
+    expect(isRejection(r)).toBe(true);
+  });
+
+  it('omits the key entirely when absent or empty', () => {
+    // Same reason as `offendingPaths`: an explicit `code: undefined` is not the
+    // same object as an absent key once it crosses a zod parse or a `toEqual`.
+    // An empty string names nothing, so it reads as absent rather than as a
+    // code a consumer would have to special-case.
+    expect('code' in reject({ reason: 'nope' })).toBe(false);
+    expect('code' in reject({ reason: 'nope', source: 's', offendingPaths: ['a'] })).toBe(false);
+    expect('code' in reject({ reason: 'nope', code: '' })).toBe(false);
+    expect(reject({ reason: 'nope' })).toEqual({ rejected: true, reason: 'nope' });
+  });
+
+  it('does not disturb source or offendingPaths', () => {
+    const r = reject({
+      reason: 'nope',
+      source: 'quota',
+      offendingPaths: ['CLAUDE.md'],
+      code: 'storage-full',
+    });
+    expect(r).toEqual({
+      rejected: true,
+      reason: 'nope',
+      source: 'quota',
+      offendingPaths: ['CLAUDE.md'],
+      code: 'storage-full',
+    });
+  });
+});
+
+describe('PluginError reasonCode (TASK-719)', () => {
+  it('carries reasonCode alongside an unchanged code, and serializes it', () => {
+    const err = new PluginError({
+      code: 'rejected',
+      plugin: 'p',
+      message: 'over the limit',
+      reasonCode: 'storage-full',
+    });
+    expect(err.code).toBe('rejected');
+    expect(err.reasonCode).toBe('storage-full');
+    expect(err.toJSON()).toMatchObject({ code: 'rejected', reasonCode: 'storage-full' });
+  });
+
+  it('has no reasonCode key at all when none was given', () => {
+    const err = new PluginError({ code: 'rejected', plugin: 'p', message: 'nope' });
+    expect('reasonCode' in err).toBe(false);
+    expect('reasonCode' in err.toJSON()).toBe(false);
+  });
+});
+
 describe('reject() offendingPaths (TASK-287)', () => {
   it('carries the paths a rejection is about', () => {
     const r = reject({ reason: 'nope', offendingPaths: ['CLAUDE.md'] });

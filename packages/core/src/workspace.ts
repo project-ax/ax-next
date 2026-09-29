@@ -208,3 +208,20 @@ export interface WorkspaceUsageOutput {
 export const WorkspaceUsageOutputSchema = z.object({
   bytes: z.number().int().nonnegative(),
 }) as unknown as ZodType<WorkspaceUsageOutput>;
+
+// ---------------------------------------------------------------------------
+// `workspace:deleted` -- notify hook (TASK-719): an agent's workspace has been
+// removed and its storage freed. Observe-only: the deletion already happened,
+// so a subscriber cannot veto it. Anything that keeps per-agent accounting of
+// workspace storage (a usage ledger, a quota cache) listens here to drop its
+// row instead of reaching into the backend.
+// ---------------------------------------------------------------------------
+
+/**
+ * Payload of the `workspace:deleted` notify hook. Names the agent whose
+ * workspace is gone -- nothing about where or how it was stored, so a
+ * subscriber cannot come to depend on one backend's layout.
+ */
+export interface WorkspaceDeletedPayload {
+  agentId: string;
+}

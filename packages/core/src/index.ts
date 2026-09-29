@@ -50,6 +50,7 @@ export type {
   WorkspaceApplyOutput,
   WorkspaceChange,
   WorkspaceChangeKind,
+  WorkspaceDeletedPayload,
   WorkspaceDelta,
   WorkspaceDiffInput,
   WorkspaceDiffOutput,

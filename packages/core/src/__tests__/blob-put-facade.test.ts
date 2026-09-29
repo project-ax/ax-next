@@ -90,6 +90,37 @@ describe('registerBlobPutFacade', () => {
     expect(stored).not.toHaveBeenCalled();
   });
 
+  it('a veto that carries a code surfaces it as reasonCode; PluginError.code stays rejected (TASK-719)', async () => {
+    const internal = vi.fn(async () => ({ sha256: SHA, size: bytes.byteLength }));
+    const bus = busWithInternal(internal);
+    bus.subscribe('blob:pre-put', 'quota', async () =>
+      reject({ reason: 'storage full', code: 'storage-full' }),
+    );
+    registerBlobPutFacade(bus, FACADE_PLUGIN);
+
+    const err = await bus
+      .call('blob:put', silentCtx(), { bytes })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('rejected');
+    expect((err as PluginError).reasonCode).toBe('storage-full');
+    expect(internal).not.toHaveBeenCalled();
+  });
+
+  it('a veto with no code yields an error with NO reasonCode key (TASK-719)', async () => {
+    const bus = busWithInternal(async () => ({ sha256: SHA, size: bytes.byteLength }));
+    bus.subscribe('blob:pre-put', 'quota', async () => reject({ reason: 'storage full' }));
+    registerBlobPutFacade(bus, FACADE_PLUGIN);
+
+    const err = await bus
+      .call('blob:put', silentCtx(), { bytes })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PluginError);
+    expect('reasonCode' in (err as PluginError)).toBe(false);
+  });
+
   it('pre-put payload size equals the byte length', async () => {
     const bus = busWithInternal(async () => ({ sha256: SHA, size: bytes.byteLength }));
     let seen: BlobPrePutPayload | undefined;

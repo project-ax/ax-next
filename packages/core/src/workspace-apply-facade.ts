@@ -118,6 +118,8 @@ export function registerWorkspaceApplyFacade(
           plugin,
           hookName: 'workspace:apply',
           message: pre.reason,
+          // Only when the veto named one; `code` stays 'rejected' either way.
+          ...(pre.code !== undefined ? { reasonCode: pre.code } : {}),
         });
       }
 

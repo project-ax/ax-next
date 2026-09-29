@@ -86,6 +86,8 @@ export function registerBlobPutFacade(
           plugin,
           hookName: 'blob:put',
           message: pre.reason,
+          // Only when the veto named one; `code` stays 'rejected' either way.
+          ...(pre.code !== undefined ? { reasonCode: pre.code } : {}),
         });
       }
 
