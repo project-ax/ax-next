@@ -78,3 +78,28 @@ precision.
   model's own on-vs-off comparison is the measurement.
 - Anything about a product version of links (a link store, UI). That comes after, and only if
   this says "improves".
+
+## Amendment 1 — 2026-09-29, before any answer exists
+
+**The link-precision gate failed as written.** 51 of 60 links at p ≥ 0.8 were correct (85.0%
+strict, 93.3% counting arguable calls), below the 54/60 bar. As pre-registered, the run stopped
+there. The labels are in `~/ax-bench-data/dem-lme500/gate-labels-60.json`.
+
+The failures are mostly two different plans or items linked as one ("pork belly next" vs a
+"paella first" recipe choice; a gift basket vs a different person's baby gift). Precision
+rose with the threshold in that same sample: 90.7% at 0.85 (n=43), 92.6% at 0.9 (n=27),
+100% at 0.95 (n=15).
+
+**Amendment (the owner's decision, made before any answer):** use **threshold 0.9**, and
+re-run the gate on a **fresh** seeded sample of 60 links at p ≥ 0.9 that **excludes the 27
+already labelled**, with the same 54/60 rule. Scoring the old sample at the new threshold
+would test the bar on the same links that suggested it. At 0.9 the run keeps 305 links across
+204 of the 500 questions. Nothing else in this document changes.
+
+Two earlier deviations, both before any answer, recorded here for completeness:
+
+- **Build caps.** The build shards were resumed with a higher per-shard cap. The ledger
+  charges failed requests their worst-case reservation (~$0.21 each), which tripped the $3
+  caps; actual billing was $20.47 for all 500 stores.
+- **Repair pass.** New: it re-played every session that left no facts. 591 retried, 392
+  recovered; afterwards no store is missing an evidence session.
