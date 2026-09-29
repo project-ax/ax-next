@@ -654,6 +654,10 @@ describe('AgentRail — "What it may do alone"', () => {
     // default personal agent, so it must not read as an error either.
     expect(container.textContent).toMatch(/Nothing limits which tools Quill can use/);
     expect(container.textContent).toMatch(/not a boundary/);
+    // It points at what IS on screen while shut — the "Show … rules" control
+    // above it — not at a list the reader cannot see (TASK-685 review).
+    expect(container.textContent).toMatch(/The rules above are what's installed today/);
+    expect(container.textContent).not.toMatch(/list above/);
   });
 
   it('says so when a source did not answer, instead of shipping a short list', async () => {
@@ -672,7 +676,8 @@ describe('AgentRail — "What it may do alone"', () => {
     // Visible with the list collapsed, for the same reason as the alert above.
     await permissionsTrigger();
     expect(screen.queryByText(/search the web/)).toBeNull();
-    expect(container.textContent).toMatch(/may be missing something/);
+    expect(container.textContent).toMatch(/the rules above may be missing something/);
+    expect(container.textContent).not.toMatch(/this list may be/);
   });
 
   it('distinguishes "no producer" from "read failed" from "nothing there"', async () => {

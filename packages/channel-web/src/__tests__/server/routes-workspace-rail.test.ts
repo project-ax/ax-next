@@ -996,8 +996,8 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(sources).toContain('rule:builtins.task');
 
     // Not a partial read. Nothing failed here — the catalog answered, and it
-    // answered that the tool is not installed. Saying "this list may be missing
-    // something" would turn a complete answer into a hedge.
+    // answered that the tool is not installed. Saying "the rules above may be
+    // missing something" would turn a complete answer into a hedge.
     expect(body.permissions.status).toBe('ok');
     expect(body.permissions.incomplete).toBe(false);
   });

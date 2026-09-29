@@ -391,15 +391,15 @@ function Permissions({
           <AlertTriangle aria-hidden="true" />
           <AlertDescription>
             Nothing limits which tools {name} can use — it can reach anything
-            installed here, now or later. The list above is what&apos;s
+            installed here, now or later. The rules above are what&apos;s
             installed today, not a boundary.
           </AlertDescription>
         </Alert>
       )}
       {incomplete && (
         <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
-          One of the places we look didn&apos;t answer, so this list may be
-          missing something. It is not a complete list of what {name} cannot do.
+          One of the places we look didn&apos;t answer, so the rules above may
+          be missing something. It is not a complete list of what {name} cannot do.
         </p>
       )}
     </div>
