@@ -757,7 +757,9 @@ What it does, in order (so you can do it by hand if the script is unavailable):
 4. Starts one pod, running the same image as the host, as UID 1000 with a read-only
    root filesystem. The restored repositories were written by agents, so they are
    treated as untrusted: the pod gets a deny-all NetworkPolicy (it needs no network;
-   the node pulls the image), and every `git` call it makes switches off hooks,
+   the node pulls the image; both cluster types in this runbook run Dataplane V2, so
+   it is enforced, but on a cluster that doesn't enforce policies it is a no-op),
+   and every `git` call it makes switches off hooks,
    filesystem monitors and pagers. It runs the checks and exits.
 5. Prints the pod's report and the verdict, deletes the pod, policy, claims, volumes
    and scratch disks, and prints how long each stage took.
