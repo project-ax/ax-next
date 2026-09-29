@@ -323,7 +323,7 @@ describe('Escape leaves Settings open (TASK-475)', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(screen.getByRole('heading', { level: 1, name: 'Skills' })).toBe(heading);
-    expect(screen.getByRole('button', { name: /^workspace$/i })).toBeTruthy();
+    screen.getByRole('button', { name: /^workspace$/i }); // throws if gone
     // The workspace's user menu is what comes back when Settings closes.
     expect(screen.queryByRole('button', { name: /Alice/ })).toBeNull();
   });

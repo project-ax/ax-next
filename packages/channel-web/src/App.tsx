@@ -401,7 +401,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
                predictable.
             3. Data loss. If a Settings surface ever holds unsaved edits, a
                stray Escape would throw away a half-typed setting.
-          The way out is the back button in `AdminShell`'s header. Escape
+          The way out is the back button at the top of `AdminSidebar`. Escape
           inside the pane still closes whatever overlay it opened (a Dialog,
           a menu) — that is Radix, and correct. Pinned by
           `__tests__/settings-return-focus.test.tsx` › "Escape leaves Settings
