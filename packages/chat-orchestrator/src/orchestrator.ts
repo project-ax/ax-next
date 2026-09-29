@@ -508,8 +508,20 @@ interface ProxyOpenSessionInput {
   agentId: string;
   /** Hostnames this session may reach (exact match). */
   allowlist: string[];
-  /** envName → { ref to credentials store, kind hint for downstream policy }. */
-  credentials: Record<string, { ref: string; kind: string }>;
+  /**
+   * envName → { ref to credentials store, kind hint for downstream policy,
+   * allowedHosts: the hosts this credential's placeholder may be SUBSTITUTED
+   * for }.
+   *
+   * `allowedHosts` is the credential BINDING (TASK-687): independent of
+   * `allowlist` above. The allowlist answers "where may this session reach";
+   * the binding answers "where may THIS credential's real value be sent".
+   * The proxy substitutes a placeholder only on egress to a host in its own
+   * credential's `allowedHosts`; absent/empty => never substituted (default
+   * deny). The orchestrator fills it only from sources the model/user cannot
+   * set for the session — never from the (user-widenable) allowlist.
+   */
+  credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
 }
 interface ProxyOpenSessionOutput {
   /** `unix:///path/to/sock` OR `tcp://127.0.0.1:<port>` — translated below. */
@@ -2230,7 +2242,10 @@ export function createOrchestrator(
     // agent-proxy-config-incomplete return above — before any proxy or sandbox
     // session exists, so there is nothing to close.
     let providerDefaults:
-      | { allowlist: string[]; credentials: Record<string, { ref: string; kind: string }> }
+      | {
+          allowlist: string[];
+          credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
+        }
       | undefined;
     if (useProviderDefaults) {
       let endpoint;
@@ -2257,7 +2272,15 @@ export function createOrchestrator(
       providerDefaults = {
         allowlist: [endpoint.egressHost],
         credentials: {
-          [endpoint.credentialEnvVar]: { ref: endpoint.credentialRef, kind: 'api-key' },
+          // TASK-687 — the provider key is bound to its provider's egress host
+          // and nothing else. `endpoint` comes from the trusted PROVIDER_ENDPOINTS
+          // table in @ax/core (code, not a store row), so this binding can't be
+          // widened by a host grant / proxy:add-host / model output.
+          [endpoint.credentialEnvVar]: {
+            ref: endpoint.credentialRef,
+            kind: 'api-key',
+            allowedHosts: [endpoint.egressHost],
+          },
         },
       };
     }
@@ -2355,9 +2378,24 @@ export function createOrchestrator(
     const baseAllowSet = providerDefaults
       ? new Set<string>(providerDefaults.allowlist)
       : new Set<string>(agent.allowedHosts ?? []);
-    const baseCreds: Record<string, { ref: string; kind: string }> = providerDefaults
-      ? { ...providerDefaults.credentials }
-      : { ...(agent.requiredCredentials ?? {}) };
+    //
+    // TASK-687 — every entry carries its credential BINDING (`allowedHosts`).
+    // Provider-default path: the provider's own egress host (set above from the
+    // PROVIDER_ENDPOINTS table). Explicit agent-row path: the agent row's
+    // `allowedHosts`, stamped here by the orchestrator (placed AFTER the entry
+    // spread, so a stray `allowedHosts` on an `agent.requiredCredentials` entry
+    // can never override it). Only the CLI dev-agents-stub produces this
+    // explicit shape; production @ax/agents returns neither field, so it always
+    // takes the provider-default path.
+    const baseCreds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }> =
+      providerDefaults
+        ? { ...providerDefaults.credentials }
+        : Object.fromEntries(
+            Object.entries(agent.requiredCredentials ?? {}).map(([envName, cred]) => [
+              envName,
+              { ...cred, allowedHosts: [...(agent.allowedHosts ?? [])] },
+            ]),
+          );
 
     // TASK-86 — the bare env-var names a TRUSTED source owns (agent defaults).
     // These ALWAYS win the sandbox flat-env stamp; a skill can never overwrite
@@ -2664,6 +2702,18 @@ export function createOrchestrator(
       connectorId: e.connectorId,
     }));
 
+    // TASK-687 — `unionedAllowlist` (where the session MAY reach) and each
+    // credential's `allowedHosts` (where THAT credential MAY be sent) are two
+    // separate questions, deliberately answered from separate sources:
+    //   - provider key      -> its provider's egress host (PROVIDER_ENDPOINTS, code)
+    //   - explicit agent row -> that row's `allowedHosts` (dev-agents-stub only)
+    //   - connector slots   -> that connector's OWN declared `allowedHosts`
+    //                          (api-key and oauth/mcp-oauth alike)
+    // Host grants (`host-grants:list`) and the live `proxy:add-host` are
+    // user-driven and only ever widen the SESSION allowlist above. They never
+    // extend a binding: a user who grants a host they control must not thereby
+    // be sent a real key (e.g. the operator's global model key) by the proxy.
+    // A credential with no binding is never substituted (default deny).
     try {
       const opened = await bus.call<ProxyOpenSessionInput, ProxyOpenSessionOutput>(
         'proxy:open-session',

@@ -1720,8 +1720,14 @@ describe('chat-orchestrator', () => {
     expect(openIn.sessionId).toBe('proxy-forward-session');
     expect(openIn.userId).toBe('test-user');
     expect(openIn.allowlist).toEqual(['api.anthropic.com']);
+    // TASK-687 — the explicit agent-row path binds each credential to the
+    // agent row's `allowedHosts`.
     expect(openIn.credentials).toEqual({
-      ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+      ANTHROPIC_API_KEY: {
+        ref: 'provider:anthropic',
+        kind: 'api-key',
+        allowedHosts: ['api.anthropic.com'],
+      },
     });
 
     // sandbox:open-session received the translated proxyConfig (tcp:// →
@@ -1963,9 +1969,11 @@ describe('chat-orchestrator', () => {
       credentials: Record<string, { ref: string; kind: string }>;
     };
     expect(openIn.allowlist).toEqual(['openrouter.ai']);
+    // TASK-687 — the provider key is bound to its provider's egress host.
     expect(openIn.credentials.OPENROUTER_API_KEY).toEqual({
       ref: 'provider:openrouter',
       kind: 'api-key',
+      allowedHosts: ['openrouter.ai'],
     });
     // The Anthropic slot must NOT ride along: an unused ANTHROPIC_API_KEY here
     // would mint a real Anthropic credential into a session that never asked
@@ -2010,7 +2018,11 @@ describe('chat-orchestrator', () => {
     };
     expect(openIn.allowlist).toEqual(['api.anthropic.com']);
     expect(openIn.credentials).toEqual({
-      ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+      ANTHROPIC_API_KEY: {
+        ref: 'provider:anthropic',
+        kind: 'api-key',
+        allowedHosts: ['api.anthropic.com'],
+      },
     });
   });
 
@@ -3706,6 +3718,255 @@ describe('chat-orchestrator', () => {
     expect(openIn.allowlist).not.toContain('persisted.example.com');
   });
 
+  // -------------------------------------------------------------------------
+  // TASK-687 — CREDENTIAL BINDING (`allowedHosts` per credential).
+  //
+  // The launch blocker: a credential's `ax-cred:` placeholder used to be
+  // substituted on ANY egress the session allowlist permitted. The allowlist is
+  // widened by user-driven `host-grants:list` (and the live `proxy:add-host`),
+  // so a user who granted a host they control was sent the operator's real
+  // model key. The fix: the orchestrator hands `proxy:open-session` a per-
+  // credential binding, sourced ONLY from things the model/user cannot set
+  // (the PROVIDER_ENDPOINTS table, the agent row, the connector's own caps) —
+  // never from `unionedAllowlist`.
+  // -------------------------------------------------------------------------
+  describe('TASK-687: credential binding (allowedHosts)', () => {
+    type BoundCred = { ref: string; kind: string; allowedHosts?: string[] };
+    interface OpenIn {
+      allowlist: string[];
+      credentials: Record<string, BoundCred>;
+    }
+
+    /** Run one turn through the real orchestrator and return what it handed
+     *  `proxy:open-session`. */
+    async function openSessionInput(opts: {
+      sessionId: string;
+      agent: Record<string, unknown>;
+      extraServices?: Record<string, ServiceHandler>;
+    }): Promise<OpenIn> {
+      const proxy = buildProxyHooks();
+      const busRef: { current: HookBus | null } = { current: null };
+      const mocks = buildMocks({
+        agentsResolve: async () => ({ agent: { ...TEST_AGENT, ...opts.agent } }),
+        openSession: makeChatEndOpenSession(busRef),
+      });
+      Object.assign(mocks.services, proxy.services, opts.extraServices ?? {});
+      const h = await createTestHarness({
+        services: mocks.services,
+        plugins: [
+          createChatOrchestratorPlugin({
+            runnerBinaries: { 'claude-sdk': '/irrelevant' },
+            chatTimeoutMs: 5_000,
+          }),
+        ],
+      });
+      busRef.current = h.bus;
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        silentCtx(opts.sessionId),
+        { message: { role: 'user', content: 'hi' } },
+      );
+      expect(outcome.kind).toBe('complete');
+      expect(proxy.state.openCalls).toBe(1);
+      return proxy.state.lastOpenInput as OpenIn;
+    }
+
+    const grantAttackerHost: Record<string, ServiceHandler> = {
+      'host-grants:list': async () => ({
+        hosts: [{ host: 'attacker.example', grantedAt: new Date().toISOString() }],
+      }),
+    };
+
+    it('provider default: the anthropic key is bound to exactly api.anthropic.com', async () => {
+      const openIn = await openSessionInput({
+        sessionId: 'bind-anthropic-session',
+        agent: { model: 'anthropic/claude-sonnet-4-6' },
+      });
+      expect(openIn.credentials.ANTHROPIC_API_KEY?.allowedHosts).toEqual(['api.anthropic.com']);
+    });
+
+    it('provider default: the openrouter key is bound to exactly openrouter.ai', async () => {
+      const openIn = await openSessionInput({
+        sessionId: 'bind-openrouter-session',
+        agent: { model: 'openrouter/x-ai/grok-4.6' },
+      });
+      expect(openIn.credentials.OPENROUTER_API_KEY?.allowedHosts).toEqual(['openrouter.ai']);
+    });
+
+    // THE REGRESSION (launch blocker). A user-granted host lands in the SESSION
+    // allowlist (that is what a grant is for) but must never appear in any
+    // credential's binding. Against the pre-fix orchestrator no credential
+    // carried a binding at all, so the proxy fell back to "any allowlisted host".
+    it('a user host grant widens the allowlist but NEVER any credential binding (provider default)', async () => {
+      const openIn = await openSessionInput({
+        sessionId: 'bind-grant-provider-session',
+        agent: { model: 'anthropic/claude-sonnet-4-6' },
+        extraServices: grantAttackerHost,
+      });
+      expect(openIn.allowlist).toContain('attacker.example');
+      for (const [envName, cred] of Object.entries(openIn.credentials)) {
+        expect(cred.allowedHosts, envName).toBeDefined();
+        expect(cred.allowedHosts, envName).not.toContain('attacker.example');
+      }
+      // The provider key stays bound to its provider host, exactly.
+      expect(openIn.credentials.ANTHROPIC_API_KEY?.allowedHosts).toEqual(['api.anthropic.com']);
+    });
+
+    it('a user host grant never reaches a bound credential on the explicit agent-row path or a connector slot', async () => {
+      const connectorHooks = buildConnectorHooks({
+        defaults: {
+          gdrive: {
+            capabilities: {
+              allowedHosts: ['drive.googleapis.com'],
+              credentials: [{ slot: 'GDRIVE', kind: 'api-key', account: 'google' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+        },
+      });
+      const openIn = await openSessionInput({
+        sessionId: 'bind-grant-explicit-session',
+        agent: {
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+        },
+        extraServices: { ...grantAttackerHost, ...connectorHooks },
+      });
+      expect(openIn.allowlist).toContain('attacker.example');
+      expect(openIn.credentials.ANTHROPIC_API_KEY?.allowedHosts).toEqual(['api.anthropic.com']);
+      expect(openIn.credentials['connector:gdrive:GDRIVE']?.allowedHosts).toEqual([
+        'drive.googleapis.com',
+      ]);
+      for (const [envName, cred] of Object.entries(openIn.credentials)) {
+        expect(cred.allowedHosts, envName).not.toContain('attacker.example');
+      }
+    });
+
+    it('explicit agent-row path: every requiredCredentials entry is bound to the agent row allowedHosts', async () => {
+      const openIn = await openSessionInput({
+        sessionId: 'bind-explicit-session',
+        agent: {
+          allowedHosts: ['api.anthropic.com', 'mcp.example'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+            OTHER_TOKEN: { ref: 'account:other', kind: 'api-key' },
+          },
+        },
+      });
+      expect(openIn.credentials.ANTHROPIC_API_KEY?.allowedHosts).toEqual([
+        'api.anthropic.com',
+        'mcp.example',
+      ]);
+      expect(openIn.credentials.OTHER_TOKEN?.allowedHosts).toEqual([
+        'api.anthropic.com',
+        'mcp.example',
+      ]);
+    });
+
+    it('explicit agent-row path: an allowedHosts smuggled onto a requiredCredentials entry is overridden', async () => {
+      const openIn = await openSessionInput({
+        sessionId: 'bind-explicit-override-session',
+        agent: {
+          allowedHosts: ['api.anthropic.com', 'mcp.example'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: {
+              ref: 'provider:anthropic',
+              kind: 'api-key',
+              allowedHosts: ['evil.example'],
+            },
+          },
+        },
+      });
+      expect(openIn.credentials.ANTHROPIC_API_KEY?.allowedHosts).toEqual([
+        'api.anthropic.com',
+        'mcp.example',
+      ]);
+      expect(JSON.stringify(openIn.credentials)).not.toContain('evil.example');
+    });
+
+    it('connector slots: each is bound to ONLY its own connector hosts (not the union); oauth -> mcp-oauth keeps the binding; no hosts -> []', async () => {
+      const connectorHooks = buildConnectorHooks({
+        defaults: {
+          gdrive: {
+            capabilities: {
+              allowedHosts: ['drive.googleapis.com'],
+              credentials: [{ slot: 'GDRIVE', kind: 'api-key', account: 'google' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+          mcpsvc: {
+            capabilities: {
+              allowedHosts: ['mcp.svc.example'],
+              credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'mcpsvc' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+        },
+        owned: {
+          sf: {
+            capabilities: {
+              allowedHosts: ['login.salesforce.com'],
+              credentials: [{ slot: 'SF_TOKEN', kind: 'api-key' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+          nohosts: {
+            capabilities: {
+              allowedHosts: [],
+              credentials: [{ slot: 'NOHOST_KEY', kind: 'api-key' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+        },
+      });
+      const openIn = await openSessionInput({
+        sessionId: 'bind-connectors-session',
+        agent: { model: 'anthropic/claude-sonnet-4-6' },
+        extraServices: connectorHooks,
+      });
+
+      // Session allowlist = the union of every connector's hosts...
+      expect(openIn.allowlist).toEqual(
+        expect.arrayContaining([
+          'api.anthropic.com',
+          'drive.googleapis.com',
+          'mcp.svc.example',
+          'login.salesforce.com',
+        ]),
+      );
+      // ...but each credential binds only its own connector's hosts.
+      expect(openIn.credentials['connector:gdrive:GDRIVE']).toEqual({
+        ref: 'account:google',
+        kind: 'api-key',
+        allowedHosts: ['drive.googleapis.com'],
+      });
+      expect(openIn.credentials['connector:sf:SF_TOKEN']).toEqual({
+        ref: 'account:sf',
+        kind: 'api-key',
+        allowedHosts: ['login.salesforce.com'],
+      });
+      expect(openIn.credentials['connector:mcpsvc:MCP_TOKEN']).toEqual({
+        ref: 'account:mcpsvc',
+        kind: 'mcp-oauth',
+        allowedHosts: ['mcp.svc.example'],
+      });
+      expect(openIn.credentials['connector:nohosts:NOHOST_KEY']).toEqual({
+        ref: 'account:nohosts',
+        kind: 'api-key',
+        allowedHosts: [],
+      });
+      // And the provider key is not widened by any connector's hosts.
+      expect(openIn.credentials.ANTHROPIC_API_KEY?.allowedHosts).toEqual(['api.anthropic.com']);
+    });
+  });
+
   it('TASK-100: a skill does NOT auto-union registry.npmjs.org (packages live on connectors now)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
@@ -3848,7 +4109,10 @@ describe('chat-orchestrator', () => {
   // -------------------------------------------------------------------------
   interface ConnectorCapsLike {
     allowedHosts: string[];
-    credentials: Array<{ slot: string; kind: 'api-key'; account?: string }>;
+    credentials: Array<
+      | { slot: string; kind: 'api-key'; account?: string }
+      | { slot: string; kind: 'oauth'; server: string }
+    >;
     mcpServers: Array<Record<string, unknown>>;
     packages?: { npm?: string[]; pypi?: string[] };
   }
@@ -4036,6 +4300,8 @@ describe('chat-orchestrator', () => {
     expect(openIn.credentials['connector:salesforce:SF_TOKEN']).toEqual({
       ref: 'account:salesforce',
       kind: 'api-key',
+      // TASK-687 — bound to the connector's own declared hosts.
+      allowedHosts: ['login.salesforce.com'],
     });
     // A synthetic installed-skill entry for the connector reached the spawn.
     const sandboxIn = mocks.calls.lastSandboxInput as {
@@ -4142,7 +4408,12 @@ describe('chat-orchestrator', () => {
     // The CONNECTOR's host + slot reach the sandbox (the connector path). The
     // skill declares no caps, so no `skill:gh:*` entry exists.
     expect(openIn.allowlist).toContain('api.shared.example.com');
-    expect(openIn.credentials['connector:cx:SHARED_KEY']).toEqual({ ref: 'account:cx', kind: 'api-key' });
+    expect(openIn.credentials['connector:cx:SHARED_KEY']).toEqual({
+      ref: 'account:cx',
+      kind: 'api-key',
+      // TASK-687 — bound to the connector's own declared hosts.
+      allowedHosts: ['api.shared.example.com'],
+    });
     expect(openIn.credentials['skill:gh:SHARED_KEY']).toBeUndefined();
   });
 

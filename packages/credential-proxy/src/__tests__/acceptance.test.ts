@@ -261,7 +261,13 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
         // exempted via allowedIPs (test-only escape hatch).
         allowedIPs: ['127.0.0.1'],
         credentials: {
-          ANTHROPIC_API_KEY: { ref: 'anthropic', kind: 'api-key' },
+          ANTHROPIC_API_KEY: {
+            ref: 'anthropic',
+            kind: 'api-key',
+            // Bound to the host the upstream is reached as (TASK-687): the
+            // placeholder is substituted there and nowhere else.
+            allowedHosts: ['127.0.0.1'],
+          },
         },
       });
 

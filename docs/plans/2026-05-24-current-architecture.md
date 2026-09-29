@@ -116,7 +116,7 @@ model output directly.
 | Host tool execution | **Host** — `@ax/mcp-client`, `@ax/web-tools`, `@ax/tool-artifact-publish` | `tool:execute:<name>` |
 | Workspace versioning | **Host** — `@ax/workspace-git` (local) / `@ax/workspace-git-server` (git-protocol) | opaque `WorkspaceVersion` |
 | Conversation/transcript metadata | **Host** — `@ax/conversations` | reads committed jsonl |
-| Credentials / egress proxy | **Host** — `@ax/credentials*`, `@ax/credential-proxy` | runner sees only `ax-cred:<hex>` placeholders |
+| Credentials / egress proxy | **Host** — `@ax/credentials*`, `@ax/credential-proxy` | runner sees only `ax-cred:<hex>` placeholders; the proxy swaps one in only for the session that owns it, on egress to that credential's bound `allowedHosts` (TASK-687) — being on the session allowlist is not enough |
 
 ---
 

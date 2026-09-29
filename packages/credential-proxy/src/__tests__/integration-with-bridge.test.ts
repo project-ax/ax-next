@@ -295,7 +295,12 @@ describe('credential-proxy + bridge end-to-end (Phase 1a Task 17)', () => {
       allowlist: ['127.0.0.1'],
       allowedIPs: ['127.0.0.1'],
       credentials: {
-        ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' },
+        ANTHROPIC_API_KEY: {
+          ref: 'r1',
+          kind: 'api-key',
+          // Bound to the host the upstream is reached as (TASK-687).
+          allowedHosts: ['127.0.0.1'],
+        },
       },
     });
 

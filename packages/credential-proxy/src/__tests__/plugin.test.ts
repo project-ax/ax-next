@@ -24,17 +24,19 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { connect as netConnect } from 'node:net';
+import { lookup as dnsLookup } from 'node:dns/promises';
 import { createServer as tlsCreate, type Server as TLSServer } from 'node:tls';
 import { ProxyAgent } from 'undici';
 import {
   HookBus,
   PluginError,
   bootstrap,
+  createLogger,
   makeAgentContext,
   type Plugin,
   type KernelHandle,
 } from '@ax/core';
-import { generateDomainCert, type CAKeyPair } from '../ca.js';
+import { generateDomainCert, getOrCreateCA, type CAKeyPair } from '../ca.js';
 import { createCredentialProxyPlugin } from '../plugin.js';
 import { basicAuth, rawConnect } from './proxy-auth-helpers.js';
 
@@ -43,7 +45,7 @@ import { basicAuth, rawConnect } from './proxy-auth-helpers.js';
 // stays in this file (vs. importing the real plugin) so we don't pull
 // AES-GCM crypto into the proxy plugin's tests — they only need the
 // hook surface, not the encryption.
-function memCredentialsPlugin(): Plugin {
+function memCredentialsPlugin(onGet?: (ref: string) => void): Plugin {
   const store = new Map<string, string>();
   const k = (userId: string, ref: string): string => `${userId}:${ref}`;
   return {
@@ -66,6 +68,7 @@ function memCredentialsPlugin(): Plugin {
         'credentials:get',
         '@test/mem-credentials',
         async (_ctx, { ref, userId }) => {
+          onGet?.(ref);
           const value = store.get(k(userId, ref));
           if (value === undefined) throw new Error(`no such credential: ${userId}:${ref}`);
           return value;
@@ -84,12 +87,29 @@ interface CapturedRequest {
  * Stand up a TLS upstream signed by the proxy's CA. The proxy adds its
  * own CA to its outbound trust store, so the chain validates without
  * `rejectUnauthorized: false`.
+ *
+ * `certHost` is the name the leaf cert is issued for — it must be the name the
+ * proxy dials the upstream by (the CONNECT hostname, used as SNI). `bindHost` is
+ * the local address it listens on. Both default to `127.0.0.1`; the credential
+ * binding tests override them to stand up a second upstream reached as
+ * `localhost`. `authorizations` records EVERY request's Authorization header and
+ * `raw()` every byte received, for "the real value never arrived" assertions.
  */
 async function startCapturingUpstream(
   ca: CAKeyPair,
-): Promise<{ port: number; captured: CapturedRequest; gotRequest: Promise<void>; close: () => Promise<void> }> {
-  const leaf = generateDomainCert('127.0.0.1', ca);
+  opts: { certHost?: string; bindHost?: string } = {},
+): Promise<{
+  port: number;
+  captured: CapturedRequest;
+  authorizations: Array<string | undefined>;
+  raw: () => string;
+  gotRequest: Promise<void>;
+  close: () => Promise<void>;
+}> {
+  const leaf = generateDomainCert(opts.certHost ?? '127.0.0.1', ca);
   const captured: CapturedRequest = { authorization: undefined, body: '' };
+  const authorizations: Array<string | undefined> = [];
+  let raw = '';
   let resolveReq!: () => void;
   const gotRequest = new Promise<void>((resolve) => {
     resolveReq = resolve;
@@ -99,22 +119,26 @@ async function startCapturingUpstream(
     let buf = '';
     sock.on('data', (d) => {
       buf += d.toString('utf8');
+      raw += d.toString('utf8');
       const headerEnd = buf.indexOf('\r\n\r\n');
       if (headerEnd === -1) return;
       const header = buf.slice(0, headerEnd);
       const lines = header.split('\r\n');
       let contentLength = 0;
+      let authorization: string | undefined;
       for (const line of lines.slice(1)) {
         const idx = line.indexOf(':');
         if (idx === -1) continue;
         const k = line.slice(0, idx).trim().toLowerCase();
         const v = line.slice(idx + 1).trim();
-        if (k === 'authorization') captured.authorization = v;
+        if (k === 'authorization') authorization = v;
         if (k === 'content-length') contentLength = parseInt(v, 10);
       }
       const bodyStart = headerEnd + 4;
       if (buf.length - bodyStart >= contentLength) {
+        captured.authorization = authorization;
         captured.body = buf.slice(bodyStart, bodyStart + contentLength);
+        authorizations.push(authorization);
         sock.write('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK');
         sock.end();
         resolveReq();
@@ -124,11 +148,15 @@ async function startCapturingUpstream(
   });
 
   const port = await new Promise<number>((r) =>
-    server.listen(0, '127.0.0.1', () => r((server.address() as { port: number }).port)),
+    server.listen(0, opts.bindHost ?? '127.0.0.1', () =>
+      r((server.address() as { port: number }).port),
+    ),
   );
   return {
     port,
     captured,
+    authorizations,
+    raw: () => raw,
     gotRequest,
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
@@ -141,6 +169,50 @@ function ctx() {
 // Parameterized ctx — proxy:add-host ownership checks key off ctx.userId.
 function ctxFor(userId: string) {
   return makeAgentContext({ sessionId: 'test-session', agentId: 'test-agent', userId });
+}
+
+/**
+ * A context whose logger writes into `lines` (parsed JSON), so a test can assert
+ * on what the plugin logged without scraping stdout.
+ */
+function capturingCtx(userId: string) {
+  const lines: Array<Record<string, unknown>> = [];
+  const logger = createLogger({
+    reqId: 'req-capture',
+    writer: (line) => lines.push(JSON.parse(line) as Record<string, unknown>),
+  });
+  return {
+    lines,
+    ctx: makeAgentContext({ sessionId: 'test-session', agentId: 'test-agent', userId, logger }),
+  };
+}
+
+/** One POST through the proxy as the session that owns `token`. Resolves with the status. */
+async function postThroughProxy(opts: {
+  proxyPort: number;
+  token: string;
+  ca: CAKeyPair;
+  host: string;
+  upstreamPort: number;
+  authorization: string;
+}): Promise<number> {
+  const dispatcher = new ProxyAgent({
+    uri: `http://127.0.0.1:${opts.proxyPort}`,
+    token: basicAuth(opts.token),
+    requestTls: { ca: opts.ca.cert },
+  });
+  try {
+    const res = await fetch(`https://${opts.host}:${opts.upstreamPort}/v1/messages`, {
+      method: 'POST',
+      headers: { authorization: opts.authorization, 'content-type': 'application/json' },
+      body: JSON.stringify({ hello: 'world' }),
+      dispatcher,
+    } as RequestInit);
+    await res.text();
+    return res.status;
+  } finally {
+    await dispatcher.close();
+  }
 }
 
 describe('@ax/credential-proxy plugin', () => {
@@ -181,7 +253,7 @@ describe('@ax/credential-proxy plugin', () => {
         userId: string;
         agentId: string;
         allowlist: string[];
-        credentials: Record<string, { ref: string; kind: string }>;
+        credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
       },
       {
         proxyEndpoint: string;
@@ -193,7 +265,7 @@ describe('@ax/credential-proxy plugin', () => {
       userId: 'u1',
       agentId: 'a1',
       allowlist: ['api.anthropic.com'],
-      credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+      credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['api.anthropic.com'] } },
     });
 
     expect(result.proxyEndpoint).toMatch(/^tcp:\/\/127\.0\.0\.1:\d+$/);
@@ -230,7 +302,7 @@ describe('@ax/credential-proxy plugin', () => {
         userId: string;
         agentId: string;
         allowlist: string[];
-        credentials: Record<string, { ref: string; kind: string }>;
+        credentials: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>;
       },
       { proxyEndpoint: string }
     >('proxy:open-session', ctx(), {
@@ -238,7 +310,7 @@ describe('@ax/credential-proxy plugin', () => {
       userId: 'u1',
       agentId: 'a1',
       allowlist: ['api.anthropic.com'],
-      credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+      credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['api.anthropic.com'] } },
     });
     expect(result.proxyEndpoint).toBe(advertised);
   });
@@ -342,7 +414,10 @@ describe('@ax/credential-proxy plugin', () => {
         agentId: 'a1',
         allowlist: ['127.0.0.1'],
         allowedIPs: ['127.0.0.1'],
-        credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+        // Bound to the host the upstream is reached as (TASK-687).
+        credentials: {
+          ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] },
+        },
       });
 
       // Extract the proxy port from the endpoint.
@@ -508,7 +583,10 @@ describe('@ax/credential-proxy plugin', () => {
         agentId: 'a1',
         allowlist: ['127.0.0.1'],
         allowedIPs: ['127.0.0.1'],
-        credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+        // Bound to the host the upstream is reached as (TASK-687).
+        credentials: {
+          ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] },
+        },
       });
 
       const portMatch = opened.proxyEndpoint.match(/^tcp:\/\/127\.0\.0\.1:(\d+)$/);
@@ -707,4 +785,276 @@ describe('@ax/credential-proxy plugin', () => {
       expect((caught as PluginError).message).toMatch(/invalid host/i);
     },
   );
+
+  // ── credential binding (TASK-687) ────────────────────────────────────
+  //
+  // A credential's `allowedHosts` (proxy:open-session) decides where its
+  // placeholder is substituted; the session `allowlist` only decides where the
+  // session may REACH. These run the real plugin + real listener over real
+  // sockets. The plugin's listener has no resolver seam, so two distinct
+  // allowlisted hostnames reaching loopback upstreams are `127.0.0.1` (an IP
+  // literal, bound to the credential) and `localhost` (a name the user "adds" —
+  // the stand-in for a host they control). Each has its own upstream + leaf
+  // cert, and the session's `allowedIPs` covers whichever loopback address
+  // `localhost` resolves to on this machine (127.0.0.1 or ::1).
+
+  const REAL_KEY = 'sk-REAL-operator-key-0123456789';
+
+  interface BindingRig {
+    ca: CAKeyPair;
+    /** Upstream reached as `127.0.0.1` — the host the credential is bound to. */
+    bound: Awaited<ReturnType<typeof startCapturingUpstream>>;
+    /** Upstream reached as `localhost` — allowlisted, but NOT a bound host. */
+    other: Awaited<ReturnType<typeof startCapturingUpstream>>;
+    /** Loopback address `localhost` resolves to here. */
+    localhostIP: string;
+    close: () => Promise<void>;
+  }
+
+  async function startBindingRig(): Promise<BindingRig> {
+    const ca = await getOrCreateCA(caDir);
+    const { address: localhostIP } = await dnsLookup('localhost');
+    const bound = await startCapturingUpstream(ca);
+    const other = await startCapturingUpstream(ca, { certHost: 'localhost', bindHost: localhostIP });
+    return {
+      ca,
+      bound,
+      other,
+      localhostIP,
+      close: async () => {
+        await bound.close();
+        await other.close();
+      },
+    };
+  }
+
+  interface OpenedSession {
+    proxyEndpoint: string;
+    proxyAuthToken: string;
+    envMap: Record<string, string>;
+  }
+
+  it('END TO END: a host added via proxy:add-host never receives a key bound to another host', async () => {
+    const rig = await startBindingRig();
+    try {
+      await bootProxy();
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: REAL_KEY });
+      const { ctx: openCtx, lines } = capturingCtx('u1');
+      const opened = await bus.call<unknown, OpenedSession>('proxy:open-session', openCtx, {
+        sessionId: 's1',
+        userId: 'u1',
+        agentId: 'a1',
+        allowlist: ['127.0.0.1'],
+        allowedIPs: ['127.0.0.1', rig.localhostIP],
+        credentials: {
+          ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] },
+        },
+      });
+      const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
+      const placeholder = opened.envMap.ANTHROPIC_API_KEY!;
+      const post = (host: string, upstreamPort: number): Promise<number> =>
+        postThroughProxy({
+          proxyPort,
+          token: opened.proxyAuthToken,
+          ca: rig.ca,
+          host,
+          upstreamPort,
+          authorization: `Bearer ${placeholder}`,
+        });
+
+      // Premise: `localhost` is NOT reachable until the user adds it.
+      await expect(post('localhost', rig.other.port)).rejects.toThrow();
+      expect(rig.other.authorizations).toEqual([]);
+
+      // The session's owner widens its own allowlist to a host it controls.
+      const added = await bus.call<{ sessionId: string; host: string }, { added: boolean }>(
+        'proxy:add-host',
+        ctxFor('u1'),
+        { sessionId: 's1', host: 'localhost' },
+      );
+      expect(added.added).toBe(true);
+
+      // Reachable now — and the operator key does NOT follow it there.
+      expect(await post('localhost', rig.other.port)).toBe(200);
+      expect(rig.other.authorizations).toEqual([`Bearer ${placeholder}`]);
+      expect(rig.other.raw()).not.toContain(REAL_KEY);
+
+      // The bound host still gets the real value.
+      expect(await post('127.0.0.1', rig.bound.port)).toBe(200);
+      expect(rig.bound.authorizations).toEqual([`Bearer ${REAL_KEY}`]);
+
+      // A bound credential is not "unbound": no warning for it.
+      expect(lines.filter((l) => l.msg === 'credential_unbound')).toEqual([]);
+    } finally {
+      await rig.close();
+    }
+  });
+
+  it.each([
+    ['omitted', undefined],
+    ['an empty list', [] as string[]],
+  ])(
+    'a credential whose allowedHosts is %s keeps its placeholder in envMap but is never substituted, and is logged by name only',
+    async (_label, allowedHosts) => {
+      const rig = await startBindingRig();
+      try {
+        await bootProxy();
+        await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: REAL_KEY });
+        const { ctx: openCtx, lines } = capturingCtx('u1');
+        const opened = await bus.call<unknown, OpenedSession>('proxy:open-session', openCtx, {
+          sessionId: 's1',
+          userId: 'u1',
+          agentId: 'a1',
+          // 127.0.0.1 IS allowlisted and reached — the credential just isn't bound to it.
+          allowlist: ['127.0.0.1'],
+          allowedIPs: ['127.0.0.1'],
+          credentials: {
+            ANTHROPIC_API_KEY: {
+              ref: 'r1',
+              kind: 'api-key',
+              ...(allowedHosts !== undefined ? { allowedHosts } : {}),
+            },
+          },
+        });
+        const placeholder = opened.envMap.ANTHROPIC_API_KEY!;
+        expect(placeholder).toMatch(/^ax-cred:[0-9a-f]{32}$/);
+
+        const status = await postThroughProxy({
+          proxyPort: parseInt(opened.proxyEndpoint.split(':').pop()!, 10),
+          token: opened.proxyAuthToken,
+          ca: rig.ca,
+          host: '127.0.0.1',
+          upstreamPort: rig.bound.port,
+          authorization: `Bearer ${placeholder}`,
+        });
+        expect(status).toBe(200);
+        expect(rig.bound.authorizations).toEqual([`Bearer ${placeholder}`]);
+        expect(rig.bound.raw()).not.toContain(REAL_KEY);
+
+        // Default-deny is made visible: one warning, carrying the env NAME only.
+        const warns = lines.filter((l) => l.msg === 'credential_unbound');
+        expect(warns).toHaveLength(1);
+        expect(warns[0]).toMatchObject({ level: 'warn', envName: 'ANTHROPIC_API_KEY' });
+        const logged = JSON.stringify(lines);
+        expect(logged).not.toContain(REAL_KEY);
+        expect(logged).not.toContain(placeholder);
+      } finally {
+        await rig.close();
+      }
+    },
+  );
+
+  it.each([
+    ['a bare string', 'api.provider.test'],
+    ['an array holding a number', ['api.provider.test', 42]],
+    ['an object', { host: 'api.provider.test' }],
+    ['null', null],
+  ])(
+    'proxy:open-session rejects %s as allowedHosts (invalid-credential-hosts) before any credentials:get',
+    async (_label, allowedHosts) => {
+      let getCalls = 0;
+      kernel = await bootstrap({
+        bus,
+        plugins: [
+          memCredentialsPlugin(() => {
+            getCalls += 1;
+          }),
+          createCredentialProxyPlugin({
+            listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+            caDir,
+          }),
+        ],
+        config: {},
+      });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: REAL_KEY });
+
+      let caught: unknown;
+      try {
+        await bus.call('proxy:open-session', ctxFor('u1'), {
+          sessionId: 's-bad',
+          userId: 'u1',
+          agentId: 'a1',
+          allowlist: ['127.0.0.1'],
+          credentials: {
+            // A WELL-FORMED credential first: if validation were interleaved with
+            // resolution, this one's credentials:get would already have run.
+            GOOD: { ref: 'r1', kind: 'api-key', allowedHosts: ['api.provider.test'] },
+            BAD: { ref: 'r1', kind: 'api-key', allowedHosts },
+          },
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PluginError);
+      expect((caught as PluginError).code).toBe('invalid-credential-hosts');
+      expect((caught as PluginError).message).toMatch(/BAD/);
+      expect(getCalls).toBe(0);
+
+      // Nothing was half-registered.
+      let rotateErr: unknown;
+      try {
+        await bus.call('proxy:rotate-session', ctx(), { sessionId: 's-bad' });
+      } catch (err) {
+        rotateErr = err;
+      }
+      expect((rotateErr as PluginError).code).toBe('unknown-session');
+    },
+  );
+
+  it('proxy:rotate-session keeps the binding: the bound host gets the NEW value, an unbound host still gets nothing', async () => {
+    const rig = await startBindingRig();
+    try {
+      await bootProxy();
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-original' });
+      const opened = await bus.call<unknown, OpenedSession>('proxy:open-session', ctx(), {
+        sessionId: 's1',
+        userId: 'u1',
+        agentId: 'a1',
+        // Both hosts allowlisted from the start; only 127.0.0.1 is bound.
+        allowlist: ['127.0.0.1', 'localhost'],
+        allowedIPs: ['127.0.0.1', rig.localhostIP],
+        credentials: {
+          ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key', allowedHosts: ['127.0.0.1'] },
+        },
+      });
+      const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
+      const placeholder = opened.envMap.ANTHROPIC_API_KEY!;
+      const post = (host: string, upstreamPort: number): Promise<number> =>
+        postThroughProxy({
+          proxyPort,
+          token: opened.proxyAuthToken,
+          ca: rig.ca,
+          host,
+          upstreamPort,
+          authorization: `Bearer ${placeholder}`,
+        });
+
+      // Before rotation.
+      expect(await post('127.0.0.1', rig.bound.port)).toBe(200);
+      expect(await post('localhost', rig.other.port)).toBe(200);
+      expect(rig.bound.authorizations).toEqual(['Bearer sk-original']);
+      expect(rig.other.authorizations).toEqual([`Bearer ${placeholder}`]);
+
+      // Rotate the backing value.
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-rotated' });
+      const rotated = await bus.call<{ sessionId: string }, { envMap: Record<string, string> }>(
+        'proxy:rotate-session',
+        ctx(),
+        { sessionId: 's1' },
+      );
+      expect(rotated.envMap.ANTHROPIC_API_KEY).toBe(placeholder); // I11: same placeholder
+
+      // After rotation: bound host gets the NEW value…
+      expect(await post('127.0.0.1', rig.bound.port)).toBe(200);
+      expect(rig.bound.authorizations).toEqual(['Bearer sk-original', 'Bearer sk-rotated']);
+      // …and rotation did not widen the binding: the other host still sees only
+      // the placeholder, never either real value.
+      expect(await post('localhost', rig.other.port)).toBe(200);
+      expect(rig.other.authorizations).toEqual([`Bearer ${placeholder}`, `Bearer ${placeholder}`]);
+      expect(rig.other.raw()).not.toContain('sk-original');
+      expect(rig.other.raw()).not.toContain('sk-rotated');
+    } finally {
+      await rig.close();
+    }
+  });
 });

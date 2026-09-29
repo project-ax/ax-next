@@ -270,7 +270,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
 
     // Register a credential, get its placeholder.
     const credMap = new CredentialPlaceholderMap();
-    const placeholder = credMap.register('ANTHROPIC_API_KEY', 'sk-real-secret-xyz');
+    const placeholder = credMap.register('ANTHROPIC_API_KEY', 'sk-real-secret-xyz', ['127.0.0.1']);
 
     const registry = new SharedCredentialRegistry();
     registry.register('s1', credMap);
@@ -333,7 +333,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
     // Real value deliberately LONGER than the 40-byte ax-cred:<hex> placeholder,
     // matching a real Anthropic key — the exact case that overran Content-Length.
     const realKey = 'sk-ant-' + 'x'.repeat(96);
-    const placeholder = credMap.register('ANTHROPIC_API_KEY', realKey);
+    const placeholder = credMap.register('ANTHROPIC_API_KEY', realKey, ['127.0.0.1']);
 
     const registry = new SharedCredentialRegistry();
     registry.register('s1', credMap);
@@ -453,7 +453,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
     const upInfo = await startCapturingUpstream(ca);
 
     const credMap = new CredentialPlaceholderMap();
-    const placeholder = credMap.register('ANTHROPIC_API_KEY', 'sk-real-secret-xyz');
+    const placeholder = credMap.register('ANTHROPIC_API_KEY', 'sk-real-secret-xyz', ['127.0.0.1']);
     const registry = new SharedCredentialRegistry();
     registry.register('s1', credMap);
 
@@ -506,7 +506,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
 
     // Resolve a placeholder for a git token, mirroring how a session would carry it.
     const credMap = new CredentialPlaceholderMap();
-    const placeholder = credMap.register('GITLAB_TOKEN', 'glpat-REALSECRET');
+    const placeholder = credMap.register('GITLAB_TOKEN', 'glpat-REALSECRET', ['127.0.0.1']);
     const registry = new SharedCredentialRegistry();
     registry.register('s1', credMap);
 
@@ -689,10 +689,17 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
     const ca = mintCA();
     const upInfo = await startMultiCapturingUpstream(ca, 2);
 
-    const credMap = new CredentialPlaceholderMap();
-    const placeholder = credMap.register('ANTHROPIC_API_KEY', 'sk-real-secret-xyz');
+    // Substitution is per-session since TASK-687: each session spends only its
+    // OWN placeholder. So s2 needs a credential of its own to prove it is still
+    // MITM'd (and substituted) despite s1's bypass declaration, and s1 sends its
+    // own placeholder to prove the bypass leaves it raw.
     const registry = new SharedCredentialRegistry();
-    registry.register('s1', credMap);
+    const placeholders: Record<string, string> = {};
+    for (const [label, real] of [['s1', 'sk-real-s1'], ['s2', 'sk-real-secret-xyz']] as const) {
+      const credMap = new CredentialPlaceholderMap();
+      placeholders[label] = credMap.register('ANTHROPIC_API_KEY', real, ['127.0.0.1']);
+      registry.register(label, credMap);
+    }
 
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
@@ -731,7 +738,7 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
         const res = await fetch(`https://127.0.0.1:${upInfo.port}/v1/messages`, {
           method: 'POST',
           headers: {
-            authorization: `Bearer ${placeholder}`,
+            authorization: `Bearer ${placeholders[label]}`,
             'content-type': 'application/json',
           },
           body: JSON.stringify({ hello: 'world' }),
@@ -753,6 +760,6 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
     // placeholder was substituted with the real credential.
     expect(upInfo.authorizations[0]).toBe('Bearer sk-real-secret-xyz');
     // s1 (the declaring session) gets the raw tunnel: placeholder verbatim.
-    expect(upInfo.authorizations[1]).toBe(`Bearer ${placeholder}`);
+    expect(upInfo.authorizations[1]).toBe(`Bearer ${placeholders.s1}`);
   });
 });
