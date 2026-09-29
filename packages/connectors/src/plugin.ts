@@ -35,8 +35,10 @@ import {
   registerAdminConnectorRoutes,
   registerUserConnectorRoutes,
 } from './admin-routes.js';
+import { authorizeGlobalAccountRead } from './credential-authz.js';
 import {
   ActivateAuthoredOutputSchema,
+  AuthorizeGlobalOutputSchema,
   ClearAuthoredOutputSchema,
   DeleteOutputSchema,
   GetOutputSchema,
@@ -49,6 +51,8 @@ import {
   UpsertOutputSchema,
   type ActivateAuthoredInput,
   type ActivateAuthoredOutput,
+  type AuthorizeGlobalInput,
+  type AuthorizeGlobalOutput,
   type AuthoredConnectorSlot,
   type Capabilities,
   type ClearAuthoredInput,
@@ -158,6 +162,13 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         'connectors:list-authored-pending',
         'connectors:activate-authored',
         'connectors:clear-authored',
+        // TASK-697 — the read-authorization seam @ax/credentials consults before
+        // it lets an `account:` ref fall through to the GLOBAL (company-wide)
+        // scope. Registered under the credentials namespace on purpose (same
+        // precedent as @ax/mcp-oauth's `credentials:resolve:mcp-oauth`): the seam
+        // belongs to the vault, this plugin only supplies the answer because it
+        // owns the ref -> connector -> keyMode mapping. See credential-authz.ts.
+        'credentials:authorize-global:account',
       ],
       // database:get-instance is hard — we run our own migration on init.
       calls,
@@ -169,6 +180,11 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
           hook: 'credentials:delete',
           degradation:
             'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
+        },
+        {
+          hook: 'auth:get-user',
+          degradation:
+            'workspace-keyed (company) connector credentials are never authorized for reading, because the connector owner cannot be proven to be an admin; personal keys are unaffected (fail closed)',
         },
       ],
       subscribes: [],
@@ -278,6 +294,13 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => clearAuthoredConnector(localAuthored, input),
         { returns: ClearAuthoredOutputSchema },
+      );
+
+      bus.registerService<AuthorizeGlobalInput, AuthorizeGlobalOutput>(
+        'credentials:authorize-global:account',
+        PLUGIN_NAME,
+        async (ctx, input) => authorizeGlobalAccountRead(localStore, bus, ctx, input),
+        { returns: AuthorizeGlobalOutputSchema },
       );
 
       // TASK-98 — the connector registry's HTTP bridge. Mounted only when the
@@ -519,6 +542,8 @@ async function resolveConnector(
   // the deterministic `account:<service>` ref. requiresSharedKeyConsent gates the
   // "act as you" consent moment (workspace mode or a shared connector). Reach
   // derives PURELY from this scope — no visibility flag on the credential itself.
+  // The plan is also what the vault consults to decide who may READ a `global`
+  // key (TASK-697, credential-authz.ts): only an admin's workspace-keyed connector.
   //
   // ZERO-REACH (TASK-94): resolve reads ONLY the LIVE connectors table. A
   // pending authored draft lives in `connectors_v1_authored` and is therefore

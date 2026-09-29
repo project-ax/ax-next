@@ -1,4 +1,4 @@
-import { PluginError, makeAgentContext, type Plugin } from '@ax/core';
+import { PluginError, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
 import { wipePreRedesignCredentials } from './wipe-pre-redesign.js';
 import type { Transaction } from 'kysely';
 import { encryptWithKey, decryptWithKey, parseKeyFromEnv } from './crypto.js';
@@ -136,6 +136,43 @@ export const CredentialsResolveOutputSchema = z.object({
     .optional(),
 });
 
+/**
+ * Service hook a provider registers to authorize the GLOBAL-scope step of
+ * `credentials:get` for `account:` refs (TASK-697).
+ *
+ * Why it exists: a connector's credential ref is `account:<connectorId>` (or
+ * `account:<connectorId>:<SLOT>`), and the connector id is chosen by whichever
+ * USER authors the connector. Without a gate, the fixed user -> agent -> global
+ * chain would hand a company-wide (global-scope) key to any user who authors a
+ * connector with the same id as a company-keyed one. So for `account:` refs the
+ * global step is taken only when a provider answers `{ allowed: true }` for
+ * this `(userId, ref)`. No provider, any other answer, or a throw = skip the
+ * global step (fail closed). User and agent scopes are not gated, and refs in
+ * any other namespace (`provider:`, `mcp:`, `skill:`, `routine:`) never call it.
+ *
+ * Deliberately NOT declared in the manifest at all: the provider
+ * (@ax/connectors) already depends on this plugin, so a declared edge back
+ * would be a plugin call-graph cycle. It is checked at runtime with
+ * `bus.hasService`, like `credentials:resolve:<kind>` (see the note above
+ * `calls` in the manifest).
+ */
+export const CREDENTIALS_AUTHORIZE_GLOBAL_ACCOUNT_HOOK = 'credentials:authorize-global:account';
+
+/** Refs in this namespace are user-chosen (connector ids) and gate their GLOBAL step. */
+const GUARDED_GLOBAL_REF_PREFIX = 'account:';
+
+export interface CredentialsAuthorizeGlobalInput {
+  /** The user asking to read `ref` (the `userId` passed to `credentials:get`). */
+  userId: string;
+  /** The full credential ref, e.g. `account:zendesk` or `account:zendesk:ZENDESK_API_TOKEN`. */
+  ref: string;
+}
+
+export interface CredentialsAuthorizeGlobalOutput {
+  /** Only a strict `true` opens the global step; anything else is a denial. */
+  allowed: boolean;
+}
+
 export interface CredentialsListInput {
   scope?: CredentialScope;
   ownerId?: string | null;
@@ -266,6 +303,10 @@ export interface CredentialsPluginConfig {
    * BOTTOM of the resolution chain — if any v2 row exists for the ref
    * (in any scope, including a tombstone-fallthrough that resolves to a
    * lower scope), this map is skipped entirely. Shape: `{ ref → ENV_VAR_NAME }`.
+   * (For an `account:` ref the global scope only counts when the
+   * `credentials:authorize-global:account` provider authorizes it; an
+   * unauthorized global row is skipped, so the walk lands here as if it were
+   * absent. The map itself is operator-configured and is not gated.)
    *
    * SECURITY: env values are universal — the same value is returned for
    * every user. Only safe for single-tenant kind/dev where there's one
@@ -308,6 +349,19 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // Per-kind dispatch (`credentials:resolve:<kind>`) is checked at runtime
       // via bus.hasService — we don't enumerate every kind in the manifest
       // because new kinds slot in by registering a sibling plugin.
+      //
+      // The `credentials:authorize-global:account` provider (TASK-697) is
+      // called the same way and is deliberately NOT declared here, neither in
+      // `calls` nor in `optionalCalls`. The provider is @ax/connectors, which
+      // itself soft-depends on credentials:delete; a declared edge in this
+      // direction would close a plugin call-graph cycle
+      // (connectors -> credentials -> connectors) and bootstrap would refuse to
+      // start any preset that loads both. The gap is still handled: with no
+      // provider loaded, `account:` refs never resolve from GLOBAL scope (fail
+      // closed) - workspace-keyed connector keys stop resolving, while
+      // user-scope and agent-scope rows are unaffected. account-global-guard's
+      // "boots alongside a provider that depends on credentials:*" case pins
+      // that the graph stays acyclic.
       calls: [
         'credentials:store-blob:get',
         'credentials:store-blob:put',
@@ -544,6 +598,35 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         });
       }
 
+      // May `userId` read the GLOBAL-scope row for this `account:` ref?
+      // Fail closed on every path that isn't a strict `{ allowed: true }`:
+      // no provider loaded, a provider that says no (or says something
+      // malformed), and a provider that throws all mean "skip the global step".
+      // Never logs a secret — nothing secret is in scope here (only the ref).
+      async function mayReadGlobal(
+        ctx: AgentContext,
+        userId: string,
+        ref: string,
+      ): Promise<boolean> {
+        if (!bus.hasService(CREDENTIALS_AUTHORIZE_GLOBAL_ACCOUNT_HOOK)) return false;
+        let allowed: boolean;
+        try {
+          const out = await bus.call<
+            CredentialsAuthorizeGlobalInput,
+            CredentialsAuthorizeGlobalOutput
+          >(CREDENTIALS_AUTHORIZE_GLOBAL_ACCOUNT_HOOK, ctx, { userId, ref });
+          allowed = out.allowed === true;
+        } catch (err) {
+          ctx.logger.warn('credentials_global_guard_failed', {
+            ref,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return false;
+        }
+        if (!allowed) ctx.logger.info('credentials_global_read_denied', { ref });
+        return allowed;
+      }
+
       async function doResolve(
         ctx: Parameters<Parameters<typeof bus.registerService>[2]>[0],
         userId: string,
@@ -557,6 +640,18 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         // mask a value at another. Tombstone semantics for non-fallthrough
         // are tested at the per-scope set/delete level.
         //
+        // One exception to "every ref walks every scope": an `account:` ref
+        // reaches the GLOBAL scope only when a provider of
+        // `credentials:authorize-global:account` says this user may read it
+        // (see mayReadGlobal). The ref is a connector id, and the connector id
+        // is chosen by the USER who authors the connector — so a bare global
+        // fall-through would hand a company-wide key to anyone who names their
+        // connector after a company-keyed one. User and agent scopes stay
+        // ungated (a user row is the caller's own; an agent row was written for
+        // the agent being run, e.g. a team agent's OAuth token), and
+        // `provider:` / `mcp:` / `skill:` / `routine:` refs are minted by the
+        // platform, not chosen by a user, so they walk the chain unchanged.
+        //
         // The walk runs OUTSIDE the inflight mutex — store-blob:get is
         // cheap (one row read, no network refresh), and pulling it out of
         // the mutex lets us key the mutex on the row that actually got
@@ -569,7 +664,12 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         }
         attempts.push({ scope: 'global', ownerId: null });
 
+        const guardGlobal = ref.startsWith(GUARDED_GLOBAL_REF_PREFIX);
         for (const a of attempts) {
+          // Gate BEFORE the read, so a denied user never even loads the row.
+          if (a.scope === 'global' && guardGlobal && !(await mayReadGlobal(ctx, userId, ref))) {
+            continue;
+          }
           const got = await bus.call<
             { scope: CredentialScope; ownerId: string | null; ref: string },
             { blob: Uint8Array | undefined }

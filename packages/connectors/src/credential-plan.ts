@@ -24,6 +24,14 @@ import type { CapabilitySlot, Connector, KeyMode } from './types.js';
 // `account:<service>` for `account`-tagged skill slots; connectors reuse that
 // exact ref so a personal connector and a skill to the same service share one key.)
 //
+// READ AUTHORIZATION (TASK-697). This plan says which scope a slot's key is
+// WRITTEN to; it is also what decides who may READ a `global` one. The ref is
+// `account:<connector id>` and the id is chosen by whoever authors the connector,
+// so the vault cannot treat "same ref" as "same connector": @ax/credentials asks
+// `credentials:authorize-global:account` (credential-authz.ts, which reads THIS
+// plan) before an `account:` ref may fall through to global scope. A personal
+// connector therefore never reads a company key, whatever its id.
+//
 // I2 — no @ax/credentials runtime import. The credential-scope vocabulary
 // (`global | user | agent`) is the stable inter-plugin contract, re-declared
 // LOCALLY here (same posture as the local zod re-declaration of Capabilities in
