@@ -318,6 +318,9 @@ function requireInboxEntry(
     return;
   }
   if (type === 'cancel') return;
+  // TASK-688. Payload-free: there is nothing to validate, and anything a caller
+  // hangs on the object is dropped by `deliver` (it rebuilds the entry).
+  if (type === 'interrupt') return;
   // AW-6. `decision-resolved` is HOST-INTERNAL: it is produced only by
   // @ax/decisions after a human answered, and no IPC action routes to
   // `session:queue-work`. The checks below are the trust-boundary belt anyway
@@ -376,7 +379,7 @@ function requireInboxEntry(
     code: 'invalid-payload',
     plugin: PLUGIN_NAME,
     hookName,
-    message: `'entry.type' must be 'user-message', 'cancel' or 'decision-resolved'`,
+    message: `'entry.type' must be 'user-message', 'cancel', 'interrupt' or 'decision-resolved'`,
   });
 }
 

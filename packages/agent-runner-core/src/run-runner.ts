@@ -30,7 +30,7 @@ import {
   scaffoldWorkspaceGitignore,
 } from './git-workspace.js';
 import { decisionResolvedTurn } from './decision-turn.js';
-import { createInboxLoop } from './inbox-loop.js';
+import { createInboxLoop, type InboxLoopEntry } from './inbox-loop.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { createLocalDispatcher, type LocalDispatcher } from './local-dispatcher.js';
 import {
@@ -197,6 +197,24 @@ export interface EndTurnInput {
 export interface LoopContext {
   /** Pulls the next user message; resolves null when the inbox says cancel. */
   nextMessage(): Promise<LoopUserMessage | null>;
+  /**
+   * Register for the person pressing Stop (TASK-688): `handler` is called, at
+   * most once per turn, when an `interrupt` arrives while a turn is in flight.
+   * Returns a disposer.
+   *
+   * What the handler must do is the loop's business — abort the model call and
+   * the running tool, then reach `endTurn` with whatever the turn produced. The
+   * runner is NOT ending: `cancel` ends the session, `interrupt` stops the turn
+   * and leaves the runner ready for the next message. An interrupt with no turn
+   * in flight never reaches a handler, and one that arrives before the handler
+   * registered fires on registration, so a loop need not worry about the race
+   * between "the turn began" and "I started listening".
+   *
+   * Handlers are called synchronously from the shell's inbox reader: keep them
+   * to "flip a flag / abort a controller". A throwing handler is logged and
+   * does not stop the others.
+   */
+  onInterrupt(handler: () => void): () => void;
   /** Emit an assistant delta to the host (event.stream-chunk). */
   emitChunk(chunk: StreamChunk): Promise<void>;
   /** Close a turn: ships the transcript delta, commits, emits turn-end. */
@@ -804,7 +822,11 @@ async function runRunnerInner(
       return;
     }
     turnActive = true;
+    interruptDelivered = false;
     if (adoption !== 'keep') currentReqId = adoption.reqId;
+    // A turn is starting, and the loop may not pull again until it ends (the
+    // aisdk loop does not). Keep a read outstanding so a Stop press is heard.
+    if (!inboxSealed) void ensureRead();
   }
   function handOverReqIdAtTurnEnd(): void {
     if (parkedAdoption !== undefined && parkedAdoption !== 'keep') {
@@ -812,6 +834,137 @@ async function runRunnerInner(
     }
     parkedAdoption = undefined;
     turnActive = false;
+    interruptDelivered = false;
+  }
+
+  // ---- The single inbox reader, and `interrupt` (TASK-688) ------------------
+  //
+  // A person pressing Stop queues `{type:'interrupt'}` behind the message it
+  // stops. Hearing it is the awkward part: the inbox cursor belongs to ONE
+  // reader (two concurrent `inbox.next()` calls share it and would both be
+  // handed the same entry), and the loops disagree about when they read. The
+  // Claude Agent SDK pulls ahead, so a pull is always pending during its turn;
+  // the aisdk loop reads once per turn and then streams. So the shell owns the
+  // one reader:
+  //
+  //   - `nextMessage()` takes from `pulled`, and only when that is empty does it
+  //     wait on a read.
+  //   - While a turn is active the shell keeps a read outstanding even if the
+  //     loop is busy, so an `interrupt` is routed within one long-poll round
+  //     trip instead of after the turn it was meant to stop.
+  //   - `interrupt` is consumed HERE and handed to `ctx.onInterrupt` handlers;
+  //     no loop ever sees the entry, and it never resolves a pending pull.
+  //     Everything else is buffered in arrival order.
+  //
+  // An interrupt read while NO turn is active is dropped: it is a Stop press
+  // that lost the race with the turn's own ending, and it must not reach the
+  // next turn. Read while a turn IS active but before the loop registered (the
+  // cold-spawn deferral queues `[user-message, interrupt]` back to back), it is
+  // latched and fires the moment a handler registers.
+  //
+  // `idle-timeout` needs care because the inbox loop's idle floor runs per
+  // `next()` call, and a read that outlives a long turn hits it with nobody
+  // waiting. Such an entry is discarded (and re-armed) rather than mistaken for
+  // "the host is gone". A waiter only honours a floor from a read that STARTED
+  // after it began waiting: otherwise a 14-minute turn would leave the runner
+  // one minute of idle floor, not fifteen.
+  const pulled: InboxLoopEntry[] = [];
+  let readInFlight: Promise<void> | null = null;
+  let readSeq = 0;
+  let readFailure: { err: unknown } | null = null;
+  let waiting = false;
+  let waitBoundary = 0;
+  // A `cancel` or an honoured `idle-timeout` is buffered: nothing after it is
+  // deliverable, so stop reading ahead (also stops a fake that answers
+  // `cancel` forever from spinning the watcher).
+  let inboxSealed = false;
+  let interruptDelivered = false;
+  const interruptHandlers = new Set<() => void>();
+
+  function ensureRead(): Promise<void> {
+    if (readInFlight !== null) return readInFlight;
+    const seq = ++readSeq;
+    readInFlight = (async () => inbox.next())().then(
+      (entry) => {
+        readInFlight = null;
+        routePulled(entry, seq);
+      },
+      (err: unknown) => {
+        readInFlight = null;
+        // Held for the loop's next pull: a terminal error (session invalid,
+        // host gone after retries) is the loop's to hear, in the place it
+        // always heard it, not an unhandled rejection in a watcher.
+        readFailure = { err };
+      },
+    );
+    return readInFlight;
+  }
+
+  function routePulled(entry: InboxLoopEntry, seq: number): void {
+    if (entry.type === 'interrupt') {
+      deliverInterrupt();
+    } else if (entry.type === 'idle-timeout' && !(waiting && seq > waitBoundary)) {
+      // Not an idle runner: discard (see above). Re-armed below.
+    } else {
+      pulled.push(entry);
+      if (entry.type === 'cancel' || entry.type === 'idle-timeout') inboxSealed = true;
+    }
+    if (!inboxSealed && turnActive) void ensureRead();
+  }
+
+  async function takePulled(): Promise<InboxLoopEntry> {
+    for (;;) {
+      const head = pulled.shift();
+      if (head !== undefined) return head;
+      if (readFailure !== null) {
+        const { err } = readFailure;
+        readFailure = null;
+        throw err;
+      }
+      waiting = true;
+      waitBoundary = readSeq;
+      try {
+        await ensureRead();
+      } finally {
+        waiting = false;
+      }
+    }
+  }
+
+  function callInterruptHandler(handler: () => void): void {
+    try {
+      handler();
+    } catch (err) {
+      // One loop's Stop handler failing must not stop the others, and must
+      // never take the runner down over a bookkeeping call.
+      process.stderr.write(
+        `runner: interrupt handler threw: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  function deliverInterrupt(): void {
+    if (!turnActive) {
+      process.stderr.write('runner: interrupt ignored (no turn in flight)\n');
+      return;
+    }
+    // Once per turn: a double click must not stop the turn AFTER this one.
+    if (interruptDelivered) return;
+    interruptDelivered = true;
+    process.stderr.write('runner: interrupt requested; stopping the turn\n');
+    for (const handler of [...interruptHandlers]) callInterruptHandler(handler);
+  }
+
+  function onInterrupt(handler: () => void): () => void {
+    interruptHandlers.add(handler);
+    if (interruptDelivered && turnActive) {
+      queueMicrotask(() => {
+        if (interruptHandlers.has(handler)) callInterruptHandler(handler);
+      });
+    }
+    return () => {
+      interruptHandlers.delete(handler);
+    };
   }
 
   // Inbox → loop user-message pull. Resolving null on cancel tells the loop no
@@ -825,7 +978,7 @@ async function runRunnerInner(
   // responsibility to surface to the model.
   async function nextMessage(): Promise<LoopUserMessage | null> {
     for (;;) {
-      const entry = await inbox.next();
+      const entry = await takePulled();
       if (entry.type === 'cancel') return null;
       if (entry.type === 'idle-timeout') {
         // Host-crash floor: nobody is going to send us another message and
@@ -1377,6 +1530,7 @@ async function runRunnerInner(
 
   const ctx: LoopContext = {
     nextMessage,
+    onInterrupt,
     emitChunk: async (chunk: StreamChunk): Promise<void> => {
       // Per-block streaming (Task 6 / J9). The loop forwards each block as
       // the model produces it; we ship it as `event.stream-chunk` so the

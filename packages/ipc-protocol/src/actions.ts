@@ -600,13 +600,13 @@ export type ConversationStoreRunnerSessionResponse = z.infer<
 // it is NOT Zod-validated at the protocol layer. The server-side parsing
 // of that query string is the IPC server's responsibility.
 //
-// Only the response body is protocol-level — the four variants are what
+// Only the response body is protocol-level — the five variants are what
 // the sandbox inbox loop branches on. (`decision-resolved` joined the
-// original three in TASK-227.)
+// original three in TASK-227; `interrupt` in TASK-688.)
 //
 // Cursor semantics: the response `cursor` is the NEXT cursor the client
 // should request. On a real delivery (`user-message` / `cancel` /
-// `decision-resolved`) it's the index of the delivered entry + 1; on
+// `interrupt` / `decision-resolved`) it's the index of the delivered entry + 1; on
 // `timeout` it's the cursor the client sent (echo — no entry was
 // delivered, so no advancement). The sandbox inbox loop stores this value
 // verbatim and passes it back on the next GET.
@@ -958,6 +958,15 @@ export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('cancel'),
+    cursor: z.number().int().nonnegative(),
+  }),
+  // TASK-688 — "stop the turn that is running, and stay warm". NOT `cancel`
+  // (which ends the session and exits the runner): the person pressed Stop on a
+  // reply, they did not close the tab. Payload-free on purpose — nothing a
+  // person or a model wrote rides this entry, so there is no string for the
+  // runner to trust. A runner with no turn in flight drops it.
+  z.object({
+    type: z.literal('interrupt'),
     cursor: z.number().int().nonnegative(),
   }),
   z.object({

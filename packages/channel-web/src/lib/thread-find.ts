@@ -304,6 +304,15 @@ export function threadFindFields(
       case 'status':
         break;
       /*
+        "You stopped this reply" (TASK-688). OUT for the same reason `status`
+        is: a client-made note about the thread, not something the agent or the
+        person said, and counting it would make the total tick up when a Stop
+        lands. Spelled out rather than left to fall through the switch, so the
+        next kind added here is a decision and not an accident of omission.
+      */
+      case 'stopped':
+        break;
+      /*
         A replayed turn failure (TASK-498). OUT, and for the mechanical reason
         the `steps` panel is out rather than the editorial one `status` is:
         the row does not paint marks. It renders authored copy straight from

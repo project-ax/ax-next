@@ -1067,6 +1067,41 @@ export const workspaceApi = {
     return body;
   },
 
+  /**
+   * Stop the turn running in a conversation (TASK-688).
+   *
+   * `interrupted: true` means the host queued the stop for a turn that was
+   * running; it is NOT "the turn has ended" — the reply stream still delivers
+   * its own `done` once the runner winds the turn down, and that frame is what
+   * ends the turn on screen. `false` means there was nothing to stop (it
+   * finished first, or never started), which is not a failure.
+   *
+   * Throws a bare `HttpError` on a non-ok status, like `sendMessage`: a 404 is
+   * an unknown OR foreign conversation (the host does not say which), a 401 is
+   * an ended session. A 200 whose body is not `{ interrupted: boolean }` throws
+   * too — reading it as "stopped" would tell the person we stopped something
+   * that may still be running.
+   */
+  async interruptTurn(
+    conversationId: string,
+  ): Promise<{ interrupted: boolean }> {
+    const path = `/api/chat/conversations/${encodeURIComponent(conversationId)}/interrupt`;
+    const res = await httpFetch(path, {
+      method: 'POST',
+      headers: writeHeaders,
+    });
+    if (!res.ok) throw new HttpError(path, res.status);
+    const body: unknown = await res.json();
+    if (
+      !isRecord(body) ||
+      Array.isArray(body) ||
+      typeof body.interrupted !== 'boolean'
+    ) {
+      throw new Error('interrupt returned a reply we could not read');
+    }
+    return { interrupted: body.interrupted };
+  },
+
   streamReply,
   memoryEvents,
 };

@@ -96,7 +96,7 @@ describe('session-postgres return schemas', () => {
     expect(SessionQueueWorkOutputSchema.safeParse({ cursor: 'x' }).success).toBe(false);
   });
 
-  it('SessionClaimWorkOutputSchema round-trips all four variants', () => {
+  it('SessionClaimWorkOutputSchema round-trips all five variants', () => {
     const um: SessionClaimWorkOutput = {
       type: 'user-message',
       payload: { role: 'user', content: 'hi', contentBlocks: [{ x: 1 }], turnId: 'T1' },
@@ -111,6 +111,14 @@ describe('session-postgres return schemas', () => {
     expect(SessionClaimWorkOutputSchema.parse({ type: 'timeout', cursor: 7 })).toEqual({
       type: 'timeout',
       cursor: 7,
+    });
+
+    // TASK-688. Refused outright if missing (see the AW-6 note just below): the
+    // bus validates `session:claim-work` against this `returns` contract, so an
+    // interrupt absent here would never reach the runner.
+    expect(SessionClaimWorkOutputSchema.parse({ type: 'interrupt', cursor: 12 })).toEqual({
+      type: 'interrupt',
+      cursor: 12,
     });
 
     // AW-6's fourth variant. A `z.discriminatedUnion` REFUSES an undeclared

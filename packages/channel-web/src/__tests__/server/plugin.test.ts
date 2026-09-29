@@ -786,6 +786,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
         },
+        {
+          hook: 'agent:interrupt',
+          degradation:
+            'the Stop button cannot stop a running turn; POST /api/chat/conversations/:id/interrupt answers 503 and the turn runs to completion',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'memory:conversation-activity'],
     });

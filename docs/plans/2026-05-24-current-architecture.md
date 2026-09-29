@@ -212,6 +212,15 @@ One `agent:invoke` call does roughly:
   exits cleanly. The channel-web/k8s preset sets `keepAlive: true`: a turn
   completes on `chat:turn-end`, the runner stays warm, and a per-session idle
   reaper (graceful cancel → force kill) collects it later.
+- **`cancel` vs `interrupt` (Stop).** They are two different inbox entries and
+  must never be confused. `cancel` ends the *session* (the runner drains and
+  exits). `interrupt` (`agent:interrupt`, called by
+  `POST /api/chat/conversations/:id/interrupt`) stops the *running turn* and
+  leaves the runner warm; the runner reads it through the same inbox as any
+  other entry. `active_req_id` is bound at POST time, so a Stop can arrive
+  during a cold spawn, before any session or inbox exists: the orchestrator
+  defers it in-process and queues the `interrupt` right *behind* the user
+  message once that lands (same single-replica posture as the waiter map).
 - **Fault A (sandbox dies mid-turn).** The orchestrator subscribes to
   `session:terminate` and fires a `chat:turn-error` broadcast so a SSE stream on
   the routed/warm path surfaces a turn-error promptly instead of hanging until
@@ -329,7 +338,7 @@ classed by how settled each surface is.
 These carry `returns` zod schemas (ARCH-6/12) and have at least one real producer
 and consumer. Treat their *shape* as a contract; changing it is a boundary review.
 
-- **Orchestration:** `agent:invoke` (`@ax/chat-orchestrator`).
+- **Orchestration:** `agent:invoke`, `agent:interrupt` (`@ax/chat-orchestrator`).
 - **Workspace:** `workspace:read`, `workspace:list`, `workspace:apply` (via the
   core facade), and `workspace:diff`. The `workspace:pre-apply` / `workspace:applied`
   subscriber pair is the policy/scanner chokepoint. The bundle fast-path hooks
