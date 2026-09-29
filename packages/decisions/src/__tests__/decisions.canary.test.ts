@@ -25,6 +25,7 @@ import {
   isHold,
   isRejection,
   PluginError,
+  reject,
   type AgentContext,
   type Hold,
   type ToolCall,
@@ -1636,6 +1637,41 @@ describe('decisions canary — attendance and delivery', () => {
     // One approval, one execution: the fallback replay spent the yes.
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
     expect(executor.calls).toHaveLength(1);
+  });
+
+  it('a wake-up the chat:resume gate refuses does NOT fall back to the host replay (TASK-692)', async () => {
+    // A suspended (or over-cap) user's agent must stay parked. The delivery is
+    // refused by a `chat:resume` subscriber, which is a decision about the
+    // PERSON, not evidence that the agent is gone — so the "nobody was there,
+    // the host runs the approved call itself" fallback must not fire, or the kill
+    // switch would be a way to make the host act for a paused account.
+    const lines: string[] = [];
+    const clock = movableClock();
+    const h = await boot({ now: clock.now }, undefined, liveChannels());
+    h.bus.subscribe<unknown>('chat:resume', 'test-usage-gate', async () =>
+      reject({ reason: 'usage-suspended' }),
+    );
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, userCtx(h), CALL);
+    const sweeper = h.ctx({
+      agentId: 'a1',
+      userId: 'u1',
+      conversationId: 'conv-web',
+      sessionId: 's1',
+      logger: createLogger({ reqId: 'req-sweep', writer: (line) => lines.push(line) }),
+    });
+
+    await approve(h, userCtx(h), id);
+    clock.pastWindow();
+    await sweepNow(h, sweeper);
+
+    expect(h.delivered).toHaveLength(0);
+    expect(executor.calls).toEqual([]);
+    const log = lines.join('\n');
+    expect(log).toContain('decision_delivery_refused');
+    expect(log).not.toContain('decision_delivery_fell_back_to_replay');
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.replayedAt).toBeNull();
   });
 
   it('the fallback parks a sandbox-only tool rather than leaving the row reading executed', async () => {

@@ -223,6 +223,13 @@ export async function runDueDeliveries(args: {
       });
       if (delivery.delivered) continue;
 
+      // TASK-692 — REFUSED is not "nobody was there". A `chat:resume` gate (the
+      // per-user usage limits and kill switch) said this person's agent may not
+      // start another turn right now, and the host taking the approved call over
+      // itself would be the same act by another road. The standing authorisation
+      // stays on the row for the agent's next run, once the gate lets it.
+      if (delivery.reason === 'refused') continue;
+
       logCtx.logger.warn('decision_delivery_fell_back_to_replay', {
         plugin: PLUGIN_NAME,
         decisionId: decision.id,

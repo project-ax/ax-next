@@ -176,8 +176,9 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                 />
                 <FieldDescription id="usage-daily-limit-help">
                   We estimate spend from how much each person's agents use, over
-                  a rolling 24 hours. At the limit, their next message waits
-                  until usage frees up.
+                  a rolling 24 hours. It's a safety limit, not a bill: models we
+                  don't recognize are counted at a high rate. At the limit,
+                  their next message waits until usage frees up.
                 </FieldDescription>
                 {dailyInvalid && (
                   <FieldError id="usage-daily-limit-error">

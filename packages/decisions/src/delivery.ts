@@ -34,6 +34,22 @@ import type { Decision } from './types.js';
 /** Named once — it appears in the manifest's `optionalCalls` and in the guard below. */
 export const SESSION_QUEUE_HOOK = 'session:queue-work';
 
+/**
+ * The veto fired before a resolution wakes a parked agent (TASK-692). A
+ * subscriber hook, not a service: many may weigh in (usage limits today), any
+ * one can refuse, and none is required to exist.
+ */
+export const CHAT_RESUME_HOOK = 'chat:resume';
+
+/**
+ * Bound on each `chat:resume` subscriber, in ms. `fire` puts no clock on
+ * subscribers by default, and this runs on the approve/sweep path where a
+ * subscriber that never settles would wedge every delivery behind it. Past the
+ * bound the subscriber is skipped and the delivery proceeds (the same posture
+ * `chat:start` takes, and for the same reason).
+ */
+export const CHAT_RESUME_SUBSCRIBER_TIMEOUT_MS = 30_000;
+
 /** What a person said. Human vocabulary, deliberately not the row's status. */
 export type ResolutionOutcome = 'approved' | 'dismissed';
 
@@ -48,7 +64,10 @@ export type DeliveryResult =
    * receipt: a person who clicked Approve does not need to hear about session
    * lifecycles, and the thing they approved still happens.
    */
-  | { delivered: false; reason: 'no-session' | 'no-session-plugin' | 'queue-failed' };
+  | {
+      delivered: false;
+      reason: 'no-session' | 'no-session-plugin' | 'queue-failed' | 'refused';
+    };
 
 /**
  * Bound on the continuation reqId riding a `decision-resolved` entry. reqIds
@@ -132,6 +151,31 @@ export async function deliverResolution({
       decisionId: decision.id,
       outcome,
     });
+  }
+
+  // TASK-692 — a `decision-resolved` entry wakes the runner into a NEW turn
+  // (the agent reads the note and carries on, spending tokens) without that turn
+  // ever passing `agent:invoke`, so `chat:start` — where per-user usage limits
+  // and the kill switch live — never sees it. `chat:resume` is the veto that
+  // closes that door: fired as the decision's OWNER (the person whose money it
+  // is, never the approver), subscribers judge it exactly as they would a
+  // `chat:start`. A refusal is not a failure of the approval: the click already
+  // succeeded and the standing authorisation stays on the row; the agent just is
+  // not woken. Bounded, and it proceeds past a subscriber that never settles.
+  const gate = await bus.fire(
+    CHAT_RESUME_HOOK,
+    deliveryCtx,
+    { decisionId: decision.id, outcome },
+    { subscriberTimeoutMs: CHAT_RESUME_SUBSCRIBER_TIMEOUT_MS },
+  );
+  if (gate.rejected) {
+    ctx.logger.info('decision_delivery_refused', {
+      plugin: PLUGIN_NAME,
+      decisionId: decision.id,
+      outcome,
+      reason: gate.reason,
+    });
+    return { delivered: false, reason: 'refused' };
   }
 
   try {

@@ -371,6 +371,13 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     `usage-suspended` | `usage-check-unavailable` are owned by `@ax/usage-limits`
     and surface as outcome reason `chat:start:<code>` (channel-web maps them to
     sentences). The gate fails closed.
+  - `chat:resume` (veto-capable subscriber): fired by `@ax/decisions` as the
+    decision's **owner** before it wakes a parked agent with a `decision-resolved`
+    entry, because that wake-up starts a turn without passing `agent:invoke`
+    (so `chat:start` never sees it). Payload `{ decisionId, outcome }`;
+    `@ax/usage-limits` judges it exactly like a `chat:start`. A refusal makes
+    `deliverResolution` return `{ delivered: false, reason: 'refused' }`, and the
+    deferred-delivery sweep does **not** fall back to the host replay for it.
   - `llm:usage` (subscriber): fired by `@ax/llm-anthropic` / `@ax/llm-openrouter`
     after a successful host-side call; payload `{ model, usage }`. Fire-and-forget.
   - `event.turn-end`'s optional `usage` (`{ model, inputTokens, outputTokens,

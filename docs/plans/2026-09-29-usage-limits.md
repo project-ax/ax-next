@@ -33,12 +33,20 @@ plugins)". They do not, for the traffic that matters:
 There is no single byte of the system that both sees every model call and
 knows its usage. So the design splits the two jobs that the card bundled:
 
-1. **Gate (refuse before spending): `chat:start`.** Every turn, from every
-   entry point (web chat, routines, heartbeats), goes through
-   `agent:invoke`, which fires the veto-capable `chat:start` first. A limits
-   subscriber there refuses the turn before a sandbox is spawned or a token is
-   spent. A new runner cannot skip it because runners do not decide whether a
-   turn starts.
+1. **Gate (refuse before spending): `chat:start`, plus `chat:resume`.** Every
+   turn a person or a routine starts (web chat, routines, heartbeats) goes
+   through `agent:invoke`, which fires the veto-capable `chat:start` first. A
+   limits subscriber there refuses the turn before a sandbox is spawned or a
+   token is spent. A new runner cannot skip it because runners do not decide
+   whether a turn starts. There is exactly one other way a turn starts: a
+   parked agent woken by a resolved decision (`decision-resolved` on its
+   inbox, queued by `@ax/decisions`, on approval, dismissal or expiry). That
+   never passes `agent:invoke`, so `@ax/decisions` fires the new veto
+   `chat:resume` first, as the decision's owner, and the same subscriber
+   judges it (an independent review found this side door). A refused wake-up
+   leaves the agent parked, and the approved call is NOT then run by the host
+   replay fallback (refusal is a decision about the person, not evidence the
+   agent is gone).
 2. **Meter (count what was spent): the runner's turn boundary.** Both runners
    are built on `@ax/agent-runner-core`, whose `LoopContext.endTurn` is the one
    seam a loop uses to close a turn. This PR makes `usage` a REQUIRED field of

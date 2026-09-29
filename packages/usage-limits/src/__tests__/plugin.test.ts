@@ -54,7 +54,7 @@ describe('manifest', () => {
     const m = createUsageLimitsPlugin().manifest;
     expect(m.name).toBe('@ax/usage-limits');
     expect(m.registers).toEqual([]);
-    expect(m.subscribes).toEqual(['chat:start', 'chat:turn-end', 'llm:usage']);
+    expect(m.subscribes).toEqual(['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage']);
     expect(m.calls).toEqual([
       'database:get-instance',
       'storage:get',
@@ -140,6 +140,58 @@ describe('the chat:start gate', () => {
     const b2 = await boot();
     for (const [k, v] of storage) b2.storage.set(k, v);
     expect(await start(b2, 'alice')).toMatchObject({ rejected: true, reason: 'usage-limit-daily' });
+  });
+});
+
+// A parked agent that is woken by an approved/dismissed decision starts a turn
+// WITHOUT passing `agent:invoke`, so `chat:start` never sees it. `chat:resume`
+// (fired by @ax/decisions before it wakes the runner) is judged exactly like a
+// `chat:start`: same suspension check, same caps, and it counts as a turn.
+describe('the chat:resume gate (a wake-up is a turn)', () => {
+  const resume = (b: Booted, userId: string) =>
+    b.harness.bus.fire('chat:resume', b.harness.ctx({ userId }), {
+      decisionId: 'dec_1',
+      outcome: 'approved',
+    });
+
+  it('refuses a suspended user, admits another', async () => {
+    const b = await boot();
+    await b.request('PUT', '/admin/usage/users/:userId/suspension', { params: { userId: 'mallory' } });
+    expect(await resume(b, 'mallory')).toMatchObject({ rejected: true, reason: 'usage-suspended' });
+    expect((await resume(b, 'alice')).rejected).toBe(false);
+  });
+
+  it('refuses once the daily spend cap is reached', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 1, turnsPerHour: 100 });
+    await turnEnd(b, 'alice', {
+      role: 'assistant',
+      usage: { model: 'anthropic/claude-opus-4', inputTokens: 0, outputTokens: 20_000 },
+    });
+    expect(await resume(b, 'alice')).toMatchObject({ rejected: true, reason: 'usage-limit-daily' });
+  });
+
+  it('counts against the hourly turn cap, shared with chat:start', async () => {
+    const b = await boot();
+    await setLimits(b, { dailySpendUsd: 100, turnsPerHour: 2 });
+    expect((await start(b, 'alice')).rejected).toBe(false);
+    expect((await resume(b, 'alice')).rejected).toBe(false);
+    expect(await resume(b, 'alice')).toMatchObject({ rejected: true, reason: 'usage-limit-rate' });
+    expect(await start(b, 'alice')).toMatchObject({ rejected: true, reason: 'usage-limit-rate' });
+  });
+
+  it('FAILS CLOSED when the database is broken', async () => {
+    const b = await boot();
+    const { db } = await b.harness.bus.call<unknown, { db: Kysely<unknown> }>(
+      'database:get-instance',
+      b.harness.ctx(),
+      {},
+    );
+    await db.destroy();
+    expect(await resume(b, 'alice')).toMatchObject({
+      rejected: true,
+      reason: 'usage-check-unavailable',
+    });
   });
 });
 

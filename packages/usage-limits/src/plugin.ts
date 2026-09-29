@@ -12,7 +12,7 @@ const DEFAULT_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** Keep 8 days of buckets: the 24h window plus a week of look-back. */
 const PRUNE_RETENTION_MS = 8 * 24 * 60 * 60 * 1000;
 
-const SUBSCRIBED = ['chat:start', 'chat:turn-end', 'llm:usage'] as const;
+const SUBSCRIBED = ['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage'] as const;
 
 // ---------------------------------------------------------------------------
 // @ax/usage-limits — per-user spend and rate limits (TASK-692).
@@ -23,7 +23,9 @@ const SUBSCRIBED = ['chat:start', 'chat:turn-end', 'llm:usage'] as const;
 //   - GATES every turn on `chat:start` (veto-capable, fired by agent:invoke
 //     before a sandbox spawns): suspended, over the daily spend cap, or over
 //     the hourly turn cap -> refused with a stable reason code. The gate fails
-//     CLOSED: if the check itself breaks, the turn is refused.
+//     CLOSED: if the check itself breaks, the turn is refused. A parked agent
+//     woken by a resolved decision starts a turn without passing agent:invoke,
+//     so the same check runs on `chat:resume` (fired by @ax/decisions).
 //   - METERS what each turn cost on `chat:turn-end` (runner-reported, so
 //     untrusted and parsed defensively) and each host-side helper call on
 //     `llm:usage`.
@@ -132,6 +134,17 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
           const decision = await service.admitTurn(ctx);
           // The reason is the bare code; the orchestrator prefixes
           // `chat:start:` itself and channel-web maps it to a sentence.
+          if (!decision.ok) return reject({ reason: decision.reason });
+          return undefined;
+        });
+        // A parked agent woken by a resolved decision starts a turn WITHOUT
+        // passing agent:invoke (the runner pulls a `decision-resolved` entry),
+        // so `chat:start` never sees it. @ax/decisions fires `chat:resume`
+        // first, as the decision's owner; it is judged exactly like a start,
+        // including counting as a turn, so neither the kill switch nor the
+        // caps have a side door.
+        bus.subscribe<unknown>('chat:resume', PLUGIN_NAME, async (ctx) => {
+          const decision = await service.admitTurn(ctx);
           if (!decision.ok) return reject({ reason: decision.reason });
           return undefined;
         });

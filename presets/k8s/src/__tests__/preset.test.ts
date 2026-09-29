@@ -627,7 +627,12 @@ describe('@ax/preset-k8s wiring', () => {
     // Subscriber-only: no service hooks, so nothing can bypass the gate by
     // calling around it, and no second source of truth for usage rows.
     expect(usage!.manifest.registers).toEqual([]);
-    expect(usage!.manifest.subscribes).toEqual(['chat:start', 'chat:turn-end', 'llm:usage']);
+    expect(usage!.manifest.subscribes).toEqual([
+      'chat:start',
+      'chat:resume',
+      'chat:turn-end',
+      'llm:usage',
+    ]);
 
     // Every hard call is registered by some OTHER plugin in the preset: the
     // shared pg pool, the settings key-value store, and the admin routes.
@@ -658,6 +663,11 @@ describe('@ax/preset-k8s wiring', () => {
     // chat:start (the gate) is fired by agent:invoke's owner.
     const invokeOwner = plugins.find((p) => p.manifest.registers.includes('agent:invoke'));
     expect(invokeOwner?.manifest.name).toBe('@ax/chat-orchestrator');
+    // chat:resume (the gate's side door) is fired by @ax/decisions before it
+    // wakes a parked agent: a decision-resolved wake-up starts a turn WITHOUT
+    // agent:invoke, so without this producer a suspended user could keep an
+    // agent running by approving what it asks for.
+    expect(names).toContain('@ax/decisions');
   });
 
   it("reads resting once a turn's reply is done, while the runner stays warm (TASK-686)", async () => {
