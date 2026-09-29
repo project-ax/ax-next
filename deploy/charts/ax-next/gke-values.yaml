@@ -88,8 +88,14 @@ memory:
 # SAME PVC. No git-server StatefulSet, no MinIO, no GCS.
 #
 # storageClassName empty → Autopilot's default (`standard-rwo`, a Balanced PD).
-# For better IOPS set `premium-rwo`. THERE IS NO BACKUP — the runbook's DR
-# section covers PD snapshots; pick one before real users arrive.
+# For better IOPS set `premium-rwo`.
+#
+# BACKUPS: helm does not take them. This volume, and the memory-facts one
+# (`memory.facts`), are plain Compute Engine disks. The daily snapshot schedule
+# for both is created outside helm, by `bash deploy/gke/backups.sh enable`. Run
+# it before real users arrive. deploy/GKE.md ("Backups and disaster recovery")
+# says what that covers, what it does not, and how much data a bad day can still
+# cost.
 workspace:
   backend: local
   storage: 20Gi               # >>> EDIT to taste; blobs share this volume

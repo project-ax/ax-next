@@ -82,6 +82,8 @@ IMAGE=""
 DRILL_NAMESPACE="ax-restore-drill"
 DRILL_TIMEOUT=1200
 KEEP=0
+OPT_workspace_snapshot=""
+OPT_facts_snapshot=""
 
 PROJECT=""
 RUN_ID=""
@@ -151,6 +153,8 @@ enable only
 
 drill only
   --keep                 Leave the scratch disks, volumes and pod in place.
+  --workspace-snapshot NAME   Restore this snapshot instead of the newest.
+  --facts-snapshot NAME       Same, for the facts disk.
   --host-deployment NAME Deployment whose image runs the checks (default:
                          ax-next-host).
   --image REF            Run the checks with this image instead.
@@ -208,6 +212,8 @@ parse_args() {
       --image) var=IMAGE ;;
       --drill-namespace) var=DRILL_NAMESPACE ;;
       --timeout) var=DRILL_TIMEOUT ;;
+      --workspace-snapshot) var=OPT_workspace_snapshot ;;
+      --facts-snapshot) var=OPT_facts_snapshot ;;
       *)
         usage >&2
         die "unknown option: $1"
@@ -230,7 +236,12 @@ validate_args() {
   done
   for v in "$SQL_INSTANCE" "$SCHEDULE_NAME"; do
     re="$NAME_RE"
-    [[ $v =~ $re ]] || die "not a valid Google Cloud resource name: $v"
+    [[ $v =~ $re ]] || die "not a valid Google Cloud resource name: '$v'"
+  done
+  for v in "$OPT_workspace_snapshot" "$OPT_facts_snapshot"; do
+    [ -n "$v" ] || continue
+    re="$NAME_RE"
+    [[ $v =~ $re ]] || die "not a valid snapshot name: '$v'"
   done
   re='^([1-9][0-9]{0,2})$'
   [[ $RETENTION_DAYS =~ $re ]] || die "--retention-days must be a whole number of days (1-999), got: $RETENTION_DAYS"
@@ -639,8 +650,24 @@ resolve_image() {
 }
 
 pick_snapshot() {
-  local kind="$1" latest
-  latest="$(latest_snapshot "$(getv "V_${kind}_disk")")"
+  local kind="$1" latest chosen info n t st src disk
+  disk="$(getv "V_${kind}_disk")"
+  chosen="$(getv "OPT_${kind}_snapshot")"
+  if [ -n "$chosen" ]; then
+    # A snapshot the operator named. It only ever feeds a SCRATCH disk, so the
+    # worst a wrong one can do is waste a drill, but say so if it looks wrong.
+    info="$("${GC[@]}" compute snapshots describe "$chosen" --format='value(name,creationTimestamp,status,sourceDisk.basename())')" ||
+      die "cannot find snapshot '$chosen' in project $PROJECT"
+    IFS="$TAB" read -r n t st src <<<"$info"
+    [ "$st" = READY ] || die "snapshot '$chosen' is $st, not READY: it cannot be restored yet"
+    if [ "$src" != "$disk" ]; then
+      warn "snapshot '$chosen' was taken of disk '$src', not of the current $kind disk '$disk'. That is expected if the claim was re-created since; if not, you have named the wrong snapshot."
+    fi
+    setv "V_${kind}_snap" "$chosen"
+    setv "V_${kind}_snap_at" "$t"
+    return 0
+  fi
+  latest="$(latest_snapshot "$disk")"
   [ -n "$latest" ] ||
     die "no READY snapshot of the $kind disk exists yet, so there is nothing to restore. Run 'enable --snapshot-now', or wait for the first scheduled snapshot ($START_TIME UTC)."
   setv "V_${kind}_snap" "${latest%%"$TAB"*}"
@@ -905,7 +932,11 @@ cmd_drill() {
   stage_done "restore snapshots to disks" "$t0"
 
   step "Mounting them in a throwaway pod ($DRILL_NAMESPACE/ax-restore-drill)"
-  manifest_namespace | apply_manifest "namespace $DRILL_NAMESPACE"
+  if "${KC[@]}" get namespace "$DRILL_NAMESPACE" >/dev/null 2>&1; then
+    note "namespace $DRILL_NAMESPACE already exists: using it as it is"
+  else
+    manifest_namespace | apply_manifest "namespace $DRILL_NAMESPACE"
+  fi
   manifest_configmap | apply_manifest "the check script"
   for kind in $KINDS; do
     manifest_pv "$kind" | apply_manifest "volume for the restored $kind disk"

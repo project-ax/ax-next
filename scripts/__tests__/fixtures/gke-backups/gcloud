@@ -107,6 +107,15 @@ case "$w" in
     # CONTAINS the disk name, like the real thing. The script must pick the exact one.
     grep -F -e "$disk" "$STUB_STATE/snapshots" || true
     ;;
+  "compute snapshots describe"*)
+    # Answers `value(name,creationTimestamp,status,sourceDisk.basename())`.
+    line="$(awk -F'\t' -v n="${words[3]}" '$1 == n' "$STUB_STATE/snapshots" 2>/dev/null | head -1)"
+    if [ -z "$line" ]; then
+      echo "ERROR: (gcloud.compute.snapshots.describe) The resource '${words[3]}' was not found" >&2
+      exit 1
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$(echo "$line" | cut -f1)" "$(echo "$line" | cut -f2)" "${STUB_SNAPSHOT_STATUS:-READY}" "$(echo "$line" | cut -f3)"
+    ;;
   "compute disks create"*)
     disk="${words[3]}"
     labels=""

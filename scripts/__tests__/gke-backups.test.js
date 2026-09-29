@@ -619,6 +619,58 @@ describe.each(SHELLS)('deploy/gke/backups.sh under %s', (shell) => {
       expect(r.status).toBe(1);
     });
 
+    it('restores the snapshots you name instead of the newest, and looks each one up first', () => {
+      readyToDrill();
+      const r = run(shell, ['drill', '--dry-run', '--workspace-snapshot', 'snap-ws-older', '--facts-snapshot', 'snap-facts-latest']);
+      expect(r.status).toBe(0);
+      expect(r.out).toContain('workspace: snap-ws-older  (taken 2026-09-28T09:00:08Z)');
+      expect(r.out).toMatch(/would run: .*disks create ax-restore-drill-workspace-\d{8}-\d{6} .*--source-snapshot snap-ws-older/);
+      expect(r.out).not.toContain('snap-ws-latest');
+      expect(r.log.some((l) => l.includes('snapshots describe snap-ws-older'))).toBe(true);
+      expect(r.writes).toEqual([]);
+    });
+
+    it('warns, but goes ahead, when a named snapshot was taken of some other disk (a re-created claim)', () => {
+      readyToDrill();
+      const r = run(shell, ['drill', '--dry-run', '--workspace-snapshot', 'snap-decoy-newest']);
+      expect(r.status).toBe(0);
+      expect(r.out).toContain(`was taken of disk '${WS_DISK}-old', not of the current workspace disk '${WS_DISK}'`);
+    });
+
+    it('refuses a named snapshot that is not READY, or does not exist', () => {
+      readyToDrill();
+      const notReady = run(shell, ['drill', '--workspace-snapshot', 'snap-ws-older'], { STUB_SNAPSHOT_STATUS: 'CREATING' });
+      expect(notReady.status).toBe(2);
+      expect(notReady.out).toContain('is CREATING, not READY');
+      expect(notReady.writes).toEqual([]);
+      const missing = run(shell, ['drill', '--facts-snapshot', 'no-such-snapshot']);
+      expect(missing.status).toBe(2);
+      expect(missing.out).toContain("cannot find snapshot 'no-such-snapshot'");
+      expect(missing.writes).toEqual([]);
+    });
+
+    it('uses a namespace that already exists as it is, instead of re-applying it', () => {
+      readyToDrill();
+      const r = run(shell, ['drill', '--drill-namespace', 'ax-next']);
+      expect(r.status).toBe(0);
+      expect(r.out).toContain('namespace ax-next already exists: using it as it is');
+      expect(r.applied.map((m) => m.kind)).toEqual([
+        'ConfigMap',
+        'PersistentVolume',
+        'PersistentVolumeClaim',
+        'PersistentVolume',
+        'PersistentVolumeClaim',
+        'Pod',
+      ]);
+      // The claims land next to the live ones (a pod can only mount its own namespace's claims).
+      for (const m of r.applied.filter((x) => x.kind === 'PersistentVolume')) {
+        expect(m.spec.claimRef.namespace).toBe('ax-next');
+      }
+      // ...and the cleanup is scoped to this run's label even there, never the whole namespace.
+      const del = r.writes.find((w) => w.includes(' delete pod,pvc,configmap'));
+      expect(del).toContain('-n ax-next delete pod,pvc,configmap -l ax-restore-drill=');
+    });
+
     it('uses --image instead of reading the host deployment', () => {
       readyToDrill();
       const r = run(shell, ['drill', '--dry-run', '--image', 'example.invalid/other:tag']);

@@ -53,6 +53,15 @@ case "$rest" in
   "get deployment ax-next-host -o jsonpath={.spec.template.spec.containers[0].image}")
     echo "example.invalid/ax-next/agent:v1"
     ;;
+  "get namespace "*)
+    # Only the live namespace exists, unless a test says the drill's does too.
+    if [ "$rest" = "get namespace ax-next" ] || [ -n "${STUB_NS_EXISTS:-}" ]; then
+      echo "namespace/${rest##* }"
+    else
+      echo "Error from server (NotFound): namespaces \"${rest##* }\" not found" >&2
+      exit 1
+    fi
+    ;;
   "apply -f -")
     n=$(find "$STUB_STATE" -name 'applied-*.yaml' | wc -l | tr -d ' ')
     cat >"$STUB_STATE/applied-$(printf '%02d' "$((n + 1))").yaml"

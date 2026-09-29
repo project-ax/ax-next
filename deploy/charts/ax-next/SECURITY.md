@@ -428,6 +428,13 @@ PVC and there's no backup" is the kind of detail that's easy to miss
 until the day it matters and impossible to retrofit afterward. If
 nothing else, please pick one before this leaves canary status.
 
+The chart itself still ships no DR primitives, and that is on purpose:
+backup is a cluster-layer job. On GKE the operator-side answer lives
+outside the chart, in `deploy/gke/backups.sh` (a daily disk-snapshot
+schedule, a health check, and a restore drill for the workspace and
+facts disks). `deploy/GKE.md` ("Backups and disaster recovery") says
+what that covers and how much data a bad day can still cost.
+
 ## Boundary review
 
 - **Alternate impl this hook could have:** N/A — a Helm chart doesn't
