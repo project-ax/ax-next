@@ -2062,8 +2062,8 @@ happened 45 s later). Then the same conversation keeps working, warm.
 4. Wait 60 s, then check the pod:
 
    ```bash
-   kubectl -n ax-next-runners get pods
-   kubectl -n ax-next-runners exec <sandbox-pod> -- ls /agent/cancel-probe.txt
+   kubectl --context kind-ax-next-dev -n ax-next-runners get pods
+   kubectl --context kind-ax-next-dev -n ax-next-runners exec <sandbox-pod> -- ls /agent/cancel-probe.txt
    ```
 
 5. Send "say hi". The same sandbox answers (no cold start), and the transcript
