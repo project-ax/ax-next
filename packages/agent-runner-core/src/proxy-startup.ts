@@ -60,12 +60,13 @@ const PROXY_TOKEN_RE = /^[0-9a-f]{32}$/;
  * userinfo (`http://ax:<token>@host:port`), so every client that reads
  * HTTP(S)_PROXY — curl, undici, python — automatically sends
  * `Proxy-Authorization: Basic ax:<token>`. The host listener resolves that
- * token → session to attribute egress (including blocked, allowlist-miss
- * requests) back to this session.
+ * token → session and AUTHENTICATES the caller with it (TASK-158): the request
+ * is gated on that session's own allowlist, and attributed to it.
  *
- * Attribution label only — it never changes the allow/deny decision. With no
- * token (or a malformed one) the URL is returned unchanged, degrading to
- * today's empty-`sessionId` behavior; it can never widen egress.
+ * With no token (or a malformed one) the URL is returned unchanged — and the
+ * proxy then refuses every request from this runner (407). That is the
+ * fail-closed direction: a missing token can never widen egress, it can only
+ * cost the runner its egress.
  */
 export function withProxyToken(proxyUrl: string, token: string | undefined): string {
   if (token === undefined || !PROXY_TOKEN_RE.test(token)) return proxyUrl;

@@ -251,9 +251,11 @@ export function readProxyCaPem(
  * `setupProxy` embeds the per-session proxy token as Basic userinfo, and the
  * happy path strips it — but only AFTER `new URL()` has succeeded. The failure
  * path has no parsed URL to strip, so it needs a textual redaction, which is
- * what this is. The token is attribution-only and cannot widen egress, but the
- * error is written to the runner's stderr and from there to the host log, and a
- * secret in a log line is a secret in a log line.
+ * what this is. The token is the credential the credential-proxy authenticates
+ * this session's egress with (a leaked one lets a holder that can reach the
+ * proxy act as this session), and the error is written to the runner's stderr
+ * and from there to the host log, and a secret in a log line is a secret in a
+ * log line.
  *
  * Deliberately greedy up to the LAST `@` before the first `/`: a password may
  * itself contain an `@`, and under-redacting is the failure that matters here.

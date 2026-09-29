@@ -65,10 +65,13 @@ const HOST_RE =
  *   replaced bytes (HTTP forwarding never substitutes; bypassMITM never
  *   substitutes; MITM only sets it when a placeholder matched).
  * - `blockedReason` is omitted on success; on a block, it's one of the
- *   four enumerated reasons (vocabulary normalized from the listener's
- *   internal `blocked` string).
- * - `sessionId`/`userId` are empty strings when no session matched
- *   (allowlist miss — the request never had an owner).
+ *   enumerated reasons (vocabulary normalized from the listener's internal
+ *   `blocked` string). `'proxy-auth'` (TASK-158) means the caller could not
+ *   be authenticated: its request carried no valid per-session proxy token.
+ * - `sessionId`/`userId` are empty strings ONLY when authentication failed
+ *   (`blockedReason: 'proxy-auth'`) — that request never had an owner. Every
+ *   other event, blocked or not, is attributed to the session whose token
+ *   the caller presented.
  */
 export interface HttpEgressEvent {
   sessionId: string;
@@ -87,7 +90,8 @@ export interface HttpEgressEvent {
     | 'private-ip'
     | 'canary'
     | 'tls-error'
-    | 'request-body-too-large';
+    | 'request-body-too-large'
+    | 'proxy-auth';
   timestamp: number;
 }
 
@@ -132,6 +136,9 @@ function classifyCredentials(
  *   proxy DoS guard, NOT a remote/policy block, but audit/security subscribers
  *   should still see it as a policy-blocked egress rather than an undefined
  *   reason on a bare 413).
+ * - `proxy_auth_required`     → `'proxy-auth'` (TASK-158 — the caller's
+ *   `Proxy-Authorization` token was missing, malformed or unknown; the request
+ *   was refused with a 407 before any allowlist/DNS work).
  * - anything else (`invalid_target`, `Proxy error: …`) → undefined
  *   (these surface as a non-2xx `status` instead).
  */
@@ -144,6 +151,7 @@ function mapBlockedReason(
   if (blocked === 'canary_detected') return 'canary';
   if (blocked.startsWith('tls_error:')) return 'tls-error';
   if (blocked === 'request_body_too_large') return 'request-body-too-large';
+  if (blocked === 'proxy_auth_required') return 'proxy-auth';
   return undefined;
 }
 
@@ -239,10 +247,12 @@ interface OpenSessionOutput {
   /** envName → opaque placeholder token (`ax-cred:<32-hex>`). */
   envMap: Record<string, string>;
   /**
-   * Per-session proxy token for egress attribution (TASK-52). The sandbox
-   * carries it as `Proxy-Authorization: Basic ax:<token>` so the listener
-   * can attribute every request — including an allowlist-miss 403 — to this
-   * session. Attribution label only; see SessionConfig.proxyToken.
+   * Per-session proxy token (TASK-52 minted it; TASK-158 made it the
+   * AUTHENTICATION credential). The sandbox carries it as
+   * `Proxy-Authorization: Basic ax:<token>`; the listener resolves it to this
+   * session and gates every request on THIS session's allowlist, so a runner
+   * can only reach what its own session was granted. A request without it is
+   * refused (407). See SessionConfig.proxyToken.
    */
   proxyAuthToken: string;
 }
@@ -482,9 +492,12 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           // event.http-egress emission.
           // Mint a per-session proxy token (TASK-52). 16 random bytes →
           // 32 hex chars. It rides into the sandbox as Proxy-Authorization
-          // Basic userinfo so the listener can attribute egress (including
-          // blocked, allowlist-miss requests) back to this session. It is an
-          // attribution LABEL only — never an allow/deny input.
+          // Basic userinfo and is how the listener AUTHENTICATES the caller
+          // (TASK-158): the request is gated on this session's allowlist and
+          // allowedIPs, and attributed to this session. It is the only thing
+          // that makes a runner's requests reach its own session's policy, so
+          // it is a bearer credential — fresh per open, never reused, dropped
+          // with the session on close.
           const proxyToken = randomBytes(16).toString('hex');
 
           const sessionConfig: SessionConfig = {

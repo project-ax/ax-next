@@ -22,13 +22,15 @@ interface HttpEgressEvent {
   classification: 'llm' | 'mcp' | 'other';
   // Keep in sync with @ax/credential-proxy's HttpEgressEvent.blockedReason
   // (structural mirror per I2 — the bus is the contract, not the type).
-  // `'request-body-too-large'` added with the TASK-24 plain-HTTP body cap.
+  // `'request-body-too-large'` added with the TASK-24 plain-HTTP body cap;
+  // `'proxy-auth'` with TASK-158 (caller sent no valid per-session proxy token).
   blockedReason?:
     | 'allowlist'
     | 'private-ip'
     | 'canary'
     | 'tls-error'
-    | 'request-body-too-large';
+    | 'request-body-too-large'
+    | 'proxy-auth';
   timestamp: number;
 }
 
@@ -54,10 +56,12 @@ export function auditLogPlugin(): Plugin {
         'event.http-egress',
         PLUGIN_NAME,
         async (ctx: AgentContext, payload) => {
-          // sessionId may be empty when the request hit the listener
-          // before any per-session config matched (allowlist miss with
-          // no owner). Key by 'unscoped' in that case so the row still
-          // lands; the caller can join on host/timestamp post-hoc.
+          // sessionId is empty only when the proxy could not authenticate the
+          // caller (`blockedReason: 'proxy-auth'`: no valid per-session token,
+          // so the request has no owner). Every other event, allowlist misses
+          // included, is attributed to the session whose token it carried.
+          // Key by 'unscoped' in the empty case so the row still lands; the
+          // caller can join on host/timestamp post-hoc.
           //
           // Append a UUID suffix so two egress events that fall in the
           // same millisecond (an LLM call + an MCP call concurrently, or

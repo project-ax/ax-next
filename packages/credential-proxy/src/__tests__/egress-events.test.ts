@@ -37,6 +37,7 @@ import {
 } from '@ax/core';
 import { generateDomainCert, type CAKeyPair, getOrCreateCA } from '../ca.js';
 import { createCredentialProxyPlugin, type HttpEgressEvent } from '../plugin.js';
+import { basicAuth } from './proxy-auth-helpers.js';
 
 // ── Test helpers ─────────────────────────────────────────────────────
 
@@ -252,7 +253,7 @@ describe('event.http-egress emission', () => {
       kernel = await boot();
       await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
 
-      const opened = await bus.call<unknown, { proxyEndpoint: string }>(
+      const opened = await bus.call<unknown, { proxyEndpoint: string; proxyAuthToken: string }>(
         'proxy:open-session',
         ctx(),
         {
@@ -269,6 +270,7 @@ describe('event.http-egress emission', () => {
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
         proxyTunnel: false, // HTTP path, not CONNECT
+        token: basicAuth(opened.proxyAuthToken),
       });
       const res = await fetch(`http://127.0.0.1:${upPort}/foo/bar`, { dispatcher } as RequestInit);
       expect(res.status).toBe(200);
@@ -306,7 +308,7 @@ describe('event.http-egress emission', () => {
 
       const opened = await bus.call<
         unknown,
-        { proxyEndpoint: string; envMap: Record<string, string> }
+        { proxyEndpoint: string; proxyAuthToken: string; envMap: Record<string, string> }
       >('proxy:open-session', ctx(), {
         sessionId: 's1',
         userId: 'u1',
@@ -320,6 +322,7 @@ describe('event.http-egress emission', () => {
 
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
+        token: basicAuth(opened.proxyAuthToken),
         requestTls: { ca: ca.cert },
       });
       const res = await fetch(`https://127.0.0.1:${upInfo.port}/v1/messages`, {
@@ -369,8 +372,9 @@ describe('event.http-egress emission', () => {
       kernel = await boot();
       await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
       // Open a session with an allowlist that does NOT include 127.0.0.1 —
-      // requests to 127.0.0.1 hit "no allowing session" and 403.
-      const opened = await bus.call<unknown, { proxyEndpoint: string }>(
+      // an AUTHENTICATED request to 127.0.0.1 misses that session's own
+      // allowlist and 403s.
+      const opened = await bus.call<unknown, { proxyEndpoint: string; proxyAuthToken: string }>(
         'proxy:open-session',
         ctx(),
         {
@@ -386,6 +390,7 @@ describe('event.http-egress emission', () => {
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
         proxyTunnel: false,
+        token: basicAuth(opened.proxyAuthToken),
       });
       const res = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
       expect(res.status).toBe(403);
@@ -396,10 +401,11 @@ describe('event.http-egress emission', () => {
       expect(ev.blockedReason).toBe('allowlist');
       expect(ev.status).toBe(403);
       expect(ev.host).toBe('127.0.0.1');
-      // No matching session → sessionId/userId empty, classification='other'.
-      expect(ev.sessionId).toBe('');
-      expect(ev.userId).toBe('');
-      expect(ev.classification).toBe('other');
+      // TASK-158: the caller authenticated, so the deny is ALWAYS attributed to
+      // its own session (real sessionId/userId + that session's classification).
+      expect(ev.sessionId).toBe('s1');
+      expect(ev.userId).toBe('u1');
+      expect(ev.classification).toBe('llm');
       expect(ev.credentialInjected).toBe(false);
     } finally {
       await new Promise<void>((r) => upstream.close(() => r()));
@@ -429,13 +435,13 @@ describe('event.http-egress emission', () => {
       );
       const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
 
-      // Send the per-session proxy token so the allowlist MISS is attributed to
-      // s1 (production: the runner's HTTPS_PROXY carries this). Without it the
-      // block is unattributed and never buffered.
+      // Send the per-session proxy token (production: the runner's HTTPS_PROXY
+      // carries this). It both authenticates the caller and attributes the
+      // allowlist MISS to s1, which is what keys the buffer.
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
         proxyTunnel: false,
-        token: 'Basic ' + Buffer.from(`ax:${opened.proxyAuthToken}`).toString('base64'),
+        token: basicAuth(opened.proxyAuthToken),
       });
       const res = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
       expect(res.status).toBe(403);
@@ -482,7 +488,7 @@ describe('event.http-egress emission', () => {
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
         proxyTunnel: false,
-        token: 'Basic ' + Buffer.from(`ax:${opened.proxyAuthToken}`).toString('base64'),
+        token: basicAuth(opened.proxyAuthToken),
       });
       const res = await fetch(`http://127.0.0.1/`, { dispatcher } as RequestInit); // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
       expect(res.status).toBe(403);
@@ -513,7 +519,7 @@ describe('event.http-egress emission', () => {
     try {
       kernel = await boot([], { maxHttpRequestBodyBytes: 1024 });
       await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
-      const opened = await bus.call<unknown, { proxyEndpoint: string }>(
+      const opened = await bus.call<unknown, { proxyEndpoint: string; proxyAuthToken: string }>(
         'proxy:open-session',
         ctx(),
         {
@@ -529,6 +535,7 @@ describe('event.http-egress emission', () => {
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
         proxyTunnel: false,
+        token: basicAuth(opened.proxyAuthToken),
       });
       const res = await fetch(`http://127.0.0.1:${upPort}/up`, {
         method: 'POST',
@@ -552,7 +559,7 @@ describe('event.http-egress emission', () => {
       await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
       // Allowlist contains the host but NO allowedIPs override. The DNS
       // resolution to 127.0.0.1 trips BlockedIPError → 403.
-      const opened = await bus.call<unknown, { proxyEndpoint: string }>(
+      const opened = await bus.call<unknown, { proxyEndpoint: string; proxyAuthToken: string }>(
         'proxy:open-session',
         ctx(),
         {
@@ -569,6 +576,7 @@ describe('event.http-egress emission', () => {
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
         proxyTunnel: false,
+        token: basicAuth(opened.proxyAuthToken),
       });
       // The whole point of this test is the proxy's private-IP block —
       // we deliberately request `http://127.0.0.1/` (the metadata-style
@@ -619,7 +627,7 @@ describe('event.http-egress emission', () => {
       });
 
       await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
-      const opened = await bus.call<unknown, { proxyEndpoint: string }>(
+      const opened = await bus.call<unknown, { proxyEndpoint: string; proxyAuthToken: string }>(
         'proxy:open-session',
         ctx(),
         {
@@ -636,6 +644,7 @@ describe('event.http-egress emission', () => {
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
         proxyTunnel: false,
+        token: basicAuth(opened.proxyAuthToken),
       });
       const res = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
       expect(res.status).toBe(200);

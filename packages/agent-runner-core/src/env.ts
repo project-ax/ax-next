@@ -62,13 +62,14 @@ export interface RunnerEnv {
    */
   proxyUnixSocket?: string;
   /**
-   * Per-session proxy token for egress attribution (TASK-52). When present,
-   * proxy-startup embeds it as `Proxy-Authorization: Basic ax:<token>` (HTTP
-   * Basic userinfo on the proxy URL), so the host listener can attribute
-   * every request — including an allowlist-miss 403 — to this session. An
-   * attribution LABEL only: a missing or malformed token degrades to "no
-   * attribution" (today's behavior) and NEVER widens egress. Validated as
-   * 32 lowercase hex chars at read time; a malformed value is ignored.
+   * Per-session proxy token (TASK-52; the proxy's caller-authentication
+   * credential since TASK-158). When present, proxy-startup embeds it as
+   * `Proxy-Authorization: Basic ax:<token>` (HTTP Basic userinfo on the proxy
+   * URL), so the host listener can authenticate every request as coming from
+   * this session and gate it on this session's allowlist. A missing or
+   * malformed token NEVER widens egress — the proxy refuses the runner's
+   * requests (407) instead. Validated as 32 lowercase hex chars at read time;
+   * a malformed value is ignored.
    */
   proxyToken?: string;
   memoryRoot?: string;
@@ -141,7 +142,8 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   // TASK-52: per-session egress-attribution token. Validate the format at the
   // trust boundary (defense in depth, mirroring the listener's parse) — a
   // malformed value is ignored, not forwarded, so a garbled env can't produce
-  // a weird Proxy-Authorization header. Attribution-only; never an authz input.
+  // a weird Proxy-Authorization header. Fail-closed: an ignored token means the
+  // proxy refuses this runner's requests (TASK-158), never that egress widens.
   const proxyToken = opt('AX_PROXY_TOKEN');
   if (proxyToken !== undefined && /^[0-9a-f]{32}$/.test(proxyToken)) {
     result.proxyToken = proxyToken;

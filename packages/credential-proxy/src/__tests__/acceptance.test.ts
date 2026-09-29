@@ -10,7 +10,8 @@
  * subsequent request through the same dispatcher fails closed.
  *
  * If any prior task (CA management, MITM TLS termination, credential
- * substitution, allowlist gate, event emission, session lifecycle)
+ * substitution, allowlist gate, event emission, session lifecycle,
+ * per-session proxy-token authentication)
  * regressed, this test catches it. Per-task tests still cover the
  * fine-grained edge cases — this one proves they all work TOGETHER.
  *
@@ -39,6 +40,7 @@ import {
 } from '@ax/core';
 import { generateDomainCert, getOrCreateCA, type CAKeyPair } from '../ca.js';
 import { createCredentialProxyPlugin, type HttpEgressEvent } from '../plugin.js';
+import { basicAuth } from './proxy-auth-helpers.js';
 
 // ── Test helpers (same shape as plugin.test.ts / egress-events.test.ts) ──
 
@@ -243,7 +245,12 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
       //    point HTTPS_PROXY, which CA to trust, and the env-var map.
       const opened = await bus.call<
         unknown,
-        { proxyEndpoint: string; caCertPem: string; envMap: Record<string, string> }
+        {
+          proxyEndpoint: string;
+          caCertPem: string;
+          envMap: Record<string, string>;
+          proxyAuthToken: string;
+        }
       >('proxy:open-session', ctx(), {
         sessionId: 'acceptance-s1',
         userId: 'acceptance-u1',
@@ -268,9 +275,14 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
 
       // 5. Configure undici to route through the proxy and trust the
       //    CA returned by open-session — exactly what the bridge will
-      //    do for sandboxed processes.
+      //    do for sandboxed processes. `token` is the per-session proxy
+      //    token open-session minted (TASK-158): undici sends it as
+      //    `Proxy-Authorization` on the CONNECT, and the listener gates the
+      //    tunnel on the allowlist of the session that token belongs to.
+      expect(opened.proxyAuthToken).toMatch(/^[0-9a-f]{32}$/);
       const dispatcher = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
+        token: basicAuth(opened.proxyAuthToken),
         requestTls: { ca: opened.caCertPem },
       });
 
@@ -321,16 +333,19 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
       expect(ev.blockedReason).toBeUndefined();
 
       // 9. Close the session. The plugin should drop both the registry
-      //    entry (no more substitution) and the session config (no more
-      //    allowlist match → next request 403s).
+      //    entry (no more substitution) and the session config — which is
+      //    what the proxy token resolves to, so the SAME client's token is
+      //    now unknown and its next request is refused (TASK-158: 407).
       await bus.call('proxy:close-session', ctx(), { sessionId: 'acceptance-s1' });
 
       // 10. Subsequent request through the same dispatcher must fail
-      //     closed. With the session gone, the hostname is no longer in
-      //     any allowlist → CONNECT returns 403 → undici surfaces this
-      //     either as a non-2xx response or a fetch error depending on
-      //     how it interprets the proxy reply. Accept either; what
-      //     matters is that the request did NOT reach the upstream.
+      //     closed. The dispatcher still sends the closed session's token,
+      //     but it no longer resolves to any session → CONNECT returns
+      //     407 Proxy Authentication Required (before, with a shared
+      //     allowlist model, this was a 403 allowlist miss) → undici
+      //     surfaces this either as a non-2xx response or a fetch error
+      //     depending on how it interprets the proxy reply. Accept either;
+      //     what matters is that the request did NOT reach the upstream.
       const upstreamHitsBefore = captured.length;
       let postCloseStatus: number | undefined;
       let postCloseError: unknown;
@@ -361,9 +376,10 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
       expect(upstream.captured.body).toBe('{"prompt":"hello"}');
 
       // The post-close blocked attempt also fires an `event.http-egress`
-      // with `blockedReason: 'allowlist'`. Wait for it the same
+      // with `blockedReason: 'proxy-auth'` and status 407 (the token no
+      // longer authenticates as any session). Wait for it the same
       // wall-clock-budgeted way as before — it fires from the listener's
-      // CONNECT-allowlist path on the next event-loop tick.
+      // CONNECT proxy-auth path on the next event-loop tick.
       await vi.waitFor(
         () => {
           expect(captured.length).toBeGreaterThan(upstreamHitsBefore);
@@ -371,8 +387,8 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
         { timeout: 2_000, interval: 10 },
       );
       const blockEv = captured[captured.length - 1]!;
-      expect(blockEv.blockedReason).toBe('allowlist');
-      expect(blockEv.status).toBe(403);
+      expect(blockEv.blockedReason).toBe('proxy-auth');
+      expect(blockEv.status).toBe(407);
     } finally {
       await upstream.close();
     }
