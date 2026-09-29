@@ -19,6 +19,13 @@ async function bootHarness(opts: {
   dir: string;
   spaFallback?: boolean | string;
   mountPath?: string;
+  apiPathPrefixes?: readonly string[];
+  /**
+   * Register `apiRoutes` AFTER static-files' catchall instead of before it.
+   * That is the order the memory preset actually ran in production
+   * (TASK-717), so the route table must not depend on which comes first.
+   */
+  apiAfterStatic?: boolean;
   apiRoutes?: Array<{
     method: 'GET' | 'POST';
     path: string;
@@ -38,6 +45,9 @@ async function bootHarness(opts: {
     dir: opts.dir,
     spaFallback: opts.spaFallback,
     mountPath: opts.mountPath,
+    ...(opts.apiPathPrefixes !== undefined
+      ? { apiPathPrefixes: opts.apiPathPrefixes }
+      : {}),
   });
 
   // API-routes plugin: registers routes BEFORE static-files's catchall.
@@ -63,9 +73,13 @@ async function bootHarness(opts: {
       }
     : null;
 
-  const plugins = apiPlugin ? [http, apiPlugin, staticPlugin] : [http, staticPlugin];
-  // The test harness starts plugins in order; api routes must be
-  // registered before static-files so the splat doesn't claim them.
+  const plugins = apiPlugin
+    ? opts.apiAfterStatic === true
+      ? [http, staticPlugin, apiPlugin]
+      : [http, apiPlugin, staticPlugin]
+    : [http, staticPlugin];
+  // The test harness starts plugins in order. Routing must not care which
+  // side of static-files' catchall an API route registers on (TASK-717).
   const harness: TestHarness = await createTestHarness({
     plugins: plugins as never,
   });
@@ -251,6 +265,84 @@ describe('@ax/static-files', () => {
     const spa = await fetch(`http://127.0.0.1:${port}/some-spa-path`);
     expect(spa.status).toBe(200);
     expect(await spa.text()).toBe('spa');
+  });
+
+  it('answers an unknown /api path with a JSON 404, never the SPA shell (TASK-717)', async () => {
+    writeFileSync(join(dir, 'index.html'), '<html>spa</html>');
+    const port = await boot({ dir, spaFallback: true });
+    for (const p of ['/api/nope', '/api/workspace/agents/a1/files/docs', '/api', '/api/']) {
+      const r = await fetch(`http://127.0.0.1:${port}${p}`);
+      expect(r.status, p).toBe(404);
+      expect(r.headers.get('content-type'), p).toContain('application/json');
+      expect(await r.json(), p).toEqual({ error: 'not-found' });
+    }
+  });
+
+  it('never serves a file from disk under /api either', async () => {
+    writeFileSync(join(dir, 'index.html'), '<html>spa</html>');
+    mkdirSync(join(dir, 'api'));
+    writeFileSync(join(dir, 'api', 'leftover.json'), '{"stale":true}');
+    const port = await boot({ dir, spaFallback: true });
+    const r = await fetch(`http://127.0.0.1:${port}/api/leftover.json`);
+    expect(r.status).toBe(404);
+    expect(await r.json()).toEqual({ error: 'not-found' });
+  });
+
+  it('treats /api as a path segment: /apiary and /apis are still SPA routes', async () => {
+    writeFileSync(join(dir, 'index.html'), '<html>spa</html>');
+    const port = await boot({ dir, spaFallback: true });
+    for (const p of ['/apiary', '/apis/x', '/settings/api']) {
+      const r = await fetch(`http://127.0.0.1:${port}${p}`);
+      expect(r.status, p).toBe(200);
+      expect(await r.text(), p).toBe('<html>spa</html>');
+    }
+  });
+
+  it('apiPathPrefixes replaces the default: the configured prefix 404s, /api falls back', async () => {
+    writeFileSync(join(dir, 'index.html'), '<html>spa</html>');
+    const port = await boot({ dir, spaFallback: true, apiPathPrefixes: ['/v1/'] });
+    const v1 = await fetch(`http://127.0.0.1:${port}/v1/things`);
+    expect(v1.status).toBe(404);
+    expect(await v1.json()).toEqual({ error: 'not-found' });
+    const api = await fetch(`http://127.0.0.1:${port}/api/things`);
+    expect(api.status).toBe(200);
+    expect(await api.text()).toBe('<html>spa</html>');
+  });
+
+  it('a splat API route registered AFTER the catchall still wins over it (TASK-717)', async () => {
+    writeFileSync(join(dir, 'index.html'), '<html>spa</html>');
+    const seen: string[] = [];
+    const port = await boot({
+      dir,
+      spaFallback: true,
+      apiAfterStatic: true,
+      apiRoutes: [
+        {
+          method: 'GET',
+          path: '/api/workspace/agents/:agentId/files/*',
+          handler: async (req, res) => {
+            const r = req as { params: Record<string, string> };
+            seen.push(`${r.params.agentId}:${r.params['*']}`);
+            res.status(200).json({ ok: true });
+          },
+        },
+      ],
+    });
+    const r = await fetch(
+      `http://127.0.0.1:${port}/api/workspace/agents/a1/files/docs/inner.txt`,
+    );
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true });
+    expect(seen).toEqual(['a1:docs/inner.txt']);
+    // And the SPA still owns everything the API does not.
+    const spa = await fetch(`http://127.0.0.1:${port}/settings/agents`);
+    expect(await spa.text()).toBe('<html>spa</html>');
+  });
+
+  it('rejects an unusable apiPathPrefixes entry at construction', () => {
+    for (const bad of ['', '/', 'api', '//']) {
+      expect(() => createStaticFilesPlugin({ dir, apiPathPrefixes: [bad] }), bad).toThrow();
+    }
   });
 
   it('throws at init when dir does not exist', async () => {
