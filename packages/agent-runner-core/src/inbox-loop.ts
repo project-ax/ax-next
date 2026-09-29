@@ -10,7 +10,7 @@ import type { AgentMessage, IpcClient } from '@ax/ipc-protocol';
 // new entry (see @ax/ipc-protocol IPC_TIMEOUTS_MS). When the host times out
 // with no entry, it returns `{ type: 'timeout', cursor: <echo> }` — the
 // runner then re-polls with the same cursor. Of the wire variants, only a
-// real delivery (`user-message` / `cancel` / `decision-resolved`) advances
+// real delivery (`user-message` / `cancel` / `interrupt` / `decision-resolved`) advances
 // the cursor — never `timeout`. (The defence-in-depth branch below can also
 // advance it, forward-only, but nothing on the real wire reaches that.)
 //
@@ -19,7 +19,7 @@ import type { AgentMessage, IpcClient } from '@ax/ipc-protocol';
 // It also re-polls past a delivery variant it does not recognise instead of
 // throwing (AW-6). That branch is DEFENCE IN DEPTH, not a forward-compat
 // path: the wire union (`SessionNextMessageResponseSchema` in
-// @ax/ipc-protocol) is a closed `z.discriminatedUnion` — four arms, no
+// @ax/ipc-protocol) is a closed `z.discriminatedUnion` — five arms, no
 // catch-all — and `createIpcClient` validates every 2xx body against it, so
 // an unrecognised `type` is rejected in the client and surfaces as a
 // non-retryable error before `next()` ever sees it. The branch only earns
@@ -66,7 +66,7 @@ export interface InboxLoopOptions {
 }
 
 export interface InboxLoopEntry {
-  type: 'user-message' | 'cancel' | 'idle-timeout' | 'decision-resolved';
+  type: 'user-message' | 'cancel' | 'interrupt' | 'idle-timeout' | 'decision-resolved';
   payload?: AgentMessage;
   /**
    * AW-6. Present iff `type === 'decision-resolved'` — a call this agent held
@@ -95,8 +95,10 @@ export interface InboxLoopEntry {
 export interface InboxLoop {
   /**
    * Resolves when the next non-timeout entry arrives. On `user-message`,
-   * the entry carries the decoded payload. On `cancel`, no payload. On
-   * `decision-resolved`, the decision id, outcome, and host-authored note.
+   * the entry carries the decoded payload. On `cancel` and `interrupt`, no
+   * payload (`cancel` ends the session; `interrupt` stops the running turn and
+   * keeps it). On `decision-resolved`, the decision id, outcome, and
+   * host-authored note.
    *
    * Rejects on terminal errors from the underlying client (e.g.
    * SessionInvalidError, HostUnavailableError after maxRetries, or an
@@ -115,6 +117,7 @@ export interface InboxLoop {
 type WireResponse =
   | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
+  | { type: 'interrupt'; cursor: number }
   | { type: 'timeout'; cursor: number }
   | {
       type: 'decision-resolved';
@@ -181,6 +184,12 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
         cursor = resp.cursor;
         return { type: 'cancel' };
       }
+      if (resp.type === 'interrupt') {
+        // TASK-688. "Stop the turn that is running" — NOT `cancel`. Same cursor
+        // rule as every real delivery, and no payload to carry.
+        cursor = resp.cursor;
+        return { type: 'interrupt' };
+      }
       if (resp.type === 'decision-resolved') {
         cursor = resp.cursor;
         return {
@@ -202,7 +211,7 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
       //
       //   - The wire union is CLOSED. `SessionNextMessageResponseSchema`
       //     (@ax/ipc-protocol `actions.ts`) is a `z.discriminatedUnion('type',
-      //     …)` over four arms with no catch-all, so a well-formed variant we
+      //     …)` over five arms with no catch-all, so a well-formed variant we
       //     do not know is exactly what it REJECTS — see the `rejects an
       //     unknown type` case in that package's `schemas.test.ts`.
       //   - `createIpcClient` runs every 2xx body for this action through that
