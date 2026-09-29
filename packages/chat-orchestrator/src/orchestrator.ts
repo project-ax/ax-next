@@ -205,6 +205,20 @@ export interface ApplyCapabilityGrantOutput {
   attached: boolean;
 }
 
+// TASK-688 — Stop cancels the in-flight turn. Domain identifiers in, a boolean
+// out: NO backend vocabulary (session ids, inbox cursors, pod names) crosses
+// this hook. `interrupted:true` means "a stop is on its way to the turn" (queued
+// now, or deferred behind a user message that is still being queued);
+// `interrupted:false` means there was nothing to stop (no turn in flight, or its
+// session is already gone).
+export interface AgentInterruptInput {
+  conversationId: string;
+  userId: string;
+}
+export interface AgentInterruptOutput {
+  interrupted: boolean;
+}
+
 // Phase 4 PR-B — authored-grant I/O. Structurally mirrors channel-web's local
 // copy (no cross-plugin import, I2). `applied:false, reason:'not-authored'`
 // signals the channel-web route to fall back to the catalog grant path.
@@ -317,9 +331,15 @@ interface SessionQueueWorkInput {
   // (Task 5/7) can deliver chunks back to the originating request. We
   // forward `ctx.reqId` from the agent:invoke call (which is itself the
   // host-handled request).
+  //
+  // `cancel` and `interrupt` are DIFFERENT and must never be confused:
+  //   - `cancel`    ends the SESSION (the runner drains and exits).
+  //   - `interrupt` stops the RUNNING TURN and leaves the runner warm (Stop
+  //     button, TASK-688). It carries no payload.
   entry:
     | { type: 'user-message'; payload: AgentMessage; reqId: string }
-    | { type: 'cancel' };
+    | { type: 'cancel' }
+    | { type: 'interrupt' };
 }
 interface SessionQueueWorkOutput {
   cursor: number;
@@ -1127,6 +1147,10 @@ export function createOrchestrator(
     ctx: AgentContext,
     input: ApplyCapabilityGrantInput,
   ): Promise<ApplyCapabilityGrantOutput>;
+  interruptTurn(
+    ctx: AgentContext,
+    input: AgentInterruptInput,
+  ): Promise<AgentInterruptOutput>;
   applyAuthoredCapabilityGrant(
     ctx: AgentContext,
     input: ApplyAuthoredCapabilityGrantInput,
@@ -1158,6 +1182,23 @@ export function createOrchestrator(
   //     path always has exactly one waiter per sessionId.
   const waitersByReqId = new Map<string, Deferred<AgentOutcome>>();
   const reqIdsBySession = new Map<string, Set<string>>();
+  // TASK-688 — Stop during a COLD SPAWN. `active_req_id` is bound at POST time,
+  // so a Stop can arrive for a reqId whose user message is not in any inbox yet
+  // (a fresh pod takes 10+ s to spawn; there is no session to interrupt).
+  // Dropping that Stop would leave the turn running; queueing `interrupt`
+  // straight into a warm inbox would put it AHEAD of the message it is meant to
+  // stop, where an idle runner drops it. So `agent:interrupt` records the
+  // request here and `runAgentInvoke` queues it BEHIND the message the moment
+  // that lands.
+  //   - pendingMessageReqIds: reqIds of an agent:invoke in flight whose user
+  //     message has NOT yet been successfully queued with session:queue-work.
+  //   - stopRequestedReqIds: those of them a Stop has been requested for.
+  // Both are bounded by the runAgentInvoke wrapper's finally (a reqId never
+  // outlives its invoke). In-memory + single-replica — same posture as
+  // waitersByReqId above; a second host replica would not see a Stop handled by
+  // another replica (the k8s chart refuses replicas > 1 for the same reason).
+  const pendingMessageReqIds = new Set<string>();
+  const stopRequestedReqIds = new Set<string>();
   // Reactive egress wall (TASK-37) — dedup raised host-grant cards per
   // (sessionId, host) so repeated 403s to the same blocked host don't spam the
   // stream with duplicate cards. Cleared per session in onSessionTerminate (the
@@ -1612,7 +1653,53 @@ export function createOrchestrator(
     augmentGenByAgent.set(agentId, (augmentGenByAgent.get(agentId) ?? 0) + 1);
   }
 
+  // The agent:invoke entrypoint. Thin wrapper whose only job is the TASK-688
+  // pending-message bookkeeping: the reqId is "pending" from the very first
+  // instruction (before chat:start, before any await) until its user message is
+  // queued (`afterUserMessageQueued`), and BOTH sets are cleared on every exit
+  // — early return, throw, or a normal end — so they stay bounded.
   async function runAgentInvoke(
+    ctx: AgentContext,
+    input: AgentInvokeInput,
+  ): Promise<AgentOutcome> {
+    pendingMessageReqIds.add(ctx.reqId);
+    try {
+      return await runAgentInvokeTurn(ctx, input);
+    } finally {
+      pendingMessageReqIds.delete(ctx.reqId);
+      stopRequestedReqIds.delete(ctx.reqId);
+    }
+  }
+
+  // Called IMMEDIATELY after a successful `session:queue-work` of this turn's
+  // user message (both the routed/warm and the fresh-spawn call sites). The
+  // pending-delete and the stop-check are one synchronous step — that is what
+  // makes the hook's check-and-add race-free (JS is single-threaded): a Stop
+  // either landed before this line (deferred, queued here, behind the message)
+  // or lands after it (the hook sees the message queued and queues directly).
+  async function afterUserMessageQueued(
+    ctx: AgentContext,
+    sessionId: string,
+  ): Promise<void> {
+    pendingMessageReqIds.delete(ctx.reqId);
+    if (!stopRequestedReqIds.delete(ctx.reqId)) return;
+    // Best-effort: a failure to queue the stop must never fail the turn it was
+    // meant to stop. The user can click Stop again (now on the plain path).
+    try {
+      await bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+        'session:queue-work',
+        ctx,
+        { sessionId, entry: { type: 'interrupt' } },
+      );
+    } catch (err) {
+      ctx.logger.warn('deferred_interrupt_queue_failed', {
+        sessionId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+  }
+
+  async function runAgentInvokeTurn(
     ctx: AgentContext,
     input: AgentInvokeInput,
   ): Promise<AgentOutcome> {
@@ -1926,6 +2013,9 @@ export function createOrchestrator(
         await fireChatEvent('chat:end', ctx, { outcome });
         return outcome;
       }
+      // TASK-688 — the message is in the inbox; a Stop that arrived while it
+      // was being queued goes in right behind it.
+      await afterUserMessageQueued(ctx, sessionId);
 
       // (4) Wait for the runner. We do NOT watch `exited` here: the sandbox
       //     handle isn't ours. If the sandbox dies mid-turn, session:terminate
@@ -2944,6 +3034,9 @@ export function createOrchestrator(
       await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
+    // TASK-688 — the message is in the inbox; a Stop clicked during the cold
+    // spawn goes in right behind it.
+    await afterUserMessageQueued(ctx, sessionId);
 
     // 5. Await chat:end with a bounded timeout, or sandbox early-exit.
     //    Both failure modes synthesize a terminated outcome so audit-log
@@ -3232,6 +3325,76 @@ export function createOrchestrator(
     }
 
     return { attached };
+  }
+
+  // TASK-688 — Stop. Interrupt the conversation's in-flight turn: queue
+  // `{ type: 'interrupt' }` into its live session's inbox. The runner stops the
+  // running model call / tool and STAYS WARM for the next message — that is the
+  // difference from `cancel` (ends the session) and `session:terminate` (kills
+  // the sandbox and errors the turn). Host-side only; the agent/runner cannot
+  // reach it, and the entry carries no payload, so nothing untrusted rides it.
+  //
+  // ACL: `conversations:get` filters by userId (then agents:resolve), so a
+  // foreign or unknown conversation throws not-found/forbidden. Those
+  // PluginErrors PROPAGATE on purpose (unlike activeAliveSession, which
+  // swallows) — the route maps them to a 404 and must never see a bare `false`
+  // for a conversation the caller doesn't own.
+  async function interruptTurn(
+    ctx: AgentContext,
+    input: AgentInterruptInput,
+  ): Promise<AgentInterruptOutput> {
+    // Without a conversation store there is no "the conversation's turn" to name.
+    if (!bus.hasService('conversations:get')) return { interrupted: false };
+    const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+      'conversations:get', ctx,
+      { conversationId: input.conversationId, userId: input.userId },
+    );
+    // `active_req_id` is bound at POST time and cleared on chat:turn-end, so
+    // null/empty means no turn is in flight.
+    const reqId = conv.conversation.activeReqId;
+    if (reqId === null || reqId.length === 0) return { interrupted: false };
+
+    const candidate = conv.conversation.activeSessionId;
+    const sessionId =
+      candidate !== null && candidate.length > 0 ? candidate : null;
+    let alive = false;
+    if (sessionId !== null && bus.hasService('session:is-alive')) {
+      const r = await bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
+        'session:is-alive', ctx, { sessionId },
+      );
+      alive = r.alive;
+    }
+
+    // ---- NO await between here and the check-and-add below ----
+    //
+    // Cold spawn: this reqId's agent:invoke has not yet queued its user message
+    // (there may be no session, or only the POST-time placeholder). Record the
+    // Stop; afterUserMessageQueued() queues the interrupt behind the message.
+    // The has() and add() run in one synchronous step relative to that
+    // function's delete-then-check, so a Stop is never lost between them.
+    if (pendingMessageReqIds.has(reqId)) {
+      stopRequestedReqIds.add(reqId);
+      return { interrupted: true };
+    }
+
+    // The plain path: the message is queued (or this is a continuation turn
+    // started by an approval — it has an active_req_id but no agent:invoke in
+    // flight). Interrupt the live session directly.
+    if (sessionId === null || !alive) return { interrupted: false };
+    try {
+      await bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+        'session:queue-work', ctx, { sessionId, entry: { type: 'interrupt' } },
+      );
+    } catch (err) {
+      // Lost a race with teardown: the session ended between is-alive and the
+      // queue. Nothing left to stop. Anything else is a real failure — it must
+      // reach the caller, not read as "stopped".
+      if (err instanceof PluginError && err.code === 'unknown-session') {
+        return { interrupted: false };
+      }
+      throw err;
+    }
+    return { interrupted: true };
   }
 
   // Resolve the conversation's ACTIVE + ALIVE session id (or null). Shared by
@@ -3571,6 +3734,7 @@ export function createOrchestrator(
     onTurnEnd,
     onSessionTerminate,
     applyCapabilityGrant,
+    interruptTurn,
     applyAuthoredCapabilityGrant,
     applyAuthoredConnectorGrant,
     onHttpEgress,
