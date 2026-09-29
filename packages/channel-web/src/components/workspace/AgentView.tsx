@@ -1852,6 +1852,13 @@ export function AgentView({
                 onStop={() => void stop()}
                 stopping={stopping}
                 settling={rereading}
+                /*
+                  The failure strip above renders on `turnError !== null &&
+                  !past`; this pane's own empty copy is already off for a past
+                  conversation (`readOnly`), so `turnError` alone is the right
+                  mirror of it (TASK-695).
+                */
+                failureStripShown={turnError !== null}
                 onSend={(text, attachments) => void send(text, attachments)}
                 onApprove={onApprove}
                 onDismiss={onDismiss}

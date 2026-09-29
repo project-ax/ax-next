@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { FirstRunAutoCreate } from '../onboard/FirstRunAutoCreate';
 import * as autoCreate from '../../lib/auto-create-agent';
 import * as hydrate from '../../lib/hydrate-agents';
+import { HttpError } from '../../lib/http';
 import { agentStoreActions, useAgentStore } from '../../lib/agent-store';
 
 describe('FirstRunAutoCreate', () => {
@@ -62,6 +63,57 @@ describe('FirstRunAutoCreate', () => {
       expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy(),
     );
     expect(onDone).not.toHaveBeenCalled();
+  });
+
+  /*
+    TASK-695. The person is told (the card above), but the `catch` used to
+    swallow the error: someone debugging a real bootstrap failure had no console
+    line to start from. `AgentView.send` leaves one through `logRequestFailure`;
+    so does this.
+  */
+  describe('the operator breadcrumb when create fails (TASK-695)', () => {
+    it('logs the request and status for an HTTP failure, and still tells the person', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(autoCreate, 'autoCreateBareAgent').mockRejectedValue(
+        new HttpError('/api/agents/bootstrap', 500),
+      );
+      render(<FirstRunAutoCreate agentName="My agent" mode="first-run" onBack={vi.fn()} onDone={vi.fn()} />);
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy(),
+      );
+      expect(warn).toHaveBeenCalledWith('[agent-bootstrap] /api/agents/bootstrap → 500');
+    });
+
+    it('logs an unexpected (non-HTTP) failure with the error itself, so its stack survives', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const boom = new TypeError('Failed to fetch');
+      vi.spyOn(autoCreate, 'autoCreateBareAgent').mockRejectedValue(boom);
+      render(<FirstRunAutoCreate agentName="My agent" mode="add" onBack={vi.fn()} onDone={vi.fn()} />);
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy(),
+      );
+      expect(warn).toHaveBeenCalledWith('[agent-bootstrap] unexpected failure', boom);
+    });
+
+    it('logs even when the card was unmounted before the failure arrived', async () => {
+      // The breadcrumb is for the operator, not for this component's state, so
+      // it must not depend on whether anyone is still looking at the card.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let fail!: (e: unknown) => void;
+      vi.spyOn(autoCreate, 'autoCreateBareAgent').mockReturnValue(
+        new Promise((_, reject) => {
+          fail = reject;
+        }),
+      );
+      const { unmount } = render(
+        <FirstRunAutoCreate agentName="My agent" mode="first-run" onBack={vi.fn()} onDone={vi.fn()} />,
+      );
+      unmount();
+      fail(new HttpError('/api/agents/bootstrap', 502));
+      await waitFor(() =>
+        expect(warn).toHaveBeenCalledWith('[agent-bootstrap] /api/agents/bootstrap → 502'),
+      );
+    });
   });
 
   /**

@@ -22,6 +22,7 @@ import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { toastActions } from '@/lib/toast-store';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
+import { HttpError } from '@/lib/http';
 import { WorkspaceShell, type WorkspaceShellProps } from '../WorkspaceShell';
 import { rail as railFixture } from './rail-fixture';
 
@@ -234,6 +235,20 @@ describe('workspace create-agent door', () => {
       expect(window.location.pathname).toBe('/workspace/agents/a-new'),
     );
     await waitFor(() => expect(toastActions.error).toHaveBeenCalledTimes(1));
+  });
+
+  /**
+   * TASK-695 — the toast tells the PERSON; nothing told an operator. A failed
+   * kickoff now leaves the same console breadcrumb `AgentView.send` does, so
+   * someone debugging a real "agent never said hello" has a line to start from.
+   */
+  it('a failed kickoff also leaves an operator breadcrumb in the console', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sendMessageMock.mockRejectedValue(new HttpError('/api/chat/messages', 503));
+    renderShell({ kickoffAgentId: 'a-new' });
+
+    await waitFor(() => expect(toastActions.error).toHaveBeenCalledTimes(1));
+    expect(warn).toHaveBeenCalledWith('[workspace-kickoff] /api/chat/messages → 503');
   });
 
   /**

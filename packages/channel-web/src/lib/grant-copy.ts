@@ -110,8 +110,8 @@ export const SLOT_HINT = 'Add the key above to continue';
  * raised it, and `/api/chat/permission-decision` cannot be posted without one.
  *
  * Without this the button was simply dead with no explanation — a control that
- * cannot work and does not say so, which is the failure `hideClose`
- * (`components/ui/dialog.tsx`) exists to prevent elsewhere in this product.
+ * cannot work and does not say so, the same failure as the first-run dialog's
+ * ✕ that silently did nothing (TASK-340 / audit B4).
  *
  * THE ADVICE HAS TO BE THE ACTION THAT WORKS. This first said "Open the agent
  * and try again", which is wrong in a way that would have wasted someone's

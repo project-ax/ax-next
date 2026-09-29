@@ -43,7 +43,7 @@ describe('NewAgentCard — first run', () => {
   });
 
   it('offers no way out: no Cancel, no close button', () => {
-    // OLD: no Cancel either, but only because the ✕ was hidden by `hideClose`.
+    // OLD: no Cancel either, but only because the retired dialog hid its ✕.
     // Pinned as the pair with the add-mode test below, which DOES have one.
     render(<NewAgentCard mode="first-run" onCreate={vi.fn()} />);
     expect(screen.queryByRole('button', { name: /cancel/i })).toBeNull();
