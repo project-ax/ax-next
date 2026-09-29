@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
+import { withContainerStartSlot } from './container-start-slots.js';
 
 const execFileAsync = promisify(execFile);
 const VERSION_ARGS = ['version', '--format', '{{.Server.Version}}'];
@@ -162,5 +163,6 @@ export async function startTestContainer<T>(container: StartableTestContainer<T>
   }
   startedConfiguration = config.identity;
   process.env.AX_TESTCONTAINERS_STRICT_ENDPOINT = 'true';
-  return container.start();
+  // Host-wide cap on concurrent starts, held only while start() runs. (TASK-398)
+  return withContainerStartSlot(() => container.start(), options.warn ?? console.warn);
 }
