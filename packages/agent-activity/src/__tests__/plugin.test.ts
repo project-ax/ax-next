@@ -10,12 +10,33 @@ function now(): number {
   return clock;
 }
 
-function ctx(over: { agentId?: string; triggerLabel?: string } = {}): AgentContext {
+function ctx(
+  over: { agentId?: string; triggerLabel?: string; reqId?: string } = {},
+): AgentContext {
   return makeAgentContext({
     sessionId: 's1',
     userId: 'u1',
     agentId: over.agentId ?? 'a1',
     ...(over.triggerLabel !== undefined ? { triggerLabel: over.triggerLabel } : {}),
+    ...(over.reqId !== undefined ? { reqId: over.reqId } : {}),
+  });
+}
+
+/**
+ * A runner-driven `chat:turn-end`, shaped the way the host really fires it:
+ * the IPC boundary stamps a FRESH `ctx.reqId` per request, and the turn's own
+ * id — the `agent:invoke` reqId that `chat:start` carried — rides in the
+ * payload. A test that reused the start's ctx here would pass against a
+ * subscriber that read the wrong one.
+ */
+async function turnEnd(
+  bus: HookBus,
+  over: { agentId?: string; reqId?: string; role?: 'assistant' | 'tool' } = {},
+): Promise<void> {
+  await bus.fire('chat:turn-end', ctx({ agentId: over.agentId, reqId: 'ipc-restamped' }), {
+    reason: 'user-message-wait',
+    role: over.role ?? 'assistant',
+    ...(over.reqId !== undefined ? { reqId: over.reqId } : {}),
   });
 }
 
@@ -257,6 +278,13 @@ describe('agent-activity:get', () => {
     would pin the agent on "Working" with nothing running, which is precisely
     the bug TASK-498 existed to end. Fixing it properly means owning that leak
     story here, in this plugin, on its own card.
+
+    TASK-686 DID NOT CHANGE THIS, and deliberately. It added per-turn ids so a
+    `chat:turn-end` ends only its own turn (see "a turn ends on chat:turn-end"
+    below) — but those ids only ever let the record go EARLIER. `chat:end` and
+    `chat:turn-error` still forget the whole agent, so a stranded id can never
+    hold "Working" past the end that used to clear it. Both assertions here
+    still hold unchanged.
   */
   it('forgets the whole agent on the FIRST end, even with a second turn still running', async () => {
     const bus = new HookBus();
@@ -291,6 +319,112 @@ describe('agent-activity:get', () => {
       input: {},
     });
     expect((await get(bus, 'a1')).activity).toMatchObject({ phrase: 'Reading email' });
+  });
+});
+
+/*
+  TASK-686. Under keepAlive (the k8s preset) a turn COMPLETES on
+  `chat:turn-end` and the runner is left warm; `chat:end` only arrives when the
+  idle reaper takes the runner, minutes later. Forgetting on `chat:end` alone
+  left the agent reading "Working" for that whole window after it had replied.
+*/
+describe('a turn ends on chat:turn-end, even while the runner stays warm', () => {
+  it('forgets the record when the only running turn ends, with no chat:end behind it', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+    expect((await get(bus)).activity).not.toBeNull();
+
+    await turnEnd(bus, { reqId: 'r1' });
+    expect((await get(bus)).activity).toBeNull();
+  });
+
+  it('keeps reading working while a second turn on the same agent is still in flight', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1', triggerLabel: 'Morning email pass' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'r2', triggerLabel: 'Weekly digest' }), {});
+
+    await turnEnd(bus, { reqId: 'r1' });
+    expect((await get(bus)).activity).not.toBeNull();
+
+    await turnEnd(bus, { reqId: 'r2' });
+    expect((await get(bus)).activity).toBeNull();
+  });
+
+  it('is idempotent across the tool + assistant turn-ends one user message emits', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'r2' }), {});
+
+    // r1's two turn-ends must not spend r2's turn as well.
+    await turnEnd(bus, { reqId: 'r1', role: 'tool' });
+    await turnEnd(bus, { reqId: 'r1', role: 'assistant' });
+    expect((await get(bus)).activity).not.toBeNull();
+  });
+
+  it('ignores a turn-end for a turn it never saw start while another is running', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+
+    await turnEnd(bus, { reqId: 'someone-else' });
+    expect((await get(bus)).activity).not.toBeNull();
+  });
+
+  it('keeps the other agent working when one agent\'s turn ends', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ agentId: 'a1', reqId: 'r1' }), {});
+    await bus.fire('chat:start', ctx({ agentId: 'a2', reqId: 'r2' }), {});
+
+    await turnEnd(bus, { agentId: 'a1', reqId: 'r1' });
+    expect((await get(bus, 'a1')).activity).toBeNull();
+    expect((await get(bus, 'a2')).activity).not.toBeNull();
+  });
+
+  it('forgets a record a tool step recovered, once that turn ends', async () => {
+    // The survivor of the "first end forgets the whole agent" gap re-creates
+    // its record on its next tool call — a record no `chat:start` stands
+    // behind, so it knows no turn ids. Its turn-end must still close it, or
+    // the recovery would pin "Working" until the reaper.
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('tool:pre-call', ctx({ reqId: 'ipc-restamped' }), {
+      id: 'c1',
+      name: 'web_search',
+      input: {},
+    });
+    expect((await get(bus)).activity).not.toBeNull();
+
+    await turnEnd(bus, { reqId: 'r2' });
+    expect((await get(bus)).activity).toBeNull();
+  });
+
+  it('falls to resting when a turn-end names no turn at all — never pinned on working', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'r2' }), {});
+
+    await turnEnd(bus, {});
+    expect((await get(bus)).activity).toBeNull();
+  });
+
+  it('a later turn on the warm runner starts a fresh stretch of work', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+    await turnEnd(bus, { reqId: 'r1' });
+
+    clock = T0 + 60_000;
+    await bus.fire('chat:start', ctx({ reqId: 'r2' }), {});
+    expect((await get(bus)).activity).toMatchObject({
+      startedAt: new Date(T0 + 60_000).toISOString(),
+    });
+    await turnEnd(bus, { reqId: 'r2' });
+    expect((await get(bus)).activity).toBeNull();
   });
 });
 
@@ -378,13 +512,14 @@ describe('lifecycle', () => {
 });
 
 describe('the manifest', () => {
-  it('registers one read hook, subscribes to four, and requires nothing', () => {
+  it('registers one read hook, subscribes to five, and requires nothing', () => {
     const { manifest } = createAgentActivityPlugin();
     expect(manifest.registers).toEqual(['agent-activity:get']);
     expect(manifest.calls).toEqual([]);
     expect(manifest.optionalCalls?.map((o) => o.hook)).toEqual(['tool:list']);
     expect(manifest.subscribes).toEqual([
       'chat:start',
+      'chat:turn-end',
       'chat:end',
       'chat:turn-error',
       'tool:pre-call',
