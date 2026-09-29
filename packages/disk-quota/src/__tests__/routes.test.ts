@@ -143,10 +143,13 @@ describe('GET /settings/storage', () => {
       (await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 64, warnPercent: 50 } })).status,
     ).toBe(200);
     const warn = 32 * MB;
+    // Blobs are charged in whole 4 KiB units (see blobCharge), so "one under" a
+    // threshold is one UNIT under it.
+    const unit = 4096;
     const cases: Array<[string, number, string]> = [
-      ['below-warn', warn - 1, 'ok'],
+      ['below-warn', warn - unit, 'ok'],
       ['at-warn', warn, 'near-limit'],
-      ['below-limit', 64 * MB - 1, 'near-limit'],
+      ['below-limit', 64 * MB - unit, 'near-limit'],
       ['at-limit', 64 * MB, 'full'],
       ['over-limit', 70 * MB, 'full'],
     ];

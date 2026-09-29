@@ -88,6 +88,22 @@ export function cleanSize(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
+/**
+ * The unit a stored blob is charged in. The fs blob backend keeps ONE FILE PER
+ * BLOB, so however small the blob, it occupies at least a filesystem block and
+ * an inode. Charging logical bytes let a looping agent make millions of tiny
+ * artifacts "inside" its quota and exhaust the shared volume; whole units make
+ * a blob cost roughly what it costs the volume (the same currency the workspace
+ * meter uses: allocated bytes). The S3 backend has no such overhead, so there
+ * this over-counts by up to one unit per blob, which errs on the safe side.
+ */
+export const BLOB_ALLOCATION_UNIT = 4096;
+
+/** What one blob of `size` logical bytes is charged: whole units, at least one. */
+export function blobCharge(size: unknown): number {
+  return Math.max(1, Math.ceil(cleanSize(size) / BLOB_ALLOCATION_UNIT)) * BLOB_ALLOCATION_UNIT;
+}
+
 function usableAgentId(agentId: unknown): agentId is string {
   return typeof agentId === 'string' && agentId.length > 0 && !isOwnerlessId(agentId);
 }
@@ -187,7 +203,7 @@ export function createDiskQuotaService(deps: {
       // They are not a person's storage, and refusing them would break admin
       // work over someone else's usage.
       if (!isAttributableUser(ctx.userId)) return OK;
-      return await admit(ctx.userId, sizeBytes, blobFullMessage);
+      return await admit(ctx.userId, blobCharge(sizeBytes), blobFullMessage);
     } catch (err) {
       log(ctx, 'error', 'disk_quota_admit_failed', { kind: 'blob', err });
       return { ok: false, reason: STORAGE_UNAVAILABLE_MESSAGE };
@@ -237,7 +253,7 @@ export function createDiskQuotaService(deps: {
         log(ctx, 'warn', 'disk_quota_blob_stored_invalid');
         return;
       }
-      await store.upsertUsage(ctx.userId, `blob:${p.sha256}`, 'blob', size);
+      await store.upsertUsage(ctx.userId, `blob:${p.sha256}`, 'blob', blobCharge(size));
     } catch (err) {
       log(ctx, 'error', 'disk_quota_record_failed', { err });
     }

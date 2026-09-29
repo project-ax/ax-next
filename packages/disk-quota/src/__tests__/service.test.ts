@@ -12,6 +12,8 @@ import {
   workspaceFullMessage,
 } from '../messages.js';
 import {
+  blobCharge,
+  BLOB_ALLOCATION_UNIT,
   createDiskQuotaService,
   OWNER_CACHE_MAX,
   STORAGE_FULL_REASON,
@@ -526,6 +528,55 @@ describe('the turn gate (chat:start)', () => {
     expect(w.lines.some((l) => l.level === 'warn' && l.msg === 'disk_quota_turn_check_failed')).toBe(true);
     // ...while the same broken store still refuses a WRITE.
     expect((await w.svc.admitBlobWrite(w.ctx('alice'), 1)).ok).toBe(false);
+  });
+});
+
+// The fs blob backend stores ONE FILE PER BLOB, so a 100-byte blob costs the
+// volume a whole block and an inode. Charging logical bytes let a looping agent
+// create millions of tiny artifacts "inside" its quota and exhaust the shared
+// volume's inodes (review finding). Each blob is therefore charged in whole
+// allocation units, the same currency the workspace meter already counts in
+// (allocated bytes).
+describe('blobs are charged by what they occupy, not by their logical size', () => {
+  it('blobCharge rounds up to whole 4 KiB units, with a floor of one unit (even for an empty blob)', () => {
+    expect(BLOB_ALLOCATION_UNIT).toBe(4096);
+    expect(blobCharge(0)).toBe(4096);
+    expect(blobCharge(1)).toBe(4096);
+    expect(blobCharge(100)).toBe(4096);
+    expect(blobCharge(4096)).toBe(4096);
+    expect(blobCharge(4097)).toBe(8192);
+    expect(blobCharge(5 * MB)).toBe(5 * MB);
+    // Hostile sizes are never a way to be charged less than one unit.
+    for (const bad of [Number.NaN, -5, Number.NEGATIVE_INFINITY, 'x' as unknown as number]) {
+      expect(blobCharge(bad), String(bad)).toBe(4096);
+    }
+  });
+
+  it('records the rounded charge, so many tiny blobs add up to what they really cost', async () => {
+    const w = makeWorld();
+    for (let i = 0; i < 20; i++) {
+      await w.svc.recordBlobStored(w.ctx('alice'), { sha256: String(i).padStart(64, '0'), size: 1 });
+    }
+    expect(await realStore.usageFor('alice')).toEqual({ workspaceBytes: 0, fileBytes: 20 * 4096 });
+  });
+
+  it('gates on the rounded charge: a 100-byte blob does not fit in 1000 bytes of room', async () => {
+    const w = makeWorld();
+    await w.setLimitMb(64);
+    await w.seedFiles('alice', 64 * MB - 1000);
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 100)).ok).toBe(false);
+    // ...but does fit when one whole unit of room is left.
+    await w.seedFiles('alice', 64 * MB - 4096);
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 100)).ok).toBe(true);
+    await w.svc.recordBlobStored(w.ctx('alice'), { sha256: 'e'.repeat(64), size: 100 });
+    expect((await w.svc.admitBlobWrite(w.ctx('alice'), 1)).ok).toBe(false);
+  });
+
+  it('leaves the workspace gate alone: it sizes a commit by its own figure, not per file', async () => {
+    const w = makeWorld();
+    await w.setLimitMb(64);
+    await w.seedFiles('alice', 64 * MB - 1000);
+    expect((await w.svc.admitWorkspaceWrite(w.ctx('alice'), 100)).ok).toBe(true);
   });
 });
 

@@ -69,7 +69,14 @@ and easy to lower on a smaller disk.
   `(owner, sha256) -> size` is written when `blob:put` succeeds. The same bytes
   put twice by one owner count once (the blob exists once on disk). Two owners
   who upload identical bytes are each charged (an over-count by design: it keeps
-  one person's usage independent of what anyone else did).
+  one person's usage independent of what anyone else did). **Each blob is charged
+  in whole 4 KiB units, at least one:** the fs backend keeps one file per blob, so
+  a 100-byte blob still costs a block and an inode, and charging logical bytes
+  would let a looping agent create millions of tiny artifacts inside its quota
+  and exhaust the shared volume's inodes (found by review). This is the same
+  currency the workspace meter counts in (allocated bytes). On the S3 backend it
+  over-counts by up to one unit per blob, which errs on the safe side. Worst
+  case at the default 1 GB: about 262k tiny blobs per person.
 
 ## The two seams (hooks)
 
@@ -160,6 +167,11 @@ grow), the friendly sentence when a message with attachments is refused, and the
 - **Blobs uploaded before this ships are not counted** (no per-user index exists
   to backfill from without reading `@ax/attachments` tables). Workspace repos ARE
   backfilled by the sweep. Follow-up.
+- **Team workspaces are not swept.** The periodic sweep enumerates
+  `agents:list-personal-owners`, which excludes team agents, so a team workspace
+  that pre-dates this feature is uncounted until its next write (per-write
+  metering charges `team:<id>` correctly), and team-repo drift (gc, repack) is not
+  repaired by the sweep. Follow-up (needs an owner-bearing team agent listing).
 - **Deleting an agent does not delete its repo**, so the bytes stay on disk and
   stay counted against the owner. Freeing them needs a workspace delete hook and
   a blob GC; neither exists. Follow-up.
