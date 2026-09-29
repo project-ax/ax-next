@@ -111,6 +111,26 @@
 //       detectable duplicate. Documented behaviour with no test is a preference, not a
 //       property.
 //
+// TASK-672 BATTERY (2026-09-28): archived cards and the floor. Each mutant was applied
+// to the committed script and restored with `git checkout HEAD --`, with `git status`
+// asserted clean between mutants. Baseline was 47 collected, 47 passed, and every mutant
+// still COLLECTED 47.
+//
+//   M9.  Drop `archivedStates:[ARCHIVED, NOT_ARCHIVED]` from the page query. That makes
+//        the read the API default, live cards only -> 4 red: `next counts ARCHIVED
+//        cards`, `check flags a live card that reuses an archived card id`, and both
+//        archived-keeper settle tests. This is the bug the card was filed for.
+//   M10. Drop the floor from `next_num` (back to `(max // 0) + 1`) -> 2 red: `a board
+//        whose highest cards are gone still answers above the floor` and `claim
+//        stamps a number above the floor`. This is the card's own acceptance mutant.
+//   M11. Accept any `BOARD_TASK_ID_FLOOR` without validating it -> 1 red, `a floor
+//        that is not a number fails closed`.
+//   M12. Keeper rule back to plain `sort_by(.item)` -> 2 red, both archived-keeper
+//        tests. With it, a new card that sorts before an archived holder waits out
+//        every attempt for a yield that never comes.
+//   M13. Committed floor lowered to 600 -> 2 red: `the committed floor is at least
+//        TASK-672` and `a board whose highest cards are gone`.
+//
 // Lives in scripts/__tests__/, which `pnpm test:scripts` runs unconditionally — no
 // network, no build.
 
