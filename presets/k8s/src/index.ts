@@ -995,9 +995,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createMcpClientPlugin({ mountAdminRoutes: true }));
 
   // ----- 7b. the "Right now" line ----------------------------------------
-  // Observe-only: watches chat:start / tool:pre-call / chat:end and answers
-  // `agent-activity:get` with one short phrase describing what an agent is
-  // doing this second. Reads each tool's in-repo `activityPhrase` from
+  // Observe-only: watches chat:start / tool:pre-call / chat:turn-end /
+  // chat:end (and chat:turn-error) and answers `agent-activity:get` with one
+  // short phrase describing what an agent is doing this second. chat:turn-end
+  // is the one that matters here (TASK-686): this preset runs the orchestrator
+  // in keepAlive, where a reply is done on turn-end and chat:end only arrives
+  // when the idle reaper takes the warm runner, minutes later. Reads each tool's in-repo `activityPhrase` from
   // `tool:list` (optionalCalls — no catalog just means the line falls to its
   // T0 floor), never a model, never a tool's model-facing description.
   //
