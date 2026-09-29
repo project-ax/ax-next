@@ -309,6 +309,18 @@ describe('@ax/static-files', () => {
     expect(await api.text()).toBe('<html>spa</html>');
   });
 
+  it('trims any run of trailing slashes off an apiPathPrefixes entry', async () => {
+    writeFileSync(join(dir, 'index.html'), '<html>spa</html>');
+    const port = await boot({ dir, spaFallback: true, apiPathPrefixes: ['/v1///'] });
+    for (const p of ['/v1', '/v1/', '/v1/things']) {
+      const r = await fetch(`http://127.0.0.1:${port}${p}`);
+      expect(r.status, p).toBe(404);
+      expect(await r.json(), p).toEqual({ error: 'not-found' });
+    }
+    const spa = await fetch(`http://127.0.0.1:${port}/v10`);
+    expect(await spa.text()).toBe('<html>spa</html>');
+  });
+
   it('a splat API route registered AFTER the catchall still wins over it (TASK-717)', async () => {
     writeFileSync(join(dir, 'index.html'), '<html>spa</html>');
     const seen: string[] = [];

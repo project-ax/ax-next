@@ -109,7 +109,11 @@ const DEFAULT_API_PATH_PREFIXES: readonly string[] = ['/api'];
  */
 function normalizeApiPrefixes(prefixes: readonly string[]): string[] {
   return prefixes.map((raw) => {
-    const trimmed = raw.replace(/\/+$/, '');
+    // A scan, not `/\/+$/`: CodeQL flags that regex as polynomial on a long
+    // run of slashes, and a loop is as short.
+    let end = raw.length;
+    while (end > 0 && raw.charCodeAt(end - 1) === 47 /* '/' */) end -= 1;
+    const trimmed = raw.slice(0, end);
     if (!raw.startsWith('/') || trimmed === '') {
       throw new PluginError({
         code: 'invalid-config',
