@@ -428,7 +428,10 @@ describe('admin connector routes', () => {
       makeRes().res,
     );
 
-    currentActor = { id: 'userB', isAdmin: false };
+    // User B is an ADMIN too: `/admin/connectors*` 403s a non-admin before
+    // ownership is ever looked at (TASK-698, admin-route-gate.test.ts), so the
+    // cross-tenant 404 is only reachable — and only worth proving — for another admin.
+    currentActor = { id: 'userB', isAdmin: true };
     const { res: lRes, captured: lCap } = makeRes();
     await handlers.list(makeReq({}), lRes);
     expect((lCap.body as { connectors: Array<{ id: string }> }).connectors).toHaveLength(0);
