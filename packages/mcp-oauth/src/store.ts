@@ -1,3 +1,4 @@
+import { PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
 import type { McpOAuthDatabase } from './migrations.js';
 import type { ClientRegistration, PendingAuthorization } from './types.js';
@@ -39,6 +40,22 @@ export interface McpOAuthStore {
    * Callers pass `now - pendingTtlMs`.
    */
   purgeExpiredPending(olderThanMs: number): Promise<void>;
+  /**
+   * Delete EVERY pending authorization started for `agentId`, whoever started it
+   * (TASK-718). Backs the `agents:deleted` subscriber: the row is a handshake
+   * that can no longer complete (the callback resolves the agent first), and it
+   * may hold a confidential client's secret in plaintext, so it must not outlive
+   * the agent. Keyed on `agent_id` ALONE — a team agent's connect can be started
+   * by several people.
+   *
+   * Touches `mcp_oauth_v1_pending` only. `mcp_oauth_v1_clients` has no `agent_id`
+   * column (it is keyed by `${connectorId}|${authServerUrl}` and shared by every
+   * agent), so it is not this method's to delete from.
+   *
+   * THROWS on an empty `agentId`: a delete keyed on nothing is never what a
+   * caller meant, so it is refused rather than run.
+   */
+  deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
 }
 
 /** Map a DB row to the domain {@link PendingAuthorization}. Shared by
@@ -148,6 +165,21 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
         .deleteFrom('mcp_oauth_v1_pending')
         .where('created_at', '<', new Date(olderThanMs))
         .execute();
+    },
+
+    async deleteAllForAgent(agentId) {
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        throw new PluginError({
+          code: 'missing-field',
+          plugin: '@ax/mcp-oauth',
+          message: 'agentId is required',
+        });
+      }
+      const res = await db
+        .deleteFrom('mcp_oauth_v1_pending')
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return { deleted: Number(res.numDeletedRows ?? 0n) };
     },
   };
 }

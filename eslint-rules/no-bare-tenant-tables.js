@@ -28,6 +28,9 @@ const TENANT_TABLE_PREFIXES = [
   // Per-user spend + turn counters and suspensions (TASK-692): only
   // packages/usage-limits/src/store.ts queries these.
   'usage_limits_v1_',
+  // Per-owner storage ledger (TASK-690): only packages/disk-quota/src/store.ts
+  // queries this.
+  'disk_quota_v1_',
 ];
 
 function isTenantTable(name) {

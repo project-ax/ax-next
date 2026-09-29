@@ -124,6 +124,25 @@ describe('skill.propose handler (TASK-74)', () => {
     expect((await skillProposeHandler(validPayload, boundCtx(), bus)).status).toBe(200);
   });
 
+  it('TASK-690: a bundle write refused by the storage limit is a model-actionable 409, not an opaque 500', async () => {
+    // skills:propose writes the bundle through blob:put, which throws code
+    // 'rejected' when a blob:pre-put subscriber refuses. The message is
+    // plugin-supplied (forgeable, I9), so the wire carries a FIXED sentence.
+    const bus = busWithPropose(async () => {
+      throw new PluginError({
+        code: 'rejected',
+        plugin: '@ax/blob-store-fs',
+        hookName: 'blob:put',
+        message: 'secret-internal-detail',
+      });
+    });
+    const r = await skillProposeHandler(validPayload, boundCtx(), bus);
+    expect(r.status).toBe(409);
+    const text = JSON.stringify((r as { body: unknown }).body);
+    expect(text).toContain('storage is full');
+    expect(text).not.toContain('secret-internal-detail');
+  });
+
   it('maps a PluginError from the hook (invalid manifest) to its HTTP status', async () => {
     const bus = busWithPropose(async () => {
       throw new PluginError({ code: 'invalid-manifest', plugin: '@ax/skills', message: 'bad' });

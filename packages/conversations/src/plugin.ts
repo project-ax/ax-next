@@ -29,6 +29,7 @@ import {
 } from './store.js';
 import {
   AppendTranscriptOutputSchema,
+  CONVERSATIONS_PURGED_CHUNK_SIZE,
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
@@ -46,6 +47,7 @@ import type {
   ReplaceTranscriptInput,
   ReplaceTranscriptOutput,
   ConversationDisplayEvent,
+  ConversationsPurgedEvent,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -179,11 +181,16 @@ export function createConversationsPlugin(): Plugin {
       // the SDK jsonl never sees — chat:turn-error (surfaced provider/sandbox
       // errors) and chat:permission-request (approval cards) — and persist
       // them into the display event log so redisplay includes them.
+      // TASK-718: agents:deleted hard-deletes the agent's conversations,
+      // events and transcripts. The manifest has no field for hooks a plugin
+      // FIRES; the one it fires in response (`conversations:purged`) is
+      // documented at its fire site, in purgeConversationsForDeletedAgent.
       subscribes: [
         'chat:turn-end',
         'session:terminate',
         'chat:turn-error',
         'chat:permission-request',
+        'agents:deleted',
       ],
     },
 
@@ -333,7 +340,7 @@ export function createConversationsPlugin(): Plugin {
       bus.registerService<AppendEventInput, AppendEventOutput>(
         'conversations:append-event',
         PLUGIN_NAME,
-        async (_ctx, input) => appendEvent(localStore, input),
+        async (ctx, input) => appendEvent(localStore, ctx, input),
       );
 
       // TASK-67 (out-of-git Part B / B2): the resume transcript store. All
@@ -428,6 +435,20 @@ export function createConversationsPlugin(): Plugin {
           return undefined;
         },
       );
+
+      // TASK-718: an agent was deleted — hard-delete its conversations (and
+      // their events + transcripts) and announce what went so other plugins can
+      // drop the rows they keep per conversation. @ax/agents fires this AFTER
+      // the agent row is gone, with `{ agentId, ownerId, ownerType }`; only
+      // `agentId` matters here. Subscriber MUST NOT throw — it logs + swallows.
+      bus.subscribe<AgentDeletedPayload>(
+        'agents:deleted',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          await purgeConversationsForDeletedAgent(localStore, bus, ctx, payload);
+          return undefined;
+        },
+      );
     },
 
     async shutdown() {
@@ -459,6 +480,14 @@ interface TurnEndPayload {
 // are forward-compat and we ignore them.
 interface SessionTerminatePayload {
   sessionId?: string;
+}
+
+// agents:deleted fire payload (TASK-718). @ax/agents fires
+// `{ agentId, ownerId, ownerType }` after the agent row is gone; duck-typed
+// here (no cross-plugin import). Only `agentId` is used, and it is validated:
+// the field is untrusted at the subscriber boundary like any other payload.
+interface AgentDeletedPayload {
+  agentId?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,6 +526,74 @@ interface PermissionRequestPayload {
   skillId?: string;
   host?: string;
   [k: string]: unknown;
+}
+
+/**
+ * TASK-718: the `agents:deleted` subscriber. Deleting an agent used to leave
+ * every conversation, display event and transcript row it ever had behind, for
+ * good: nothing hard-deleted these tables, and every per-conversation hook
+ * answers 404 once the agent is gone, so nobody could see or remove them.
+ *
+ * Product decision: conversations are deleted WITH the agent (no retention),
+ * for every user who talked to it. Hence `purgeForAgent` keys on agent_id alone
+ * and includes soft-deleted and hidden rows.
+ *
+ * Order matters: purge (one transaction) FIRST, announce SECOND. The
+ * `conversations:purged` fire below is deliberately outside the transaction, so
+ * a subscriber never sees ids whose deletion could still roll back, and a slow
+ * or failing subscriber can never hold the purge open or undo it.
+ *
+ * Subscriber-must-not-throw (K10): every failure (an invalid payload, a
+ * database error, a fire that throws) is logged at `error` and swallowed. The
+ * agent row is already gone by the time this runs; failing here would only tell
+ * @ax/agents about a problem it cannot act on.
+ */
+async function purgeConversationsForDeletedAgent(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  payload: AgentDeletedPayload,
+): Promise<void> {
+  const agentId = payload?.agentId;
+  try {
+    // A payload that is not `{ agentId: <non-empty string> }` is a caller bug.
+    // Refuse it HERE as well as in the store: nothing may ever reach a delete
+    // keyed on an empty or non-string value.
+    if (typeof agentId !== 'string' || agentId.length === 0) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName: 'agents:deleted',
+        message: "'agentId' must be a non-empty string",
+      });
+    }
+    const conversationIds = await store.purgeForAgent(agentId);
+    ctx.logger.info('conversations_purged_for_deleted_agent', {
+      agentId,
+      count: conversationIds.length,
+    });
+
+    // `conversations:purged`: a subscriber hook this plugin FIRES for others
+    // (@ax/attachments deletes the rows it keeps per conversation). Payload is
+    // ConversationsPurgedEvent `{ conversationIds }`, at most
+    // CONVERSATIONS_PURGED_CHUNK_SIZE ids per fire so a subscriber's own query
+    // stays bounded however many conversations the agent had. Nothing is fired
+    // when nothing was purged. Not an IPC action; domain vocabulary only.
+    //
+    // Alternate impl: a different conversations backend fires the same event,
+    // and any store that keeps per-conversation data (a blob service, a search
+    // index) subscribes the same way.
+    for (let i = 0; i < conversationIds.length; i += CONVERSATIONS_PURGED_CHUNK_SIZE) {
+      await bus.fire('conversations:purged', ctx, {
+        conversationIds: conversationIds.slice(i, i + CONVERSATIONS_PURGED_CHUNK_SIZE),
+      } satisfies ConversationsPurgedEvent);
+    }
+  } catch (err) {
+    ctx.logger.error('conversations_purge_for_deleted_agent_failed', {
+      agentId,
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
 }
 
 async function handleTurnEnd(
@@ -543,6 +640,7 @@ async function handleTurnEnd(
  */
 async function appendEvent(
   store: ConversationStore,
+  ctx: AgentContext,
   input: AppendEventInput,
 ): Promise<AppendEventOutput> {
   const hookName = 'conversations:append-event';
@@ -551,6 +649,22 @@ async function appendEvent(
     'conversationId',
     hookName,
   );
+  // TASK-718: a turn already in flight when its agent was deleted finishes
+  // AFTER the purge and would write an event row for a conversation that no
+  // longer exists: an orphan nothing can ever read or clean up. Drop it quietly.
+  // The turn-end that got here has nothing left to display into, and failing it
+  // would only turn a clean delete into a runner-side error. Rows that DO exist,
+  // soft-deleted ones included, are written as before.
+  //
+  // Check-then-insert is not atomic: a purge that commits in the millisecond
+  // between the two can still leave one orphan. This shrinks "every late turn"
+  // to "one racing append", and neither is readable.
+  if (!(await store.conversationExists(conversationId))) {
+    ctx.logger.debug('conversations_append_event_skipped_missing_conversation', {
+      conversationId,
+    });
+    return;
+  }
   await store.appendEvent({
     conversationId,
     kind: input.kind,
@@ -586,6 +700,7 @@ async function appendTranscript(
     'conversationId',
     hookName,
   );
+  await assertConversationExists(store, conversationId, hookName);
   const currentMax = await store.getTranscriptMaxSeq(conversationId);
   const expectedPrefixHash = await store.getTranscriptPrefixHash(
     conversationId,
@@ -615,8 +730,41 @@ async function replaceTranscript(
     'conversationId',
     hookName,
   );
+  await assertConversationExists(store, conversationId, hookName);
   const maxSeq = await store.replaceTranscript(conversationId, input.lines);
   return { maxSeq };
+}
+
+/**
+ * TASK-718: refuse to write a transcript for a conversation whose row is gone
+ * (purged with its agent). Throws `not-found` rather than answering quietly, for
+ * two reasons that both come from the only caller, the host's
+ * `session.append-transcript` / `.replace-transcript` IPC handlers:
+ *
+ *   - `not-found` maps to a 404 (`mapPluginError`), which the runner's client
+ *     treats as non-retryable. A success-shaped answer would be a lie: the
+ *     runner would take `appended` to mean the transcript is durable and go on to
+ *     bind its session id to it. `resync-required` would be worse: the runner
+ *     answers that by re-shipping the whole file through replace-transcript,
+ *     which would fail the same way.
+ *   - The failure is contained to that one runner's transcript ship. The agent
+ *     is deleted, so there is nothing left to protect.
+ *
+ * Soft-deleted rows DO exist, so they pass: a user deleting a chat from their
+ * sidebar mid-turn must not break that turn's transcript.
+ */
+async function assertConversationExists(
+  store: ConversationStore,
+  conversationId: string,
+  hookName: string,
+): Promise<void> {
+  if (await store.conversationExists(conversationId)) return;
+  throw new PluginError({
+    code: 'not-found',
+    plugin: PLUGIN_NAME,
+    hookName,
+    message: `conversation '${conversationId}' not found`,
+  });
 }
 
 /** conversations:get-transcript hook handler (resume read). */

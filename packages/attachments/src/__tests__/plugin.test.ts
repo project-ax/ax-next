@@ -90,7 +90,8 @@ describe('@ax/attachments plugin manifest', () => {
     // The git path is removed (acceptance criterion).
     expect(plugin.manifest.calls).not.toContain('workspace:apply');
     expect(plugin.manifest.calls).not.toContain('workspace:read');
-    expect(plugin.manifest.subscribes).toEqual([]);
+    // TASK-718: the one subscription — drop a purged conversation's metadata rows.
+    expect(plugin.manifest.subscribes).toEqual(['conversations:purged']);
   });
 });
 

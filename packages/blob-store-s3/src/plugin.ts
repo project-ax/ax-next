@@ -1,5 +1,5 @@
 import { S3Client } from '@aws-sdk/client-s3';
-import type { Plugin } from '@ax/core';
+import { registerBlobPutFacade, type Plugin } from '@ax/core';
 import { z, type ZodType } from 'zod';
 import { S3BlobStore } from './store.js';
 
@@ -49,7 +49,12 @@ export interface BlobStoreS3Config {
 }
 
 // ---------------------------------------------------------------------------
-// blob:* hook I/O types. Payloads carry ONLY sha256 / bytes / size — no backend
+// blob:* hook I/O types. `blob:put` is a PUBLIC facade owned by @ax/core
+// (`registerBlobPutFacade`): it fires the `blob:pre-put` veto, calls this
+// backend's raw `blob:put-internal`, then fires `blob:stored`. Callers keep
+// calling `blob:put`; only the registration moved.
+//
+// Payloads carry ONLY sha256 / bytes / size — no backend
 // vocabulary (no bucket, endpoint, region, oid, lfs, pack, ref, commit, path,
 // key). This is a STRUCTURALLY-IDENTICAL copy of @ax/blob-store-fs's surface,
 // re-declared (NOT imported — invariant I2) so the two backends agree on the
@@ -158,17 +163,20 @@ function blobStoreS3Plugin(store: S3BlobStore): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['blob:put', 'blob:get', 'blob:stat', 'blob:delete'],
+      registers: ['blob:put', 'blob:put-internal', 'blob:get', 'blob:stat', 'blob:delete'],
       calls: [],
       subscribes: [],
     },
     async init({ bus }) {
+      // The raw write. `blob:put` itself is the @ax/core facade below, so the
+      // veto/notify hooks fire around every write — no caller can skip them.
       bus.registerService<BlobPutInput, BlobPutOutput>(
-        'blob:put',
+        'blob:put-internal',
         PLUGIN_NAME,
         async (_ctx, { bytes }) => store.put(bytes),
         { returns: BlobPutOutputSchema },
       );
+      registerBlobPutFacade(bus, PLUGIN_NAME, { returns: BlobPutOutputSchema });
 
       bus.registerService<BlobGetInput, BlobGetOutput>(
         'blob:get',

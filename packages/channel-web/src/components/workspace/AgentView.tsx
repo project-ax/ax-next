@@ -42,6 +42,7 @@ import {
 } from '@/lib/new-agent-return-focus';
 import { relativeDay } from '@/lib/workspace-time';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
+import { StorageFullError } from '@/lib/storage-full';
 import {
   readAlertVariant,
   toReadOutcome,
@@ -507,6 +508,15 @@ export function AgentView({
      * when the reply ends, since "may still be running" is then untrue.
      */
     source: 'turn' | 'stop';
+    /**
+     * The whole sentence, when the send was turned away because the person's
+     * storage is full (TASK-690). It REPLACES the `TURN_COPY` headline: "That
+     * reply didn’t finish" would be untrue (no reply ever started) and would
+     * hide the one thing they can act on — ask an admin for more room. Resend
+     * stays, because that is the way back once someone has: the words are still
+     * in `sent`.
+     */
+    refusal?: string;
   } | null>(null);
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
@@ -1064,7 +1074,12 @@ export function AgentView({
           to the control nobody thinks of as one.
         */
         if (kind === 'gone') conversationRef.current = null;
-        setTurnError({ kind, sentence: null, source: 'turn' });
+        setTurnError({
+          kind,
+          sentence: null,
+          source: 'turn',
+          ...(e instanceof StorageFullError ? { refusal: e.sentence } : {}),
+        });
       }
     },
     [agentId, streamFrom],
@@ -1620,9 +1635,10 @@ export function AgentView({
                   <Alert variant={readAlertVariant(turnError.kind)}>
                     <AlertDescription className="flex flex-col items-start gap-2">
                       <span>
-                        {(turnError.source === 'stop' ? STOP_COPY : TURN_COPY)[
-                          turnError.kind
-                        ]}
+                        {turnError.refusal ??
+                          (turnError.source === 'stop' ? STOP_COPY : TURN_COPY)[
+                            turnError.kind
+                          ]}
                       </span>
                       {/*
                         UNTRUSTED PLAIN TEXT, deliberately rendered as a text

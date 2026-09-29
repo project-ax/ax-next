@@ -1,9 +1,15 @@
-import type { AgentContext, HookBus } from '@ax/core';
+import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 import {
   BlobGetRequestSchema,
   BlobPutResponseSchema,
 } from '@ax/ipc-protocol';
-import { internalError, logInternalError, notFound, validationError } from '../errors.js';
+import {
+  hookRejected,
+  internalError,
+  logInternalError,
+  notFound,
+  validationError,
+} from '../errors.js';
 import type { ActionHandler, HandlerResult } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -24,9 +30,17 @@ import type { ActionHandler, HandlerResult } from './types.js';
 // pure content-addressed write. The METADATA row (which conversation owns this
 // blob) is inserted separately by `artifact.publish` / the host-side
 // attachments path, so a blob with no referencing row is just an orphan a GC
-// sweep reclaims (design open-question #3). The bytes alone leak nothing (you
-// can't read a blob back without knowing its sha, and you only learn the sha if
-// you stored it).
+// sweep reclaims (design open-question #3; no such sweep exists yet, so orphans
+// stay). The bytes alone leak nothing (you can't read a blob back without knowing
+// its sha, and you only learn the sha if you stored it).
+//
+// STORAGE LIMIT (TASK-690). Unowned in the store does NOT mean free: `blob:put`
+// is a facade that fires the veto `blob:pre-put`, and the session's
+// `ctx.userId` (the invoking person) is who @ax/disk-quota charges. A runner
+// looping on this action with no matching `artifact.publish` row is exactly the
+// fill-the-disk shape the limit exists for. A refusal comes back as 409
+// HOOK_REJECTED with the subscriber's host-authored reason, so the agent can
+// tell the person, instead of a bare 500.
 // ---------------------------------------------------------------------------
 
 // Binary actions receive the raw REQUEST body PLUS the parsed request URL, so
@@ -62,6 +76,13 @@ export const blobPutHandler: BinaryActionHandler = async (
       bytes: new Uint8Array(body.buffer, body.byteOffset, body.byteLength),
     });
   } catch (err) {
+    // A `blob:pre-put` veto (a storage limit, TASK-690) is an answer, not a
+    // fault: hand the runner the subscriber's host-authored reason so the agent
+    // can tell the person. Everything else stays a sanitized 500.
+    if (err instanceof PluginError && err.code === 'rejected') {
+      ctx.logger.warn('blob_put_refused', { action: 'blob.put', reason: err.message });
+      return hookRejected(err.message);
+    }
     logInternalError(ctx.logger, 'blob.put', err);
     return internalError();
   }

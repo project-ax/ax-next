@@ -35,6 +35,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
+import { StorageFullError } from '@/lib/storage-full';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import {
   composerSendBlock,
@@ -160,10 +161,15 @@ export function HomeComposer({
       // neither, so a 503 leaves the message and the files both sitting there
       // and the retry is one click rather than a re-pick.
       clear();
-    } catch {
+    } catch (e) {
       setProposal(null);
       setError(
-        `We could not get that to ${nameOf(agentId)}. Nothing was sent, and your message is still here — try again in a moment.`,
+        // A full storage is not a blip: "try again in a moment" would be a
+        // false hope. The refusal carries its own sentence (TASK-690) — what
+        // happened, and who can give more room.
+        e instanceof StorageFullError
+          ? e.sentence
+          : `We could not get that to ${nameOf(agentId)}. Nothing was sent, and your message is still here — try again in a moment.`,
       );
     } finally {
       setSending(false);

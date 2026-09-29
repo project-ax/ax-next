@@ -282,7 +282,7 @@ kubectl -n ax-next scale statefulset/ax-next-git-server-experimental --replicas=
 kubectl -n ax-next rollout status statefulset/ax-next-git-server-experimental
 ```
 
-**`workspace.backend: local` (GKE and production; there is no git-server).** The repos are `ws-*.git` directories on the host's workspace PVC, `ax-next-workspace`. **Don't delete that PVC.** It also holds the blob store (`blobs/`, which has attachments and published artifacts) and `skill-bundles/`. We delete only the repos:
+**`workspace.backend: local` (GKE and production; there is no git-server).** The repos are `ws-*.git` directories on the host's workspace PVC, `ax-next-workspace`. **Don't delete that PVC.** It also holds the blob store (`blobs/`, which has attachments, published artifacts and skill-bundle files; the old `skill-bundles/` directory is retired). Each person's share of this volume (repos plus blobs) is capped by the storage limit in Settings (`@ax/disk-quota`), so one person cannot fill it for everyone. We delete only the repos:
 
 ```bash
 kubectl -n ax-next apply -f - <<'YAML'

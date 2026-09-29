@@ -16,6 +16,7 @@ import {
   WorkspaceDiffOutputSchema,
   WorkspaceListOutputSchema,
   WorkspaceReadOutputSchema,
+  WorkspaceUsageOutputSchema,
   type Bytes,
   type FileChange,
   type HookBus,
@@ -29,8 +30,11 @@ import {
   type WorkspaceListOutput,
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
+  type WorkspaceUsageInput,
+  type WorkspaceUsageOutput,
   type WorkspaceVersion,
 } from '@ax/core';
+import { measureDirBytes } from './disk-usage.js';
 import type {
   WorkspaceApplyBundleInput,
   WorkspaceApplyBundleOutput,
@@ -1172,6 +1176,22 @@ export function registerWorkspaceGitHooks(
       return { paths };
     },
     { returns: WorkspaceListOutputSchema },
+  );
+
+  // `workspace:usage` -- how many bytes THIS agent's repo occupies on disk,
+  // history included (TASK-690). Read-only, so it deliberately does not take
+  // the write mutex: a write that lands mid-walk just makes the number a
+  // little stale, and the caller re-measures after its next write anyway.
+  // It also does not `ensureRepo`: measuring must not materialize a repo, so
+  // an agent that has never written reports 0.
+  bus.registerService<WorkspaceUsageInput, WorkspaceUsageOutput>(
+    'workspace:usage',
+    PLUGIN_NAME,
+    async (ctx) => {
+      const { gitdir } = agentRepo(ctx, 'workspace:usage');
+      return { bytes: await measureDirBytes(gitdir) };
+    },
+    { returns: WorkspaceUsageOutputSchema },
   );
 
   bus.registerService<WorkspaceDiffInput, WorkspaceDiffOutput>(

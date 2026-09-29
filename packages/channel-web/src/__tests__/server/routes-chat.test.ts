@@ -361,6 +361,10 @@ interface BootResult {
 // the workspace:* hooks stay registered for OTHER plugins booted here that still
 // call them (chat-orchestrator etc.). Mirrors the inline stub in
 // `packages/attachments/src/__tests__/contract.test.ts`.
+// TASK-690: when set, the mock `blob:put` below refuses like the real facade does
+// after a `blob:pre-put` veto. Reset by the storage-full test itself.
+let blobPutRefusal: string | undefined;
+
 function permissiveWorkspacePlugin(): Plugin {
   const blobs = new Map<string, Uint8Array>();
   const cas = new Map<string, Uint8Array>();
@@ -434,6 +438,16 @@ function permissiveWorkspacePlugin(): Plugin {
         'blob:put',
         'mock-workspace-permissive',
         async (_ctx, input: unknown) => {
+          // TASK-690: the real `blob:put` throws code 'rejected' when a
+          // `blob:pre-put` subscriber (the per-person storage limit) refuses.
+          if (blobPutRefusal !== undefined) {
+            throw new PluginError({
+              code: 'rejected',
+              plugin: 'mock-workspace-permissive',
+              hookName: 'blob:put',
+              message: blobPutRefusal,
+            });
+          }
           const bytes = (input as { bytes: Uint8Array }).bytes;
           const sha256 = `${bytes.length.toString(16).padStart(8, '0')}${(bytes[0] ?? 0)
             .toString(16)
@@ -2273,6 +2287,43 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     expect(r.status).toBe(400);
     expect(await r.json()).toEqual({ error: 'attachment-not-found' });
     // No agent:invoke fired.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(booted.chatRunCaptures).toHaveLength(0);
+  });
+
+  it('TASK-690: returns 413 storage-full, with the sentence, when the storage limit refuses the upload; nothing is dispatched', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+    const stored = await booted.harness.bus.call<
+      unknown,
+      { attachmentId: string }
+    >('attachments:store-temp', userCtx('userA'), {
+      bytes: Buffer.from('hello pdf bytes'),
+      displayName: 'note.pdf',
+      mediaType: 'application/pdf',
+    });
+
+    const sentence = "You've used all of your storage (1 GB of 1 GB), so that file wasn't saved.";
+    blobPutRefusal = sentence;
+    try {
+      const r = await postMessage(booted.port, {
+        conversationId: null,
+        agentId: 'agt_test',
+        contentBlocks: [
+          { type: 'text', text: 'here is a doc' },
+          { type: 'attachment_ref', attachmentId: stored.attachmentId },
+        ],
+      });
+      // Not a 500: the refusal is an answer the person can act on.
+      expect(r.status).toBe(413);
+      expect(await r.json()).toEqual({ error: 'storage-full', message: sentence });
+    } finally {
+      blobPutRefusal = undefined;
+    }
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(booted.chatRunCaptures).toHaveLength(0);
   });

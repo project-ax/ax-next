@@ -29,6 +29,7 @@ import {
   DECISION_THREAD_READ_FAILED,
 } from '../decision-copy';
 import { uploadAttachment } from '@/lib/attachment-upload';
+import { StorageFullError } from '@/lib/storage-full';
 import { rail as railFixture } from './rail-fixture';
 import {
   getWorkspaceGrantSnapshot,
@@ -421,6 +422,76 @@ describe('AgentView — an excerpt that will not open', () => {
   because `conversationRef` was left pointing at the vanished row, so every
   following message failed the same way for the rest of the session.
 */
+/*
+  TASK-690 — a send the server turned away because the person's storage is full.
+
+  It used to arrive as a bare 413, which `toReadOutcome` files under `failed`:
+  "That reply didn’t finish. Nothing you sent was lost." Untrue (no reply ever
+  started) and useless (it hides the one thing they can do: ask an admin). The
+  refusal now carries its sentence, and that sentence IS the headline. Resend
+  stays: the words are still held, and once an admin has given more room it is
+  the way back.
+*/
+describe('a send the server refused because storage is full', () => {
+  const refusal = new StorageFullError(
+    '/api/chat/messages',
+    'Your storage is full, so that message could not go. Ask an admin for more room, then try again.',
+  );
+
+  it('shows the refusal\'s sentence instead of "that reply didn’t finish"', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(refusal);
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'here is the big file' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect(await screen.findByText(refusal.sentence)).toBeTruthy();
+    expect(screen.queryByText(/didn’t finish/)).toBeNull();
+    expect(screen.queryByText(/Nothing you sent was lost/)).toBeNull();
+    // No plumbing on screen.
+    expect(document.body.textContent).not.toMatch(/413|storage-full|→/);
+  });
+
+  it('keeps Resend, and Resend sends the same words again', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(refusal);
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'here is the big file' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await screen.findByText(refusal.sentence);
+
+    sendMock.mockClear();
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r2' });
+    streamMock.mockResolvedValue(undefined as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
+
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'here is the big file' }),
+      ),
+    );
+    // A retried send that lands retires the refusal.
+    await waitFor(() => expect(screen.queryByText(refusal.sentence)).toBeNull());
+  });
+
+  it('leaves an ordinary failed send worded as it always was', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(new WorkspaceApiError('/chat/messages', 503));
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'hello' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect(await screen.findByText(/didn’t finish/)).toBeTruthy();
+    expect(screen.queryByText(/storage is full/i)).toBeNull();
+  });
+});
+
 describe('a send into a conversation that is gone', () => {
   it('withdraws Resend and lets the next message start somewhere new', async () => {
     agentMock.mockResolvedValue(detail());

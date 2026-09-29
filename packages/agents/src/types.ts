@@ -459,4 +459,13 @@ export interface AgentsConfig {
    * default of three Claude IDs. Enforced at create/update time.
    */
   allowedModels?: readonly string[];
+  /**
+   * How long `agents:delete` waits on ONE `agents:deleted` subscriber before it
+   * stops waiting and lets the next one run (TASK-718). Default
+   * `AGENTS_DELETED_SUBSCRIBER_TIMEOUT_MS`. A timed-out subscriber is not killed
+   * -- it gets an aborted `signal` and keeps whatever it was doing -- it just no
+   * longer holds the delete, or the subscribers after it, hostage. Tests shrink
+   * it; production has no reason to.
+   */
+  deletedSubscriberTimeoutMs?: number;
 }

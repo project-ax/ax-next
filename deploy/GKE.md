@@ -783,7 +783,7 @@ Record every drill here, including the ones that fail:
 
 | Date | Snapshot age | Restore to disks | Attach and check | Result | Notes |
 |---|---|---|---|---|---|
-| _not yet run_ | | | | | The first drill fills this in. |
+| 2026-09-29 | ~3 min (on-demand snapshots) | 0m44s | 0m22s | PASS | First drill, on prod (`ax-next-std`), right after `backups.sh enable --snapshot-now`. Workspace disk (100 GB, 1 repo): fsck clean, `blobs/` present. Facts disk (10 GB): `facts.db` integrity_check ok; it held 0 fact rows because prod memory was empty at the time, so this drill did not prove a non-empty facts database restores. Cleanup 0m20s, total 1m26s. Not rehearsed yet: the copy-back step of a real restore, the Cloud SQL point-in-time clone, and Filestore (not backed up). |
 
 ### Restoring for real
 

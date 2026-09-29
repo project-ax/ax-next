@@ -345,7 +345,10 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
 - **Orchestration:** `agent:invoke`, `agent:interrupt` (`@ax/chat-orchestrator`).
 - **Workspace:** `workspace:read`, `workspace:list`, `workspace:apply` (via the
   core facade), and `workspace:diff`. The `workspace:pre-apply` / `workspace:applied`
-  subscriber pair is the policy/scanner chokepoint. The bundle fast-path hooks
+  subscriber pair is the policy/scanner chokepoint (and, since TASK-690, the
+  storage-limit gate: `workspace:pre-apply` carries `sizeBytes`). `blob:put`
+  is the same shape (facade over `blob:put-internal`, see "Storage limit"
+  below). The bundle fast-path hooks
   (`workspace:apply-bundle`, `workspace:export-baseline-bundle`) are **optional**
   and git-specific; their payload types live in `@ax/workspace-bundle-protocol`
   (ARCH-3), not core, because they carry git vocabulary.
@@ -359,6 +362,24 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
 - **Conversations:** `conversations:get-metadata`,
   `conversations:store-runner-session` (and the `conversations:bind-session` /
   `:get` / `:list` family).
+- **Deleting an agent (TASK-718).** `agents:deleted { agentId, ownerId, ownerType }`
+  is a subscriber hook `@ax/agents` fires once the agent row is gone; each
+  subscriber gets 150 s before the next one runs, so a wedged one cannot hold the
+  rest hostage. There is no foreign key from any table to `agents_v1_agents` (a
+  plugin owns its own rows), so **every plugin that keeps rows keyed on an agent
+  subscribes and deletes its own**: conversations (+ events + transcripts, hard
+  delete, no retention), sessions (terminated first, which revokes the runner's
+  token), skills, connectors, host grants, decisions, MCP handshakes, remembered
+  facts, routines, the durable-files directory (a reclaim pod that runs as root
+  with `DAC_OVERRIDE` + `FOWNER` only) and the orchestrator's warm sandboxes.
+  Rows keyed only on a conversation id are cleaned by a second hook,
+  `conversations:purged { conversationIds }`, which `@ax/conversations` fires
+  after its purge commits (at most 500 ids per fire; today `@ax/attachments`
+  subscribes). `scripts/__tests__/agent-keyed-tables-are-cleaned.test.js` fails
+  the PR that adds an agent-scoped table with no cleanup. **Not covered yet**
+  (no delete hook exists, or the store is shared): the agent's git workspace
+  repository, blob bytes behind attachments, `routines_v1_fires` history (kept on
+  purpose), and key-value leftovers.
 - **Credentials:** `credentials:get`, `credentials:resolve:<kind>`,
   `credentials:list`, `credentials:list-kinds`, plus the `credentials:store-blob:*`
   storage seam.
@@ -397,6 +418,41 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     `{ blocked: true, reason }`; blocked means suspended or past 2x the daily
     limit. Spend is the larger of runner-reported and proxy-measured, plus helper
     calls. Design and the residual gaps: `2026-09-29-provider-call-metering.md`.
+- **Storage limit (TASK-690, `@ax/disk-quota`):** a per-owner limit on the ONE
+  shared volume that holds every agent workspace and every blob. Design note:
+  `2026-09-29-workspace-disk-quota.md`.
+  - `workspace:pre-apply` payload gained an optional **`sizeBytes`** ("roughly
+    how many bytes this write adds"). It is set on BOTH firing sites: the
+    `@ax/core` `workspace:apply` facade (sum of the put contents, full change
+    set) and `@ax/ipc-core`'s commit-notify (decoded bundle length, derived
+    host-side, never runner-claimed). The subscriber's veto reason is **prose**:
+    on the runner path it rides `accepted:false, recoverable:false` (the runner
+    resets the tree; the reason reaches the agent as `rejectionReason` ONLY on
+    the mid-turn flush before a host tool, the end-of-turn save drops it);
+    in-process callers get `PluginError` `rejected`.
+  - `chat:start` veto reason **`storage-full`** (owned by `@ax/disk-quota`,
+    surfaces as `chat:start:storage-full`, channel-web maps it to a sentence):
+    the front door for a person whose storage is full, needed because the
+    end-of-turn save refusal above is silent. Unlike the write gates it fails
+    **open**.
+  - **`blob:put` is a facade** (`registerBlobPutFacade` in `@ax/core`, like
+    `workspace:apply`): veto `blob:pre-put { size }` → the backend's
+    `blob:put-internal` → notify `blob:stored { sha256, size }`. Both backends
+    (`@ax/blob-store-fs`, `-s3`) register the `-internal` hook. A refusal is
+    `PluginError` `rejected` carrying the sentence: the IPC `blob.put` and
+    `skill.propose` handlers answer 409, the skills routes and the chat send
+    answer 413 `storage-full`. `@ax/skills` now passes the owning person to the
+    write (`writeTree(files, ownerUserId?)`); a `system` ctx is not attributed.
+  - **`workspace:usage {} → { bytes }`** (optional service hook; routes by
+    `ctx.agentId`): how much storage the agent's workspace occupies, history
+    included. Registered by the local git backend only; the multi-replica
+    backend does not register it yet, so the plugin degrades to not measuring
+    workspaces there.
+  - The gate fails closed and is not a reservation (concurrent writes can each
+    pass; overshoot is bounded by concurrent writes x the per-write cap). The
+    limit is the admin-editable `settings:disk-quota`. Nothing frees storage
+    today (no blob delete or GC, git history keeps everything), which is why
+    the refusal sentences never tell a person to delete anything.
 
 ### Stable — covered by ARCH-13's long-tail rollout
 

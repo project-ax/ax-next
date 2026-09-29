@@ -64,6 +64,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -641,13 +642,19 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
               <DialogHeader>
                 <DialogTitle>Delete agent?</DialogTitle>
               </DialogHeader>
-              <p className="text-sm text-muted-foreground">
+              {/* TASK-718: say what goes with the agent. Every item named here
+                  is really deleted (conversations and their attachments, the
+                  agent's saved files, its routines) -- do not add a claim
+                  without the code behind it, and do not promise anything is
+                  kept. Data loss, so plain and direct: no jokes. */}
+              <DialogDescription>
                 Delete{' '}
                 <span className="font-medium text-foreground">
                   {pendingDelete.displayName}
                 </span>
-                ? This cannot be undone.
-              </p>
+                ? We will delete its conversations, the files in them, the files
+                it saved and its routines along with it. This cannot be undone.
+              </DialogDescription>
               <div className="flex justify-end gap-2">
                 <Button
                   variant="outline"

@@ -228,6 +228,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/tool-dispatcher',
         '@ax/tool-policy',
         '@ax/usage-limits',
+        '@ax/disk-quota',
         '@ax/validator-identity',
         '@ax/validator-routine',
         '@ax/validator-service',
@@ -415,7 +416,9 @@ describe('@ax/preset-k8s wiring', () => {
     // — exactly as `tool.execute-host` does.
     expect(d!.manifest.calls).toEqual(['database:get-instance', 'tool-policy:evaluate']);
     expect(d!.manifest.calls).not.toContain('tool:execute:request_capability');
-    expect(d!.manifest.subscribes).toEqual(['tool:pre-call']);
+    // `agents:deleted` (TASK-718): a deleted agent's decisions go with it. The
+    // gate is still the only `tool:pre-call` subscriber.
+    expect(d!.manifest.subscribes).toEqual(['tool:pre-call', 'agents:deleted']);
 
     // TASK-227 (AW-6). Both OPTIONAL, and the distinction is load-bearing in
     // both directions: a host with no conversations store treats every held
@@ -694,6 +697,62 @@ describe('@ax/preset-k8s wiring', () => {
     const opener = plugins.find((p) => p.manifest.registers.includes('proxy:open-session'));
     expect(opener?.manifest.name).toBe('@ax/credential-proxy');
     expect(plugins.map((p) => p.manifest.name)).toContain('@ax/chat-orchestrator');
+  });
+
+  it('loads @ax/disk-quota next to BOTH gates it depends on: workspace:pre-apply and blob:put (TASK-690)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const quota = plugins.find((p) => p.manifest.name === '@ax/disk-quota');
+    expect(quota).toBeDefined();
+    // Subscriber-only: no service hooks, so there is no second place a write
+    // can be sized and nothing can call around the gate.
+    expect(quota!.manifest.registers).toEqual([]);
+    expect(quota!.manifest.subscribes).toEqual([
+      'workspace:pre-apply',
+      'workspace:applied',
+      'blob:pre-put',
+      'blob:stored',
+      'chat:start',
+    ]);
+    expect(quota!.manifest.calls).toEqual([
+      'database:get-instance',
+      'storage:get',
+      'storage:set',
+      'http:register-route',
+      'auth:require-user',
+    ]);
+    for (const hook of quota!.manifest.calls) {
+      const owners = plugins
+        .filter((p) => p.manifest.name !== '@ax/disk-quota')
+        .filter((p) => p.manifest.registers.includes(hook))
+        .map((p) => p.manifest.name);
+      expect(owners, `no registrant for ${hook}`).toHaveLength(1);
+    }
+
+    // The gate is only real if the hooks it subscribes to are FIRED by
+    // something in this preset:
+    //   - blob:pre-put / blob:stored come from the blob:put FACADE, which
+    //     every blob backend registers behind (blob:put-internal). A backend
+    //     that registered a bare blob:put would silently switch the limit off
+    //     for every upload.
+    //   - workspace:pre-apply / workspace:applied come from the @ax/core
+    //     workspace:apply facade (in-process writers) and @ax/ipc-http's
+    //     commit-notify (the runner). Local backend registers the facade.
+    const blobBackends = plugins.filter((p) => p.manifest.registers.includes('blob:put'));
+    expect(blobBackends).toHaveLength(1);
+    expect(blobBackends[0]!.manifest.registers).toContain('blob:put-internal');
+    const ws = plugins.filter((p) => p.manifest.registers.includes('workspace:apply'));
+    expect(ws).toHaveLength(1);
+    expect(ws[0]!.manifest.registers).toContain('workspace:apply-internal');
+    expect(plugins.map((p) => p.manifest.name)).toContain('@ax/ipc-http');
+    // chat:start (the front door that tells a full person why their message
+    // was turned away) is fired by agent:invoke's owner.
+    expect(
+      plugins.find((p) => p.manifest.registers.includes('agent:invoke'))?.manifest.name,
+    ).toBe('@ax/chat-orchestrator');
+    // The workspace measurement + owner attribution the plugin uses.
+    expect(ws[0]!.manifest.registers).toContain('workspace:usage');
+    expect(plugins.some((p) => p.manifest.registers.includes('agents:resolve'))).toBe(true);
+    expect(plugins.some((p) => p.manifest.registers.includes('agents:list-personal-owners'))).toBe(true);
   });
 
   it("reads resting once a turn's reply is done, while the runner stays warm (TASK-686)", async () => {
@@ -1232,6 +1291,11 @@ describe('@ax/preset-k8s workspace backend selection', () => {
     // now the @ax/core policy facade and the backend's raw impl moved to
     // the internal hook. If a refactor accidentally drops a hook, this
     // fails before bootstrap does.
+    //
+    // `workspace:usage` (TASK-690) is OPTIONAL and only the local backend can
+    // measure its storage today, so it is pinned separately below: callers
+    // probe with `bus.hasService`, and the multi-replica backend must NOT
+    // claim it until it can answer.
     const expected = [
       'workspace:apply',
       'workspace:apply-bundle',
@@ -1258,7 +1322,7 @@ describe('@ax/preset-k8s workspace backend selection', () => {
         .flatMap((p) => p.manifest.registers)
         .filter((h) => h.startsWith('workspace:'))
         .sort();
-    expect(wsHooksFor(localPlugins)).toEqual(expected);
+    expect(wsHooksFor(localPlugins)).toEqual([...expected, 'workspace:usage']);
     expect(wsHooksFor(gitProtocolPlugins)).toEqual(expected);
   });
 });

@@ -3,7 +3,7 @@ import {
   stopPostgresContainer,
   startTestContainer,
 } from '@ax/test-harness';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -276,5 +276,105 @@ describe('createAuthoredConnectorsStore', () => {
     await store.activate({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'linear' });
     expect((await store.list('u1', 'a2'))[0]!.status).toBe('pending');
     expect((await store.list('u2', 'a1'))[0]!.status).toBe('pending');
+  });
+});
+
+// TASK-718 — deleting an agent removes every authored draft keyed on it. The
+// table has no FK to the agents table (cross-plugin FKs are banned), so the
+// `agents:deleted` subscriber is the only thing that ever clears it.
+describe('AuthoredConnectorsStore.deleteAllForAgent (TASK-718)', () => {
+  async function seed(
+    store: ReturnType<typeof createAuthoredConnectorsStore>,
+    agentId: string,
+    owners: string[],
+    connectorIds: string[],
+  ): Promise<void> {
+    for (const ownerUserId of owners) {
+      for (const connectorId of connectorIds) {
+        await store.upsert({
+          ownerUserId,
+          agentId,
+          connectorId,
+          name: `${ownerUserId}/${connectorId}`,
+          usageNote: '',
+          keyMode: 'personal',
+          proposal: caps(),
+        });
+      }
+    }
+  }
+
+  async function count(db: Kysely<ConnectorDatabase>, agentId: string): Promise<number> {
+    const res = await sql<{ n: number }>`
+      SELECT count(*)::int AS n FROM connectors_v1_authored WHERE agent_id = ${agentId}
+    `.execute(db);
+    return res.rows[0]!.n;
+  }
+
+  it('deletes every draft keyed on the agent, across owners, connectors and statuses', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+    // A team agent: drafts for several owner users, several connectors.
+    await seed(store, 'agt_A', ['u1', 'u2', 'u3'], ['linear', 'notion']);
+    // One draft already approved: an `active` row is still the agent's row.
+    await store.activate({ ownerUserId: 'u2', agentId: 'agt_A', connectorId: 'notion' });
+    expect(await count(db, 'agt_A')).toBe(6);
+
+    const removed = await store.deleteAllForAgent('agt_A');
+
+    expect(removed).toEqual({ removed: 6 });
+    expect(await count(db, 'agt_A')).toBe(0);
+  });
+
+  it("leaves other agents' drafts (including an id sharing a prefix) and the live registry untouched", async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+    await seed(store, 'agt_A', ['u1', 'u2'], ['linear']);
+    await seed(store, 'agt_B', ['u1', 'u2'], ['linear', 'notion']);
+    await seed(store, 'agt_A2', ['u1'], ['linear']);
+    // connectors_v1_connectors has NO agent column: it is the user's own
+    // registry, not the agent's data, so the purge must not reach it.
+    await sql`
+      INSERT INTO connectors_v1_connectors
+        (owner_user_id, connector_id, name, key_mode, visibility, capabilities)
+      VALUES ('u1', 'linear', 'Linear', 'personal', 'private', ${JSON.stringify(caps())}::jsonb)
+    `.execute(db);
+
+    await store.deleteAllForAgent('agt_A');
+
+    expect(await count(db, 'agt_A')).toBe(0);
+    expect(await count(db, 'agt_B')).toBe(4);
+    expect(await count(db, 'agt_A2')).toBe(1);
+    const live = await sql<{ n: number }>`
+      SELECT count(*)::int AS n FROM connectors_v1_connectors
+    `.execute(db);
+    expect(live.rows[0]!.n).toBe(1);
+  });
+
+  it('is idempotent: an agent with no drafts removes nothing and does not throw', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+    await seed(store, 'agt_B', ['u1'], ['linear']);
+
+    expect(await store.deleteAllForAgent('agt_never_had_rows')).toEqual({ removed: 0 });
+    expect(await count(db, 'agt_B')).toBe(1);
+  });
+
+  it('refuses an empty agent id and deletes nothing (an empty key must never run a delete)', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+    // A row whose agent_id IS the empty string is the bait: a naive
+    // `WHERE agent_id = ''` would remove it.
+    await seed(store, '', ['u1'], ['linear']);
+    await seed(store, 'agt_B', ['u1'], ['linear']);
+
+    await expect(store.deleteAllForAgent('')).rejects.toThrow(/agentId/);
+
+    expect(await count(db, '')).toBe(1);
+    expect(await count(db, 'agt_B')).toBe(1);
   });
 });

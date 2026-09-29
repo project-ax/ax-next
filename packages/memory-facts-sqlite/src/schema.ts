@@ -510,9 +510,10 @@ export function indexFactRow(
 
 /**
  * Drop the derived-index rows for a set of ids — the counterpart to
- * `indexFactRow`, used by `memory:facts:clear` only.
+ * `indexFactRow`, used by `deleteFactsForKey` only (`memory:facts:clear` and
+ * the `agents:deleted` purge both go through it).
  *
- * It exists because `clear` DELETEs the base rows: without this the FTS5
+ * It exists because those DELETE the base rows: without this the FTS5
  * shadow would keep the tenant's statement text on disk forever, unreachable
  * through recall (the join drops it) but very much still there. For a
  * "forget this" operation that is the wrong kind of leftover.

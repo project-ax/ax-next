@@ -9,8 +9,9 @@ import { sql, type Kysely } from 'kysely';
  * `conversation_id` are opaque scoping keys, not references: a FK onto
  * `agents_v1_*` or `conversations_v1_*` would put this table into the shared
  * DROP-TABLE order used by repo-wide test teardown, and that breakage only
- * surfaces on a full-repo run. A decision pointing at a deleted agent is
- * simply never listed.
+ * surfaces on a full-repo run. Deleting an agent therefore does not cascade
+ * here: this plugin subscribes to `agents:deleted` and deletes the agent's rows
+ * itself (TASK-718).
  */
 export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`

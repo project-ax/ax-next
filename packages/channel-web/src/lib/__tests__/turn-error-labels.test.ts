@@ -68,3 +68,25 @@ describe('turnErrorText — usage limits (TASK-692)', () => {
     }
   });
 });
+
+/*
+  The storage limit's front door (TASK-690). @ax/disk-quota vetoes a turn at
+  `chat:start` with the reason `storage-full` once a person's storage is full,
+  so the sentence lives here. It must not promise a remedy that does not exist:
+  nothing a person does gives space back today, so it says "ask an admin".
+*/
+describe('turnErrorText — storage full (TASK-690)', () => {
+  const code = 'chat:start:storage-full';
+
+  it('says the authored sentence, not the generic "stopped unexpectedly" line', () => {
+    expect(ERROR_LABELS[code]).toBe(
+      'Your storage is full, so nothing new can be saved right now. Ask an admin for more room, then try again.',
+    );
+    expect(turnErrorText(code)).toBe(ERROR_LABELS[code]);
+    expect(turnErrorText(code)).not.toBe(DEFAULT_TURN_ERROR);
+  });
+
+  it('does not tell anyone to delete anything (nothing they delete frees space)', () => {
+    expect(turnErrorText(code).toLowerCase()).not.toContain('delete');
+  });
+});

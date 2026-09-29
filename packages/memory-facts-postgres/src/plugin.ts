@@ -44,6 +44,7 @@ import {
 } from './closure.js';
 import { PENDING_SLOT, pendingStatus } from './pending.js';
 import { agentScopeKey } from './agent-scope-key.js';
+import { deleteFactsForKey, purgeFactsForAgentId } from './purge.js';
 
 const PLUGIN_NAME = '@ax/memory-facts-postgres';
 
@@ -732,7 +733,7 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
         'memory:facts:reindex',
       ],
       calls: ['database:get-instance'],
-      subscribes: [],
+      subscribes: ['agents:deleted'],
     },
 
     async init({ bus }) {
@@ -1118,10 +1119,38 @@ export function createMemoryFactsPostgresPlugin(): Plugin {
           // for a tenant whose data is still there — the worst possible lie
           // for a "forget this" operation.
           await inStore('memory:facts:clear', async () => {
-            await requireDb().deleteFrom(TABLE).where('agent_key', '=', agentKey).execute();
+            await deleteFactsForKey(requireDb(), agentKey);
           });
         },
       );
+
+      // TASK-718 — a deleted agent's memory goes with it. `@ax/agents` fires
+      // this AFTER the agent row is gone; the payload is `{ agentId, ownerId,
+      // ownerType }` and only `agentId` is used here.
+      //
+      // The key comes from the EVENT's `agentId`, never from `ctx`: the ctx on
+      // a `fire` belongs to whoever issued the delete (an admin, or another
+      // agent's session), and keying off it would purge the wrong partition.
+      //
+      // Never throws (`fire` would isolate a throw, but only as a generic
+      // subscriber failure). A purge that fails leaves the rows in place, which
+      // is exactly what the error line says, so an operator can re-run it.
+      bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+        if (!isNonEmptyString(agentId)) {
+          ctx.logger.warn('memory_facts_purge_for_deleted_agent_skipped', {
+            reason: 'agents:deleted payload has no non-empty string agentId',
+          });
+          return undefined;
+        }
+        try {
+          const purged = await purgeFactsForAgentId(requireDb(), agentId);
+          ctx.logger.info('memory_facts_purged_for_deleted_agent', { agentId, purged });
+        } catch (err) {
+          ctx.logger.error('memory_facts_purge_for_deleted_agent_failed', { agentId, err });
+        }
+        return undefined;
+      });
 
       bus.registerService<ReindexInput, ReindexOutput>(
         'memory:facts:reindex',

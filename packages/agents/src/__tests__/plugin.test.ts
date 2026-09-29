@@ -14,6 +14,7 @@ import { PluginError } from '@ax/core';
 import { createAgentsPlugin } from '../plugin.js';
 import type {
   AgentInput,
+  AgentsConfig,
   AgentsCreatedEvent,
   AgentsDeletedEvent,
   CreateInput,
@@ -34,6 +35,7 @@ const harnesses: TestHarness[] = [];
 async function makeHarness(extras: {
   withTeams?: 'always-member' | 'never-member' | null;
   extraServices?: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>>;
+  config?: AgentsConfig;
 } = {}): Promise<TestHarness> {
   // The agents plugin declares `calls: ['database:get-instance',
   // 'http:register-route', 'auth:require-user']`. The bus tests below don't
@@ -65,7 +67,7 @@ async function makeHarness(extras: {
     services,
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createAgentsPlugin(),
+      createAgentsPlugin(extras.config),
     ],
   });
   harnesses.push(h);
@@ -329,6 +331,37 @@ describe('@ax/agents service hooks (round trip)', () => {
       { agentId: created.agent.id, ownerId: 'u1', ownerType: 'user' },
     ]);
   });
+
+  // TASK-718: every data-owning plugin now reacts to agents:deleted, and the
+  // k8s reclaim subscriber waits on a pod. `HookBus.fire` is unbounded by
+  // default and runs subscribers one after another, so a subscriber that never
+  // settles (an apiserver that stops answering) would hold the delete request
+  // open AND keep every later subscriber -- the ones that delete conversations,
+  // sessions and facts -- from ever running. A bound turns "never" into "late".
+  it('a hung agents:deleted subscriber does not hold back the subscribers after it', async () => {
+    const h = await makeHarness({ config: { deletedSubscriberTimeoutMs: 50 } });
+    const ctx = h.ctx({ userId: 'u1' });
+    h.bus.subscribe<AgentsDeletedEvent>('agents:deleted', 'test-hang', async () => {
+      await new Promise<never>(() => {
+        /* never settles */
+      });
+      return undefined;
+    });
+    const ran: string[] = [];
+    h.bus.subscribe<AgentsDeletedEvent>('agents:deleted', 'test-after', async (_c, payload) => {
+      ran.push(payload.agentId);
+      return undefined;
+    });
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput(),
+    });
+    await h.bus.call<DeleteInput, void>('agents:delete', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      agentId: created.agent.id,
+    });
+    expect(ran).toEqual([created.agent.id]);
+  }, 10_000);
 
   it('agents:delete succeeds even when an agents:deleted subscriber throws', async () => {
     const h = await makeHarness();

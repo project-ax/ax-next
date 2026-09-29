@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { PluginError } from '@ax/core';
 import { blobGetHandler, blobPutHandler } from '../blob.js';
 import type { HandlerBinary, HandlerErr, HandlerOk } from '../types.js';
 
@@ -46,6 +47,24 @@ describe('blob.put handler (raw-body REQUEST channel)', () => {
     const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
     expect(result.status).toBe(500);
     expect(JSON.stringify(result.body)).not.toContain('/var/blobs');
+  });
+
+  it('TASK-690: a blob:put refused by a policy subscriber is a 409 carrying the host-authored reason, not a 500', async () => {
+    // A storage-limit veto is not a fault: the runner must be able to tell
+    // the agent (and through it the person) why the artifact was not saved.
+    // A bare 500 reads as "the host broke" and tells nobody anything.
+    const reason = "You've used all of your storage (1 GB of 1 GB), so that file wasn't saved.";
+    const bus = fakeBus(async () => {
+      throw new PluginError({
+        code: 'rejected',
+        plugin: '@ax/blob-store-fs',
+        hookName: 'blob:put',
+        message: reason,
+      });
+    });
+    const result = (await blobPutHandler(Buffer.from('x'), fakeCtx(), bus as never)) as HandlerErr;
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({ error: { code: 'HOOK_REJECTED', message: reason } });
   });
 
   it('sanitizes a store returning a malformed sha (shape drift) to 500', async () => {

@@ -420,5 +420,20 @@ export function createFakeStore(): FakeStore {
       }
       return null;
     },
+
+    async deleteAllForAgent(agentId) {
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        throw new Error('fake store: agentId is required');
+      }
+      let deleted = 0;
+      for (const [id, row] of rows) {
+        if (row.agentId === agentId) {
+          rows.delete(id);
+          deliveryReqIds.delete(id);
+          deleted += 1;
+        }
+      }
+      return { deleted };
+    },
   };
 }

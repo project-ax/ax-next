@@ -14,7 +14,9 @@ import { sql, type Kysely } from 'kysely';
  * The runtime ACL gate (`agents:resolve`) checks ownership against the
  * live row at hook time; orphan conversation rows after a user/agent
  * delete are tolerable (they simply fail every `conversations:get` and
- * can be GC'd later).
+ * can be GC'd later). Agent delete no longer leaves them: the `agents:deleted`
+ * subscriber hard-deletes the agent's conversations, events and transcripts
+ * (TASK-718). Rows orphaned before that landed stay until cleaned by hand.
  *
  * Soft delete:
  *   `deleted_at` is nullable. The owner index excludes tombstones via a

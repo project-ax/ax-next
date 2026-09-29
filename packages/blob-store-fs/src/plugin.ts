@@ -1,4 +1,4 @@
-import type { Plugin } from '@ax/core';
+import { registerBlobPutFacade, type Plugin } from '@ax/core';
 import { z, type ZodType } from 'zod';
 import { BlobStore } from './store.js';
 
@@ -17,7 +17,12 @@ export interface BlobStoreFsConfig {
 }
 
 // ---------------------------------------------------------------------------
-// blob:* hook I/O types. Payloads carry ONLY sha256 / bytes / size — no backend
+// blob:* hook I/O types. `blob:put` is a PUBLIC facade owned by @ax/core
+// (`registerBlobPutFacade`): it fires the `blob:pre-put` veto, calls this
+// backend's raw `blob:put-internal`, then fires `blob:stored`. Callers keep
+// calling `blob:put`; only the registration moved.
+//
+// Payloads carry ONLY sha256 / bytes / size — no backend
 // vocabulary (no bucket, oid, lfs, pack, ref, commit, path, root). `bytes` is a
 // raw Uint8Array on the bus (NOT base64-in-JSON), so the eventual IPC binary
 // wire can carry it over the callBinary octet-stream channel without re-encoding
@@ -86,19 +91,22 @@ export function createBlobStoreFsPlugin(config: BlobStoreFsConfig): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['blob:put', 'blob:get', 'blob:stat', 'blob:delete'],
+      registers: ['blob:put', 'blob:put-internal', 'blob:get', 'blob:stat', 'blob:delete'],
       calls: [],
       subscribes: [],
     },
     async init({ bus }) {
       await store.ensureRoot();
 
+      // The raw write. `blob:put` itself is the @ax/core facade below, so the
+      // veto/notify hooks fire around every write — no caller can skip them.
       bus.registerService<BlobPutInput, BlobPutOutput>(
-        'blob:put',
+        'blob:put-internal',
         PLUGIN_NAME,
         async (_ctx, { bytes }) => store.put(bytes),
         { returns: BlobPutOutputSchema },
       );
+      registerBlobPutFacade(bus, PLUGIN_NAME, { returns: BlobPutOutputSchema });
 
       bus.registerService<BlobGetInput, BlobGetOutput>(
         'blob:get',

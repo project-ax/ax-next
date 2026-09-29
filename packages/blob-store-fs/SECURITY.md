@@ -11,7 +11,7 @@ paranoid about up front, not after it ships.
 
 The plugin exposes four service hooks:
 
-- `blob:put(ctx, { bytes: Uint8Array }) → { sha256, size }` — content-addressed; idempotent on identical bytes
+- `blob:put(ctx, { bytes: Uint8Array }) → { sha256, size }` — content-addressed; idempotent on identical bytes. Since TASK-690 this is the `@ax/core` facade (`registerBlobPutFacade`) over the backend's own `blob:put-internal`: it fires the veto `blob:pre-put { size }` first (the per-person storage limit can refuse; nothing is written), then the backend, then the observe-only `blob:stored { sha256, size }`. The backend itself still has no size cap and no notion of an owner.
 - `blob:get(ctx, { sha256: string }) → { bytes: Uint8Array } | { found: false }` — digest re-verified on read
 - `blob:stat(ctx, { sha256: string }) → { size } | { found: false }`
 - `blob:delete(ctx, { sha256: string }) → {}` — GC; safe only when unreferenced (caller's responsibility)

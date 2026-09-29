@@ -27,7 +27,6 @@ import type {
 import {
   openDatabase,
   indexFactRow,
-  deleteIndexedFactRows,
   reconcileEmbeddingFingerprint,
   EMBEDDING_DIMENSIONS,
   TABLE,
@@ -60,6 +59,7 @@ import {
 } from './recall.js';
 import { embedTexts, rerankDocuments, type ProducerRef } from './producers.js';
 import { agentScopeKey } from './agent-scope-key.js';
+import { deleteFactsForKey, purgeFactsForAgentId } from './purge.js';
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
 
 const PLUGIN_NAME = '@ax/memory-facts-sqlite';
@@ -1192,7 +1192,7 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
       ],
       calls: [],
       ...(optionalCalls.length > 0 ? { optionalCalls } : {}),
-      subscribes: [],
+      subscribes: ['agents:deleted'],
     },
 
     init({ bus }) {
@@ -1681,28 +1681,41 @@ export function createMemoryFactsSqlitePlugin(config: MemoryFactsSqliteConfig): 
           // for a tenant whose data is still there — the worst possible lie
           // for a "forget this" operation.
           inStore('memory:facts:clear', () => {
-            const db = requireDriver();
-            // The derived rows go too, in the same transaction. Everywhere
-            // else the FTS shadow is left alone when a fact stops being
-            // current — that is a VALIDITY question and the base table is its
-            // sole authority (Invariant 4), so the join at query time settles
-            // it. Clear is not a validity question: the base row is gone, so
-            // the join would hide the text either way, and leaving the
-            // tenant's statements sitting in a shadow table after they asked
-            // us to forget them is a retention bug rather than a ranking one.
-            const forget = db.transaction(() => {
-              const ids = (
-                db.prepare(`SELECT id FROM ${TABLE} WHERE agent_key = ?`).all(agentKey) as Array<{
-                  id: string;
-                }>
-              ).map((row) => row.id);
-              deleteIndexedFactRows(db, ids, vectorExtensionLoaded);
-              db.prepare(`DELETE FROM ${TABLE} WHERE agent_key = ?`).run(agentKey);
-            });
-            forget();
+            // The derived FTS5/vec0 rows go too, in the same transaction — see
+            // `deleteFactsForKey` for why that is a retention question rather
+            // than a ranking one.
+            deleteFactsForKey(requireDriver(), agentKey, vectorExtensionLoaded);
           });
         },
       );
+
+      // TASK-718 — a deleted agent's memory goes with it. `@ax/agents` fires
+      // this AFTER the agent row is gone; the payload is `{ agentId, ownerId,
+      // ownerType }` and only `agentId` is used here.
+      //
+      // The key comes from the EVENT's `agentId`, never from `ctx`: the ctx on
+      // a `fire` belongs to whoever issued the delete (an admin, or another
+      // agent's session), and keying off it would purge the wrong partition.
+      //
+      // Never throws (`fire` would isolate a throw, but only as a generic
+      // subscriber failure). A purge that fails leaves the rows in place, which
+      // is exactly what the error line says, so an operator can re-run it.
+      bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+        if (!isNonEmptyString(agentId)) {
+          ctx.logger.warn('memory_facts_purge_for_deleted_agent_skipped', {
+            reason: 'agents:deleted payload has no non-empty string agentId',
+          });
+          return undefined;
+        }
+        try {
+          const purged = purgeFactsForAgentId(requireDriver(), agentId, vectorExtensionLoaded);
+          ctx.logger.info('memory_facts_purged_for_deleted_agent', { agentId, purged });
+        } catch (err) {
+          ctx.logger.error('memory_facts_purge_for_deleted_agent_failed', { agentId, err });
+        }
+        return undefined;
+      });
 
       bus.registerService<ReindexInput, ReindexOutput>(
         'memory:facts:reindex',

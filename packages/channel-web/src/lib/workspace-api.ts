@@ -39,6 +39,7 @@
  */
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
+import { readStorageFull } from './storage-full';
 /*
   The Fault A reason-code → authored-label table, read rather than re-declared.
   A second copy here would be invariant 4 violated in the one place the drift is
@@ -1037,6 +1038,11 @@ export const workspaceApi = {
    * Start a turn on the SHIPPED chat wire. Returns the conversation the turn
    * landed in (the server mints one when `conversationId` is null) and the
    * `reqId` to stream from.
+   *
+   * Throws a bare `HttpError` on a non-ok status, with ONE exception: a 413
+   * `storage-full` (committing an attachment would put the person over their
+   * storage limit) throws a `StorageFullError`, an `HttpError` that also
+   * carries the sentence to show. Surfaces branch on it with `instanceof`.
    */
   async sendMessage({
     agentId,
@@ -1057,6 +1063,11 @@ export const workspaceApi = {
       }),
     });
     if (!res.ok) {
+      // A 413 `storage-full` is the one refusal whose CODE we read (TASK-690):
+      // it carries a kind sentence, and a bare status would read as a network
+      // problem. Everything else stays status-only, as it always was.
+      const full = await readStorageFull('/api/chat/messages', res);
+      if (full !== null) throw full;
       // Was `send message → ${res.status}`, which `AgentView` rendered.
       throw new HttpError('/api/chat/messages', res.status);
     }
@@ -1076,7 +1087,7 @@ export const workspaceApi = {
    * ends the turn on screen. `false` means there was nothing to stop (it
    * finished first, or never started), which is not a failure.
    *
-   * Throws a bare `HttpError` on a non-ok status, like `sendMessage`: a 404 is
+   * Throws a bare `HttpError` on a non-ok status, like `sendMessage` (bar its storage-full refusal): a 404 is
    * an unknown OR foreign conversation (the host does not say which), a 401 is
    * an ended session. A 200 whose body is not `{ interrupted: boolean }` throws
    * too — reading it as "stopped" would tell the person we stopped something

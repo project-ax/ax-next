@@ -33,6 +33,7 @@ export type {
   Conversation,
   ConversationDisplayEvent,
   ConversationEventKind,
+  ConversationsPurgedEvent,
   CreateInput,
   CreateOutput,
   DeleteInput,

@@ -271,7 +271,10 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             'else — there is no authorisation behind it.',
         },
       ],
-      subscribes: ['tool:pre-call'],
+      // `agents:deleted` (TASK-718): `@ax/agents` fires it after the agent row
+      // is gone; `decisions_v1_decisions` has no FK to it, so this subscriber is
+      // the only cleanup.
+      subscribes: ['tool:pre-call', 'agents:deleted'],
     },
 
     async init({ bus }) {
@@ -321,6 +324,36 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         bus,
       });
       bus.subscribe<ToolCall>('tool:pre-call', PLUGIN_NAME, subscriber);
+
+      // ---------------------------------------------------------------------
+      // TASK-718 — a deleted agent's decisions must go with it.
+      //
+      // Payload (declared locally, no cross-plugin import): `{ agentId,
+      // ownerId, ownerType }`; only `agentId` matters, and it is keyed on ALONE
+      // because a team agent raises holds for several owner users. A different
+      // hook from the gate, so the `tool:pre-call` ordering note above does not
+      // apply to it.
+      //
+      // K10: a subscriber must never throw. A failed purge is logged loudly and
+      // swallowed — the agent is already gone, and there is nobody to tell.
+      // ---------------------------------------------------------------------
+      const decisionStore = store;
+      bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+        if (typeof agentId !== 'string' || agentId.length === 0) {
+          ctx.logger.warn('decisions_purge_for_deleted_agent_skipped', {
+            reason: 'agents:deleted payload has no non-empty string agentId',
+          });
+          return undefined;
+        }
+        try {
+          const { deleted } = await decisionStore.deleteAllForAgent(agentId);
+          ctx.logger.info('decisions_purged_for_deleted_agent', { agentId, deleted });
+        } catch (err) {
+          ctx.logger.error('decisions_purge_for_deleted_agent_failed', { agentId, err });
+        }
+        return undefined;
+      });
 
       // ---------------------------------------------------------------------
       // AW-7 — the freshness producers have to come in PAIRS.
