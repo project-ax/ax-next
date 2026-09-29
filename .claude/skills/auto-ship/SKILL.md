@@ -234,7 +234,10 @@ When the To Do lane changes, review the **whole** lane before dispatching:
 - **Prune the dangling.** For each To Do card with deps, drop any referenced Task ID
   whose card **no longer exists** on the board (it was deleted/renamed). A reference
   to a vanished task is not a real block — remove it. (Deps that point at a **Done**
-  card stay — they're satisfied, and they record the history.)
+  card stay — they're satisfied, and they record the history.) An **archived** card
+  also reads as vanished, because the snapshot does not return archived cards. Only Done
+  cards are ever archived, so pruning that reference is still correct
+  (`references/github-project.md` §4a).
 
 You are the **sole writer** of the "Depends on" field's analysis. (Humans may
 hand-set deps too; you fill gaps and prune, you don't overwrite a human's explicit

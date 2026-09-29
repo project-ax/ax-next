@@ -129,8 +129,11 @@ cat > .claude/auto-ship-board.sh <<'SH'
 BOARD_CACHE=.claude/auto-ship-board.json
 # BOARD_LIMIT must stay comfortably ABOVE the board's item count. The board passed 300
 # items in Aug 2026; the helper shipped `--limit 200` and silently handed back a
-# HALF BOARD. Keep headroom and re-raise this when the board grows.
-BOARD_LIMIT=700
+# HALF BOARD. It then HIT 700 on 2026-09-28 (701 items; every read FATAL) — TASK-672
+# raised it and started archiving Done cards (§4a). `item-list` does NOT return
+# archived cards, so archiving is what keeps this count down. Keep headroom and
+# re-raise this when the board grows.
+BOARD_LIMIT=1500
 # board_snapshot — fetch the WHOLE board once, cache to disk, echo the path.
 # The guard asserts NON-TRUNCATION, not non-emptiness. A `length>0` check passes
 # happily on a truncated array, and the orchestrator then derives its ready set, dep
@@ -584,6 +587,58 @@ allocate through the same door as everyone else, §8.2a) with the `epic:<slug>` 
 (`references/templates.md` › Decomposition dispatch prompt); the orchestrator then
 `board_batch`es each new card's `Status → To Do` + `Depends on` from the returned
 manifest — the agent never sets routing.
+
+## 4a. Archiving Done cards (keeps the board under `BOARD_LIMIT`)
+
+The board hit **701 items on 2026-09-28** and `board_snapshot` went FATAL on every
+read, because the old `BOARD_LIMIT` was 700 (TASK-672). The ruling (Vinay, 2026-09-28):
+Done cards are **archived, never deleted.**
+
+**When.** When `board_snapshot`'s live count passes about two-thirds of `BOARD_LIMIT`
+(1000 of 1500 today), or whenever a human asks. Archive the oldest Done cards first, and
+leave plenty of room. There's no prize for archiving yesterday's merge.
+
+**Only Done.** Never archive a card in any other lane. `gh project item-list` (so
+`board_snapshot`, the poller and every lane query) does **not** return archived cards.
+So a To Do card whose `Depends on` names an archived card sees that reference as
+dangling, and the dependency review prunes it. For a Done card that's the right answer:
+the dependency was satisfied. For any other card, archiving it quietly turns a real
+block into a pruned one.
+
+```bash
+# board-archive: one Done card. Reversible: add --undo to bring it back.
+gh project item-archive 1 --owner project-ax --id "$ITEM_ID"
+```
+
+**Task IDs survive archiving, and nothing needs bumping.** An archived card's number is
+still cited by commits, memory shards and `Depends on`, so it must never be issued
+again. `scripts/board-task-id.sh` reads archived cards too: its query passes
+`archivedStates: [ARCHIVED, NOT_ARCHIVED]`, because the API's default is live cards
+only. Its `next`, `claim` and `settle` therefore count every archived number, and an
+archived holder always keeps its number in a collision. That's why archiving doesn't
+come with a "remember to bump X" step. A step people have to remember is a step that
+gets skipped.
+
+**The floor is for deletes.** `TASK_ID_FLOOR_DEFAULT` in `scripts/board-task-id.sh`
+(672 when it landed) is the backstop for a card that leaves *every* read, and only a
+deleted card does that. The next number is `max(highest on the board, floor) + 1`. If a
+card ever does get **deleted** (a mis-created duplicate, say), and its number is near
+the top, raise the floor to at least that number in a PR. That's the same change, made
+at the same time as the delete.
+
+**After a sweep**, confirm the allocator still sees the whole history. Both commands are
+reads:
+
+```bash
+# board-task-id: reference listing
+# A post-archive sanity read, not a card-creation call site.
+scripts/board-task-id.sh check   # no id held twice, archived cards included
+scripts/board-task-id.sh next    # must be above the highest id you just archived
+```
+
+**The helper on disk.** `.claude/auto-ship-board.sh` is gitignored and written from §2b
+at run start. A run that started before a `BOARD_LIMIT` change keeps the old number until
+it rewrites the file, so re-run §2b's `cat` block (or restart the run) after pulling one.
 
 ## 5. The poller (model-token-free To Do watcher — but NOT GraphQL-free)
 
@@ -1347,6 +1402,12 @@ from the already-bound `$ITEMS`) and rewrite the title:
 > `$ITEMS` is minutes old and other sessions write this board. The claim here stays
 > optimistic on purpose (it is free, and it is usually right); **§8.2a's settle step
 > below is what makes a collision unable to survive**, and it is not optional.
+>
+> **Archived cards make this collide more often, not less** (TASK-672). `$ITEMS` comes
+> from `gh project item-list`, which does not return archived cards (§4a). Once the
+> highest-numbered Done cards are archived, this `NEXT` can land on an archived card's
+> number. §8.2a's settle reads archived cards too, and an archived holder always keeps
+> its number, so the new card renames itself. It's correct, just not free.
 
 ```bash
 NEXT=$(printf '%s' "$ITEMS" | jq -r '.items[].title | capture("\\[TASK-(?<n>[0-9]+)\\]").n // empty' \
@@ -1474,7 +1535,9 @@ computing the max in one tool call and creating the card in a later one is exact
 
 The read is the cheap one: a paginated `items(first:100)` fetching ids and titles only,
 ~1 point a page, not the ~102 `gh project item-list` costs. It asks for the `DraftIssue`
-id in the same query, so a rename needs no second lookup hop.
+id in the same query, so a rename needs no second lookup hop. It also asks for
+**archived** cards (`archivedStates: [ARCHIVED, NOT_ARCHIVED]`), and it never goes below
+a committed floor. Together those mean archiving a card can't free its number (§4a).
 
 **Guard direction.** `check` fails **closed** — an unreadable board, an unparseable
 reply, and a reply that parses to zero cards are all exit 2, never exit 0. The board has

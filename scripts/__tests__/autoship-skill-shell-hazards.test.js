@@ -365,13 +365,14 @@ describe('board_batch generates the same GraphQL under bash and zsh', () => {
 describe('board reads assert non-truncation, not non-emptiness', () => {
   const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
 
-  // Headroom over the live board (300+ items as of 2026-08). Raise BOTH this and the
+  // Headroom over the live board: 300+ items in 2026-08, and it HIT the old 700 on
+  // 2026-09-28 (TASK-672), which made every snapshot FATAL. Raise BOTH this and the
   // doc when the board approaches it -- a truncated snapshot makes the orchestrator
   // derive its ready set from a partial board, which is invisible until a card is
   // mysteriously never dispatched.
-  const MIN_LIMIT = 700;
+  const MIN_LIMIT = 1500;
 
-  it('every board-read limit in the doc is >= 700', () => {
+  it('every board-read limit in the doc is >= MIN_LIMIT', () => {
     // Two shapes count: a literal `item-list … --limit 250`, and the `BOARD_LIMIT=250`
     // assignment the call sites interpolate. Following only one of them lets the other
     // regress -- and the doc has moved between the two forms once already.
