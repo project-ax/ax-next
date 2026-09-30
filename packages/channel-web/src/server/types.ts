@@ -7,6 +7,9 @@
 // import path into channel-web's react bundle.
 // ---------------------------------------------------------------------------
 
+// Type-only, so it is erased from both bundles (no zod at runtime).
+import type { SaveRefusedCode } from '@ax/ipc-protocol';
+
 export type StreamChunkKind = 'text' | 'thinking' | 'tool-use' | 'tool-result';
 
 /**
@@ -242,7 +245,18 @@ export interface DecisionRaised {
 export type SseFrame =
   | StreamChunk
   | { reqId: string; phase: PhaseKind }
-  | { reqId: string; done: true }
+  // `saveRefused` (TASK-720): the host refused this turn's end-of-turn
+  // workspace save and the runner undid the turn's file changes. One of three
+  // closed codes, re-checked in `sse.ts` before it is written (never the veto's
+  // prose, which is worded for the model) and again by the browser. Absent when
+  // the save went through or there was nothing to save.
+  //
+  // LIVE ONLY. The done frame is never buffered: turn-end evicts the reqId's
+  // buffer (`createTurnEndEvictor` and the per-connection subscriber), so a
+  // browser that connects after the turn ended gets no replayed `done` and no
+  // code. That matches the notice's scope — it is not persisted and is gone on
+  // reload (see the TASK-720 decision shard).
+  | { reqId: string; done: true; saveRefused?: SaveRefusedCode }
   // `error` is the stable backend-agnostic reason code; `detail` (TASK-160) is
   // an OPTIONAL author-facing free-text line (e.g. a dev-service-sidecar
   // self-diagnosis), bounded + sanitized upstream and rendered as UNTRUSTED

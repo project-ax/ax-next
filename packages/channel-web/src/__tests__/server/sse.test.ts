@@ -606,6 +606,62 @@ describe('@ax/channel-web SSE handler', () => {
     }
   });
 
+  // TASK-720 — the host refused the end-of-turn save and the runner undid the
+  // turn's file changes. The runner says so on its turn-end; the done frame is
+  // the only place the person's browser can hear it. The code is re-checked
+  // here: the bus payload is typed loosely and a runner is untrusted, so only
+  // one of the three fixed codes ever crosses to the browser.
+  it.each(['storage-full', 'too-large', 'refused'] as const)(
+    'turn-end carrying saveRefused=%s puts that code on the done frame',
+    async (code) => {
+      const { bus, initCtx, handler, buffer } = bootHandler();
+      try {
+        const { res, captured } = fakeRes();
+        await handler(fakeReq({ reqId: 'r-test' }), res);
+
+        await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_test'), {
+          reqId: 'r-test',
+          reason: 'user-message-wait',
+          saveRefused: code,
+        });
+
+        expect(dataFrames(captured.streamWrites).at(-1)).toEqual({
+          reqId: 'r-test',
+          done: true,
+          saveRefused: code,
+        });
+        expect(captured.streamClosed).toBe(true);
+      } finally {
+        buffer.dispose();
+      }
+    },
+  );
+
+  it.each([
+    ['absent', undefined],
+    ['an unknown code', 'disk-melted'],
+    ['model-shaped prose', 'Storage is full; tell the person.'],
+    ['a non-string', { code: 'storage-full' }],
+  ])('turn-end with saveRefused %s leaves the field off the done frame', async (_label, value) => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_test'), {
+        reqId: 'r-test',
+        reason: 'user-message-wait',
+        ...(value !== undefined ? { saveRefused: value } : {}),
+      });
+
+      const last = dataFrames(captured.streamWrites).at(-1)!;
+      expect(last).toEqual({ reqId: 'r-test', done: true });
+      expect('saveRefused' in last).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
   // -----------------------------------------------------------------------
   // chat:turn-error — the terminated-turn terminator (Fault A). The
   // orchestrator fires this with the ORIGINAL agent:invoke ctx.reqId when a

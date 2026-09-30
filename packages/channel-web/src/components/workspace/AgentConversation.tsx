@@ -162,6 +162,7 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         case 'status':
         case 'fold':
         case 'stopped':
+        case 'save-refused':
           return `${m.kind}:${m.id}:${m.text.length}`;
         /*
           A replayed failure (TASK-498). The id is NOT enough on its own: the
@@ -1253,6 +1254,30 @@ function Message({
     return (
       <Alert role="note" className="max-w-[600px]">
         <CircleStop size={14} aria-hidden="true" />
+        <AlertDescription className="text-[13px] leading-relaxed">
+          {m.text}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  if (m.kind === 'save-refused') {
+    /*
+      "The files from this reply weren't saved" (TASK-720), at the foot of the
+      thread under the reply it is about.
+
+      NOT `stopped`'s register. The person did not ask for this: the reply
+      above likely says it made or changed files, and they are gone. So it is
+      the destructive `Alert`, with its default `role="alert"` — announced
+      when it appears, which is once, after the turn ends. The sentence is one
+      of three fixed lines (`save-refused-copy.ts`), never the model's words.
+
+      No control on it: there is nothing to retry from here. The sentence says
+      what might help, and the composer beneath is live.
+    */
+    return (
+      <Alert variant="destructive" className="max-w-[600px]">
+        <AlertTriangle size={14} aria-hidden="true" />
         <AlertDescription className="text-[13px] leading-relaxed">
           {m.text}
         </AlertDescription>
