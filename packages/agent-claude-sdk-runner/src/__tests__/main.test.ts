@@ -193,9 +193,9 @@ vi.mock('../jsonl-transcript-source.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../jsonl-transcript-source.js')>();
   return {
     ...actual,
-    createJsonlTranscriptSource: (workspaceRoot: string) => {
-      createJsonlTranscriptSourceSpy(workspaceRoot);
-      return actual.createJsonlTranscriptSource(workspaceRoot);
+    createJsonlTranscriptSource: (workspaceRoot: string, sdkCwd?: string) => {
+      createJsonlTranscriptSourceSpy(workspaceRoot, sdkCwd);
+      return actual.createJsonlTranscriptSource(workspaceRoot, sdkCwd);
     },
   };
 });
@@ -3470,7 +3470,11 @@ describe('main()', () => {
       // source (below), AND that source was built from the right root (the
       // spy on createJsonlTranscriptSource — otherwise a source of the right
       // SHAPE but the wrong workspace would pass silently).
-      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith('/tmp/workspace');
+      // (No AX_USERFILES_ROOT in this env, so the SDK's cwd IS the workspace.)
+      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
+        '/tmp/workspace',
+        '/tmp/workspace',
+      );
       expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
         expect.objectContaining({
           source: expect.objectContaining({
@@ -3880,6 +3884,33 @@ describe('main()', () => {
       expect(queryArg.options.additionalDirectories).not.toContain('/files');
       // ~/bin follows HOME → /files/bin (durable NFS), appended to PATH.
       expect(queryArg.options.env.PATH?.endsWith(':/files/bin')).toBe(true);
+    });
+
+    it('builds the transcript source for the dir the SDK runs in, so a resumed turn finds its jsonl', async () => {
+      // The SDK reads `projects/<slug(cwd)>/<sid>.jsonl`. With a durable mount
+      // cwd is /files, NOT the governed /agent the source is rooted at, so the
+      // source must be told the cwd or the resume-restore writes under a slug
+      // the SDK never opens ("No conversation found with session ID").
+      setEnv({
+        ...COMPLETE_ENV,
+        AX_EPHEMERAL_ROOT: '/ephemeral',
+        AX_USERFILES_ROOT: '/files',
+      });
+      wirePlan2Client();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { cwd: string };
+      };
+      expect(queryArg.options.cwd).toBe('/files');
+      // Rooted at the governed tier (where the projects symlink lands), slugged
+      // by the SDK's actual cwd — the same value, not a parallel computation.
+      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith(
+        '/tmp/workspace',
+        queryArg.options.cwd,
+      );
     });
 
     it('grants AX_MEMORY_ROOT via additionalDirectories only — never cwd/HOME/settingSources', async () => {

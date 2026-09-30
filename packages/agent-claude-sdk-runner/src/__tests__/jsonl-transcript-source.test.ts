@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -52,6 +52,34 @@ describe('createJsonlTranscriptSource', () => {
     // The next read() for the same session returns exactly what write() wrote.
     const roundTripped = await source.read('sess-resume');
     expect(roundTripped?.equals(bytes)).toBe(true);
+  });
+
+  it('write keys the project dir on the SDK cwd, not workspaceRoot, when they differ', async () => {
+    // Production shape: the source is rooted at the governed tier (/agent) —
+    // that is where `$CLAUDE_CONFIG_DIR/projects` symlinks to — but the SDK runs
+    // with cwd=HOME=/files (AX_USERFILES_ROOT). The SDK reads
+    // `projects/<slug(cwd)>/<sid>.jsonl`, so a restore keyed on the workspace
+    // slug is invisible to it and every resumed turn dies with "No conversation
+    // found with session ID". Reproduced against the real SDK 0.2.119.
+    const root = await mkdtemp(join(tmpdir(), 'jsonl-src-'));
+    const workspaceRoot = join(root, 'agent');
+    const sdkCwd = join(root, 'files');
+    await mkdir(workspaceRoot, { recursive: true });
+    await mkdir(sdkCwd, { recursive: true });
+    const source = createJsonlTranscriptSource(workspaceRoot, sdkCwd);
+    const bytes = Buffer.from('u1\na1\n', 'utf8');
+
+    await expect(source.write('sess-files', bytes)).resolves.toBe('accepted');
+
+    const projects = join(workspaceRoot, '.claude', 'projects');
+    const sdkSlug = encodeProjectSlug(await realpath(sdkCwd));
+    const written = await readFile(join(projects, sdkSlug, 'sess-files.jsonl'));
+    expect(written.equals(bytes)).toBe(true);
+    // Nothing lands under the workspace's own slug: that is where the SDK does
+    // NOT look, and a stale copy there could shadow the real one in locateJsonl.
+    expect(await readdir(projects)).toEqual([sdkSlug]);
+    // The delta-ship reader still finds it (it walks every slug dir).
+    expect((await source.read('sess-files'))?.equals(bytes)).toBe(true);
   });
 });
 

@@ -985,7 +985,17 @@ export async function main(): Promise<number> {
     // TASK-67 split: the delta/prefixHash/resync protocol lives in
     // @ax/agent-runner-core; locating the SDK's jsonl (its private cwd-slug
     // encoding) is SDK-specific and hides behind this source.
-    createTranscriptSource: (env) => createJsonlTranscriptSource(env.workspaceRoot),
+    //
+    // Rooted at the governed tier (the `$CLAUDE_CONFIG_DIR/projects` symlink
+    // target) but slugged by the SDK's actual cwd — run-runner's `homeDir`, i.e.
+    // `userFilesRoot ?? workspaceRoot`, which becomes `query({ cwd })`. Slugging
+    // by workspaceRoot instead wrote the resume-restore where the SDK never
+    // looked whenever a /files mount was wired ("No conversation found").
+    createTranscriptSource: (env) =>
+      createJsonlTranscriptSource(
+        env.workspaceRoot,
+        env.userFilesRoot ?? env.workspaceRoot,
+      ),
     // F2a guard, non-conversation branch: the legacy on-disk scan of the
     // materialized workspace's jsonl.
     hasLocalTranscript: (env, sessionId) =>

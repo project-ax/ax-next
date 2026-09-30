@@ -72,10 +72,12 @@ export function encodeProjectSlug(cwdRealpath: string): string {
 /**
  * Write reconstructed transcript bytes to
  * `<workspaceRoot>/.claude/projects/<slug>/<sessionId>.jsonl` — the path the
- * SDK reads on `query({ resume })`. Computes the SDK's project-dir slug from
- * realpath(cwd); cwd === workspaceRoot (the runner passes it to
- * `query({ cwd })`). realpath resolves any symlink the SDK would also
- * resolve.
+ * SDK reads on `query({ resume })`. The slug is the SDK's encoding of
+ * realpath(`sdkCwd`), the directory the runner passes to `query({ cwd })` — NOT
+ * of `workspaceRoot`. The two are the same dir only when no durable user-files
+ * mount is wired; with one, cwd is `/files` while `workspaceRoot` (where
+ * `$CLAUDE_CONFIG_DIR/projects` symlinks to) stays `/agent`. realpath resolves
+ * any symlink the SDK would also resolve.
  */
 /**
  * Does this transcript announce that some OTHER runner wrote it?
@@ -125,6 +127,7 @@ export function isForeignRunnerTranscript(bytes: Buffer): boolean {
 
 async function writeJsonl(
   workspaceRoot: string,
+  sdkCwd: string,
   sessionId: string,
   bytes: Buffer,
 ): Promise<TranscriptWriteOutcome> {
@@ -140,9 +143,9 @@ async function writeJsonl(
   }
   let cwdReal: string;
   try {
-    cwdReal = await realpath(workspaceRoot);
+    cwdReal = await realpath(sdkCwd);
   } catch {
-    cwdReal = workspaceRoot;
+    cwdReal = sdkCwd;
   }
   const slug = encodeProjectSlug(cwdReal);
   const dir = join(workspaceRoot, '.claude', 'projects', slug);
@@ -156,8 +159,15 @@ async function writeJsonl(
  * The Claude Agent SDK writes `${CLAUDE_CONFIG_DIR}/projects/<cwd-slug>/<sid>.jsonl`.
  * We don't know the slug a priori (it's the SDK's encoding of realpath(cwd)),
  * so we readdir-walk the projects dir and pick the dir holding the file.
+ *
+ * `workspaceRoot` is where the projects dir lives; `sdkCwd` is the directory the
+ * SDK subprocess runs in (what `write` slugs), which defaults to `workspaceRoot`
+ * for callers with no separate working frame.
  */
-export function createJsonlTranscriptSource(workspaceRoot: string): TranscriptSource {
+export function createJsonlTranscriptSource(
+  workspaceRoot: string,
+  sdkCwd: string = workspaceRoot,
+): TranscriptSource {
   return {
     // The seam is BYTES, not a path (see TranscriptSource in
     // @ax/agent-runner-core): locate the jsonl, then read it. A missing file is
@@ -167,6 +177,7 @@ export function createJsonlTranscriptSource(workspaceRoot: string): TranscriptSo
       if (jsonlPath === null) return null;
       return readFile(jsonlPath);
     },
-    write: (sessionId: string, bytes: Buffer) => writeJsonl(workspaceRoot, sessionId, bytes),
+    write: (sessionId: string, bytes: Buffer) =>
+      writeJsonl(workspaceRoot, sdkCwd, sessionId, bytes),
   };
 }
