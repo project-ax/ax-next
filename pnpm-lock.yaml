@@ -21,7 +21,7 @@ overrides:
   browserslist@<4.28.7: '>=4.28.7 <5.0.0'
   tmp@<0.2.7: '>=0.2.7'
   assistant-cloud@<0.1.30: '>=0.1.30'
-  '@grpc/grpc-js@>=1.14.0 <1.14.4': '>=1.14.4'
+  '@grpc/grpc-js@>=1.14.0 <1.14.5': '>=1.14.5 <2.0.0'
   form-data@>=4.0.0 <4.0.6: '>=4.0.6'
   js-yaml@<4.3.2: '>=4.3.2 <5.0.0'
   nanoid@>=4.0.0 <5.1.16: '>=5.1.16 <6.0.0'
@@ -3795,8 +3795,8 @@ packages:
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
 
-  '@grpc/grpc-js@1.14.4':
-    resolution: {integrity: sha512-k9Dj3DV/itK9D06Y8f190Qgop7/Ui+D0njFV3LHMPwPT75DpXLQohE9Wmz0QElrJnzsjB7KPWiKJbOl7IPDArQ==}
+  '@grpc/grpc-js@1.14.5':
+    resolution: {integrity: sha512-7VZM+SVdEcUUqSQeNI3zM8Qs/BhQKZndPo2h5VkYkAM8Iz0wJIa8mKV5ekQGqG8UUsnkQ0NMxIxwkIHYvj0qOw==}
     engines: {node: '>=12.10.0'}
 
   '@grpc/proto-loader@0.7.15':
@@ -9127,7 +9127,7 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
-  '@grpc/grpc-js@1.14.4':
+  '@grpc/grpc-js@1.14.5':
     dependencies:
       '@grpc/proto-loader': 0.8.0
       '@js-sdsl/ordered-map': 4.4.2
@@ -11082,7 +11082,7 @@ snapshots:
   dockerode@4.0.12:
     dependencies:
       '@balena/dockerignore': 1.0.2
-      '@grpc/grpc-js': 1.14.4
+      '@grpc/grpc-js': 1.14.5
       '@grpc/proto-loader': 0.7.15
       docker-modem: 5.0.7
       protobufjs: 7.6.5
