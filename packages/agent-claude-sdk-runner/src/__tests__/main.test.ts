@@ -2405,6 +2405,126 @@ describe('main()', () => {
     expect(rc).toBe(0);
   });
 
+  describe('SDK error results', () => {
+    const subtypes = [
+      'error_during_execution',
+      'error_max_turns',
+      'error_max_budget_usd',
+      'error_max_structured_output_retries',
+    ] as const;
+
+    function wireConfig(): void {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('continue', 'req-failed'), cancelEntry]);
+    }
+
+    it.each(subtypes)('%s terminates without first signalling a successful turn', async (subtype) => {
+      wireConfig();
+      queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+        (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield {
+            ...resultSuccess(),
+            subtype,
+            is_error: true,
+            errors: ['The resumed turn failed.'],
+          } as SDKMessage;
+          await it.next();
+        })(),
+      );
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(1);
+      // A turn-end closes SSE and removes the orchestrator's waiter. Sending
+      // it before the error makes the later chat-end invisible to the person.
+      expect(fakeClient.event.mock.calls.filter((c) => c[0] === 'event.turn-end')).toEqual([]);
+      const chatEnds = fakeClient.event.mock.calls.filter((c) => c[0] === 'event.chat-end');
+      expect(chatEnds).toHaveLength(1);
+      expect(chatEnds[0]?.[1]).toMatchObject({
+        outcome: {
+          kind: 'terminated',
+          error: { message: expect.stringContaining('The resumed turn failed.') },
+        },
+      });
+    });
+
+    it('a failed turn after a successful one does not publish another success heartbeat', async () => {
+      wireConfig();
+      fakeInbox = buildFakeInbox([
+        userEntry('first', 'req-first'),
+        userEntry('second', 'req-second'),
+        cancelEntry,
+      ]);
+      queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+        (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('first reply');
+          yield resultSuccess();
+          await it.next();
+          yield assistantText('partial second reply');
+          yield {
+            ...resultSuccess(),
+            subtype: 'error_during_execution',
+            is_error: true,
+            errors: ['The model failed mid-turn.'],
+          } as SDKMessage;
+          // Some CLI failures throw only after yielding the error result. The
+          // error must win before a success heartbeat, even in that sequence.
+          throw new Error('Claude Code process exited with code 1');
+        })(),
+      );
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(1);
+      const turnEnds = fakeClient.event.mock.calls.filter((c) => c[0] === 'event.turn-end');
+      expect(turnEnds).toHaveLength(1);
+      expect(turnEnds[0]?.[1]).toMatchObject({ reqId: 'req-first' });
+      const chatEnd = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end');
+      expect(chatEnd?.[1]).toMatchObject({
+        outcome: { kind: 'terminated', error: { message: expect.stringContaining('The model failed mid-turn.') } },
+      });
+    });
+
+    it('honours is_error even when the SDK labels the subtype success', async () => {
+      wireConfig();
+      queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+        (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield { ...resultSuccess(), is_error: true } as SDKMessage;
+          await it.next();
+        })(),
+      );
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(1);
+      expect(fakeClient.event.mock.calls.filter((c) => c[0] === 'event.turn-end')).toEqual([]);
+    });
+  });
+
   it('terminated path: SDK throws mid-stream → exit 1, chat-end outcome.kind=terminated', async () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
@@ -4742,12 +4862,12 @@ describe('main()', () => {
   // the loop asks for it, once, and carries on.
   // -------------------------------------------------------------------------
   describe('Stop (TASK-688)', () => {
-    function resultInterrupted(): SDKMessage {
+    function resultInterrupted(terminalReason: 'aborted_streaming' | 'aborted_tools'): SDKMessage {
       return {
         ...(resultSuccess() as unknown as Record<string, unknown>),
         subtype: 'error_during_execution',
         is_error: true,
-        terminal_reason: 'aborted_streaming',
+        terminal_reason: terminalReason,
         errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'],
       } as unknown as SDKMessage;
     }
@@ -4795,7 +4915,7 @@ describe('main()', () => {
     }
     const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 
-    it('an interrupt mid-turn asks the SDK to interrupt, once, and the turn ends through the normal result path', async () => {
+    it.each(['aborted_streaming', 'aborted_tools'] as const)('an interrupt mid-turn (%s) asks the SDK to interrupt, once, and the turn ends through the normal result path', async (terminalReason) => {
       setEnv(COMPLETE_ENV);
       wireConfig();
       const stop = deferred();
@@ -4823,7 +4943,7 @@ describe('main()', () => {
           yield assistantText('Once upon a ');
           stop.resolve(); // the person presses Stop mid-reply
           await interrupted.promise; // ... and nothing more happens until the SDK is asked
-          yield resultInterrupted();
+          yield resultInterrupted(terminalReason);
           finish.resolve();
           await it.next(); // the cancel that ends the session, later
         })();

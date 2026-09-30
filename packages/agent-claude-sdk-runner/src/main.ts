@@ -864,6 +864,31 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             }
           }
         } else if (msg.type === 'result') {
+          const heldDecisionId = drainHoldLatch(holdLatch);
+          // SDK failures arrive as result messages, sometimes BEFORE the CLI
+          // throws on exit. endTurn emits the success heartbeat that closes
+          // SSE and removes the host's waiter, so an error must leave through
+          // runRunner's terminated chat-end BEFORE that heartbeat is sent.
+          // Stop and a pre-call hold intentionally end a turn and still need
+          // its normal commit; the SDK labels those as errors too.
+          const interrupted =
+            msg.terminal_reason === 'aborted_streaming' ||
+            msg.terminal_reason === 'aborted_tools';
+          const held = heldDecisionId !== null &&
+            (msg.terminal_reason === 'hook_stopped' ||
+              msg.terminal_reason === 'tool_deferred');
+          if ((msg.subtype !== 'success' || msg.is_error) && !interrupted && !held) {
+            const detail = msg.subtype !== 'success' ? msg.errors.join('; ') : '';
+            const error = new Error(
+              `Claude SDK turn failed (${msg.subtype}${msg.terminal_reason !== undefined ? `, ${msg.terminal_reason}` : ''})` +
+              (detail.length > 0 ? `: ${detail.slice(0, 2000)}` : ''),
+            );
+            error.name = 'ClaudeSdkTurnError';
+            // Keep the SDK diagnosis after the short-lived pod is reaped.
+            // JSON escapes untrusted newlines so they cannot forge log lines.
+            process.stderr.write(`${JSON.stringify({ event: 'sdk_turn_failed', message: error.message })}\n`);
+            throw error;
+          }
           // Turn boundary. The shell owns the transcript ship, the commit +
           // bundle, and the turn-end events; we hand it this turn's
           // accumulators and the two SDK-specific transcript reads.
@@ -879,7 +904,6 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // indistinguishably from a finished reply and nothing would record
           // that a human is now the blocker. TASK-225 replaces the log with
           // the Decision correlation.
-          const heldDecisionId = drainHoldLatch(holdLatch);
           // Same per-turn rule, same reason, and it belongs HERE for the same
           // ordering argument the latch's drain makes: this turn's
           // tool_results all arrived earlier in this loop (the SDK echoes them
