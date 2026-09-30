@@ -35,7 +35,10 @@ export {
 // real workspace-git-server backend without going through the IPC
 // transport. Production callers always reach handlers via `dispatch`;
 // these direct exports are an integration-test seam.
-export { workspaceCommitNotifyHandler } from './handlers/workspace-commit-notify.js';
+export {
+  workspaceCommitBundleHandler,
+  workspaceCommitNotifyHandler,
+} from './handlers/workspace-commit-notify.js';
 export {
   workspaceMaterializeHandler,
   buildBaselineBundle,

@@ -8,6 +8,8 @@ import {
   ToolListResponseSchema,
   WorkspaceCommitNotifyRequestSchema,
   WorkspaceCommitNotifyResponseSchema,
+  WorkspaceCommitBundleQuerySchema,
+  WORKSPACE_COMMIT_BUNDLE_MAX_BYTES,
   WorkspaceMaterializeRequestSchema,
   WorkspaceReadRequestSchema,
   WorkspaceReadResponseSchema,
@@ -261,6 +263,94 @@ describe('workspace.commit-notify', () => {
         bundleBytes: 42,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('workspace commit answer — veto code (TASK-720)', () => {
+  it('the rejected answer carries an optional machine code', () => {
+    const parsed = WorkspaceCommitNotifyResponseSchema.parse({
+      accepted: false,
+      reason: 'Storage for this workspace is full.',
+      recoverable: false,
+      code: 'storage-full',
+    });
+    expect(parsed.accepted).toBe(false);
+    if (!parsed.accepted) expect(parsed.code).toBe('storage-full');
+  });
+
+  it('the rejected answer without a code parses with no code key', () => {
+    const parsed = WorkspaceCommitNotifyResponseSchema.parse({
+      accepted: false,
+      reason: 'veto',
+    });
+    expect('code' in parsed).toBe(false);
+  });
+
+  it('refuses a code that is not a short lowercase slug', () => {
+    for (const code of ['', 'Storage Full', 'x'.repeat(65), 'a/b', 'storage_full']) {
+      expect(
+        WorkspaceCommitNotifyResponseSchema.safeParse({
+          accepted: false,
+          reason: 'veto',
+          code,
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('workspace.commit-bundle (TASK-720)', () => {
+  it('caps one save at 100 MiB', () => {
+    expect(WORKSPACE_COMMIT_BUNDLE_MAX_BYTES).toBe(100 * 1024 * 1024);
+  });
+
+  it('query: reason required, parentVersion absent means null', () => {
+    const parsed = WorkspaceCommitBundleQuerySchema.parse({
+      reason: 'turn',
+      parentVersion: null,
+    });
+    expect(parsed).toEqual({ reason: 'turn', parentVersion: null });
+    expect(
+      WorkspaceCommitBundleQuerySchema.parse({ reason: 'turn', parentVersion: 'v-1' }),
+    ).toEqual({ reason: 'turn', parentVersion: 'v-1' });
+  });
+
+  it('query: refuses a missing, empty or over-long reason', () => {
+    for (const reason of [null, '', 'r'.repeat(201)]) {
+      expect(
+        WorkspaceCommitBundleQuerySchema.safeParse({ reason, parentVersion: null }).success,
+      ).toBe(false);
+    }
+    expect(
+      WorkspaceCommitBundleQuerySchema.safeParse({ reason: 'r'.repeat(200), parentVersion: null })
+        .success,
+    ).toBe(true);
+  });
+
+  it('query: a PRESENT parentVersion must be non-empty and bounded', () => {
+    for (const parentVersion of ['', 'v'.repeat(513)]) {
+      expect(
+        WorkspaceCommitBundleQuerySchema.safeParse({ reason: 'turn', parentVersion }).success,
+      ).toBe(false);
+    }
+    expect(
+      WorkspaceCommitBundleQuerySchema.safeParse({ reason: 'turn', parentVersion: 'v'.repeat(512) })
+        .success,
+    ).toBe(true);
+  });
+
+  it('query: no other field is meaningful (.strict)', () => {
+    expect(
+      WorkspaceCommitBundleQuerySchema.safeParse({
+        reason: 'turn',
+        parentVersion: null,
+        workspaceId: 'someone-else',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('is a registered sandbox→host action with the upload ceiling', () => {
+    expect(IPC_TIMEOUTS_MS['workspace.commit-bundle']).toBe(120_000);
   });
 });
 
@@ -914,12 +1004,14 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the twenty expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks; cross-runner reconstruction adds session.get-display-history)', () => {
+  it('IPC_TIMEOUTS_MS has the twenty-one expected keys (TASK-720 adds workspace.commit-bundle; TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks; cross-runner reconstruction adds session.get-display-history)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
       'workspace.commit-notify',
+      // TASK-720: the binary end-of-turn save (raw bundle body, 100 MiB).
+      'workspace.commit-bundle',
       'workspace.materialize',
       'workspace.export-baseline-bundle',
       'workspace.read',

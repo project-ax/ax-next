@@ -31,7 +31,10 @@ import { proxyDrainEgressBlocksHandler } from './handlers/proxy-drain-egress-blo
 import { toolPreCallHandler } from './handlers/tool-pre-call.js';
 import { toolExecuteHostHandler } from './handlers/tool-execute-host.js';
 import { toolListHandler } from './handlers/tool-list.js';
-import { workspaceCommitNotifyHandler } from './handlers/workspace-commit-notify.js';
+import {
+  workspaceCommitBundleHandler,
+  workspaceCommitNotifyHandler,
+} from './handlers/workspace-commit-notify.js';
 import { workspaceMaterializeHandler } from './handlers/workspace-materialize.js';
 import { workspaceExportBaselineBundleHandler } from './handlers/workspace-export-baseline-bundle.js';
 import { workspaceReadHandler } from './handlers/workspace-read.js';
@@ -92,6 +95,9 @@ const ACTIONS = new Map<string, {
 ACTIONS.set('/tool.pre-call', { method: 'POST', handler: toolPreCallHandler });
 ACTIONS.set('/tool.execute-host', { method: 'POST', handler: toolExecuteHostHandler });
 ACTIONS.set('/tool.list', { method: 'POST', handler: toolListHandler });
+// Legacy JSON carrier of the end-of-turn save (base64 bundle inside the 4 MiB
+// frame). Current runners use the binary `/workspace.commit-bundle` below; this
+// stays registered for sandboxes started by the previous release (TASK-720).
 ACTIONS.set('/workspace.commit-notify', { method: 'POST', handler: workspaceCommitNotifyHandler });
 ACTIONS.set('/workspace.materialize', { method: 'POST', handler: workspaceMaterializeHandler });
 ACTIONS.set('/workspace.export-baseline-bundle', {
@@ -131,19 +137,22 @@ ACTIONS.set('/session.get-display-history', {
   handler: sessionGetDisplayHistoryHandler,
 });
 
-// Maximum inbound blob body for the raw-body REQUEST-direction channel
-// (blob.put). Matches the artifact_publish executor's 100 MiB size cap so the
-// host never admits a body larger than the runner would ever legitimately send.
-// This is the inbound mirror of the runner's outbound size check — defense in
-// depth at the host boundary, far above the 4 MiB JSON MAX_FRAME (the whole
-// point of the binary channel).
-const MAX_BLOB_BODY_BYTES = 100 * 1024 * 1024;
+// Maximum inbound body for the raw-body REQUEST-direction channel (every
+// BINARY_ACTIONS entry). Matches the artifact_publish executor's 100 MiB size
+// cap so the host never admits a body larger than the runner would ever
+// legitimately send, and `WORKSPACE_COMMIT_BUNDLE_MAX_BYTES` in @ax/ipc-protocol
+// (the runner's pre-send check for the end-of-turn save) must never exceed it —
+// a test pins that. This is the inbound mirror of the runner's outbound size
+// checks — defense in depth at the host boundary, far above the 4 MiB JSON
+// MAX_FRAME (the whole point of the binary channel). Over it → 413.
+export const MAX_BLOB_BODY_BYTES = 100 * 1024 * 1024;
 
 // BINARY_ACTIONS — POST actions whose REQUEST body is a raw octet-stream (NOT
 // JSON), read via `readRawBody` under MAX_BLOB_BODY_BYTES instead of the 4 MiB
 // JSON cap. `blob.put` streams artifact bytes inbound; the two transcript-ship
 // actions stream jsonl bytes inbound (their `fromSeq`/`prefixHash` integrity
-// metadata travels as query params — see `sessionAppendTranscriptHandler`).
+// metadata travels as query params — see `sessionAppendTranscriptHandler`);
+// `workspace.commit-bundle` streams the end-of-turn git bundle inbound.
 const BINARY_ACTIONS = new Map<string, {
   method: 'POST';
   handler: BinaryActionHandler;
@@ -155,6 +164,13 @@ BINARY_ACTIONS.set('/blob.put', { method: 'POST', handler: blobPutHandler });
 // overflow the 4 MiB JSON cap and terminate the runner.
 BINARY_ACTIONS.set('/session.append-transcript', { method: 'POST', handler: sessionAppendTranscriptHandler });
 BINARY_ACTIONS.set('/session.replace-transcript', { method: 'POST', handler: sessionReplaceTranscriptHandler });
+// TASK-720: the end-of-turn workspace save. The JSON `/workspace.commit-notify`
+// capped one save at about 3 MiB of compressed objects (base64 inside the 4 MiB
+// frame); over it the save failed, the runner's baseline never moved, and every
+// later save re-carried the same blob, so the agent's persistence wedged for
+// good. The raw bundle is the body here; `reason` / `parentVersion` ride as
+// query params (see `workspaceCommitBundleHandler`).
+BINARY_ACTIONS.set('/workspace.commit-bundle', { method: 'POST', handler: workspaceCommitBundleHandler });
 
 type EventSpec = {
   method: 'POST';
