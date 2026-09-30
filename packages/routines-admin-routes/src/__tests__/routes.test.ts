@@ -80,12 +80,17 @@ interface MockServices {
   agentDefaults?: Array<{ defaultRoutineId: string; name: string }>;
   /** Controls the workspace:apply mock used by the write-route tests:
    *  - 'ok'                  → succeeds, records the call
-   *  - 'reject'              → throws PluginError 'rejected' (validator veto)
+   *  - 'reject'              → throws PluginError 'rejected' (validator veto).
+   *                            With `reasonCode: 'storage-full'` it is the
+   *                            storage limit's veto instead (TASK-719): the
+   *                            shape the @ax/core apply facade mints from a
+   *                            veto that carried a code. `code` is 'rejected'
+   *                            either way.
    *  - 'parent-mismatch-once'→ throws parent-mismatch on the FIRST call (with
    *                            cause.actualParent), succeeds on the retry */
   applyMode?:
     | { kind: 'ok' }
-    | { kind: 'reject'; message: string }
+    | { kind: 'reject'; message: string; reasonCode?: string }
     | { kind: 'parent-mismatch-once'; actualParent: string | null };
   /** Token returned by the agents:ensure-webhook-token mock (default derives
    *  one from the agentId). */
@@ -310,6 +315,7 @@ async function makeHarnessWith(opts: MockServices) {
             plugin: 'test',
             hookName: 'workspace:apply',
             message: mode.message,
+            ...(mode.reasonCode !== undefined ? { reasonCode: mode.reasonCode } : {}),
           });
         }
         if (mode.kind === 'parent-mismatch-once' && applyAttempt === 0) {
@@ -1263,6 +1269,95 @@ describe('routines-admin-routes — write routes (PUT/DELETE /settings/routines/
     await harness.close({ onError: () => {} });
   });
 
+  // -------------------------------------------------------------------------
+  // The storage limit says no (TASK-719).
+  //
+  // disk-quota vetoes workspace:pre-apply with `code: 'storage-full'`; the core
+  // apply facade throws it as PluginError{ code: 'rejected', reasonCode:
+  // 'storage-full' }. Before, that fell into the validator branch below and
+  // answered 400 with the veto's own message, which is worded for the AGENT that
+  // writes files (it names paths and says what to do next). A person saving a
+  // routine got a sentence they cannot act on, then (client bug, see
+  // routines-client.test.ts) not even that: just "HTTP 400".
+  //
+  // The veto's message must NEVER reach the wire: the marker below is in it, and
+  // every assertion on the body checks it is absent.
+  // -------------------------------------------------------------------------
+  const AGENT_DIRECTED =
+    'AGENT-ONLY: your workspace is full; remove files under .ax/ to make room, then commit again';
+  const SAVE_FULL =
+    "We couldn't save that routine because your storage is full. An admin can make more room, then you can try again.";
+  const REMOVE_FULL =
+    "We couldn't remove that routine because your storage is full. An admin can make more room, then you can try again.";
+
+  it('PUT answers 413 storage-full with one plain sentence when the storage limit refuses the save', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      applyMode: { kind: 'reject', message: AGENT_DIRECTED, reasonCode: 'storage-full' },
+    });
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(putReq('agt_x', { path: VALID_PATH, sourceMd: VALID_MD }), res);
+    expect(captured.status).toBe(413);
+    // Exactly these two fields: the code the client keys on, the sentence it shows.
+    expect(captured.body).toEqual({ error: 'storage-full', message: SAVE_FULL });
+    expect(JSON.stringify(captured.body)).not.toContain('AGENT-ONLY');
+    // A refusal is final: no retry (only a CAS miss is retried), nothing written.
+    expect(applyCalls).toHaveLength(1);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('DELETE answers 413 storage-full with one plain sentence when the storage limit refuses the removal', async () => {
+    // A delete adds no bytes, but the gate refuses any write from someone who is
+    // already over the limit, so a full person cannot remove a routine either.
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      applyMode: { kind: 'reject', message: AGENT_DIRECTED, reasonCode: 'storage-full' },
+    });
+    const handler = handlersByMethod.get('DELETE /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({ params: { agentId: 'agt_x' }, query: { path: VALID_PATH } }),
+      res,
+    );
+    expect(captured.status).toBe(413);
+    expect(captured.body).toEqual({ error: 'storage-full', message: REMOVE_FULL });
+    expect(JSON.stringify(captured.body)).not.toContain('AGENT-ONLY');
+    expect(applyCalls).toHaveLength(1);
+    expect(applyCalls[0]!.input.changes[0]).toMatchObject({ path: VALID_PATH, kind: 'delete' });
+    await harness.close({ onError: () => {} });
+  });
+
+  it('the two sentences are plain: no number, no code name, and no advice to delete or free up anything', () => {
+    for (const s of [SAVE_FULL, REMOVE_FULL]) {
+      expect(s).not.toMatch(/\d/);
+      expect(s).not.toMatch(/storage-full|workspace|quota|\.ax/i);
+      // "remove" only names what we could not do; nothing tells them to do it.
+      expect(s).not.toMatch(/\b(delet|free up|free some|make (some )?space|clean|clear|tidy)/i);
+      expect(s).toMatch(/An admin can make more room/);
+    }
+  });
+
+  it('PUT keeps answering 400 with the veto reason for a rejected that is NOT the storage limit', async () => {
+    // A validator's veto means "fix what you wrote". Telling a person their
+    // storage is full about it would be a false diagnosis with a false remedy.
+    for (const reasonCode of [undefined, 'something-else', '']) {
+      const { harness, handlersByMethod } = await makeHarnessWith({
+        applyMode: {
+          kind: 'reject',
+          message: '.ax/routines/heartbeat.md: interval.every: minimum is 60s',
+          ...(reasonCode !== undefined ? { reasonCode } : {}),
+        },
+      });
+      const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+      const { res, captured } = makeRes();
+      await handler(putReq('agt_x', { path: VALID_PATH, sourceMd: VALID_MD }), res);
+      expect(captured.status, `reasonCode ${String(reasonCode)}`).toBe(400);
+      expect(captured.body, `reasonCode ${String(reasonCode)}`).toEqual({
+        error: '.ax/routines/heartbeat.md: interval.every: minimum is 60s',
+      });
+      await harness.close({ onError: () => {} });
+    }
+  });
+
   it('PUT retries once with cause.actualParent on a CAS miss, then succeeds', async () => {
     const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
       applyMode: { kind: 'parent-mismatch-once', actualParent: 'head-abc' },
@@ -1312,6 +1407,32 @@ describe('routines-admin-routes — write routes (PUT/DELETE /settings/routines/
     expect(applyCalls).toHaveLength(1);
     expect(applyCalls[0]!.input.changes[0]).toMatchObject({ path: VALID_PATH, kind: 'delete' });
     await harness.close({ onError: () => {} });
+  });
+
+  it('DELETE returns 400 with the veto reason when a rejected is NOT the storage limit', async () => {
+    // There was no test for a refused delete at all. Pins that the storage
+    // branch did not swallow the ordinary veto (no reasonCode, or another one).
+    for (const reasonCode of [undefined, 'something-else']) {
+      const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+        applyMode: {
+          kind: 'reject',
+          message: 'a policy said no to removing this routine',
+          ...(reasonCode !== undefined ? { reasonCode } : {}),
+        },
+      });
+      const handler = handlersByMethod.get('DELETE /settings/routines/:agentId')!;
+      const { res, captured } = makeRes();
+      await handler(
+        makeReq({ params: { agentId: 'agt_x' }, query: { path: VALID_PATH } }),
+        res,
+      );
+      expect(captured.status, `reasonCode ${String(reasonCode)}`).toBe(400);
+      expect(captured.body, `reasonCode ${String(reasonCode)}`).toEqual({
+        error: 'a policy said no to removing this routine',
+      });
+      expect(applyCalls).toHaveLength(1);
+      await harness.close({ onError: () => {} });
+    }
   });
 
   it('DELETE returns 403 when the actor cannot resolve the agent', async () => {

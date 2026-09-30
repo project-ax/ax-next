@@ -16,6 +16,8 @@
  * HTTP shim over the existing service hooks plus a new
  * `routines:recent-fires` hook this phase introduces.
  */
+import { STORAGE_FULL_ROUTINE_REMOVE, STORAGE_FULL_ROUTINE_SAVE } from './storage-copy';
+import { storageFullFromBody } from './storage-full';
 
 export type TriggerSpec =
   | { kind: 'interval'; every: string }
@@ -94,7 +96,7 @@ async function get<T>(path: string): Promise<T> {
   const r = await fetch(path, {
     headers: { 'X-Requested-With': 'ax-admin' },
   });
-  if (!r.ok) throw new Error(await readError(r));
+  if (!r.ok) throw await readFailure(path, r);
   return r.json() as Promise<T>;
 }
 
@@ -104,17 +106,20 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'ax-admin' },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(await readError(r));
+  if (!r.ok) throw await readFailure(path, r);
   return r.json() as Promise<T>;
 }
 
+// `put` and `del` are the two verbs the storage limit can turn away (they write
+// through `workspace:apply`), so each names the sentence to wear if the server's
+// own is missing. `get` and `post` never are, and do not look for the refusal.
 async function put<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'ax-admin' },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(await readError(r));
+  if (!r.ok) throw await readFailure(path, r, STORAGE_FULL_ROUTINE_SAVE);
   return r.json() as Promise<T>;
 }
 
@@ -124,16 +129,63 @@ async function del(path: string): Promise<void> {
     headers: { 'X-Requested-With': 'ax-admin' },
   });
   // 204 No Content — nothing to parse on success.
-  if (!r.ok) throw new Error(await readError(r));
+  if (!r.ok) throw await readFailure(path, r, STORAGE_FULL_ROUTINE_REMOVE);
 }
 
-async function readError(r: Response): Promise<string> {
+/**
+ * The words in a failed response, or null when it carries none a person could
+ * use. Both shapes are read, string first because it is the one the server
+ * really sends: `@ax/routines-admin-routes` answers `{ error: '<reason>' }`
+ * (a validator's veto, 'forbidden', ...). `{ error: { message } }` is kept for
+ * anything that speaks that way.
+ *
+ * This used to read ONLY the object shape, so every string error read as a bare
+ * "HTTP 400" and a validator's "interval.every: minimum is 60s" never reached
+ * the person. Anything that is not a non-blank string is not a message: it falls
+ * back to the status, and a body is never printed as JSON.
+ */
+function messageIn(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+  const { error } = body as { error?: unknown };
+  const text =
+    typeof error === 'string'
+      ? error
+      : typeof error === 'object' && error !== null && !Array.isArray(error)
+        ? (error as { message?: unknown }).message
+        : undefined;
+  return typeof text === 'string' && text.trim().length > 0 ? text.trim() : null;
+}
+
+/**
+ * What a failed request throws. The body is read ONCE (the hand-built responses
+ * in the tests, and a real one, can only be read once), then the same body is
+ * asked three things in order:
+ *
+ *   1. Is it the storage refusal (`413 { error: 'storage-full', message }`)?
+ *      Then the error is a `StorageFullError`, whose `message` IS the sentence:
+ *      the server's when it sent one, else `storageFullFallback`. Only asked
+ *      when the caller named a fallback, i.e. for a save or a delete.
+ *   2. Does it carry a message (string or object `error`)? Then that.
+ *   3. Otherwise `HTTP <status>`. Never a body printed as JSON.
+ *
+ * The callers render `err.message` as it is, so no component needs a branch.
+ */
+async function readFailure(
+  path: string,
+  r: Response,
+  storageFullFallback?: string,
+): Promise<Error> {
+  let body: unknown;
   try {
-    const body = (await r.json()) as { error?: { message?: string } };
-    return body.error?.message ?? `HTTP ${r.status}`;
+    body = await r.json();
   } catch {
-    return `HTTP ${r.status}`;
+    return new Error(`HTTP ${r.status}`);
   }
+  if (storageFullFallback !== undefined) {
+    const full = storageFullFromBody(path, r.status, body, storageFullFallback);
+    if (full !== null) return full;
+  }
+  return new Error(messageIn(body) ?? `HTTP ${r.status}`);
 }
 
 /**

@@ -166,6 +166,24 @@ export const STORAGE_FULL_SEND =
  */
 export { STORAGE_FULL_IDENTITY, STORAGE_FULL_RULES } from './storage-full-copy';
 
+/**
+ * The same refusal on the routines screen (TASK-719): a save from the editor
+ * and a delete from the confirm dialog. The ROUTINES server sends these same
+ * words (`@ax/routines-admin-routes`), and `lib/routines.ts` prefers what it
+ * sent; these are what a person reads if its sentence is missing. They are
+ * restated here, not imported, because that package shares no code with this
+ * one, so `storage-copy.test.ts` pins the exact text on this side and the
+ * server's own test pins it on the other.
+ *
+ * Both are true because the refusal comes BEFORE anything is written: the
+ * routine was not saved, and was not removed. "Remove" only names what we could
+ * not do; nothing tells anyone to do it, since no one can give space back today.
+ */
+export const STORAGE_FULL_ROUTINE_SAVE =
+  "We couldn't save that routine because your storage is full. An admin can make more room, then you can try again.";
+export const STORAGE_FULL_ROUTINE_REMOVE =
+  "We couldn't remove that routine because your storage is full. An admin can make more room, then you can try again.";
+
 // ---------------------------------------------------------------------------
 // Limits
 // ---------------------------------------------------------------------------

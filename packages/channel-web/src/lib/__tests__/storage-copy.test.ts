@@ -7,6 +7,8 @@ import {
   FULL_BODY,
   FULL_TITLE,
   STORAGE_FULL_IDENTITY,
+  STORAGE_FULL_ROUTINE_REMOVE,
+  STORAGE_FULL_ROUTINE_SAVE,
   STORAGE_FULL_RULES,
   STORAGE_FULL_SEND,
   WARN_PERCENT_INVALID,
@@ -213,6 +215,43 @@ describe('the sentences a person reads', () => {
 
   it('carry no number, so nothing can go stale when the limit changes', () => {
     for (const [, text] of sentences) expect(text).not.toMatch(/\d/);
+  });
+});
+
+/*
+  TASK-719: the routines screen's two refusals. The ROUTINES SERVER sends the same
+  words (`@ax/routines-admin-routes`, which may not import from here), so these
+  are only what a person reads if its sentence is missing, and they must agree
+  with it word for word.
+
+  They are NOT in the `sentences` table above on purpose: that table forbids the
+  word "remov", to catch advice like "remove some files". The routine sentence
+  says "remove" about what we COULD NOT do, and is true because the refused
+  delete leaves the routine where it was. Nothing here tells anyone to do it.
+*/
+describe('the routine refusals', () => {
+  const routineSentences: Array<[string, string]> = [
+    ['save', STORAGE_FULL_ROUTINE_SAVE],
+    ['remove', STORAGE_FULL_ROUTINE_REMOVE],
+  ];
+
+  it('say which action did not happen, why, and who can help', () => {
+    expect(STORAGE_FULL_ROUTINE_SAVE).toBe(
+      "We couldn't save that routine because your storage is full. An admin can make more room, then you can try again.",
+    );
+    expect(STORAGE_FULL_ROUTINE_REMOVE).toBe(
+      "We couldn't remove that routine because your storage is full. An admin can make more room, then you can try again.",
+    );
+  });
+
+  it.each(routineSentences)('%s advises nothing about deleting or freeing up space', (_name, text) => {
+    expect(text).not.toMatch(/\b(delet|clear|clean|free up|free some|make (some )?space|tidy)/i);
+  });
+
+  it.each(routineSentences)('%s uses no jargon and no number', (_name, text) => {
+    expect(text).not.toMatch(/\b(git|repos?|repository|blobs?|pvc|quota|ledger|bytes?|disk|volume|sha)\b/i);
+    expect(text).not.toMatch(/\d/);
+    expect(text).not.toMatch(/storage-full|\.ax/);
   });
 });
 

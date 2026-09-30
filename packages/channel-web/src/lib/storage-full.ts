@@ -58,6 +58,23 @@ export async function readStorageFull(
   } catch {
     return null;
   }
+  return storageFullFromBody(path, res.status, body, fallback);
+}
+
+/**
+ * The same recognition as `readStorageFull`, for a caller that has ALREADY read
+ * the body and cannot read it twice (`lib/routines.ts` reads its error body once
+ * and decides what it says from that: the refusal, a string reason, or an object
+ * message). One rule for what "the storage refusal" looks like, so a second
+ * reader cannot grow its own idea of it: 413, and `error === 'storage-full'`.
+ */
+export function storageFullFromBody(
+  path: string,
+  status: number,
+  body: unknown,
+  fallback: string = STORAGE_FULL_SEND,
+): StorageFullError | null {
+  if (status !== 413) return null;
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
   const { error, message } = body as { error?: unknown; message?: unknown };
   if (error !== 'storage-full') return null;

@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { HttpError } from '../http';
 import { STORAGE_FULL_RULES, STORAGE_FULL_SEND } from '../storage-copy';
-import { MAX_SERVER_SENTENCE_CHARS, StorageFullError, readStorageFull } from '../storage-full';
+import {
+  MAX_SERVER_SENTENCE_CHARS,
+  StorageFullError,
+  readStorageFull,
+  storageFullFromBody,
+} from '../storage-full';
 
 function res(status: number, body: unknown): Response {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
@@ -80,5 +85,36 @@ describe('readStorageFull', () => {
     expect(await readStorageFull('/p', res(413, '<html>too large</html>'))).toBeNull();
     expect(await readStorageFull('/p', res(413, 'null'))).toBeNull();
     expect(await readStorageFull('/p', res(413, '[]'))).toBeNull();
+  });
+});
+
+/*
+  TASK-719. `lib/routines.ts` reads its error body once and asks the SAME rule
+  about it, so the rule is a function of (status, body) that both readers share.
+  It must agree with `readStorageFull` on every case: two readers with two ideas
+  of "the storage refusal" is how a Save button ends up saying the wrong thing.
+*/
+describe('storageFullFromBody', () => {
+  const cases: Array<[string, number, unknown]> = [
+    ['the refusal with a sentence', 413, { error: 'storage-full', message: 'Full.' }],
+    ['the refusal with none', 413, { error: 'storage-full' }],
+    ['the other 413', 413, { error: 'attachment-total-too-large' }],
+    ['the code on another status', 400, { error: 'storage-full' }],
+    ['an array', 413, []],
+    ['null', 413, null],
+    ['a string', 413, 'storage-full'],
+  ];
+
+  it.each(cases)('agrees with readStorageFull on %s', async (_name, status, body) => {
+    const fromBody = storageFullFromBody('/p', status, body, STORAGE_FULL_RULES);
+    const fromRes = await readStorageFull('/p', res(status, body), STORAGE_FULL_RULES);
+    expect(fromBody === null).toBe(fromRes === null);
+    expect(fromBody?.sentence).toBe(fromRes?.sentence);
+    expect(fromBody?.status).toBe(fromRes?.status);
+  });
+
+  it('is only the refusal when it says so, and wears the fallback it was given otherwise', () => {
+    expect(storageFullFromBody('/p', 413, { error: 'storage-full' }, 'Ours.')?.sentence).toBe('Ours.');
+    expect(storageFullFromBody('/p', 413, { error: 'nope' }, 'Ours.')).toBeNull();
   });
 });
