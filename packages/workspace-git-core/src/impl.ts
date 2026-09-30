@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import * as fs from 'node:fs';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import git from 'isomorphic-git';
 import picomatch from 'picomatch';
 import {
@@ -24,6 +24,7 @@ import {
   type WorkspaceApplyOutput,
   type WorkspaceChange,
   type WorkspaceDelta,
+  type WorkspaceDeletedPayload,
   type WorkspaceDiffInput,
   type WorkspaceDiffOutput,
   type WorkspaceListInput,
@@ -970,24 +971,85 @@ export function registerWorkspaceGitHooks(
   // agents write to two different repos, so serializing them against each
   // other buys nothing. Growth is bounded by the number of agentIds this host
   // process has served, and each entry is a two-field object.
+  // An entry is NEVER removed, including after the agent is deleted: a fresh
+  // Mutex for the same id would stop serializing against a write still
+  // holding (or queued on) the old one.
   const mutexes = new Map<string, Mutex>();
+
+  // TASK-719 -- workspaceIds of agents deleted during this process's life.
+  // `ensureRepo` CREATES a repo, and a warm runner outlives its agent by
+  // minutes: without this set, a late commit would recreate the repo the
+  // delete just removed, `workspace:applied` would re-meter it, and the
+  // disk-quota ledger row the delete released would come back. Grows by one
+  // short string per deleted agent (agent ids are random, never reused), the
+  // same bound as `mutexes`. In-memory only: after a restart there is no warm
+  // runner left from before it, so nothing is left to refuse.
+  const tombstone = new Set<string>();
+
+  function gitdirFor(workspaceId: string): string {
+    return join(config.repoRoot, `${workspaceId}.git`);
+  }
+
+  function mutexFor(workspaceId: string): Mutex {
+    let mutex = mutexes.get(workspaceId);
+    if (mutex === undefined) {
+      mutex = new Mutex();
+      mutexes.set(workspaceId, mutex);
+    }
+    return mutex;
+  }
+
+  function refuseIfDeleted(workspaceId: string, hookName: string): void {
+    if (tombstone.has(workspaceId)) {
+      throw new PluginError({
+        code: 'agent-deleted',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: 'this agent has been deleted, so its workspace is gone',
+      });
+    }
+  }
 
   /**
    * Resolves the caller to `{ gitdir, mutex }`, or THROWS if it has no
-   * identity. Every hook below starts here — there is deliberately no way to
-   * reach a gitdir without passing through `requireAgent` first.
+   * identity or its agent has been deleted. Every hook below starts here —
+   * there is deliberately no way to reach a gitdir without passing through
+   * `requireAgent` first. So every hook, `workspace:usage` included, refuses a
+   * deleted agent with `agent-deleted` (a 0 from usage would let a late
+   * measurement write a fresh ledger row).
    */
   function agentRepo(
     ctx: AgentContext,
     hookName: string,
   ): { gitdir: string; mutex: Mutex } {
     const workspaceId = requireAgent(ctx, hookName);
-    let mutex = mutexes.get(workspaceId);
-    if (mutex === undefined) {
-      mutex = new Mutex();
-      mutexes.set(workspaceId, mutex);
-    }
-    return { gitdir: join(config.repoRoot, `${workspaceId}.git`), mutex };
+    refuseIfDeleted(workspaceId, hookName);
+    return { gitdir: gitdirFor(workspaceId), mutex: mutexFor(workspaceId) };
+  }
+
+  /**
+   * The ONLY way a hook in here may create a repo: `ensureRepo` behind the
+   * tombstone check. The check in `agentRepo` is not enough on its own: a
+   * write already QUEUED on the agent's mutex when the delete arrived passed
+   * `agentRepo` before the tombstone existed, and without this re-check it
+   * would recreate the repo the moment the delete's `rm` let go of the mutex.
+   * Every write path calls this INSIDE its `mutex.run`, so the check and the
+   * create are atomic with respect to the delete's `rm` (which runs in the
+   * same mutex).
+   *
+   * RESIDUAL GAP (accepted, not closable here): the read paths
+   * (`resolveVersion` for read/list, and `workspace:diff`) call this OUTSIDE
+   * the mutex. A read that passed this check and is mid-`git init` on a repo
+   * that did not exist yet can race the delete's `rm` and leave an empty
+   * scaffold directory behind: a few KB, holding no content, and never counted
+   * (nothing fires `workspace:applied` for a read, and `workspace:usage`
+   * refuses a deleted agent).
+   */
+  async function ensureAgentRepo(gitdir: string, hookName: string): Promise<void> {
+    // `gitdir` always comes from `gitdirFor`, so its basename minus `.git` is
+    // exactly the workspaceId.
+    refuseIfDeleted(basename(gitdir, '.git'), hookName);
+    await ensureRepo(gitdir);
   }
 
   // Resolve a version that callers may pass. `version` undefined → HEAD.
@@ -997,7 +1059,7 @@ export function registerWorkspaceGitHooks(
     version: WorkspaceVersion | undefined,
     hookName: string,
   ): Promise<string | null> {
-    await ensureRepo(gitdir);
+    await ensureAgentRepo(gitdir, hookName);
     // A caller-supplied version becomes an argv token for `git`. Validate the
     // shape HERE, at the single choke point both read and list go through,
     // rather than trusting that no caller ever forwards an odd string.
@@ -1026,7 +1088,7 @@ export function registerWorkspaceGitHooks(
       }
 
       return mutex.run(async () => {
-        await ensureRepo(gitdir);
+        await ensureAgentRepo(gitdir, 'workspace:apply-internal');
         const currentOid = await resolveHead(gitdir);
         const currentVersion: WorkspaceVersion | null =
           currentOid === null ? null : asWorkspaceVersion(currentOid);
@@ -1183,7 +1245,8 @@ export function registerWorkspaceGitHooks(
   // the write mutex: a write that lands mid-walk just makes the number a
   // little stale, and the caller re-measures after its next write anyway.
   // It also does not `ensureRepo`: measuring must not materialize a repo, so
-  // an agent that has never written reports 0.
+  // an agent that has never written reports 0. A DELETED agent is refused
+  // (`agent-deleted`, from `agentRepo`) rather than reported as 0.
   bus.registerService<WorkspaceUsageInput, WorkspaceUsageOutput>(
     'workspace:usage',
     PLUGIN_NAME,
@@ -1202,7 +1265,7 @@ export function registerWorkspaceGitHooks(
       // Both versions become argv tokens for `git`; validate before use.
       if (input.from !== null) requireOid(input.from, 'workspace:diff', 'from');
       requireOid(input.to, 'workspace:diff', 'to');
-      await ensureRepo(gitdir);
+      await ensureAgentRepo(gitdir, 'workspace:diff');
       let fromSnapshot: Snapshot;
       let fromCommitOid: string | null = null;
       if (input.from === null) {
@@ -1284,7 +1347,7 @@ export function registerWorkspaceGitHooks(
       // serializes against concurrent applies so HEAD doesn't shift
       // between the version check and the bundle.
       return mutex.run(async () => {
-        await ensureRepo(gitdir);
+        await ensureAgentRepo(gitdir, 'workspace:export-baseline-bundle');
         const head = await resolveHead(gitdir);
         // Empty bare repo: only the deterministic empty-baseline OID is
         // a valid version here (the only tip a prior caller could have
@@ -1329,7 +1392,7 @@ export function registerWorkspaceGitHooks(
       // comment credited — TASK-68 moved it to blob:put and off this path.)
       requireOid(input.baselineCommit, 'workspace:apply-bundle', 'baselineCommit');
       return mutex.run(async () => {
-        await ensureRepo(gitdir);
+        await ensureAgentRepo(gitdir, 'workspace:apply-bundle');
         const currentOid = await resolveHead(gitdir);
         const currentVersion: WorkspaceVersion | null =
           currentOid === null ? null : asWorkspaceVersion(currentOid);
@@ -1456,4 +1519,86 @@ export function registerWorkspaceGitHooks(
       });
     },
   );
+
+  /**
+   * TASK-719 -- an agent was deleted: remove its repo, then say so.
+   *
+   * THE PATH. The only directory this can remove is
+   * `gitdirFor(workspaceIdForAgent(agentId))`: `<repoRoot>/ws-<16 hex>.git`.
+   * The raw agent id is hashed, never joined, so `'../x'`, `'/'` or `'..'`
+   * name a (never-existing) hashed repo inside `repoRoot` like any other id.
+   * A payload whose `agentId` is not a non-blank string is logged and ignored.
+   *
+   * THE ORDER. The tombstone is set FIRST, before waiting for the mutex, so a
+   * write already queued on the mutex ahead of this delete is refused by its
+   * in-mutex re-check (`ensureAgentRepo`) rather than committing into a repo
+   * that is about to go. The `rm` itself runs INSIDE the agent's mutex, so it
+   * never pulls the repo out from under a write that is mid-commit.
+   *
+   * THE NOTICE. `workspace:deleted { agentId }` fires only after the `rm`
+   * succeeded -- including when there was nothing to remove (`force`), so a
+   * stray ledger row for an agent that never wrote is still released. If the
+   * `rm` fails the bytes are still on disk: nothing is fired (so the ledger
+   * keeps counting them), an error is logged, and the tombstone stays (the
+   * agent is gone even if its bytes are not).
+   *
+   * `workspace:deleted` is a subscriber hook this plugin FIRES for others
+   * (`@ax/disk-quota` drops the agent's workspace ledger row). Payload is
+   * `WorkspaceDeletedPayload` -- the agent id only, no path or repo vocabulary.
+   * Alternate impl: `@ax/workspace-git-server` (or any other backend) fires the
+   * same event after removing its own storage for the agent.
+   *
+   * ALWAYS returns `undefined` and never throws: `agents:deleted` is a fan-out
+   * of every plugin's per-agent cleanup, and a returned rejection would stop
+   * every subscriber after this one.
+   */
+  async function removeRepoForDeletedAgent(
+    ctx: AgentContext,
+    payload: unknown,
+  ): Promise<void> {
+    const agentId =
+      typeof payload === 'object' && payload !== null
+        ? (payload as { agentId?: unknown }).agentId
+        : undefined;
+    if (typeof agentId !== 'string' || agentId.trim().length === 0) {
+      ctx.logger.warn('workspace_git_delete_for_deleted_agent_skipped', {
+        reason: "'agentId' must be a non-empty string",
+        agentIdType: agentId === null ? 'null' : typeof agentId,
+      });
+      return;
+    }
+    const workspaceId = workspaceIdForAgent(agentId);
+    const gitdir = gitdirFor(workspaceId);
+    tombstone.add(workspaceId);
+    try {
+      await mutexFor(workspaceId).run(async () => {
+        // `fs.promises.rm`, not the named `rm` import: the tests make this one
+        // call fail through the `fs.promises` object, the same way the
+        // null-slice suite injects read faults.
+        await fs.promises.rm(gitdir, { recursive: true, force: true });
+      });
+    } catch (err) {
+      ctx.logger.error('workspace_git_delete_for_deleted_agent_failed', {
+        agentId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return;
+    }
+    ctx.logger.info('workspace_git_removed_for_deleted_agent', { agentId });
+    const deleted: WorkspaceDeletedPayload = { agentId };
+    await bus.fire('workspace:deleted', ctx, deleted);
+  }
+
+  bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+    try {
+      await removeRepoForDeletedAgent(ctx, payload);
+    } catch (err) {
+      // Belt and braces: removeRepoForDeletedAgent catches its own failures,
+      // but nothing may escape into the agents:deleted fan-out.
+      ctx.logger.error('workspace_git_delete_for_deleted_agent_failed', {
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+    return undefined;
+  });
 }

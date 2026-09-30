@@ -7,8 +7,9 @@ export interface WorkspaceGitConfig {
   /**
    * Absolute path to the directory that will host the bare repositories,
    * one per `agentId` at `<repoRoot>/<workspaceId>.git`. The plugin
-   * idempotently `git.init`s each on first use. Capabilities are scoped to
-   * this directory only — nothing outside `repoRoot` is read or written.
+   * idempotently `git.init`s each on first use, and removes one when its
+   * agent is deleted. Capabilities are scoped to this directory only —
+   * nothing outside `repoRoot` is read, written or removed.
    */
   repoRoot: string;
 }
@@ -53,7 +54,11 @@ export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {
         'workspace:usage',
       ],
       calls: [],
-      subscribes: [],
+      // TASK-719: an agent delete removes that agent's repo (the core's
+      // `agents:deleted` subscriber) and then fires `workspace:deleted
+      // { agentId }` for others. The manifest has no field for hooks a plugin
+      // FIRES; that one is documented at its fire site in the core.
+      subscribes: ['agents:deleted'],
     },
     init({ bus }) {
       registerWorkspaceGitHooks(bus, { repoRoot: config.repoRoot });

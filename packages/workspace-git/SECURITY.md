@@ -10,7 +10,7 @@ The `security-checklist` walk for everything this package transitively does is i
 
 Almost nothing. `createWorkspaceGitPlugin(config)` builds a `Plugin` whose `init({ bus })` calls `registerWorkspaceGitHooks(bus, { repoRoot: config.repoRoot })`. The `repoRoot` config string is passed straight through; the wrapper doesn't read it, validate it, or store it elsewhere.
 
-The only thing this wrapper "owns" from a security standpoint is the manifest — it declares the four hooks the core registers (`workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`) so the kernel knows what surface this plugin exposes. The manifest doesn't grant capability; it documents it.
+The only thing this wrapper "owns" from a security standpoint is the manifest — it declares the four hooks the core registers (`workspace:apply`, `workspace:read`, `workspace:list`, `workspace:diff`) so the kernel knows what surface this plugin exposes, and (TASK-719) that it subscribes to `agents:deleted`, on which the core removes that agent's repo — see the core's **Deletion** paragraph for how that `rm` is fenced. The manifest doesn't grant capability; it documents it.
 
 ## Known limits
 
