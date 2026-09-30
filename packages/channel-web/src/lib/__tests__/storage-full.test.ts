@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { HttpError } from '../http';
-import { STORAGE_FULL_SEND } from '../storage-copy';
+import { STORAGE_FULL_RULES, STORAGE_FULL_SEND } from '../storage-copy';
 import { MAX_SERVER_SENTENCE_CHARS, StorageFullError, readStorageFull } from '../storage-full';
 
 function res(status: number, body: unknown): Response {
@@ -32,6 +32,32 @@ describe('readStorageFull', () => {
     const err = await readStorageFull('/api/chat/messages', res(413, body));
     expect(err).toBeInstanceOf(StorageFullError);
     expect(err!.sentence).toBe(STORAGE_FULL_SEND);
+  });
+
+  /*
+    TASK-719. The fallback used to be one sentence, about a MESSAGE that did not
+    send. Rules and agent identity reuse this reader, and "we couldn't send that
+    message" under a Save button that saved nothing would be a lie of its own,
+    so each surface names the sentence it falls back to.
+  */
+  it('falls back to the sentence the SURFACE named, not the message one', async () => {
+    const err = await readStorageFull(
+      '/api/workspace/agents/a1/memory/rules',
+      res(413, { error: 'storage-full' }),
+      STORAGE_FULL_RULES,
+    );
+    expect(err).toBeInstanceOf(StorageFullError);
+    expect(err!.sentence).toBe(STORAGE_FULL_RULES);
+    expect(err!.sentence).not.toBe(STORAGE_FULL_SEND);
+  });
+
+  it("still prefers the server's sentence over a named fallback", async () => {
+    const err = await readStorageFull(
+      '/p',
+      res(413, { error: 'storage-full', message: 'The server said this.' }),
+      STORAGE_FULL_RULES,
+    );
+    expect(err!.sentence).toBe('The server said this.');
   });
 
   it('clamps a very long server sentence rather than filling the screen with it', async () => {

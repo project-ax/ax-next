@@ -147,6 +147,11 @@ import { isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceLine } from '../lib/fence-line.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
+// The sentence a full storage limit answers a Rules Save with (TASK-719), and
+// the one test for "this refusal is the storage limit". The sentence is shared
+// with the browser's fallback so there is one copy of the words.
+import { STORAGE_FULL_RULES } from '../lib/storage-full-copy.js';
+import { isStorageFullRefusal } from './storage-full-refusal.js';
 // The renderer's own ceiling for the untrusted `detail` line. Imported rather
 // than restated so the host and the browser cannot drift about where that
 // sentence ends (invariant 4) — the module is pure constants and one pure
@@ -5329,6 +5334,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // silently failed is how a hand-written rule goes missing.
         if (err instanceof PluginError && err.code === 'invalid-payload') {
           res.status(400).json({ error: 'invalid-body', detail: err.message });
+          return;
+        }
+        // The storage limit said no (TASK-719). The write goes through
+        // `workspace:apply`, whose pre-apply veto disk-quota answers with
+        // `code: 'storage-full'`. This used to rethrow like any other veto and
+        // surface as a 500, which the editor read as "the server ran into a
+        // problem, try again" — a false hope: nothing changes until an admin
+        // makes room. So it is its own answer, with ONE fixed sentence. The
+        // veto's message is worded for the agent and is never sent.
+        if (isStorageFullRefusal(err)) {
+          res.status(413).json({ error: 'storage-full', message: STORAGE_FULL_RULES });
           return;
         }
         throw err;

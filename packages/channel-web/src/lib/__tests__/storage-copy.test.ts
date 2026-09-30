@@ -6,6 +6,8 @@ import {
   NEAR_LIMIT_TITLE,
   FULL_BODY,
   FULL_TITLE,
+  STORAGE_FULL_IDENTITY,
+  STORAGE_FULL_RULES,
   STORAGE_FULL_SEND,
   WARN_PERCENT_INVALID,
   breakdownRows,
@@ -162,6 +164,8 @@ describe('the sentences a person reads', () => {
     ['full title', FULL_TITLE],
     ['full body', FULL_BODY],
     ['storage-full send refusal', STORAGE_FULL_SEND],
+    ['storage-full rules refusal', STORAGE_FULL_RULES],
+    ['storage-full identity refusal', STORAGE_FULL_IDENTITY],
   ];
 
   it('says what the status is, what happens at the limit, and who can help', () => {
@@ -185,6 +189,30 @@ describe('the sentences a person reads', () => {
   it('the storage-full refusal says the message was not sent, and who can help', () => {
     expect(STORAGE_FULL_SEND).toMatch(/storage is full/i);
     expect(STORAGE_FULL_SEND).toMatch(/ask an admin for more room/i);
+  });
+
+  /*
+    TASK-719. Each one names what did NOT get saved, why, and who can help, and
+    says nothing more than the code behind it can promise. The identity one is
+    the delicate one: it says the AGENT was saved (true only because the form
+    creates or patches it first) and that the IDENTITY was not, and it points at
+    the edit screen rather than at "Save again", which on a brand-new agent
+    would make a second agent.
+  */
+  it('the rules refusal says the rules were not saved, why, and who can help', () => {
+    expect(STORAGE_FULL_RULES).toBe(
+      "We couldn't save your rules because your storage is full. An admin can make more room, then you can try again.",
+    );
+  });
+
+  it('the identity refusal says the agent was saved, its identity was not, and who can help', () => {
+    expect(STORAGE_FULL_IDENTITY).toBe(
+      "The agent was saved, but its identity wasn't, because storage is full. An admin can make more room, then you can edit the agent and save its identity again.",
+    );
+  });
+
+  it('carry no number, so nothing can go stale when the limit changes', () => {
+    for (const [, text] of sentences) expect(text).not.toMatch(/\d/);
   });
 });
 

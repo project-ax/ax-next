@@ -7,7 +7,9 @@ import {
   type HookBus,
 } from '@ax/core';
 import { z } from 'zod';
+import { STORAGE_FULL_IDENTITY } from '../lib/storage-full-copy.js';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
+import { isStorageFullRefusal } from './storage-full-refusal.js';
 import { actualParentFromMismatch, NO_ACTUAL_PARENT } from './workspace-cas.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
@@ -320,6 +322,22 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
         }
         res.status(200).json({ ok: true });
       } catch (err) {
+        // The storage limit said no (TASK-719). It is a `rejected` like a
+        // validator's veto, and used to fall into the branch below: a 400 that
+        // carried the veto's own message, a sentence worded for the AGENT that
+        // writes files, shown to a person in the form's Alert. It must be told
+        // apart FIRST, and only by the code the veto carries — never by who said
+        // it or by its words — because everything else in that branch means "fix
+        // what you wrote", which is the wrong advice for a full disk.
+        //
+        // The sentence is true as sent because of the order the screen saves in
+        // (see STORAGE_FULL_IDENTITY): the agent row and its connectors are
+        // written BEFORE this PUT, and the apply is all-or-nothing, so a refusal
+        // leaves none of the three identity files written.
+        if (isStorageFullRefusal(err)) {
+          res.status(413).json({ error: 'storage-full', message: STORAGE_FULL_IDENTITY });
+          return;
+        }
         // A validator-identity veto (injection scan / non-canonical BOOTSTRAP)
         // surfaces from the @ax/core apply facade as PluginError{code:'rejected'}
         // whose `message` is the validator's reason → 400 with that reason (no

@@ -156,6 +156,16 @@ export const FULL_BODY =
 export const STORAGE_FULL_SEND =
   "We couldn't send that message because your storage is full. Nothing new can be saved right now, including uploads. Ask an admin for more room, then try again.";
 
+/**
+ * The same refusal on the two saves that are not a message: the Rules editor
+ * and the agent form's identity fields (TASK-719). The HOST sends these
+ * sentences (`413 storage-full`), and `lib/storage-full.ts` prefers what it
+ * sent; these are what a person reads if it is missing. They live in a file of
+ * their own only because the host has to import the same words and cannot
+ * import this one (see `storage-full-copy.ts`).
+ */
+export { STORAGE_FULL_IDENTITY, STORAGE_FULL_RULES } from './storage-full-copy';
+
 // ---------------------------------------------------------------------------
 // Limits
 // ---------------------------------------------------------------------------

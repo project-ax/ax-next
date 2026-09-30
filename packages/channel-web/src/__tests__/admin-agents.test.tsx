@@ -315,6 +315,67 @@ describe('AdminSettings — agents tab', () => {
     });
   });
 
+  // TASK-719 — the storage limit turned the identity save away. The agent row
+  // was already created and its connectors attached (the form saves in that
+  // order), so the person must be told, in one plain sentence, that the AGENT
+  // is saved and its IDENTITY is not — not handed `save agent identity: 413:
+  // storage-full`, and not a sentence worded for the agent that writes files.
+  it('says a full storage limit in plain words when the identity save is refused', async () => {
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const sentence =
+      "The agent was saved, but its identity wasn't, because storage is full. An admin can make room.";
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/admin/agents/models') {
+        return Promise.resolve(jsonOk({ models: MODEL_OPTIONS }));
+      }
+      if (url === '/admin/agents' && method === 'POST') {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+      }
+      if (/connector-attachments/.test(url)) {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+      }
+      if (/\/identity$/.test(url) && method === 'PUT') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: 'storage-full', message: sentence }), {
+            status: 413,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (/\/admin\/teams(\?|$)/.test(url)) return Promise.resolve(jsonOk({ teams: [] }));
+      if (/\/admin\/connectors(\?|$)/.test(url)) {
+        return Promise.resolve(jsonOk({ connectors: [] }));
+      }
+      return Promise.resolve(jsonOk({ agents: [] }));
+    });
+
+    render(<AgentForm isAdmin />);
+    await waitFor(() => screen.getByText(/New agent/i));
+    fireEvent.click(screen.getByText(/New agent/i));
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'new-bot' } });
+    fireEvent.change(screen.getByLabelText('Identity'), { target: { value: 'I am new-bot.' } });
+    fireEvent.change(screen.getByLabelText('Soul'), { target: { value: 'I am helpful.' } });
+    fireEvent.change(screen.getByLabelText(/allowed tools/i), { target: { value: 'bash' } });
+    await waitFor(() =>
+      expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+        'anthropic/claude-sonnet-4-6',
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Save/i }));
+
+    // The destructive Alert holds the server's sentence and nothing else.
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toBe(sentence);
+    });
+    expect(screen.queryByText(/save agent identity/i)).toBeNull();
+    expect(screen.queryByText(/413/)).toBeNull();
+    // The form stays open with what was typed: nothing was thrown away.
+    expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).value).toBe('I am new-bot.');
+  });
+
   it('model options come from GET /admin/agents/models, not a hardcoded list', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
