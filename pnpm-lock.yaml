@@ -1350,6 +1350,9 @@ importers:
         specifier: workspace:*
         version: link:../workspace-bundle-protocol
     devDependencies:
+      '@ax/agent-runner-core':
+        specifier: workspace:*
+        version: link:../agent-runner-core
       '@ax/chat-orchestrator':
         specifier: workspace:*
         version: link:../chat-orchestrator
