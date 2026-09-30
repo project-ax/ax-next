@@ -20,7 +20,8 @@
 //   1. BOOTSTRAP mode  — `.ax/BOOTSTRAP.md` present → the system prompt is
 //      that file's content behind a runner-authored name preamble. The agent
 //      wakes up inside the bootstrap script; nothing else is injected (no
-//      floor, no notes, no identity files) EXCEPT the bootstrap-safe slice of
+//      floor, no notes, no identity files) EXCEPT, when cwd is not the governed
+//      root, a short path note (`bootstrapPathNote`) — and the bootstrap-safe slice of
 //      the host augment (TASK-524): contributions a provider flagged
 //      `bootstrapSafe`, carried separately as
 //      `agentConfig.systemPromptBootstrapAugment` and prepended on top. Today
@@ -64,6 +65,7 @@
 import { readFile, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  bootstrapPathNote,
   communicationNote,
   operationalNotes,
   workPolicyNote,
@@ -325,9 +327,14 @@ export async function buildSystemPrompt(
   // The canonical template doesn't encode the agent's pre-assigned name (the
   // validator gate checks bytes on disk — it only covers WRITEs, not what we
   // forward to the SDK). Prepend a trusted runner-authored preamble so the agent
-  // knows its display name from the first message.
+  // knows its display name from the first message. When a durable mount moved
+  // cwd off the governed root, the same preamble slot also carries the one
+  // fact the script can't: Bash (unlike the file tools) is not re-rooted, so
+  // `.ax/` paths in a shell command must be absolute or the completion step
+  // (`rm .ax/BOOTSTRAP.md`) hits the wrong directory and bootstrap never ends.
   if (files.bootstrap !== undefined) {
-    const script = `${bootstrapPreamble(displayName)}\n\n${files.bootstrap}`;
+    const pathNote = cwd === workspaceRoot ? '' : `\n\n${bootstrapPathNote(workspaceRoot, cwd)}`;
+    const script = `${bootstrapPreamble(displayName)}${pathNote}\n\n${files.bootstrap}`;
     return bootstrapAugment.length > 0 ? `${bootstrapAugment}\n\n${script}` : script;
   }
 

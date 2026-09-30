@@ -192,6 +192,30 @@ export function workspaceNote(workspaceRoot: string, cwd: string = workspaceRoot
 }
 
 /**
+ * Bootstrap-mode path note, for when the working directory (`cwd`, e.g. the
+ * durable `/files` mount) is NOT the governed root (`workspaceRoot`, where
+ * `.ax/` lives).
+ *
+ * Bootstrap mode injects none of the normal-mode operational notes, so nothing
+ * else tells the model where `.ax/` really is. The file tools are re-rooted to
+ * the governed tier for it, but a Bash command string is not (tool-policy
+ * rewrites only path-typed fields), so the script's relative
+ * `rm .ax/BOOTSTRAP.md` ran against `<cwd>/.ax` and the agent never graduated.
+ * Both paths are host-controlled (env), never model/user input.
+ */
+export function bootstrapPathNote(workspaceRoot: string, cwd: string): string {
+  return [
+    `Where your \`.ax/\` files are: your working directory is \`${cwd}\`, but`,
+    `\`.ax/BOOTSTRAP.md\`, \`.ax/IDENTITY.md\` and \`.ax/SOUL.md\` live under`,
+    `\`${workspaceRoot}/.ax/\`, NOT \`${cwd}/.ax/\`. The file tools (Read, Write, Edit)`,
+    `find them for you; Bash does not — it reads a path exactly as written,`,
+    `relative to \`${cwd}\`. So in a Bash command always use the full path (when you`,
+    `are done: \`rm ${workspaceRoot}/.ax/BOOTSTRAP.md\`), and never create a \`.ax\``,
+    `folder in \`${cwd}\`.`,
+  ].join(' ');
+}
+
+/**
  * Operational note telling the agent that `ephemeralRoot` is throwaway
  * scratch — written for the LLM, kept short and direct.
  */

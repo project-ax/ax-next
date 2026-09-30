@@ -180,6 +180,25 @@ describe('runRunner — bootstrap-safe augment (TASK-524)', () => {
   });
 });
 
+describe('runRunner — prompt working frame', () => {
+  it('hands the prompt engine the durable mount as cwd, distinct from the governed root', async () => {
+    // Bootstrap mode needs to know the two differ: its script says `rm
+    // .ax/BOOTSTRAP.md`, which a Bash command resolves against cwd (/files),
+    // not the governed root (/tmp/workspace), unless the prompt says otherwise.
+    const { buildSystemPrompt } = await import('../prompt-engine.js');
+    const mock = buildSystemPrompt as unknown as Mock;
+    mock.mockClear();
+    const loop: Loop = { run: vi.fn().mockResolvedValue(0) };
+    const env = (): RunnerEnv => ({ ...fakeEnv(), userFilesRoot: '/files' });
+    expect(await runRunner(() => loop, seams(env))).toBe(0);
+    expect(mock).toHaveBeenCalledOnce();
+    const args = mock.mock.calls[0]!;
+    expect(args[2]).toBe('/tmp/workspace'); // workspaceRoot: where .ax/ lives
+    expect(args[5]).toBe('/files'); //          userFilesRoot
+    expect(args[6]).toBe('/files'); //          cwd
+  });
+});
+
 describe('runRunner', () => {
   it('returns 2 and does not fire chat-end when boot fails', async () => {
     const makeLoop = vi.fn();

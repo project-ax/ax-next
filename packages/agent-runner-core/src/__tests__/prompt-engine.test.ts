@@ -267,6 +267,46 @@ describe('buildSystemPrompt — bootstrap mode (exclusive)', () => {
   });
 });
 
+describe('buildSystemPrompt — bootstrap mode when cwd is not the governed root', () => {
+  // With a durable user-files mount the agent's cwd is /files while `.ax/` lives
+  // on the governed tier. The file tools (Read/Write/Edit) are re-rooted there
+  // for the model, but a Bash command string is not, so the script's relative
+  // `rm .ax/BOOTSTRAP.md` ran against /files/.ax (nothing there) and the agent
+  // never graduated out of bootstrap mode. Bootstrap mode injects no operational
+  // notes, so nothing ever told the model where `.ax/` really is.
+  const bootstrap = '# Bootstrap\nDelete `.ax/BOOTSTRAP.md` when you are done.';
+
+  it('spells the governed .ax path out for shell commands and leaves the script verbatim', async () => {
+    await writeAx('BOOTSTRAP.md', bootstrap);
+    const out = (await buildSystemPrompt(
+      'Display Name',
+      '',
+      dir,
+      undefined,
+      false,
+      '/files',
+      '/files',
+    )) as string;
+    // Name preamble first, canonical script last and byte-for-byte untouched.
+    expect(out.startsWith(bootstrapPreamble('Display Name'))).toBe(true);
+    expect(out.endsWith(`\n\n${bootstrap}`)).toBe(true);
+    // The absolute path for the one thing the script asks the agent to do, and
+    // the reason: it is the shell that would otherwise resolve `.ax/` under cwd.
+    expect(out).toContain(`${dir}/.ax/BOOTSTRAP.md`);
+    expect(out).toContain('/files');
+    expect(out).toMatch(/Bash|shell/);
+    // Still exclusive: the normal-mode floor and notes stay out.
+    expect(out).not.toContain(safetyFloorNote());
+    expect(out).not.toContain(workspaceNote(dir, '/files'));
+  });
+
+  it('adds nothing when cwd IS the governed root (byte-identical to the plain prompt)', async () => {
+    await writeAx('BOOTSTRAP.md', bootstrap);
+    const out = await buildSystemPrompt('Display Name', '', dir, undefined, false, undefined, dir);
+    expect(out).toBe(`${bootstrapPreamble('Display Name')}\n\n${bootstrap}`);
+  });
+});
+
 describe('buildSystemPrompt — bootstrap mode admits ONLY the bootstrap-safe augment (TASK-524)', () => {
   const bootstrap = '# Bootstrap\nYou just woke up. Talk to your user.';
 
