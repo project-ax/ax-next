@@ -472,7 +472,7 @@ export function flushPreconditionMessage(
     const sentence = /[.!?]$/.test(stated) ? stated : `${stated}.`;
     const rolledBack =
       flush.outcome === 'rolled-back' ? ` The turn's commit was rolled back.` : '';
-    return `${head} The host refused the change: ${sentence}${rolledBack}`;
+    return `${head} The change was not saved: ${sentence}${rolledBack}`;
   }
   return `${head} The files are not visible to the installer yet — please try again.`;
 }

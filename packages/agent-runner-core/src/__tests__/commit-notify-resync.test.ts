@@ -961,7 +961,7 @@ describe('flushPreconditionMessage', () => {
     const text = flushPreconditionMessage('skill_install', { outcome: 'rolled-back' });
     expect(text).toContain('flush outcome: rolled-back');
     expect(text).toContain('please try again');
-    expect(text).not.toContain('The host refused the change');
+    expect(text).not.toContain('The change was not saved');
   });
 
   it('punctuates a reason that does not end in a sentence', () => {
