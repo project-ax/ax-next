@@ -380,7 +380,7 @@ image:
   # matching where you pushed — NOT the multi-region us-docker.pkg.dev.
   repository: us-central1-docker.pkg.dev/<PROJECT_ID>/ax-next/agent
 workspace:
-  storage: 20Gi
+  storage: 100Gi                       # edit to taste; see the note below this block
 ingress:
   host: your.domain.example            # also the A-record + ManagedCertificate domain
 http:
@@ -398,6 +398,11 @@ memory:
 # If you named the static IP / cert something other than ax-next-ip / ax-next-cert
 # in Step 5, override ingress.annotations here too.
 ```
+
+About `workspace.storage`: `100Gi` is a starting point, so edit it to taste. Blobs
+(attachments and artifacts) share this volume with the agent workspaces, and the
+per-person storage limit (default 1 GB, Settings > Storage) multiplies across
+people, so size the volume for the number of people you expect.
 
 Helm needs the (conditioned-off) Postgres subchart present in `charts/` before it
 will render, so build dependencies once:

@@ -90,6 +90,10 @@ memory:
 # storageClassName empty → Autopilot's default (`standard-rwo`, a Balanced PD).
 # For better IOPS set `premium-rwo`.
 #
+# SIZE: 100Gi is a starting point, not a promise. Blobs share this volume, and
+# the per-person storage limit (default 1 GB, Settings > Storage) multiplies
+# across people, so size the volume for the number of people you expect.
+#
 # BACKUPS: helm does not take them. This volume, and the memory-facts one
 # (`memory.facts`), are plain Compute Engine disks. The daily snapshot schedule
 # for both is created outside helm, by `bash deploy/gke/backups.sh enable`. Run
@@ -98,7 +102,7 @@ memory:
 # cost.
 workspace:
   backend: local
-  storage: 20Gi               # >>> EDIT to taste; blobs share this volume
+  storage: 100Gi              # >>> EDIT to taste; blobs share this volume
   storageClassName: ""        # "" → standard-rwo; or "premium-rwo"
   accessMode: ReadWriteOnce
   mountPath: /var/lib/ax-next/workspaces

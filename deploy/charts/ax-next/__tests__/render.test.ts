@@ -306,28 +306,27 @@ describeIfHelm('ax-next chart: workspace.backend wiring', () => {
     expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_TOKEN');
   });
 
-  it('backend=local: host has AX_SKILLS_BUNDLE_ROOT under the workspace PVC (TASK-40)', () => {
-    const docs = helmTemplate([]);
-    const env = findHostEnv(docs);
-    const names = env.map((e) => e.name);
-    const byName = Object.fromEntries(env.map((e) => [e.name, e]));
+  it('neither backend sets AX_SKILLS_BUNDLE_ROOT: the git-tree bundle store is retired and no code reads it', () => {
+    // The TASK-40 git-tree backing was retired (out-of-git Part D2) and
+    // `loadK8sConfigFromEnv` ignores this variable, so a value here would
+    // only mislead an operator into thinking the volume holds skill bundles.
+    // Pinned absent for BOTH backends so it cannot quietly come back.
+    const local = findHostEnv(helmTemplate([])).map((e) => e.name);
+    const gitProtocol = findHostEnv(
+      helmTemplate([
+        '--set', 'workspace.backend=git-protocol',
+        '--set', 'gitServer.enabled=true',
+        '--set', 'gitServer.storage=10Gi',
+      ]),
+    ).map((e) => e.name);
 
-    expect(names).toContain('AX_SKILLS_BUNDLE_ROOT');
-    const mountPath = byName.AX_WORKSPACE_ROOT?.value;
-    expect(mountPath).toBeDefined();
-    // The bundle repo is a sibling dir on the same workspace PVC.
-    expect(byName.AX_SKILLS_BUNDLE_ROOT?.value).toBe(`${mountPath}/skill-bundles`);
-  });
+    // Guard the guard: make sure we really rendered the host env of each
+    // backend, so "absent" is not just "we read an empty array".
+    expect(local).toContain('AX_WORKSPACE_ROOT');
+    expect(gitProtocol).toContain('AX_WORKSPACE_GIT_SERVER_URL');
 
-  it('backend=git-protocol: host has no AX_SKILLS_BUNDLE_ROOT (TASK-40)', () => {
-    const docs = helmTemplate([
-      '--set', 'workspace.backend=git-protocol',
-      '--set', 'gitServer.enabled=true',
-      '--set', 'gitServer.storage=10Gi',
-    ]);
-    const env = findHostEnv(docs);
-    const names = env.map((e) => e.name);
-    expect(names).not.toContain('AX_SKILLS_BUNDLE_ROOT');
+    expect(local).not.toContain('AX_SKILLS_BUNDLE_ROOT');
+    expect(gitProtocol).not.toContain('AX_SKILLS_BUNDLE_ROOT');
   });
 
   it('backend=git-protocol + gitServer.enabled: host has AX_WORKSPACE_GIT_SERVER_*, StatefulSet renders', () => {
