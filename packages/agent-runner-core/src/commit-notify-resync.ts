@@ -176,7 +176,13 @@ export async function commitNotifyWithResync(input: {
     await rollbackToBaseline(root, 'hard');
     commitTrace(`[commit-trace] outcome=rolled-back (too-large: ${why})\n`);
     return {
-      parentVersion: input.parentVersion,
+      // NOT `input.parentVersion`: a re-sync may have re-pinned the local
+      // `baseline` ref to the host's advanced parent before this re-bundle, and
+      // the hard reset above just put the tree THERE. Reporting the parent we
+      // entered with would desync the caller's tracked version from the local
+      // ref, and the next turn would name a parent the host cannot line its
+      // bundle up against.
+      parentVersion: currentParentVersion,
       outcome: 'rolled-back',
       rejectionReason: TOO_LARGE_REJECTION_REASON,
       rejectionCode: 'too-large',
@@ -222,7 +228,11 @@ export async function commitNotifyWithResync(input: {
       process.stderr.write(
         `runner: commit-notify failed: ${err instanceof Error ? err.message : String(err)}\n`,
       );
-      return { parentVersion: input.parentVersion, outcome: 'kept' };
+      // `currentParentVersion`, never `input.parentVersion`: once a re-sync has
+      // run, the local `baseline` ref IS the host's advanced parent, so the
+      // parent to carry forward is that one. (A read-only exit before any
+      // re-sync has the two equal, so this is a no-op there.)
+      return { parentVersion: currentParentVersion, outcome: 'kept' };
     }
     if (resp.accepted) {
       await advanceBaseline(root);
@@ -300,7 +310,7 @@ export async function commitNotifyWithResync(input: {
           `runner: resync failed (${e instanceof Error ? e.message : String(e)})\n`,
         );
         commitTrace(`[commit-trace] outcome=kept (resync threw)\n`);
-        return { parentVersion: input.parentVersion, outcome: 'kept' };
+        return { parentVersion: currentParentVersion, outcome: 'kept' };
       }
       currentParentVersion = resp.actualParent;
       const rebasedBundleBytes = await commitTurnAndBundle({ root, reason });
@@ -379,7 +389,11 @@ export async function commitNotifyWithResync(input: {
     // The veto's machine `code` (e.g. `storage-full`) rides on the same
     // condition: a race's code, if one ever sent one, is not a refusal.
     return {
-      parentVersion: input.parentVersion,
+      // `currentParentVersion`, never `input.parentVersion`: once a re-sync has
+      // run, the local `baseline` ref IS the host's advanced parent, so the
+      // parent to carry forward is that one. (A read-only exit before any
+      // re-sync has the two equal, so this is a no-op there.)
+      parentVersion: currentParentVersion,
       outcome: 'rolled-back',
       ...(resp.recoverable === false ? { rejectionReason: resp.reason } : {}),
       ...(resp.recoverable === false && resp.code !== undefined

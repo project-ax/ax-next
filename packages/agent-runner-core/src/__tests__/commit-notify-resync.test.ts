@@ -258,7 +258,11 @@ describe('commitNotifyWithResync', () => {
     expect(call).toHaveBeenCalledTimes(MAX_RESYNC_ATTEMPTS + 1);
     expect(advanceBaselineMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    // 'vN', not 'v1': every resync re-pinned the local `baseline` ref to the
+    // host's advanced parent, and the rollback reset the tree to THAT. Reporting
+    // the parent we entered with would leave the runner's tracked version
+    // pointing at a ref its own tree no longer matches.
+    expect(result).toEqual({ parentVersion: 'vN', outcome: 'rolled-back' });
   });
 
   it('baseline-bundle fetch fails (head moved again) → re-enters loop with same parent+bundle → accepted', async () => {
@@ -502,7 +506,9 @@ describe('commitNotifyWithResync', () => {
       reason: 'turn',
     });
     expect(call).toHaveBeenCalledTimes(MAX_RESYNC_ATTEMPTS + 1);
-    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    // 'v2' — the parent the last resync pinned the local baseline to, and the
+    // one this rollback reset the tree to (see the exhausted-resync test).
+    expect(result).toEqual({ parentVersion: 'v2', outcome: 'rolled-back' });
     expect(result.rejectionReason).toBeUndefined();
   });
 
@@ -667,6 +673,35 @@ describe('commitNotifyWithResync — commit-bundle wire + too-large (TASK-720)',
     expect(call).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
     expect(result.rejectionCode).toBe('too-large');
+    // The re-sync re-pinned the LOCAL `baseline` ref to the host's advanced
+    // parent before the re-bundle, so that — not the stale parent we entered
+    // with — is where the hard reset just put the tree. Returning the old one
+    // would desync the caller's tracked parent from the local ref, and the next
+    // turn would declare a parent the host cannot line its bundle up against.
+    expect(result.parentVersion).toBe('v2');
+  });
+
+  it('a send failure AFTER a re-sync carries the advanced parent, not the one we entered with', async () => {
+    // The re-sync re-pinned the local `baseline` ref to the host's advanced
+    // parent, so that is what the caller must track from here. Reporting the
+    // stale parent would leave the runner declaring a parent its own local ref
+    // no longer matches, and the next turn's thin bundle would be built against
+    // the wrong base.
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({ accepted: false, actualParent: 'v2' })
+      .mockRejectedValueOnce(new Error('ECONNRESET'));
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('0123456789ABCDEF'));
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('small'),
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(result.outcome).toBe('kept');
+    expect(result.parentVersion).toBe('v2');
   });
 
   it('a host 413 is the same loud too-large rollback (never "kept")', async () => {
