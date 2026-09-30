@@ -440,14 +440,24 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     set) and `@ax/ipc-core`'s commit-notify (decoded bundle length, derived
     host-side, never runner-claimed). The subscriber's veto reason is **prose**:
     on the runner path it rides `accepted:false, recoverable:false` (the runner
-    resets the tree; the reason reaches the agent as `rejectionReason` ONLY on
-    the mid-turn flush before a host tool, the end-of-turn save drops it);
-    in-process callers get `PluginError` `rejected`.
+    resets the tree; the reason reaches the agent as `rejectionReason` on the
+    mid-turn flush before a host tool); in-process callers get `PluginError`
+    `rejected`. The veto's machine `code` rides the commit answer too, and a
+    refused END-OF-TURN save reaches the person as `event.turn-end`
+    `saveRefused` (`storage-full` | `too-large` | `refused`) → the SSE `done`
+    frame → a fixed sentence under the reply (TASK-720). Live only: it is not
+    persisted, and the final/idle commit after the last turn-end only logs.
   - `chat:start` veto reason **`storage-full`** (owned by `@ax/disk-quota`,
     surfaces as `chat:start:storage-full`, channel-web maps it to a sentence):
-    the front door for a person whose storage is full, needed because the
-    end-of-turn save refusal above is silent. Unlike the write gates it fails
+    the front door for a person whose storage is full, so they do not start
+    another turn whose files cannot be kept. Unlike the write gates it fails
     **open**.
+  - The runner's save is the BINARY action **`workspace.commit-bundle`** (raw
+    bundle body, `parentVersion`/`reason` query, up to 100 MiB, TASK-720). The
+    JSON `workspace.commit-notify` (base64 inside the 4 MiB frame, so about
+    3 MiB per save) stays only for sandboxes from the previous release. A save
+    over the cap is not sent and a host 413 is not retried: both roll the turn
+    back and report `too-large`, instead of the old silent wedge.
   - **`blob:put` is a facade** (`registerBlobPutFacade` in `@ax/core`, like
     `workspace:apply`): veto `blob:pre-put { size }` → the backend's
     `blob:put-internal` → notify `blob:stored { sha256, size }`. Both backends
