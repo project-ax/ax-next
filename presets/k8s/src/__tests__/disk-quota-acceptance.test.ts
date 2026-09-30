@@ -990,6 +990,26 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
     let deleteSeq = 0;
 
+    /** How long (5b-c) waits for a gate it is counting on before it says which one never opened. */
+    const GATE_TIMEOUT_MS = 5_000;
+
+    /**
+     * Wait for a gate to be reached, or fail in a few seconds with `problem`
+     * instead of waiting out vitest's 60 s test timeout (which gives a generic
+     * message and never reaches the test's `finally`).
+     */
+    async function gateReached(gate: Promise<void>, problem: string): Promise<void> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(problem)), GATE_TIMEOUT_MS);
+      });
+      try {
+        await Promise.race([gate, timedOut]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     async function exists(p: string): Promise<boolean> {
       try {
         await fs.access(p);
@@ -1225,24 +1245,36 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
         entered: appliedReached,
         opened: new Promise<void>((resolve) => (openApplied = resolve)),
       };
+      // Started work the `finally` waits out, so a failure here cannot leave a
+      // write or a delete still running into the next test.
+      const inFlight: Array<Promise<unknown>> = [];
       try {
         const write = workspaceApply(asA, { 'docs/late.bin': randomBytes(100_000) }, t.a.version);
         const writeOutcome = write.then(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),
         );
-        await mutexGate.entered;
+        inFlight.push(writeOutcome);
+        await gateReached(
+          mutexGate.entered,
+          'this test needs workspace-git-core to read through fs.promises.readFile inside the per-agent mutex, ' +
+            "so the write can be held there; the write never reached its first read under the agent's repo",
+        );
 
         // The delete arrives while the write holds the mutex. It sets its
         // tombstone and queues behind the write; nothing is removed yet.
         const delivered = agentDeleted(t.a.id, t.owner);
+        inFlight.push(delivered);
         await tick();
         expect(await exists(t.a.dir), 'the delete waits for the write holding the mutex').toBe(true);
         expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toEqual(t.a.row);
 
         // Let the write finish. It commits, then parks at the applied gate.
         mutexGate.release();
-        await appliedEntered;
+        await gateReached(
+          appliedEntered,
+          "this test needs the released write to commit and fire workspace:applied, and its gate plugin to be booted before @ax/disk-quota's own workspace:applied subscriber; the write never reached the applied gate",
+        );
         await delivered;
 
         // The delete is complete (repo removed, then row released), and the
@@ -1270,6 +1302,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
         openApplied();
         mutexGate.restore();
         appliedGate = null;
+        await Promise.allSettled(inFlight);
       }
     });
 

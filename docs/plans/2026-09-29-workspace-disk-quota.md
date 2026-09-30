@@ -35,12 +35,19 @@ Two facts the card did not have, both of which shape the design:
    away, so the friendly message does not say so. It says what is true: ask for
    more room.
 2. **The volume is 100Gi in prod, and the chart used to say 20Gi.** Read-only
-   `kubectl get pvc` showed 100Gi (overridden somewhere) while
-   `deploy/charts/ax-next/gke-values.yaml` said 20Gi. TASK-719 made
-   `gke-values.yaml` and `deploy/GKE.md` say 100Gi, with a note that the
-   per-person limit multiplies across people. The chart default in `values.yaml`
-   and `kind-dev-values.yaml` are untouched, and changing a default does not
-   resize a volume that already exists. The default limit below is chosen to be
+   `kubectl get pvc` showed 100Gi (a fact seen once, read-only; the override that
+   set it is not in the repo) while `deploy/charts/ax-next/gke-values.yaml` said
+   20Gi. TASK-719 made `gke-values.yaml` and `deploy/GKE.md` say 100Gi, with a
+   note that the per-person limit multiplies across people. The chart default in
+   `values.yaml` and the `kind-dev-values.yaml` file are untouched.
+   The chart renders `storage` straight into the volume claim's request
+   (`templates/host/pvc.yaml`), and `helm.sh/resource-policy: keep` only protects
+   the claim from `helm uninstall`, not from an upgrade. So a default can grow an
+   existing volume but cannot shrink one. Prod's is already 100Gi, so nothing
+   changes there. What does change: an existing cluster that deploys from
+   `gke-values.yaml` at the old 20Gi will ask for 100Gi on its next `helm
+   upgrade`, and that cannot be undone. Whether the storage class grants the
+   growth is something we did not check. The default limit below is chosen to be
    safe against either size.
 
 ## Unit, numbers, and how both stores are counted
@@ -186,9 +193,10 @@ grow), the friendly sentence when a message with attachments is refused, and the
   that pre-dates this feature is uncounted until its next write (per-write
   metering charges `team:<id>` correctly), and team-repo drift (gc, repack) is not
   repaired by the sweep. Follow-up (needs an owner-bearing team agent listing).
-- **Deleting an agent frees its workspace, and only that.** Blob bytes are never
-  freed and stay counted against the owner: freeing them needs a blob GC and a
-  blob ledger release, which is a separate design (see the list at the end).
+- **Deleting an agent frees its workspace, and only that.** Almost nothing frees
+  blob bytes (`blob:delete` has one caller, the unmetered branding logo), so they
+  stay counted against the owner: freeing them needs a blob GC and a blob ledger
+  release, which is a separate design (see the list at the end).
   Agents deleted BEFORE TASK-719 shipped keep an orphan repo on disk and a counted
   row until an operator cleans them up by hand; nothing does that automatically.
   The multi-replica `@ax/workspace-git-server` backend does not subscribe to
@@ -236,8 +244,9 @@ grow), the friendly sentence when a message with attachments is refused, and the
 7. **Docs and memory.**
 
 Cut as YAGNI: per-owner limit overrides, an in-chat nudge before the limit,
-admin-editable per-kind budgets, a storage-freeing flow for a person (blobs are
-never freed, and deleting an agent is not a chore to suggest), reservations.
+admin-editable per-kind budgets, a storage-freeing flow for a person (almost
+nothing frees blob bytes, and deleting an agent is not a chore to suggest),
+reservations.
 
 ## What changed in TASK-719
 
@@ -249,8 +258,9 @@ more screens, and two stale bits of deploy config are gone.
   `agents:deleted`, removes that agent's repo under the agent's write mutex, then
   fires `workspace:deleted { agentId }`. `@ax/disk-quota` subscribes and deletes
   the `workspace:<agentId>` row for every owner (personal or `team:<id>`), after
-  waiting for any measurement of that agent already in flight. From then on every
-  workspace hook for that agent refuses with `agent-deleted`, so a warm runner's
+  waiting for any measurement of that agent already in flight. Until the host
+  restarts, every workspace hook for that agent refuses with `agent-deleted`
+  (the tombstone lives in memory, one per host process), so a warm runner's
   late commit cannot recreate the repo and a late measurement cannot bring the
   row back. If the removal fails, nothing is fired and the row keeps counting
   bytes that are still on disk. A canary in `presets/k8s` proves the chain on the
@@ -268,16 +278,24 @@ more screens, and two stale bits of deploy config are gone.
 
 Still open, and not hidden:
 
-- **Blob bytes are never freed.** Blob GC and a blob ledger release are a
-  separate design. Known constraints: nothing says which attachments, skills and
-  branding still point at a sha; `put`'s already-stored fast path races `delete`
-  and never touches the file's age; `blob.put` over IPC makes blobs with no
-  ledger row; and `attachments_v1_artifacts.artifact_id` looks like a possible
-  primary-key bug (it is a sha prefix, with a conflict rule only on
-  `(conversation_id, path)`), which needs checking before per-row references.
+- **Almost nothing frees blob bytes.** `blob:delete` has one caller, the
+  branding logo, which is not metered. Attachments and artifacts cannot be
+  deleted. Blob GC and a blob ledger release are a separate design. Known
+  constraints: nothing says which attachments, skills and branding still point at
+  a sha; `put`'s already-stored fast path races `delete` and never touches the
+  file's age; `blob.put` over IPC makes blobs with no ledger row; and
+  `attachments_v1_artifacts.artifact_id` looks like a possible primary-key bug
+  (it is a sha prefix, with a conflict rule only on `(conversation_id, path)`),
+  which needs checking before per-row references.
 - **Agents deleted before this shipped** keep an orphan repo and a counted row.
   Cleaning up is an operator job with a dry-run listing first (hash every live
   agent id, diff against the `ws-*.git` directories).
+- **The deleted-agent refusal lasts until the host restarts.** The tombstone is an
+  in-memory set in `@ax/workspace-git`, so a restart forgets it. The argument for
+  why that is enough: after a restart no warm runner holding that agent's token
+  remains, because the delete terminated the agent's sessions and killed its
+  sandboxes, so nothing is left to send a late commit. We have not tested a
+  restart in the middle of a delete.
 - **Blobs from before the storage limit shipped are still not counted.** A
   backfill needs owner-bearing listing hooks from attachments and skills.
 - **Team workspaces are not swept,** and `@ax/workspace-git-server` neither

@@ -82,7 +82,8 @@ const KEPT_ON_PURPOSE = {
  */
 // NOT_TABLES (documentation only, nothing reads it):
 //   - blob bytes behind attachments and skills (content-addressed and shared
-//     across users, so never freed; blob GC is a separate design)
+//     across users, so an agent delete does not free them; blob GC is a
+//     separate design)
 //   - key-value entries: the memory observer cursors, declined-grant markers
 //   - repos of agents deleted BEFORE TASK-719 shipped: an orphan `ws-*.git`
 //     and a counted disk-quota row until an operator cleans them by hand

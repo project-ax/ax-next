@@ -10,7 +10,7 @@
  * jokes, and no advice we cannot stand behind. In particular NOTHING here
  * tells a person to delete anything. Deleting a whole agent does give its
  * workspace back, but that throws the agent away, and no smaller chore helps
- * (files stay in the history; attachments and artifacts are never freed), so
+ * (files stay in the history; attachments and artifacts cannot be deleted), so
  * "delete some files" would be a false promise. What is true is: ask an admin
  * for more room.
  */

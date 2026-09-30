@@ -18,8 +18,8 @@
  *
  * NOTHING HERE TELLS A PERSON TO DELETE THINGS. Deleting a whole agent does give
  * its workspace back, but that throws the agent away, and attachments and
- * artifacts are never freed, so "delete something" would be a false promise for
- * most of what fills the disk. The way out is an admin.
+ * artifacts cannot be deleted, so "delete something" would be a false promise
+ * for most people. The way out is an admin.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
