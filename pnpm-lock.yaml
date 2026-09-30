@@ -1011,7 +1011,7 @@ importers:
   packages/credential-proxy-bridge:
     dependencies:
       undici:
-        specifier: '>=7.29.1 <8.0.0'
+        specifier: 7.29.1
         version: 7.29.1
     devDependencies:
       '@types/node':
