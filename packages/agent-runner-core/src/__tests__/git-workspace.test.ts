@@ -554,13 +554,17 @@ describe('commitTurnAndBundle', () => {
 
     const bundleB64 = await commitTurnAndBundle({ root, reason: 'turn' });
     expect(bundleB64).not.toBeNull();
+    // TASK-720: raw bytes (the octet-stream body of workspace.commit-bundle),
+    // not base64 — `.length` is the size checked against the save cap.
+    expect(Buffer.isBuffer(bundleB64)).toBe(true);
+    expect(bundleB64!.subarray(0, 16).toString('utf8')).toMatch(/^# v[23] git bundle/);
     expect(bundleB64!.length).toBeGreaterThan(0);
 
     // Verify the bundle round-trips: clone it elsewhere and check the
     // file is there.
     const verifyDir = path.join(scratchRoot, 'verify-bash');
     const bundleFile = path.join(scratchRoot, 'b.bundle');
-    await fs.writeFile(bundleFile, Buffer.from(bundleB64!, 'base64'));
+    await fs.writeFile(bundleFile, bundleB64!);
 
     // The bundle is thin (baseline..main); we need the baseline as a
     // prereq. Clone the workspace itself, which has both.
@@ -670,7 +674,7 @@ describe('advanceBaseline', () => {
     // Turn 2's bundle should contain only b.txt (a.txt is in baseline now).
     const verifyDir = path.join(scratchRoot, 'verify-t2');
     const bundleFile = path.join(scratchRoot, 't2.bundle');
-    await fs.writeFile(bundleFile, Buffer.from(turn2!, 'base64'));
+    await fs.writeFile(bundleFile, turn2!);
     // Clone the workspace itself (has the prereq).
     await git(['clone', root, verifyDir]);
     expect(await fs.readFile(path.join(verifyDir, 'a.txt'), 'utf8')).toBe('A1');

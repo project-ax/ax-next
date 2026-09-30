@@ -229,9 +229,9 @@ export function createDiskQuotaService(deps: {
 
   // The FRONT DOOR: once a person's storage is full, their next turn is turned
   // away at `chat:start` with a plain sentence. The write gates above are the
-  // hard guard, but the runner's end-of-turn save happens after the reply is
-  // shown and its refusal reason is only surfaced on the mid-turn flush path,
-  // so on its own a full person would lose files with nobody telling them.
+  // hard guard. A refused end-of-turn save is reported under its reply
+  // (`saveRefused` on `event.turn-end`, TASK-720); this gate stops a full person
+  // starting another turn whose files could not be kept either.
   //
   // It fails OPEN, the opposite of the write gates, on purpose: this gate exists
   // to give a clear message, not to guard the disk (the write gates do that and

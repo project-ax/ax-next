@@ -313,6 +313,13 @@ export function threadFindFields(
       case 'stopped':
         break;
       /*
+        "The files from this reply weren't saved" (TASK-720). OUT for the
+        `stopped` reason: a client-made note about the thread, not something
+        anyone said.
+      */
+      case 'save-refused':
+        break;
+      /*
         A replayed turn failure (TASK-498). OUT, and for the mechanical reason
         the `steps` panel is out rather than the editorial one `status` is:
         the row does not paint marks. It renders authored copy straight from

@@ -173,8 +173,9 @@ grow), the friendly sentence when a message with attachments is refused, and the
 
 - **The check is not a reservation.** N simultaneous writes by one owner can all
   pass the check before any lands, so the limit can be overshot by (concurrent
-  writes x size of each). Each write is bounded (about 3 MiB per commit, 25 to
-  100 MiB per upload) and the next check after they land refuses. Exactness would
+  writes x size of each). Each write is bounded (up to 100 MiB per commit since
+  TASK-720 moved the save to the binary `workspace.commit-bundle`; 25 to 100 MiB
+  per upload) and the next check after they land refuses. Exactness would
   need a reservation row per write and a cleanup on failure; not worth it for a
   volume guard.
 - **The workspace part of the ledger lags by one write.** It is re-measured after
@@ -210,7 +211,9 @@ grow), the friendly sentence when a message with attachments is refused, and the
 - **A commit over about 3 MiB of compressed new objects already wedges
   persistence today**, independent of this card: the 413 on the 4 MiB JSON action
   is swallowed by `commitNotifyWithResync` as `kept`. Not changed here; returned
-  as a follow-up.
+  as a follow-up. **Fixed by TASK-720:** the save now rides the binary
+  `workspace.commit-bundle` (100 MiB), and a save over that is rolled back and
+  reported as `too-large` rather than kept.
 - **The refused turn's file changes are removed.** The runner-commit refusal takes
   the existing `recoverable: false` answer (no re-submit loop); the cost is that
   the runner resets the tree to its last saved state. If the crossing commit is

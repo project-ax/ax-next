@@ -62,6 +62,7 @@ import { stepDetail } from './workspace-steps';
 // three kinds is a drift waiting to happen.
 import { isRenderableGrant } from './workspace-grant-store';
 import type { PermissionRequest, PhaseKind, SseFrame } from '../server/types';
+import { asSaveRefusedCode, type SaveRefusedCode } from './save-refused';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
@@ -488,11 +489,23 @@ export interface SendMessageInput {
   attachmentIds?: readonly string[];
 }
 
+/** What a normally-ended turn can still have to say. See `StreamHandlers.onDone`. */
+export interface TurnDoneInfo {
+  saveRefused?: SaveRefusedCode;
+}
+
 export interface StreamHandlers {
   /** One text delta. Called many times; concatenate in order. */
   onText: (chunk: string) => void;
-  /** The turn ended normally. */
-  onDone: () => void;
+  /**
+   * The turn ended normally.
+   *
+   * `info.saveRefused` (TASK-720): the reply finished, but the host refused to
+   * save the files it changed and they were undone. One of three closed codes,
+   * checked here before it is handed on — an unknown value is dropped, not
+   * passed along. Absent in the ordinary case, and `info` itself may be.
+   */
+  onDone: (info?: TurnDoneInfo) => void;
   /**
    * The agent called a tool (TASK-352). NON-TERMINAL — the turn carries on.
    *
@@ -1322,7 +1335,8 @@ async function streamReply(
   const end = await readSseFrames(res.body, (frame: SseFrame) => {
     if ('done' in frame && frame.done === true) {
       terminated = true;
-      onDone();
+      const saveRefused = asSaveRefusedCode(frame.saveRefused);
+      onDone(saveRefused !== undefined ? { saveRefused } : undefined);
       return 'stop';
     }
     if ('error' in frame && typeof frame.error === 'string') {

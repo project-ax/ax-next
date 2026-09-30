@@ -198,9 +198,9 @@ async function mirrorMain(mirrorDir: string): Promise<string | null> {
 }
 
 /** Fetch a base64 thin bundle into the bare mirror, advancing refs/heads/main. */
-async function fetchBundleAdvance(mirrorDir: string, bundleB64: string): Promise<string> {
+async function fetchBundleAdvance(mirrorDir: string, bundle: Buffer): Promise<string> {
   const bundleFile = path.join(scratch, `in-${Date.now()}-${Math.random().toString(36).slice(2)}.bundle`);
-  await fs.writeFile(bundleFile, Buffer.from(bundleB64, 'base64'));
+  await fs.writeFile(bundleFile, bundle);
   try {
     await expectOk(
       await git(['-C', mirrorDir, 'fetch', bundleFile, '+refs/heads/main:refs/heads/main']),
@@ -250,7 +250,9 @@ async function hostRetire(mirrorDir: string, relPath: string): Promise<string> {
 }
 
 /**
- * A real-git IpcClient stand-in. `workspace.commit-notify` is parent-aware
+ * A real-git IpcClient stand-in. The save (`callBinaryUpload`
+ * `workspace.commit-bundle`, raw bundle body + `reason`/`parentVersion` query,
+ * absent parentVersion = null) is parent-aware
  * (what the real git-server does): it applies the thin bundle only when the
  * caller's parent matches the mirror head, otherwise it returns the
  * concurrent-writer signal (`accepted:false` + `actualParent`, head only — the
@@ -263,15 +265,12 @@ async function hostRetire(mirrorDir: string, relPath: string): Promise<string> {
 function makeHostClient(mirrorDir: string): IpcClient {
   const norm = (h: string | null | undefined): string | null => (h && h.length ? h : null);
   return {
-    call: async (action: string, payload: unknown) => {
-      if (action === 'workspace.commit-notify') {
-        const { parentVersion, bundleBytes } = payload as {
-          parentVersion: string | null;
-          bundleBytes: string;
-        };
+    callBinaryUpload: async (action: string, bytes: Buffer, query?: Record<string, string>) => {
+      if (action === 'workspace.commit-bundle') {
+        const parentVersion = query?.parentVersion ?? null;
         const head = await mirrorMain(mirrorDir);
         if (norm(parentVersion) === norm(head)) {
-          const version = await fetchBundleAdvance(mirrorDir, bundleBytes);
+          const version = await fetchBundleAdvance(mirrorDir, bytes);
           return { accepted: true, version };
         }
         return {
@@ -280,6 +279,9 @@ function makeHostClient(mirrorDir: string): IpcClient {
           reason: 'parent-mismatch',
         };
       }
+      throw new Error(`unexpected upload IPC action: ${action}`);
+    },
+    call: async (action: string) => {
       if (action === 'tool.execute-host') {
         const found =
           (
@@ -433,7 +435,7 @@ describe('flushWorkspaceBeforeCall host tool (BUG-W2 real path)', () => {
     const res = await commitNotifyWithResync({
       client,
       root: runnerRoot,
-      bundleBytes: bundle!,
+      bundle: bundle!,
       parentVersion,
       reason: 'turn',
     });
@@ -569,13 +571,13 @@ describe('TASK-137 — gitWithRetry settle seam (transient-git resilience)', () 
       return r.code === 0 && r.stdout.trim().length > 0 ? r.stdout.trim() : null;
     };
     const client: IpcClient = {
-      call: async (action: string, payload: unknown) => {
-        if (action === 'workspace.commit-notify') {
-          const { parentVersion, bundleBytes } = payload as { parentVersion: string | null; bundleBytes: string };
+      callBinaryUpload: async (action: string, bytes: Buffer, query?: Record<string, string>) => {
+        if (action === 'workspace.commit-bundle') {
+          const parentVersion = query?.parentVersion ?? null;
           const head = await flakyMirrorMain();
           if (norm(parentVersion) === norm(head)) {
             const bundleFile = path.join(scratch, `in-${Date.now()}-${Math.random().toString(36).slice(2)}.bundle`);
-            await fs.writeFile(bundleFile, Buffer.from(bundleBytes, 'base64'));
+            await fs.writeFile(bundleFile, bytes);
             try {
               await expectOk(
                 await flakyGit(['-C', mirrorDir, 'fetch', bundleFile, '+refs/heads/main:refs/heads/main']),
@@ -588,6 +590,9 @@ describe('TASK-137 — gitWithRetry settle seam (transient-git resilience)', () 
           }
           return { accepted: false, actualParent: head, reason: 'parent-mismatch' };
         }
+        throw new Error(`unexpected upload IPC action: ${action}`);
+      },
+      call: async (action: string) => {
         if (action === 'tool.execute-host') {
           const found = (await flakyGit(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.ax/scratch/foo.txt'])).code === 0;
           return { output: { found } };
@@ -638,7 +643,7 @@ describe('TASK-137 — gitWithRetry settle seam (transient-git resilience)', () 
     const res = await commitNotifyWithResync({
       client,
       root: runnerRoot,
-      bundleBytes: bundle!,
+      bundle: bundle!,
       parentVersion,
       reason: 'turn',
     });

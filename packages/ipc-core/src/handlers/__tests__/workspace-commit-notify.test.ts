@@ -457,6 +457,40 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
     expect((result.body as { discardPaths?: unknown }).discardPaths).toBeUndefined();
   });
 
+  it('TASK-720: the JSON action forwards the veto code too (older sandboxes share the core)', async () => {
+    prepareScratchRepoMock.mockResolvedValueOnce({
+      ...DEFAULT_SCRATCH,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([]);
+    const probe = makePhase3Probe('@ax/test-code-veto-probe');
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    bus.subscribe(
+      'workspace:pre-apply',
+      '@ax/test-code-veto-subscriber',
+      async () => reject({ reason: 'Storage for this workspace is full.', code: 'storage-full' }),
+    );
+    const ctx = makeAgentContext({
+      sessionId: 'wcn-test-code',
+      agentId: 'wcn-agent-code',
+      userId: 'wcn-user-code',
+    });
+    const result = await workspaceCommitNotifyHandler(
+      { parentVersion: null, reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
+      ctx,
+      bus,
+    );
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({
+      accepted: false,
+      reason: 'Storage for this workspace is full.',
+      recoverable: false,
+      code: 'storage-full',
+    });
+  });
+
   it('TASK-287: a veto that names its path scopes the discard to that path', async () => {
     // The realistic trigger: an agent writes CLAUDE.md (a policy-visible exact
     // path, and one @ax/validator-skill refuses unconditionally) in the same

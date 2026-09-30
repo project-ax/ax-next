@@ -58,6 +58,7 @@ type FakeClient = {
   call: Mock;
   callGet: Mock;
   callBinary: Mock;
+  callBinaryUpload: Mock;
   event: Mock;
   close: Mock;
 } & IpcClient;
@@ -261,6 +262,12 @@ function buildFakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
         return { path: '/tmp/fake-resync-baseline.bundle', bytes: 64 };
       }
       return { path: '/tmp/fake-materialize.bundle', bytes: 0 };
+    }),
+    // The end-of-turn save rides the binary `workspace.commit-bundle` upload
+    // (TASK-720). Tests that ship a bundle answer it themselves; anything else
+    // reaching here is a setup bug, so say which action it was.
+    callBinaryUpload: vi.fn().mockImplementation(async (action: string) => {
+      throw new Error(`unexpected upload: ${action}`);
     }),
     event: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
@@ -486,10 +493,13 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         return { accepted: true, version: 'v1', delta: null };
       }
-      throw new Error(`unexpected call: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('please summarize'), cancelEntry]);
 
@@ -545,8 +555,8 @@ describe('main()', () => {
     });
     // Empty turns (no file changes accumulated) skip commit-notify; the
     // event.turn-end below is the heartbeat the host keys off (Task 7c).
-    const commitNotifies = fakeClient.call.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-notify',
+    const commitNotifies = fakeClient.callBinaryUpload.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-bundle',
     );
     expect(commitNotifies).toHaveLength(0);
 
@@ -886,10 +896,13 @@ describe('main()', () => {
           tools: [{ name: 'skill_propose', executesIn: 'sandbox', inputSchema: {} }],
         };
       }
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         return { accepted: true, version: 'v1', delta: null };
       }
-      throw new Error(`unexpected call: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
     queryMock.mockImplementation(
@@ -1071,7 +1084,7 @@ describe('main()', () => {
     // On host accept, runner advances baseline; on veto, runner rolls
     // back. Fully replaces the legacy diff-accumulator path.
     setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock.mockResolvedValueOnce('FAKE_BUNDLE_B64');
+    commitTurnAndBundleMock.mockResolvedValueOnce(Buffer.from('FAKE_BUNDLE_B64'));
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
@@ -1092,10 +1105,13 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         return { accepted: true, version: 'v-new', delta: null };
       }
-      throw new Error(`unexpected: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
     queryMock.mockImplementation(
@@ -1115,8 +1131,8 @@ describe('main()', () => {
     expect(rc).toBe(0);
 
     // commit-notify was sent with bundleBytes from commitTurnAndBundle.
-    const commitCalls = fakeClient.call.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-notify',
+    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-bundle',
     );
     expect(commitCalls).toHaveLength(1);
     // parentVersion is the materialize-time baselineCommit, not null.
@@ -1126,11 +1142,10 @@ describe('main()', () => {
     // the FIRST commit-notify of a session whose workspace already has
     // history fails with "Repository lacks these prerequisite commits"
     // (see the materialize/commit-notify OID-drift fix).
-    expect(commitCalls[0]?.[1]).toEqual({
-      parentVersion: 'mock-baseline-oid',
-      reason: 'turn',
-      bundleBytes: 'FAKE_BUNDLE_B64',
-    });
+    expect(commitCalls[0]?.slice(1)).toEqual([
+      Buffer.from('FAKE_BUNDLE_B64'),
+      { reason: 'turn', parentVersion: 'mock-baseline-oid' },
+    ]);
     // advanceBaseline called on accept.
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).not.toHaveBeenCalled();
@@ -1175,8 +1190,8 @@ describe('main()', () => {
     );
     const { main } = await import('../main.js');
     expect(await main()).toBe(0);
-    const commitCalls = fakeClient.call.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-notify',
+    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-bundle',
     );
     expect(commitCalls).toHaveLength(0);
     expect(advanceBaselineMock).not.toHaveBeenCalled();
@@ -1185,7 +1200,7 @@ describe('main()', () => {
 
   it('Phase 3 turn end: host vetoes → rollback called, baseline NOT advanced', async () => {
     setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_VETO');
+    commitTurnAndBundleMock.mockResolvedValueOnce(Buffer.from('BUNDLE_VETO'));
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
@@ -1206,10 +1221,13 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         return { accepted: false, reason: 'policy violation' };
       }
-      throw new Error(`unexpected: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
     const stderrSpy = vi
@@ -1240,7 +1258,7 @@ describe('main()', () => {
 
   it('Phase 3 turn end: commit-notify IPC error → preserve working tree (no rollback, no advance)', async () => {
     setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_NETERR');
+    commitTurnAndBundleMock.mockResolvedValueOnce(Buffer.from('BUNDLE_NETERR'));
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
@@ -1261,10 +1279,13 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         throw new Error('connect ECONNREFUSED');
       }
-      throw new Error(`unexpected: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
     const stderrSpy = vi
@@ -2776,13 +2797,16 @@ describe('main()', () => {
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'workspace.commit-notify') {
-          return { accepted: true, version: 'v1', delta: null };
-        }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
         throw new Error(`unexpected call: ${action}`);
+      });
+      fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+        if (action === 'workspace.commit-bundle') {
+          return { accepted: true, version: 'v1', delta: null };
+        }
+        throw new Error(`unexpected upload: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
       queryMock.mockImplementation(
@@ -2954,7 +2978,7 @@ describe('main()', () => {
       // is captured into transcriptSessionId and a later init must NOT change
       // it. The bind itself fires once, after the first accepted commit (F2a).
       setEnv(COMPLETE_ENV);
-      commitTurnAndBundleMock.mockResolvedValue('YnVuZGxl');
+      commitTurnAndBundleMock.mockResolvedValue(Buffer.from('YnVuZGxl'));
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -2975,13 +2999,16 @@ describe('main()', () => {
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'workspace.commit-notify') {
-          return { accepted: true, version: 'v1', delta: null };
-        }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
         throw new Error(`unexpected call: ${action}`);
+      });
+      fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+        if (action === 'workspace.commit-bundle') {
+          return { accepted: true, version: 'v1', delta: null };
+        }
+        throw new Error(`unexpected upload: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('first'), cancelEntry]);
       queryMock.mockImplementation(
@@ -3026,8 +3053,8 @@ describe('main()', () => {
       setEnv(COMPLETE_ENV);
       // turn-1 per-turn bundle, turn-2 per-turn bundle, final drain → null.
       commitTurnAndBundleMock
-        .mockResolvedValueOnce('YnVuZGxl-1')
-        .mockResolvedValueOnce('YnVuZGxl-2')
+        .mockResolvedValueOnce(Buffer.from('YnVuZGxl-1'))
+        .mockResolvedValueOnce(Buffer.from('YnVuZGxl-2'))
         .mockResolvedValue(null);
       let bindAttempts = 0;
       fakeClient = buildFakeClient();
@@ -3050,9 +3077,6 @@ describe('main()', () => {
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'workspace.commit-notify') {
-          return { accepted: true, version: 'v1', delta: null };
-        }
         if (action === 'conversation.store-runner-session') {
           bindAttempts++;
           // Transient (NOT a 409) on the first attempt; succeeds on the second.
@@ -3060,6 +3084,12 @@ describe('main()', () => {
           return { ok: true };
         }
         throw new Error(`unexpected call: ${action}`);
+      });
+      fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+        if (action === 'workspace.commit-bundle') {
+          return { accepted: true, version: 'v1', delta: null };
+        }
+        throw new Error(`unexpected upload: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('one'), userEntry('two'), cancelEntry]);
       queryMock.mockImplementation(
@@ -3108,7 +3138,7 @@ describe('main()', () => {
       // 409. Retrying is futile and continuing would commit an orphan
       // transcript — the run must terminate so the loser stops.
       setEnv(COMPLETE_ENV);
-      commitTurnAndBundleMock.mockResolvedValue('YnVuZGxl');
+      commitTurnAndBundleMock.mockResolvedValue(Buffer.from('YnVuZGxl'));
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -3129,9 +3159,6 @@ describe('main()', () => {
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'workspace.commit-notify') {
-          return { accepted: true, version: 'v1', delta: null };
-        }
         if (action === 'conversation.store-runner-session') {
           throw new IpcRequestError(
             'HOOK_REJECTED',
@@ -3140,6 +3167,12 @@ describe('main()', () => {
           );
         }
         throw new Error(`unexpected call: ${action}`);
+      });
+      fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+        if (action === 'workspace.commit-bundle') {
+          return { accepted: true, version: 'v1', delta: null };
+        }
+        throw new Error(`unexpected upload: ${action}`);
       });
       fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
       queryMock.mockImplementation(
@@ -3394,8 +3427,8 @@ describe('main()', () => {
       // The jsonl is NOT committed to git as the resume backing — no
       // commit-notify carries it (commitTurnAndBundle is null on a pure chat
       // turn now that .claude/projects is gitignored).
-      const commitNotifies = fakeClient.call.mock.calls.filter(
-        (c) => c[0] === 'workspace.commit-notify',
+      const commitNotifies = fakeClient.callBinaryUpload.mock.calls.filter(
+        (c) => c[0] === 'workspace.commit-bundle',
       );
       expect(commitNotifies).toHaveLength(0);
       // The bind fired off the durable transcript ship.
@@ -4000,10 +4033,13 @@ describe('main()', () => {
           ],
         };
       }
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         return { accepted: true, version: 'v1', delta: null };
       }
-      throw new Error(`unexpected call: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([cancelEntry]);
 
@@ -4059,10 +4095,13 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         return { accepted: true, version: 'v1', delta: null };
       }
-      throw new Error(`unexpected call: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
 
     // Inject a user message with an image attachment in its contentBlocks.
@@ -4153,10 +4192,13 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         return { accepted: true, version: 'v1', delta: null };
       }
-      throw new Error(`unexpected call: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
 
     // The future Phase 3 chat-messages handler will send BOTH typed text
@@ -4309,8 +4351,8 @@ describe('main()', () => {
     // First commitTurnAndBundle returns the initial bundle; after resync it
     // returns a rebased bundle.
     commitTurnAndBundleMock
-      .mockResolvedValueOnce('BUNDLE_FIRST')
-      .mockResolvedValueOnce('BUNDLE_REBASED');
+      .mockResolvedValueOnce(Buffer.from('BUNDLE_FIRST'))
+      .mockResolvedValueOnce(Buffer.from('BUNDLE_REBASED'));
 
     let commitNotifyCallCount = 0;
     fakeClient = buildFakeClient();
@@ -4333,7 +4375,10 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         commitNotifyCallCount++;
         if (commitNotifyCallCount === 1) {
           // Concurrent writer advanced the mirror: resync path. Only the head
@@ -4346,7 +4391,7 @@ describe('main()', () => {
         // Second attempt: accept
         return { accepted: true, version: 'newhead2' };
       }
-      throw new Error(`unexpected: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
 
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -4384,24 +4429,22 @@ describe('main()', () => {
     });
 
     // Two commit-notify calls were made.
-    const commitCalls = fakeClient.call.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-notify',
+    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-bundle',
     );
     expect(commitCalls).toHaveLength(2);
 
     // First call used the original parentVersion (materialize-time OID).
-    expect(commitCalls[0]?.[1]).toEqual({
-      parentVersion: 'mock-baseline-oid',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_FIRST',
-    });
+    expect(commitCalls[0]?.slice(1)).toEqual([
+      Buffer.from('BUNDLE_FIRST'),
+      { reason: 'turn', parentVersion: 'mock-baseline-oid' },
+    ]);
 
     // Second call used the concurrent writer's new head as parentVersion.
-    expect(commitCalls[1]?.[1]).toEqual({
-      parentVersion: 'newhead',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_REBASED',
-    });
+    expect(commitCalls[1]?.slice(1)).toEqual([
+      Buffer.from('BUNDLE_REBASED'),
+      { reason: 'turn', parentVersion: 'newhead' },
+    ]);
 
     // After accept, baseline was advanced (not rolled back).
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
@@ -4418,9 +4461,9 @@ describe('main()', () => {
     // Turn 1: initial bundle, then null after resync (empty rebased bundle).
     // Turn 2: a normal bundle.
     commitTurnAndBundleMock
-      .mockResolvedValueOnce('BUNDLE_FIRST')
+      .mockResolvedValueOnce(Buffer.from('BUNDLE_FIRST'))
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce('BUNDLE_TURN2');
+      .mockResolvedValueOnce(Buffer.from('BUNDLE_TURN2'));
 
     let commitNotifyCallCount = 0;
     fakeClient = buildFakeClient();
@@ -4443,7 +4486,10 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         commitNotifyCallCount++;
         if (commitNotifyCallCount === 1) {
           // Turn 1: concurrent writer advanced the mirror → resync signal
@@ -4456,7 +4502,7 @@ describe('main()', () => {
         // Turn 2's commit-notify accepts.
         return { accepted: true, version: 'newhead2' };
       }
-      throw new Error(`unexpected: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
 
     fakeInbox = buildFakeInbox([userEntry('hi'), userEntry('hi2'), cancelEntry]);
@@ -4492,24 +4538,22 @@ describe('main()', () => {
       newBaseline: 'newhead',
     });
 
-    const commitCalls = fakeClient.call.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-notify',
+    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-bundle',
     );
     // Turn 1 made ONE commit-notify (reb===null breaks before any retry).
     // Turn 2 made the second.
     expect(commitCalls).toHaveLength(2);
-    expect(commitCalls[0]?.[1]).toEqual({
-      parentVersion: 'mock-baseline-oid',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_FIRST',
-    });
+    expect(commitCalls[0]?.slice(1)).toEqual([
+      Buffer.from('BUNDLE_FIRST'),
+      { reason: 'turn', parentVersion: 'mock-baseline-oid' },
+    ]);
     // THE REGRESSION ASSERTION: turn 2 uses the promoted baseline ('newhead'),
     // NOT the stale 'mock-baseline-oid'.
-    expect(commitCalls[1]?.[1]).toEqual({
-      parentVersion: 'newhead',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_TURN2',
-    });
+    expect(commitCalls[1]?.slice(1)).toEqual([
+      Buffer.from('BUNDLE_TURN2'),
+      { reason: 'turn', parentVersion: 'newhead' },
+    ]);
 
     // Turn 2's accept advanced baseline; nothing was rolled back.
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
@@ -4520,7 +4564,7 @@ describe('main()', () => {
     // A rejected commit-notify with NO actualParent is a true policy veto —
     // not a concurrent-writer race. The runner must rollback (unchanged behavior).
     setEnv(COMPLETE_ENV);
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_VETO2');
+    commitTurnAndBundleMock.mockResolvedValueOnce(Buffer.from('BUNDLE_VETO2'));
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
@@ -4541,11 +4585,14 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         // True veto: no actualParent
         return { accepted: false, reason: 'security veto' };
       }
-      throw new Error(`unexpected: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
     const stderrSpy = vi
@@ -4590,8 +4637,8 @@ describe('main()', () => {
     setEnv(COMPLETE_ENV);
     commitTurnAndBundleMock
       .mockResolvedValueOnce(null) // per-turn: empty → no per-turn commit-notify
-      .mockResolvedValueOnce('BUNDLE_FINAL') // final commit
-      .mockResolvedValueOnce('BUNDLE_FINAL_REBASED'); // re-bundle after resync
+      .mockResolvedValueOnce(Buffer.from('BUNDLE_FINAL')) // final commit
+      .mockResolvedValueOnce(Buffer.from('BUNDLE_FINAL_REBASED')); // re-bundle after resync
 
     let commitNotifyCallCount = 0;
     fakeClient = buildFakeClient();
@@ -4614,7 +4661,10 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.commit-notify') {
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string) => {
+      if (action === 'workspace.commit-bundle') {
         commitNotifyCallCount++;
         if (commitNotifyCallCount === 1) {
           // Concurrent writer advanced the mirror under the final commit
@@ -4626,7 +4676,7 @@ describe('main()', () => {
         }
         return { accepted: true, version: 'v2' };
       }
-      throw new Error(`unexpected: ${action}`);
+      throw new Error(`unexpected upload: ${action}`);
     });
 
     fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
@@ -4659,22 +4709,20 @@ describe('main()', () => {
       newBaseline: 'v2',
     });
 
-    const commitCalls = fakeClient.call.mock.calls.filter(
-      (c) => c[0] === 'workspace.commit-notify',
+    const commitCalls = fakeClient.callBinaryUpload.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-bundle',
     );
     // Two commit-notify calls: the rejected final + the accepted retry.
     expect(commitCalls).toHaveLength(2);
-    expect(commitCalls[0]?.[1]).toEqual({
-      parentVersion: 'mock-baseline-oid',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_FINAL',
-    });
+    expect(commitCalls[0]?.slice(1)).toEqual([
+      Buffer.from('BUNDLE_FINAL'),
+      { reason: 'turn', parentVersion: 'mock-baseline-oid' },
+    ]);
     // The retry used the concurrent writer's new head + the re-bundle.
-    expect(commitCalls[1]?.[1]).toEqual({
-      parentVersion: 'v2',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_FINAL_REBASED',
-    });
+    expect(commitCalls[1]?.slice(1)).toEqual([
+      Buffer.from('BUNDLE_FINAL_REBASED'),
+      { reason: 'turn', parentVersion: 'v2' },
+    ]);
 
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).not.toHaveBeenCalled();

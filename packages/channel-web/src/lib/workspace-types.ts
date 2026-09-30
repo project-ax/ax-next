@@ -670,9 +670,10 @@ export type ThreadMessage =
    * the persisted `turn-error` display events off `conversations:get` and
    * interleaves them with the turns. `status` (AW-8) is the one still
    * waiting, and `fold` above. `stopped` (below) HAS A PRODUCER (TASK-688):
-   * `AgentView` appends it client-side after a Stop. This list is meant to be
-   * exhaustive — if you add a producer, say so here, because the next card
-   * scoped off this comment will believe it.
+   * `AgentView` appends it client-side after a Stop, and `save-refused`
+   * (TASK-720) the same way after a reply whose files were not saved. This
+   * list is meant to be exhaustive — if you add a producer, say so here,
+   * because the next card scoped off this comment will believe it.
    */
   | { kind: 'fold'; id: string; text: string }
   /**
@@ -690,7 +691,21 @@ export type ThreadMessage =
    * Thread find does not index it: like `status` it is chrome, not something
    * anyone said.
    */
-  | { kind: 'stopped'; id: string; text: string };
+  | { kind: 'stopped'; id: string; text: string }
+  /**
+   * "The files from this reply weren't saved" (TASK-720). CLIENT-ONLY, with
+   * exactly `stopped`'s lifetime: `AgentView` appends it after a turn whose
+   * stream `done` carried a `saveRefused` code, and drops it on the next
+   * message, an agent switch, or a change of conversation. Not persisted — a
+   * reload loses it (cut from TASK-720 as a follow-up).
+   *
+   * Unlike `stopped` this IS bad news the person did not ask for: the reply
+   * says it made files, and they are gone. So it is drawn as a warning, not a
+   * footnote. `text` is one fixed sentence from `save-refused-copy.ts`, never
+   * anything the model or the host veto wrote. Thread find skips it, as it
+   * does `stopped`: chrome, not something anyone said.
+   */
+  | { kind: 'save-refused'; id: string; text: string };
 
 /**
  * The human's memory tier: `rules`, verbatim, always injected, safe to

@@ -102,6 +102,9 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'tool.execute-host': ToolExecuteHostResponseSchema,
   'tool.list': ToolListResponseSchema,
   'workspace.commit-notify': WorkspaceCommitNotifyResponseSchema,
+  // TASK-720: same JSON answer as commit-notify; its REQUEST is the raw bundle
+  // (callBinaryUpload), so only the response is Zod-parsed here.
+  'workspace.commit-bundle': WorkspaceCommitNotifyResponseSchema,
   'workspace.read': WorkspaceReadResponseSchema,
   'session.next-message': SessionNextMessageResponseSchema,
   'session.get-config': SessionGetConfigResponseSchema,
@@ -229,25 +232,28 @@ export interface IpcClient {
    * The REQUEST-direction binary channel (TASK-68): POST `bytes` as the RAW
    * `application/octet-stream` request body and parse a small JSON response.
    * The mirror of `callBinary` — outbound bytes instead of inbound. Used for
-   * `blob.put` (artifact bytes) and the two transcript-ship actions
+   * `blob.put` (artifact bytes), the two transcript-ship actions
    * (`session.append-transcript` per-turn delta, `session.replace-transcript`
-   * resync whole-file): each streams jsonl/artifact bytes up to the host's blob
-   * cap without base64-inflating them into a JSON field or hitting the 4 MiB
-   * `MAX_FRAME` JSON cap. The response is a small JSON envelope, Zod-validated
-   * against the matching schema.
+   * resync whole-file) and the end-of-turn save (`workspace.commit-bundle`,
+   * TASK-720): each streams its bytes up to the host's blob cap without
+   * base64-inflating them into a JSON field or hitting the 4 MiB `MAX_FRAME`
+   * JSON cap. The response is a small JSON envelope, Zod-validated against the
+   * matching schema.
    *
-   * `query` carries any out-of-band request metadata (e.g. append-transcript's
-   * `fromSeq`/`prefixHash` integrity hints) as URL query params — the binary
-   * body has no JSON envelope to hold them. `blob.put` is content-addressed (so
-   * a transient-error retry that re-streams the same bytes is safe); the
-   * transcript actions are idempotent on `(fromSeq, prefixHash)` for the same
-   * reason.
+   * `query` carries any out-of-band request metadata (append-transcript's
+   * `fromSeq`/`prefixHash` integrity hints, commit-bundle's `reason` /
+   * `parentVersion`) as URL query params — the binary body has no JSON
+   * envelope to hold them. `blob.put` is content-addressed (so a
+   * transient-error retry that re-streams the same bytes is safe); the
+   * transcript actions are idempotent on `(fromSeq, prefixHash)` and
+   * commit-bundle on `parentVersion` for the same reason.
    */
   callBinaryUpload<
     Action extends
       | 'blob.put'
       | 'session.append-transcript'
-      | 'session.replace-transcript',
+      | 'session.replace-transcript'
+      | 'workspace.commit-bundle',
   >(
     action: Action,
     bytes: Buffer,
@@ -1065,7 +1071,8 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     Action extends
       | 'blob.put'
       | 'session.append-transcript'
-      | 'session.replace-transcript',
+      | 'session.replace-transcript'
+      | 'workspace.commit-bundle',
   >(
     action: Action,
     bytes: Buffer,

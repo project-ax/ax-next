@@ -45,10 +45,12 @@ const SUBSCRIBED = [
 //     `used + incoming > limit`. The gates fail CLOSED: if the check itself
 //     breaks, the write is refused.
 //   - TURNS AWAY a full person's next message at `chat:start` (reason
-//     `storage-full`, which channel-web turns into a sentence), because the
-//     runner's end-of-turn save is refused after the reply is shown and would
-//     otherwise be silent. This one fails OPEN: it exists for the message; the
-//     write gates above are the guard.
+//     `storage-full`, which channel-web turns into a sentence). The refused
+//     end-of-turn save itself is reported under that reply (the veto's `code`
+//     rides the commit answer, the runner reports it on `event.turn-end` as
+//     `saveRefused`, TASK-720); this gate is what stops the person starting
+//     another turn whose files cannot be kept either. This one fails OPEN: it
+//     exists for the message; the write gates above are the guard.
 //   - METERS what was stored. `blob:stored` charges the writer (one row per
 //     owner and sha, so a re-put is free); `workspace:applied` re-measures
 //     that agent's repo in the background; a periodic sweep backfills every
@@ -227,13 +229,13 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
           if (!decision.ok) return vetoFor(decision);
           return undefined;
         });
-        // The front door. The write gates above are the hard guard, but the
-        // runner's end-of-turn save happens after the reply is shown and its
-        // refusal reason is only surfaced on the mid-turn flush path, so a full
-        // person would lose files silently. Turning their NEXT message away
-        // here, with a code channel-web turns into a sentence
-        // (`chat:start:storage-full`), is how they find out. Fails OPEN (see
-        // admitTurn): it exists for the message, not for the disk.
+        // The front door. The write gates above are the hard guard; a refused
+        // end-of-turn save is reported under the reply it belonged to
+        // (`saveRefused` on `event.turn-end`, TASK-720). Turning their NEXT
+        // message away here, with a code channel-web turns into a sentence
+        // (`chat:start:storage-full`), stops a full person running another turn
+        // whose files would be thrown away too. Fails OPEN (see admitTurn): it
+        // exists for the message, not for the disk.
         bus.subscribe<unknown>('chat:start', PLUGIN_NAME, async (ctx) => {
           const decision = await svc.admitTurn(ctx);
           if (!decision.ok) return reject({ reason: decision.reason });

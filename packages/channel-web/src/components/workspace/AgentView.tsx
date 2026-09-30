@@ -74,6 +74,8 @@ import { continuationActions } from '@/lib/continuation-actions';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
 import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
+import { SAVE_REFUSED_COPY } from './save-refused-copy';
+import type { SaveRefusedCode } from '@/lib/save-refused';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
@@ -612,6 +614,17 @@ export function AgentView({
   */
   const [stopping, setStopping] = useState(false);
   const [stopNotice, setStopNotice] = useState<string | null>(null);
+  /*
+    TASK-720 — "the files from this reply weren't saved". Same lifetime as
+    `stopNotice` and for the same reasons: set when a turn's `done` carries a
+    `saveRefused` code, keyed by the conversation the turn ran in so it is only
+    drawn there and survives the post-done re-read, cleared by the next send,
+    the next stream, or an agent switch. Not persisted; a reload loses it.
+  */
+  const [saveRefusedNotice, setSaveRefusedNotice] = useState<{
+    conversationId: string;
+    code: SaveRefusedCode;
+  } | null>(null);
   interface PendingStop {
     conversationId: string;
     /** The host answered `interrupted: true` — a stop really was queued. */
@@ -787,6 +800,7 @@ export function AgentView({
     // pressed on.
     cancelStop();
     setStopNotice(null);
+    setSaveRefusedNotice(null);
   }, [agentId, cancelStop]);
 
   /*
@@ -827,6 +841,10 @@ export function AgentView({
       // old turn's note.
       cancelStop();
       setStopNotice(null);
+      setSaveRefusedNotice(null);
+      // The conversation this turn runs in — what a save-refused notice from
+      // its `done` belongs to.
+      const turnConversation = conversationRef.current;
       setStreaming(true);
       setStreamed('');
       setLiveCalls([]);
@@ -853,7 +871,7 @@ export function AgentView({
           same rule from `ctx.contentSeen`; here it falls out of the shape.
         */
         onPhase: (next) => setPhase(next),
-        onDone: () => {
+        onDone: (info) => {
           /*
             TASK-688 — was this turn ended BY a Stop? Only if the host said it
             queued one (`confirmed`). A Stop whose answer has not landed yet is
@@ -873,6 +891,12 @@ export function AgentView({
           setTurnError((prev) => (prev?.source === 'stop' ? null : prev));
           resetLiveTurn();
           if (stoppedIn !== null) setStopNotice(stoppedIn);
+          // TASK-720 — the reply finished but its files were not kept.
+          // `streamReply` has already checked the code is one of the three.
+          const refused = info?.saveRefused;
+          if (refused !== undefined && turnConversation !== null) {
+            setSaveRefusedNotice({ conversationId: turnConversation, code: refused });
+          }
           // The durable thread is the source of truth — re-read it rather than
           // keeping our transient copy around to drift. `rereading` bridges the
           // gap until it lands (TASK-689): `load` settles after BOTH of its
@@ -1110,8 +1134,10 @@ export function AgentView({
       const files = attachments ?? [];
       setSent({ text, attachments: files, resendable: true });
       setTurnError(null);
-      // The last turn's "you stopped this" is history the moment they say more.
+      // The last turn's "you stopped this" is history the moment they say more,
+      // and so is its "files weren't saved" (TASK-720).
       setStopNotice(null);
+      setSaveRefusedNotice(null);
       try {
         const { conversationId, reqId } = await workspaceApi.sendMessage({
           agentId,
@@ -1397,6 +1423,18 @@ export function AgentView({
   */
   if (stopNotice !== null && stopNotice === detail.conversationId) {
     liveThread.push({ kind: 'stopped', id: 'stopped-notice', text: STOPPED_NOTICE });
+  }
+  /*
+    "The files from this reply weren't saved" (TASK-720), by the same rules as
+    the Stop note above: at the end, only in the conversation it was earned in,
+    one fixed sentence per code.
+  */
+  if (saveRefusedNotice !== null && saveRefusedNotice.conversationId === detail.conversationId) {
+    liveThread.push({
+      kind: 'save-refused',
+      id: 'save-refused-notice',
+      text: SAVE_REFUSED_COPY[saveRefusedNotice.code],
+    });
   }
 
   /*

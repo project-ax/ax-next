@@ -1,7 +1,9 @@
 import {
   PluginError,
   findRunnerImmutableViolations,
+  type AgentContext,
   type FileChange,
+  type HookBus,
   type WorkspaceApplyOutput,
   type WorkspaceVersion,
 } from '@ax/core';
@@ -12,6 +14,7 @@ import type {
   WorkspaceExportBaselineBundleOutput,
 } from '@ax/workspace-bundle-protocol';
 import {
+  WorkspaceCommitBundleQuerySchema,
   WorkspaceCommitNotifyRequestSchema,
   WorkspaceCommitNotifyResponseSchema,
 } from '@ax/ipc-protocol';
@@ -24,7 +27,8 @@ import {
   logInternalError,
   validationError,
 } from '../errors.js';
-import type { ActionHandler } from './types.js';
+import type { BinaryActionHandler } from './blob.js';
+import type { ActionHandler, HandlerResult } from './types.js';
 
 // Pull the re-sync HEAD signal (`actualParent`) out of a parent-mismatch
 // PluginError's `cause`. Both backends signal a concurrent-writer advance with
@@ -48,17 +52,34 @@ function resyncEnvelopeFromCause(cause: unknown): { actualParent?: string } {
 }
 
 // ---------------------------------------------------------------------------
-// POST /workspace.commit-notify — the host side of the thin-bundle commit wire.
+// POST /workspace.commit-bundle and POST /workspace.commit-notify — the host
+// side of the thin-bundle commit wire.
 //
 // The runner finishes a turn, bundles `baseline..HEAD` as a thin git bundle, and
-// POSTs it here (see @ax/agent-runner-core's `commit-notify-resync.ts` for the
+// sends it here (see @ax/agent-runner-core's `commit-notify-resync.ts` for the
 // sender). The host reconstructs the turn in a throwaway scratch repo, verifies
 // who authored it, shows the policy-visible slice of the diff to the pre-apply
 // validators, and only then asks the workspace backend to land it.
 //
+// Two carriers, one pipeline (`commitBundleCore` below):
+//   - `workspace.commit-bundle` (TASK-720, current runners): a BINARY action.
+//     The raw bundle is the octet-stream body (up to the dispatcher's 100 MiB
+//     MAX_BLOB_BODY_BYTES); `reason` and `parentVersion` (absent = null) ride
+//     as query params.
+//   - `workspace.commit-notify` (legacy): a JSON action carrying the bundle as
+//     base64 inside the 4 MiB JSON frame, so about 3 MiB of compressed objects
+//     at most. Over that one save failed, the runner's baseline never moved,
+//     and every later save re-carried the same blob: persistence wedged. It
+//     stays registered for sandboxes started by the previous release that
+//     outlive a host rollout (an unknown path would 404 and lose their work).
+//
 // Pipeline:
-//   1. Parse + validate the request schema (parentVersion, reason, bundleBytes).
-//      The pre-bundle wire shape schema-rejects as 400.
+//   1. Parse + validate the carrier's input. JSON: the request schema
+//      (parentVersion, reason, bundleBytes); the pre-bundle wire shape
+//      schema-rejects as 400. Binary: the query schema; the body needs no
+//      check, and its base64 (which the internals consume) is built from the
+//      Buffer, canonical by construction. Never run the JSON schema's base64
+//      regex on it: past about 5 MiB that regex overflows the stack.
 //   2. Empty-bundle short-circuit: the turn wrote nothing → accepted:true
 //      against the parentVersion the runner sent. No apply, no subscribers.
 //   3. Export the workspace's baseline bundle at `parentVersion` via
@@ -97,8 +118,11 @@ function resyncEnvelopeFromCause(cause: unknown): { actualParent?: string } {
 //   - accepted → {accepted: true, version, delta: null}
 //   - rejected → {accepted: false, reason}, plus — depending on which branch
 //     rejected — `actualParent` (the parent-mismatch re-sync signal),
-//     `recoverable: false` (the runner must discard the work), and
-//     `discardPaths` (scope that discard to named paths — TASK-287).
+//     `recoverable: false` (the runner must discard the work),
+//     `discardPaths` (scope that discard to named paths — TASK-287), and
+//     `code` (the pre-apply veto's machine name, e.g. `storage-full` —
+//     TASK-720; only on the veto branch, only when the veto named one).
+// Both carriers answer with exactly these shapes.
 // The wire NEVER carries the delta payload (Invariant I5 — `WorkspaceDelta`
 // carries lazy fetchers that don't survive JSON, and exposing the content set
 // across the trust boundary widens the blast radius of a compromised sandbox).
@@ -116,9 +140,11 @@ function resyncEnvelopeFromCause(cause: unknown): { actualParent?: string } {
 // to the host log via `logInternalError`.
 //
 // Test pins live in `__tests__/workspace-commit-notify.test.ts` (schema, backend
-// gate, veto + discard scoping) and
+// gate, veto + discard scoping),
 // `__tests__/workspace-commit-notify-core-resync.test.ts` (the single-replica
-// re-sync path). Neither pins the prose above, and this block has drifted from
+// re-sync path) and `../../__tests__/workspace-commit-bundle.test.ts` (the
+// binary carrier over the real dispatcher: query, empty body, >4 MiB body,
+// veto code). Neither pins the prose above, and this block has drifted from
 // the code more than once — if you change a branch here, re-read it.
 // ---------------------------------------------------------------------------
 
@@ -131,7 +157,48 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
   if (!parsed.success) {
     return validationError(`workspace.commit-notify: ${parsed.error.message}`);
   }
-  const { parentVersion, reason, bundleBytes } = parsed.data;
+  return commitBundleCore(parsed.data, ctx, bus);
+};
+
+export const workspaceCommitBundleHandler: BinaryActionHandler = async (
+  body,
+  ctx,
+  bus,
+  url,
+) => {
+  // Built from exactly these two getters: anything else smuggled onto the
+  // query is never read. A missing `parentVersion` is null (first save); a
+  // missing `reason` stays null and fails the schema (it is required).
+  const parsed = WorkspaceCommitBundleQuerySchema.safeParse({
+    reason: url.searchParams.get('reason'),
+    parentVersion: url.searchParams.get('parentVersion'),
+  });
+  if (!parsed.success) {
+    return validationError(`workspace.commit-bundle: ${parsed.error.message}`);
+  }
+  // The core consumes base64 (scratch repo, `workspace:apply-bundle`). An empty
+  // body encodes to '', which is the empty-turn short-circuit.
+  return commitBundleCore(
+    {
+      parentVersion: parsed.data.parentVersion,
+      reason: parsed.data.reason,
+      bundleBytes: body.toString('base64'),
+    },
+    ctx,
+    bus,
+  );
+};
+
+/**
+ * The shared pipeline behind both carriers. `input` is ALREADY validated by
+ * the carrier: `bundleBytes` is canonical base64 ('' = empty turn).
+ */
+async function commitBundleCore(
+  input: { parentVersion: string | null; reason: string; bundleBytes: string },
+  ctx: AgentContext,
+  bus: HookBus,
+): Promise<HandlerResult> {
+  const { parentVersion, reason, bundleBytes } = input;
 
   // Empty-bundle short-circuit: the runner observed an empty turn (no
   // commits in baseline..HEAD) and shipped the empty wire shape. No
@@ -388,8 +455,10 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     // decoded, never taken from anything the runner claims, and it covers the
     // WHOLE write: `policyChanges` is only the `.ax/**` / `.claude/**` slice, so
     // it cannot say how big the rest of the turn is. The compressed bundle is
-    // what actually lands on the volume, so it is the honest figure (the wire
-    // caps it at about 3 MiB, see MAX_FRAME).
+    // what actually lands on the volume, so it is the honest figure. The wire
+    // bounds it: up to 100 MiB over `workspace.commit-bundle` (the dispatcher's
+    // MAX_BLOB_BODY_BYTES), about 3 MiB over the legacy JSON commit-notify
+    // (base64 inside the 4 MiB MAX_FRAME).
     const sizeBytes = Buffer.byteLength(bundleBytes, 'base64');
 
     // ---- pre-apply: subscribers can transform or veto ----
@@ -457,13 +526,22 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
         action: 'workspace.commit-notify',
         rejectedBy: pre.source ?? 'unknown',
         reason: pre.reason,
+        ...(pre.code !== undefined ? { code: pre.code } : {}),
         scoped,
       });
+      // TASK-720: forward the veto's machine code (TASK-719; `storage-full`
+      // from @ax/disk-quota) so the runner can tell the PERSON which kind of
+      // refusal this was without matching `reason`, which is written for the
+      // model. The key is built only when present: an explicit undefined would
+      // not survive the answer as "absent". A code the response schema refuses
+      // (not a short slug) is plugin drift and fails the parse below → 500,
+      // rather than reaching the runner.
       const body = {
         accepted: false as const,
         reason: pre.reason,
         recoverable: false as const,
         ...(scoped ? { discardPaths } : {}),
+        ...(pre.code !== undefined ? { code: pre.code } : {}),
       };
       const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
       if (!checked.success) {
@@ -571,4 +649,4 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
   } finally {
     await scratch.dispose();
   }
-};
+}

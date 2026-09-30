@@ -320,7 +320,7 @@ export async function scaffoldSdkProjectsSymlink(
 //   2. Detects empty turn (no staged changes) → returns null bundle so
 //      the runner skips the commit-notify call.
 //   3. Otherwise commits + bundles `baseline..main main` (thin bundle
-//      with the new tip ref). Returns base64 bytes.
+//      with the new tip ref). Returns the raw bundle bytes.
 //
 // After the host responds:
 //   - Accepted: `advanceBaseline` moves refs/heads/baseline to HEAD so
@@ -335,7 +335,7 @@ export async function scaffoldSdkProjectsSymlink(
  * Stage `/agent`, commit any working-tree changes, and build a thin
  * bundle of the commits in `baseline..main`.
  *
- * Returns the bundle as base64 bytes, OR null when there is nothing to ship.
+ * Returns the raw bundle bytes, OR null when there is nothing to ship.
  *
  * This is the TASK-70 / out-of-git Phase-5 gate: with transcripts (TASK-67),
  * blobs/attachments (TASK-68), and skills (TASK-69) all OFF git, the only thing
@@ -358,7 +358,7 @@ export async function scaffoldSdkProjectsSymlink(
 export async function commitTurnAndBundle(input: {
   root: string;
   reason: string;
-}): Promise<string | null> {
+}): Promise<Buffer | null> {
   const { root, reason } = input;
 
   // Stage everything. `-A` catches additions, modifications, AND
@@ -438,8 +438,11 @@ export async function commitTurnAndBundle(input: {
     'git bundle create',
   );
   try {
-    const bytes = await fs.readFile(bundlePath);
-    return bytes.toString('base64');
+    // Raw bytes, not base64 (TASK-720): the save rides the binary
+    // `workspace.commit-bundle` action as an octet-stream body, so there is no
+    // JSON envelope to encode for, and `.length` is the real size the runner
+    // checks against WORKSPACE_COMMIT_BUNDLE_MAX_BYTES before sending.
+    return await fs.readFile(bundlePath);
   } finally {
     await fs.rm(bundlePath, { force: true });
   }

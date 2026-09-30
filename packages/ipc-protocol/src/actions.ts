@@ -168,6 +168,12 @@ export type ToolListResponse = z.infer<typeof ToolListResponseSchema>;
 // multiple of 4, and `=` padding only at the tail. The regex matches
 // the canonical shape; Buffer.from(s, 'base64') is permissive (it
 // silently ignores garbage), so we don't lean on it for validation.
+//
+// Only safe on strings the 4 MiB JSON frame already bounded: on a string of
+// about 5 MiB or more this regex overflows the stack (`RangeError: Maximum call
+// stack size exceeded`, measured during TASK-720). The binary
+// `workspace.commit-bundle` path therefore never runs it: its base64 comes from
+// `Buffer.toString('base64')`, canonical by construction.
 // ---------------------------------------------------------------------------
 
 const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -201,6 +207,14 @@ const BundleBytesSchema = z
 // existing parentVersion). Preserved as a no-op rather than a hard error
 // because some turn boundaries genuinely write nothing (e.g., the model
 // answered without touching files).
+//
+// TASK-720: this JSON shape is now the LEGACY carrier. Base64 inside the 4 MiB
+// JSON frame capped one save at about 3 MiB of compressed objects; over it the
+// save failed, the runner's baseline never moved, and every later save
+// re-carried the same blob, so persistence wedged for good. Current runners
+// send `workspace.commit-bundle` (below) instead. This action stays registered
+// for sandboxes started by the previous release. Both answer with
+// `WorkspaceCommitNotifyResponseSchema`.
 // ---------------------------------------------------------------------------
 
 export const WorkspaceCommitNotifyRequestSchema = z.object({
@@ -270,11 +284,75 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
       // here too, since this is a wire-driven instruction to take files back
       // off the agent.
       discardPaths: z.array(z.string().min(1).max(1024)).max(256).optional(),
+      // TASK-720: a short machine name for WHY the save was refused, forwarded
+      // from the `workspace:pre-apply` veto's `code` (TASK-719; e.g.
+      // `storage-full` from @ax/disk-quota). `reason` stays the model-facing
+      // sentence; `code` is what the runner keys on to tell the person, so it
+      // never has to match prose. Absent when the veto named none, and on
+      // every other rejected branch (parent-mismatch, baseline drift, author
+      // verification, runner-immutable). A label only: it grants nothing, and
+      // a runner that does not know a code treats the refusal as it always
+      // did. Bounded to a lowercase slug since it crosses the trust boundary.
+      code: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'code must be a lowercase slug')
+        .optional(),
     }),
   ],
 );
 export type WorkspaceCommitNotifyResponse = z.infer<
   typeof WorkspaceCommitNotifyResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
+// workspace.commit-bundle — TASK-720
+//
+// The same end-of-turn save as `workspace.commit-notify`, over the
+// REQUEST-direction binary channel (the one `blob.put` and the transcript
+// actions use): the RAW git bundle is the `application/octet-stream` body, and
+// the two small fields ride as QUERY PARAMS, validated by
+// `WorkspaceCommitBundleQuerySchema`. The answer is the same JSON
+// `WorkspaceCommitNotifyResponseSchema`. An EMPTY body is the empty turn (same
+// short-circuit as `bundleBytes === ''`).
+//
+// Why a separate action: the JSON carrier capped one save at about 3 MiB (see
+// above), and the content-type gate keys on the path, so a raw body needs its
+// own path.
+//
+// Size: `WORKSPACE_COMMIT_BUNDLE_MAX_BYTES` is the most one save may carry. It
+// is the host's existing per-request budget for runner uploads (the
+// dispatcher's `MAX_BLOB_BODY_BYTES`; an @ax/ipc-core test pins that this
+// never exceeds it). The runner checks a bundle against it BEFORE sending and
+// fails the save loudly instead of shipping bytes the host would refuse with a
+// 413.
+//
+// Field names are the commit-notify ones; `bundle` is sandbox↔host transport
+// vocabulary that no `workspace:*` bus hook ever sees (same I1 justification
+// as `bundleBytes` above).
+// ---------------------------------------------------------------------------
+
+export const WORKSPACE_COMMIT_BUNDLE_MAX_BYTES = 100 * 1024 * 1024;
+
+// Query-carried fields for `workspace.commit-bundle`. The handler builds the
+// object from exactly two `searchParams.get` calls, so `.strict()` only
+// documents that nothing else is meaningful.
+//   - `reason`: REQUIRED (the runner always labels a save: `turn`,
+//     `user-message-wait`, ...). Bounded: it is echoed into logs and into the
+//     `workspace:pre-apply` payload.
+//   - `parentVersion`: ABSENT means null (the first save of a new workspace);
+//     the handler maps a missing param to null before parsing. A PRESENT value
+//     must be non-empty: an empty string is not a version, and accepting it
+//     would make `?parentVersion=` mean something different from absent.
+export const WorkspaceCommitBundleQuerySchema = z
+  .object({
+    reason: z.string().min(1).max(200),
+    parentVersion: z.string().min(1).max(512).nullable(),
+  })
+  .strict();
+export type WorkspaceCommitBundleQuery = z.infer<
+  typeof WorkspaceCommitBundleQuerySchema
 >;
 
 // ---------------------------------------------------------------------------
@@ -297,7 +375,9 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 // blew that cap and the runner crashed on boot (`response body too large`).
 // Streaming the raw bytes drops the base64 tax and the in-memory cap wall —
 // the runner drains to disk under a much higher, disk-bounded ceiling. The
-// per-turn `commit-notify` bundle stays JSON+base64 (it's bounded per turn).
+// per-turn save went the same way later (TASK-720): it USED to stay JSON+base64
+// on the theory that one turn is small, until a single 5 MiB file wedged an
+// agent's persistence; it now streams raw over `workspace.commit-bundle`.
 //
 // `git bundle` is git-vocabulary on the wire — by Invariant I1 that's
 // allowed here because this is the sandbox-host transport axis, not a

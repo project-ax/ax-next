@@ -13,6 +13,13 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   'tool.execute-host': 30_000,
   'tool.list': 5_000,
   'workspace.commit-notify': 30_000,
+  // TASK-720: `workspace.commit-bundle` — the end-of-turn save as a raw
+  // octet-stream REQUEST body (up to WORKSPACE_COMMIT_BUNDLE_MAX_BYTES, 100 MiB).
+  // Duration scales with the bundle, so it shares the other uploads' 120 s
+  // ceiling; the 30 s above was sized for a JSON body under 4 MiB.
+  // parentVersion-idempotent like commit-notify: a retry after a landed save
+  // answers parent-mismatch and the runner re-syncs.
+  'workspace.commit-bundle': 120_000,
   // Session-start materialize fires once at boot. The host streams the whole
   // workspace bundle as a raw octet-stream body and the runner drains it to a
   // temp file (BUG-W3). This is a single in-flight transfer whose duration

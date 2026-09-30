@@ -143,8 +143,25 @@ export const EventTurnEndSchema = z.object({
    * strings are rejected so a misbehaving producer can't trip the
    * downstream "drop most recent turn" fallback. */
   turnId: z.string().min(1).optional(),
+  /**
+   * The host refused this turn's end-of-turn workspace save, so the runner
+   * undid the turn's file changes (TASK-720). Before this field the refusal
+   * was silent to the person: the refusal's own reason is prose written for
+   * the model, and the model's turn is already over when the save runs.
+   *
+   * A closed set of machine codes, never prose. Runner-reported and therefore
+   * UNTRUSTED, which is fine: the worst a lying runner can do is pick which of
+   * three fixed sentences the person sees.
+   *   - `storage-full`: the person's storage limit refused the save.
+   *   - `too-large`: one save was over the per-save size cap.
+   *   - `refused`: any other refusal (a validator veto, an author check).
+   * Absent means the save went through, had nothing to save, or failed in a
+   * way the runner keeps and retries next turn.
+   */
+  saveRefused: z.enum(['storage-full', 'too-large', 'refused']).optional(),
 });
 export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
+export type SaveRefusedCode = NonNullable<EventTurnEnd['saveRefused']>;
 
 /**
  * Terminal outcome of a chat, mirroring `@ax/core/src/types.ts` `AgentOutcome`

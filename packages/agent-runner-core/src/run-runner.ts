@@ -5,6 +5,7 @@ import {
   type AgentMessage,
   type ContentBlock,
   type IpcClient,
+  type SaveRefusedCode,
   type SessionGetConfigResponse,
   type ToolListResponse,
   type WorkspaceReadRequest,
@@ -20,6 +21,7 @@ import {
 import {
   commitNotifyWithResync,
   flushWorkspaceToHost,
+  saveRefusedFrom,
   type HostToolFlush,
 } from './commit-notify-resync.js';
 import { commitTrace } from './commit-trace.js';
@@ -1430,6 +1432,10 @@ async function runRunnerInner(
   }
 
   async function closeTurn(input: EndTurnInput): Promise<void> {
+    // Set by the end-of-turn commit below iff the host refused the save; read
+    // by the assistant turn-end. Scoped to THIS turn: a later turn's turn-end
+    // must not repeat an earlier refusal.
+    let saveRefused: SaveRefusedCode | undefined;
     try {
       commitTrace(
         `[commit-trace] per-turn result: session=${transcriptSessionId ?? 'null'} contentBlocks=${input.contentBlocks.length} toolResults=${input.toolResultBlocks.length} finalAsstUuid=${input.lastAssistantUuid ?? '-'} parent=${parentVersion ?? 'null'}\n`,
@@ -1475,14 +1481,14 @@ async function runRunnerInner(
       // /agent diff (TASK-70 Phase-5 gate; the empty-diff skip is the
       // `git diff --cached --quiet` short-circuit inside
       // commitTurnAndBundle).
-      const bundleB64 = await commitTurnAndBundle({
+      const bundle = await commitTurnAndBundle({
         root: env.workspaceRoot,
         reason: 'turn',
       });
       commitTrace(
-        `[commit-trace] per-turn commitTurnAndBundle → ${bundleB64 === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${bundleB64.length}B`}\n`,
+        `[commit-trace] per-turn commitTurnAndBundle → ${bundle === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${bundle.length}B`}\n`,
       );
-      if (bundleB64 !== null) {
+      if (bundle !== null) {
         // Bounded re-sync + retry. On a concurrent-writer advance the host
         // returns accepted:false with actualParent + baselineBundleBytes;
         // the shared helper rebases our turn commit onto the new head and
@@ -1492,11 +1498,16 @@ async function runRunnerInner(
         const result = await commitNotifyWithResync({
           client,
           root: env.workspaceRoot,
-          bundleBytes: bundleB64,
+          bundle,
           parentVersion,
           reason: 'turn',
         });
         parentVersion = result.parentVersion;
+        // TASK-720: a TERMINAL refusal (the host objected, or the save was too
+        // big to carry) just took this turn's files back. The turn is over, so
+        // the model cannot be told; the person can — the code rides this
+        // turn's assistant `event.turn-end` below as `saveRefused`.
+        saveRefused = saveRefusedFrom(result);
         commitTrace(
           `[commit-trace] per-turn DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
         );
@@ -1566,6 +1577,16 @@ async function runRunnerInner(
           // request's freshly-minted reqId, dead to those subscribers.
           ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
           ...(turnId !== undefined ? { turnId } : {}),
+          // TASK-720: the refusal rides BOTH turn-ends of this turn, not only
+          // the assistant one below. A turn a save can be refused on is a turn
+          // that wrote files, i.e. one that ran tools, i.e. one that emits this
+          // event FIRST — and channel-web's SSE `done` subscriber closes the
+          // stream on the first `chat:turn-end` carrying this reqId (the reply
+          // itself already streamed as chunks). A code that rode only the
+          // assistant turn-end reached an unsubscribed subscriber, so the
+          // person was never told. This field is not persisted, so carrying it
+          // twice costs nothing.
+          ...(saveRefused !== undefined ? { saveRefused } : {}),
         })
         .catch(() => {
           /* host may be tearing down; non-fatal */
@@ -1596,6 +1617,11 @@ async function runRunnerInner(
           ? { contentBlocks: input.contentBlocks }
           : {}),
         ...(turnUsage !== undefined ? { usage: turnUsage } : {}),
+        // TASK-720: on both turn-ends of this turn — see the role='tool' event
+        // above for why the first one has to carry it too. Usage is the field
+        // that must stay assistant-only (the tool turn-end is the same turn and
+        // metering both would double-charge it); this one is not metered.
+        ...(saveRefused !== undefined ? { saveRefused } : {}),
         // See reqId rationale on the tool turn-end above.
         ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
         ...(assistantTurnId !== undefined ? { turnId: assistantTurnId } : {}),
@@ -1718,7 +1744,7 @@ async function runRunnerInner(
         const result = await commitNotifyWithResync({
           client,
           root: env.workspaceRoot,
-          bundleBytes: finalBundle,
+          bundle: finalBundle,
           parentVersion,
           reason: 'turn',
         });
@@ -1726,6 +1752,15 @@ async function runRunnerInner(
         commitTrace(
           `[commit-trace] final DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
         );
+        // No turn-end follows the final/idle commit, so a refusal here has no
+        // channel to the person (a follow-up, TASK-720). At least keep it out
+        // of the silent column: the files are gone either way.
+        const finalRefused = saveRefusedFrom(result);
+        if (finalRefused !== undefined) {
+          process.stderr.write(
+            `runner: final save refused (${finalRefused}); this turn's files were rolled back and no turn-end carries the notice\n`,
+          );
+        }
       }
     } catch (err) {
       // Propagate a terminal bind rejection (4xx) past this best-effort catch

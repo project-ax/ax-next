@@ -14,6 +14,7 @@ import type { ChunkBuffer } from './chunk-buffer.js';
 // the stream opens (step 3a), the filter after (step 4a-ter).
 import { filterDeclinedGrants, readGrantDeclines } from './grant-declines.js';
 import type { StoredDecline } from './grant-declines.js';
+import { asSaveRefusedCode } from '../lib/save-refused.js';
 import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -32,7 +33,8 @@ import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './typ
 //      conversationId, and by the payload's reqId when it names one —
 //      TASK-569). The chunk subscriber emits one `data:` frame
 //      per chunk; the turn-end subscriber emits a final `done: true`
-//      and closes.
+//      (with `saveRefused` when the runner reported that the turn's files
+//      could not be saved — TASK-720) and closes.
 //
 // Subscribers are unwired on:
 //   - `done: true` emitted (turn-end)
@@ -480,7 +482,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // continuation never rendered until the next send. A turn-end that names
     // no reqId (a turn run dark, with no stream to address) keeps the old
     // conversation-only match, so nothing that used to close us now hangs.
-    deps.bus.subscribe<{ reqId?: string; reason?: string }>(
+    deps.bus.subscribe<{ reqId?: string; reason?: string; saveRefused?: unknown }>(
       'chat:turn-end',
       turnEndSubKey,
       async (ctx, payload) => {
@@ -489,11 +491,20 @@ export function createSseHandler(deps: SseHandlerDeps) {
         if (typeof endedReqId === 'string' && endedReqId.length > 0 && endedReqId !== reqId) {
           return undefined;
         }
+        // TASK-720 — the host refused this turn's end-of-turn save and the
+        // runner undid its file changes. Forward the code ONLY when it is one
+        // of the three: the payload is typed loosely and the runner is
+        // untrusted, so nothing it wrote beyond a closed code reaches a page.
+        const saveRefused = asSaveRefusedCode(payload?.saveRefused);
         // Emit the done frame, evict the buffer (this turn is over),
         // then close. The eviction here is the success path; the TTL
         // sweep in chunk-buffer is the fallback for browsers that
         // never get here (closed mid-stream).
-        safeWrite({ reqId, done: true });
+        safeWrite({
+          reqId,
+          done: true,
+          ...(saveRefused !== undefined ? { saveRefused } : {}),
+        });
         deps.buffer.evictReqId(reqId);
         cleanup();
         try {
