@@ -180,7 +180,8 @@ describe('the sentences a person reads', () => {
   });
 
   it.each(sentences)('%s never tells anyone to delete anything', (_name, text) => {
-    // Nothing a person can do frees space today, so that advice would be false.
+    // Only deleting a whole agent frees space, and no smaller chore does, so
+    // that advice would be a false promise.
     expect(text).not.toMatch(/\b(delet|remov|clear|clean|free up|free some|make (some )?space|tidy)/i);
   });
 

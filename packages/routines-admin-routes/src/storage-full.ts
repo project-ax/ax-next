@@ -55,9 +55,9 @@ export const STORAGE_FULL_ROUTINE_SAVE =
  * cannot remove a routine either. True because the refusal is before anything
  * is written: the routine is still there.
  *
- * It says "remove" about what we could NOT do, and tells nobody to do it: no
- * one can give space back today (a removed file stays in the history), so
- * advice to delete something would be a false promise.
+ * It says "remove" about what we could NOT do, and tells nobody to do it:
+ * removing a routine does not give space back (the file stays in the history),
+ * so advice to delete something would be a false promise.
  */
 export const STORAGE_FULL_ROUTINE_REMOVE =
   "We couldn't remove that routine because your storage is full. An admin can make more room, then you can try again.";

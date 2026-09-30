@@ -1,6 +1,7 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import * as nodeFs from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -48,6 +49,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 //   METER  -- `blob:stored` charges the writer; `workspace:applied` makes the
 //             plugin re-measure that agent's repo through the backend's
 //             `workspace:usage`; a periodic sweep backfills and repairs.
+//   FREE   -- `agents:deleted` makes the preset's @ax/workspace-git remove that
+//             agent's repo and fire `workspace:deleted`, which makes the plugin
+//             drop the agent's ledger row (TASK-719). Blob bytes are NOT freed.
 //
 // The package tests prove each half against fakes. This canary proves the
 // LOOP through the real chokepoints: the preset's own @ax/workspace-git (a
@@ -210,6 +214,41 @@ function createControlPlaneStubPlugin(mountedRoutes: string[]): Plugin {
   };
 }
 
+/**
+ * A one-shot gate on `workspace:applied` for ONE agent, armed by the test that
+ * needs to hold that agent's post-write notice (and with it @ax/disk-quota's
+ * re-measure, which it triggers) shut until the test says go. Unarmed, or for
+ * any other agent, it lets everything through untouched.
+ *
+ * It only works because the kernel boots this plugin FIRST: subscribers run in
+ * registration order, so the gate is reached before disk-quota's own
+ * `workspace:applied` subscriber and nothing measures while it is shut.
+ */
+let appliedGate: { agentId: string; entered: () => void; opened: Promise<void> } | null = null;
+
+function createAppliedGatePlugin(): Plugin {
+  const name = '@ax/preset-k8s/test/disk-quota-applied-gate';
+  return {
+    manifest: {
+      name,
+      version: '0.0.0',
+      registers: [],
+      calls: [],
+      subscribes: ['workspace:applied'],
+    },
+    init({ bus }) {
+      bus.subscribe<unknown>('workspace:applied', name, async (ctx) => {
+        const gate = appliedGate;
+        if (gate === null || gate.agentId !== ctx.agentId) return undefined;
+        appliedGate = null;
+        gate.entered();
+        await gate.opened;
+        return undefined;
+      });
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Real git, playing the runner
 // ---------------------------------------------------------------------------
@@ -326,6 +365,8 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
 
     const mountedRoutes: string[] = [];
     const plugins: Plugin[] = [
+      // First on purpose: see createAppliedGatePlugin.
+      createAppliedGatePlugin(),
       ...kept,
       diskQuota,
       createAgentsStubPlugin(),
@@ -543,6 +584,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
   beforeEach(async () => {
     agentOwners.clear();
     sweepAgents = [];
+    appliedGate = null;
     await live().diskQuota.drain();
     await sql`TRUNCATE disk_quota_v1_usage`.execute(await db());
     await setLimits({ limitMb: MIN_LIMIT_MB, warnPercent: 80 });
@@ -599,7 +641,9 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     expect(err.code).toBe('rejected');
     expect(err.message).toBe(blobFullMessage(used, MIN_LIMIT_BYTES));
     // It says what is true (storage is used up) and does NOT send anyone off
-    // to delete things: nothing can free bytes yet.
+    // to delete things: deleting a whole agent gives its workspace back, but
+    // attachments and artifacts cannot be deleted, so there is no small chore
+    // that makes room.
     expect(err.message.toLowerCase()).toContain('storage');
     expect(err.message.toLowerCase()).not.toContain('delete');
     // The veto fired BEFORE the backend: the refused bytes are not in the
@@ -913,6 +957,346 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     await setLimits({ limitMb: 4096 });
     expect(await start(USER_A, 'dq-agt-turn-a')).toMatchObject({ rejected: false });
     expect(await start(USER_B, 'dq-agt-turn-team-full')).toMatchObject({ rejected: false });
+  });
+
+  // -------------------------------------------------------------------------
+  // 5b. AGENT DELETE -- `agents:deleted` frees the agent's workspace. The real
+  //     bus fans the event to the preset's own @ax/workspace-git (removes the
+  //     repo, refuses late writes, fires `workspace:deleted`), which reaches the
+  //     real @ax/disk-quota (drops the ledger row). No stub sits between them:
+  //     the only test-only pieces are the agent-owner lookup and the gates in
+  //     (5b-c).
+  // -------------------------------------------------------------------------
+
+  describe('(5b) deleting an agent frees its storage', () => {
+    interface SeededAgent {
+      id: string;
+      /** The agent's bare repo on disk. */
+      dir: string;
+      /** The head after its one write: what a warm runner would still name as parent. */
+      version: WorkspaceVersion;
+      /** Its `workspace:<id>` ledger row, as metered from the real repo. */
+      row: LedgerRow;
+    }
+    interface Seeded {
+      owner: string;
+      a: SeededAgent;
+      b: SeededAgent;
+      blobSource: string;
+      /** The owner's blob row: nothing in this feature ever frees it. */
+      blobRow: LedgerRow;
+    }
+
+    const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
+    let deleteSeq = 0;
+
+    async function exists(p: string): Promise<boolean> {
+      try {
+        await fs.access(p);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    /** Every entry in the repo root, sorted: the repos, and nothing else made behind them. */
+    async function repoDirs(): Promise<string[]> {
+      return (await fs.readdir(repoRoot)).sort();
+    }
+
+    async function requireRow(ownerId: string, source: string): Promise<LedgerRow> {
+      const row = await ledgerRow(ownerId, source);
+      if (row === undefined) throw new Error(`no ledger row for ${ownerId} / ${source}`);
+      return row;
+    }
+
+    /**
+     * An agent's first write creates its repo, in a directory named after a hash
+     * of its id: find it the way (4b) does, as the one entry that was not there
+     * before.
+     */
+    async function firstWrite(
+      ctx: AgentContext,
+      files: Record<string, Uint8Array>,
+    ): Promise<{ dir: string; version: WorkspaceVersion }> {
+      const before = new Set(await fs.readdir(repoRoot));
+      const out = await workspaceApply(ctx, files, null);
+      const created = (await fs.readdir(repoRoot)).filter((n) => !before.has(n));
+      expect(created, `one new repo for ${ctx.agentId}`).toHaveLength(1);
+      return { dir: path.join(repoRoot, created[0]!), version: out.version };
+    }
+
+    /**
+     * Owner O with two agents that each made a real write (so each has a repo
+     * on disk and a metered `workspace:<id>` row) and one uploaded blob (a blob
+     * row). Everything is written through the real facades and drained.
+     */
+    async function seedOwnerWithTwoAgents(): Promise<Seeded> {
+      const owner = USER_A;
+      // A fresh pair of ids per test: a deleted agent stays deleted for the life
+      // of the host (workspace-git's tombstone), and the kernel is shared.
+      deleteSeq += 1;
+      const ids = { a: `dq-del-agt-a-${deleteSeq}`, b: `dq-del-agt-b-${deleteSeq}` };
+      agentOwners.set(ids.a, { ownerId: owner, ownerType: 'user' });
+      agentOwners.set(ids.b, { ownerId: owner, ownerType: 'user' });
+
+      const blob = await blobPut(owner, randomBytes(200_000));
+      const wa = await firstWrite(ctxFor(owner, ids.a), { 'docs/a.bin': randomBytes(300_000) });
+      const wb = await firstWrite(ctxFor(owner, ids.b), { 'docs/b.bin': randomBytes(150_000) });
+      await live().diskQuota.drain();
+
+      const seeded: Seeded = {
+        owner,
+        a: { id: ids.a, ...wa, row: await requireRow(owner, `workspace:${ids.a}`) },
+        b: { id: ids.b, ...wb, row: await requireRow(owner, `workspace:${ids.b}`) },
+        blobSource: `blob:${blob.sha256}`,
+        blobRow: await requireRow(owner, `blob:${blob.sha256}`),
+      };
+      // The starting point is honest: three rows, and the owner's usage is
+      // exactly their sum. Each workspace row is the whole repo (more than the
+      // bytes written into it).
+      expect(seeded.a.row.bytes).toBeGreaterThan(300_000);
+      expect(seeded.b.row.bytes).toBeGreaterThan(150_000);
+      expect(await usedBy(owner)).toBe(
+        seeded.a.row.bytes + seeded.b.row.bytes + seeded.blobRow.bytes,
+      );
+      return seeded;
+    }
+
+    /** What @ax/agents fires once the agent's row is gone, through the real bus. */
+    function agentDeleted(agentId: string, ownerId: string) {
+      return live().bus.fire('agents:deleted', ctxFor(ownerId, 'dq-agents-delete'), {
+        agentId,
+        ownerId,
+        ownerType: 'user',
+      });
+    }
+
+    /** B's repo and row, and the owner's blob row, exactly as they were seeded. */
+    async function expectSiblingsIntact(t: Seeded): Promise<void> {
+      expect(await exists(t.b.dir)).toBe(true);
+      expect(await ledgerRow(t.owner, `workspace:${t.b.id}`)).toEqual(t.b.row);
+      expect(await ledgerRow(t.owner, t.blobSource)).toEqual(t.blobRow);
+      const asB = ctxFor(t.owner, t.b.id);
+      expect(await workspaceRead(asB, 'docs/b.bin')).toMatchObject({
+        found: true,
+        version: t.b.version,
+      });
+      // The row still matches what is really on disk.
+      expect(await workspaceUsage(asB)).toBe(t.b.row.bytes);
+    }
+
+    /**
+     * Hold `gitdir`'s write mutex open. The first file read under it is the
+     * `resolveHead` a write makes INSIDE the mutex, so the write that trips the
+     * gate is holding the mutex, and anything else for that agent (the delete)
+     * queues behind it. Same trick as workspace-git-core's own delete tests, and
+     * it works here because `node:fs` is one shared module. Only that gitdir is
+     * gated, and only its first read.
+     */
+    function holdRepoMutexOnFirstRead(gitdir: string): {
+      entered: Promise<void>;
+      release: () => void;
+      restore: () => void;
+    } {
+      const realReadFile = nodeFs.promises.readFile.bind(nodeFs.promises);
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => (enter = resolve));
+      let release!: () => void;
+      const opened = new Promise<void>((resolve) => (release = resolve));
+      let tripped = false;
+      const spy = vi.spyOn(nodeFs.promises, 'readFile').mockImplementation((async (
+        p: Parameters<typeof realReadFile>[0],
+        ...rest: unknown[]
+      ) => {
+        if (!tripped && typeof p === 'string' && p.startsWith(`${gitdir}/`)) {
+          tripped = true;
+          enter();
+          await opened;
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return realReadFile(p, ...(rest as any));
+      }) as typeof nodeFs.promises.readFile);
+      return { entered, release, restore: () => spy.mockRestore() };
+    }
+
+    it('(5b-a) agents:deleted removes that agent\'s repo and its ledger row; the sibling agent and the owner\'s blobs are untouched, and the owner\'s usage falls by exactly what the workspace held', async () => {
+      const t = await seedOwnerWithTwoAgents();
+      const usedBefore = await usedBy(t.owner);
+      const dirsBefore = await repoDirs();
+
+      const fired = await agentDeleted(t.a.id, t.owner);
+      expect(fired).toMatchObject({ rejected: false });
+
+      // A's repo is gone from the disk, and A's row from the ledger.
+      expect(await exists(t.a.dir)).toBe(false);
+      expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
+      // Nothing else in the repo root went with it.
+      expect(await repoDirs()).toEqual(
+        dirsBefore.filter((name) => path.join(repoRoot, name) !== t.a.dir),
+      );
+      // B and the blob are exactly as they were.
+      await expectSiblingsIntact(t);
+      // The owner got back exactly A's workspace bytes: no more, no less.
+      expect(await usedBy(t.owner)).toBe(usedBefore - t.a.row.bytes);
+      expect(await usedBy(t.owner)).toBe(t.b.row.bytes + t.blobRow.bytes);
+    });
+
+    it('(5b-a2) the room is real: an owner too full to save a change can save it once another agent is deleted', async () => {
+      const t = await seedOwnerWithTwoAgents();
+      const asB = ctxFor(t.owner, t.b.id);
+      const change = { 'docs/more.bin': randomBytes(200_000) };
+
+      // Nearly full: B's next change does not fit, and the refusal is the
+      // storage-full one (the code, not just the sentence).
+      await seedNearlyFull(t.owner);
+      const refused = await refusalOf(workspaceApply(asB, change, t.b.version));
+      expect(refused.code).toBe('rejected');
+      expect(refused.reasonCode).toBe('storage-full');
+
+      // A's workspace goes away: the same change now fits.
+      await agentDeleted(t.a.id, t.owner);
+      const saved = await workspaceApply(asB, change, t.b.version);
+      expect(await workspaceRead(asB, 'docs/more.bin')).toMatchObject({
+        found: true,
+        version: saved.version,
+      });
+    });
+
+    it('(5b-b) a write for the deleted agent afterwards is refused with agent-deleted: no directory comes back and no ledger row appears', async () => {
+      const t = await seedOwnerWithTwoAgents();
+      const asA = ctxFor(t.owner, t.a.id);
+      await agentDeleted(t.a.id, t.owner);
+      expect(await exists(t.a.dir), 'the delete removed the repo').toBe(false);
+      const dirsAfterDelete = await repoDirs();
+
+      // The write a warm runner would still send: a first commit that would
+      // succeed on a fresh repo.
+      const fresh = await refusalOf(
+        workspaceApply(asA, { 'late/report.bin': randomBytes(100_000) }, null),
+      );
+      expect(fresh.code).toBe('agent-deleted');
+      // ...and one naming the parent it last knew.
+      const stale = await refusalOf(
+        workspaceApply(asA, { 'late/more.bin': randomBytes(100_000) }, t.a.version),
+      );
+      expect(stale.code).toBe('agent-deleted');
+      // Reads and measurements are refused too, and none of them makes a repo.
+      await expect(workspaceRead(asA, 'docs/a.bin')).rejects.toMatchObject({
+        code: 'agent-deleted',
+      });
+      await expect(workspaceList(asA)).rejects.toMatchObject({ code: 'agent-deleted' });
+      await expect(workspaceUsage(asA)).rejects.toMatchObject({ code: 'agent-deleted' });
+
+      // Let any background measurement a write could have triggered land.
+      await live().diskQuota.drain();
+      expect(await exists(t.a.dir)).toBe(false);
+      expect(await repoDirs()).toEqual(dirsAfterDelete);
+      expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
+
+      // The sibling is unaffected and still takes writes.
+      await expectSiblingsIntact(t);
+      const asB = ctxFor(t.owner, t.b.id);
+      await workspaceApply(asB, { 'docs/next.bin': randomBytes(50_000) }, t.b.version);
+      await live().diskQuota.drain();
+      expect((await requireRow(t.owner, `workspace:${t.b.id}`)).bytes).toBeGreaterThan(
+        t.b.row.bytes,
+      );
+    });
+
+    it('(5b-c) a write that holds the mutex when the delete arrives lands, and its late measurement cannot bring the ledger row back', async () => {
+      const t = await seedOwnerWithTwoAgents();
+      const asA = ctxFor(t.owner, t.a.id);
+
+      // Two gates make the interleaving exact instead of a race:
+      //   1. The repo mutex is held open, so the write is INSIDE it (and will
+      //      succeed: it names the right parent) when the delete arrives.
+      //   2. The write's `workspace:applied` notice is held shut, so
+      //      disk-quota's re-measure of the write cannot start until the whole
+      //      delete has finished. The measurement therefore lands strictly
+      //      AFTER the delete: the order that would resurrect the row if
+      //      workspace:usage answered 0 for a deleted agent.
+      const mutexGate = holdRepoMutexOnFirstRead(t.a.dir);
+      let openApplied!: () => void;
+      let appliedReached!: () => void;
+      const appliedEntered = new Promise<void>((resolve) => (appliedReached = resolve));
+      appliedGate = {
+        agentId: t.a.id,
+        entered: appliedReached,
+        opened: new Promise<void>((resolve) => (openApplied = resolve)),
+      };
+      try {
+        const write = workspaceApply(asA, { 'docs/late.bin': randomBytes(100_000) }, t.a.version);
+        const writeOutcome = write.then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+        await mutexGate.entered;
+
+        // The delete arrives while the write holds the mutex. It sets its
+        // tombstone and queues behind the write; nothing is removed yet.
+        const delivered = agentDeleted(t.a.id, t.owner);
+        await tick();
+        expect(await exists(t.a.dir), 'the delete waits for the write holding the mutex').toBe(true);
+        expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toEqual(t.a.row);
+
+        // Let the write finish. It commits, then parks at the applied gate.
+        mutexGate.release();
+        await appliedEntered;
+        await delivered;
+
+        // The delete is complete (repo removed, then row released), and the
+        // write's measurement has not even started.
+        expect(await exists(t.a.dir)).toBe(false);
+        expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
+
+        // Now the notice reaches disk-quota and the late measurement runs.
+        openApplied();
+        const outcome = await writeOutcome;
+        expect(outcome.ok, 'the in-flight write itself succeeded').toBe(true);
+        await live().diskQuota.drain();
+
+        // The measurement was refused, not answered with 0: no row came back
+        // (the harm), and the reason is that measuring a deleted agent throws.
+        expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
+        expect(await exists(t.a.dir)).toBe(false);
+        await expect(workspaceUsage(asA)).rejects.toMatchObject({ code: 'agent-deleted' });
+        await expectSiblingsIntact(t);
+        expect(await usedBy(t.owner)).toBe(t.b.row.bytes + t.blobRow.bytes);
+      } finally {
+        // An assertion that failed while a gate was shut must not leave the
+        // parked write hanging the rest of the file.
+        mutexGate.release();
+        openApplied();
+        mutexGate.restore();
+        appliedGate = null;
+      }
+    });
+
+    it('(5b-d) delivering the same agents:deleted again is a harmless no-op', async () => {
+      const t = await seedOwnerWithTwoAgents();
+      await agentDeleted(t.a.id, t.owner);
+      // The first delivery really did the work, so there is something for the
+      // second to be a no-op about.
+      expect(await exists(t.a.dir)).toBe(false);
+      expect(await ledgerRow(t.owner, `workspace:${t.a.id}`)).toBeUndefined();
+      const usedAfterFirst = await usedBy(t.owner);
+      const dirsAfterFirst = await repoDirs();
+
+      await expect(agentDeleted(t.a.id, t.owner)).resolves.toMatchObject({ rejected: false });
+      await live().diskQuota.drain();
+      expect(await repoDirs()).toEqual(dirsAfterFirst);
+      expect(await usedBy(t.owner)).toBe(usedAfterFirst);
+      await expectSiblingsIntact(t);
+
+      // An agent that never wrote a byte (no repo, no row) is just as quiet.
+      await expect(agentDeleted(`dq-del-agt-never-wrote-${deleteSeq}`, t.owner)).resolves.toMatchObject({
+        rejected: false,
+      });
+      expect(await repoDirs()).toEqual(dirsAfterFirst);
+      expect(await usedBy(t.owner)).toBe(usedAfterFirst);
+      await expectSiblingsIntact(t);
+    });
   });
 
   // -------------------------------------------------------------------------

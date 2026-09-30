@@ -8,9 +8,11 @@
  * The reader is a person who wants to know if they can keep working, or an
  * admin deciding how much room to give everyone. So: plain sentences, no
  * jokes, and no advice we cannot stand behind. In particular NOTHING here
- * tells a person to delete anything. Today nothing they can do gives space
- * back (files stay in the history), so "delete some files" would be a false
- * promise. What is true is: ask an admin for more room.
+ * tells a person to delete anything. Deleting a whole agent does give its
+ * workspace back, but that throws the agent away, and no smaller chore helps
+ * (files stay in the history; attachments and artifacts are never freed), so
+ * "delete some files" would be a false promise. What is true is: ask an admin
+ * for more room.
  */
 import {
   STORAGE_LIMIT_BOUNDS,
@@ -177,7 +179,8 @@ export { STORAGE_FULL_IDENTITY, STORAGE_FULL_RULES } from './storage-full-copy';
  *
  * Both are true because the refusal comes BEFORE anything is written: the
  * routine was not saved, and was not removed. "Remove" only names what we could
- * not do; nothing tells anyone to do it, since no one can give space back today.
+ * not do; nothing tells anyone to do it, since removing a routine does not give
+ * space back (the file stays in the history).
  */
 export const STORAGE_FULL_ROUTINE_SAVE =
   "We couldn't save that routine because your storage is full. An admin can make more room, then you can try again.";

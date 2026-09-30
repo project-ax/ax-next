@@ -15,8 +15,9 @@
  *
  * WHAT THEY MAY SAY. The reader is a person whose Save just did not go through.
  * Each sentence says what was NOT saved, why, and who can help. None tells them
- * to delete anything (nothing they can do gives space back today, so that would
- * be a false promise; `storage-copy.test.ts` forbids the words), none carries a
+ * to delete anything (only deleting a whole agent gives space back, and no
+ * smaller chore does, so that would be a false promise; `storage-copy.test.ts`
+ * forbids the words), none carries a
  * number (the limit is an admin's to change), none names a code.
  *
  * These are NOT the veto's own message. That one is worded for the AGENT that

@@ -25,16 +25,23 @@ So the claim holds: there are per-object caps and no per-owner cap anywhere.
 
 Two facts the card did not have, both of which shape the design:
 
-1. **Nothing ever frees the bytes.** `blob:delete` has one caller (a replaced
+1. **Almost nothing frees the bytes.** `blob:delete` has one caller (a replaced
    branding logo). Attachment and artifact rows cannot be deleted, deleting a
-   conversation is a soft delete, deleting an agent touches no blobs and no repo,
-   and git history keeps every blob ever committed. A person cannot "delete
-   something" to get room back, so the friendly message does not say so. It says
-   what is true: ask for more room.
-2. **The volume is 100Gi in prod but 20Gi in the chart.** Read-only `kubectl get
-   pvc` showed 100Gi (overridden somewhere); `deploy/charts/ax-next/gke-values.yaml`
-   says 20Gi. That is a deploy fact, not touched here. The default limit below is
-   chosen to be safe against either.
+   conversation is a soft delete, and git history keeps every blob ever
+   committed. The one thing that gives room back is deleting a whole agent: since
+   TASK-719 that removes its repo and drops its workspace row (see "What changed
+   in TASK-719" below). It still touches no blobs. A person cannot "delete
+   something" small to get room back, and deleting an agent throws the agent
+   away, so the friendly message does not say so. It says what is true: ask for
+   more room.
+2. **The volume is 100Gi in prod, and the chart used to say 20Gi.** Read-only
+   `kubectl get pvc` showed 100Gi (overridden somewhere) while
+   `deploy/charts/ax-next/gke-values.yaml` said 20Gi. TASK-719 made
+   `gke-values.yaml` and `deploy/GKE.md` say 100Gi, with a note that the
+   per-person limit multiplies across people. The chart default in `values.yaml`
+   and `kind-dev-values.yaml` are untouched, and changing a default does not
+   resize a volume that already exists. The default limit below is chosen to be
+   safe against either size.
 
 ## Unit, numbers, and how both stores are counted
 
@@ -112,9 +119,10 @@ blob store gets the same shape.
    and it saves running an agent whose work cannot be saved. Unlike the two write
    gates it fails OPEN (a storage hiccup must not stop people chatting; the write
    gates are the guard). Cost: a person who is full cannot chat at all, including
-   read-only questions, until an admin raises the limit. That is a deliberate
-   trade: nothing they can do gives space back, so work started now could not be
-   kept anyway. `chat:resume` (a parked agent woken by a decision) is not gated;
+   read-only questions, until an admin raises the limit (or, since TASK-719, they
+   delete an agent, which gives that workspace back). That is a deliberate trade:
+   no small chore gives space back, so work started now could not be kept anyway.
+   `chat:resume` (a parked agent woken by a decision) is not gated;
    its writes still hit the write gates.
 
 Plus one new service hook so the quota plugin can measure without knowing the
@@ -125,8 +133,9 @@ does not register it yet (see gaps).
 ## The plugin: `@ax/disk-quota`
 
 Subscribes `workspace:pre-apply` (gate), `workspace:applied` (re-measure that
-agent), `blob:pre-put` (gate), `blob:stored` (ledger row) and `chat:start` (front
-door). Registers no service hooks. Storage: one Postgres table `disk_quota_v1_usage (owner_id, source, kind,
+agent), `blob:pre-put` (gate), `blob:stored` (ledger row), `chat:start` (front
+door) and, since TASK-719, `workspace:deleted` (drop that agent's row). Registers
+no service hooks. Storage: one Postgres table `disk_quota_v1_usage (owner_id, source, kind,
 bytes, updated_at)`, primary key `(owner_id, source)`; `source` is
 `workspace:<agentId>` or `blob:<sha256>`. The limit setting is
 `settings:disk-quota` through `storage:get`/`storage:set` (the `@ax/usage-limits`
@@ -177,9 +186,13 @@ grow), the friendly sentence when a message with attachments is refused, and the
   that pre-dates this feature is uncounted until its next write (per-write
   metering charges `team:<id>` correctly), and team-repo drift (gc, repack) is not
   repaired by the sweep. Follow-up (needs an owner-bearing team agent listing).
-- **Deleting an agent does not delete its repo**, so the bytes stay on disk and
-  stay counted against the owner. Freeing them needs a workspace delete hook and
-  a blob GC; neither exists. Follow-up.
+- **Deleting an agent frees its workspace, and only that.** Blob bytes are never
+  freed and stay counted against the owner: freeing them needs a blob GC and a
+  blob ledger release, which is a separate design (see the list at the end).
+  Agents deleted BEFORE TASK-719 shipped keep an orphan repo on disk and a counted
+  row until an operator cleans them up by hand; nothing does that automatically.
+  The multi-replica `@ax/workspace-git-server` backend does not subscribe to
+  `agents:deleted` yet either.
 - **`@ax/workspace-git-server` (multi-replica) does not register
   `workspace:usage`.** On that backend workspace bytes are not measured; blobs
   still are. Prod uses the `local` backend.
@@ -197,9 +210,12 @@ grow), the friendly sentence when a message with attachments is refused, and the
   are told on their next message by the `chat:start` gate, and the Settings
   Storage tab shows the state. Making the end-of-turn reason reach the person is a
   runner-side change and a follow-up.
-- **In-process writers see a raw refusal.** The Rules and agent-identity screens
-  call `workspace:apply`; over the limit they get a `rejected` error that their
-  routes do not turn into a sentence. Follow-up.
+- **Some in-process writers still see a raw refusal.** Since TASK-719 the Rules,
+  agent-identity and routines routes answer `413 { error: 'storage-full',
+  message }` with a plain sentence. Still raw: the bootstrap seed (swallowed, so
+  the agent silently skips the identity interview), the memory exporter,
+  authored-skill promote (a 400 with the raw code), and the skills clients, which
+  show a raw `413 {json}` string. Follow-up.
 - **A write is refused only when it would go over.** A person already over the
   limit (limit lowered later) can read everything and is refused every write
   until they are back under it or the limit is raised.
@@ -220,5 +236,59 @@ grow), the friendly sentence when a message with attachments is refused, and the
 7. **Docs and memory.**
 
 Cut as YAGNI: per-owner limit overrides, an in-chat nudge before the limit,
-admin-editable per-kind budgets, a storage-freeing flow (nothing can free bytes
-yet), reservations.
+admin-editable per-kind budgets, a storage-freeing flow for a person (blobs are
+never freed, and deleting an agent is not a chore to suggest), reservations.
+
+## What changed in TASK-719
+
+The follow-ups the gaps above asked for, the ones that fit one PR. In short:
+deleting an agent now gives its storage back, a full disk reads as plain words on
+more screens, and two stale bits of deploy config are gone.
+
+- **Deleting an agent frees its workspace.** `@ax/workspace-git` subscribes to
+  `agents:deleted`, removes that agent's repo under the agent's write mutex, then
+  fires `workspace:deleted { agentId }`. `@ax/disk-quota` subscribes and deletes
+  the `workspace:<agentId>` row for every owner (personal or `team:<id>`), after
+  waiting for any measurement of that agent already in flight. From then on every
+  workspace hook for that agent refuses with `agent-deleted`, so a warm runner's
+  late commit cannot recreate the repo and a late measurement cannot bring the
+  row back. If the removal fails, nothing is fired and the row keeps counting
+  bytes that are still on disk. A canary in `presets/k8s` proves the chain on the
+  real path (real git, real Postgres), including the write that holds the mutex
+  when the delete arrives.
+- **A full disk has a code.** A refusal because storage is full carries
+  `code: 'storage-full'`, which both `@ax/core` facades forward as
+  `PluginError.reasonCode`, so routes stop guessing from the sentence. The
+  "could not check your storage" refusal has no code.
+- **Plain sentences on more screens.** Rules, agent identity and routines answer
+  `413 { error: 'storage-full', message }`, and their screens show the server's
+  sentence instead of a raw error.
+- **Chart housekeeping.** `gke-values.yaml` and `deploy/GKE.md` say 100Gi, and
+  the dead `AX_SKILLS_BUNDLE_ROOT` host env is gone (a render test pins it absent).
+
+Still open, and not hidden:
+
+- **Blob bytes are never freed.** Blob GC and a blob ledger release are a
+  separate design. Known constraints: nothing says which attachments, skills and
+  branding still point at a sha; `put`'s already-stored fast path races `delete`
+  and never touches the file's age; `blob.put` over IPC makes blobs with no
+  ledger row; and `attachments_v1_artifacts.artifact_id` looks like a possible
+  primary-key bug (it is a sha prefix, with a conflict rule only on
+  `(conversation_id, path)`), which needs checking before per-row references.
+- **Agents deleted before this shipped** keep an orphan repo and a counted row.
+  Cleaning up is an operator job with a dry-run listing first (hash every live
+  agent id, diff against the `ws-*.git` directories).
+- **Blobs from before the storage limit shipped are still not counted.** A
+  backfill needs owner-bearing listing hooks from attachments and skills.
+- **Team workspaces are not swept,** and `@ax/workspace-git-server` neither
+  registers `workspace:usage` nor subscribes to `agents:deleted`. It already has a
+  `deleteRepo`; wiring it in and firing `workspace:deleted` is a card of its own.
+- **Two narrow races remain.** A periodic-sweep measurement already mid-walk when
+  an agent is deleted can still write one stale row afterwards (the sweep does not
+  go through the in-flight wait; one sweep per 6 hours). And a read that was
+  already past the deleted-agent check when the repo was removed can leave an
+  empty scaffold directory behind: a few KB, holding nothing, never counted.
+- **Raw refusals remain** for the bootstrap seed, the memory exporter,
+  authored-skill promote and the skills clients (see the gap above).
+- **The end-of-turn refusal still does not reach the person** at that moment
+  (runner-side, tracked with TASK-690).

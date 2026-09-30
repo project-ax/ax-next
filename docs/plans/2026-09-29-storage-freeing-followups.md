@@ -155,3 +155,37 @@
 4. **One-off cleanup of orphan repos and stale ledger rows for agents deleted before this ships**: operator action with a dry-run listing (hash every live agent id, diff against `ws-*.git`).
 5. **Unmapped callers of a refusal**: bootstrap seed (swallowed, agent silently skips the identity interview), memory exporter, authored-skill promote (400 + raw code), and the skills clients rendering a raw `413 {json}` string.
 6. **Making the end-of-turn refusal reach the person** (runner-side, already listed by TASK-690).
+
+---
+
+## Boundary review: workspace:deleted
+
+What is new on the hook surface: the subscriber hook **`workspace:deleted { agentId }`**
+(`WorkspaceDeletedPayload` in `@ax/core`), fired by `@ax/workspace-git` after it removed an
+agent's repo and heard by `@ax/disk-quota`. Also three additive pieces: `Rejection.code`,
+`PluginError.reasonCode`, and the `agent-deleted` error code that every `@ax/workspace-git`
+hook throws for a deleted agent.
+
+- **Alternate impl this hook could have:** `@ax/workspace-git-server`, the multi-replica
+  backend. It would subscribe to `agents:deleted`, delete the repo through its client's
+  existing `deleteRepo`, then fire the same `workspace:deleted { agentId }`. Not built here:
+  it also lacks `workspace:usage`, and both are one board card.
+- **Payload field names that might leak:** none. The payload is `{ agentId }`. There is no
+  path, `gitdir`, `repoRoot`, hash, bucket, pod or shard in it. The directory name (a hash
+  of the agent id) is derived inside `@ax/workspace-git` and never leaves it.
+- **Subscriber risk:** none that we can see. A subscriber cannot key off a backend field
+  because there is none. `@ax/disk-quota` deletes by agent id alone and never by owner
+  (a team agent has several users), so it behaves the same whichever backend fired the
+  notice.
+- **Wire surface:** none. This is an in-process hook, not an IPC action, so there is no
+  schema to place.
+- **`Rejection.code` and `PluginError.reasonCode` (additive optional fields).** Alternate
+  use: any other quota-like veto (a spend or rate limit) can set its own `code` and be
+  told apart the same way. Leak check: the value is a public wire code (`'storage-full'`,
+  the same string as the `chat:start:storage-full` reason and the 413 body's `error`), not
+  backend vocabulary. Subscriber risk: `PluginError.code` stays `'rejected'`, so nothing
+  that switches on `code` changes, and `reasonCode` is absent (not `undefined`) when a veto
+  has none. Wire surface: none, both are in-process.
+- **`agent-deleted` (a `PluginError` code).** It names a state ("that agent is gone"),
+  not a backend, so any other workspace backend can refuse the same way for the same
+  reason.

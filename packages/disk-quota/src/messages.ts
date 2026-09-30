@@ -5,10 +5,12 @@
 // agent on the runner-commit path (which relays it to the person), and to the
 // person on the upload paths. So these are written for a non-technical reader.
 //
-// One thing they never say is "delete something to make room". Nothing frees
-// bytes today (attachments and artifacts cannot be deleted, git history keeps
-// every blob), so that advice would send someone on a hunt that cannot end.
-// What is true is that an admin can raise the limit.
+// One thing they never say is "delete something to make room". Deleting a whole
+// agent does give its workspace back, but that throws the agent away, and no
+// smaller chore makes room: attachments and artifacts cannot be deleted, and git
+// history keeps every blob inside a workspace. So that advice would send someone
+// on a hunt that mostly cannot end. What is true is that an admin can raise the
+// limit.
 // ---------------------------------------------------------------------------
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;

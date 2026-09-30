@@ -73,7 +73,8 @@ describe('turnErrorText — usage limits (TASK-692)', () => {
   The storage limit's front door (TASK-690). @ax/disk-quota vetoes a turn at
   `chat:start` with the reason `storage-full` once a person's storage is full,
   so the sentence lives here. It must not promise a remedy that does not exist:
-  nothing a person does gives space back today, so it says "ask an admin".
+  only deleting a whole agent gives space back (no smaller chore does), so it
+  says "ask an admin".
 */
 describe('turnErrorText — storage full (TASK-690)', () => {
   const code = 'chat:start:storage-full';
@@ -86,7 +87,7 @@ describe('turnErrorText — storage full (TASK-690)', () => {
     expect(turnErrorText(code)).not.toBe(DEFAULT_TURN_ERROR);
   });
 
-  it('does not tell anyone to delete anything (nothing they delete frees space)', () => {
+  it('does not tell anyone to delete anything (no small chore frees space)', () => {
     expect(turnErrorText(code).toLowerCase()).not.toContain('delete');
   });
 });

@@ -376,9 +376,11 @@ export function createDiskQuotaService(deps: {
       // periodic sweep (`reconcile`) calls `measureOnce` directly and bypasses
       // the `measuring` map, so a sweep measurement already mid-walk when the
       // agent is deleted can still upsert a stale figure afterwards. The window
-      // is narrow (one sweep per 6 h, two agents at a time) and workspace-git's
-      // tombstone for a deleted agent (TASK-719) stops any measurement that
-      // STARTS after the delete. Deliberately not fixed here: the sweep is unchanged.
+      // is narrow (one sweep per 6 h, two agents at a time). A measurement (or a
+      // write) that STARTS after the delete is not the problem: workspace-git
+      // refuses it with `agent-deleted` (TASK-719), so `measureOnce` records a
+      // failure and writes nothing. Deliberately not fixed here: the sweep is
+      // unchanged.
       await measuring.get(agentId)?.done?.catch(() => undefined);
       const removed = await store.deleteWorkspaceUsage(agentId);
       log(ctx, 'debug', 'disk_quota_workspace_released', { agentId, removed });

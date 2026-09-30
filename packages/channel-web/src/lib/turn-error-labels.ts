@@ -86,9 +86,10 @@ export const ERROR_LABELS: Record<string, string> = {
   // checked when they are saved, but the runner's end-of-turn save happens
   // AFTER the reply is shown, so a refusal there would be silent. @ax/disk-quota
   // therefore also vetoes the turn at `chat:start` once a person's storage is
-  // full, and this is what they read. It never says "delete something": nothing
-  // a person does gives space back today, so the only true next step is an
-  // admin. The settings side is `components/admin/StorageTab.tsx`.
+  // full, and this is what they read. It never says "delete something": only
+  // deleting a whole agent gives space back (no smaller chore does), so the
+  // one true next step for most people is an admin. The settings side is
+  // `components/admin/StorageTab.tsx`.
   'chat:start:storage-full':
     "Your storage is full, so nothing new can be saved right now. Ask an admin for more room, then try again.",
 };
