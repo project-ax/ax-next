@@ -129,13 +129,25 @@ describe('deleteWorkspaceUsage', () => {
     await store.upsertUsage('alice', `blob:${sha}`, 'blob', 4 * MB);
     // A blob whose source merely ENDS in the agent id is not that agent's workspace.
     await store.upsertUsage('alice', 'blob:agt_a', 'blob', 7);
+    // An agent whose id merely BEGINS with the deleted one's is a different
+    // agent (`agt_a` is a true prefix of `agt_ab`), for every owner it is charged to.
+    await store.upsertUsage('alice', 'workspace:agt_ab', 'workspace', 3 * MB);
+    await store.upsertUsage('team:t1', 'workspace:agt_ab', 'workspace', 2 * MB);
 
     expect(await store.deleteWorkspaceUsage('agt_a')).toBe(2);
 
-    expect(await store.usageFor('team:t1')).toEqual({ workspaceBytes: 0, fileBytes: 0 });
-    expect(await store.usageFor('alice')).toEqual({ workspaceBytes: 5 * MB, fileBytes: 4 * MB + 7 });
-    const left = await db.selectFrom('disk_quota_v1_usage').select('source').execute();
-    expect(left.map((r) => r.source).sort()).toEqual(['blob:agt_a', `blob:${sha}`, 'workspace:agt_b'].sort());
+    expect(await store.usageFor('team:t1')).toEqual({ workspaceBytes: 2 * MB, fileBytes: 0 });
+    expect(await store.usageFor('alice')).toEqual({ workspaceBytes: 8 * MB, fileBytes: 4 * MB + 7 });
+    const left = await db.selectFrom('disk_quota_v1_usage').select(['owner_id', 'source']).execute();
+    expect(left.map((r) => `${r.owner_id} ${r.source}`).sort()).toEqual(
+      [
+        'alice blob:agt_a',
+        `alice blob:${sha}`,
+        'alice workspace:agt_ab',
+        'alice workspace:agt_b',
+        'team:t1 workspace:agt_ab',
+      ].sort(),
+    );
   });
 
   it('is idempotent: a second delete, or one for an agent nobody charged, removes nothing', async () => {

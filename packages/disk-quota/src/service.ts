@@ -368,14 +368,26 @@ export function createDiskQuotaService(deps: {
       // A measurement already walking this repo would upsert its (now stale)
       // figure AFTER the delete below and re-create the row, and nothing ever
       // repairs that: the sweep only upserts, and the agent is no longer listed.
-      // Let it land first, then delete. (Never rejects; see scheduleWorkspaceMeasure.)
-      await measuring.get(agentId)?.done;
+      // Let it land first, then delete. It never rejects today (see
+      // scheduleWorkspaceMeasure), but the `.catch` makes that a guarantee: a
+      // future rejection must not be able to skip the delete.
+      //
+      // KNOWN RESIDUAL: this only covers the write-triggered measurements. The
+      // periodic sweep (`reconcile`) calls `measureOnce` directly and bypasses
+      // the `measuring` map, so a sweep measurement already mid-walk when the
+      // agent is deleted can still upsert a stale figure afterwards. The window
+      // is narrow (one sweep per 6 h, two agents at a time) and workspace-git's
+      // tombstone for a deleted agent (TASK-719) stops any measurement that
+      // STARTS after the delete. Deliberately not fixed here: the sweep is unchanged.
+      await measuring.get(agentId)?.done?.catch(() => undefined);
       const removed = await store.deleteWorkspaceUsage(agentId);
       log(ctx, 'debug', 'disk_quota_workspace_released', { agentId, removed });
     } catch (err) {
       // An error, not a warn: a row left behind keeps charging the owner for
-      // bytes that are gone, and nothing else takes it out.
-      log(ctx, 'error', 'disk_quota_release_failed', { err });
+      // bytes that are gone, and nothing else takes it out. So it names the agent
+      // (this context's own agentId is the plugin's): it is the line an operator
+      // acts on. `agentId` is a validated string on every path that reaches here.
+      log(ctx, 'error', 'disk_quota_release_failed', { agentId, err });
     }
   }
 

@@ -51,6 +51,7 @@ afterAll(async () => {
 interface Line {
   level: string;
   msg: string;
+  bindings?: Record<string, unknown>;
 }
 
 interface World {
@@ -103,8 +104,8 @@ function makeWorld(
   }
 
   const lines: Line[] = [];
-  const mk = (level: string) => (msg: string) => {
-    lines.push({ level, msg });
+  const mk = (level: string) => (msg: string, bindings?: Record<string, unknown>) => {
+    lines.push({ level, msg, ...(bindings === undefined ? {} : { bindings }) });
   };
   const logger: Logger = {
     debug: mk('debug'),
@@ -898,6 +899,13 @@ describe('releaseWorkspace (an agent was deleted)', () => {
     const w = makeWorld({ store: failingStore });
     await expect(w.svc.releaseWorkspace('agt_1')).resolves.toBeUndefined();
     expect(errorLogged(w, 'disk_quota_release_failed')).toBe(true);
+    // The row is now left behind and keeps charging the owner, and nothing else
+    // repairs it, so this is the one line an operator acts on: it must say WHICH
+    // agent. (The line's own context is the plugin's, so the id can only come
+    // from the bindings.)
+    const line = w.lines.find((l) => l.level === 'error' && l.msg === 'disk_quota_release_failed');
+    expect(line?.bindings).toMatchObject({ agentId: 'agt_1' });
+    expect(line?.bindings?.err).toBeInstanceOf(Error);
   });
 
   it('waits out a measurement already in flight, so a stale figure cannot re-create the row after the delete', async () => {
