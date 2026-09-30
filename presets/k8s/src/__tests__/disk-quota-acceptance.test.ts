@@ -802,10 +802,14 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     expect(turn2.status).toBe(200);
     // `recoverable: false` is what makes the runner throw the work away and
     // hand the reason to the agent; no `discardPaths`, because it is the whole
-    // turn that does not fit, not one file.
+    // turn that does not fit, not one file. `code` is the machine-readable
+    // twin of that prose (TASK-720): the runner maps it to `saveRefused` on
+    // event.turn-end so the PERSON learns their files were not saved, instead
+    // of the refusal reaching the model and stopping there.
     expect(turn2.body).toEqual({
       accepted: false,
       recoverable: false,
+      code: 'storage-full',
       reason: workspaceFullMessage(used, MIN_LIMIT_BYTES),
     });
     expect(turn2.body).not.toHaveProperty('discardPaths');
