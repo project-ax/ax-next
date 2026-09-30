@@ -604,6 +604,23 @@ describe('events', () => {
     expect(r.success).toBe(false);
   });
 
+  // TASK-720: the end-of-turn save refusal rides the turn-end as a closed code.
+  it('EventTurnEnd carries each saveRefused code and nothing else', () => {
+    for (const code of ['storage-full', 'too-large', 'refused'] as const) {
+      const parsed = EventTurnEndSchema.parse({ reason: 'user-message-wait', saveRefused: code });
+      expect(parsed.saveRefused).toBe(code);
+    }
+    // Prose (the veto's model-facing reason) must never pass as a code.
+    expect(
+      EventTurnEndSchema.safeParse({
+        reason: 'user-message-wait',
+        saveRefused: 'Storage is full; tell the person.',
+      }).success,
+    ).toBe(false);
+    const absent = EventTurnEndSchema.parse({ reason: 'user-message-wait' });
+    expect('saveRefused' in absent).toBe(false);
+  });
+
   it('EventTurnEnd accepts optional turnId', () => {
     expect(
       EventTurnEndSchema.safeParse({
