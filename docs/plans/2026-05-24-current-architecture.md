@@ -371,15 +371,28 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   delete, no retention), sessions (terminated first, which revokes the runner's
   token), skills, connectors, host grants, decisions, MCP handshakes, remembered
   facts, routines, the durable-files directory (a reclaim pod that runs as root
-  with `DAC_OVERRIDE` + `FOWNER` only) and the orchestrator's warm sandboxes.
+  with `DAC_OVERRIDE` + `FOWNER` only), the orchestrator's warm sandboxes and, since
+  TASK-719, the agent's git workspace repository: `@ax/workspace-git` removes
+  `<repoRoot>/ws-<hash>.git` under the agent's write mutex, refuses every later
+  hook for that agent with `PluginError` `agent-deleted` (so a warm runner's late
+  commit cannot recreate it) until the host restarts (the tombstone is an
+  in-memory set, one per host process; after a restart no warm runner holding
+  that agent's token remains, because the delete terminated its sessions and
+  killed its sandboxes, but a restart in the middle of a delete is untested), then
+  fires the subscriber hook
+  `workspace:deleted { agentId }`, which is how `@ax/disk-quota` learns to drop that
+  agent's ledger row. A failed `rm` fires nothing, so the row keeps counting bytes
+  that are still on disk.
   Rows keyed only on a conversation id are cleaned by a second hook,
   `conversations:purged { conversationIds }`, which `@ax/conversations` fires
   after its purge commits (at most 500 ids per fire; today `@ax/attachments`
   subscribes). `scripts/__tests__/agent-keyed-tables-are-cleaned.test.js` fails
   the PR that adds an agent-scoped table with no cleanup. **Not covered yet**
-  (no delete hook exists, or the store is shared): the agent's git workspace
-  repository, blob bytes behind attachments, `routines_v1_fires` history (kept on
-  purpose), and key-value leftovers.
+  (no delete hook exists, or the store is shared): blob bytes behind attachments
+  and skills, `routines_v1_fires` history (kept on purpose), key-value leftovers,
+  and the repos of agents deleted before TASK-719 shipped (an orphan `ws-*.git` and
+  a counted ledger row until an operator cleans them by hand). The multi-replica
+  `@ax/workspace-git-server` backend does not subscribe yet.
 - **Credentials:** `credentials:get`, `credentials:resolve:<kind>`,
   `credentials:list`, `credentials:list-kinds`, plus the `credentials:store-blob:*`
   storage seam.
@@ -450,9 +463,22 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     workspaces there.
   - The gate fails closed and is not a reservation (concurrent writes can each
     pass; overshoot is bounded by concurrent writes x the per-write cap). The
-    limit is the admin-editable `settings:disk-quota`. Nothing frees storage
-    today (no blob delete or GC, git history keeps everything), which is why
-    the refusal sentences never tell a person to delete anything.
+    limit is the admin-editable `settings:disk-quota`.
+  - **What frees storage (TASK-719).** For a person, only deleting a whole agent:
+    its repo is removed and `workspace:deleted { agentId }` makes the plugin drop
+    that agent's `workspace:<agentId>` row. Almost nothing frees blob bytes:
+    `blob:delete` has one caller, the branding logo, which is unmetered; there is
+    no blob GC; attachments and artifacts cannot be deleted; and git history keeps
+    everything inside a workspace. That is why the refusal sentences never tell a
+    person to delete anything: deleting an agent throws the agent away, and no
+    smaller chore helps.
+  - **A refusal for a full disk carries a code.** The veto is `Rejection.code:
+    'storage-full'`, which both `@ax/core` facades forward as
+    `PluginError.reasonCode` (`code` stays `'rejected'`). The Rules,
+    agent-identity and routines routes key on `reasonCode`, never on the sentence
+    or the plugin name, and answer `413 { error: 'storage-full', message }` (the
+    chat send and skills routes had their own 413s already). The fail-closed
+    "could not check your storage" refusal has no code.
 
 ### Stable — covered by ARCH-13's long-tail rollout
 

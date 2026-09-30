@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { AgentMemoryRead } from '@/lib/workspace-api';
+import { StorageFullError } from '@/lib/storage-full';
 import { AgentMemory } from '../AgentMemory';
 
 /**
@@ -133,6 +134,40 @@ describe('AgentMemory', () => {
     // And what the user typed is still in the box — losing it would be the
     // second betrayal in a row.
     expect(screen.getByLabelText('Rules you gave me')).toHaveValue('- cc Priya');
+  });
+
+  /*
+    TASK-719. A full storage limit is not "the server ran into a problem".
+
+    The route answers 413 `storage-full`; `saveRules` turns that into a
+    `StorageFullError` carrying the server's sentence. Before this the editor
+    printed "We could not save that, so nothing changed. The server ran into a
+    problem. Please try again." — a false hope, because trying again cannot work
+    until an admin makes room. And once the sentence IS the right one it must
+    stand alone: it already says what was not saved, so the generic lead-in
+    ("We could not save that…") in front of it would say it twice.
+  */
+  it('says a full storage limit in the server\'s own words, once, and keeps what was typed', async () => {
+    const sentence = 'Your storage is full, so those rules were not kept. An admin can make room.';
+    const onSaveRules = vi
+      .fn()
+      .mockRejectedValue(new StorageFullError('/api/workspace/agents/a1/memory/rules', sentence));
+    render(<AgentMemory agentName="Quill" memory={read()} onSaveRules={onSaveRules} />);
+
+    fireEvent.change(screen.getByLabelText('Rules you gave me'), {
+      target: { value: '- cc Priya' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // The alert's WHOLE text is the sentence: no generic lead-in in front of it.
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toBe(sentence);
+    });
+    expect(screen.queryByText(/We could not save that/u)).toBeNull();
+    expect(screen.queryByText(/server ran into a problem/iu)).toBeNull();
+    // The draft is still there, and Save is on again for when there is room.
+    expect(screen.getByLabelText('Rules you gave me')).toHaveValue('- cc Priya');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
   });
 
   it('refuses to show an empty editor when no rules row came back', () => {

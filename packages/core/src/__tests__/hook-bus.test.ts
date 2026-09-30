@@ -366,6 +366,28 @@ describe('HookBus — a scoped rejection survives the fire (TASK-287)', () => {
         expect(result.source).toBe('@ax/test-scoped-rejecter');
       });
   });
+
+  it('spreads a veto code through too, and adds none when the veto had none (TASK-719)', async () => {
+    // The facades read `pre.code`; a bus that rebuilt the rejection field by
+    // field would drop it and every over-limit write would go back to an
+    // uncoded, unclassifiable "rejected".
+    const coded = new HookBus();
+    coded.subscribe('workspace:pre-apply', '@ax/test-coded-rejecter', async () =>
+      reject({ reason: 'full', code: 'storage-full' }),
+    );
+    const withCode = await coded.fire('workspace:pre-apply', silentCtx(), { changes: [] });
+    expect(withCode.rejected).toBe(true);
+    if (withCode.rejected !== true) return;
+    expect(withCode.code).toBe('storage-full');
+
+    const plain = new HookBus();
+    plain.subscribe('workspace:pre-apply', '@ax/test-plain-rejecter', async () =>
+      reject({ reason: 'no' }),
+    );
+    const withoutCode = await plain.fire('workspace:pre-apply', silentCtx(), { changes: [] });
+    expect(withoutCode.rejected).toBe(true);
+    expect('code' in withoutCode).toBe(false);
+  });
 });
 
 /**

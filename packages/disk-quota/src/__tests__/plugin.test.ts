@@ -81,7 +81,7 @@ async function dbOf(b: Booted): Promise<Kysely<unknown>> {
 }
 
 describe('manifest', () => {
-  it('subscribes to the two write gates + two meters + the chat:start front door, registers nothing, declares its calls', () => {
+  it('subscribes to the two write gates + two meters + the chat:start front door + workspace:deleted, registers nothing, declares its calls', () => {
     const m = createDiskQuotaPlugin().manifest;
     expect(m.name).toBe('@ax/disk-quota');
     expect(m.version).toBe('0.0.0');
@@ -92,6 +92,7 @@ describe('manifest', () => {
       'blob:pre-put',
       'blob:stored',
       'chat:start',
+      'workspace:deleted',
     ]);
     expect(m.calls).toEqual([
       'database:get-instance',
@@ -179,6 +180,121 @@ describe('the blob:pre-put gate, end to end through the bus', () => {
 
 const chatStart = (b: Booted, ctx: AgentContext) =>
   b.harness.bus.fire('chat:start', ctx, { message: { role: 'user', content: 'hi' } });
+const workspaceDeleted = (b: Booted, ctx: AgentContext, payload: unknown) =>
+  b.harness.bus.fire('workspace:deleted', ctx, payload);
+
+// The two write gates say WHY in a machine-readable code as well as in prose,
+// so a caller that must react to "full" specifically (an HTTP status, say) does
+// not have to match a sentence or the name of the plugin that said no.
+describe('a refusal because storage is full carries the storage-full code', () => {
+  it('on the blob:pre-put gate', async () => {
+    const b = await boot();
+    await setLimitMb(b, 64);
+    const alice = b.harness.ctx({ userId: 'alice' });
+    await blobStored(b, alice, 60 * MB);
+    expect(await blobPrePut(b, alice, 5 * MB)).toMatchObject({
+      rejected: true,
+      source: '@ax/disk-quota',
+      code: 'storage-full',
+    });
+  });
+
+  it('on the workspace:pre-apply gate', async () => {
+    const b = await boot({ 'workspace:usage': (async () => ({ bytes: 60 * MB })) as ServiceHandler });
+    await setLimitMb(b, 64);
+    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+    await applied(b, alice);
+    await b.plugin.drain();
+    expect(await preApply(b, alice, 5 * MB)).toMatchObject({
+      rejected: true,
+      source: '@ax/disk-quota',
+      code: 'storage-full',
+    });
+  });
+
+  it('but NOT on the fail-closed "could not check" refusal, which is not the same thing', async () => {
+    const b = await boot();
+    await (await dbOf(b)).destroy();
+    const alice = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+    const blob = await blobPrePut(b, alice, 1);
+    const ws = await preApply(b, alice, 1);
+    for (const r of [blob, ws]) {
+      expect(r).toMatchObject({ rejected: true, reason: STORAGE_UNAVAILABLE_MESSAGE });
+      expect('code' in r).toBe(false);
+    }
+  });
+});
+
+describe('the workspace:deleted subscriber, end to end through the bus', () => {
+  const usageByAgent = (bytes: Record<string, number>): Record<string, ServiceHandler> => ({
+    'workspace:usage': (async (ctx: AgentContext) => ({ bytes: bytes[ctx.agentId] ?? 0 })) as ServiceHandler,
+  });
+
+  it("drops that agent's workspace row and frees the owner's room; another agent's row stays", async () => {
+    const b = await boot(usageByAgent({ agt_1: 40 * MB, agt_2: 10 * MB }));
+    await setLimitMb(b, 64);
+    const one = b.harness.ctx({ userId: 'alice', agentId: 'agt_1' });
+    const two = b.harness.ctx({ userId: 'alice', agentId: 'agt_2' });
+    await applied(b, one);
+    await applied(b, two);
+    await b.plugin.drain();
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(50 * MB);
+    expect((await blobPrePut(b, one, 20 * MB)).rejected).toBe(true);
+
+    // Whoever fires it (a system context, in real life) is not the owner.
+    const result = await workspaceDeleted(b, b.harness.ctx({ userId: 'system' }), { agentId: 'agt_1' });
+    expect(result.rejected).toBe(false);
+
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(10 * MB);
+    expect((await blobPrePut(b, one, 20 * MB)).rejected).toBe(false);
+  });
+
+  it("drops a TEAM agent's row from the team, not from whoever fired the hook", async () => {
+    const b = await boot({
+      ...usageByAgent({ agt_team: 30 * MB }),
+      'agents:resolve': (async () => ({ agent: { ownerId: 't1', ownerType: 'team' } })) as ServiceHandler,
+    });
+    await applied(b, b.harness.ctx({ userId: 'alice', agentId: 'agt_team' }));
+    await b.plugin.drain();
+    b.setAuth({ id: 'admin-1', isAdmin: true });
+    expect(((await b.request('GET', '/admin/storage')).json as { owners: unknown[] }).owners).toEqual([
+      expect.objectContaining({ ownerId: 'team:t1', workspaceBytes: 30 * MB }),
+    ]);
+
+    await workspaceDeleted(b, b.harness.ctx({ userId: 'system' }), { agentId: 'agt_team' });
+    expect(((await b.request('GET', '/admin/storage')).json as { owners: unknown[] }).owners).toEqual([]);
+  });
+
+  it('a malformed payload deletes nothing and does not throw', async () => {
+    const b = await boot(usageByAgent({ agt_1: 40 * MB }));
+    await applied(b, b.harness.ctx({ userId: 'alice', agentId: 'agt_1' }));
+    await b.plugin.drain();
+    const ctx = b.harness.ctx({ userId: 'system' });
+    const bad: unknown[] = [
+      undefined,
+      null,
+      'agt_1',
+      42,
+      [],
+      {},
+      { agentId: '' },
+      { agentId: 5 },
+      { agentId: null },
+      { agentId: ['agt_1'] },
+      { agent: 'agt_1' },
+    ];
+    for (const payload of bad) {
+      await expect(workspaceDeleted(b, ctx, payload), JSON.stringify(payload)).resolves.toMatchObject({
+        rejected: false,
+      });
+    }
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(40 * MB);
+    // The subscriber is alive (so the above is not just "nobody was listening"):
+    // the same hook with a good payload does drop the row.
+    await workspaceDeleted(b, ctx, { agentId: 'agt_1' });
+    expect((await mine(b, 'alice')).workspaceBytes).toBe(0);
+  });
+});
 
 describe('the chat:start front door, end to end through the bus', () => {
   it('turns a FULL person away with the stable code; someone with room, and someone else, get through', async () => {

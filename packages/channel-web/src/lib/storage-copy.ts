@@ -8,9 +8,11 @@
  * The reader is a person who wants to know if they can keep working, or an
  * admin deciding how much room to give everyone. So: plain sentences, no
  * jokes, and no advice we cannot stand behind. In particular NOTHING here
- * tells a person to delete anything. Today nothing they can do gives space
- * back (files stay in the history), so "delete some files" would be a false
- * promise. What is true is: ask an admin for more room.
+ * tells a person to delete anything. Deleting a whole agent does give its
+ * workspace back, but that throws the agent away, and no smaller chore helps
+ * (files stay in the history; attachments and artifacts cannot be deleted), so
+ * "delete some files" would be a false promise. What is true is: ask an admin
+ * for more room.
  */
 import {
   STORAGE_LIMIT_BOUNDS,
@@ -155,6 +157,35 @@ export const FULL_BODY =
  */
 export const STORAGE_FULL_SEND =
   "We couldn't send that message because your storage is full. Nothing new can be saved right now, including uploads. Ask an admin for more room, then try again.";
+
+/**
+ * The same refusal on the two saves that are not a message: the Rules editor
+ * and the agent form's identity fields (TASK-719). The HOST sends these
+ * sentences (`413 storage-full`), and `lib/storage-full.ts` prefers what it
+ * sent; these are what a person reads if it is missing. They live in a file of
+ * their own only because the host has to import the same words and cannot
+ * import this one (see `storage-full-copy.ts`).
+ */
+export { STORAGE_FULL_IDENTITY, STORAGE_FULL_RULES } from './storage-full-copy';
+
+/**
+ * The same refusal on the routines screen (TASK-719): a save from the editor
+ * and a delete from the confirm dialog. The ROUTINES server sends these same
+ * words (`@ax/routines-admin-routes`), and `lib/routines.ts` prefers what it
+ * sent; these are what a person reads if its sentence is missing. They are
+ * restated here, not imported, because that package shares no code with this
+ * one, so `storage-copy.test.ts` pins the exact text on this side and the
+ * server's own test pins it on the other.
+ *
+ * Both are true because the refusal comes BEFORE anything is written: the
+ * routine was not saved, and was not removed. "Remove" only names what we could
+ * not do; nothing tells anyone to do it, since removing a routine does not give
+ * space back (the file stays in the history).
+ */
+export const STORAGE_FULL_ROUTINE_SAVE =
+  "We couldn't save that routine because your storage is full. An admin can make more room, then you can try again.";
+export const STORAGE_FULL_ROUTINE_REMOVE =
+  "We couldn't remove that routine because your storage is full. An admin can make more room, then you can try again.";
 
 // ---------------------------------------------------------------------------
 // Limits

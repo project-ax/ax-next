@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { HttpError } from '../http';
-import { STORAGE_FULL_SEND } from '../storage-copy';
-import { MAX_SERVER_SENTENCE_CHARS, StorageFullError, readStorageFull } from '../storage-full';
+import { STORAGE_FULL_RULES, STORAGE_FULL_SEND } from '../storage-copy';
+import {
+  MAX_SERVER_SENTENCE_CHARS,
+  StorageFullError,
+  readStorageFull,
+  storageFullFromBody,
+} from '../storage-full';
 
 function res(status: number, body: unknown): Response {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
@@ -34,6 +39,32 @@ describe('readStorageFull', () => {
     expect(err!.sentence).toBe(STORAGE_FULL_SEND);
   });
 
+  /*
+    TASK-719. The fallback used to be one sentence, about a MESSAGE that did not
+    send. Rules and agent identity reuse this reader, and "we couldn't send that
+    message" under a Save button that saved nothing would be a lie of its own,
+    so each surface names the sentence it falls back to.
+  */
+  it('falls back to the sentence the SURFACE named, not the message one', async () => {
+    const err = await readStorageFull(
+      '/api/workspace/agents/a1/memory/rules',
+      res(413, { error: 'storage-full' }),
+      STORAGE_FULL_RULES,
+    );
+    expect(err).toBeInstanceOf(StorageFullError);
+    expect(err!.sentence).toBe(STORAGE_FULL_RULES);
+    expect(err!.sentence).not.toBe(STORAGE_FULL_SEND);
+  });
+
+  it("still prefers the server's sentence over a named fallback", async () => {
+    const err = await readStorageFull(
+      '/p',
+      res(413, { error: 'storage-full', message: 'The server said this.' }),
+      STORAGE_FULL_RULES,
+    );
+    expect(err!.sentence).toBe('The server said this.');
+  });
+
   it('clamps a very long server sentence rather than filling the screen with it', async () => {
     const err = await readStorageFull(
       '/api/chat/messages',
@@ -54,5 +85,36 @@ describe('readStorageFull', () => {
     expect(await readStorageFull('/p', res(413, '<html>too large</html>'))).toBeNull();
     expect(await readStorageFull('/p', res(413, 'null'))).toBeNull();
     expect(await readStorageFull('/p', res(413, '[]'))).toBeNull();
+  });
+});
+
+/*
+  TASK-719. `lib/routines.ts` reads its error body once and asks the SAME rule
+  about it, so the rule is a function of (status, body) that both readers share.
+  It must agree with `readStorageFull` on every case: two readers with two ideas
+  of "the storage refusal" is how a Save button ends up saying the wrong thing.
+*/
+describe('storageFullFromBody', () => {
+  const cases: Array<[string, number, unknown]> = [
+    ['the refusal with a sentence', 413, { error: 'storage-full', message: 'Full.' }],
+    ['the refusal with none', 413, { error: 'storage-full' }],
+    ['the other 413', 413, { error: 'attachment-total-too-large' }],
+    ['the code on another status', 400, { error: 'storage-full' }],
+    ['an array', 413, []],
+    ['null', 413, null],
+    ['a string', 413, 'storage-full'],
+  ];
+
+  it.each(cases)('agrees with readStorageFull on %s', async (_name, status, body) => {
+    const fromBody = storageFullFromBody('/p', status, body, STORAGE_FULL_RULES);
+    const fromRes = await readStorageFull('/p', res(status, body), STORAGE_FULL_RULES);
+    expect(fromBody === null).toBe(fromRes === null);
+    expect(fromBody?.sentence).toBe(fromRes?.sentence);
+    expect(fromBody?.status).toBe(fromRes?.status);
+  });
+
+  it('is only the refusal when it says so, and wears the fallback it was given otherwise', () => {
+    expect(storageFullFromBody('/p', 413, { error: 'storage-full' }, 'Ours.')?.sentence).toBe('Ours.');
+    expect(storageFullFromBody('/p', 413, { error: 'nope' }, 'Ours.')).toBeNull();
   });
 });

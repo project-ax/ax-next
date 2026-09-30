@@ -31,6 +31,14 @@ export interface DiskQuotaStore {
    * re-putting the same blob or re-measuring a workspace cannot double count.
    */
   upsertUsage(ownerId: string, source: string, kind: UsageKind, bytes: number): Promise<void>;
+  /**
+   * Drop the workspace row for `agentId`, whichever owner it is charged to (a
+   * team agent's row sits under `team:<id>`, a fallback-charged one under the
+   * acting user), and resolve how many rows went. Keyed on the AGENT alone on
+   * purpose: the agent is already deleted, so nobody can ask who owned it.
+   * Blob rows are never touched. Idempotent: a second call returns 0.
+   */
+  deleteWorkspaceUsage(agentId: string): Promise<number>;
   usageFor(ownerId: string): Promise<OwnerUsage>;
   /** The biggest owners first (by workspace + file bytes, ties by id). */
   topOwners(limit: number): Promise<OwnerUsageRow[]>;
@@ -63,6 +71,19 @@ export function createDiskQuotaStore(db: Kysely<DiskQuotaDatabase>): DiskQuotaSt
           }),
         )
         .execute();
+    },
+
+    async deleteWorkspaceUsage(agentId) {
+      // Plain equality on the whole source, not LIKE: the agent id is data, so a
+      // `%` or `_` in it must not reach a neighbour's row. The primary key leads
+      // with `owner_id`, so this is a scan of a small table; an agent delete is
+      // rare and nobody waits on it, so it does not earn an index of its own.
+      const res = await db
+        .deleteFrom('disk_quota_v1_usage')
+        .where('source', '=', `workspace:${agentId}`)
+        .where('kind', '=', 'workspace')
+        .executeTakeFirst();
+      return Number(res.numDeletedRows);
     },
 
     async usageFor(ownerId) {

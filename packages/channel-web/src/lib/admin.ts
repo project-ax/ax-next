@@ -23,6 +23,8 @@
  * `lib/auth.ts`.
  */
 import type { AdminTeamWire } from '@ax/teams';
+import { STORAGE_FULL_IDENTITY } from './storage-copy';
+import { readStorageFull } from './storage-full';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -86,18 +88,29 @@ export async function getAgentIdentity(id: string): Promise<AgentIdentityFiles> 
 
 /** PUT the agent's `.ax/` identity files (IDENTITY.md / SOUL.md / AGENTS.md).
  * The server writes through `workspace:apply` (→ validator-identity). `operating`
- * is created only when non-empty; clearing it deletes `.ax/AGENTS.md`. */
+ * is created only when non-empty; clearing it deletes `.ax/AGENTS.md`.
+ *
+ * A 413 `storage-full` (the storage limit turned the save away, TASK-719) throws
+ * a `StorageFullError`, whose `message` IS the sentence to show: no status, no
+ * colon, no code. AgentForm prints `err.message`, so it needs no branch of its
+ * own. Every other failure keeps its `save agent identity: <status>: <reason>`
+ * shape (a validator's 400 carries the reason the person can act on). */
 export async function putAgentIdentity(
   id: string,
   files: AgentIdentityFiles,
 ): Promise<void> {
-  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}/identity`, {
+  const path = `/admin/agents/${encodeURIComponent(id)}/identity`;
+  const res = await fetch(path, {
     method: 'PUT',
     headers: writeHeaders,
     credentials: 'include',
     body: JSON.stringify(files),
   });
   if (!res.ok) {
+    // `clone()`: looking for the refusal reads the body, and the detail below
+    // reads it again for any failure that is not this one.
+    const full = await readStorageFull(path, res.clone(), STORAGE_FULL_IDENTITY);
+    if (full !== null) throw full;
     let detail = '';
     try {
       const body = (await res.json()) as { error?: string };

@@ -40,6 +40,7 @@
 import { attachmentRefBlock } from './attachment-upload';
 import { HttpError, httpErrorMessage, httpFetch } from './http';
 import { readStorageFull } from './storage-full';
+import { STORAGE_FULL_RULES } from './storage-copy';
 /*
   The Fault A reason-code → authored-label table, read rather than re-declared.
   A second copy here would be invariant 4 violated in the one place the drift is
@@ -435,7 +436,17 @@ function isFactMemoryPage(b: unknown): b is FactMemoryPage {
 
 async function req<T>(
   path: string,
-  init?: { method: string; body?: unknown },
+  init?: {
+    method: string;
+    body?: unknown;
+    /**
+     * Opt in to reading a 413 `storage-full` refusal (TASK-719), naming the
+     * sentence to wear when the server sent none. Only a route that can be
+     * refused for storage passes it: for every other call a 413 stays a bare
+     * `WorkspaceApiError`, exactly as before, and its body is never read.
+     */
+    storageFull?: string;
+  },
 ): Promise<T> {
   const res = await httpFetch(`/api/workspace${path}`, {
     method: init?.method ?? 'GET',
@@ -445,6 +456,10 @@ async function req<T>(
     ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
   });
   if (!res.ok) {
+    if (init?.storageFull !== undefined) {
+      const full = await readStorageFull(`/api/workspace${path}`, res, init.storageFull);
+      if (full !== null) throw full;
+    }
     throw new WorkspaceApiError(path, res.status);
   }
   return (await res.json()) as T;
@@ -892,11 +907,17 @@ export const workspaceApi = {
    * `memory:rules:write`, the one writer of the one memory file the rollup and
    * the GC are forbidden to touch — which is what makes "your rules are kept
    * word for word" something we are allowed to say.
+   *
+   * Rejects with a `StorageFullError` (an `HttpError`, so every existing
+   * branch on one still holds) when the storage limit turned the Save away:
+   * that one carries the sentence to show, and trying again cannot work until
+   * an admin makes room. Any other failure is the `WorkspaceApiError` it
+   * always was.
    */
   saveRules: (agentId: string, body: string) =>
     req<{ saved: true; body: string }>(
       `/agents/${encodeURIComponent(agentId)}/memory/rules`,
-      { method: 'PUT', body: { body } },
+      { method: 'PUT', body: { body }, storageFull: STORAGE_FULL_RULES },
     ),
 
   recallMemory: (agentId: string, input: FactRecallQuery) =>

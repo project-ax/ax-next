@@ -13,6 +13,11 @@ import {
   type RouteRequest,
   type RouteResponse,
 } from './shared.js';
+import {
+  isStorageFullRefusal,
+  STORAGE_FULL_ROUTINE_REMOVE,
+  STORAGE_FULL_ROUTINE_SAVE,
+} from './storage-full.js';
 
 // ---------------------------------------------------------------------------
 // /settings/routines* — owner-scoped HTTP surface for the Routines admin UI.
@@ -416,6 +421,17 @@ export function createRoutinesAdminHandlers(
         );
         res.status(200).json({ path });
       } catch (err) {
+        // The storage limit said no (TASK-719). Checked BEFORE the general
+        // `rejected` branch, which would answer 400 with the veto's own message:
+        // worded for the agent, not for the person who pressed Save. One fixed
+        // sentence instead; the veto's message is never sent. Nothing was
+        // written, because the gate refuses before `workspace:apply-internal`.
+        if (isStorageFullRefusal(err)) {
+          res
+            .status(413)
+            .json({ error: 'storage-full', message: STORAGE_FULL_ROUTINE_SAVE });
+          return;
+        }
         // A validator-routine pre-apply veto surfaces as PluginError 'rejected'
         // whose message is the validator's reason → 400 with that reason.
         if (err instanceof PluginError && err.code === 'rejected') {
@@ -463,6 +479,16 @@ export function createRoutinesAdminHandlers(
         );
         res.status(204).end();
       } catch (err) {
+        // A delete adds no bytes, but the storage gate refuses any write from
+        // someone already over the limit, so a full person cannot remove a
+        // routine either (TASK-719). Same shape as `save`, its own sentence: the
+        // routine is still there.
+        if (isStorageFullRefusal(err)) {
+          res
+            .status(413)
+            .json({ error: 'storage-full', message: STORAGE_FULL_ROUTINE_REMOVE });
+          return;
+        }
         if (err instanceof PluginError && err.code === 'rejected') {
           res.status(400).json({ error: err.message });
           return;

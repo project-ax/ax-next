@@ -115,6 +115,66 @@ describe('usageFor', () => {
   });
 });
 
+// An agent delete frees its repo, so its ledger row has to go too, or the owner
+// stays charged for bytes that no longer exist. The row is keyed on the AGENT
+// alone: a team agent's row sits under `team:<id>` and a fallback-charged one
+// under whichever user was acting, and the delete has to catch both.
+describe('deleteWorkspaceUsage', () => {
+  const sha = 'a'.repeat(64);
+
+  it("drops that agent's workspace row for EVERY owner, and touches nothing else", async () => {
+    await store.upsertUsage('alice', 'workspace:agt_a', 'workspace', 10 * MB);
+    await store.upsertUsage('team:t1', 'workspace:agt_a', 'workspace', 20 * MB);
+    await store.upsertUsage('alice', 'workspace:agt_b', 'workspace', 5 * MB);
+    await store.upsertUsage('alice', `blob:${sha}`, 'blob', 4 * MB);
+    // A blob whose source merely ENDS in the agent id is not that agent's workspace.
+    await store.upsertUsage('alice', 'blob:agt_a', 'blob', 7);
+    // An agent whose id merely BEGINS with the deleted one's is a different
+    // agent (`agt_a` is a true prefix of `agt_ab`), for every owner it is charged to.
+    await store.upsertUsage('alice', 'workspace:agt_ab', 'workspace', 3 * MB);
+    await store.upsertUsage('team:t1', 'workspace:agt_ab', 'workspace', 2 * MB);
+
+    expect(await store.deleteWorkspaceUsage('agt_a')).toBe(2);
+
+    expect(await store.usageFor('team:t1')).toEqual({ workspaceBytes: 2 * MB, fileBytes: 0 });
+    expect(await store.usageFor('alice')).toEqual({ workspaceBytes: 8 * MB, fileBytes: 4 * MB + 7 });
+    const left = await db.selectFrom('disk_quota_v1_usage').select(['owner_id', 'source']).execute();
+    expect(left.map((r) => `${r.owner_id} ${r.source}`).sort()).toEqual(
+      [
+        'alice blob:agt_a',
+        `alice blob:${sha}`,
+        'alice workspace:agt_ab',
+        'alice workspace:agt_b',
+        'team:t1 workspace:agt_ab',
+      ].sort(),
+    );
+  });
+
+  it('is idempotent: a second delete, or one for an agent nobody charged, removes nothing', async () => {
+    await store.upsertUsage('alice', 'workspace:agt_a', 'workspace', 10 * MB);
+    expect(await store.deleteWorkspaceUsage('agt_a')).toBe(1);
+    expect(await store.deleteWorkspaceUsage('agt_a')).toBe(0);
+    expect(await store.deleteWorkspaceUsage('agt_never')).toBe(0);
+  });
+
+  it('treats the agent id as data: wildcards and quotes match no other agent', async () => {
+    await store.upsertUsage('alice', 'workspace:agt_a', 'workspace', 1);
+    await store.upsertUsage('alice', 'workspace:agt_b', 'workspace', 2);
+    for (const hostile of ['%', 'agt_%', 'agt__', "x' OR '1'='1", '']) {
+      expect(await store.deleteWorkspaceUsage(hostile), hostile).toBe(0);
+    }
+    expect((await store.usageFor('alice')).workspaceBytes).toBe(3);
+  });
+
+  it('never deletes a blob-kind row, even one whose source reads like a workspace', async () => {
+    await sql`INSERT INTO disk_quota_v1_usage (owner_id, source, kind, bytes) VALUES ('alice', 'workspace:agt_k', 'blob', 9)`.execute(
+      db,
+    );
+    expect(await store.deleteWorkspaceUsage('agt_k')).toBe(0);
+    expect((await store.usageFor('alice')).fileBytes).toBe(9);
+  });
+});
+
 describe('topOwners and totals', () => {
   it('orders by total (workspace + files) descending, ties by owner id', async () => {
     await store.upsertUsage('small', 'blob:a', 'blob', 10);

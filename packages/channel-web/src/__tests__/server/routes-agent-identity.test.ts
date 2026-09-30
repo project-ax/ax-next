@@ -59,11 +59,14 @@ function busWith(opts: {
   files?: Record<string, string>;
   /** When set, workspace:apply rejects with this reason (validator veto). */
   applyRejectReason?: string;
+  /** When set, workspace:apply throws exactly this (for refusals a plain reason
+   * cannot describe: a veto carrying a `reasonCode`, an unrelated failure). */
+  applyThrows?: Error;
   /** When set, the FIRST workspace:apply (parent:null) throws a parent-mismatch
    * echoing this head; the retry (parent=this) succeeds. Models an agent with
    * existing /agent history. */
   actualParentOnFirstApply?: string | null;
-}): { bus: HookBus; applies: Applied[] } {
+}): { bus: HookBus; applies: Applied[]; attempts: () => number } {
   const applies: Applied[] = [];
   let applyCount = 0;
   const bus = new HookBus();
@@ -121,10 +124,13 @@ function busWith(opts: {
         cause: { actualParent: opts.actualParentOnFirstApply },
       });
     }
+    // After the CAS miss (if any), so `applyThrows` + `actualParentOnFirstApply`
+    // models a refusal that lands on the RETRY.
+    if (opts.applyThrows !== undefined) throw opts.applyThrows;
     applies.push({ ctx, input: input as Applied['input'] });
     return { version: 'v1', delta: { before: null, after: 'v1', changes: [] } };
   });
-  return { bus, applies };
+  return { bus, applies, attempts: () => applyCount };
 }
 
 describe('GET /admin/agents/:id/identity', () => {
@@ -252,6 +258,138 @@ describe('PUT /admin/agents/:id/identity', () => {
     );
     expect(captured.statusCode).toBe(400);
     expect((captured.body as { error: string }).error).toContain('prompt-injection');
+  });
+
+  /*
+    TASK-719 — a save the storage limit turned away.
+
+    disk-quota vetoes `workspace:pre-apply` with `code: 'storage-full'`; the core
+    facade throws that as `PluginError{ code: 'rejected', reasonCode:
+    'storage-full' }`. It used to fall into the validator branch below and answer
+    400 with the veto's own message — a sentence worded for the AGENT that
+    writes files (it names paths and says what to do next), shown to a person in
+    the destructive Alert. The route now answers 413 with ONE fixed sentence.
+
+    The sentence is only true because of the order the screen saves in
+    (AgentForm creates or patches the agent, and attaches connectors, BEFORE it
+    PUTs the identity) and because `workspace:apply` is all-or-nothing, so a
+    refusal writes none of the three files.
+  */
+  const AGENT_DIRECTED_REFUSAL =
+    'Workspace is over its limit; the write to .ax/IDENTITY.md was refused. Delete files to free up space.';
+  const storageFull = (over: { plugin?: string } = {}): PluginError =>
+    new PluginError({
+      code: 'rejected',
+      plugin: over.plugin ?? 'workspace',
+      hookName: 'workspace:apply',
+      message: AGENT_DIRECTED_REFUSAL,
+      reasonCode: 'storage-full',
+    });
+
+  it('answers 413 storage-full in plain words when the storage limit refuses the save', async () => {
+    const { bus, applies, attempts } = busWith({ applyThrows: storageFull() });
+    const h = makeAgentIdentityHandlers({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await h.save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'I am Ada.', soul: 'I value clarity.' } }),
+      res,
+    );
+    expect(captured.statusCode).toBe(413);
+    expect(captured.body).toEqual({
+      error: 'storage-full',
+      message:
+        "The agent was saved, but its identity wasn't, because storage is full. An admin can make more room, then you can edit the agent and save its identity again.",
+    });
+    // A refusal is final: only a parent-mismatch earns the second attempt.
+    expect(attempts()).toBe(1);
+    expect(applies).toHaveLength(0);
+  });
+
+  it('recognises the refusal on the retry after a parent-mismatch too', async () => {
+    // The route's first apply (parent:null) is a CAS miss for any agent with
+    // history; the retry is the one the storage limit can refuse — and in
+    // practice that is the one a real agent's save gets refused on.
+    const { bus, attempts } = busWith({
+      actualParentOnFirstApply: 'oid-head-7',
+      applyThrows: storageFull(),
+    });
+    const h = makeAgentIdentityHandlers({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await h.save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'x', soul: 'y' } }),
+      res,
+    );
+    expect(attempts()).toBe(2);
+    expect(captured.statusCode).toBe(413);
+    expect((captured.body as { error: string }).error).toBe('storage-full');
+  });
+
+  it('does not read any OTHER refusal as a full disk', async () => {
+    /*
+      Both directions matter. The 413 is only for the veto that CARRIES the code.
+      A validator's veto keeps its 400-with-the-reason (the person can fix what
+      they wrote); a veto naming some other reason, or one from the disk-quota
+      plugin that names none, is the same ordinary refusal; and the code on
+      something that is not a `rejected` at all is not a full disk either.
+    */
+    const validator = busWith({ applyRejectReason: '.ax/SOUL.md: prompt-injection signature' });
+    const v = fakeRes();
+    await makeAgentIdentityHandlers({ bus: validator.bus, initCtx }).save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'x', soul: 'y' } }),
+      v.res,
+    );
+    expect(v.captured.statusCode).toBe(400);
+    expect(v.captured.body).toEqual({ error: '.ax/SOUL.md: prompt-injection signature' });
+
+    const otherCode = busWith({
+      applyThrows: new PluginError({
+        code: 'rejected',
+        plugin: 'workspace',
+        hookName: 'workspace:apply',
+        message: 'some other policy said no',
+        reasonCode: 'something-else',
+      }),
+    });
+    const o = fakeRes();
+    await makeAgentIdentityHandlers({ bus: otherCode.bus, initCtx }).save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'x', soul: 'y' } }),
+      o.res,
+    );
+    expect(o.captured.statusCode).toBe(400);
+    expect(o.captured.body).toEqual({ error: 'some other policy said no' });
+
+    const quotaNoCode = busWith({
+      applyThrows: new PluginError({
+        code: 'rejected',
+        plugin: '@ax/disk-quota',
+        hookName: 'workspace:apply',
+        message: 'Your storage is full',
+      }),
+    });
+    const q = fakeRes();
+    await makeAgentIdentityHandlers({ bus: quotaNoCode.bus, initCtx }).save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'x', soul: 'y' } }),
+      q.res,
+    );
+    expect(q.captured.statusCode).toBe(400);
+    expect(q.captured.body).toEqual({ error: 'Your storage is full' });
+
+    const notARejection = busWith({
+      applyThrows: new PluginError({
+        code: 'unknown',
+        plugin: 'workspace',
+        hookName: 'workspace:apply',
+        message: 'boom',
+        reasonCode: 'storage-full',
+      }),
+    });
+    const n = fakeRes();
+    await makeAgentIdentityHandlers({ bus: notARejection.bus, initCtx }).save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'x', soul: 'y' } }),
+      n.res,
+    );
+    expect(n.captured.statusCode).toBe(500);
+    expect(n.captured.body).toEqual({ error: 'save-failed' });
   });
 
   it('rejects an oversized field with 400 (per-field 32 KiB cap)', async () => {

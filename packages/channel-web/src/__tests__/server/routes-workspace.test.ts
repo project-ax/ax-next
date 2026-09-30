@@ -610,6 +610,8 @@ describe('channel-web agent-workspace BFF', () => {
     rules: string;
     calls: Array<{ hook: string; agentId: string; userId: string }>;
     readThrows?: boolean;
+    /** When set, `memory:rules:write` throws this instead of writing. */
+    writeThrows?: Error;
   }): void {
     bus.registerService('memory:rules:read', 'memory', async (ctx, i: unknown) => {
       state.calls.push({
@@ -629,6 +631,7 @@ describe('channel-web agent-workspace BFF', () => {
         userId: ctx.userId ?? '',
       });
       expect(agentId).toBe(ctx.agentId);
+      if (state.writeThrows !== undefined) throw state.writeThrows;
       state.rules = body;
       return { written: true, body };
     });
@@ -895,6 +898,115 @@ describe('channel-web agent-workspace BFF', () => {
     expect(captured.body).toEqual({ saved: true, body: '- Always cc Priya' });
     expect(state.rules).toBe('- Always cc Priya');
     expect(state.calls).toEqual([{ hook: 'write', agentId: 'a1', userId: 'u1' }]);
+  });
+
+  /*
+    TASK-719 — a Save the storage limit turned away.
+
+    `memory:rules:write` goes through `workspace:apply`, and disk-quota vetoes
+    that with `code: 'storage-full'`, which the core facade throws as
+    `PluginError{ code: 'rejected', reasonCode: 'storage-full' }`. Before this
+    the route rethrew every `rejected`, http-server answered 500 `internal`, and
+    the editor told the person "The server ran into a problem. Please try
+    again." — a false hope, because trying again cannot work until an admin
+    makes room.
+
+    The sentence sent is the ROUTE's, fixed. The veto's own message is worded
+    for the AGENT (it names paths and tells it what to do next) and must never
+    reach a person, so this fixture's message is deliberately unlike anything a
+    person should read.
+  */
+  const AGENT_DIRECTED_REFUSAL =
+    'Workspace is over its limit; the write to .ax/memory/rules.md was refused. Delete files to free up space.';
+
+  it('saveRules answers 413 storage-full in plain words when the storage limit refuses the write', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerMemory({
+      rules: '',
+      calls: [],
+      writeThrows: new PluginError({
+        code: 'rejected',
+        plugin: '@ax/workspace-git',
+        hookName: 'workspace:apply',
+        message: AGENT_DIRECTED_REFUSAL,
+        reasonCode: 'storage-full',
+      }),
+    });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.saveRules(mkReq({ agentId: 'a1' }, { body: '- Always cc Priya' }), res);
+
+    expect(captured.statusCode).toBe(413);
+    expect(captured.body).toEqual({
+      error: 'storage-full',
+      message:
+        "We couldn't save your rules because your storage is full. An admin can make more room, then you can try again.",
+    });
+  });
+
+  it('saveRules does not read any OTHER refusal as a full disk', async () => {
+    /*
+      Both directions matter. The 413 is only for the veto that CARRIES the
+      code; a validator's veto, a veto naming some other reason, or an error
+      that merely looks similar keeps the path it always had (rethrown → the
+      generic 500), and a full disk is never inferred from who said no or from
+      what the message says.
+    */
+    const cases: Array<[string, Error]> = [
+      [
+        'a rejected with no reasonCode',
+        new PluginError({
+          code: 'rejected',
+          plugin: '@ax/validator-identity',
+          hookName: 'workspace:apply',
+          message: 'refused',
+        }),
+      ],
+      [
+        'a rejected with a different reasonCode',
+        new PluginError({
+          code: 'rejected',
+          plugin: '@ax/workspace-git',
+          hookName: 'workspace:apply',
+          message: 'refused',
+          reasonCode: 'something-else',
+        }),
+      ],
+      [
+        'a rejected from the disk-quota plugin that names no reasonCode',
+        new PluginError({
+          code: 'rejected',
+          plugin: '@ax/disk-quota',
+          hookName: 'workspace:apply',
+          message: 'Your storage is full',
+        }),
+      ],
+      [
+        'the code alone on an error that is not a rejected',
+        new PluginError({
+          code: 'unknown',
+          plugin: '@ax/workspace-git',
+          hookName: 'workspace:apply',
+          message: 'boom',
+          reasonCode: 'storage-full',
+        }),
+      ],
+    ];
+    registerAuth({ id: 'u1', isAdmin: false });
+    // One registration; the mock reads `writeThrows` at call time, so each
+    // iteration only swaps what it throws.
+    const state: Parameters<typeof registerMemory>[0] = { rules: '', calls: [] };
+    registerMemory(state);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    for (const [label, err] of cases) {
+      state.writeThrows = err;
+      const { res, captured } = mkRes();
+      await expect(
+        h.saveRules(mkReq({ agentId: 'a1' }, { body: 'x' }), res),
+        label,
+      ).rejects.toBe(err);
+      expect(captured.statusCode, label).toBe(0);
+    }
   });
 
   it('refuses a saveRules with no string body, and 401s an anonymous one', async () => {

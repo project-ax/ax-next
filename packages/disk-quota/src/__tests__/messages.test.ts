@@ -70,7 +70,7 @@ describe('the refusal sentences', () => {
     expect(STORAGE_UNAVAILABLE_MESSAGE).not.toMatch(/\d/);
   });
 
-  it('none of them tells anyone to delete anything (nothing can free space today)', () => {
+  it('none of them tells anyone to delete anything (no small chore makes room)', () => {
     for (const m of [
       workspaceFullMessage(MB, MB),
       blobFullMessage(MB, MB),

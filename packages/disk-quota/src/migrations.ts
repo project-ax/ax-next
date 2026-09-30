@@ -5,8 +5,10 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * one source of truth per concept). Greenfield posture: additive ALTERs in
  * place. No foreign keys into other plugins' tables: `owner_id` is either the
  * auth provider's opaque user id or `team:<id>`, and a usage row must survive
- * whatever another plugin does to its own rows (nothing frees these bytes
- * anyway).
+ * whatever another plugin does to its own rows. Only one thing removes a row:
+ * a `workspace:deleted` notice (the agent's repo is gone, so its bytes are
+ * free), which drops that agent's `workspace:<agentId>` row for every owner.
+ * Blob rows are never removed, and the periodic sweep only ever upserts.
  *
  * Table:
  *   disk_quota_v1_usage — one row per (owner, source). `source` is

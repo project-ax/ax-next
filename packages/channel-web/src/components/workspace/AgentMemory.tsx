@@ -31,8 +31,12 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { userFacingMessage } from '@/lib/http';
+import { StorageFullError } from '@/lib/storage-full';
 import type { AgentMemoryRead } from '@/lib/workspace-api';
 import { SectionLabel } from './bits';
+
+/** What a failed Save opens with, when the failure is a generic one. */
+const SAVE_FAILED_LEAD = 'We could not save that, so nothing changed.';
 
 const RULES_PLACEHOLDER =
   'No rules yet. For example:\nAlways cc Priya on customer email.\nNever touch the billing spreadsheet without asking.';
@@ -226,9 +230,19 @@ export function RulesEditor({
       // Say so. A Save that failed quietly is how a hand-written rule goes
       // missing, which is the failure this whole tier exists to prevent.
       setState('idle');
+      if (err instanceof StorageFullError) {
+        // The storage limit turned the Save away (TASK-719). The server's
+        // sentence already says what was not saved, why, and who can help, so it
+        // stands ALONE: "We could not save that, so nothing changed" in front of
+        // it would say the same thing twice. It is not a malfunction either, so
+        // nothing goes to the console. What was typed is still in the box, which
+        // is what makes its "you can try again" true.
+        setError(err.sentence);
+        return;
+      }
       // Was `err.message`, i.e. `workspace /agents/…/memory → 401` glued into
       // the middle of an authored sentence (TASK-288).
-      setError(userFacingMessage(err, 'agent-memory'));
+      setError(`${SAVE_FAILED_LEAD} ${userFacingMessage(err, 'agent-memory')}`);
     }
   }
 
@@ -260,9 +274,7 @@ export function RulesEditor({
 
       {error !== null && (
         <Alert variant="destructive">
-          <AlertDescription>
-            We could not save that, so nothing changed. {error}
-          </AlertDescription>
+          <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 

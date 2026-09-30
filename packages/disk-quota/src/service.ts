@@ -20,6 +20,8 @@ import type { DiskQuotaStore } from './store.js';
 //   recordBlobStored    — `blob:stored`: charge the bytes to the writer.
 //   scheduleWorkspaceMeasure — `workspace:applied`: re-measure that agent's
 //                         repo off the write's critical path.
+//   releaseWorkspace    — `workspace:deleted`: the agent's repo is gone, so
+//                         drop its row and give the owner the room back.
 //   reconcile           — the periodic sweep over every personal agent.
 //
 // Error posture is deliberately lopsided (the same as @ax/usage-limits):
@@ -31,13 +33,21 @@ import type { DiskQuotaStore } from './store.js';
 // ---------------------------------------------------------------------------
 
 /**
- * A refusal of a WRITE carries prose (see messages.ts), shown verbatim. A refusal
- * of a TURN carries `STORAGE_FULL_REASON`, a code, because the orchestrator
+ * A refusal of a WRITE carries prose (see messages.ts), shown verbatim, and, when
+ * the refusal is because the person's storage is full, ALSO `code:
+ * STORAGE_FULL_REASON`, so a caller that must treat "full" differently (an HTTP
+ * status, a banner) keys on the code instead of matching the sentence. The
+ * fail-closed "could not check your storage" refusal has NO code: it is not the
+ * same thing, and a caller keyed on `storage-full` must not see it. A refusal of
+ * a TURN carries `STORAGE_FULL_REASON` as its reason, because the orchestrator
  * surfaces it as `chat:start:<code>` and channel-web owns the sentence.
  */
-export type AdmitDecision = { ok: true } | { ok: false; reason: string };
+export type AdmitDecision = { ok: true } | { ok: false; reason: string; code?: string };
 
-/** The `chat:start` veto reason for a person whose storage is full. */
+/**
+ * The stable code for "this person's storage is full": the `chat:start` veto
+ * reason, and the `code` on a write refused for the same cause.
+ */
 export const STORAGE_FULL_REASON = 'storage-full';
 
 export interface ReconcileResult {
@@ -55,6 +65,13 @@ export interface DiskQuotaService {
   recordBlobStored(ctx: AgentContext, payload: unknown): Promise<void>;
   /** Fire-and-track: never awaited by the caller, never throws. */
   scheduleWorkspaceMeasure(ctx: AgentContext): void;
+  /**
+   * `workspace:deleted`: the agent's repo is gone, so drop its ledger row (for
+   * every owner) and free that room. Takes the raw payload field, because the
+   * subscriber must not trust it: anything that is not a non-empty string
+   * deletes nothing. Never throws.
+   */
+  releaseWorkspace(agentId: unknown): Promise<void>;
   /** Sweep every personal agent. Skips (measured: 0) when a hook it needs is absent. Never throws. */
   reconcile(): Promise<ReconcileResult>;
   /** Resolves once every background measurement has settled. */
@@ -175,7 +192,7 @@ export function createDiskQuotaService(deps: {
     const usedBytes = usage.workspaceBytes + usage.fileBytes;
     // A write may land EXACTLY on the limit; one byte past it is refused.
     if (usedBytes + cleanSize(sizeBytes) > limitBytes) {
-      return { ok: false, reason: refusal(usedBytes, limitBytes) };
+      return { ok: false, reason: refusal(usedBytes, limitBytes), code: STORAGE_FULL_REASON };
     }
     return { ok: true };
   }
@@ -293,7 +310,9 @@ export function createDiskQuotaService(deps: {
   // One measurement per agent at a time. A write that lands while one is
   // running asks for a fresh measurement afterwards, so a slow, stale reading
   // can never be the LAST one written.
-  const measuring = new Map<string, { again: boolean; ctx: AgentContext }>();
+  // `done` settles when that agent's whole measuring loop has, so a release can
+  // wait for it (see releaseWorkspace).
+  const measuring = new Map<string, { again: boolean; ctx: AgentContext; done?: Promise<void> }>();
   const inflight = new Set<Promise<void>>();
 
   function track(p: Promise<unknown>, ctx: AgentContext): void {
@@ -317,21 +336,61 @@ export function createDiskQuotaService(deps: {
       running.ctx = ctx;
       return;
     }
-    const state = { again: false, ctx };
+    const state: { again: boolean; ctx: AgentContext; done?: Promise<void> } = { again: false, ctx };
     measuring.set(agentId, state);
-    track(
-      (async () => {
-        try {
-          do {
-            state.again = false;
-            await measureOnce(state.ctx);
-          } while (state.again);
-        } finally {
-          measuring.delete(agentId);
-        }
-      })(),
-      ctx,
-    );
+    const run = (async () => {
+      try {
+        do {
+          state.again = false;
+          await measureOnce(state.ctx);
+        } while (state.again);
+      } finally {
+        measuring.delete(agentId);
+      }
+    })();
+    state.done = run;
+    track(run, ctx);
+  }
+
+  async function releaseWorkspace(agentId: unknown): Promise<void> {
+    // No request to borrow a logger from: the notice carries an id and nothing else.
+    const ctx = makeAgentContext({
+      sessionId: 'disk-quota-release',
+      agentId: PLUGIN_NAME,
+      userId: 'system',
+      ...sweepLogger,
+    });
+    try {
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        log(ctx, 'warn', 'disk_quota_workspace_deleted_invalid');
+        return;
+      }
+      // A measurement already walking this repo would upsert its (now stale)
+      // figure AFTER the delete below and re-create the row, and nothing ever
+      // repairs that: the sweep only upserts, and the agent is no longer listed.
+      // Let it land first, then delete. It never rejects today (see
+      // scheduleWorkspaceMeasure), but the `.catch` makes that a guarantee: a
+      // future rejection must not be able to skip the delete.
+      //
+      // KNOWN RESIDUAL: this only covers the write-triggered measurements. The
+      // periodic sweep (`reconcile`) calls `measureOnce` directly and bypasses
+      // the `measuring` map, so a sweep measurement already mid-walk when the
+      // agent is deleted can still upsert a stale figure afterwards. The window
+      // is narrow (one sweep per 6 h, two agents at a time). A measurement (or a
+      // write) that STARTS after the delete is not the problem: workspace-git
+      // refuses it with `agent-deleted` (TASK-719), so `measureOnce` records a
+      // failure and writes nothing. Deliberately not fixed here: the sweep is
+      // unchanged.
+      await measuring.get(agentId)?.done?.catch(() => undefined);
+      const removed = await store.deleteWorkspaceUsage(agentId);
+      log(ctx, 'debug', 'disk_quota_workspace_released', { agentId, removed });
+    } catch (err) {
+      // An error, not a warn: a row left behind keeps charging the owner for
+      // bytes that are gone, and nothing else takes it out. So it names the agent
+      // (this context's own agentId is the plugin's): it is the line an operator
+      // acts on. `agentId` is a validated string on every path that reaches here.
+      log(ctx, 'error', 'disk_quota_release_failed', { agentId, err });
+    }
   }
 
   async function reconcile(): Promise<ReconcileResult> {
@@ -385,6 +444,7 @@ export function createDiskQuotaService(deps: {
     admitTurn,
     recordBlobStored,
     scheduleWorkspaceMeasure,
+    releaseWorkspace,
     reconcile,
     ownerOf,
     async drain() {

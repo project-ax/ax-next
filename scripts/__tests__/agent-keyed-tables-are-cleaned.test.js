@@ -81,10 +81,16 @@ const KEPT_ON_PURPOSE = {
  * down so the gap has an address. Each has a follow-up card.
  */
 // NOT_TABLES (documentation only, nothing reads it):
-//   - the agent's git workspace repository (no delete hook exists yet)
-//   - blob bytes behind attachments (content-addressed and shared across users)
+//   - blob bytes behind attachments and skills (content-addressed and shared
+//     across users, so an agent delete does not free them; blob GC is a
+//     separate design)
 //   - key-value entries: the memory observer cursors, declined-grant markers
-//   - the agent's memory files inside its git workspace
+//   - repos of agents deleted BEFORE TASK-719 shipped: an orphan `ws-*.git`
+//     and a counted disk-quota row until an operator cleans them by hand
+//
+// No longer here: the agent's git workspace repository, and the memory files
+// inside it. `@ax/workspace-git` removes the repo when `agents:deleted` fires
+// (TASK-719) and then fires `workspace:deleted`, which drops its disk-quota row.
 
 /** Directories never scanned. */
 const SKIP_DIRS = new Set(['node_modules', 'dist', '__tests__', 'test', 'tests', 'coverage']);

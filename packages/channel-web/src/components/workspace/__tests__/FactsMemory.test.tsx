@@ -5,6 +5,7 @@ import {
   type AgentMemoryRead,
   type FactMemoryStatement,
 } from '@/lib/workspace-api';
+import { StorageFullError } from '@/lib/storage-full';
 import { MemorySurface } from '../FactsMemory';
 import { memoryForgetLabel, memoryStatementText } from '../memory-copy';
 
@@ -74,6 +75,36 @@ describe('MemorySurface', () => {
     expect(screen.getAllByText('Search memories')).not.toHaveLength(0);
     await waitFor(() =>
       expect(recallMock).toHaveBeenCalledWith('a1', { profile: true, history: false }),
+    );
+  });
+
+  it('carries a full-storage refusal on a rules Save through to the editor in its own words (TASK-719)', async () => {
+    /*
+      `RulesEditor` is mounted here too, and `onSaveRules` reaches it untouched
+      from `AgentView`. Nothing in between may catch the refusal and turn it into
+      a generic failure: the sentence the server chose must be what is drawn.
+    */
+    const sentence = 'Your storage is full, so those rules were not kept. An admin can make room.';
+    const onSaveRules = vi
+      .fn()
+      .mockRejectedValue(new StorageFullError('/api/workspace/agents/a1/memory/rules', sentence));
+    render(
+      <MemorySurface
+        agentId="a1"
+        agentName="Quill"
+        memory={read(true)}
+        onSaveRules={onSaveRules}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('Rules you gave me'), {
+      target: { value: '- Always cc Priya\n- Never work weekends' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.queryByText(/We could not save that/u)).toBeNull();
+    expect(screen.getByLabelText('Rules you gave me')).toHaveValue(
+      '- Always cc Priya\n- Never work weekends',
     );
   });
 

@@ -111,6 +111,55 @@ describe('registerWorkspaceApplyFacade', () => {
     expect(internal).not.toHaveBeenCalled();
   });
 
+  it('(b2) a veto that carries a code surfaces it as reasonCode; PluginError.code stays rejected (TASK-719)', async () => {
+    const bus = new HookBus();
+    const internal = vi.fn(async () => makeOutput('v1'));
+    bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply-internal',
+      FACADE_PLUGIN,
+      internal,
+    );
+    bus.subscribe('workspace:pre-apply', 'quota', async () =>
+      reject({ reason: 'storage full', code: 'storage-full' }),
+    );
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+
+    const err = await bus
+      .call('workspace:apply', silentCtx(), {
+        changes: [nonPolicyChange],
+        parent: null,
+      })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('rejected');
+    expect((err as PluginError).reasonCode).toBe('storage-full');
+    expect(internal).not.toHaveBeenCalled();
+  });
+
+  it('(b3) a veto with no code yields an error with NO reasonCode key (TASK-719)', async () => {
+    const bus = new HookBus();
+    bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply-internal',
+      FACADE_PLUGIN,
+      async () => makeOutput('v1'),
+    );
+    bus.subscribe('workspace:pre-apply', 'validator', async () =>
+      reject({ reason: 'skill schema invalid' }),
+    );
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+
+    const err = await bus
+      .call('workspace:apply', silentCtx(), {
+        changes: [policyChange],
+        parent: null,
+      })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PluginError);
+    expect('reasonCode' in (err as PluginError)).toBe(false);
+  });
+
   it('(c) pre-apply receives the policy-filtered subset only', async () => {
     const bus = new HookBus();
     bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(

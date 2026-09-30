@@ -242,7 +242,7 @@ describe('StorageTab — Your storage, for everyone', () => {
     expect(alert).toHaveClass('text-destructive');
   });
 
-  it('never tells anyone to delete anything, because nothing they delete gives room back', async () => {
+  it('never tells anyone to delete anything, because no small chore gives room back', async () => {
     for (const status of ['near-limit', 'full'] as const) {
       mine = makeMine({ usedBytes: 5 * GB, status });
       const { unmount } = await renderPerson();
