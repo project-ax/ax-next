@@ -1426,13 +1426,19 @@ describe('runRunner', () => {
       }
     });
 
-    it('only the assistant turn-end carries it, not the role=tool one', async () => {
+    it('BOTH turn-ends of the turn carry it, because the stream closes on the first', async () => {
+      // A turn with tool results emits role='tool' and then role='assistant'
+      // under the SAME reqId. channel-web's SSE `done` subscriber closes on the
+      // FIRST one it sees and unsubscribes, so a code that rides only the
+      // assistant turn-end is never written to the frame — and a turn a save
+      // can be refused on is exactly a turn that used tools. Each side was
+      // tested in isolation and passed while the seam lost the notice.
       const { tool, assistant } = await turnWithSave(
         async () => ({ accepted: false, reason: 'no', recoverable: false }),
         { toolResults: true },
       );
       expect(tool).toBeDefined();
-      expect('saveRefused' in tool!).toBe(false);
+      expect(tool?.saveRefused).toBe('refused');
       expect(assistant?.saveRefused).toBe('refused');
     });
 

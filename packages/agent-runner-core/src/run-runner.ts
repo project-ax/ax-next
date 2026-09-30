@@ -1577,6 +1577,16 @@ async function runRunnerInner(
           // request's freshly-minted reqId, dead to those subscribers.
           ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
           ...(turnId !== undefined ? { turnId } : {}),
+          // TASK-720: the refusal rides BOTH turn-ends of this turn, not only
+          // the assistant one below. A turn a save can be refused on is a turn
+          // that wrote files, i.e. one that ran tools, i.e. one that emits this
+          // event FIRST — and channel-web's SSE `done` subscriber closes the
+          // stream on the first `chat:turn-end` carrying this reqId (the reply
+          // itself already streamed as chunks). A code that rode only the
+          // assistant turn-end reached an unsubscribed subscriber, so the
+          // person was never told. This field is not persisted, so carrying it
+          // twice costs nothing.
+          ...(saveRefused !== undefined ? { saveRefused } : {}),
         })
         .catch(() => {
           /* host may be tearing down; non-fatal */
@@ -1607,8 +1617,10 @@ async function runRunnerInner(
           ? { contentBlocks: input.contentBlocks }
           : {}),
         ...(turnUsage !== undefined ? { usage: turnUsage } : {}),
-        // Assistant turn-end ONLY: the role='tool' one above is the same turn,
-        // and the notice belongs under the reply.
+        // TASK-720: on both turn-ends of this turn — see the role='tool' event
+        // above for why the first one has to carry it too. Usage is the field
+        // that must stay assistant-only (the tool turn-end is the same turn and
+        // metering both would double-charge it); this one is not metered.
         ...(saveRefused !== undefined ? { saveRefused } : {}),
         // See reqId rationale on the tool turn-end above.
         ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
