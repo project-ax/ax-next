@@ -5,6 +5,7 @@ import {
   type AgentMessage,
   type ContentBlock,
   type IpcClient,
+  type SaveRefusedCode,
   type SessionGetConfigResponse,
   type ToolListResponse,
   type WorkspaceReadRequest,
@@ -20,6 +21,7 @@ import {
 import {
   commitNotifyWithResync,
   flushWorkspaceToHost,
+  saveRefusedFrom,
   type HostToolFlush,
 } from './commit-notify-resync.js';
 import { commitTrace } from './commit-trace.js';
@@ -1430,6 +1432,10 @@ async function runRunnerInner(
   }
 
   async function closeTurn(input: EndTurnInput): Promise<void> {
+    // Set by the end-of-turn commit below iff the host refused the save; read
+    // by the assistant turn-end. Scoped to THIS turn: a later turn's turn-end
+    // must not repeat an earlier refusal.
+    let saveRefused: SaveRefusedCode | undefined;
     try {
       commitTrace(
         `[commit-trace] per-turn result: session=${transcriptSessionId ?? 'null'} contentBlocks=${input.contentBlocks.length} toolResults=${input.toolResultBlocks.length} finalAsstUuid=${input.lastAssistantUuid ?? '-'} parent=${parentVersion ?? 'null'}\n`,
@@ -1497,6 +1503,11 @@ async function runRunnerInner(
           reason: 'turn',
         });
         parentVersion = result.parentVersion;
+        // TASK-720: a TERMINAL refusal (the host objected, or the save was too
+        // big to carry) just took this turn's files back. The turn is over, so
+        // the model cannot be told; the person can — the code rides this
+        // turn's assistant `event.turn-end` below as `saveRefused`.
+        saveRefused = saveRefusedFrom(result);
         commitTrace(
           `[commit-trace] per-turn DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
         );
@@ -1596,6 +1607,9 @@ async function runRunnerInner(
           ? { contentBlocks: input.contentBlocks }
           : {}),
         ...(turnUsage !== undefined ? { usage: turnUsage } : {}),
+        // Assistant turn-end ONLY: the role='tool' one above is the same turn,
+        // and the notice belongs under the reply.
+        ...(saveRefused !== undefined ? { saveRefused } : {}),
         // See reqId rationale on the tool turn-end above.
         ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
         ...(assistantTurnId !== undefined ? { turnId: assistantTurnId } : {}),
@@ -1726,6 +1740,15 @@ async function runRunnerInner(
         commitTrace(
           `[commit-trace] final DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
         );
+        // No turn-end follows the final/idle commit, so a refusal here has no
+        // channel to the person (a follow-up, TASK-720). At least keep it out
+        // of the silent column: the files are gone either way.
+        const finalRefused = saveRefusedFrom(result);
+        if (finalRefused !== undefined) {
+          process.stderr.write(
+            `runner: final save refused (${finalRefused}); this turn's files were rolled back and no turn-end carries the notice\n`,
+          );
+        }
       }
     } catch (err) {
       // Propagate a terminal bind rejection (4xx) past this best-effort catch

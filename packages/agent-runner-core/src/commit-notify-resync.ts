@@ -2,6 +2,7 @@ import {
   IpcRequestError,
   WORKSPACE_COMMIT_BUNDLE_MAX_BYTES,
   type IpcClient,
+  type SaveRefusedCode,
   type WorkspaceCommitNotifyResponse,
 } from '@ax/ipc-protocol';
 import {
@@ -61,7 +62,8 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  * has no such gap.
  *
  * `rejectionCode` is the machine half of the same refusal (TASK-720), for
- * callers that DO branch. It is
+ * callers that DO branch: the end-of-turn commit maps it to the closed
+ * `saveRefused` code on `event.turn-end` (see {@link saveRefusedFrom}). It is
  * the host's `code` on a `recoverable: false` answer (the pre-apply veto's
  * slug, e.g. `storage-full`), or `'too-large'` when the save was too big to
  * carry — which the runner decides itself, before sending or on a host 413.
@@ -86,6 +88,27 @@ export const TOO_LARGE_REJECTION_REASON =
   `(over ${Math.round(WORKSPACE_COMMIT_BUNDLE_MAX_BYTES / (1024 * 1024))} MB), ` +
   `so they were removed. Tell the person, and suggest saving large files in ` +
   `smaller pieces or outside the workspace.`;
+
+/**
+ * The closed `event.turn-end` code for a commit result, or `undefined` when the
+ * save was not REFUSED. Only a terminal refusal counts: the host objected on
+ * the merits (`rejectionReason` present) or the save was too big to carry.
+ * `accepted`, `kept` (host unreachable — the files ride the next turn) and a
+ * recoverable race rollback (`--mixed`, no reason) are not refusals.
+ *
+ * A code outside the two the person-facing surface has a sentence for maps to
+ * `'refused'`: the runner forwards a choice among three fixed sentences, never
+ * a host string.
+ */
+export function saveRefusedFrom(result: CommitNotifyResult): SaveRefusedCode | undefined {
+  if (result.outcome !== 'rolled-back') return undefined;
+  if (result.rejectionReason === undefined && result.rejectionCode !== 'too-large') {
+    return undefined;
+  }
+  if (result.rejectionCode === 'storage-full') return 'storage-full';
+  if (result.rejectionCode === 'too-large') return 'too-large';
+  return 'refused';
+}
 
 /**
  * Commit-notify a turn bundle, recovering from a concurrent-writer advance by
@@ -331,8 +354,12 @@ export async function commitNotifyWithResync(input: {
     );
     // Hand the host's stated reason back to the caller when — and only when —
     // the host refused on the merits. Everything else on this path is
-    // write-only (a stderr line and an off-by-default commit trace), so this is
-    // the only channel by which the agent can learn what it did wrong.
+    // write-only (a stderr line and an off-by-default commit trace). The reason
+    // is how the MODEL learns what it did wrong, on the mid-turn flush before a
+    // host tool (the forwarder renders it into the tool error). The PERSON
+    // learns of an end-of-turn refusal a different way: the runner maps this
+    // result to `saveRefused` on `event.turn-end` (saveRefusedFrom, TASK-720),
+    // a closed code — never this prose, which is written for the model.
     //
     // Keyed off `recoverable === false`, which is the actual condition: the
     // host objected to the content and said why. Everything else that lands

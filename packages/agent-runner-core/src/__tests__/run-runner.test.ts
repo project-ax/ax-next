@@ -57,10 +57,15 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
     scaffoldWorkspaceGitignore: vi.fn().mockResolvedValue(undefined),
     scaffoldSdkProjectsSymlink: vi.fn().mockResolvedValue(undefined),
     commitTurnAndBundle: vi.fn().mockResolvedValue(null),
+    // Only reached when a test hands commitTurnAndBundle a bundle (the
+    // TASK-720 save-refusal cases); there is no real repo at /tmp/workspace.
+    advanceBaseline: vi.fn().mockResolvedValue(undefined),
+    rollbackToBaseline: vi.fn().mockResolvedValue(undefined),
   };
 });
 
 const { runRunner } = await import('../run-runner.js');
+const { commitTurnAndBundle } = await import('../git-workspace.js');
 const { createInboxLoop } = await import('../inbox-loop.js');
 
 /** Drive the shell's message pump with a scripted inbox. */
@@ -1330,6 +1335,138 @@ describe('runRunner', () => {
         cacheWriteTokens: 9e15,
       });
       expect(EventTurnEndSchema.safeParse(assistant).success).toBe(true);
+    });
+  });
+
+  // TASK-720. The end-of-turn save runs BEFORE this turn's `event.turn-end`,
+  // so a refusal rides that turn-end as a closed `saveRefused` code — the only
+  // way the person learns the files were taken back. Only a TERMINAL refusal
+  // sets it; a save that landed, a host that could not be reached (the files
+  // ride the next turn) and a recoverable race do not.
+  describe('save refusal on turn-end (TASK-720)', () => {
+    /** One turn whose save gets `answer` from the host; returns turn-ends by role. */
+    async function turnWithSave(
+      answer: () => Promise<unknown>,
+      opts: { toolResults?: boolean } = {},
+    ): Promise<{ tool?: Record<string, unknown>; assistant?: Record<string, unknown> }> {
+      fakeClient.event.mockClear();
+      (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('BUNDLE'));
+      const upload = vi.fn(async (action: string) => {
+        if (action === 'workspace.commit-bundle') return answer();
+        throw new Error(`unexpected upload: ${action}`);
+      });
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = upload;
+      scriptInbox([
+        { type: 'user-message', payload: { role: 'user', content: 'hi' }, reqId: 'req-u', cursor: 1 },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.endTurn({
+            contentBlocks: [{ type: 'text', text: 'done' }],
+            toolResultBlocks:
+              opts.toolResults === true
+                ? [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }]
+                : [],
+            readTurnId: async () => undefined,
+            usage: null,
+          });
+          return 0;
+        }),
+      };
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(upload).toHaveBeenCalledWith('workspace.commit-bundle', Buffer.from('BUNDLE'), {
+        reason: 'turn',
+        parentVersion: 'oid-0',
+      });
+      const out: { tool?: Record<string, unknown>; assistant?: Record<string, unknown> } = {};
+      for (const c of fakeClient.event.mock.calls) {
+        if (c[0] !== 'event.turn-end') continue;
+        const p = c[1] as Record<string, unknown>;
+        if (p.role === 'tool') out.tool = p;
+        if (p.role === 'assistant') out.assistant = p;
+      }
+      return out;
+    }
+
+    it("a storage-full veto rides the assistant turn-end as 'storage-full'", async () => {
+      const { assistant } = await turnWithSave(async () => ({
+        accepted: false,
+        reason: 'The workspace is full.',
+        recoverable: false,
+        code: 'storage-full',
+      }));
+      expect(assistant?.saveRefused).toBe('storage-full');
+      const { EventTurnEndSchema } = await import('@ax/ipc-protocol');
+      expect(EventTurnEndSchema.safeParse(assistant).success).toBe(true);
+    });
+
+    it("a host 413 (save too large) rides it as 'too-large'", async () => {
+      const { IpcRequestError } = await import('@ax/ipc-protocol');
+      const { assistant } = await turnWithSave(async () => {
+        throw new IpcRequestError('PAYLOAD_TOO_LARGE', 413, 'body too large');
+      });
+      expect(assistant?.saveRefused).toBe('too-large');
+    });
+
+    it("any other terminal veto (no code, or an unknown one) rides it as 'refused'", async () => {
+      for (const code of [undefined, 'something-new']) {
+        const { assistant } = await turnWithSave(async () => ({
+          accepted: false,
+          reason: 'CLAUDE.md: SDK-config paths are host-only',
+          recoverable: false,
+          ...(code !== undefined ? { code } : {}),
+        }));
+        expect(assistant?.saveRefused).toBe('refused');
+      }
+    });
+
+    it('only the assistant turn-end carries it, not the role=tool one', async () => {
+      const { tool, assistant } = await turnWithSave(
+        async () => ({ accepted: false, reason: 'no', recoverable: false }),
+        { toolResults: true },
+      );
+      expect(tool).toBeDefined();
+      expect('saveRefused' in tool!).toBe(false);
+      expect(assistant?.saveRefused).toBe('refused');
+    });
+
+    it('an accepted save, an unreachable host, and a recoverable race carry NO saveRefused key', async () => {
+      const answers: Array<() => Promise<unknown>> = [
+        async () => ({ accepted: true, version: 'v2', delta: null }),
+        async () => {
+          throw new Error('ECONNRESET');
+        },
+        async () => ({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' }),
+      ];
+      for (const answer of answers) {
+        const { assistant } = await turnWithSave(answer);
+        expect(assistant).toBeDefined();
+        expect('saveRefused' in assistant!).toBe(false);
+      }
+    });
+
+    it('a refused FINAL (post-loop) save has no turn-end to ride, but is not silent in the logs', async () => {
+      fakeClient.event.mockClear();
+      (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('FINAL'));
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
+        async () => ({ accepted: false, reason: 'The workspace is full.', recoverable: false, code: 'storage-full' }),
+      );
+      const loop: Loop = { run: vi.fn().mockResolvedValue(0) };
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+        const text = stderr.mock.calls.map((c) => String(c[0])).join('');
+        expect(text).toMatch(/final save refused \(storage-full\)/);
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(fakeClient.event.mock.calls.some((c) => c[0] === 'event.turn-end')).toBe(false);
     });
   });
 });

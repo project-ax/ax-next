@@ -40,6 +40,7 @@ import {
   flushPreconditionMessage,
   flushWorkspaceToHost,
   MAX_RESYNC_ATTEMPTS,
+  saveRefusedFrom,
   TOO_LARGE_REJECTION_REASON,
 } from '../commit-notify-resync.js';
 
@@ -756,6 +757,47 @@ describe('commitNotifyWithResync — commit-bundle wire + too-large (TASK-720)',
       reason: 'turn',
     });
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+  });
+});
+
+describe('saveRefusedFrom (TASK-720)', () => {
+  it('maps a terminal refusal to the closed turn-end code', () => {
+    expect(
+      saveRefusedFrom({
+        parentVersion: 'v1',
+        outcome: 'rolled-back',
+        rejectionReason: 'full',
+        rejectionCode: 'storage-full',
+      }),
+    ).toBe('storage-full');
+    expect(
+      saveRefusedFrom({
+        parentVersion: 'v1',
+        outcome: 'rolled-back',
+        rejectionReason: TOO_LARGE_REJECTION_REASON,
+        rejectionCode: 'too-large',
+      }),
+    ).toBe('too-large');
+    // No code, or a code the person-facing surface has no sentence for.
+    expect(
+      saveRefusedFrom({ parentVersion: 'v1', outcome: 'rolled-back', rejectionReason: 'SDK-config' }),
+    ).toBe('refused');
+    expect(
+      saveRefusedFrom({
+        parentVersion: 'v1',
+        outcome: 'rolled-back',
+        rejectionReason: 'x',
+        rejectionCode: 'something-new',
+      }),
+    ).toBe('refused');
+  });
+
+  it('is undefined for everything that is not a terminal refusal', () => {
+    expect(saveRefusedFrom({ parentVersion: 'v2', outcome: 'accepted' })).toBeUndefined();
+    expect(saveRefusedFrom({ parentVersion: 'v1', outcome: 'kept' })).toBeUndefined();
+    // Recoverable race / re-sync exhausted: rolled back --mixed, no reason, the
+    // files are still on disk and ride the next turn.
+    expect(saveRefusedFrom({ parentVersion: 'v1', outcome: 'rolled-back' })).toBeUndefined();
   });
 });
 
