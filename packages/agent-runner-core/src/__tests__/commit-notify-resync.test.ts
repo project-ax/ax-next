@@ -34,25 +34,40 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
   };
 });
 
+import { IpcRequestError, WORKSPACE_COMMIT_BUNDLE_MAX_BYTES } from '@ax/ipc-protocol';
 import {
   commitNotifyWithResync,
   flushPreconditionMessage,
   flushWorkspaceToHost,
   MAX_RESYNC_ATTEMPTS,
+  TOO_LARGE_REJECTION_REASON,
 } from '../commit-notify-resync.js';
 
-// The re-sync path now fetches the baseline bundle out-of-band via
+// The save goes over the BINARY action (TASK-720):
+// client.callBinaryUpload('workspace.commit-bundle', <raw bundle>, { reason,
+// parentVersion? }). `upload` is that mock; every test below drives the host's
+// answer through it. `call` is present and must stay unused: nothing on this
+// path speaks the JSON `workspace.commit-notify` action any more.
+//
+// The re-sync path fetches the baseline bundle out-of-band via
 // client.callBinary('workspace.export-baseline-bundle', { version }). The
 // default mock returns a fake temp-file handle; resync-branch tests assert on
 // its call args.
-function fakeClient(call: Mock, callBinary?: Mock): { call: Mock; callBinary: Mock } {
+function fakeClient(
+  upload: Mock,
+  callBinary?: Mock,
+): { call: Mock; callBinary: Mock; callBinaryUpload: Mock } {
   return {
-    call,
+    call: vi.fn().mockRejectedValue(new Error('the JSON commit-notify action must not be used')),
     callBinary:
       callBinary ??
       vi.fn().mockResolvedValue({ path: '/tmp/fetched-baseline.bundle', bytes: 42 }),
+    callBinaryUpload: upload,
   };
 }
+
+/** Bytes for a fake bundle (the helper only measures and forwards them). */
+const b = (s: string): Buffer => Buffer.from(s, 'utf8');
 
 const ROOT = '/tmp/workspace';
 
@@ -77,17 +92,17 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'BUNDLE',
+      bundle: b('BUNDLE'),
       parentVersion: 'v1',
       reason: 'turn',
     });
 
     expect(call).toHaveBeenCalledTimes(1);
-    expect(call).toHaveBeenCalledWith('workspace.commit-notify', {
-      parentVersion: 'v1',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE',
-    });
+    expect(call).toHaveBeenCalledWith(
+      'workspace.commit-bundle',
+      b('BUNDLE'),
+      { reason: 'turn', parentVersion: 'v1' },
+    );
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
     expect(advanceBaselineMock).toHaveBeenCalledWith(ROOT);
     expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
@@ -109,12 +124,12 @@ describe('commitNotifyWithResync', () => {
     const callBinary = vi
       .fn()
       .mockResolvedValue({ path: '/tmp/v2-baseline.bundle', bytes: 99 });
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_REBASED');
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('BUNDLE_REBASED'));
 
     const result = await commitNotifyWithResync({
       client: fakeClient(call, callBinary),
       root: ROOT,
-      bundleBytes: 'BUNDLE_FIRST',
+      bundle: b('BUNDLE_FIRST'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -135,16 +150,14 @@ describe('commitNotifyWithResync', () => {
     });
     // Two commit-notify calls; the retry uses the new head + the re-bundle.
     expect(call).toHaveBeenCalledTimes(2);
-    expect(call.mock.calls[0]?.[1]).toEqual({
-      parentVersion: 'v1',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_FIRST',
-    });
-    expect(call.mock.calls[1]?.[1]).toEqual({
-      parentVersion: 'v2',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_REBASED',
-    });
+    expect(call.mock.calls[0]?.slice(1)).toEqual([
+      b('BUNDLE_FIRST'),
+      { reason: 'turn', parentVersion: 'v1' },
+    ]);
+    expect(call.mock.calls[1]?.slice(1)).toEqual([
+      b('BUNDLE_REBASED'),
+      { reason: 'turn', parentVersion: 'v2' },
+    ]);
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).not.toHaveBeenCalled();
     expect(result).toEqual({ parentVersion: 'v3', outcome: 'accepted' });
@@ -161,7 +174,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'BUNDLE_FIRST',
+      bundle: b('BUNDLE_FIRST'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -187,7 +200,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'BUNDLE',
+      bundle: b('BUNDLE'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -209,7 +222,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'BUNDLE',
+      bundle: b('BUNDLE'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -227,12 +240,12 @@ describe('commitNotifyWithResync', () => {
       accepted: false,
       actualParent: 'vN',
     });
-    commitTurnAndBundleMock.mockResolvedValue('BUNDLE_REBASED');
+    commitTurnAndBundleMock.mockResolvedValue(b('BUNDLE_REBASED'));
 
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'BUNDLE_FIRST',
+      bundle: b('BUNDLE_FIRST'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -268,12 +281,12 @@ describe('commitNotifyWithResync', () => {
       .mockRejectedValueOnce(new Error('500'))
       // Second fetch (for v3) succeeds.
       .mockResolvedValueOnce({ path: '/tmp/v3-baseline.bundle', bytes: 77 });
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_REBASED');
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('BUNDLE_REBASED'));
 
     const result = await commitNotifyWithResync({
       client: fakeClient(call, callBinary),
       root: ROOT,
-      bundleBytes: 'BUNDLE_FIRST',
+      bundle: b('BUNDLE_FIRST'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -281,22 +294,19 @@ describe('commitNotifyWithResync', () => {
     // Three commit-notify calls: initial → fetch-fail re-enter → resync retry.
     expect(call).toHaveBeenCalledTimes(3);
     // The fetch-fail re-entry uses the ORIGINAL parent+bundle (no resync ran).
-    expect(call.mock.calls[0]?.[1]).toEqual({
-      parentVersion: 'v1',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_FIRST',
-    });
-    expect(call.mock.calls[1]?.[1]).toEqual({
-      parentVersion: 'v1',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_FIRST',
-    });
+    expect(call.mock.calls[0]?.slice(1)).toEqual([
+      b('BUNDLE_FIRST'),
+      { reason: 'turn', parentVersion: 'v1' },
+    ]);
+    expect(call.mock.calls[1]?.slice(1)).toEqual([
+      b('BUNDLE_FIRST'),
+      { reason: 'turn', parentVersion: 'v1' },
+    ]);
     // The successful resync retry uses the fresher head + the re-bundle.
-    expect(call.mock.calls[2]?.[1]).toEqual({
-      parentVersion: 'v3',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_REBASED',
-    });
+    expect(call.mock.calls[2]?.slice(1)).toEqual([
+      b('BUNDLE_REBASED'),
+      { reason: 'turn', parentVersion: 'v3' },
+    ]);
     expect(callBinary).toHaveBeenCalledTimes(2);
     expect(callBinary.mock.calls[0]?.[1]).toEqual({ version: 'v2' });
     expect(callBinary.mock.calls[1]?.[1]).toEqual({ version: 'v3' });
@@ -322,7 +332,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call, callBinary),
       root: ROOT,
-      bundleBytes: 'BUNDLE_FIRST',
+      bundle: b('BUNDLE_FIRST'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -349,7 +359,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'BUNDLE',
+      bundle: b('BUNDLE'),
       parentVersion: null,
       reason: 'turn',
     });
@@ -365,7 +375,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'B',
+      bundle: b('B'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -394,7 +404,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'B',
+      bundle: b('B'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -419,7 +429,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'B',
+      bundle: b('B'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -438,7 +448,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'B',
+      bundle: b('B'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -464,7 +474,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'B',
+      bundle: b('B'),
       parentVersion: null,
       reason: 'turn',
     });
@@ -482,11 +492,11 @@ describe('commitNotifyWithResync', () => {
       actualParent: 'v2',
       reason: 'parent-mismatch: expected parent 3d4e5f6, got 9f2c1ab',
     });
-    commitTurnAndBundleMock.mockResolvedValue('REBUNDLED');
+    commitTurnAndBundleMock.mockResolvedValue(b('REBUNDLED'));
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'B',
+      bundle: b('B'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -510,7 +520,7 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'B',
+      bundle: b('B'),
       parentVersion: 'v1',
       reason: 'turn',
     });
@@ -527,12 +537,225 @@ describe('commitNotifyWithResync', () => {
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
       root: ROOT,
-      bundleBytes: 'B',
+      bundle: b('B'),
       parentVersion: 'v1',
       reason: 'turn',
     });
     expect(result).toEqual({ parentVersion: 'v2', outcome: 'accepted' });
     expect(result.rejectionReason).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-720: the save rides the binary `workspace.commit-bundle` action, and a
+// save too big to carry fails LOUDLY instead of wedging the workspace.
+//
+// The wedge it replaces: an oversized save used to be swallowed as `kept`, so
+// `baseline` never moved and every later bundle (`baseline..main`) still
+// carried the big blob and failed the same way — nothing saved again, nobody
+// told. Too-large must therefore (a) reset HARD, the only rollback that stops
+// the next turn re-bundling the blob, and (b) say so, in words and in a code.
+// ---------------------------------------------------------------------------
+describe('commitNotifyWithResync — commit-bundle wire + too-large (TASK-720)', () => {
+  it('sends the raw bundle with reason + parentVersion as the query', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: true, version: 'v2' });
+    const client = fakeClient(call);
+    await commitNotifyWithResync({
+      client,
+      root: ROOT,
+      bundle: b('RAW'),
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(call).toHaveBeenCalledWith(
+      'workspace.commit-bundle',
+      b('RAW'),
+      {
+      reason: 'turn',
+      parentVersion: 'v1',
+    },
+    );
+    expect(client.call).not.toHaveBeenCalled();
+  });
+
+  it('a null parentVersion is OMITTED from the query (absent = null on the host)', async () => {
+    // `?parentVersion=` (empty) is a schema error on the host, and the string
+    // 'null' would be read as a version. Absent is the only null.
+    const call = vi.fn().mockResolvedValue({ accepted: true, version: 'v1' });
+    await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('RAW'),
+      parentVersion: null,
+      reason: 'turn',
+    });
+    const query = call.mock.calls[0]?.[2] as Record<string, string>;
+    expect(query).toEqual({ reason: 'turn' });
+    expect('parentVersion' in query).toBe(false);
+  });
+
+  it('a bundle over the cap is NOT sent: hard rollback, too-large code, a reason the model can relay', async () => {
+    const call = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('0123456789'),
+      parentVersion: 'v1',
+      reason: 'turn',
+      maxBundleBytes: 9,
+    });
+    expect(call).not.toHaveBeenCalled();
+    expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
+    expect(advanceBaselineMock).not.toHaveBeenCalled();
+    expect(result.outcome).toBe('rolled-back');
+    expect(result.parentVersion).toBe('v1');
+    expect(result.rejectionCode).toBe('too-large');
+    expect(result.rejectionReason).toBe(TOO_LARGE_REJECTION_REASON);
+    // Loud in the logs too: an operator can see why a turn's files vanished.
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toMatch(/too large/);
+  });
+
+  it('a bundle exactly AT the cap is sent', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: true, version: 'v2' });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('012345678'),
+      parentVersion: 'v1',
+      reason: 'turn',
+      maxBundleBytes: 9,
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ parentVersion: 'v2', outcome: 'accepted' });
+  });
+
+  it('the cap defaults to WORKSPACE_COMMIT_BUNDLE_MAX_BYTES', async () => {
+    // One byte over the protocol's cap, without allocating 100 MiB: a Buffer
+    // whose length reads as over. The helper only reads `.length` before
+    // deciding not to send.
+    const call = vi.fn();
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const huge = Object.defineProperty(b('x'), 'length', {
+      value: WORKSPACE_COMMIT_BUNDLE_MAX_BYTES + 1,
+    });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: huge,
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(call).not.toHaveBeenCalled();
+    expect(result.rejectionCode).toBe('too-large');
+  });
+
+  it('a re-bundle after a re-sync that grows over the cap is not sent either', async () => {
+    const call = vi.fn().mockResolvedValueOnce({ accepted: false, actualParent: 'v2' });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('0123456789ABCDEF'));
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('small'),
+      parentVersion: 'v1',
+      reason: 'turn',
+      maxBundleBytes: 9,
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
+    expect(result.rejectionCode).toBe('too-large');
+  });
+
+  it('a host 413 is the same loud too-large rollback (never "kept")', async () => {
+    const call = vi
+      .fn()
+      .mockRejectedValue(new IpcRequestError('PAYLOAD_TOO_LARGE', 413, 'body too large'));
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('B'),
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
+    expect(result).toEqual({
+      parentVersion: 'v1',
+      outcome: 'rolled-back',
+      rejectionReason: TOO_LARGE_REJECTION_REASON,
+      rejectionCode: 'too-large',
+    });
+  });
+
+  it('any other IpcRequestError (a 404 from an older host) keeps the work', async () => {
+    // A host from the previous release has no commit-bundle route. Destroying
+    // the turn's files because the host is old would be the wrong trade.
+    for (const status of [404, 400, 409]) {
+      rollbackToBaselineMock.mockClear();
+      const call = vi.fn().mockRejectedValue(new IpcRequestError('NOT_FOUND', status, 'no route'));
+      vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const result = await commitNotifyWithResync({
+        client: fakeClient(call),
+        root: ROOT,
+        bundle: b('B'),
+        parentVersion: 'v1',
+        reason: 'turn',
+      });
+      expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ parentVersion: 'v1', outcome: 'kept' });
+    }
+  });
+
+  it('a veto that names a code passes it through as rejectionCode', async () => {
+    const call = vi.fn().mockResolvedValue({
+      accepted: false,
+      reason: 'The workspace is full.',
+      recoverable: false,
+      code: 'storage-full',
+    });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('B'),
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(result).toEqual({
+      parentVersion: 'v1',
+      outcome: 'rolled-back',
+      rejectionReason: 'The workspace is full.',
+      rejectionCode: 'storage-full',
+    });
+  });
+
+  it('a veto without a code carries NO rejectionCode key', async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValue({ accepted: false, reason: 'SDK-config', recoverable: false });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('B'),
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect('rejectionCode' in result).toBe(false);
+  });
+
+  it('a code on a RECOVERABLE rejection is ignored (a race is not a refusal)', async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValue({ accepted: false, reason: 'baseline drift', code: 'storage-full' });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('B'),
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 });
 
@@ -556,7 +779,7 @@ describe('flushWorkspaceToHost', () => {
   });
 
   it('staged bundle → commit-notify accepted → advanced parentVersion + outcome "accepted"', async () => {
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('BUNDLE_MIDTURN'));
     const call = vi.fn().mockResolvedValue({ accepted: true, version: 'v2' });
     const result = await flushWorkspaceToHost({
       client: fakeClient(call),
@@ -565,17 +788,17 @@ describe('flushWorkspaceToHost', () => {
       reason: 'turn',
     });
     expect(call).toHaveBeenCalledTimes(1);
-    expect(call).toHaveBeenCalledWith('workspace.commit-notify', {
-      parentVersion: 'v1',
-      reason: 'turn',
-      bundleBytes: 'BUNDLE_MIDTURN',
-    });
+    expect(call).toHaveBeenCalledWith(
+      'workspace.commit-bundle',
+      b('BUNDLE_MIDTURN'),
+      { reason: 'turn', parentVersion: 'v1' },
+    );
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ parentVersion: 'v2', outcome: 'accepted' });
   });
 
   it('staged bundle → commit-notify network error → outcome "kept" (caller must NOT forward)', async () => {
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('BUNDLE_MIDTURN'));
     const call = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
     const result = await flushWorkspaceToHost({
       client: fakeClient(call),
@@ -590,7 +813,7 @@ describe('flushWorkspaceToHost', () => {
   });
 
   it('staged bundle → recoverable rejection → "rolled-back" (caller must NOT forward)', async () => {
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('BUNDLE_MIDTURN'));
     const call = vi
       .fn()
       .mockResolvedValue({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' });
@@ -612,7 +835,7 @@ describe('flushWorkspaceToHost', () => {
   });
 
   it('staged bundle → NON-recoverable veto → the host\'s reason travels with the outcome', async () => {
-    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('BUNDLE_MIDTURN'));
     const call = vi.fn().mockResolvedValue({
       accepted: false,
       reason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
@@ -633,6 +856,30 @@ describe('flushWorkspaceToHost', () => {
       outcome: 'rolled-back',
       rejectionReason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
     });
+  });
+});
+
+describe('flushWorkspaceToHost — too-large (TASK-720)', () => {
+  it('an oversized mid-turn flush rolls back and the model gets the too-large reason', async () => {
+    commitTurnAndBundleMock.mockResolvedValueOnce(b('0123456789'));
+    const call = vi.fn();
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const result = await flushWorkspaceToHost({
+      client: fakeClient(call),
+      root: ROOT,
+      parentVersion: 'v1',
+      reason: 'turn',
+      maxBundleBytes: 4,
+    });
+    expect(call).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      parentVersion: 'v1',
+      outcome: 'rolled-back',
+      rejectionReason: TOO_LARGE_REJECTION_REASON,
+    });
+    const text = flushPreconditionMessage('skill_install', result);
+    expect(text).toContain(TOO_LARGE_REJECTION_REASON);
+    expect(text).not.toContain('please try again');
   });
 });
 

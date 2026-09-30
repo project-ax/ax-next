@@ -1475,14 +1475,14 @@ async function runRunnerInner(
       // /agent diff (TASK-70 Phase-5 gate; the empty-diff skip is the
       // `git diff --cached --quiet` short-circuit inside
       // commitTurnAndBundle).
-      const bundleB64 = await commitTurnAndBundle({
+      const bundle = await commitTurnAndBundle({
         root: env.workspaceRoot,
         reason: 'turn',
       });
       commitTrace(
-        `[commit-trace] per-turn commitTurnAndBundle → ${bundleB64 === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${bundleB64.length}B`}\n`,
+        `[commit-trace] per-turn commitTurnAndBundle → ${bundle === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${bundle.length}B`}\n`,
       );
-      if (bundleB64 !== null) {
+      if (bundle !== null) {
         // Bounded re-sync + retry. On a concurrent-writer advance the host
         // returns accepted:false with actualParent + baselineBundleBytes;
         // the shared helper rebases our turn commit onto the new head and
@@ -1492,7 +1492,7 @@ async function runRunnerInner(
         const result = await commitNotifyWithResync({
           client,
           root: env.workspaceRoot,
-          bundleBytes: bundleB64,
+          bundle,
           parentVersion,
           reason: 'turn',
         });
@@ -1718,7 +1718,7 @@ async function runRunnerInner(
         const result = await commitNotifyWithResync({
           client,
           root: env.workspaceRoot,
-          bundleBytes: finalBundle,
+          bundle: finalBundle,
           parentVersion,
           reason: 'turn',
         });

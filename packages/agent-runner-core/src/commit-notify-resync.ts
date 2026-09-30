@@ -1,4 +1,9 @@
-import type { IpcClient, WorkspaceCommitNotifyResponse } from '@ax/ipc-protocol';
+import {
+  IpcRequestError,
+  WORKSPACE_COMMIT_BUNDLE_MAX_BYTES,
+  type IpcClient,
+  type WorkspaceCommitNotifyResponse,
+} from '@ax/ipc-protocol';
 import {
   advanceBaseline,
   commitTurnAndBundle,
@@ -54,12 +59,33 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  * arrive without one (an empty-repo mismatch, or a git-core integrity guard
  * that throws with no cause). `recoverable` is set on the branch itself and
  * has no such gap.
+ *
+ * `rejectionCode` is the machine half of the same refusal (TASK-720), for
+ * callers that DO branch. It is
+ * the host's `code` on a `recoverable: false` answer (the pre-apply veto's
+ * slug, e.g. `storage-full`), or `'too-large'` when the save was too big to
+ * carry — which the runner decides itself, before sending or on a host 413.
+ * Absent whenever the refusal named no code; never present without
+ * `rejectionReason`.
  */
 export interface CommitNotifyResult {
   parentVersion: string | null;
   outcome: CommitNotifyOutcome;
   rejectionReason?: string;
+  rejectionCode?: string;
 }
+
+/**
+ * What the model is told when a save was too big to carry (TASK-720). Written
+ * for the model, in the same register as a host veto's reason: say what
+ * happened to the files, and what to do about it. The size is the protocol's
+ * cap, not an injected test cap — it is the one limit a person can act on.
+ */
+export const TOO_LARGE_REJECTION_REASON =
+  `This turn's file changes were too large to save in one go ` +
+  `(over ${Math.round(WORKSPACE_COMMIT_BUNDLE_MAX_BYTES / (1024 * 1024))} MB), ` +
+  `so they were removed. Tell the person, and suggest saving large files in ` +
+  `smaller pieces or outside the workspace.`;
 
 /**
  * Commit-notify a turn bundle, recovering from a concurrent-writer advance by
@@ -74,46 +100,102 @@ export interface CommitNotifyResult {
  *    envelope                 MAX_RESYNC_ATTEMPTS. An empty re-bundle (turn
  *                             absorbed) → promote parentVersion to the new head ('accepted').
  *  - true veto / exhausted  → rollbackToBaseline ('rolled-back'); parentVersion unchanged,
- *                             and the host's stated reason comes back as `rejectionReason`.
+ *                             and the host's stated reason comes back as `rejectionReason`
+ *                             (plus its `code`, if any, as `rejectionCode`).
+ *  - too large to carry     → NOT sent (over the cap) or refused by the host with a 413:
+ *                             HARD rollback ('rolled-back', `rejectionCode: 'too-large'`).
  *  - network/5xx/resync-fail→ keep the working tree ('kept'); parentVersion unchanged.
+ *
+ * Wire (TASK-720): the raw bundle is the octet-stream body of the binary
+ * `workspace.commit-bundle` action, with `reason` and `parentVersion` (omitted
+ * when null) as query params; the answer is the same JSON shape
+ * `workspace.commit-notify` returns, Zod-parsed by the client. The JSON action
+ * carried the bundle as base64 inside the 4 MiB frame, which capped one save at
+ * about 3 MiB.
  */
 export async function commitNotifyWithResync(input: {
-  // Needs `callBinary` too: on the re-sync path the runner fetches the baseline
-  // bundle for `actualParent` out-of-band via the binary
-  // `workspace.export-baseline-bundle` action (octet-stream, uncapped) instead
-  // of reading it inline from the JSON response — the inline bytes blew the
-  // 4 MiB response cap on aged workspaces (same bug class as materialize BUG-W3).
-  client: Pick<IpcClient, 'call' | 'callBinary'>;
+  // `callBinaryUpload` sends the save. `callBinary` is the re-sync path: the
+  // runner fetches the baseline bundle for `actualParent` out-of-band via the
+  // binary `workspace.export-baseline-bundle` action (octet-stream, uncapped)
+  // instead of reading it inline from the JSON response — the inline bytes blew
+  // the 4 MiB response cap on aged workspaces (same bug class as materialize
+  // BUG-W3).
+  client: Pick<IpcClient, 'callBinary' | 'callBinaryUpload'>;
   root: string;
-  bundleBytes: string;
+  /** The raw bundle from `commitTurnAndBundle`. */
+  bundle: Buffer;
   parentVersion: string | null;
   reason: string;
+  /**
+   * The most one save may carry. Defaults to the protocol's
+   * `WORKSPACE_COMMIT_BUNDLE_MAX_BYTES`; injectable so a test need not build a
+   * 100 MiB bundle.
+   */
+  maxBundleBytes?: number;
 }): Promise<CommitNotifyResult> {
   const { client, root, reason } = input;
-  let bundleB64 = input.bundleBytes;
+  const maxBundleBytes = input.maxBundleBytes ?? WORKSPACE_COMMIT_BUNDLE_MAX_BYTES;
+  let bundle = input.bundle;
   let currentParentVersion: string | null = input.parentVersion;
   let attempt = 0;
   commitTrace(
-    `[commit-trace] commit-notify enter reason=${reason} parent=${currentParentVersion ?? 'null'} bundleB64Len=${bundleB64.length}\n`,
+    `[commit-trace] commit-notify enter reason=${reason} parent=${currentParentVersion ?? 'null'} bundleLen=${bundle.length}\n`,
   );
+  // Too big to carry: fail LOUDLY. Never `kept` — `baseline` would not move, so
+  // every later turn's `baseline..main` bundle would still carry the same bytes
+  // and fail the same way, forever. `hard` because nothing smaller works: a
+  // `--mixed` reset leaves the files in the tree for the next `git add -A`. The
+  // bundle does not say which paths made it big, so there is no scoped discard.
+  const tooLarge = async (why: string): Promise<CommitNotifyResult> => {
+    process.stderr.write(
+      `runner: workspace save too large (${why}); rolling back turn\n`,
+    );
+    await rollbackToBaseline(root, 'hard');
+    commitTrace(`[commit-trace] outcome=rolled-back (too-large: ${why})\n`);
+    return {
+      parentVersion: input.parentVersion,
+      outcome: 'rolled-back',
+      rejectionReason: TOO_LARGE_REJECTION_REASON,
+      rejectionCode: 'too-large',
+    };
+  };
   for (;;) {
+    // Checked on EVERY send, not just the first: a re-bundle after a re-sync
+    // can be bigger than the bundle it replaced.
+    if (bundle.length > maxBundleBytes) {
+      return tooLarge(`${bundle.length} bytes, over the ${maxBundleBytes}-byte cap; not sent`);
+    }
     let resp: WorkspaceCommitNotifyResponse;
     try {
       commitTrace(
-        `[commit-trace] → workspace.commit-notify call parent=${currentParentVersion ?? 'null'} attempt=${attempt}\n`,
+        `[commit-trace] → workspace.commit-bundle call parent=${currentParentVersion ?? 'null'} attempt=${attempt}\n`,
       );
-      resp = (await client.call('workspace.commit-notify', {
-        parentVersion: currentParentVersion,
-        reason,
-        bundleBytes: bundleB64,
-      })) as WorkspaceCommitNotifyResponse;
+      // Absent = null on the host. An empty `parentVersion=` is a schema error
+      // there, and the string 'null' would read as a version.
+      const query: Record<string, string> =
+        currentParentVersion === null
+          ? { reason }
+          : { reason, parentVersion: currentParentVersion };
+      resp = (await client.callBinaryUpload(
+        'workspace.commit-bundle',
+        bundle,
+        query,
+      )) as WorkspaceCommitNotifyResponse;
       commitTrace(
-        `[commit-trace] ← commit-notify resp accepted=${resp.accepted} version=${(resp as { version?: string }).version ?? '-'} actualParent=${(resp as { actualParent?: string }).actualParent ?? '-'} reason=${(resp as { reason?: string }).reason ?? '-'}\n`,
+        `[commit-trace] ← commit-bundle resp accepted=${resp.accepted} version=${(resp as { version?: string }).version ?? '-'} actualParent=${(resp as { actualParent?: string }).actualParent ?? '-'} reason=${(resp as { reason?: string }).reason ?? '-'}\n`,
       );
     } catch (err) {
-      // Network / 5xx / timeout: keep the working tree intact so the next
-      // turn's accumulated changes flow as one bundle. Don't advance baseline;
-      // don't rollback. Same trade-off the legacy accumulator path made.
+      // The host refused the BODY as too large (the dispatcher's binary-body
+      // budget). Same loud failure as the pre-send check above — a body the
+      // host will not take is not going to fit next turn either.
+      if (err instanceof IpcRequestError && err.status === 413) {
+        return tooLarge(`host answered 413: ${err.message}`);
+      }
+      // Network / 5xx / timeout — and any other 4xx: keep the working tree
+      // intact so the next turn's accumulated changes flow as one bundle.
+      // Don't advance baseline; don't rollback. A 404 from a host too old to
+      // know `workspace.commit-bundle` lands here on purpose: an old host must
+      // not cost the agent its files.
       process.stderr.write(
         `runner: commit-notify failed: ${err instanceof Error ? err.message : String(err)}\n`,
       );
@@ -213,7 +295,7 @@ export async function commitNotifyWithResync(input: {
         );
         return { parentVersion: currentParentVersion, outcome: 'accepted' };
       }
-      bundleB64 = rebasedBundleBytes;
+      bundle = rebasedBundleBytes;
       continue;
     }
     // Retries exhausted on concurrent-writer rejection vs. true veto: log
@@ -266,10 +348,16 @@ export async function commitNotifyWithResync(input: {
     // That would have reverted TASK-240 without a single test going red, which
     // is why the two are decoupled here rather than left to drift.
     // See CommitNotifyResult.
+    //
+    // The veto's machine `code` (e.g. `storage-full`) rides on the same
+    // condition: a race's code, if one ever sent one, is not a refusal.
     return {
       parentVersion: input.parentVersion,
       outcome: 'rolled-back',
       ...(resp.recoverable === false ? { rejectionReason: resp.reason } : {}),
+      ...(resp.recoverable === false && resp.code !== undefined
+        ? { rejectionCode: resp.code }
+        : {}),
     };
   }
 }
@@ -363,23 +451,26 @@ export function flushPreconditionMessage(
 }
 
 export async function flushWorkspaceToHost(input: {
-  client: Pick<IpcClient, 'call' | 'callBinary'>;
+  client: Pick<IpcClient, 'callBinary' | 'callBinaryUpload'>;
   root: string;
   parentVersion: string | null;
   reason: string;
+  /** See {@link commitNotifyWithResync}; tests only. */
+  maxBundleBytes?: number;
 }): Promise<FlushResult> {
   const { client, root, parentVersion, reason } = input;
-  const bundleB64 = await commitTurnAndBundle({ root, reason });
-  if (bundleB64 === null) {
+  const bundle = await commitTurnAndBundle({ root, reason });
+  if (bundle === null) {
     commitTrace(`[commit-trace] flushWorkspaceToHost: nothing staged (no-op)\n`);
     return { parentVersion, outcome: 'noop' };
   }
   const result = await commitNotifyWithResync({
     client,
     root,
-    bundleBytes: bundleB64,
+    bundle,
     parentVersion,
     reason,
+    ...(input.maxBundleBytes !== undefined ? { maxBundleBytes: input.maxBundleBytes } : {}),
   });
   return {
     parentVersion: result.parentVersion,

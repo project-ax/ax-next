@@ -205,6 +205,7 @@ async function runnerSave(
   fx: Fixture,
   parentVersion: string | null,
   reason: string,
+  maxBundleBytes?: number,
 ): Promise<{ result: CommitNotifyResult; bundleSize: number; runnerStderr: string }> {
   const bundle = await commitTurnAndBundle({ root: fx.root, reason });
   if (bundle === null) throw new Error('commitTurnAndBundle found nothing to ship');
@@ -225,9 +226,10 @@ async function runnerSave(
     const result = await commitNotifyWithResync({
       client: fx.client,
       root: fx.root,
-      bundleBytes: bundle,
+      bundle,
       parentVersion,
       reason,
+      ...(maxBundleBytes !== undefined ? { maxBundleBytes } : {}),
     });
     return { result, bundleSize: bundle.length, runnerStderr: lines.join('').trim() };
   } finally {
@@ -341,5 +343,31 @@ describe('TASK-720: a workspace save bigger than the 4 MiB JSON frame', () => {
     if (note.found) {
       expect(Buffer.from(note.bytes).toString('utf8')).toBe('a tiny follow-up\n');
     }
+  });
+
+  // Over the cap the save cannot succeed, so it must fail LOUDLY and leave the
+  // workspace saveable: never `kept` (which is the wedge above). The cap is
+  // injected so the test need not build a 100 MiB bundle; the path is the one
+  // a real over-100-MiB save takes before anything is sent.
+  it('a save over the cap is refused loudly, its files removed, and the next save still lands', async () => {
+    const big = randomBytes(2 * 1024 * 1024);
+    await fs.mkdir(path.join(fx.root, 'data'), { recursive: true });
+    await fs.writeFile(path.join(fx.root, 'data', 'big.bin'), big);
+    const first = await runnerSave(fx, fx.baselineCommit, 'turn 1: too big', 1024 * 1024);
+
+    expect(first.result.outcome).toBe('rolled-back');
+    expect(first.result.rejectionCode).toBe('too-large');
+    expect(first.result.rejectionReason).toMatch(/too large to save/);
+    expect(first.result.parentVersion).toBe(fx.baselineCommit);
+    expect(first.runnerStderr).toMatch(/too large/);
+    // Hard reset: the oversized file is gone, so the next bundle cannot carry it.
+    await expect(fs.stat(path.join(fx.root, 'data', 'big.bin'))).rejects.toThrow();
+    expect((await hostRead(fx, 'data/big.bin')).found).toBe(false);
+
+    await fs.writeFile(path.join(fx.root, 'note.txt'), 'after the refusal\n');
+    const second = await runnerSave(fx, first.result.parentVersion, 'turn 2', 1024 * 1024);
+    expect(second.result.outcome, second.runnerStderr).toBe('accepted');
+    const note = await hostRead(fx, 'note.txt');
+    expect(note.found).toBe(true);
   });
 });
