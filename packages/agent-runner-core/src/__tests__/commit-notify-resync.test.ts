@@ -681,6 +681,38 @@ describe('commitNotifyWithResync — commit-bundle wire + too-large (TASK-720)',
     expect(result.parentVersion).toBe('v2');
   });
 
+  it('a resync that THREW on a later attempt still reports the parent the earlier one pinned', async () => {
+    // The third shape of "which parent do we report": the FIRST resync re-pinned
+    // the local baseline to the host's advanced parent and then the SECOND one
+    // threw (a rebase conflict, or the fetch behind it failing). The tree is
+    // left at the parent the first resync pinned, so that is what the caller
+    // must track. `currentParentVersion` is assigned only AFTER a resync
+    // returns, which is why the missing assignment on the throw path is correct
+    // rather than a forgetful one — this test is what pins that.
+    const call = vi.fn().mockResolvedValue({ accepted: false, actualParent: 'v3' });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    commitTurnAndBundleMock.mockResolvedValue(b('0123456789ABCDEF'));
+    // Queued in call order: the FIRST resync resolves, the SECOND throws.
+    // (A bare `mockRejectedValueOnce` would land on the first call and hit the
+    // exit before `currentParentVersion` was ever advanced — a different test.)
+    resyncBaselineAndReplayMock
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('rebase conflict'));
+
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundle: b('small'),
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+
+    // Two calls: the one that pinned the baseline, then the one that threw.
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(2);
+    expect(result.outcome).toBe('kept');
+    expect(result.parentVersion).toBe('v3');
+  });
+
   it('a send failure AFTER a re-sync carries the advanced parent, not the one we entered with', async () => {
     // The re-sync re-pinned the local `baseline` ref to the host's advanced
     // parent, so that is what the caller must track from here. Reporting the
