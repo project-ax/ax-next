@@ -133,8 +133,10 @@ export function createCatalog(deps: CatalogDeps): Catalog {
     p: { id: string; name: string },
     refresh: boolean,
   ): Promise<CatalogProvider> {
-    const st = states.get(p.id) ?? {};
-    states.set(p.id, st);
+    // Provider keys may be personal, so cache identity follows credential resolution.
+    const identity = JSON.stringify([ctx.userId, p.id]);
+    const st = states.get(identity) ?? {};
+    states.set(identity, st);
     if (st.pending !== undefined) return st.pending;
     const t = now();
     let force = false;
@@ -149,9 +151,9 @@ export function createCatalog(deps: CatalogDeps): Catalog {
       return {
         id: p.id,
         name: p.name,
-        status: 'live',
+        status: st.lastResult?.provider.status === 'cached' ? 'cached' : 'live',
         fetchedAt: new Date(st.good.at).toISOString(),
-        models: st.good.models,
+        models: [...st.good.models],
       };
     }
     async function fetchOne(): Promise<CatalogProvider> {
@@ -171,7 +173,10 @@ export function createCatalog(deps: CatalogDeps): Catalog {
           err: err instanceof Error ? err.message : String(err),
         });
       }
-      if (out?.status === 'no-key') return { id: p.id, name: p.name, status: 'no-key', models: [] };
+      if (out?.status === 'no-key') {
+        delete st.good; // A known missing key cannot reuse a formerly live result.
+        return { id: p.id, name: p.name, status: 'no-key', models: [] };
+      }
       if (out?.status === 'live') {
         const models = normalizeModels(p.id, out.models);
         if (models.length > 0) {

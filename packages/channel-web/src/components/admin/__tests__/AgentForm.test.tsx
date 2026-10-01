@@ -864,5 +864,42 @@ it('opens resolved agent details so a stored removed model is shown as the Defau
   fireEvent.click(screen.getByRole('button', { name: 'edit' }));
   expect(await screen.findByText(/Your admin changed the available models/)).toBeInTheDocument();
   expect(getAdminAgent).toHaveBeenCalledWith(AGENT.id);
-  expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(AGENT.model);
+  await waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(AGENT.model));
+});
+
+it('keeps a delayed Edit read from replacing a new agent draft', async () => {
+  mockList.mockResolvedValue([AGENT]);
+  let release!: (agent: typeof AGENT) => void;
+  vi.mocked(getAdminAgent).mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+  render(<AgentForm isAdmin />);
+  await screen.findByText('Research Bot');
+  fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+  await waitFor(() => expect(getAdminAgent).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole('button', { name: 'New agent' }));
+  const name = screen.getByLabelText('Name');
+  fireEvent.change(name, { target: { value: 'New draft' } });
+  release(AGENT);
+  await waitFor(() => expect(getAdminAgent).toHaveBeenCalledWith(AGENT.id));
+  expect(await screen.findByRole('heading', { name: 'New agent' })).toBeInTheDocument();
+  expect(name).toHaveValue('New draft');
+});
+
+it('keeps a delayed first Edit from replacing a newer Edit', async () => {
+  const other = { ...AGENT, id: 'agent-other', displayName: 'Other Bot' };
+  mockList.mockResolvedValue([AGENT, other]);
+  let first!: (agent: typeof AGENT) => void;
+  let second!: (agent: typeof AGENT) => void;
+  vi.mocked(getAdminAgent).mockImplementation((id) => new Promise((resolve) => {
+    if (id === AGENT.id) first = resolve; else second = resolve;
+  }));
+  render(<AgentForm isAdmin />);
+  await screen.findByText('Other Bot');
+  const edits = screen.getAllByRole('button', { name: 'edit' });
+  fireEvent.click(edits[0]!);
+  fireEvent.click(edits[1]!);
+  second(other);
+  await screen.findByRole('heading', { name: 'Edit Other Bot' });
+  first(AGENT);
+  await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Other Bot'));
+  expect(screen.queryByRole('heading', { name: 'Edit Research Bot' })).toBeNull();
 });

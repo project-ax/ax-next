@@ -51,6 +51,7 @@ export function createPolicyStore(deps: PolicyStoreDeps): PolicyStore {
   const now = deps.now ?? (() => new Date());
   const ttlMs = deps.ttlMs ?? 15_000;
   let unreadableLogged = false;
+  let savedGeneration = 0;
   let cache: { view: PolicyView; at: number } | null = null;
 
   // `storage:set` has no compare-and-swap, so the version check is only as
@@ -98,7 +99,9 @@ export function createPolicyStore(deps: PolicyStoreDeps): PolicyStore {
   return {
     async read(ctx) {
       if (cache !== null && now().getTime() - cache.at < ttlMs) return clone(cache.view);
+      const generation = savedGeneration;
       const view = await load(ctx);
+      if (generation !== savedGeneration && cache !== null) return clone(cache.view);
       cache = { view, at: now().getTime() };
       return clone(view);
     },
@@ -125,6 +128,7 @@ export function createPolicyStore(deps: PolicyStoreDeps): PolicyStore {
           updatedAt: doc.updatedAt,
           updatedBy: doc.updatedBy,
         };
+        savedGeneration += 1;
         cache = { view, at: now().getTime() };
         return { ok: true, policy: clone(view) };
       });

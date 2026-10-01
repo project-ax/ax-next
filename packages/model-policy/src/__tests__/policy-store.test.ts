@@ -52,6 +52,35 @@ function setup(opts: { ttlMs?: number } = {}) {
 }
 
 describe('createPolicyStore.read', () => {
+  it('does not let an older in-flight read overwrite a successful save in the cache', async () => {
+    const bus = new HookBus();
+    let held = true;
+    let bytes: Uint8Array | undefined;
+    let release!: (out: { value: Uint8Array | undefined }) => void;
+    let signal!: () => void;
+    const started = new Promise<void>((resolve) => { signal = resolve; });
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' });
+    bus.registerService('storage:get', 'test', async () => {
+      if (held) {
+        held = false;
+        signal();
+        return new Promise<{ value: Uint8Array | undefined }>((resolve) => { release = resolve; });
+      }
+      return { value: bytes };
+    });
+    bus.registerService('storage:set', 'test', async (_ctx, input: { value: Uint8Array }) => {
+      bytes = input.value;
+      return {};
+    });
+    const store = createPolicyStore({ bus, builtin: BUILTIN });
+    const oldRead = store.read(ctx);
+    await started;
+    expect(await store.save(ctx, { baseVersion: 0, allowed: [KIMI], default: KIMI }, 'admin')).toMatchObject({ ok: true });
+    release({ value: undefined });
+    await oldRead;
+    expect(await store.read(ctx)).toMatchObject({ source: 'admin', version: 1, allowed: [KIMI], default: KIMI });
+  });
+
   it('serves the built-in policy when nothing is saved', async () => {
     const { store, ctx } = setup();
     expect(await store.read(ctx)).toEqual({

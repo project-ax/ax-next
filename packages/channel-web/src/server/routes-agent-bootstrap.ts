@@ -1,5 +1,6 @@
 import {
   PluginError,
+  isModelRef,
   isRejection,
   makeAgentContext,
   makeReqId,
@@ -13,9 +14,7 @@ import { actualParentFromMismatch, NO_ACTUAL_PARENT } from './workspace-cas.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
 
-/** Hidden default — see plan decision #2. No persisted "default model" setting
- *  exists. Fully-qualified `provider/model-id`: the agents allow-list rejects
- *  bare ids, so a bare value here fails first-run agent creation outright. */
+/** Legacy fallback for presets without the model-policy plugin. */
 const DEFAULT_PERSONAL_AGENT_MODEL = 'anthropic/claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------
@@ -158,6 +157,18 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
         return;
       }
 
+      let model = DEFAULT_PERSONAL_AGENT_MODEL;
+      if (bus.hasService('models:get-policy')) {
+        try {
+          const policy = await bus.call<Record<string, never>, { allowed: string[]; default: string }>(
+            'models:get-policy', makeAgentContext({ sessionId: 'agent-bootstrap-policy', agentId: PLUGIN_NAME, userId: actor.id }), {},
+          );
+          if (isModelRef(policy.default) && policy.allowed.includes(policy.default)) model = policy.default;
+        } catch {
+          initCtx.logger.warn('agent_bootstrap_policy_unavailable', { plugin: PLUGIN_NAME });
+        }
+      }
+
       // 3) Create a BARE agent — no systemPrompt; wildcard tool scope, personal
       //    visibility, owner = caller. Identical capability profile to the
       //    onboarding Default Agent (minus the prompt). The admin HTTP route
@@ -172,7 +183,7 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
               displayName: parsed.displayName,
               allowedTools: [],
               mcpConfigIds: [],
-              model: DEFAULT_PERSONAL_AGENT_MODEL,
+              model,
               visibility: 'personal',
             },
           },

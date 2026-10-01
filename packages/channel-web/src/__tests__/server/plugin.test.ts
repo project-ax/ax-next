@@ -671,6 +671,10 @@ describe('@ax/channel-web server plugin (integration)', () => {
       ],
       optionalCalls: [
         {
+          hook: 'models:get-policy',
+          degradation: 'personal-agent bootstrap uses the built-in Sonnet model',
+        },
+        {
           hook: 'teams:list-for-user',
           degradation:
             'team agents are omitted from the chat agent picker (personal agents only)',

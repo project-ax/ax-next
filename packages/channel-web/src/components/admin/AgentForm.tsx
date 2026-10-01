@@ -28,7 +28,7 @@ import { movedNotice } from '@/lib/models-copy';
  * store; the picker save runs AFTER the agent create/PATCH so the agent id
  * exists (mirroring the SkillAttachmentsSection two-step save).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   listAdminAgents,
   listAgentModelOptions,
@@ -251,6 +251,8 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [editing, setEditing] = useState<AdminAgent | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(() => emptyForm());
   const [busy, setBusy] = useState(false);
+  const editRequest = useRef(0);
+  useEffect(() => () => { editRequest.current += 1; }, []);
   const [error, setError] = useState<string | null>(null);
   // Whether the agent's `.ax/` identity files are still loading (edit view).
   // The identity textareas are disabled until the fetch resolves so a save
@@ -418,23 +420,28 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   }, [form.connectorIds, editing]);
 
   const startNew = () => {
+    editRequest.current += 1;
+    setBusy(false);
     setError(null);
     setForm(emptyForm());
     setEditing('new');
   };
 
   const startEdit = async (a: AdminAgent) => {
+    const request = ++editRequest.current;
     setError(null);
     setBusy(true);
     try {
       const resolved = await getAdminAgent(a.id);
+      if (request !== editRequest.current) return;
       setForm(formFromAgent(resolved));
       setEditing(resolved);
     } catch (err) {
+      if (request !== editRequest.current) return;
       setError('We could not load this agent. Try opening it again.');
       console.warn('could not read agent details', err);
     } finally {
-      setBusy(false);
+      if (request === editRequest.current) setBusy(false);
     }
   };
 
@@ -455,6 +462,8 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const selectedModel = effectiveModelId(form.model, modelOptions, defaultModel);
 
   const cancelForm = () => {
+    editRequest.current += 1;
+    setBusy(false);
     setEditing(null);
     setError(null);
   };

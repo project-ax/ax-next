@@ -116,6 +116,63 @@ describe('normalizeModels', () => {
 });
 
 describe('createCatalog.get', () => {
+  it('keeps simultaneous callers with different keys out of each other’s in-flight work', async () => {
+    const bus = new HookBus();
+    const users: string[] = [];
+    bus.registerService('models:list-available:openrouter', 'test', async (caller) => {
+      users.push(caller.userId);
+      return caller.userId === 'alice' ? live('openrouter/a/b') : { status: 'no-key', models: [] };
+    });
+    const catalog = createCatalog({ bus, providers: PROVIDERS });
+    const alice = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'alice' });
+    const bob = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'bob' });
+    const [a, b] = await Promise.all([catalog.get(alice, { refresh: true }), catalog.get(bob, { refresh: true })]);
+    expect(a.providers[0]?.status).toBe('live');
+    expect(b.providers[0]?.status).toBe('no-key');
+    expect(users).toEqual(['alice', 'bob']);
+  });
+
+  it('retains cached failure status when serving a still-young last-good list', async () => {
+    let healthy = true;
+    const { catalog, advance } = boot({
+      'models:list-available:openrouter': async () => healthy ? live('openrouter/a/b') : { status: 'error', models: [] },
+    });
+    await catalog.get(ctx, { refresh: false });
+    healthy = false;
+    advance(16_000);
+    expect((await catalog.get(ctx, { refresh: true })).providers[0]?.status).toBe('cached');
+    advance(16_000);
+    expect((await catalog.get(ctx, { refresh: false })).providers[0]?.status).toBe('cached');
+  });
+
+  it('keeps catalogs scoped to the user whose credentials supplied them', async () => {
+    const bus = new HookBus();
+    const users: string[] = [];
+    bus.registerService('models:list-available:openrouter', 'test', async (caller) => {
+      users.push(caller.userId);
+      return caller.userId === 'alice' ? live('openrouter/a/b') : { status: 'no-key', models: [] };
+    });
+    const catalog = createCatalog({ bus, providers: PROVIDERS });
+    const alice = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'alice' });
+    const bob = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'bob' });
+    expect((await catalog.get(alice, { refresh: false })).providers[0]?.status).toBe('live');
+    expect((await catalog.get(bob, { refresh: false })).providers[0]?.status).toBe('no-key');
+    expect(users).toEqual(['alice', 'bob']);
+  });
+
+  it('does not resurrect a live cache after the provider reports a missing key', async () => {
+    let keyed = true;
+    const { catalog, advance } = boot({
+      'models:list-available:openrouter': async () => keyed ? live('openrouter/a/b') : { status: 'no-key', models: [] },
+    });
+    await catalog.get(ctx, { refresh: false });
+    keyed = false;
+    advance(16_000);
+    expect((await catalog.get(ctx, { refresh: true })).providers[0]?.status).toBe('no-key');
+    advance(16_000);
+    expect((await catalog.get(ctx, { refresh: false })).providers[0]).toMatchObject({ status: 'no-key', models: [] });
+  });
+
   it('throttles refreshes after a failed first fetch, even without a good cache', async () => {
     const { catalog, calls, advance } = boot({
       'models:list-available:openrouter': async () => ({ status: 'error', models: [] }),

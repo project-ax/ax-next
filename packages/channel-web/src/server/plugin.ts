@@ -178,6 +178,10 @@ export function createChannelWebServerPlugin(
       ],
       optionalCalls: [
         {
+          hook: 'models:get-policy',
+          degradation: 'personal-agent bootstrap uses the built-in Sonnet model',
+        },
+        {
           // The chat agent picker (GET /api/chat/agents) surfaces team agents
           // the user belongs to by resolving the user's teamIds here.
           // teams:list-for-user is k8s-preset-only; a preset without @ax/teams
