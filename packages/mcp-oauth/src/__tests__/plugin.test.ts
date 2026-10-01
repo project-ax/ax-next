@@ -2,7 +2,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   createTestHarness,
   stopPostgresContainer,
@@ -189,12 +189,39 @@ describe('@ax/mcp-oauth plugin init (mountRoutes:true)', () => {
 
     expect(recorded).toContainEqual({
       method: 'POST',
+      path: '/api/connectors/oauth/discover-hosts',
+    });
+    expect(recorded).toContainEqual({
+      method: 'POST',
       path: '/api/connectors/oauth/begin',
     });
     expect(recorded).toContainEqual({
       method: 'GET',
       path: '/api/connectors/oauth/callback',
     });
+  });
+
+  it('wires the authenticated host preview through the running plugin', async () => {
+    const services = routeStubServices([]);
+    let previewHandler!: (req: unknown, res: unknown) => Promise<void>;
+    services['http:register-route'] = (async (_ctx, input) => {
+      const route = input as { path: string; handler: typeof previewHandler };
+      if (route.path === '/api/connectors/oauth/discover-hosts') previewHandler = route.handler;
+      return { unregister: () => {} };
+    }) as ServiceHandler;
+    const preview = vi.fn(async () => ({ hosts: ['accounts.google.com', 'gmailmcp.googleapis.com', 'oauth2.googleapis.com'] }));
+    const h = await createTestHarness({
+      services,
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createMcpOAuthPlugin({
+        mountRoutes: true, publicOrigin: 'https://example.com', testOverrides: { discoverHosts: preview },
+      })],
+    });
+    harnesses.push(h);
+    const response = { status: vi.fn().mockReturnThis(), json: vi.fn() };
+    await previewHandler({ body: Buffer.from(JSON.stringify({ url: 'https://gmailmcp.googleapis.com/mcp/v1' })) }, response);
+    expect(preview).toHaveBeenCalledWith({ resourceUrl: 'https://gmailmcp.googleapis.com/mcp/v1' });
+    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.json).toHaveBeenCalledWith(await preview.mock.results[0]!.value);
   });
 
   it('throws a clear error when mountRoutes is set without publicOrigin', async () => {

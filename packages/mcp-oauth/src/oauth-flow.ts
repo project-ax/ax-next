@@ -61,6 +61,23 @@ export async function discover(opts: {
 }): Promise<{ authServerUrl: string; metadata: AuthorizationServerMetadata; scope?: string }> {
   const { resourceUrl, pinnedAuthServerUrl, allowedHosts, resolver } = opts;
   const fetchFn = guardedFetch(allowedHosts, resolver);
+  return discoverMetadata({
+    resourceUrl,
+    ...(pinnedAuthServerUrl !== undefined ? { pinnedAuthServerUrl } : {}),
+    fetchFn,
+    checkUrl: (url) => assertSafeUrl(url, allowedHosts, resolver),
+  });
+}
+
+/** Shared discovery algorithm. The authoring preview uses a credential-free,
+ * IP-pinned transport; actual OAuth uses the saved connector's allowlist. */
+export async function discoverMetadata(opts: {
+  resourceUrl: string;
+  pinnedAuthServerUrl?: string;
+  fetchFn: FetchLike;
+  checkUrl: (url: string) => Promise<void>;
+}): Promise<{ authServerUrl: string; metadata: AuthorizationServerMetadata; scope?: string }> {
+  const { resourceUrl, pinnedAuthServerUrl, fetchFn, checkUrl } = opts;
 
   let authServerUrl: string;
   let scope: string | undefined;
@@ -107,7 +124,7 @@ export async function discover(opts: {
   // Pre-gate the authorization server's base. The SDK derives the
   // `.well-known/oauth-authorization-server` / `openid-configuration` probes from
   // this origin; the guarded fetchFn re-checks each derived URL at fetch time.
-  await assertSafeUrl(authServerUrl, allowedHosts, resolver);
+  await checkUrl(authServerUrl);
   const metadata = await discoverAuthorizationServerMetadata(authServerUrl, { fetchFn });
   if (!metadata) {
     throw new Error(`authorization server ${authServerUrl} returned no usable metadata`);

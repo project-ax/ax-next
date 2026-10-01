@@ -8,6 +8,7 @@ import {
 import type { discover, ensureClient, buildAuthorization, redeemCode } from './oauth-flow.js';
 import { isOwnClientSecretRef } from './client-secret-ref.js';
 import { NeedsReconnectError } from './resolver.js';
+import { discoverOAuthHosts, metadataUrl } from './host-discovery.js';
 import type { McpOAuthStore } from './store.js';
 import {
   clientKeyOf,
@@ -78,6 +79,7 @@ export interface McpOAuthRouteDeps {
   bus: { call<I, O>(hook: string, ctx: AgentContext, input: I): Promise<O> };
   store: McpOAuthStore;
   flow: {
+    discoverHosts?: typeof discoverOAuthHosts;
     discover: typeof discover;
     ensureClient: typeof ensureClient;
     buildAuthorization: typeof buildAuthorization;
@@ -131,6 +133,7 @@ function neutralMessage(err: unknown): string {
 }
 
 export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
+  discoverHosts(req: RouteRequest, res: RouteResponse): Promise<void>;
   begin(req: RouteRequest, res: RouteResponse): Promise<void>;
   callback(req: RouteRequest, res: RouteResponse): Promise<void>;
   status(req: RouteRequest, res: RouteResponse): Promise<void>;
@@ -185,6 +188,52 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         return null;
       }
       throw err;
+    }
+  }
+
+  // Bound the draft-URL preview separately from OAuth. It can reach public
+  // metadata hosts before a connector exists, but never registers a client,
+  // reads the vault or stores a grant. Avoid unbounded concurrent network work.
+  let activePreviews = 0;
+  const previewAttempts = new Map<string, number[]>();
+  async function discoverHosts(req: RouteRequest, res: RouteResponse): Promise<void> {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (req.body.length > 4096) {
+      res.status(413).json({ error: 'body-too-large' });
+      return;
+    }
+    let url: string;
+    try {
+      const body = JSON.parse(req.body.toString('utf8')) as { url?: unknown };
+      if (!body || typeof body.url !== 'string') throw new Error('missing URL');
+      url = metadataUrl(body.url).href;
+    } catch {
+      res.status(400).json({ error: 'invalid-mcp-url', message: 'Enter a public HTTPS MCP URL without embedded credentials or a fragment.' });
+      return;
+    }
+    const cutoff = now() - 60_000;
+    for (const [id, attempts] of previewAttempts) {
+      const recent = attempts.filter((time) => time > cutoff);
+      if (recent.length) previewAttempts.set(id, recent);
+      else previewAttempts.delete(id);
+    }
+    const attempts = previewAttempts.get(user.id) ?? [];
+    if (activePreviews >= 4 || attempts.length >= 6 || (!previewAttempts.has(user.id) && previewAttempts.size >= 512)) {
+      res.header('Retry-After', '60');
+      res.status(429).json({ error: 'discovery-rate-limited', message: 'Please wait a minute before retrying OAuth host discovery.' });
+      return;
+    }
+    previewAttempts.set(user.id, [...attempts, now()]);
+    activePreviews++;
+    try {
+      const result = await (flow.discoverHosts ?? discoverOAuthHosts)({ resourceUrl: url });
+      res.status(200).json(result);
+    } catch (err) {
+      logger.warn('mcp_oauth_host_discovery_failed', { name: err instanceof Error ? err.name : 'unknown' });
+      res.status(502).json({ error: 'oauth-host-discovery-failed', message: 'Could not discover OAuth hosts. Check the MCP URL, retry, or enter the hosts manually.' });
+    } finally {
+      activePreviews--;
     }
   }
 
@@ -740,7 +789,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
   }
 
-  return { begin, callback, status };
+  return { discoverHosts, begin, callback, status };
 }
 
 /**
@@ -760,6 +809,7 @@ export async function registerMcpOAuthRoutes(
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
+    { method: 'POST', path: '/api/connectors/oauth/discover-hosts', handler: handlers.discoverHosts },
     { method: 'POST', path: '/api/connectors/oauth/begin', handler: handlers.begin },
     { method: 'GET', path: '/api/connectors/oauth/callback', handler: handlers.callback },
     { method: 'GET', path: '/api/connectors/oauth/status', handler: handlers.status },

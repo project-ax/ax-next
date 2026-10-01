@@ -216,6 +216,90 @@ function fakeRes(): CapturedRes {
   return { res, state };
 }
 
+describe('OAuth host discovery route', () => {
+  const request = () => fakeReq({ body: Buffer.from(JSON.stringify({ url: 'https://mcp.example.com/mcp' })) });
+  const auth = { 'auth:require-user': () => ({ user: { id: 'owner', isAdmin: false } }) };
+
+  it('previews an unsaved URL for an authenticated owner without reading connectors, credentials or writing state', async () => {
+    const preview = vi.fn(async () => ({ hosts: ['auth.example.com', 'tokens.example.com'] }));
+    const { deps, calls, store } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).discoverHosts(request(), res as never);
+    expect(state).toEqual({ status: 200, json: { hosts: ['auth.example.com', 'tokens.example.com'] } });
+    expect(preview).toHaveBeenCalledWith({ resourceUrl: 'https://mcp.example.com/mcp' });
+    expect(calls.map(({ hook }) => hook)).toEqual(['auth:require-user']);
+    expect(store.putPending).not.toHaveBeenCalled();
+  });
+
+  it('rejects unauthenticated callers before any network request', async () => {
+    const preview = vi.fn();
+    const { deps } = makeDeps({ 'auth:require-user': () => { throw reject({ reason: 'login required' }); } }, { flow: fakeFlow({ discoverHosts: preview }) });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).discoverHosts(request(), res as never);
+    expect(state.status).toBe(401);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it.each(['null', '{}', '{', '{"url":3}', '{"url":"http://example.com"}', '{"url":"https://user:secret@example.com"}'])('rejects malformed or unsafe preview body %s', async (body) => {
+    const preview = vi.fn();
+    const { deps } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).discoverHosts(fakeReq({ body: Buffer.from(body) }), res as never);
+    expect(state.status).toBe(400);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('caps request bodies and reflects neither the draft URL nor provider errors', async () => {
+    const preview = vi.fn(async () => { throw new Error('SECRET_MARKER query or provider body'); });
+    const { deps, logger } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const oversized = fakeRes();
+    await handlers.discoverHosts(fakeReq({ body: Buffer.alloc(4097) }), oversized.res as never);
+    expect(oversized.state.status).toBe(413);
+    expect(preview).not.toHaveBeenCalled();
+    const failure = fakeRes();
+    await handlers.discoverHosts(request(), failure.res as never);
+    expect(failure.state.status).toBe(502);
+    expect(JSON.stringify(failure.state)).not.toContain('SECRET_MARKER');
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('SECRET_MARKER');
+  });
+
+  it('bounds per-user attempts, expires old entries, and releases capacity after failure', async () => {
+    const preview = vi.fn(async () => { throw new Error('failed'); });
+    const { deps } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    let time = 1_000_000;
+    deps.now = () => time;
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    for (let i = 0; i < 6; i++) await handlers.discoverHosts(request(), fakeRes().res as never);
+    const limited = fakeRes();
+    await handlers.discoverHosts(request(), limited.res as never);
+    expect(limited.state.status).toBe(429);
+    expect(preview).toHaveBeenCalledTimes(6);
+    time += 60_001;
+    const later = fakeRes();
+    await handlers.discoverHosts(request(), later.res as never);
+    expect(later.state.status).toBe(502);
+    expect(preview).toHaveBeenCalledTimes(7);
+  });
+
+  it('bounds concurrent previews', async () => {
+    let finish!: (result: { hosts: string[] }) => void;
+    const waiting = new Promise<{ hosts: string[] }>((resolve) => { finish = resolve; });
+    const preview = vi.fn(() => waiting);
+    const { deps } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const requests = Array.from({ length: 4 }, () => handlers.discoverHosts(request(), fakeRes().res as never));
+    await Promise.resolve();
+    await Promise.resolve();
+    const limited = fakeRes();
+    await handlers.discoverHosts(request(), limited.res as never);
+    expect(limited.state.status).toBe(429);
+    expect(preview).toHaveBeenCalledTimes(4);
+    finish({ hosts: ['auth.example.com'] });
+    await Promise.all(requests);
+  });
+});
+
 // PluginError-ish reject (the duck-typed catch keys on instanceof PluginError
 // OR isRejection; a thrown Rejection object exercises the isRejection branch).
 function rejectThrow(reason: string): never {
