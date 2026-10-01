@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ConnectorEditDialog } from '../ConnectorEditDialog';
 import * as connectorsLib from '@/lib/connectors';
 import * as credentialsLib from '@/lib/credentials';
+import * as oauthLib from '@/lib/connectors-oauth';
 import type { ConnectorSummary, Connector, ConnectorOAuthSlot } from '@/lib/connectors';
 import { connectorAccessCopy } from '@/lib/connector-access-copy';
 
@@ -39,6 +40,7 @@ const FULL: Connector = {
 
 describe('ConnectorEditDialog', () => {
   beforeEach(() => {
+    vi.spyOn(oauthLib, 'discoverOAuthHosts').mockResolvedValue({ hosts: [] });
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(FULL);
     vi.spyOn(connectorsLib, 'createConnector').mockResolvedValue(FULL);
     vi.spyOn(connectorsLib, 'patchConnector').mockResolvedValue(FULL);
@@ -56,6 +58,115 @@ describe('ConnectorEditDialog', () => {
     );
   });
   afterEach(() => vi.restoreAllMocks());
+
+  const gmailUrl = 'https://gmailmcp.googleapis.com/mcp/v1';
+  const gmailHosts = ['accounts.google.com', 'gmailmcp.googleapis.com', 'oauth2.googleapis.com'];
+  async function httpDraft(url = gmailUrl) {
+    render(<ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />);
+    fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Gmail' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /transport/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /http/i }));
+    fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: url } });
+  }
+
+  it('shows discovered Gmail hosts before saving, then merges them with manual hosts without duplicates', async () => {
+    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue({ hosts: gmailHosts });
+    await httpDraft();
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
+    await screen.findByText('accounts.google.com', { exact: true });
+    expect(screen.getByText('oauth2.googleapis.com', { exact: true })).toBeInTheDocument();
+    expect(screen.getByText(/these hosts will be included/i)).toBeInTheDocument();
+    expect(connectorsLib.createConnector).not.toHaveBeenCalled();
+    expect(credentialsLib.setDestinationCredential).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText(/allowed hosts/i), { target: { value: 'custom.example.com, accounts.google.com' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const [body, base] = vi.mocked(connectorsLib.createConnector).mock.calls[0]!;
+    expect(base).toBe('/settings/connectors');
+    expect(body.capabilities.allowedHosts).toEqual(expect.arrayContaining([...gmailHosts, 'custom.example.com']));
+    expect(body.capabilities.allowedHosts.filter((host) => host === 'accounts.google.com')).toHaveLength(1);
+    expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledWith(gmailUrl, expect.any(AbortSignal));
+  });
+
+  it('debounces URL edits and does not discover invalid or insecure URLs', async () => {
+    await httpDraft('http://example.com/mcp');
+    expect(oauthLib.discoverOAuthHosts).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://old.example.com/mcp' } });
+    fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: gmailUrl } });
+    await waitFor(() => expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledTimes(1));
+    expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledWith(gmailUrl, expect.any(AbortSignal));
+  });
+
+  it('discovers an existing HTTP connector on edit and preserves its other server and OAuth client configuration', async () => {
+    const oauthSlot: ConnectorOAuthSlot = { slot: 'GMAIL_OAUTH', kind: 'oauth', server: 'gmail', clientId: 'dedicated-client', clientSecretRef: 'account:gmail:oauth-client-secret' };
+    const secondServer = { name: 'other', transport: 'stdio' as const, command: 'mcp-other', allowedHosts: [], credentials: [] };
+    const existing: Connector = { ...FULL, id: 'gmail', name: 'Gmail', capabilities: {
+      ...connectorsLib.emptyCapabilities(), allowedHosts: ['custom.example.com'], credentials: [oauthSlot],
+      mcpServers: [{ name: 'gmail', transport: 'http', url: gmailUrl, allowedHosts: [], credentials: [] }, secondServer],
+    } };
+    vi.mocked(connectorsLib.getConnector).mockResolvedValue(existing);
+    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue({ hosts: gmailHosts });
+    render(<ConnectorEditDialog target={existing} open isAdmin onOpenChange={() => {}} onSaved={() => {}} />);
+    await screen.findByText('accounts.google.com', { exact: true });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.patchConnector).toHaveBeenCalled());
+    const [id, body] = vi.mocked(connectorsLib.patchConnector).mock.calls[0]!;
+    expect(id).toBe('gmail');
+    expect(body.capabilities!.allowedHosts).toEqual(expect.arrayContaining([...gmailHosts, 'custom.example.com']));
+    expect(body.capabilities!.mcpServers[1]).toEqual(secondServer);
+    expect(body.capabilities!.credentials[0]).toMatchObject(oauthSlot);
+    expect(credentialsLib.setDestinationCredential).not.toHaveBeenCalled();
+  });
+
+  it('ignores a stale response after the URL changes and never saves the old hosts', async () => {
+    let finishOld!: (value: { hosts: string[] }) => void;
+    vi.mocked(oauthLib.discoverOAuthHosts).mockImplementation((url) => url === gmailUrl
+      ? new Promise((resolve) => { finishOld = resolve; })
+      : Promise.resolve({ hosts: ['new.example.com', 'new-auth.example.com'] }));
+    await httpDraft();
+    await waitFor(() => expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledTimes(1));
+    const oldSignal = vi.mocked(oauthLib.discoverOAuthHosts).mock.calls[0]![1]!;
+    fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://new.example.com/mcp' } });
+    expect(oldSignal.aborted).toBe(true);
+    await screen.findByText('new-auth.example.com', { exact: true });
+    await act(async () => { finishOld({ hosts: gmailHosts }); });
+    expect(screen.queryByText('accounts.google.com', { exact: true })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    expect(vi.mocked(connectorsLib.createConnector).mock.calls[0]![0].capabilities.allowedHosts).toEqual(['new.example.com', 'new-auth.example.com']);
+  });
+
+  it('offers retry after discovery fails and allows manual host entry', async () => {
+    vi.mocked(oauthLib.discoverOAuthHosts).mockRejectedValueOnce(new Error('failed')).mockResolvedValue({ hosts: gmailHosts });
+    await httpDraft();
+    await screen.findByText(/could not discover oauth hosts/i);
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: /retry discovery/i }));
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
+    await screen.findByText('accounts.google.com', { exact: true });
+    expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledTimes(2);
+  });
+
+  it('can save manually entered hosts when an MCP server has no usable OAuth metadata', async () => {
+    vi.mocked(oauthLib.discoverOAuthHosts).mockRejectedValue(new Error('no metadata'));
+    await httpDraft();
+    await screen.findByText(/could not discover oauth hosts/i);
+    fireEvent.change(screen.getByLabelText(/allowed hosts/i), { target: { value: 'manual.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    expect(vi.mocked(connectorsLib.createConnector).mock.calls[0]![0].capabilities.allowedHosts).toEqual(['manual.example.com', 'gmailmcp.googleapis.com']);
+  });
+
+  it('drops the preview when switching away from HTTP MCP', async () => {
+    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue({ hosts: gmailHosts });
+    await httpDraft();
+    await screen.findByText('accounts.google.com', { exact: true });
+    fireEvent.click(screen.getByRole('radio', { name: /direct api/i }));
+    expect(screen.queryByText('accounts.google.com', { exact: true })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    expect(vi.mocked(connectorsLib.createConnector).mock.calls[0]![0].capabilities.allowedHosts).toEqual([]);
+  });
 
   it('create mode: a blank form, submitting calls createConnector with a slugged id', async () => {
     const onSaved = vi.fn();
@@ -177,6 +288,24 @@ describe('ConnectorEditDialog', () => {
     expect(screen.queryByLabelText(/transport/i)).toBeNull();
     expect(screen.queryByLabelText(/package name/i)).toBeNull();
     expect(screen.getByLabelText(/allowed hosts/i)).toBeInTheDocument();
+  });
+
+  it('lets an HTTP MCP connector save the hosts needed for Google OAuth', async () => {
+    render(<ConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />);
+    fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Gmail' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /transport/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /http/i }));
+    fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://gmailmcp.googleapis.com/mcp/v1' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText(/allowed hosts/i), {
+      target: { value: 'accounts.google.com, oauth2.googleapis.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const caps = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0].capabilities;
+    expect(caps.allowedHosts).toEqual(expect.arrayContaining([
+      'gmailmcp.googleapis.com', 'accounts.google.com', 'oauth2.googleapis.com',
+    ]));
   });
 
   it('Command-line tool shows the npm/pypi package picker and submits packages', async () => {
@@ -616,6 +745,7 @@ describe('ConnectorEditDialog', () => {
       target: { value: 'read' },
     });
 
+    await waitFor(() => expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.patchConnector).toHaveBeenCalled());
     const body = vi.mocked(connectorsLib.patchConnector).mock.calls[0]![1];

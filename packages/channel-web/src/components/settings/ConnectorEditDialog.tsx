@@ -56,6 +56,7 @@ import {
   applyComposeToForm,
   summaryToForm,
   connectorIdFromName,
+  splitList,
   STARTER_SERVICE_EXAMPLES,
   type ConnectorFormState,
   type Mechanism,
@@ -76,6 +77,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -88,6 +90,7 @@ import {
 } from '@/components/ui/card';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { discoverOAuthHosts } from '@/lib/connectors-oauth';
 import {
   Select,
   SelectContent,
@@ -473,6 +476,39 @@ export function ConnectorEditDialog({
   const [form, setForm] = useState<ConnectorFormState>(() => emptyConnectorForm());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hostDiscovery, setHostDiscovery] = useState<{
+    url: string;
+    status: 'loading' | 'ready' | 'error';
+    hosts: string[];
+  } | null>(null);
+  const [discoveryRetry, setDiscoveryRetry] = useState(0);
+  const discoveryUrl = open && form.mechanism === 'mcp' && form.transport === 'http'
+    ? form.url.trim() : '';
+  const validDiscoveryUrl = (() => {
+    try {
+      const url = new URL(discoveryUrl);
+      return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.port;
+    } catch { return false; }
+  })();
+  const currentDiscovery = hostDiscovery?.url === discoveryUrl ? hostDiscovery : null;
+  const discoveringHosts = validDiscoveryUrl && (!currentDiscovery || currentDiscovery.status === 'loading');
+  const discoveredHosts = validDiscoveryUrl && currentDiscovery?.status === 'ready'
+    ? currentDiscovery.hosts : [];
+
+  useEffect(() => {
+    if (!validDiscoveryUrl) { setHostDiscovery(null); return; }
+    let cancelled = false;
+    const controller = new AbortController();
+    setHostDiscovery({ url: discoveryUrl, status: 'loading', hosts: [] });
+    const timer = setTimeout(() => {
+      discoverOAuthHosts(discoveryUrl, controller.signal).then(({ hosts }) => {
+        if (!cancelled) setHostDiscovery({ url: discoveryUrl, status: 'ready', hosts });
+      }).catch(() => {
+        if (!cancelled) setHostDiscovery({ url: discoveryUrl, status: 'error', hosts: [] });
+      });
+    }, 500);
+    return () => { cancelled = true; clearTimeout(timer); controller.abort(); };
+  }, [discoveryUrl, validDiscoveryUrl, discoveryRetry]);
   /**
    * Per-row client_secret values (keyed by row index). These are LOCAL state —
    * they are NEVER stored on CredentialSlotRow, NEVER flow into capabilitiesFromForm,
@@ -519,7 +555,7 @@ export function ConnectorEditDialog({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || discoveringHosts) return;
     if (!form.name.trim()) {
       setError('Give this connector a service name first.');
       return;
@@ -594,6 +630,7 @@ export function ConnectorEditDialog({
     const formWithSecretRefs: ConnectorFormState = {
       ...form,
       credentialSlots: updatedSlots,
+      allowedHosts: [...new Set([...splitList(form.allowedHosts), ...discoveredHosts])].join(', '),
     };
 
     const body = {
@@ -904,23 +941,58 @@ export function ConnectorEditDialog({
               </div>
             )}
 
-            {/* Allowed hosts — relevant to direct-api + cli (MCP reach derives
-                from its own server config, so we hide it for the MCP mechanism). */}
-            {form.mechanism !== 'mcp' && (
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="connector-hosts">
-                  Allowed hosts (comma-separated)
-                </Label>
-                <Input
-                  id="connector-hosts"
-                  type="text"
-                  placeholder="e.g. api.stripe.com"
-                  value={form.allowedHosts}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, allowedHosts: e.target.value }))
-                  }
-                />
-              </div>
+            {/* OAuth metadata and token endpoints can live on different hosts
+                than the MCP server. Keep their reach explicit and editable. */}
+            {(form.mechanism !== 'mcp' || form.transport === 'http') && (
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="connector-hosts">
+                    Allowed hosts (comma-separated)
+                  </FieldLabel>
+                  <Input
+                    id="connector-hosts"
+                    type="text"
+                    placeholder="e.g. api.stripe.com"
+                    value={form.allowedHosts}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, allowedHosts: e.target.value }))
+                    }
+                  />
+                  {form.mechanism === 'mcp' && (
+                    <FieldDescription>
+                      The server’s host is included automatically. OAuth hosts
+                      discovered below are added when you save. Enter any other
+                      hosts this connector needs here.
+                    </FieldDescription>
+                  )}
+                </Field>
+                {form.mechanism === 'mcp' && (
+                  <Field>
+                    <FieldTitle>OAuth hosts from MCP metadata</FieldTitle>
+                    <div role="status" aria-live="polite" className="min-w-0">
+                      {discoveringHosts ? (
+                        <FieldDescription>Discovering OAuth hosts…</FieldDescription>
+                      ) : currentDiscovery?.status === 'ready' ? (
+                        <>
+                          <ul className="flex flex-col gap-1 text-sm">
+                            {discoveredHosts.map((host) => <li key={host} className="break-all">{host}</li>)}
+                          </ul>
+                          <FieldDescription>These hosts will be included in the allowlist when you save.</FieldDescription>
+                        </>
+                      ) : currentDiscovery?.status === 'error' ? (
+                        <>
+                          <FieldDescription>Could not discover OAuth hosts. Check the URL, retry, or enter the hosts manually above.</FieldDescription>
+                          <Button type="button" variant="outline" size="sm" onClick={() => setDiscoveryRetry((n) => n + 1)}>
+                            Retry discovery
+                          </Button>
+                        </>
+                      ) : (
+                        <FieldDescription>Enter a public HTTPS MCP URL to discover its OAuth hosts.</FieldDescription>
+                      )}
+                    </div>
+                  </Field>
+                )}
+              </FieldGroup>
             )}
 
             {/* Structured credential-slot rows. */}
@@ -1082,6 +1154,10 @@ export function ConnectorEditDialog({
                                 Fill these in only if the service doesn't support
                                 automatic registration.
                               </p>
+                              <p className="break-words text-xs text-muted-foreground">
+                                Register this redirect URI with the service:{' '}
+                                <code className="break-all">{window.location.origin}/api/connectors/oauth/callback</code>
+                              </p>
                               <div className="flex flex-col gap-1.5">
                                 <Label
                                   htmlFor={`slot-clientid-${i}`}
@@ -1182,7 +1258,7 @@ export function ConnectorEditDialog({
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || discoveringHosts}>
               {busy ? 'Saving…' : 'Save'}
             </Button>
           </div>

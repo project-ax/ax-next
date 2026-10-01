@@ -216,6 +216,90 @@ function fakeRes(): CapturedRes {
   return { res, state };
 }
 
+describe('OAuth host discovery route', () => {
+  const request = () => fakeReq({ body: Buffer.from(JSON.stringify({ url: 'https://mcp.example.com/mcp' })) });
+  const auth = { 'auth:require-user': () => ({ user: { id: 'owner', isAdmin: false } }) };
+
+  it('previews an unsaved URL for an authenticated owner without reading connectors, credentials or writing state', async () => {
+    const preview = vi.fn(async () => ({ hosts: ['auth.example.com', 'tokens.example.com'] }));
+    const { deps, calls, store } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).discoverHosts(request(), res as never);
+    expect(state).toEqual({ status: 200, json: { hosts: ['auth.example.com', 'tokens.example.com'] } });
+    expect(preview).toHaveBeenCalledWith({ resourceUrl: 'https://mcp.example.com/mcp' });
+    expect(calls.map(({ hook }) => hook)).toEqual(['auth:require-user']);
+    expect(store.putPending).not.toHaveBeenCalled();
+  });
+
+  it('rejects unauthenticated callers before any network request', async () => {
+    const preview = vi.fn();
+    const { deps } = makeDeps({ 'auth:require-user': () => { throw reject({ reason: 'login required' }); } }, { flow: fakeFlow({ discoverHosts: preview }) });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).discoverHosts(request(), res as never);
+    expect(state.status).toBe(401);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it.each(['null', '{}', '{', '{"url":3}', '{"url":"http://example.com"}', '{"url":"https://user:secret@example.com"}'])('rejects malformed or unsafe preview body %s', async (body) => {
+    const preview = vi.fn();
+    const { deps } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).discoverHosts(fakeReq({ body: Buffer.from(body) }), res as never);
+    expect(state.status).toBe(400);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('caps request bodies and reflects neither the draft URL nor provider errors', async () => {
+    const preview = vi.fn(async () => { throw new Error('SECRET_MARKER query or provider body'); });
+    const { deps, logger } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const oversized = fakeRes();
+    await handlers.discoverHosts(fakeReq({ body: Buffer.alloc(4097) }), oversized.res as never);
+    expect(oversized.state.status).toBe(413);
+    expect(preview).not.toHaveBeenCalled();
+    const failure = fakeRes();
+    await handlers.discoverHosts(request(), failure.res as never);
+    expect(failure.state.status).toBe(502);
+    expect(JSON.stringify(failure.state)).not.toContain('SECRET_MARKER');
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('SECRET_MARKER');
+  });
+
+  it('bounds per-user attempts, expires old entries, and releases capacity after failure', async () => {
+    const preview = vi.fn(async () => { throw new Error('failed'); });
+    const { deps } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    let time = 1_000_000;
+    deps.now = () => time;
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    for (let i = 0; i < 6; i++) await handlers.discoverHosts(request(), fakeRes().res as never);
+    const limited = fakeRes();
+    await handlers.discoverHosts(request(), limited.res as never);
+    expect(limited.state.status).toBe(429);
+    expect(preview).toHaveBeenCalledTimes(6);
+    time += 60_001;
+    const later = fakeRes();
+    await handlers.discoverHosts(request(), later.res as never);
+    expect(later.state.status).toBe(502);
+    expect(preview).toHaveBeenCalledTimes(7);
+  });
+
+  it('bounds concurrent previews', async () => {
+    let finish!: (result: { hosts: string[] }) => void;
+    const waiting = new Promise<{ hosts: string[] }>((resolve) => { finish = resolve; });
+    const preview = vi.fn(() => waiting);
+    const { deps } = makeDeps(auth, { flow: fakeFlow({ discoverHosts: preview }) });
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const requests = Array.from({ length: 4 }, () => handlers.discoverHosts(request(), fakeRes().res as never));
+    await Promise.resolve();
+    await Promise.resolve();
+    const limited = fakeRes();
+    await handlers.discoverHosts(request(), limited.res as never);
+    expect(limited.state.status).toBe(429);
+    expect(preview).toHaveBeenCalledTimes(4);
+    finish({ hosts: ['auth.example.com'] });
+    await Promise.all(requests);
+  });
+});
+
 // PluginError-ish reject (the duck-typed catch keys on instanceof PluginError
 // OR isRejection; a thrown Rejection object exercises the isRejection branch).
 function rejectThrow(reason: string): never {
@@ -229,6 +313,37 @@ beforeEach(() => {
 });
 
 describe('mcp-oauth begin route', () => {
+  it.each([
+    { scopes: undefined, expected: 'discovered.read' },
+    { scopes: [] as string[], expected: 'discovered.read' },
+    { scopes: ['configured.read'], expected: 'configured.read' },
+  ])('threads the selected scope through registration, authorization and pending state: $expected', async ({ scopes, expected }) => {
+    const flow = fakeFlow({ discover: vi.fn(async () => ({
+      authServerUrl: 'https://auth.example.com',
+      metadata: {
+        issuer: 'https://auth.example.com',
+        authorization_endpoint: 'https://auth.example.com/authorize',
+        token_endpoint: 'https://auth.example.com/token',
+        response_types_supported: ['code'],
+      },
+      scope: 'discovered.read',
+    })) });
+    const { deps, store } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture({ credentials: [{
+        slot: 'oauth-main', kind: 'oauth', server: 'srv', ...(scopes ? { scopes } : {}),
+      }] }),
+    }, { flow });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }), res,
+    );
+    expect(state.status).toBe(200);
+    expect(flow.ensureClient).toHaveBeenCalledWith(expect.objectContaining({ scope: expected }));
+    expect(flow.buildAuthorization).toHaveBeenCalledWith(expect.objectContaining({ scope: expected }));
+    expect(store.putPending).toHaveBeenCalledWith(expect.objectContaining({ scope: expected }));
+  });
+
   it('1. happy path → 200 { authorizationUrl }; putPending(state,userId) called; the shared client row is never written', async () => {
     // The real store has no putClient any more. Plant one on the double so that a
     // stray begin -> putClient call (the TASK-696 bug) is observable, not a TypeError
@@ -263,6 +378,7 @@ describe('mcp-oauth begin route', () => {
     expect(pending.connectorId).toBe('conn-1');
     expect(pending.codeVerifier).toBe('verifier-0');
     expect(pending.resource).toBe('https://mcp.example.com/mcp');
+    expect(pending.issuerRequired).toBe(false);
     // The redirectUri threaded to the SDK is publicOrigin + the callback path.
     expect((flow.ensureClient as ReturnType<typeof vi.fn>).mock.calls[0]![0].redirectUri).toBe(
       REDIRECT_URI,
@@ -1220,7 +1336,7 @@ describe('mcp-oauth callback route', () => {
     expect(setSpy).not.toHaveBeenCalled();
   });
 
-  it('7. provider error (?error=access_denied) → redirect oauth=error; peek + consume + set NOT reached', async () => {
+  it('provider denial consumes the user-bound state and returns the connector so the popup can report failure', async () => {
     const setSpy = vi.fn();
     const store = storeWithPending(pending);
     const { deps } = makeDeps(
@@ -1237,9 +1353,74 @@ describe('mcp-oauth callback route', () => {
       res,
     );
     expect(state.redirectUrl).toContain('oauth=error');
-    expect(store.getPending).not.toHaveBeenCalled();
-    expect(store.consumePending).not.toHaveBeenCalled();
+    expect(state.redirectUrl).toContain('connector=conn-1');
+    expect(store.getPending).toHaveBeenCalledWith('STATE0');
+    expect(store.consumePending).toHaveBeenCalledTimes(1);
     expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it('another user cannot cancel a pending authorization with a provider error', async () => {
+    const store = storeWithPending(pending);
+    const { deps, flow } = makeDeps({
+      'auth:require-user': () => ({ user: { id: 'other-user', isAdmin: false } }),
+    }, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { error: 'access_denied', state: 'STATE0' } }), res,
+    );
+    expect(state.status).toBe(403);
+    expect(state.redirectUrl).toBeUndefined();
+    expect(store.consumePending).not.toHaveBeenCalled();
+    expect(flow.redeemCode).not.toHaveBeenCalled();
+  });
+
+  it('a provider denial with no state is rejected without touching pending authorizations', async () => {
+    const { deps, store } = makeDeps({ 'auth:require-user': () => OK_USER });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(fakeReq({ query: { error: 'access_denied' } }), res);
+    expect(state.status).toBe(400);
+    expect(store.getPending).not.toHaveBeenCalled();
+  });
+
+  it.each([{ code: 'c' }, { error: 'access_denied' }])('rejects a mismatching response issuer before consuming state: %j', async (response) => {
+    const store = storeWithPending(pending);
+    const { deps, flow } = makeDeps({ 'auth:require-user': () => OK_USER }, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { ...response, state: 'STATE0', iss: 'https://other.example.com' } }), res,
+    );
+    expect(state.status).toBe(400);
+    expect(state.json).toEqual({ error: 'authorization_server_mismatch' });
+    expect(store.consumePending).not.toHaveBeenCalled();
+    expect(flow.redeemCode).not.toHaveBeenCalled();
+  });
+
+  it('accepts a response issuer matching the pending authorization server', async () => {
+    const store = storeWithPending(pending);
+    const { deps, flow } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture(),
+      'credentials:set': () => undefined,
+    }, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { code: 'c', state: 'STATE0', iss: pending.authServerUrl } }), res,
+    );
+    expect(state.redirectUrl).toContain('oauth=success');
+    expect(flow.redeemCode).toHaveBeenCalledOnce();
+  });
+
+  it('requires iss when the authorization server advertised issuer identification', async () => {
+    const store = storeWithPending({ ...pending, issuerRequired: true });
+    const { deps, flow } = makeDeps({ 'auth:require-user': () => OK_USER }, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { code: 'c', state: 'STATE0' } }), res,
+    );
+    expect(state.status).toBe(400);
+    expect(state.json).toEqual({ error: 'authorization_server_mismatch' });
+    expect(store.consumePending).not.toHaveBeenCalled();
+    expect(flow.redeemCode).not.toHaveBeenCalled();
   });
 
   it('unauthenticated callback → 401', async () => {

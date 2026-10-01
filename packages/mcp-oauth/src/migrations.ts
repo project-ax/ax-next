@@ -48,6 +48,7 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS cred_scope TEXT NOT NULL DEFAULT 'agent'`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_id TEXT`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_secret TEXT`.execute(db);
+  await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS issuer_required BOOLEAN NOT NULL DEFAULT false`.execute(db);
 }
 
 export interface McpOAuthClientRow {
@@ -66,6 +67,7 @@ export interface McpOAuthPendingRow {
   slot: string;
   code_verifier: string;
   auth_server_url: string;
+  issuer_required: boolean;
   client_key: string;
   resource: string;
   scope: string | null;

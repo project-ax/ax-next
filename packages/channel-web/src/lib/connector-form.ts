@@ -335,8 +335,8 @@ export function capabilitiesFromForm(
     }
   }
 
-  // Derive egress hosts from http MCP server URLs. The MCP form has no explicit
-  // allowedHosts field, but the connector's top-level `allowedHosts` is the ONLY
+  // Derive egress hosts from http MCP server URLs. Additional OAuth hosts are
+  // explicit in the form; the connector's top-level `allowedHosts` is the ONLY
   // source the credential-proxy egress lock AND the mcp-oauth SSRF guard read — so
   // without this an http MCP connector (and any OAuth on it) can never reach its
   // own server. Union, preserving any explicitly-entered hosts.

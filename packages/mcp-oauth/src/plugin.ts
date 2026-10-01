@@ -59,6 +59,7 @@ export interface McpOAuthPluginConfig {
   testOverrides?: {
     refresh?: ResolverDeps['refresh'];
     discover?: typeof import('./oauth-flow.js').discover;
+    discoverHosts?: typeof import('./host-discovery.js').discoverOAuthHosts;
     ensureClient?: typeof import('./oauth-flow.js').ensureClient;
     buildAuthorization?: typeof import('./oauth-flow.js').buildAuthorization;
     redeemCode?: typeof import('./oauth-flow.js').redeemCode;
@@ -257,6 +258,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
           // calls so begin/callback run without a live auth server. Each falls
           // through to the real oauth-flow function when unset (production).
           flow: {
+            ...(config.testOverrides?.discoverHosts ? { discoverHosts: config.testOverrides.discoverHosts } : {}),
             discover: config.testOverrides?.discover ?? discover,
             ensureClient: config.testOverrides?.ensureClient ?? ensureClient,
             buildAuthorization: config.testOverrides?.buildAuthorization ?? buildAuthorization,

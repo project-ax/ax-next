@@ -68,6 +68,7 @@ function rowToPending(r: {
   slot: string;
   code_verifier: string;
   auth_server_url: string;
+  issuer_required: boolean;
   client_key: string;
   resource: string;
   scope: string | null;
@@ -86,6 +87,7 @@ function rowToPending(r: {
     slot: r.slot,
     codeVerifier: r.code_verifier,
     authServerUrl: r.auth_server_url,
+    issuerRequired: r.issuer_required,
     clientKey: r.client_key,
     // NULL columns ⇒ ABSENT keys (never `clientId: undefined`): a pre-TASK-696 row
     // has no client of its own, and the callback keys its fallback off that.
@@ -126,6 +128,7 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           slot: p.slot,
           code_verifier: p.codeVerifier,
           auth_server_url: p.authServerUrl,
+          issuer_required: p.issuerRequired ?? false,
           client_key: p.clientKey,
           resource: p.resource,
           scope: p.scope ?? null,

@@ -1,5 +1,28 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
-import { beginOAuth, getOAuthStatus } from '../connectors-oauth';
+import { beginOAuth, discoverOAuthHosts, getOAuthStatus } from '../connectors-oauth';
+
+describe('discoverOAuthHosts', () => {
+  it('POSTs only the draft URL, with authentication/CSRF headers and a cancellation signal', async () => {
+    const signal = new AbortController().signal;
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ hosts: ['accounts.google.com', 'oauth2.googleapis.com'] })));
+    expect(await discoverOAuthHosts('https://gmailmcp.googleapis.com/mcp/v1', signal)).toEqual({ hosts: ['accounts.google.com', 'oauth2.googleapis.com'] });
+    expect(fetch).toHaveBeenCalledWith('/api/connectors/oauth/discover-hosts', expect.objectContaining({
+      method: 'POST', credentials: 'include', signal,
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: JSON.stringify({ url: 'https://gmailmcp.googleapis.com/mcp/v1' }),
+    }));
+  });
+
+  it('returns a neutral discovery failure rather than reflecting provider content', async () => {
+    globalThis.fetch = vi.fn(async () => new Response('untrusted response', { status: 502 }));
+    await expect(discoverOAuthHosts('https://mcp.example.com')).rejects.toThrow('Retry or enter the hosts manually');
+  });
+
+  it.each([null, {}, { hosts: 'wrong' }, { hosts: [1] }, { hosts: [''] }, { hosts: Array(13).fill('example.com') }])('rejects an invalid host preview %j before it reaches the dialog', async (body) => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(body)));
+    await expect(discoverOAuthHosts('https://mcp.example.com')).rejects.toThrow('Retry or enter the hosts manually');
+  });
+});
 
 describe('beginOAuth', () => {
   it('POSTs connectorId/agentId and returns authorizationUrl', async () => {

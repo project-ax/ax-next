@@ -8,6 +8,7 @@ import {
 import type { discover, ensureClient, buildAuthorization, redeemCode } from './oauth-flow.js';
 import { isOwnClientSecretRef } from './client-secret-ref.js';
 import { NeedsReconnectError } from './resolver.js';
+import { discoverOAuthHosts, metadataUrl } from './host-discovery.js';
 import type { McpOAuthStore } from './store.js';
 import {
   clientKeyOf,
@@ -78,6 +79,7 @@ export interface McpOAuthRouteDeps {
   bus: { call<I, O>(hook: string, ctx: AgentContext, input: I): Promise<O> };
   store: McpOAuthStore;
   flow: {
+    discoverHosts?: typeof discoverOAuthHosts;
     discover: typeof discover;
     ensureClient: typeof ensureClient;
     buildAuthorization: typeof buildAuthorization;
@@ -131,6 +133,7 @@ function neutralMessage(err: unknown): string {
 }
 
 export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
+  discoverHosts(req: RouteRequest, res: RouteResponse): Promise<void>;
   begin(req: RouteRequest, res: RouteResponse): Promise<void>;
   callback(req: RouteRequest, res: RouteResponse): Promise<void>;
   status(req: RouteRequest, res: RouteResponse): Promise<void>;
@@ -185,6 +188,52 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         return null;
       }
       throw err;
+    }
+  }
+
+  // Bound the draft-URL preview separately from OAuth. It can reach public
+  // metadata hosts before a connector exists, but never registers a client,
+  // reads the vault or stores a grant. Avoid unbounded concurrent network work.
+  let activePreviews = 0;
+  const previewAttempts = new Map<string, number[]>();
+  async function discoverHosts(req: RouteRequest, res: RouteResponse): Promise<void> {
+    const user = await requireUser(req, res);
+    if (!user) return;
+    if (req.body.length > 4096) {
+      res.status(413).json({ error: 'body-too-large' });
+      return;
+    }
+    let url: string;
+    try {
+      const body = JSON.parse(req.body.toString('utf8')) as { url?: unknown };
+      if (!body || typeof body.url !== 'string') throw new Error('missing URL');
+      url = metadataUrl(body.url).href;
+    } catch {
+      res.status(400).json({ error: 'invalid-mcp-url', message: 'Enter a public HTTPS MCP URL without embedded credentials or a fragment.' });
+      return;
+    }
+    const cutoff = now() - 60_000;
+    for (const [id, attempts] of previewAttempts) {
+      const recent = attempts.filter((time) => time > cutoff);
+      if (recent.length) previewAttempts.set(id, recent);
+      else previewAttempts.delete(id);
+    }
+    const attempts = previewAttempts.get(user.id) ?? [];
+    if (activePreviews >= 4 || attempts.length >= 6 || (!previewAttempts.has(user.id) && previewAttempts.size >= 512)) {
+      res.header('Retry-After', '60');
+      res.status(429).json({ error: 'discovery-rate-limited', message: 'Please wait a minute before retrying OAuth host discovery.' });
+      return;
+    }
+    previewAttempts.set(user.id, [...attempts, now()]);
+    activePreviews++;
+    try {
+      const result = await (flow.discoverHosts ?? discoverOAuthHosts)({ resourceUrl: url });
+      res.status(200).json(result);
+    } catch (err) {
+      logger.warn('mcp_oauth_host_discovery_failed', { name: err instanceof Error ? err.name : 'unknown' });
+      res.status(502).json({ error: 'oauth-host-discovery-failed', message: 'Could not discover OAuth hosts. Check the MCP URL, retry, or enter the hosts manually.' });
+    } finally {
+      activePreviews--;
     }
   }
 
@@ -303,7 +352,6 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
     const resource = server.url;
     const allowedHosts = new Set(caps.allowedHosts);
-    const scope = slot.scopes?.join(' ');
 
     // Resolve a pinned client (non-DCR). DCR is the default when no clientId.
     let pinned: { clientId: string; clientSecret?: string } | undefined;
@@ -334,11 +382,14 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // is an upstream/metadata problem; report a neutral 502 (message is a
     // host/url, never a secret) and store nothing.
     try {
-      const { authServerUrl, metadata } = await flow.discover({
+      const { authServerUrl, metadata, scope: discoveredScope } = await flow.discover({
         resourceUrl: resource,
         ...(slot.authServerUrl !== undefined ? { pinnedAuthServerUrl: slot.authServerUrl } : {}),
         allowedHosts,
       });
+      // Explicit connector scopes bound the grant. Otherwise use the resource's
+      // advertised requirements consistently for DCR, consent and token storage.
+      const scope = slot.scopes?.join(' ') || discoveredScope;
 
       const clientKey = clientKeyOf(connectorId, authServerUrl);
       const client = await flow.ensureClient({
@@ -379,6 +430,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         slot: slot.slot,
         codeVerifier,
         authServerUrl,
+        issuerRequired: (metadata as { authorization_response_iss_parameter_supported?: unknown })
+          .authorization_response_iss_parameter_supported === true,
         clientKey,
         // The client THIS authorization was started with. The callback redeems the
         // code as it, and the token blob records it, so the token is refreshed by
@@ -411,21 +464,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const user = await requireUser(req, res);
     if (!user) return;
 
-    // Provider-side denial (e.g. user clicked "Deny"). We don't yet have a
-    // trusted return target keyed off state, but the provider only ever
-    // redirects back here for a state we minted, so reflect the connector if we
-    // can recover it from the (still-present) pending row WITHOUT consuming it?
-    // No — keep it simple and safe: redirect to the generic return path with
-    // oauth=error. We do NOT consume the pending row (the user may retry).
     const providerError = req.query.error;
-    if (providerError) {
-      res.redirect(`${config.publicOrigin}${config.connectorReturnPath}?oauth=error`);
-      return;
-    }
-
     const state = req.query.state;
     const code = req.query.code;
-    if (!state || !code) {
+    if (!state || (!code && !providerError)) {
       res.status(400).json({ error: 'missing code or state' });
       return;
     }
@@ -446,11 +488,32 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(403).json({ error: 'state_user_mismatch' });
       return;
     }
+    // RFC 9207: when the provider identifies the response issuer, it must match
+    // the authorization server selected at begin. Reject before burning state
+    // or sending the code to a token endpoint. Providers that omit iss still
+    // use the server bound to this single-use state.
+    const issuer = req.query.iss;
+    if ((issuer !== undefined || peeked.issuerRequired) && issuer !== peeked.authServerUrl) {
+      res.status(400).json({ error: 'authorization_server_mismatch' });
+      return;
+    }
     // The user matches — now atomically consume (single-use + TTL gate). A null
     // here means it expired or a concurrent request already consumed it.
     const pending = await store.consumePending(state, now(), pendingTtlMs);
     if (!pending) {
       res.status(400).json({ error: 'invalid_or_expired_state' });
+      return;
+    }
+
+    // A denied grant ends this authorization too. Return the trusted connector
+    // id so the popup can notify its own connect widget, and discard the pending
+    // verifier/client secret. A retry starts with a fresh state and PKCE pair.
+    if (providerError) {
+      res.redirect(returnUrl(pending.connectorId, 'error'));
+      return;
+    }
+    if (!code) {
+      res.status(400).json({ error: 'missing code or state' });
       return;
     }
 
@@ -726,7 +789,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
   }
 
-  return { begin, callback, status };
+  return { discoverHosts, begin, callback, status };
 }
 
 /**
@@ -746,6 +809,7 @@ export async function registerMcpOAuthRoutes(
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
+    { method: 'POST', path: '/api/connectors/oauth/discover-hosts', handler: handlers.discoverHosts },
     { method: 'POST', path: '/api/connectors/oauth/begin', handler: handlers.begin },
     { method: 'GET', path: '/api/connectors/oauth/callback', handler: handlers.callback },
     { method: 'GET', path: '/api/connectors/oauth/status', handler: handlers.status },
