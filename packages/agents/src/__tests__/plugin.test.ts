@@ -157,6 +157,11 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
           degradation:
             "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected",
         },
+        {
+          hook: 'models:get-policy',
+          degradation:
+            "the model allow-list, the Default model and the runner rule fall back to the built-in list (today's behaviour)",
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
     });
@@ -825,4 +830,168 @@ describe('@ax/agents credential purge on delete', () => {
     );
     expect(agents.find((a) => a.id === created.agent.id)).toBeUndefined();
   });
+});
+describe('model policy (models:get-policy)', () => {
+  const SONNET = 'anthropic/claude-sonnet-4-6';
+  const OPUS = 'anthropic/claude-opus-4-7';
+  const DEEPSEEK = 'openrouter/deepseek/deepseek-v4-pro'; // not in the built-in list
+
+  function policyServices(state: { allowed: string[]; default: string }) {
+    return {
+      'models:get-policy': async () => ({
+        allowed: state.allowed,
+        default: state.default,
+        source: 'admin',
+        version: 1,
+      }),
+    };
+  }
+  const actor = { userId: 'u1', isAdmin: false };
+
+  it('create accepts a model only the policy allows, and derives the aisdk runner for it', async () => {
+    const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+    const h = await makeHarness({ extraServices: policyServices(state) });
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx({ userId: 'u1' }), {
+      actor,
+      input: makeInput({ model: DEEPSEEK }),
+    });
+    expect(created.agent).toMatchObject({ model: DEEPSEEK, runner: 'aisdk' });
+  });
+
+  it('create rejects a model the policy removed even though the built-in list has it', async () => {
+    const state = { allowed: [SONNET], default: SONNET };
+    const h = await makeHarness({ extraServices: policyServices(state) });
+    await expect(
+      h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx({ userId: 'u1' }), {
+        actor,
+        input: makeInput({ model: OPUS }),
+      }),
+    ).rejects.toThrow(/not in the allow-list/);
+  });
+
+  it('update follows the policy live: a model allowed a moment ago is refused once removed', async () => {
+    const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+    const h = await makeHarness({ extraServices: policyServices(state) });
+    const ctx = h.ctx({ userId: 'u1' });
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, { actor, input: makeInput({ model: SONNET }) });
+    state.allowed = [SONNET];
+    await expect(
+      h.bus.call<UpdateInput, UpdateOutput>('agents:update', ctx, {
+        actor,
+        agentId: created.agent.id,
+        patch: { model: DEEPSEEK },
+      }),
+    ).rejects.toThrow(/not in the allow-list/);
+  });
+
+  it('update re-derives the runner when the model changes', async () => {
+    const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+    const h = await makeHarness({ extraServices: policyServices(state) });
+    const ctx = h.ctx({ userId: 'u1' });
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, { actor, input: makeInput({ model: SONNET }) });
+    const updated = await h.bus.call<UpdateInput, UpdateOutput>('agents:update', ctx, {
+      actor,
+      agentId: created.agent.id,
+      patch: { model: DEEPSEEK },
+    });
+    expect(updated.agent).toMatchObject({ model: DEEPSEEK, runner: 'aisdk' });
+  });
+
+  it('update refuses a runner-only change that contradicts the stored model', async () => {
+    const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+    const h = await makeHarness({ extraServices: policyServices(state) });
+    const ctx = h.ctx({ userId: 'u1' });
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, { actor, input: makeInput({ model: DEEPSEEK }) });
+    await expect(
+      h.bus.call<UpdateInput, UpdateOutput>('agents:update', ctx, {
+        actor,
+        agentId: created.agent.id,
+        patch: { runner: 'claude-sdk' },
+      }),
+    ).rejects.toThrow(/only run Anthropic models/);
+  });
+
+  it('keeps today\'s behaviour when @ax/model-policy is not loaded (built-in list)', async () => {
+    const h = await makeHarness();
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx({ userId: 'u1' }), {
+      actor,
+      input: makeInput({ model: OPUS }),
+    });
+    expect(created.agent.model).toBe(OPUS);
+  });
+  describe('lazy swap in agents:resolve', () => {
+    it('runs a no-longer-allowed agent on the Default, reports requestedModel, and leaves the stored row alone', async () => {
+      const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+      const h = await makeHarness({ extraServices: policyServices(state) });
+      const ctx = h.ctx({ userId: 'u1' });
+      const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, { actor, input: makeInput({ model: DEEPSEEK }) });
+      state.allowed = [SONNET]; // the admin removes DEEPSEEK
+
+      const resolved = await h.bus.call<ResolveInput, ResolveOutput>('agents:resolve', ctx, { agentId: created.agent.id, userId: 'u1' });
+      expect(resolved.agent).toMatchObject({ model: SONNET, runner: 'claude-sdk', requestedModel: DEEPSEEK });
+
+      const listed = await h.bus.call<ListForUserInput, ListForUserOutput>('agents:list-for-user', ctx, { userId: 'u1' });
+      expect(listed.agents[0]).toMatchObject({ model: DEEPSEEK, runner: 'aisdk' });
+      expect(listed.agents[0]!.requestedModel).toBeUndefined();
+    });
+
+    it('brings the agent back when the model is added again', async () => {
+      const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+      const h = await makeHarness({ extraServices: policyServices(state) });
+      const ctx = h.ctx({ userId: 'u1' });
+      const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, { actor, input: makeInput({ model: DEEPSEEK }) });
+      state.allowed = [SONNET];
+      await h.bus.call<ResolveInput, ResolveOutput>('agents:resolve', ctx, { agentId: created.agent.id, userId: 'u1' });
+      state.allowed = [SONNET, DEEPSEEK];
+      const back = await h.bus.call<ResolveInput, ResolveOutput>('agents:resolve', ctx, { agentId: created.agent.id, userId: 'u1' });
+      expect(back.agent).toMatchObject({ model: DEEPSEEK, runner: 'aisdk' });
+      expect(back.agent.requestedModel).toBeUndefined();
+    });
+
+    it('an update that does not touch the model never persists the swapped-in Default', async () => {
+      const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+      const h = await makeHarness({ extraServices: policyServices(state) });
+      const ctx = h.ctx({ userId: 'u1' });
+      const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, { actor, input: makeInput({ model: DEEPSEEK }) });
+      state.allowed = [SONNET];
+      await h.bus.call<UpdateInput, UpdateOutput>('agents:update', ctx, {
+        actor,
+        agentId: created.agent.id,
+        patch: { displayName: 'Renamed' },
+      });
+      const listed = await h.bus.call<ListForUserInput, ListForUserOutput>('agents:list-for-user', ctx, { userId: 'u1' });
+      expect(listed.agents[0]).toMatchObject({ displayName: 'Renamed', model: DEEPSEEK, runner: 'aisdk' });
+    });
+
+    it("an explicit model choice on a swapped agent is saved as the owner's choice", async () => {
+      const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+      const h = await makeHarness({ extraServices: policyServices(state) });
+      const ctx = h.ctx({ userId: 'u1' });
+      const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, { actor, input: makeInput({ model: DEEPSEEK }) });
+      state.allowed = [SONNET];
+      await h.bus.call<UpdateInput, UpdateOutput>('agents:update', ctx, {
+        actor,
+        agentId: created.agent.id,
+        patch: { model: SONNET },
+      });
+      const resolved = await h.bus.call<ResolveInput, ResolveOutput>('agents:resolve', ctx, { agentId: created.agent.id, userId: 'u1' });
+      expect(resolved.agent).toMatchObject({ model: SONNET, runner: 'claude-sdk' });
+      expect(resolved.agent.requestedModel).toBeUndefined();
+    });
+
+    it('heals an existing claude-sdk agent on a non-Anthropic model so it runs on aisdk', async () => {
+      const state = { allowed: [SONNET, DEEPSEEK], default: SONNET };
+      const h = await makeHarness({ extraServices: policyServices(state) });
+      const ctx = h.ctx({ userId: 'u1' });
+      const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, { actor, input: makeInput({ model: DEEPSEEK }) });
+      // Recreate the broken combination that exists in production today.
+      const { sql } = await import('kysely');
+      const { db } = await h.bus.call<unknown, { db: import('kysely').Kysely<unknown> }>('database:get-instance', h.ctx(), {});
+      await sql`UPDATE agents_v1_agents SET runner = 'claude-sdk' WHERE agent_id = ${created.agent.id}`.execute(db);
+
+      const resolved = await h.bus.call<ResolveInput, ResolveOutput>('agents:resolve', ctx, { agentId: created.agent.id, userId: 'u1' });
+      expect(resolved.agent).toMatchObject({ model: DEEPSEEK, runner: 'aisdk' });
+    });
+  });
+
 });

@@ -589,6 +589,12 @@ export interface AgentStoreCreateArgs {
 }
 
 export interface AgentStore {
+  /**
+   * How many agents use each of `models`, across ALL owners (counts only, no
+   * identities). Models with no agent are omitted; result is ordered by model.
+   * Admin-only caller (the model-policy save confirmation), not ACL-scoped.
+   */
+  countByModel(models: readonly string[]): Promise<Array<{ model: string; agentCount: number }>>;
   getById(agentId: string): Promise<Agent | null>;
   listScoped(scope: AgentScope): Promise<Agent[]>;
   create(args: AgentStoreCreateArgs): Promise<Agent>;
@@ -843,6 +849,18 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         .orderBy('agent_id')
         .execute();
       return rows.map(rowToAgent);
+    },
+
+    async countByModel(models) {
+      if (models.length === 0) return [];
+      const rows = await db
+        .selectFrom('agents_v1_agents')
+        .select(['model', sql<string>`count(*)`.as('n')])
+        .where('model', 'in', [...models])
+        .groupBy('model')
+        .orderBy('model')
+        .execute();
+      return rows.map((r) => ({ model: r.model, agentCount: Number(r.n) }));
     },
 
     async listPersonalAgentOwners() {

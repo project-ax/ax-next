@@ -87,4 +87,15 @@ describe('agents return schemas', () => {
     const full: ResolveOutput = { agent };
     expect(ResolveOutputSchema.parse(full)).toEqual(full);
   });
+  // `requestedModel` marks an agent whose model the admin removed (the lazy swap
+  // in agents:resolve). The schema strips undeclared keys, so it must be declared.
+  it('keeps requestedModel when present and stays valid without it', () => {
+    const parsed = ResolveOutputSchema.parse({
+      agent: { ...agent, requestedModel: 'openrouter/moonshotai/kimi-k3' },
+    }) as { agent: Agent };
+    expect(parsed.agent.requestedModel).toBe('openrouter/moonshotai/kimi-k3');
+    expect(ResolveOutputSchema.safeParse({ agent }).success).toBe(true);
+    expect(ResolveOutputSchema.safeParse({ agent: { ...agent, requestedModel: 7 } }).success).toBe(false);
+  });
+
 });

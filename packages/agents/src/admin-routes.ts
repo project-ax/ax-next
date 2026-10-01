@@ -1,3 +1,5 @@
+import type { AgentStore } from './store.js';
+import { loadPolicy, type ModelPolicy } from './model-policy.js';
 import {
   isRejection,
   makeAgentContext,
@@ -390,6 +392,8 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     mcpConfigIds: a.mcpConfigIds,
     model: a.model,
     runner: a.runner,
+    ...(a.requestedModel !== undefined ? { requestedModel: a.requestedModel } : {}),
+
     workspaceRef: a.workspaceRef,
     skillAttachments: a.skillAttachments,
     connectorAttachments: a.connectorAttachments,
@@ -508,11 +512,12 @@ async function listTeamIdsForUser(
 }
 
 export interface AdminRouteDeps {
+  store: AgentStore;
   bus: HookBus;
   /** The agents allow-list (`provider/model-id` refs) — GET /admin/agents/models
    *  emits exactly these ids, decorated with whatever metadata the matching
    *  `models:list-supported:<provider>` registrants supply. */
-  allowedModels: readonly string[];
+  boot: ModelPolicy;
 }
 
 /** Local shape of a provider plugin's `models:list-supported:<provider>`
@@ -521,6 +526,10 @@ export interface AdminRouteDeps {
 interface ModelsListSupportedOutput {
   models: Array<{ id: string; label: string; kind: 'fast' | 'default' | 'either' }>;
 }
+
+const impactBodySchema = z
+  .object({ remove: z.array(z.string().max(200)).max(1000) })
+  .strict();
 
 export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
   // A per-handler ctx is acceptable for MVP (Task 9 spec). A subscriber
@@ -622,17 +631,39 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
      * routes first), so it can never be shadowed by `GET /admin/agents/:id`
      * with `id: 'models'`.
      */
+    /**
+     * POST /admin/agents/models/impact — how many agents use each model an
+     * admin is about to remove. Admin-only; counts across all owners, never
+     * identities. Used by the Models tab's save confirmation.
+     */
+    async impact(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      if (!actor.isAdmin) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const parsed = parseAndValidate(req.body, impactBodySchema);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      const remove = (parsed.value as { remove: string[] }).remove;
+      res.status(200).json({ affected: await deps.store.countByModel(remove) });
+    },
+
     async listModels(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
 
+      const policy = await loadPolicy(deps.bus, ctx, deps.boot);
       // Providers named by the allow-list, in first-appearance order. An
       // unparseable entry is skipped rather than rejected: `resolveAllowedModels`
       // already refuses to boot on a non-ref, so this is defence in depth, not a
       // second policy — and a read route is the wrong place to re-litigate a
       // boot-time decision.
       const providers: string[] = [];
-      for (const ref of deps.allowedModels) {
+      for (const ref of policy.allowed) {
         let provider: string;
         try {
           provider = parseModelRef(ref).provider;
@@ -654,10 +685,10 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         }
       }
 
-      const models = deps.allowedModels.map(
+      const models = policy.allowed.map(
         (ref) => metadata.get(ref) ?? { id: ref, label: ref, kind: 'either' as const },
       );
-      res.status(200).json({ models });
+      res.status(200).json({ models, defaultModel: policy.default });
     },
 
     /** GET /admin/agents/:id */
@@ -1109,9 +1140,10 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
 export async function registerAdminAgentRoutes(
   bus: HookBus,
   initCtx: AgentContext,
-  allowedModels: readonly string[],
+  boot: ModelPolicy,
+  store: AgentStore,
 ): Promise<Array<() => void>> {
-  const handlers = createAdminAgentRouteHandlers({ bus, allowedModels });
+  const handlers = createAdminAgentRouteHandlers({ bus, boot, store });
   const routes: Array<{
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
     path: string;
@@ -1122,6 +1154,8 @@ export async function registerAdminAgentRoutes(
     // Registered BEFORE the `:id` pattern route (Router.match checks exact
     // routes first) — see listModels' doc comment for why this is safe.
     { method: 'GET', path: '/admin/agents/models', handler: handlers.listModels },
+    { method: 'POST', path: '/admin/agents/models/impact', handler: handlers.impact },
+
     { method: 'GET', path: '/admin/agents/:id', handler: handlers.show },
     { method: 'PATCH', path: '/admin/agents/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/agents/:id', handler: handlers.destroy },

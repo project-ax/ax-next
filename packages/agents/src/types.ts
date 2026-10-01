@@ -66,6 +66,13 @@ export interface Agent {
    * The orchestrator resolves each via connectors:resolve into sandbox reach.
    */
   connectorAttachments: string[];
+  /**
+   * Set only on the record `agents:resolve` returns, when the admin has since
+   * removed this agent's stored model: `model` is then the Default and this is
+   * what the owner originally chose. Never persisted.
+   */
+  requestedModel?: string;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -90,7 +97,7 @@ export interface AgentInput {
   mcpConfigIds: string[];
   model: string;
   /**
-   * Runner id. Optional on create — the store defaults it to `'claude-sdk'`.
+   * Runner id. Optional on create — the runner follows the model's provider.
    * Typed `string` (not `RunnerId`) because the value arrives off the HTTP /
    * IPC wire unnarrowed; `validateRunner` rejects anything not in
    * `SUPPORTED_RUNNERS`.
@@ -170,6 +177,10 @@ const AgentSchema = z.object({
   workspaceRef: z.string().nullable(),
   skillAttachments: z.array(SkillAttachmentSchema),
   connectorAttachments: z.array(z.string()),
+  // Declared explicitly for the same reason as `runner`: a zod object strips
+  // undeclared keys, and this schema is the `returns` contract of agents:resolve.
+  requestedModel: z.string().optional(),
+
   createdAt: z.date(),
   updatedAt: z.date(),
 });
