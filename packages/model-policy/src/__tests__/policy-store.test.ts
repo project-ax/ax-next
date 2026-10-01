@@ -79,10 +79,12 @@ describe('createPolicyStore.read', () => {
   });
 
   it('falls back to the built-in policy, warns, and logs once when the saved document is corrupt', async () => {
-    const { store, storage, ctx, logger } = setup();
+    const { store, storage, ctx, logger, advance } = setup();
     storage.set(POLICY_STORAGE_KEY, new TextEncoder().encode('{nope'));
     const view = await store.read(ctx);
     expect(view).toMatchObject({ source: 'builtin', version: 0, warning: 'saved-policy-unreadable' });
+    advance(15_001);
+    await store.read(ctx);
     expect(logger.errors).toEqual(['model_policy_unreadable']);
   });
 

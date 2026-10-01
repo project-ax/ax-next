@@ -50,6 +50,7 @@ function clone(view: PolicyView): PolicyView {
 export function createPolicyStore(deps: PolicyStoreDeps): PolicyStore {
   const now = deps.now ?? (() => new Date());
   const ttlMs = deps.ttlMs ?? 15_000;
+  let unreadableLogged = false;
   let cache: { view: PolicyView; at: number } | null = null;
 
   // `storage:set` has no compare-and-swap, so the version check is only as
@@ -77,7 +78,10 @@ export function createPolicyStore(deps: PolicyStoreDeps): PolicyStore {
     const parsed = parseStored(out.value);
     if (parsed.kind === 'absent') return builtinView();
     if (parsed.kind === 'corrupt') {
-      ctx.logger.error('model_policy_unreadable', { key: POLICY_STORAGE_KEY });
+      if (!unreadableLogged) {
+        ctx.logger.error('model_policy_unreadable', { key: POLICY_STORAGE_KEY });
+        unreadableLogged = true;
+      }
       return builtinView('saved-policy-unreadable');
     }
     const d = parsed.doc;

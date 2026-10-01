@@ -29,6 +29,24 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 describe('fetchOpenRouterModels', () => {
+
+  it('stops reading and cancels an oversized streaming response', async () => {
+    let chunks = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunks += 1;
+        if (chunks <= 8) controller.enqueue(new Uint8Array(1024 * 1024));
+        else controller.close();
+      },
+      cancel() { cancelled = true; },
+    }, { highWaterMark: 0 });
+    const impl = (async () => new Response(stream)) as typeof fetch;
+    expect(await fetchOpenRouterModels(impl, BASE, 'key')).toEqual({ status: 'error', models: [] });
+    expect(cancelled).toBe(true);
+    expect(chunks).toBe(6);
+  });
+
   it('maps the public list to refs and labels and sends the key as a Bearer token', async () => {
     const s = stub(() =>
       json({

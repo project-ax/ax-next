@@ -1,3 +1,4 @@
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { PROVIDER_ENDPOINTS, isModelRef, parseModelRef, type AgentContext, type HookBus } from '@ax/core';
 import { MAX_REF_CHARS } from './shared.js';
 
@@ -37,13 +38,12 @@ export interface CatalogDeps {
 const LABEL_MAX = 120;
 const MODELS_PER_PROVIDER_MAX = 2000;
 // Control characters, soft hyphen, zero-width, bidirectional overrides/isolates, BOM.
-const UNSAFE_CHARS = /[\u0000-\u001F\u007F-\u009F\u00AD\u200B-\u200F\u2028-\u202E\u2060-\u206F\uFEFF]/g;
 // A ref is a routing key, so it gets a strict allow-list rather than a block-list.
 const SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]*$/;
 
 export function sanitizeLabel(raw: unknown, fallback: string): string {
   if (typeof raw !== 'string') return fallback;
-  const cleaned = raw.replace(UNSAFE_CHARS, ' ').replace(/\s+/g, ' ').trim().slice(0, LABEL_MAX).trim();
+  const cleaned = replaceSurfaceRewriters(raw).replace(/\p{Cf}/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, LABEL_MAX).trim();
   return cleaned.length > 0 ? cleaned : fallback;
 }
 
@@ -85,6 +85,8 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 interface ProviderState {
   good?: { models: CatalogModel[]; at: number };
   lastForcedAt?: number;
+  pending?: Promise<CatalogProvider>;
+  lastResult?: { provider: CatalogProvider; at: number };
 }
 
 export function createCatalog(deps: CatalogDeps): Catalog {
@@ -113,7 +115,7 @@ export function createCatalog(deps: CatalogDeps): Catalog {
     const hook = `models:list-supported:${p.id}`;
     if (deps.bus.hasService(hook)) {
       try {
-        const out = await deps.bus.call<Record<string, never>, { models?: unknown }>(hook, ctx, {});
+        const out = await withTimeout(deps.bus.call<Record<string, never>, { models?: unknown }>(hook, ctx, {}), timeoutMs);
         const models = normalizeModels(p.id, out.models);
         if (models.length > 0) return { id: p.id, name: p.name, status: 'fallback', models };
       } catch (err) {
@@ -133,11 +135,15 @@ export function createCatalog(deps: CatalogDeps): Catalog {
   ): Promise<CatalogProvider> {
     const st = states.get(p.id) ?? {};
     states.set(p.id, st);
+    if (st.pending !== undefined) return st.pending;
     const t = now();
     let force = false;
     if (refresh && (st.lastForcedAt === undefined || t - st.lastForcedAt >= minRefreshMs)) {
       force = true;
       st.lastForcedAt = t;
+    }
+    if (!force && st.lastResult !== undefined && t - st.lastResult.at < minRefreshMs) {
+      return structuredClone(st.lastResult.provider);
     }
     if (!force && st.good !== undefined && t - st.good.at < ttlMs) {
       return {
@@ -148,32 +154,43 @@ export function createCatalog(deps: CatalogDeps): Catalog {
         models: st.good.models,
       };
     }
-    let out: { status?: unknown; models?: unknown } | undefined;
-    try {
-      out = await withTimeout(
-        deps.bus.call<Record<string, never>, { status?: unknown; models?: unknown }>(
-          `models:list-available:${p.id}`,
-          ctx,
-          {},
-        ),
-        timeoutMs,
-      );
-    } catch (err) {
-      ctx.logger.warn('model_catalog_provider_failed', {
-        provider: p.id,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
-    if (out?.status === 'no-key') return { id: p.id, name: p.name, status: 'no-key', models: [] };
-    if (out?.status === 'live') {
-      const models = normalizeModels(p.id, out.models);
-      if (models.length > 0) {
-        const at = now();
-        st.good = { models, at };
-        return { id: p.id, name: p.name, status: 'live', fetchedAt: new Date(at).toISOString(), models };
+    async function fetchOne(): Promise<CatalogProvider> {
+      let out: { status?: unknown; models?: unknown } | undefined;
+      try {
+        out = await withTimeout(
+          deps.bus.call<Record<string, never>, { status?: unknown; models?: unknown }>(
+            `models:list-available:${p.id}`,
+            ctx,
+            {},
+          ),
+          timeoutMs,
+        );
+      } catch (err) {
+        ctx.logger.warn('model_catalog_provider_failed', {
+          provider: p.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
       }
+      if (out?.status === 'no-key') return { id: p.id, name: p.name, status: 'no-key', models: [] };
+      if (out?.status === 'live') {
+        const models = normalizeModels(p.id, out.models);
+        if (models.length > 0) {
+          const at = now();
+          st.good = { models, at };
+          return { id: p.id, name: p.name, status: 'live', fetchedAt: new Date(at).toISOString(), models };
+        }
+      }
+      return fallbackFor(ctx, p, st);
     }
-    return fallbackFor(ctx, p, st);
+    const pending = fetchOne();
+    st.pending = pending;
+    try {
+      const provider = await pending;
+      st.lastResult = { provider: structuredClone(provider), at: now() };
+      return provider;
+    } finally {
+      delete st.pending;
+    }
   }
 
   return {

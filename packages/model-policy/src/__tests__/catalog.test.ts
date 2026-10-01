@@ -116,6 +116,38 @@ describe('normalizeModels', () => {
 });
 
 describe('createCatalog.get', () => {
+  it('throttles refreshes after a failed first fetch, even without a good cache', async () => {
+    const { catalog, calls, advance } = boot({
+      'models:list-available:openrouter': async () => ({ status: 'error', models: [] }),
+    });
+    await catalog.get(ctx, { refresh: true });
+    await catalog.get(ctx, { refresh: true });
+    expect(calls['models:list-available:openrouter']).toBe(1);
+    advance(15_001);
+    await catalog.get(ctx, { refresh: true });
+    expect(calls['models:list-available:openrouter']).toBe(2);
+  });
+
+  it('coalesces simultaneous provider requests', async () => {
+    const { catalog, calls } = boot({
+      'models:list-available:openrouter': async () => live('openrouter/a/b'),
+    });
+    await Promise.all([catalog.get(ctx, { refresh: true }), catalog.get(ctx, { refresh: true })]);
+    expect(calls['models:list-available:openrouter']).toBe(1);
+  });
+
+  it('bounds fallback hooks as well as live hooks', async () => {
+    const { catalog } = boot({
+      'models:list-available:openrouter': async () => ({ status: 'error', models: [] }),
+      'models:list-supported:openrouter': () => new Promise(() => {}),
+    });
+    const answer = await Promise.race([
+      catalog.get(ctx, { refresh: false }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 200)),
+    ]);
+    expect(answer?.providers[0]?.status).toBe('error');
+  });
+
   it('omits providers that register no list-available hook', async () => {
     const { catalog } = boot({ 'models:list-available:openrouter': async () => live('openrouter/a/b') });
     const r = await catalog.get(ctx, { refresh: false });

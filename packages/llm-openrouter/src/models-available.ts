@@ -13,7 +13,34 @@ export const ModelsListAvailableOutputSchema = z.object({
 
 const LIST_TIMEOUT_MS = 10_000;
 const LIST_MAX_BYTES = 5 * 1024 * 1024;
+const LIST_MAX_MODELS = 2000;
 const ERROR: ModelsListAvailableOutput = { status: 'error', models: [] };
+
+
+/** Stop consuming an untrusted response as soon as its byte budget is exhausted. */
+async function readCatalogBody(res: Response, maxBytes: number): Promise<{ body: unknown; bytes: number }> {
+  if (res.body === null) throw new Error('Missing model catalog body');
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maxBytes) {
+        await reader.cancel();
+        throw new Error('Model catalog exceeds its byte budget');
+      }
+      parts.push(decoder.decode(chunk.value, { stream: true }));
+    }
+    parts.push(decoder.decode());
+    return { body: JSON.parse(parts.join('')) as unknown, bytes };
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 /**
  * GET `${baseUrl}/models` (a fixed URL, never caller-supplied). The endpoint is
@@ -30,16 +57,17 @@ export async function fetchOpenRouterModels(
   try {
     const res = await fetchImpl(`${baseUrl}/models`, {
       method: 'GET',
+      redirect: 'error',
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: ctrl.signal,
     });
     if (!res.ok) return ERROR;
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength > LIST_MAX_BYTES) return ERROR;
-    const body = JSON.parse(new TextDecoder().decode(buf)) as { data?: unknown };
+    const { body: raw } = await readCatalogBody(res, LIST_MAX_BYTES);
+    const body = raw as { data?: unknown };
     if (!Array.isArray(body.data)) return ERROR;
     const models: ModelsListAvailableOutput['models'] = [];
     for (const item of body.data) {
+      if (models.length >= LIST_MAX_MODELS) break;
       if (typeof item !== 'object' || item === null) continue;
       const { id, name } = item as { id?: unknown; name?: unknown };
       if (typeof id !== 'string' || id.length === 0) continue;
