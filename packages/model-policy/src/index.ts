@@ -11,3 +11,4 @@ export {
   type CatalogResult,
   type ProviderStatus,
 } from './catalog.js';
+export { createHandlers, registerModelPolicyRoutes, type RouteHandlers } from './routes.js';

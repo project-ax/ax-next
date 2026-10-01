@@ -8,7 +8,7 @@ const SONNET = 'anthropic/claude-sonnet-4-6';
 const OPUS = 'anthropic/claude-opus-4-7';
 const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 
-function bootBus(storage = new Map<string, Uint8Array>()) {
+function bootBus(storage = new Map<string, Uint8Array>(), routes: string[] = []) {
   const bus = new HookBus();
   bus.registerService<{ key: string }, { value: Uint8Array | undefined }>('storage:get', 'test', async (_c, i) => ({
     value: storage.get(i.key),
@@ -17,6 +17,12 @@ function bootBus(storage = new Map<string, Uint8Array>()) {
     storage.set(i.key, i.value);
     return {};
   });
+  bus.registerService('http:register-route', 'test', async (_c, input) => {
+    const r = input as { method: string; path: string };
+    routes.push(`${r.method} ${r.path}`);
+    return { unregister: () => {} };
+  });
+  bus.registerService('auth:require-user', 'test', async () => ({ user: { id: 'u', isAdmin: true } }));
   return { bus, storage };
 }
 
@@ -65,4 +71,15 @@ describe('createModelPolicyPlugin', () => {
       version: 2,
     });
   });
+  it('registers its three admin routes during init', async () => {
+    const routes: string[] = [];
+    const { bus } = bootBus(new Map(), routes);
+    await createModelPolicyPlugin({ builtinAllowed: [OPUS, SONNET] }).init!({ bus, config: {} } as never);
+    expect(routes.sort()).toEqual([
+      'GET /admin/models/catalog',
+      'GET /admin/models/policy',
+      'PUT /admin/models/policy',
+    ]);
+  });
+
 });

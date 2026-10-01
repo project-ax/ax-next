@@ -37,7 +37,7 @@ export interface CatalogDeps {
 const LABEL_MAX = 120;
 const MODELS_PER_PROVIDER_MAX = 2000;
 // Control characters, soft hyphen, zero-width, bidirectional overrides/isolates, BOM.
-const UNSAFE_CHARS = /[\u0000-\u001F\u007F-\u009F­​-‏ -‮⁠-⁯﻿]/g;
+const UNSAFE_CHARS = /[\u0000-\u001F\u007F-\u009F\u00AD\u200B-\u200F\u2028-\u202E\u2060-\u206F\uFEFF]/g;
 // A ref is a routing key, so it gets a strict allow-list rather than a block-list.
 const SAFE_REF = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]*$/;
 

@@ -1,4 +1,6 @@
-import { PluginError, type Plugin } from '@ax/core';
+import { createCatalog } from './catalog.js';
+import { createHandlers, registerModelPolicyRoutes } from './routes.js';
+import { PluginError, makeAgentContext, type Plugin } from '@ax/core';
 import { z, type ZodType } from 'zod';
 import { pickDefault, validatePolicyInput } from './policy.js';
 import { createPolicyStore } from './policy-store.js';
@@ -39,12 +41,14 @@ export function createModelPolicyPlugin(config: ModelPolicyConfig): Plugin {
     });
   }
 
+  const unregisterRoutes: Array<() => void> = [];
+
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: [SERVICE_GET_POLICY],
-      calls: ['storage:get', 'storage:set'],
+      calls: ['http:register-route', 'auth:require-user', 'storage:get', 'storage:set'],
       subscribes: [],
     },
     async init({ bus }) {
@@ -54,8 +58,12 @@ export function createModelPolicyPlugin(config: ModelPolicyConfig): Plugin {
         ...(config.now !== undefined ? { now: config.now } : {}),
         ...(config.ttlMs !== undefined ? { ttlMs: config.ttlMs } : {}),
       });
-      // The bus cannot unregister a service, so registering it last keeps a
-      // throwing init from leaving a half-wired hook behind (usage-limits does the same).
+      const catalog = createCatalog({ bus });
+      const initCtx = makeAgentContext({ sessionId: 'init', agentId: PLUGIN_NAME, userId: 'system' });
+      unregisterRoutes.push(...(await registerModelPolicyRoutes(bus, initCtx, createHandlers({ bus, store, catalog }))));
+
+      // The bus cannot unregister a service, so this goes last: a throwing init
+      // (for example a route conflict above) never leaves a half-wired hook.
       bus.registerService<Record<string, never>, GetPolicyOutput>(
         SERVICE_GET_POLICY,
         PLUGIN_NAME,
@@ -65,6 +73,15 @@ export function createModelPolicyPlugin(config: ModelPolicyConfig): Plugin {
         },
         { returns: GetPolicyOutputSchema },
       );
+    },
+    async shutdown() {
+      while (unregisterRoutes.length > 0) {
+        try {
+          unregisterRoutes.pop()?.();
+        } catch (err) {
+          console.warn(`[${PLUGIN_NAME}] failed to unregister a route during shutdown`, err);
+        }
+      }
     },
   };
 }
