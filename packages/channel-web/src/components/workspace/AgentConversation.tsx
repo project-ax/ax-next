@@ -96,6 +96,7 @@ import {
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
 import { AttachmentChip } from '@/components/AttachmentChip';
+import { GeneratedFileChip } from './GeneratedFileChip';
 import { AGENT_CONVERSATION_ATTR } from '@/lib/new-agent-return-focus';
 
 /**
@@ -1390,8 +1391,8 @@ function Message({
           Two differences from that, both inherited from `Markdown.tsx` and
           both deliberate: an `![](…)` renders as its ALT TEXT rather than
           fetching a remote image (model output must not make the reader's
-          browser call out), and `ax://artifact/` is not widened into a chip
-          (that needs a thread in scope to resolve against).
+          browser call out), and file download links are omitted from prose.
+          Persisted attachments supply the download chips below.
         */}
         {m.text.length > 0 && (
           <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
@@ -1399,6 +1400,13 @@ function Message({
           </div>
         )}
         {m.kind === 'steps' && <Steps label={m.stepsLabel} steps={m.steps} />}
+        {conversationId !== null && (m.attachments?.length ?? 0) > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {m.attachments?.map((file, i) => (
+              <GeneratedFileChip key={`${i}-${file.path}`} file={file} conversationId={conversationId} />
+            ))}
+          </div>
+        )}
         {/*
           What memory this answer was handed (TASK-628). Drawn only when it
           used some, and on a tool-only turn too — that turn has no prose, but

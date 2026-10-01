@@ -146,7 +146,7 @@ const attachmentBlock = {
   sizeBytes: 4096,
 };
 
-function storedTurns(blocks: unknown[], agentBlocks?: unknown[]): unknown[] {
+function storedTurns(blocks: unknown[], agentBlocks?: unknown[], toolBlocks: unknown[] = []): unknown[] {
   return [
     {
       turnId: 't1',
@@ -155,6 +155,10 @@ function storedTurns(blocks: unknown[], agentBlocks?: unknown[]): unknown[] {
       contentBlocks: blocks,
       createdAt: '2026-09-18T10:00:00.000Z',
     },
+    ...(toolBlocks.length > 0 ? [{
+      turnId: 'tool-1', turnIndex: 1, role: 'tool', contentBlocks: toolBlocks,
+      createdAt: '2026-09-18T10:00:04.000Z',
+    }] : []),
     {
       turnId: 't2',
       turnIndex: 1,
@@ -188,6 +192,7 @@ async function reloadDetailWithAgentBlocks(
 async function reloadDetail(
   blocks: unknown[],
   agentBlocks?: unknown[],
+  toolBlocks: unknown[] = [],
 ): Promise<AgentDetail> {
   const bus = new HookBus();
   const notFound = (): PluginError =>
@@ -207,7 +212,7 @@ async function reloadDetail(
   ]);
   bus.registerService('conversations:get', 'conversations', async () => ({
     conversation: conversationRow,
-    turns: storedTurns(blocks, agentBlocks),
+    turns: storedTurns(blocks, agentBlocks, toolBlocks),
   }));
 
   const handlers = makeWorkspaceHandlers({ bus, initCtx });
@@ -237,6 +242,53 @@ function conversationProps(
     onGranted: vi.fn(async () => true),
   };
 }
+
+describe('generated file download chips', () => {
+  const file = { type: 'attachment', path: 'reports/budget.csv', displayName: 'budget.csv', mediaType: 'text/csv', sizeBytes: 128 };
+  it('keeps only the chip when the saved reply includes a download link, including after reload', async () => {
+    for (let reload = 0; reload < 2; reload++) {
+      const detail = await reloadDetail([], [{
+        type: 'text', text: 'Your budget is ready.\n\n📄 [Download the budget](ax://artifact/abc123)\n\n[Source](https://example.com/source)',
+      }], [file]);
+      const view = render(<AgentConversation {...conversationProps(detail)} />);
+      expect(screen.getAllByRole('button', { name: 'Download budget.csv' })).toHaveLength(1);
+      expect(screen.queryByText('Download the budget')).not.toBeInTheDocument();
+      expect(view.container.textContent).not.toContain('📄');
+      expect(screen.getByRole('link', { name: 'Source' })).toHaveAttribute('href', 'https://example.com/source');
+      view.unmount();
+    }
+  });
+  it('renders runner-published files from persisted history, including file-only turns', async () => {
+    for (let reload = 0; reload < 2; reload++) {
+      const detail = await reloadDetail([{ type: 'text', text: 'Make a budget.' }], [], [file]);
+      const view = render(<AgentConversation {...conversationProps(detail)} />);
+      expect(screen.getByRole('button', { name: 'Download budget.csv' })).toBeVisible();
+      expect(view.container.textContent).toContain('128 B');
+      view.unmount();
+    }
+  });
+
+  it('recovers legacy explicit publish results with MCP names, without duplicate chips', async () => {
+    const detail = await reloadDetail([], [
+      { type: 'tool_use', id: 'publish-1', name: 'mcp__ax-sandbox-tools__artifact_publish', input: {} },
+    ], [file, { type: 'tool_result', tool_use_id: 'publish-1', content: [{ type: 'text', text: JSON.stringify(file) }] }]);
+    const view = render(<AgentConversation {...conversationProps(detail)} />);
+    expect(screen.getAllByRole('button', { name: 'Download budget.csv' })).toHaveLength(1);
+    view.unmount();
+  });
+
+  it('ignores failed, held, unrelated and traversal-shaped tool results', async () => {
+    const detail = await reloadDetail([], [
+      { type: 'tool_use', id: 'publish-1', name: 'artifact_publish', input: {} },
+    ], [
+      { ...file, path: '../secret.csv' },
+      { type: 'tool_result', tool_use_id: 'publish-1', is_error: true, content: JSON.stringify(file) },
+      { type: 'tool_result', tool_use_id: 'publish-1', held: true, content: JSON.stringify(file) },
+      { type: 'tool_result', tool_use_id: 'unrelated', content: JSON.stringify(file) },
+    ]);
+    expect(JSON.stringify(detail.thread)).not.toContain('budget.csv');
+  });
+});
 
 /** The user's own bubble — the half of the thread this card is about. */
 function userBubble(container: HTMLElement): HTMLElement {

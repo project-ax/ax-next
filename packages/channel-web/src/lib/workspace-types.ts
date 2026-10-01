@@ -597,6 +597,8 @@ export type ThreadMessage =
        * model recalled nothing (or nothing could be attributed to this answer).
        */
       memoryUsed?: MemoryUsed;
+      /** Files published by this turn, persisted with the conversation. */
+      attachments?: readonly ThreadAttachment[];
     }
   | {
       kind: 'user';
@@ -616,6 +618,7 @@ export type ThreadMessage =
       at: string;
       stepsLabel: string;
       steps: WorkspaceStep[];
+      attachments?: readonly ThreadAttachment[];
       /** See `memoryUsed` on the `agent` variant above — same field, same rule. */
       memoryUsed?: MemoryUsed;
     }

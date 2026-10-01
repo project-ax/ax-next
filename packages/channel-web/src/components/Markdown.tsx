@@ -34,6 +34,7 @@ import type { ComponentPropsWithoutRef, FC } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
+import { remarkFileDownloads } from '@/lib/remark-file-downloads';
 import { cn } from '@/lib/utils';
 
 /**
@@ -126,13 +127,15 @@ export const Markdown: FC<{
   text: string;
   className?: string;
   rehypePlugins?: PluggableList;
-}> = ({ text, className, rehypePlugins }) => (
+  /** Chat owns download chips separately; workspace file previews keep their text. */
+  hideFileDownloadLinks?: boolean;
+}> = ({ text, className, rehypePlugins, hideFileDownloadLinks = false }) => (
   // `ax-md` is the typography (index.css). It is not optional decoration: this
   // renders outside `.msg-body`, where Preflight has zeroed every heading and
   // stripped every list marker.
   <div className={cn(MARKDOWN_PROSE_CLASS, 'ax-md', className)}>
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={hideFileDownloadLinks ? [remarkGfm, remarkFileDownloads] : [remarkGfm]}
       {...(rehypePlugins === undefined ? {} : { rehypePlugins })}
       urlTransform={safeUrlTransform}
       components={{ a: ExternalAnchor, img: AltTextOnly }}

@@ -69,7 +69,7 @@ afterAll(async () => {
 const SHA = 'a'.repeat(64);
 
 describe('artifacts:publish-blob handler', () => {
-  it('inserts an artifact row scoped to ctx.userId and returns the sha-prefix id', async () => {
+  it('inserts an artifact row scoped to ctx.userId and returns an opaque id', async () => {
     const { store } = await freshSetup();
     const handler = createPublishArtifactBlobHandler({ store });
     const out = await handler(makeCtx('u-1'), {
@@ -80,12 +80,27 @@ describe('artifacts:publish-blob handler', () => {
       mediaType: 'application/pdf',
       size: 2048,
     });
-    expect(out.artifactId).toBe(SHA.slice(0, 16));
+    expect(out.artifactId).toMatch(/^[a-f0-9]{32}$/);
     const row = await store.getArtifactByPath('c-1', 'workspace/report.pdf');
     expect(row).not.toBeNull();
     expect(row!.sha256).toBe(SHA);
     expect(row!.userId).toBe('u-1');
     expect(row!.mediaType).toBe('application/pdf');
+  });
+
+  it('publishes identical bytes under multiple paths and conversations', async () => {
+    const { store } = await freshSetup();
+    const handler = createPublishArtifactBlobHandler({ store });
+    const ids: string[] = [];
+    for (const [conversationId, path] of [['c-1', 'a.txt'], ['c-1', 'b.txt'], ['c-2', 'a.txt']]) {
+      const result = await handler(makeCtx('u-1'), {
+        conversationId: conversationId!, path: path!, sha256: SHA,
+        displayName: 'file.txt', mediaType: 'text/plain', size: 1,
+      });
+      ids.push(result.artifactId);
+      expect((await store.getArtifactByPath(conversationId!, path!))?.sha256).toBe(SHA);
+    }
+    expect(new Set(ids).size).toBe(3);
   });
 
   it('is idempotent on (conversationId, path) — re-publish upserts', async () => {

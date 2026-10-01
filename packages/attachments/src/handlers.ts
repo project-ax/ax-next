@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   PluginError,
   type AgentContext,
@@ -283,17 +283,19 @@ export interface PublishArtifactBlobDeps {
 
 /**
  * `artifacts:publish-blob` — inserts a published-artifact metadata row after the
- * runner streamed the bytes to `blob:put`. Scoped to ctx.userId. The artifactId
- * is the sha256 prefix (matching the runner executor's existing contract +
- * stable across re-publishes of identical bytes). Idempotent on
- * (conversationId, path).
+ * runner streamed the bytes to `blob:put`. Scoped to ctx.userId. Identity is
+ * scoped to the conversation and path: identical bytes can be published under
+ * different names or in different conversations without a primary-key clash.
+ * Idempotent on (conversationId, path); blob deduplication still uses sha256.
  */
 export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) {
   return async function publishArtifactBlob(
     ctx: AgentContext,
     input: ArtifactsPublishBlobInput,
   ): Promise<ArtifactsPublishBlobOutput> {
-    const artifactId = input.sha256.slice(0, 16);
+    const artifactId = createHash('sha256')
+      .update(JSON.stringify([input.conversationId, input.path]))
+      .digest('hex').slice(0, 32);
     await deps.store.upsertArtifact({
       id: artifactId,
       conversationId: input.conversationId,

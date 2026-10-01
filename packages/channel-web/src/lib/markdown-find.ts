@@ -62,6 +62,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
 import remarkRehype from 'remark-rehype';
+import { remarkFileDownloads } from '@/lib/remark-file-downloads';
 import type { FindRange } from '@/lib/thread-find';
 
 /**
@@ -110,6 +111,7 @@ interface TreeNode {
 const pipeline = unified()
   .use(remarkParse)
   .use(remarkGfm)
+  .use(remarkFileDownloads)
   .use(remarkRehype, { allowDangerousHtml: true })
   .freeze();
 

@@ -335,11 +335,11 @@ export function FindHighlight({
   const field: FindField = markdown ? { key: fieldKey, text, markdown } : { key: fieldKey, text };
 
   if (find === null) {
-    return markdown ? <Markdown text={text} /> : <>{text}</>;
+    return markdown ? <Markdown text={text} hideFileDownloadLinks /> : <>{text}</>;
   }
   const base = find.index.firstMatch.get(fieldKey);
   if (base === undefined) {
-    return markdown ? <Markdown text={text} /> : <>{text}</>;
+    return markdown ? <Markdown text={text} hideFileDownloadLinks /> : <>{text}</>;
   }
 
   const ranges = fieldRanges(field, find.query);
@@ -353,6 +353,7 @@ export function FindHighlight({
     */
     return (
       <Markdown
+        hideFileDownloadLinks
         text={text}
         rehypePlugins={[
           markdownHighlight({
