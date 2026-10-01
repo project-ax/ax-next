@@ -210,7 +210,7 @@ function misScoped(): Frame[] {
 
 describe('the Activity feed across a scope change', () => {
   it('is never handed the previous agent’s rows to render as the record', async () => {
-    window.history.replaceState(null, '', '/workspace/agents/a-quill/did');
+    window.history.replaceState(null, '', '/workspace/agents/a-quill/activity');
     render(
       <UserProvider value={user}>
         <WorkspaceShell />
@@ -292,7 +292,7 @@ describe('the Activity feed across a scope change', () => {
     */
     fireEvent.click(screen.getByRole('button', { name: 'open a-tern' }));
     await waitFor(() =>
-      expect(window.location.pathname).toBe('/workspace/agents/a-tern/did'),
+      expect(window.location.pathname).toBe('/workspace/agents/a-tern/activity'),
     );
 
     await waitFor(() =>

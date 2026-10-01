@@ -270,6 +270,15 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     provenance: 'catalog',
   },
   {
+    id: 'memory.use',
+    match: { tool: 'memory_use' },
+    providedBy: 'host',
+    verdict: 'allow',
+    capability: 'identify the remembered facts supporting its answer',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
+  {
     id: 'skills.search-catalog',
     match: { tool: 'search_catalog' },
     providedBy: 'host',

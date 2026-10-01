@@ -2,253 +2,109 @@
 @tailwind components;
 @tailwind utilities;
 
+/* State marks use --state-quiet. Copy never uses text-state-quiet. */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 6% 10%;
+    --background: 202 100% 98%;
+    --foreground: 223 41% 30%;
     --card: 0 0% 100%;
-    --card-foreground: 240 6% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 6% 10%;
-    /* 44% -> 42%. `text-primary` on `bg-primary-soft` measured 4.35:1 here and
-       4.28:1 in dark — under the AA floor — on the selected row in
-       WorkspaceSidebar, AgentFiles and AgentRail, and on the added-line row in
-       BundleDiffView.
-
-       The accent moved, NOT the tint, and the asymmetry is the whole point.
-       `--primary-soft` has to stay a VISIBLE selection tint: fixing the ratio
-       from that side needs ~96.5% here, lighter than `--muted` at 96%, so the
-       selected row would read as quieter than the hovered one — and ~12% in
-       dark, within a point of `--card` at 11%, so it would all but disappear on
-       a card. `--primary` has the opposite property: every role of it that
-       carries text puts the foreground on the far side of the accent, so moving
-       it away from the surfaces lifts them all together. The defect pair goes
-       4.35 -> 4.65, and the pairs that already passed improved as well — white
-       on `bg-primary` 4.97 -> 5.31, and `text-primary` on the page 4.97 -> 5.31.
-       The roles that carry no text are unaffected either way: the state dots,
-       progress fills and switch tracks, and `AvatarTile`'s decorative gradient,
-       which mixes the accent at 22-26% behind an `aria-hidden` tile.
-
-       Compare `--state-quiet` below, split off a now-deleted fill token
-       (`--ink-ghost`) when the roles genuinely fought instead of shifted. Same
-       question, opposite answer; measure, don't assume. `--ring` tracks this
-       value in every block and moves with it. */
-    --primary: 211 100% 42%;
-    --primary-foreground: 0 0% 100%;
-    --primary-soft: 214 100% 95%;
-    /* The hover fill for `bg-primary` / `bg-destructive` buttons and badges
-       (TASK-511). shadcn's stock hover is `hover:bg-primary/90`, which lets 10%
-       of the SURFACE bleed through — and the surface sits on the same side of
-       the accent as the foreground in both themes (white page under white text
-       here, black page under near-black text in dark). So the hover drifted
-       toward the text: 4.48:1 light, 4.32:1 dark on the page, under the floor
-       on the button that grants a capability. Destructive did the same (4.46 /
-       4.30), and `Badge`'s `/80` hover was worse still (~3.5-3.8).
-
-       A hover has to move AWAY from its foreground, and which way that is
-       depends on the theme — darker here, lighter in dark mode — which no
-       single alpha can express. Hence a token per theme. Roughly the same
-       visual step off the resting fill as the old /90 (~1.2:1), with the text
-       gaining contrast instead of losing it: primary 6.50 / 6.18, destructive
-       6.05 / 6.25. `theme-contrast.test.ts` reads the hover class off
-       `button.tsx` and `badge.tsx`, so reverting to `/90` goes red. */
-    --primary-hover: 211 100% 37%;
-    --secondary: 240 5% 96%;
-    --secondary-foreground: 240 6% 10%;
-    --muted: 240 5% 96%;
-    /* 46% -> 44%. Quiet text on a FILLED surface, not on the page. At 46%
-       `text-muted-foreground` on `bg-muted` measured 4.40:1 in a browser —
-       under the floor — while the same token on white measured a comfortable
-       4.83, which is why it went unnoticed: the defect only exists where the
-       surface is filled. Moving the text rather than `--muted` is the one
-       change that lifts every surface at once (muted/secondary/accent all sit
-       at this same 96% in light mode), and it leaves every background alone —
-       lightening `--muted` instead would wash the user's own chat bubble out
-       against the white page it sits on. Now 4.73:1 on muted, 5.20 on white. */
-    --muted-foreground: 240 4% 44%;
-    --accent: 240 5% 96%;
-    --accent-foreground: 240 6% 10%;
-    /* 55% -> 50%. Light mode keeps white-on-destructive, but at 55% that
-       measured 4.47:1 — under the floor by a hair, and `text-destructive` on
-       white was the same 4.47 for the same reason. Darkening the accent is the
-       one move that lifts BOTH roles here (each to 5.13:1), which is why light
-       mode is fixed at the accent and dark mode at the foreground. */
+    --primary: 223 41% 30%;
+    --primary-foreground: 202 100% 98%;
+    --primary-soft: 200 100% 92%;
+    --primary-hover: 223 41% 25%;
+    --secondary: 205 60% 94%;
+    --muted: 205 60% 94%;
+    --accent: 205 60% 94%;
+    --muted-foreground: 223 20% 38%;
     --destructive: 0 60% 50%;
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 0 60% 96%;
     --destructive-hover: 0 60% 45%;
-    /* Held-for-you. A third semantic state the surface genuinely needs:
-       "waiting on a human" is neither an error nor business as usual.
-
-       36% -> 35%. `text-warning` on `bg-warning-soft` measured 4.45:1 here —
-       under the AA floor — on the rail count badge in `WorkspaceSidebar` and
-       the "Waiting on you" badge in `bits.tsx`. Both paint the tint SOLID, no
-       alpha, so that number is the pixel and not merely the token; TASK-428 is
-       the cautionary tale one card over, where the same reading was taken off a
-       token whose painted class was `bg-warning-soft/40` and the defect
-       evaporated once it was composited. This one did not. Dark was never in
-       question at 8.47:1, so only this block moves.
-
-       Same asymmetry as `--primary` above, and more lopsided. To fix from the
-       tint's side, `--warning-soft` would have to get LIGHTER, not darker —
-       darkening walks the tint toward the accent and makes the text ratio WORSE
-       (4.45 -> 4.08 at 85%). Lighter clears the floor only at 94%, and matching
-       the headroom below takes ~97%, by which point the tint measures 1.04:1
-       against the white page it sits on: a "held" badge nobody can see is not a
-       held badge. `--warning` has the opposite property — white sits on it, and
-       it sits on the page, the card and its own tint, so every role is on the
-       far side and one move lifts them all. Measured: the defect pair
-       4.45 -> 4.66, white on `bg-warning` 4.84 -> 5.07, and `text-warning` on
-       the page and the card 4.84 -> 5.07. Nothing was traded away.
-
-       The roles that carry no text ride along rather than pay: the `bits.tsx`
-       state dot, `ThreadFind`'s match underline, and the hold glyphs in
-       `ActivityFeed` and `AgentConversation` all gain contrast. */
-    --warning: 32 81% 35%;
+    --warning: 15 85% 36%;
     --warning-foreground: 0 0% 100%;
-    --warning-soft: 45 93% 93%;
-    --border: 240 6% 91%;
-    --input: 240 6% 91%;
-    /* Tracks `--primary` (see its note above). */
-    --ring: 211 100% 42%;
+    --warning-soft: 15 100% 94%;
+    --border: 210 35% 88%;
+    --input: 210 30% 80%;
+    --ring: 222 69% 51%;
+    --rule-soft: 210 35% 92%;
+    --state-quiet: 220 15% 48%;
+    --bubble: 200 100% 90%;
     --radius: 0.5rem;
-    --rule-soft: 240 6% 95%;
-    /* The quiet-but-legible state mark: the `resting` dot in `bits.tsx` and the
-       admin `empty` / `pending` dots in `StatusDot.tsx`.
-
-       The dot's fill carries its state (alongside its shape, since TASK-485),
-       which makes these information-bearing non-text UI owing 3:1 under WCAG 1.4.11 — a different floor from
-       the 4.5:1 that governs text. The dots used to share a fill token with
-       the composer's (now-deleted) empty send circle, `--ink-ghost`, which
-       measured 1.72:1 here on the page and a card (1.67:1 on a dark card,
-       2.04:1 on the dark page), and 1.50:1 / 1.56:1 on
-       `--primary-soft` — the worst surface they land on, the selected sidebar
-       row. About half of what they owe, so the dots got a token of their own
-       (TASK-450) rather than a shifted shared one — same accent-vs-foreground
-       tension documented above for primary/destructive, same fix: split the
-       roles.
-
-       And why this is NOT `--muted-foreground` under a third name — the value
-       that clears 3:1 sits on the OTHER side of it in each theme. 54% here is
-       LIGHTER than `--muted-foreground` at 44%; 45% in dark is DARKER than its
-       56%. So the dot stays quieter than the quiet text in both themes, which
-       is the visual hierarchy we want: an agent's name outranks its resting
-       dot. That ordering is asserted, not just described.
-
-       Measured against every surface a dot lands on — the page, a card,
-       `--muted`, the hover `bg-muted/60`, the stale decision row's
-       `bg-destructive-soft/50`, and `bg-primary-soft` (the SELECTED sidebar
-       row, which is the tightest of the six): 3.66 / 3.66 / 3.33 / 3.45 /
-       3.45 / 3.20 light, and 4.16 / 3.41 / 3.58 / 3.85 / 3.30 / 3.18 dark.
-
-       A FILL, never ink. 3:1 is the NON-text floor; as text this measures
-       3.33:1 on `--muted` and 3.41:1 on a dark card, under the 4.5:1 AA floor,
-       and Tailwind publishes `text-state-quiet` from the same colour entry
-       whether we want it or not. So nothing paints it; quiet copy is
-       `--muted-foreground`. `theme-contrast.test.ts` enforces that too.
-
-       It still reads as "not working" beside a `bg-primary` dot, because
-       activeness here is carried by SATURATION, not lightness: this is a 4%-sat
-       neutral sitting in the same family as every border and every line of
-       quiet text, next to a 100%-sat blue. What 78% actually bought was not
-       calm — it was a dot people could not see at all. */
-    --state-quiet: 240 4% 54%;
+    --card-foreground: 223 41% 30%;
+    --popover-foreground: 223 41% 30%;
+    --secondary-foreground: 223 41% 30%;
+    --accent-foreground: 223 41% 30%;
+    color-scheme: light;
   }
-
-  /* Dark tokens scoped to existing data-theme mechanism + system fallback.
-   *
-   * On `--primary-foreground` and `--destructive-foreground` being near-black
-   * here rather than white: dark mode LIGHTENS both accents (primary 42% ->
-   * 56%, destructive 50% -> 62%), which moves them toward white and takes the
-   * white text on top of them below the WCAG AA floor. Measured in a browser:
-   * "Just this once" on the permission card 3.75:1, "Turn it off anyway" on the
-   * sign-in lockout dialog 3.40:1 — the two most consequential buttons in the
-   * product, both under 4.5.
-   *
-   * The fix is the foreground, not the accent, because `--primary` and
-   * `--destructive` are ALSO foregrounds: `text-destructive` alone appears 37
-   * times and measures a healthy 6.17:1 on black precisely BECAUSE the accent
-   * is bright. Darkening the accents would fix the buttons and break the text.
-   * Every `*-foreground` use is paired with its own `bg-*`, so changing these
-   * two touches buttons, badges and chips and nothing else.
-   *
-   * This is not a new idea — `--warning-foreground` below has been `240 6% 10%`
-   * in dark mode all along. Primary and destructive simply never got the same
-   * treatment. Now: primary 5.23:1, destructive 5.21:1.
-   */
-  :root[data-theme='dark'],
-  :root:not([data-theme='light']) {
-    @media (prefers-color-scheme: dark) {
-      --background: 0 0% 0%;
-      --foreground: 240 5% 96%;
-      --card: 240 3% 11%;
-      --card-foreground: 240 5% 96%;
-      --popover: 240 3% 11%;
-      --popover-foreground: 240 5% 96%;
-      /* 52% -> 56%. Dark half of the same fix; see the light block's note. On
-         `--primary-soft` this goes 4.28 -> 4.73, and near-black on `bg-primary`
-         4.72 -> 5.23. */
-      --primary: 211 100% 56%;
-      --primary-foreground: 240 6% 10%;
-      --primary-soft: 212 100% 14%;
-      /* LIGHTER than the accent here, darker in light mode: the hover moves
-         away from the foreground. See `--primary-hover` in the light block. */
-      --primary-hover: 211 100% 62%;
-      --secondary: 240 3% 9%;
-      --secondary-foreground: 240 5% 96%;
-      --muted: 240 3% 9%;
-      --muted-foreground: 240 4% 56%;
-      --accent: 240 3% 9%;
-      --accent-foreground: 240 5% 96%;
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --background: 223 45% 12%;
+      --foreground: 202 100% 98%;
+      --card: 223 40% 17%;
+      --popover: 223 40% 17%;
+      --primary: 208 100% 69%;
+      --primary-foreground: 223 45% 12%;
+      --primary-soft: 223 41% 26%;
+      --primary-hover: 208 100% 75%;
+      --secondary: 223 40% 17%;
+      --muted: 223 40% 17%;
+      --accent: 223 40% 19%;
+      --muted-foreground: 220 25% 72%;
       --destructive: 4 86% 62%;
-      --destructive-foreground: 240 6% 10%;
+      --destructive-foreground: 223 45% 12%;
       --destructive-soft: 4 60% 16%;
       --destructive-hover: 4 86% 68%;
-      --warning: 43 96% 58%;
-      --warning-foreground: 240 6% 10%;
-      --warning-soft: 38 60% 14%;
-      --border: 240 4% 17%;
-      --input: 240 4% 17%;
-      /* Tracks `--primary`. */
-      --ring: 211 100% 56%;
-      --rule-soft: 240 4% 13%;
-      /* The state dots. See the light block for the whole argument. */
-      --state-quiet: 240 4% 45%;
+      --warning: 15 100% 70%;
+      --warning-foreground: 223 45% 12%;
+      --warning-soft: 15 50% 18%;
+      --border: 223 30% 26%;
+      --input: 223 30% 30%;
+      --ring: 208 100% 69%;
+      --rule-soft: 223 30% 20%;
+      --state-quiet: 220 20% 58%;
+      --bubble: 223 41% 26%;
+      --radius: 0.5rem;
+      --sidebar-background: 223 50% 8%;
+      --card-foreground: 202 100% 98%;
+      --popover-foreground: 202 100% 98%;
+      --secondary-foreground: 202 100% 98%;
+      --accent-foreground: 202 100% 98%;
       color-scheme: dark;
     }
   }
   :root[data-theme='dark'] {
-    --background: 0 0% 0%;
-    --foreground: 240 5% 96%;
-    --card: 240 3% 11%;
-    --card-foreground: 240 5% 96%;
-    --popover: 240 3% 11%;
-    --popover-foreground: 240 5% 96%;
-    /* 52% -> 56%. Dark half of the same fix; see the light block's note. */
-    --primary: 211 100% 56%;
-    --primary-foreground: 240 6% 10%;
-    --primary-soft: 212 100% 14%;
-    --primary-hover: 211 100% 62%;
-    --secondary: 240 3% 9%;
-    --secondary-foreground: 240 5% 96%;
-    --muted: 240 3% 9%;
-    --muted-foreground: 240 4% 56%;
-    --accent: 240 3% 9%;
-    --accent-foreground: 240 5% 96%;
+    --background: 223 45% 12%;
+    --foreground: 202 100% 98%;
+    --card: 223 40% 17%;
+    --popover: 223 40% 17%;
+    --primary: 208 100% 69%;
+    --primary-foreground: 223 45% 12%;
+    --primary-soft: 223 41% 26%;
+    --primary-hover: 208 100% 75%;
+    --secondary: 223 40% 17%;
+    --muted: 223 40% 17%;
+    --accent: 223 40% 19%;
+    --muted-foreground: 220 25% 72%;
     --destructive: 4 86% 62%;
-    --destructive-foreground: 240 6% 10%;
+    --destructive-foreground: 223 45% 12%;
     --destructive-soft: 4 60% 16%;
     --destructive-hover: 4 86% 68%;
-    --warning: 43 96% 58%;
-    --warning-foreground: 240 6% 10%;
-    --warning-soft: 38 60% 14%;
-    --border: 240 4% 17%;
-    --input: 240 4% 17%;
-    /* Tracks `--primary`. */
-    --ring: 211 100% 56%;
-    --rule-soft: 240 4% 13%;
-    /* The state dots. See the light block for the whole argument. */
-    --state-quiet: 240 4% 45%;
+    --warning: 15 100% 70%;
+    --warning-foreground: 223 45% 12%;
+    --warning-soft: 15 50% 18%;
+    --border: 223 30% 26%;
+    --input: 223 30% 30%;
+    --ring: 208 100% 69%;
+    --rule-soft: 223 30% 20%;
+    --state-quiet: 220 20% 58%;
+    --bubble: 223 41% 26%;
+    --radius: 0.5rem;
+    --sidebar-background: 223 50% 8%;
+    --card-foreground: 202 100% 98%;
+    --popover-foreground: 202 100% 98%;
+    --secondary-foreground: 202 100% 98%;
+    --accent-foreground: 202 100% 98%;
     color-scheme: dark;
   }
 }
@@ -259,7 +115,8 @@
   padding: 0;
 }
 
-html,
+html { font-size: 16px; }
+
 body {
   background: hsl(var(--background));
   color: hsl(var(--foreground));
@@ -338,3 +195,8 @@ body {
 .ax-md table { width: 100%; border-collapse: collapse; margin: 0.75em 0; display: block; overflow-x: auto; }
 .ax-md :is(th, td) { border: 1px solid hsl(var(--rule-soft)); padding: 0.35em 0.6em; text-align: left; }
 .ax-md th { font-weight: 600; }
+
+/* Conversation names fade within their column; the date/menu slot never moves. */
+.conversation-title-fade {
+  mask-image: linear-gradient(to right, black calc(100% - 14px), transparent);
+}

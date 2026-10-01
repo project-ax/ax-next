@@ -51,7 +51,7 @@
  * are rendered either as markdown through the package's shared renderer — with
  * images off and no artifact widening — or as plain preformatted text.
  */
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ChevronLeft,
@@ -63,6 +63,8 @@ import {
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import {
   Breadcrumb,
@@ -167,24 +169,24 @@ function RailRow({
 }) {
   const Icon = kind === 'dir' ? Folder : FileText;
   return (
-    <button
+    <Button variant="ghost"
       ref={ref}
       type="button"
       onClick={onClick}
       title={label}
       className={cn(
-        'flex items-center gap-2 truncate rounded-md px-2.5 py-2 text-left text-[13px]',
+        'h-10 justify-start gap-2 overflow-hidden rounded-sm px-2.5 text-left text-[13px] font-normal max-md:h-11',
         selected
           ? 'bg-primary-soft text-primary'
           : 'text-muted-foreground hover:bg-muted',
       )}
     >
       <Icon size={13} className="shrink-0" />
-      <span className="truncate">{label}</span>
+      <span className="min-w-0 truncate">{label}</span>
       {kind === 'dir' && (
         <ChevronRight size={12} className="ml-auto shrink-0 opacity-60" />
       )}
-    </button>
+    </Button>
   );
 }
 
@@ -197,15 +199,28 @@ function SectionNote({ children }: { children: React.ReactNode }) {
   );
 }
 
+function FileListEmpty({ children }: { children: React.ReactNode }) {
+  return <Empty className="p-3 md:p-3"><EmptyHeader><EmptyDescription>{children}</EmptyDescription></EmptyHeader></Empty>;
+}
+
+function FileListLoading() {
+  return <div className="space-y-2 py-2" aria-label="Loading files"><span className="sr-only">Loading…</span>{[0, 1, 2].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>;
+}
+
 export function AgentFiles({
   agentId,
   agentName,
+  onCount,
 }: {
   agentId: string;
   agentName: string;
+  onCount?: (count: number | null) => void;
 }) {
   const durable = useAgentUserFiles(agentId);
   const governed = useAgentFiles(agentId);
+  const count = durable.loading || governed.loading || durable.error || governed.error
+    ? null : durable.entries.filter(entry => entry.kind === 'file').length + governed.files.length;
+  useEffect(() => { onCount?.(count); }, [count, onCount]);
 
   /**
    * Below `md` this tab shows ONE pane at a time (TASK-455).
@@ -469,19 +484,19 @@ export function AgentFiles({
                 consulted here, since a failed listing leaves the previous
                 folder's rows in it.
               */
-              <SectionNote>{agentName} hasn’t put any files here yet.</SectionNote>
+              <FileListEmpty>{agentName} hasn’t put any files here yet.</FileListEmpty>
             ) : durable.loading && durable.entries.length === 0 ? (
-              <SectionNote>Loading&hellip;</SectionNote>
+              <FileListLoading />
             ) : durable.entries.length === 0 ? (
               /*
                 Reachable only after a listing that actually succeeded, which is
                 what makes it safe to say something about the agent here.
               */
-              <SectionNote>
+              <FileListEmpty>
                 {durable.dirPath === ''
                   ? `${agentName} hasn’t put any files here yet.`
                   : 'This folder is empty.'}
-              </SectionNote>
+              </FileListEmpty>
             ) : (
               <div className="flex flex-col gap-0.5">
                 {durable.entries.map((e) => (
@@ -543,9 +558,9 @@ export function AgentFiles({
                 </Alert>
               </div>
             ) : governed.loading && governed.files.length === 0 ? (
-              <SectionNote>Loading&hellip;</SectionNote>
+              <FileListLoading />
             ) : governed.files.length === 0 ? (
-              <SectionNote>{agentName} has not written anything yet.</SectionNote>
+              <FileListEmpty>{agentName} has not written anything yet.</FileListEmpty>
             ) : (
               <div className="flex flex-col gap-0.5">
                 {governed.files.map((f) => (

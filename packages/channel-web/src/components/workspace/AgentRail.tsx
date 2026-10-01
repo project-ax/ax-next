@@ -1,140 +1,138 @@
-/**
- * The rail — what it is doing, what it may do alone, what you granted it, this
- * week's numbers, and what you have talked about before.
- *
- * EVERY SENTENCE HERE COMES FROM SOMETHING THAT ENFORCES IT, COUNTS IT, OR
- * OBSERVED IT. There are no fixture strings left. The permission rows are
- * generated from the policy record and carry the rule that produced them, so a
- * sentence drifting from the enforced policy shows up rather than lying
- * quietly; the "Right now" line comes from the tool manifests the runner
- * actually calls; the counter is an integer out of the decision store with its
- * written definition printed underneath it.
- *
- * THREE RULES THIS FILE IS BUILT AROUND.
- *
- * 1. An empty list is a CLAIM. So every block distinguishes "there is nothing"
- *    from "this deployment has no producer" from "we could not read it", and
- *    says which. A bare empty state on a security surface is the bug.
- *
- * 2. Understating reach is worse than overstating it (design H4). A capability
- *    we cannot describe is rendered mechanically and explicitly, never omitted,
- *    because a row that is not there reads as "it cannot do that". Same reason
- *    the unrestricted-scope note exists: an agent with no tool allow-list can
- *    reach whatever this deployment installs, and a tidy list of eleven rows
- *    would read as a leash it does not have.
- *
- * 3. "Right now" has no progress bar and no ETA. See `Elapsed`.
- *
- * The rail reads its own route rather than riding on the agent detail: it is
- * separately refreshable, which is what makes a Revoke button able to show its
- * own consequence.
- */
 import { Fragment, useState } from 'react';
-import { AlertTriangle, ChevronRight } from 'lucide-react';
+import {
+  AlertTriangle,
+  Activity,
+  Folder,
+  Lightbulb,
+  MessageSquare,
+  MoreHorizontal,
+  PanelRight,
+  Plus,
+  Shield,
+} from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { Separator } from '@/components/ui/separator';
-import { useAgentRail } from '@/lib/workspace-rail';
-import type {
-  AgentRailData,
-  AgentDetail,
-  GrantRow,
-} from '@/lib/workspace-api';
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { Separator } from '@/components/ui/separator';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { CompactSurfaceContext } from '@/lib/use-compact';
+import { cn } from '@/lib/utils';
+import { conversationControls } from '@/lib/conversation-controls';
+import { conversationDate } from '@/lib/workspace-time';
+import { useAgentRail } from '@/lib/workspace-rail';
+import { WORKSPACE_AGENT_TABS, type AgentTab } from '@/lib/workspace-route';
+import type { AgentRailData, AgentDetail, GrantRow } from '@/lib/workspace-api';
+import {
+  AgentTile,
   Elapsed,
   GrantLine,
   PermissionLine,
   ReadFailure,
   SectionLabel,
+  StateDot,
+  stateWord,
 } from './bits';
+import { IconTooltip } from './IconTooltip';
+
+export const RAIL_TABS = {
+  activity: { label: 'Activity', Icon: Activity },
+  chat: { label: 'Conversations', Icon: MessageSquare },
+  memory: { label: 'Memory', Icon: Lightbulb },
+  files: { label: 'Files', Icon: Folder },
+  rules: { label: 'What it may do alone', Icon: Shield },
+} satisfies Record<AgentTab, { label: string; Icon: typeof Activity }>;
 
 interface Props {
   detail: AgentDetail;
-  /**
-   * "What I learned in this chat" (TASK-627), drawn directly under "Right
-   * now". Handed in rather than built here: its state has to outlive this
-   * content, which is unmounted while the mobile rail sheet is shut.
-   */
   learned?: React.ReactNode;
   openPastId: string | null;
   onOpenPast: (id: string | null) => void;
+  tab?: AgentTab;
+  onTab?: (tab: AgentTab) => void;
+  collapsed?: boolean;
+  onCollapse?: () => void;
+  mobile?: boolean;
+  panels?: Partial<Record<AgentTab, React.ReactNode>>;
+  onChanged?: () => void;
+  onNew?: () => Promise<void>;
+  busy?: boolean;
+  counts?: { memory: number | null; files: number | null };
 }
 
-const STATE_WORD: Record<string, string> = {
-  working: 'Working',
-  waiting: 'Waiting on you',
-  resting: 'Resting',
-  stopped: 'Stopped',
-};
-
-/** One muted line. The only thing a block says when it has nothing to show. */
 function Note({ children }: { children: React.ReactNode }) {
   return (
-    <p className="text-[13px] leading-relaxed text-muted-foreground">{children}</p>
+    <p className="text-[13px] leading-relaxed text-muted-foreground">
+      {children}
+    </p>
   );
 }
 
-/*
-  `ReadFailure` used to live here. It moved to `./bits` verbatim when the Memory
-  tab needed the same two sentences (TASK-417) — see its docstring there for why
-  these two surfaces may share strings when `decision-copy.ts` says surfaces
-  generally may not.
-*/
-
-/**
- * The rail in its desktop shape: a fixed 296px column against the right edge.
- *
- * Below `md` this column does not exist — 296px here plus the sidebar's 236px
- * is 532px of non-shrinking chrome on a 390px phone, which leaves the
- * conversation (the actual product) no width at all. `AgentView` renders
- * `AgentRailContent` inside a `Sheet` there instead (TASK-404). The split is a
- * wrapper and nothing else on purpose: the content below has state and a POST,
- * and duplicating it per-layout is how the two shapes start disagreeing.
- */
-export function AgentRail({ detail, learned, openPastId, onOpenPast }: Props) {
+export function AgentRail(props: Props) {
   return (
-    <aside className="w-[296px] shrink-0 overflow-y-auto border-l border-border px-5 pb-6">
-      {/*
-        The rail's own `h2` (TASK-446), so its `SectionLabel` `h3`s hang
-        off something instead of skipping a level straight from the page title.
-
-        `sr-only`, and named exactly as the two controls that reach this panel
-        already name it — `AgentView`'s `aria-label="Agent details"` trigger and
-        the compact `SheetTitle`. The sheet gets its `h2` from `SheetTitle`
-        (Radix renders one), which is why this sits on the DESKTOP column only:
-        put it in `AgentRailContent` and the compact branch would announce
-        "Agent details" twice.
-      */}
-      <h2 className="sr-only">Agent details</h2>
-      <AgentRailContent
-        detail={detail}
-        learned={learned}
-        openPastId={openPastId}
-        onOpenPast={onOpenPast}
-      />
+    <aside
+      aria-label="Agent details"
+      className={cn(
+        'flex min-h-0 shrink-0 flex-col border-l border-border',
+        props.collapsed ? 'w-[52px]' : 'w-[296px]',
+      )}
+    >
+      <AgentRailContent {...props} />
     </aside>
   );
 }
 
-/**
- * Everything the rail says, with no opinion about the box it says it in — so
- * the off-canvas `Sheet` below `md` and the inline column above it are the same
- * component, not two that drift.
- */
-export function AgentRailContent({ detail, learned, openPastId, onOpenPast }: Props) {
+/** One panel implementation for the desktop rail and the phone sheet. */
+export function AgentRailContent({
+  detail,
+  learned,
+  openPastId,
+  onOpenPast,
+  tab = 'chat',
+  onTab,
+  collapsed = false,
+  onCollapse,
+  mobile = false,
+  panels,
+  onChanged,
+  onNew,
+  busy = false,
+  counts,
+}: Props) {
   const { agent, past } = detail;
   const { rail, loading, error, revoke } = useAgentRail(agent.id);
-  /** The grant rows with a POST in flight, plus whatever the last one said. */
+  const [localTab, setLocalTab] = useState<AgentTab>(tab);
+  const active = onTab ? tab : localTab;
   const [revoking, setRevoking] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [editing, setEditing] = useState<{
+    id: string;
+    title: string;
+    kind: 'rename' | 'delete';
+  } | null>(null);
+  const [title, setTitle] = useState('');
 
-  async function onRevoke(row: GrantRow): Promise<void> {
+  async function onRevoke(row: GrantRow) {
     setNotice(null);
     setRevoking((prev) => new Set(prev).add(row.source));
     const outcome = await revoke(row.ref);
@@ -143,78 +141,395 @@ export function AgentRailContent({ detail, learned, openPastId, onOpenPast }: Pr
       next.delete(row.source);
       return next;
     });
-    /*
-      Three outcomes, three sentences. "Already gone" is a refusal, not a
-      failure, and saying "revoked" for it would claim we did something we did
-      not.
-
-      The success line carries a caveat because the caveat is TRUE: a site
-      grant is loaded into the egress allowlist when a session opens
-      (`orchestrator.ts` reads `host-grants:list` there), so a conversation
-      that is already running keeps what it was given until it ends. "Revoked"
-      on its own would let someone believe they had just stopped something
-      mid-flight. "May" covers both cases without overstating either.
-    */
-    if (outcome === 'revoked') {
+    if (outcome === 'revoked')
       setNotice(
         'Revoked. Anything already running may still have it until it finishes.',
       );
-    }
     if (outcome === 'already-gone') setNotice('That one was already gone.');
-    if (outcome === 'failed') {
+    if (outcome === 'failed')
       setNotice("We couldn't take that back just now. Nothing changed.");
+  }
+  async function act(action: () => Promise<void>) {
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await action();
+    } catch {
+      setActionError('We couldn’t finish that just now. Please try again.');
+    } finally {
+      setActionBusy(false);
     }
   }
-
-  return (
-    <>
-      <RightNow agent={agent} rail={rail} loading={loading} error={error} />
-
-      {learned}
-
-      <SectionLabel>What it may do alone</SectionLabel>
-      <Permissions name={agent.name} rail={rail} loading={loading} error={error} />
-
-      <SectionLabel>Granted by you</SectionLabel>
-      <Grants
-        rail={rail}
-        loading={loading}
-        revoking={revoking}
-        notice={notice}
-        onRevoke={onRevoke}
-      />
-
-      <ThisWeek rail={rail} loading={loading} error={error} />
-
-      <SectionLabel>Previous conversations</SectionLabel>
-      <Card className="shadow-sm">
-        <CardContent className="flex flex-col gap-0.5 p-2">
-          {past.length === 0 && (
-            <span className="px-1.5 py-1 text-[12.5px] text-muted-foreground">
-              None yet — this is the first one.
-            </span>
-          )}
-          {past.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => onOpenPast(openPastId === c.id ? null : c.id)}
-              className={
-                openPastId === c.id
-                  ? 'truncate rounded-md bg-primary-soft px-2 py-1.5 text-left text-[12.5px] text-primary'
-                  : 'truncate rounded-md px-2 py-1.5 text-left text-[12.5px] text-muted-foreground hover:bg-muted'
-              }
-              title={c.title}
+  function select(next: AgentTab) {
+    if (onTab) onTab(next);
+    else setLocalTab(next);
+    if (collapsed) onCollapse?.();
+  }
+  function menu(id: string, name: string) {
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={`Options for ${name}`}
+            className="absolute right-0 top-0 size-9 rounded-sm opacity-0 focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 max-md:size-11 max-md:opacity-100"
+            disabled={actionBusy || busy}
+          >
+            <MoreHorizontal aria-hidden="true" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          sideOffset={4}
+          className="shadow-popover"
+        >
+          <DropdownMenuGroup>
+            <DropdownMenuItem
+              onSelect={() => {
+                setEditing({ id, title: name, kind: 'rename' });
+                setTitle(name);
+                setActionError(null);
+              }}
             >
-              {c.title}
-            </button>
-          ))}
-        </CardContent>
-      </Card>
-    </>
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() =>
+                void act(() => conversationControls.export(agent.id, id))
+              }
+            >
+              Export as text
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={() => {
+                setEditing({ id, title: name, kind: 'delete' });
+                setActionError(null);
+              }}
+            >
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+  const count =
+    active === 'rules' && rail?.permissions.status === 'ok'
+      ? `${rail.permissions.rows.length} ${rail.permissions.rows.length === 1 ? 'rule' : 'rules'}`
+      : active === 'memory' && counts?.memory != null
+        ? `${counts.memory} ${counts.memory === 1 ? 'note' : 'notes'}`
+        : active === 'files' && counts?.files != null
+          ? `${counts.files} ${counts.files === 1 ? 'file' : 'files'}`
+          : null;
+  return (
+    <Tabs
+      value={active}
+      onValueChange={(v) => select(v as AgentTab)}
+      orientation={collapsed ? 'vertical' : 'horizontal'}
+      className="flex min-h-0 flex-1 flex-col"
+    >
+      <div
+        className={cn(
+          'flex h-14 shrink-0 items-center gap-2.5 px-4',
+          collapsed && 'justify-center px-0',
+          mobile && 'pr-14',
+        )}
+      >
+        {!collapsed && (
+          <>
+            <AgentTile agent={agent} size={28} />
+            <span
+              className="min-w-0 truncate font-brand text-[15px] font-semibold"
+              title={agent.name}
+            >
+              {agent.name}
+            </span>
+          </>
+        )}
+        {!mobile && onCollapse && (
+          <IconTooltip
+            label={collapsed ? 'Show agent details' : 'Hide agent details'}
+            side="left"
+            className={collapsed ? '' : 'ml-auto'}
+          >
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onCollapse}
+              aria-label={
+                collapsed ? 'Show agent details' : 'Hide agent details'
+              }
+              className={cn(
+                'size-7 rounded-sm text-muted-foreground',
+                !collapsed && 'ml-auto',
+              )}
+            >
+              <PanelRight aria-hidden="true" />
+            </Button>
+          </IconTooltip>
+        )}
+      </div>
+      <TabsList
+        aria-label="Agent detail tabs"
+        className={cn(
+          'flex h-[52px] shrink-0 justify-between rounded-none border-b border-border bg-transparent px-2 py-1.5 max-md:h-[56px]',
+          collapsed && 'h-auto flex-col gap-1 border-b-0 px-1 py-2',
+        )}
+      >
+        {WORKSPACE_AGENT_TABS.map((value) => {
+          const { Icon, label } = RAIL_TABS[value];
+          return (
+            <IconTooltip
+              key={value}
+              label={label}
+              side={collapsed ? 'left' : 'bottom'}
+            >
+              <TabsTrigger
+                value={value}
+                aria-label={label}
+                onClick={() => {
+                  if (collapsed && value === active) onCollapse?.();
+                }}
+                className="relative size-10 shrink-0 rounded-sm p-0 text-muted-foreground hover:bg-accent data-[state=active]:bg-primary-soft data-[state=active]:text-primary data-[state=active]:shadow-none max-md:size-11"
+              >
+                <Icon aria-hidden="true" className="size-4" />
+                {value === 'activity' && agent.state === 'working' && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute right-2 top-2 size-1.5 rounded-full bg-primary"
+                  />
+                )}
+              </TabsTrigger>
+            </IconTooltip>
+          );
+        })}
+      </TabsList>
+      {!collapsed && (
+        <TabsContent
+          value={active}
+          forceMount
+          className="mt-0 flex min-h-0 flex-1 flex-col"
+        >
+          <div className="flex h-12 shrink-0 items-center gap-2 px-4">
+            <h2 className="text-[14px] font-semibold">
+              {RAIL_TABS[active].label}
+            </h2>
+            {count && (
+              <span className="text-[12px] text-muted-foreground">{count}</span>
+            )}
+            {active === 'chat' && onNew && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy || actionBusy}
+                onClick={() => void act(onNew)}
+                className="ml-auto h-7 rounded-sm px-1.5 text-[12.5px]"
+              >
+                <Plus data-icon="inline-start" aria-hidden="true" />
+                New
+              </Button>
+            )}
+          </div>
+          <CompactSurfaceContext.Provider value={true}>
+            <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-5">
+              {actionError && !editing && (
+                <Alert variant="destructive" className="mb-3">
+                  <AlertDescription>{actionError}</AlertDescription>
+                </Alert>
+              )}
+              {active === 'activity' && (
+                <>
+                  <SectionLabel>Right now</SectionLabel>
+                  <RightNow
+                    agent={agent}
+                    rail={rail}
+                    loading={loading}
+                    error={error}
+                  />
+                  <ThisWeek rail={rail} loading={loading} error={error} />
+                  <SectionLabel>Recent activity</SectionLabel>
+                  {panels?.activity}
+                </>
+              )}
+              {active === 'chat' && (
+                <div className="flex flex-col gap-0.5">
+                  <div className="group relative flex h-9 items-center rounded-sm max-md:h-11">
+                    <Button
+                      variant="ghost"
+                      onClick={() => onOpenPast(null)}
+                      className={cn(
+                        'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',
+                        openPastId === null && 'bg-primary-soft text-primary',
+                      )}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="size-1.5 shrink-0 rounded-full bg-primary"
+                      />
+                      <span className="min-w-0 flex-1 text-left">
+                        Current conversation
+                      </span>
+                      <span className="w-[52px] shrink-0 text-right text-[12px] text-muted-foreground group-hover:opacity-0 max-md:opacity-0">
+                        Now
+                      </span>
+                    </Button>
+                    {detail.conversationId &&
+                      menu(detail.conversationId, 'Current conversation')}
+                  </div>
+                  {past.map((c) => (
+                    <div
+                      key={c.id}
+                      className="group relative flex min-h-9 items-center rounded-sm"
+                    >
+                      <Button
+                        variant="ghost"
+                        aria-label={c.title}
+                        aria-description={conversationDate(c.lastActivityAt)}
+                        onClick={() => onOpenPast(c.id)}
+                        className={cn(
+                          'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',
+                          openPastId === c.id && 'bg-primary-soft text-primary',
+                        )}
+                      >
+                        <span
+                          className="conversation-title-fade min-w-0 flex-1 overflow-hidden whitespace-nowrap text-left"
+                          title={c.title}
+                        >
+                          {c.title}
+                        </span>
+                        <span className="w-[52px] shrink-0 whitespace-nowrap text-right text-[12px] text-muted-foreground group-hover:opacity-0 max-md:opacity-0">
+                          {conversationDate(c.lastActivityAt)}
+                        </span>
+                      </Button>
+                      {menu(c.id, c.title)}
+                    </div>
+                  ))}
+
+                </div>
+              )}
+              {active === 'memory' && (
+                <>
+                  {learned}
+                  {panels?.memory}
+                  <p className="mt-4 text-[12px] text-muted-foreground">
+                    Notes it keeps from your conversations. Edit or remove any
+                    of them.
+                  </p>
+                </>
+              )}
+              {active === 'files' && panels?.files}
+              {active === 'rules' && (
+                <>
+                  <Permissions
+                    name={agent.name}
+                    rail={rail}
+                    loading={loading}
+                    error={error}
+                  />
+                  <p className="mt-4 text-[12px] text-muted-foreground">
+                    Rules guide it. They don’t limit which tools it can reach.
+                  </p>
+                  <SectionLabel>Granted by you</SectionLabel>
+                  <Grants
+                    rail={rail}
+                    loading={loading}
+                    revoking={revoking}
+                    notice={notice}
+                    onRevoke={onRevoke}
+                  />
+                </>
+              )}
+            </div>
+          </CompactSurfaceContext.Provider>
+        </TabsContent>
+      )}
+      {WORKSPACE_AGENT_TABS.filter((v) => collapsed || v !== active).map(
+        (v) => (
+          <TabsContent key={v} value={v} forceMount hidden className="mt-0" />
+        ),
+      )}
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open && !actionBusy) setEditing(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {editing?.kind === 'delete'
+                ? 'Delete conversation?'
+                : 'Rename conversation'}
+            </DialogTitle>
+            <DialogDescription>
+              {editing?.kind === 'delete'
+                ? 'This removes the conversation from your workspace.'
+                : 'Give it a name that’s easy to find later.'}
+            </DialogDescription>
+          </DialogHeader>
+          {editing?.kind === 'rename' && (
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="conversation-title">Name</FieldLabel>
+                <Input
+                  id="conversation-title"
+                  value={title}
+                  maxLength={256}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </Field>
+            </FieldGroup>
+          )}
+          {actionError && (
+            <Alert variant="destructive">
+              <AlertDescription>{actionError}</AlertDescription>
+            </Alert>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={actionBusy}
+              onClick={() => setEditing(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={editing?.kind === 'delete' ? 'destructive' : 'default'}
+              disabled={
+                actionBusy || (editing?.kind === 'rename' && !title.trim())
+              }
+              onClick={() => {
+                if (!editing) return;
+                const target = editing;
+                void act(async () => {
+                  if (target.kind === 'rename')
+                    await conversationControls.rename(target.id, title.trim());
+                  else {
+                    await conversationControls.delete(target.id);
+                    if (openPastId === target.id) onOpenPast(null);
+                  }
+                  setEditing(null);
+                  onChanged?.();
+                });
+              }}
+            >
+              {actionBusy
+                ? 'Saving…'
+                : editing?.kind === 'delete'
+                  ? 'Delete'
+                  : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Tabs>
   );
 }
-
 /**
  * "Right now" — a phrase, a REAL counter, and how long it has been going.
  *
@@ -242,12 +557,13 @@ function RightNow({
   const line = rail?.activity.activity ?? null;
   return (
     <>
-      <SectionLabel>Right now</SectionLabel>
-      <Card className="shadow-sm">
+      <Card className="rounded-md bg-muted shadow-none">
         <CardContent className="flex flex-col gap-2 p-3.5">
-          <div className="text-[13px]">
-            {line?.phrase ?? STATE_WORD[agent.state] ?? 'Resting'}
+          <div className="flex items-center gap-2 text-[12.5px] font-medium">
+            <StateDot state={agent.state} />
+            {stateWord(agent.state)}
           </div>
+          <div className="text-[13px]">{line?.phrase ?? ''}</div>
           {line !== null && (
             <div className="flex justify-between text-[12px] text-muted-foreground">
               <span>
@@ -264,11 +580,12 @@ function RightNow({
             producer says nothing extra: the state word IS the honest answer
             there, and a notice would be noise on every render forever.
           */}
-          {!loading && (error !== null || rail?.activity.status === 'failed') && (
-            <p className="text-[11.5px] text-muted-foreground">
-              We couldn&apos;t read what it&apos;s doing just now.
-            </p>
-          )}
+          {!loading &&
+            (error !== null || rail?.activity.status === 'failed') && (
+              <p className="text-[11.5px] text-muted-foreground">
+                We couldn&apos;t read what it&apos;s doing just now.
+              </p>
+            )}
         </CardContent>
       </Card>
     </>
@@ -288,7 +605,12 @@ function Permissions({
   error: string | null;
 }) {
   if (loading && rail === null) {
-    return <Note>Reading what {name} may do…</Note>;
+    return (
+      <div className="flex flex-col gap-3">
+        <Skeleton className="h-4 w-4/5" />
+        <Skeleton className="h-4 w-3/5" />
+      </div>
+    );
   }
   if (rail === null) {
     return (
@@ -320,71 +642,24 @@ function Permissions({
           can&apos;t tell you — not that there isn&apos;t any.
         </Note>
       )}
-      {/*
-        COLLAPSED BY DEFAULT (TASK-685). A new agent's first screen used to
-        open on a dozen rows, each ending in a mono `rule:…` id — policy
-        internals before anyone had said a word, and at 1280×800 it pushed
-        "Granted by you" below the fold. This is DISCLOSURE, NOT REMOVAL:
-        every row is one click away and the expanded list is exactly the
-        list this used to draw (design H4 — never drop a capability).
-
-        The trigger names a COUNT and nothing else. A per-verdict breakdown
-        ("8 on its own · 1 never") was considered and declined: a conditional
-        rule counted under "never" is a sometimes-claim promoted to an
-        always-claim, and a summary that can say something the rows do not is
-        a second, untested copy of the frames in `permission-frames.ts`.
-
-        Radix unmounts the closed content, so nothing inside it is tabbable
-        while it is shut, and the trigger is a real `<button>` carrying
-        `aria-expanded`.
-
-        What stays OUTSIDE the fold is deliberate: the unrestricted-scope
-        alert and the incomplete-read note are claims about the list's
-        LIMITS. Folding them away would let a tidy "12 rules" read as a leash
-        the agent does not have — the understatement H4 forbids.
-      */}
       {rows.length > 0 && (
-        <Collapsible>
-          <CollapsibleTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="group h-auto w-full justify-between px-2 py-1.5 text-[12.5px] font-normal text-muted-foreground"
-            >
-              {rows.length === 1 ? 'Show the 1 rule' : `Show all ${String(rows.length)} rules`}
-              <ChevronRight
-                data-icon="inline-end"
-                aria-hidden="true"
-                className="transition-transform duration-150 group-data-[state=open]:rotate-90"
-              />
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="flex flex-col pt-1">
-            {/*
-              The index rides in the key on purpose. `source` is unique per
-              producer, but it is FENCED on the way out — two very long ids can
-              truncate to the same 60 characters — and a duplicate key here
-              would silently drop a permission row. This list is replaced
-              wholesale on every read, so there is no reorder for the index to
-              spoil.
-            */}
-            {rows.map((row, i) => (
-              <Fragment key={`${row.source}#${String(i)}`}>
-                {/*
+        <div className="flex flex-col">
+          {rows.map((row, i) => (
+            <Fragment key={`${row.source}#${String(i)}`}>
+              {/*
                   A rule from the group above ends here. Twenty rows separated
                   only by a small coloured glyph is a list nobody scans; a
                   hairline between "can", "asks first" and "never" makes the
                   three blocks findable without adding three headings that
                   repeat what each row already says.
                 */}
-                {i > 0 && rows[i - 1]?.verdict !== row.verdict && (
-                  <Separator className="my-2" />
-                )}
-                <PermissionLine row={row} />
-              </Fragment>
-            ))}
-          </CollapsibleContent>
-        </Collapsible>
+              {i > 0 && rows[i - 1]?.verdict !== row.verdict && (
+                <Separator className="my-2" />
+              )}
+              <PermissionLine row={row} />
+            </Fragment>
+          ))}
+        </div>
       )}
       {unrestrictedTools && (
         <Alert className="mt-3">
@@ -399,7 +674,8 @@ function Permissions({
       {incomplete && (
         <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
           One of the places we look didn&apos;t answer, so the rules above may
-          be missing something. It is not a complete list of what {name} cannot do.
+          be missing something. It is not a complete list of what {name} cannot
+          do.
         </p>
       )}
     </div>
@@ -444,12 +720,17 @@ function Grants({
   }
   const { status, rows, incomplete } = rail.grants;
   if (status !== 'ok') {
-    return <ReadFailure status={status} what="a record of what you've granted" />;
+    return (
+      <ReadFailure status={status} what="a record of what you've granted" />
+    );
   }
   return (
     <div className="flex flex-col">
       {rows.length === 0 && (
-        <Note>Nothing yet — you haven&apos;t granted anything beyond the rules above.</Note>
+        <Note>
+          Nothing yet — you haven&apos;t granted anything beyond the rules
+          above.
+        </Note>
       )}
       {rows.map((row, i) => (
         <GrantLine

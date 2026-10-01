@@ -228,10 +228,7 @@ describe('the agent pane below md', () => {
     setViewport(true);
     renderAgentView();
 
-    // The pane has mounted (its tab strip is up).
-    expect(
-      await screen.findByRole('tab', { name: 'Conversation' }),
-    ).toBeTruthy();
+    expect(await screen.findByPlaceholderText('Message Quill')).toBeTruthy();
 
     /*
       The rail is what squeezed the conversation column to ZERO pixels at 390px
@@ -241,7 +238,7 @@ describe('the agent pane below md', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent details' }));
 
-    expect(await screen.findByText('What it may do alone')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Conversations' })).toBeTruthy();
   });
 
   it('closes the rail when you open a past conversation from it', async () => {
@@ -260,9 +257,9 @@ describe('the agent pane below md', () => {
     fireEvent.click(
       await screen.findByRole('button', { name: 'Agent details' }),
     );
-    const panel = await screen.findByText('What it may do alone');
+    const panel = await screen.findByRole('heading', { name: 'Conversations' });
 
-    fireEvent.click(screen.getByRole('button', { name: /March/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'March' }));
 
     await waitFor(() => expect(panel.isConnected).toBe(false));
   });
@@ -290,9 +287,9 @@ describe('the agent pane below md', () => {
     renderAgentView({ onOpenNav: () => {} });
 
     expect(
-      await screen.findByRole('tab', { name: 'Conversation' }),
+      await screen.findByRole('tab', { name: 'Conversations' }),
     ).toBeTruthy();
-    expect(await screen.findByText('What it may do alone')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Conversations' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Agent details' })).toBeNull();
     /*
       Even handed `onOpenNav`, the nav trigger stays off above `md` — the

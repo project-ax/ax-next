@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { HomeComposer } from '../HomeComposer';
+import { AgentConversation } from '../AgentConversation';
 import { ATTACHMENT_NEEDS_MESSAGE } from '@/lib/workspace-attachments';
 import { StorageFullError } from '@/lib/storage-full';
 import { STORAGE_FULL_SEND } from '@/lib/storage-copy';
@@ -65,6 +66,47 @@ const twoAgents: WorkspaceAgent[] = [
 ];
 
 const oneAgent: WorkspaceAgent[] = [agent()];
+
+it('shares composer layout and chat width, with agent selection only on Today', () => {
+  render(<HomeComposer agents={oneAgent} onSend={vi.fn()} />);
+  const todayInput = screen.getByRole('textbox');
+  const todayFrame = todayInput.parentElement!;
+  const agentView = render(
+    <AgentConversation
+      agent={oneAgent[0]!}
+      thread={[]}
+      conversationId="c1"
+      decisions={[]}
+      readOnly={false}
+      onSend={vi.fn()}
+      onApprove={vi.fn()}
+      onDismiss={vi.fn()}
+      onUndo={vi.fn()}
+      approvalRead="ok"
+      onRetryApprovals={vi.fn()}
+      grants={[]}
+      onGrantResolved={vi.fn()}
+      onGranted={vi.fn(async () => true)}
+    />,
+  );
+  const agentFrame = within(agentView.container).getByRole('group', { name: 'Message Scheduler' });
+  const radiusClass = (frame: HTMLElement) =>
+    [...frame.classList].find(token => token.startsWith('rounded-'));
+  expect(radiusClass(agentFrame)).toBe(radiusClass(todayFrame));
+  expect(radiusClass(todayFrame)).toBe('rounded-xl');
+  const agentInput = within(agentFrame).getByRole('textbox');
+  expect(agentInput.className).toBe(todayInput.className);
+  for (const frame of [todayFrame, agentFrame]) {
+    const input = within(frame).getByRole('textbox');
+    const attach = within(frame).getByRole('button', { name: 'Attach a file' });
+    expect(input.compareDocumentPosition(attach) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(frame.parentElement).toHaveClass('max-w-[900px]', 'mx-auto', 'px-6');
+  }
+  expect(within(todayFrame).getByText('Scheduler')).toBeInTheDocument();
+  expect(within(agentFrame).queryByText('Scheduler')).not.toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'Conversation with Scheduler' }).firstElementChild)
+    .toHaveClass('max-w-[900px]', 'mx-auto', 'px-6');
+});
 
 function setup(agents: WorkspaceAgent[] = twoAgents) {
   const onSend = vi.fn();

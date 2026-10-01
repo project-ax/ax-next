@@ -3,7 +3,7 @@
  *
  * The Today queue shows every open grant. An agent's thread ALSO shows the
  * ones that agent raised, but only while the person is demonstrably there
- * reading that thread: its chat tab is the open route, and the tab is visible.
+ * reading that thread: its agent is the open route, and the browser tab is visible.
  *
  * Pinned here as a pure function because the rule is the part worth pinning,
  * and because each refusal is a separate sentence about the product — "another
@@ -39,7 +39,7 @@ const grant = (agentId = 'a-quill', request = skill()): WorkspaceGrant => ({
 /** The one presence state that routes a grant into a thread. */
 const there = (
   id = 'a-quill',
-  tab: 'chat' | 'did' | 'files' | 'memory' = 'chat',
+  tab: 'activity' | 'chat' | 'files' | 'memory' | 'rules' = 'chat',
 ): GrantPresence => ({ route: { kind: 'agent', id, tab }, visible: true });
 
 describe('the thread is the exception', () => {
@@ -53,13 +53,12 @@ describe('the thread is the exception', () => {
     expect(grantBelongsInThread(grant('a-quill'), there('a-scout'))).toBe(false);
   });
 
-  test.each(['did', 'files', 'memory'] as const)(
-    "the agent's %s tab does not take it",
+  test.each(['activity', 'files', 'memory', 'rules'] as const)(
+    "the conversation beside the agent's %s tab takes it",
     (tab) => {
-      // Right agent, wrong view. The card renders above the composer, and no
-      // other tab has one.
+      // Every detail tab is beside the same conversation and composer.
       expect(grantBelongsInThread(grant('a-quill'), there('a-quill', tab))).toBe(
-        false,
+        true,
       );
     },
   );

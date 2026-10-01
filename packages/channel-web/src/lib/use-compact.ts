@@ -26,7 +26,7 @@
  * property this hook is for. Negating the real breakpoint makes that true by
  * construction rather than by a rounding margin.
  */
-import { useSyncExternalStore } from 'react';
+import { createContext, useContext, useSyncExternalStore } from 'react';
 
 /**
  * The exact complement of Tailwind's `md` (`min-width: 768px`) — gap-free by
@@ -59,6 +59,10 @@ const subscribeCompact = (cb: () => void): (() => void) => {
  * `matchMedia` fires `change` for both — a rotation that crosses the breakpoint
  * moves the sidebar without a reload.
  */
+export const CompactSurfaceContext = createContext<boolean | undefined>(undefined);
+
 export function useIsCompact(): boolean {
-  return useSyncExternalStore(subscribeCompact, isCompact, () => false);
+  const surface = useContext(CompactSurfaceContext);
+  const viewport = useSyncExternalStore(subscribeCompact, isCompact, () => false);
+  return surface ?? viewport;
 }

@@ -405,7 +405,7 @@ export type MemoryUsedStatement = Pick<
   closedSince?: 'replaced' | 'forgotten' | 'retracted';
 };
 
-/** One `memory_recall` answer inside a conversation: when, and what it handed the model. */
+/** Supporting evidence explicitly selected for an answer, with its recall timestamp. */
 export interface MemoryRecallReceipt {
   /** ISO-8601 instant the tool answered. */
   at: string;

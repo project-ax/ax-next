@@ -389,7 +389,9 @@ export function stepDetail(input: unknown): string | undefined {
     // The guard runs on the ordered pass too. Nothing in DETAIL_KEYS trips it
     // today; asking here rather than only in the fallback means a key added to
     // that list later cannot quietly opt out of it.
-    if (namesASecret(key)) return null;
+    // A recall ID links search candidates to selected evidence; it has no
+    // meaning for the person reading an activity step.
+    if (key === 'recallId' || namesASecret(key)) return null;
     return fenceLine(value, STEP_DETAIL_MAX_CHARS);
   };
   for (const key of DETAIL_KEYS) {

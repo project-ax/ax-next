@@ -1,5 +1,6 @@
-import type { AgentContext, HookBus } from '@ax/core';
+import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 
+import { PLUGIN_NAME } from './plugin-name.js';
 import { conversationOf } from './conversation.js';
 import { STORAGE_GET_HOOK, STORAGE_SET_HOOK } from './incremental.js';
 import type {
@@ -12,33 +13,10 @@ import type {
 } from './types.js';
 
 /**
- * Recall receipts — what `memory_recall` handed the model, per conversation
- * (TASK-628).
- *
- * ## Why a receipt instead of reading the transcript
- *
- * The persisted tool result is model-visible TEXT (the evidence table carries
- * no statement ids), the browser never sees tool outputs, and the tool call's
- * id on the host path is not the SDK's tool_use id — so nothing already
- * stored can say which rows an answer used. And a re-query later would answer
- * what memory says NOW, not what the model saw. So when the tool answers
- * inside a conversation we keep the exact rows it rendered.
- *
- * ## Where it lives
- *
- * `storage:*`, the same kv the incremental-extraction cursor uses: one key
- * per conversation, stamped with the agent and the user it was recorded for,
- * capped at {@link RECALL_RECEIPTS_CAP} receipts (oldest dropped). Reads
- * return a receipt only to that same agent AND user.
- *
- * ## Serialization
- *
- * A receipt write is a read-modify-write of one key, and one turn can call
- * the tool twice in parallel. Writes to one key are chained in-process —
- * honest only because the host is single-replica (the chart refuses more;
- * same footing as `memory:status` and the extraction scheduler). A second
- * replica would lose a receipt in a race, never corrupt one: the value is
- * rewritten whole.
+ * Bounded, owner-scoped snapshots of retrieved candidates and explicit usage.
+ * Retrieval is not usage: pending candidates never reach the answer chip.
+ * Writes and selections share a per-key queue on the single-replica host.
+ * Version 1 receipts represented retrieval, so they cannot establish usage.
  */
 
 export const MEMORY_RECALL_RECEIPTS_HOOK = 'memory:recall-receipts';
@@ -53,13 +31,19 @@ export const MAX_STATUS_SUBJECTS = 10;
 
 export const MAX_CONVERSATION_ID_CHARS = 256;
 
-const STORED_VERSION = 1;
+const STORED_VERSION = 2;
+
+interface StoredReceipt extends MemoryRecallReceipt {
+  recallId?: string;
+  selected: boolean;
+  usedIds?: string[];
+}
 
 interface StoredReceipts {
-  v: 1;
+  v: 2;
   agentId: string;
   userId: string;
-  receipts: MemoryRecallReceipt[];
+  receipts: StoredReceipt[];
 }
 
 export function recallReceiptsKey(conversationId: string): string {
@@ -129,7 +113,7 @@ async function readStored(
   if (p.v !== STORED_VERSION || !isString(p.agentId) || !isString(p.userId) || !Array.isArray(p.receipts)) {
     return undefined;
   }
-  const receipts: MemoryRecallReceipt[] = [];
+  const receipts: StoredReceipt[] = [];
   for (const raw of p.receipts as unknown[]) {
     if (raw === null || typeof raw !== 'object') continue;
     const r = raw as Record<string, unknown>;
@@ -137,7 +121,11 @@ async function readStored(
     const statements = (r.statements as unknown[])
       .map(toUsedStatement)
       .filter((s): s is MemoryUsedStatement => s !== undefined);
-    if (statements.length > 0) receipts.push({ at: r.at, statements });
+    if (statements.length > 0) receipts.push({
+      at: r.at, statements, selected: r.selected === true,
+      ...(Array.isArray(r.usedIds) && r.usedIds.every(isString) ? { usedIds: r.usedIds } : {}),
+      ...(isString(r.recallId) ? { recallId: r.recallId } : {}),
+    });
   }
   return { v: STORED_VERSION, agentId: p.agentId, userId: p.userId, receipts };
 }
@@ -157,7 +145,9 @@ interface RecallReceiptRecorder {
     ctx: AgentContext,
     statements: readonly MemoryStatement[],
     at: string,
+    recallId?: string,
   ): Promise<void>;
+  select(ctx: AgentContext, recallId: string, ids: readonly string[]): Promise<void>;
 }
 
 /**
@@ -171,7 +161,7 @@ function createRecallReceiptRecorder(bus: HookBus): RecallReceiptRecorder {
   const append = async (
     ctx: AgentContext,
     key: string,
-    receipt: MemoryRecallReceipt,
+    receipt: StoredReceipt,
   ): Promise<void> => {
     const stored = await readStored(bus, ctx, key);
     // A list recorded for anyone else is not ours to extend — and never
@@ -193,8 +183,44 @@ function createRecallReceiptRecorder(bus: HookBus): RecallReceiptRecorder {
     });
   };
 
+  const enqueue = async (key: string, action: () => Promise<void>): Promise<void> => {
+    const previous = tails.get(key) ?? Promise.resolve();
+    const work = previous.catch(() => {}).then(action);
+    tails.set(key, work);
+    try { await work; } finally {
+      if (tails.get(key) === work) tails.delete(key);
+    }
+  };
+
   return {
-    async record(ctx, statements, at) {
+    async select(ctx, recallId, ids) {
+      const conversationId = conversationOf(ctx);
+      if (!conversationId || !hasStorage(bus)) return;
+      const key = recallReceiptsKey(conversationId);
+      await enqueue(key, async () => {
+        const stored = await readStored(bus, ctx, key);
+        const receipt = stored?.agentId === ctx.agentId && stored.userId === ctx.userId
+          ? stored.receipts.find((r) => r.recallId === recallId) : undefined;
+        if (!receipt || ids.some((id) => !receipt.statements.some((s) => s.id === id))) {
+          throw new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME,
+            hookName: 'tool:execute:memory_use', message: 'Select only IDs from this conversation’s recall result' });
+        }
+        if (receipt.selected) {
+          if (receipt.usedIds?.length === new Set(ids).size &&
+              receipt.usedIds.every((id) => ids.includes(id))) return;
+          throw new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME,
+            hookName: 'tool:execute:memory_use', message: 'This recall result already has recorded sources' });
+        }
+        // A selection is final and idempotent. No new row text or owner scope
+        // can be supplied by the model. Preserve the retrieval timestamp.
+        receipt.usedIds = [...new Set(ids)];
+        receipt.selected = true;
+        await bus.call(STORAGE_SET_HOOK, ctx, {
+          key, value: new TextEncoder().encode(JSON.stringify(stored)),
+        });
+      });
+    },
+    async record(ctx, statements, at, recallId) {
       try {
         const conversationId = conversationOf(ctx);
         if (conversationId === undefined || conversationId === '') return;
@@ -209,16 +235,10 @@ function createRecallReceiptRecorder(bus: HookBus): RecallReceiptRecorder {
         if (snapshot.length === 0) return;
 
         const key = recallReceiptsKey(conversationId);
-        const previous = tails.get(key) ?? Promise.resolve();
-        const work = previous
-          .then(() => append(ctx, key, { at, statements: snapshot }))
-          .catch((err: unknown) => warn(ctx, 'record', err));
-        tails.set(key, work);
-        try {
-          await work;
-        } finally {
-          if (tails.get(key) === work) tails.delete(key);
-        }
+        await enqueue(key, () => append(ctx, key, {
+          at, statements: snapshot, selected: recallId === undefined,
+          ...(recallId !== undefined ? { recallId } : {}),
+        }));
       } catch (err) {
         try {
           warn(ctx, 'record', err);
@@ -234,7 +254,7 @@ function createRecallReceiptRecorder(bus: HookBus): RecallReceiptRecorder {
 const recorders = new WeakMap<HookBus, RecallReceiptRecorder>();
 
 /**
- * Record what `memory_recall` just handed the model, when it answered inside
+ * Snapshot recalled candidates (recallId supplied), or confirmed usage, inside
  * a conversation. Never throws. Skips a routine turn (`conversationOf`), a
  * caller with no user, an empty answer, and a host without `storage:*`.
  */
@@ -243,13 +263,26 @@ export async function recordRecallReceipt(
   ctx: AgentContext,
   statements: readonly MemoryStatement[],
   at: string,
+  recallId?: string,
 ): Promise<void> {
   let recorder = recorders.get(bus);
   if (recorder === undefined) {
     recorder = createRecallReceiptRecorder(bus);
     recorders.set(bus, recorder);
   }
-  await recorder.record(ctx, statements, at);
+  await recorder.record(ctx, statements, at, recallId);
+}
+
+/** Mark a retrieved snapshot as used, selecting only its own rows. */
+export async function selectRecallReceipt(
+  bus: HookBus, ctx: AgentContext, recallId: string, ids: readonly string[],
+): Promise<void> {
+  let recorder = recorders.get(bus);
+  if (recorder === undefined) {
+    recorder = createRecallReceiptRecorder(bus);
+    recorders.set(bus, recorder);
+  }
+  await recorder.select(ctx, recallId, ids);
 }
 
 /**
@@ -278,10 +311,13 @@ export async function readRecallReceipts(
   const stored = await readStored(bus, ctx, recallReceiptsKey(conversationId));
   if (stored === undefined) return [];
   if (stored.agentId !== ctx.agentId || stored.userId !== ctx.userId) return [];
-  if (stored.receipts.length === 0) return [];
+  const selected = stored.receipts.filter((r) => r.selected).map((r) => ({
+    ...r, statements: r.statements.filter((s) => r.usedIds === undefined || r.usedIds.includes(s.id)),
+  })).filter((r) => r.statements.length > 0);
+  if (selected.length === 0) return [];
 
   const subjects: string[] = [];
-  for (const receipt of [...stored.receipts].reverse()) {
+  for (const receipt of [...selected].reverse()) {
     for (const s of receipt.statements) {
       if (subjects.length >= MAX_STATUS_SUBJECTS) break;
       if (!subjects.includes(s.about)) subjects.push(s.about);
@@ -306,7 +342,7 @@ export async function readRecallReceipts(
     }
   }
 
-  return stored.receipts.map((receipt) => ({
+  return selected.map((receipt) => ({
     at: receipt.at,
     statements: receipt.statements.map((s) => {
       const closedSince = closures.get(s.id);

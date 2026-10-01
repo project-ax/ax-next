@@ -262,6 +262,10 @@ describe('telling one call from the next', () => {
 });
 
 describe('stepDetail', () => {
+  it('does not show memory attribution bookkeeping IDs in activity steps', () => {
+    expect(stepDetail({ recallId: 'internal-recall-id', ids: ['evidence-id'] })).toBeUndefined();
+  });
+
   it('picks the argument a person would ask about first', () => {
     // `command` over everything, then the path, then what was searched for.
     expect(stepDetail({ description: 'run the build', command: 'pnpm build' })).toBe(

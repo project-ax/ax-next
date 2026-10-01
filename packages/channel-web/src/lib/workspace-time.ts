@@ -76,3 +76,11 @@ export function relativeDay(iso: string, now: Date = new Date()): string {
   if (days < 365) return `${Math.floor(days / 30)} months ago`;
   return 'over a year ago';
 }
+
+/** Compact date for the rail. A malformed server timestamp must not blank chat. */
+export function conversationDate(iso: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return 'Unknown';
+  const parts = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).formatToParts(date);
+  return `${parts.find(p => p.type === 'day')?.value} ${parts.find(p => p.type === 'month')?.value}`;
+}

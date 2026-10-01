@@ -90,13 +90,13 @@ export function formatEvidenceWhen(
   return row.until === undefined ? when : `${when} → superseded ${row.until.slice(0, 10)}`;
 }
 
-export function renderEvidenceTable(rows: readonly MemoryStatement[], asOf: string): string {
+export function renderEvidenceTable(rows: readonly MemoryStatement[], asOf: string, includeIds = false): string {
   const ordered = [...rows].sort(
     (a, b) => a.when.localeCompare(b.when) || a.id.localeCompare(b.id),
   );
   return [
-    '| Network | When | Conv | Statement |',
-    '| :---- | :---- | :---- | :---- |',
+    includeIds ? '| ID | Network | When | Conv | Statement |' : '| Network | When | Conv | Statement |',
+    includeIds ? '| :---- | :---- | :---- | :---- | :---- |' : '| :---- | :---- | :---- | :---- |',
     ...ordered.map((row) => {
       const words = (value: string) => value.replace(/_/g, ' ').trim();
       // The caller's own subject is stored as `user:<id>`; DEM canonicalized
@@ -115,12 +115,12 @@ export function renderEvidenceTable(rows: readonly MemoryStatement[], asOf: stri
       // id (see MemoryStatement.conversation) — `-` means "recorded outside
       // a conversation", not "unknown".
       const conv = typeof row.conversation === 'number' ? `#${row.conversation}` : '-';
-      return `| [${tag}] | ${escapeStatementText(formatEvidenceWhen(row, asOf))} | ${conv} | ${statement} |`;
+      return `| ${includeIds ? `${escapeStatementText(row.id)} | ` : ''}[${tag}] | ${escapeStatementText(formatEvidenceWhen(row, asOf))} | ${conv} | ${statement} |`;
     }),
   ].join('\n');
 }
 
-export function renderRecallResult(result: MemoryRecallOutput, asOf: string): string {
+export function renderRecallResult(result: MemoryRecallOutput, asOf: string, recallId?: string): string {
   const date = new Date(asOf);
   const distinctConversations = new Set(
     result.statements
@@ -132,10 +132,14 @@ export function renderRecallResult(result: MemoryRecallOutput, asOf: string): st
     ...(result.degraded.length > 0
       ? [`Degraded: ${result.degraded.map((flag) => escapeStatementText(String(flag))).join(', ')}`]
       : []),
+    ...(recallId !== undefined ? [
+      `Recall ID: ${recallId}`,
+      'These are search candidates. Before answering, call memory_use with this Recall ID and only the evidence IDs that support your answer. Unrelated candidates are not used memories. Do not display these IDs in your answer.',
+    ] : []),
     'Ground all claims in the evidence table. Never invent entities, events, dates, or preferences.',
     `Distinct conversations in this evidence: ${distinctConversations}.`,
     '',
     'Evidence table:',
-    renderEvidenceTable(result.statements, asOf),
+    renderEvidenceTable(result.statements, asOf, recallId !== undefined),
   ].join('\n');
 }

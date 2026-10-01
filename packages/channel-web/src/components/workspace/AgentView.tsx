@@ -17,12 +17,14 @@
  * turn ends we re-read the detail so the server's durable thread replaces it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowRight, ChevronLeft, Menu, PanelRight } from 'lucide-react';
+import { Archive, ArrowRight, Menu } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useRailPreference } from '@/lib/use-rail-preference';
+import { conversationControls } from '@/lib/conversation-controls';
 import { useIsCompact } from '@/lib/use-compact';
 import {
   MemoryFixesContext,
@@ -83,7 +85,7 @@ import { MemorySurface } from './FactsMemory';
 import { AgentRail, AgentRailContent } from './AgentRail';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
 import { learnedAnnouncement, learnedToggleLabel } from './memory-copy';
-import { AgentStateLabel, AgentTile } from './bits';
+import { AgentTile } from './bits';
 import type {
   ActivityEvent,
   ThreadMessage,
@@ -93,7 +95,7 @@ import {
   workspaceGrantActions,
   type WorkspaceGrant,
 } from '@/lib/workspace-grant-store';
-import { WORKSPACE_AGENT_TABS, type AgentTab } from '@/lib/workspace-route';
+import { type AgentTab } from '@/lib/workspace-route';
 
 // The tab vocabulary lives with the URL grammar that has to name it — one
 // list, so a tab cannot exist that no link can reach.
@@ -110,12 +112,6 @@ export type { AgentTab } from '@/lib/workspace-route';
  * cannot see says something else. `Record<AgentTab, string>` also makes a new
  * tab a compile error here rather than a panel with no heading.
  */
-const TAB_LABELS: Record<AgentTab, string> = {
-  chat: 'Conversation',
-  did: 'What it did',
-  files: 'Files',
-  memory: 'Memory',
-};
 
 interface Props {
   agentId: string;
@@ -385,6 +381,9 @@ export function AgentView({
    */
   const compact = useIsCompact();
   const [railOpen, setRailOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useRailPreference('details');
+  const [memoryCount, setMemoryCount] = useState<number | null>(null);
+  const [fileCount, setFileCount] = useState<number | null>(null);
   const [pastId, setPastId] = useState<string | null>(null);
   /**
    * The excerpt for the past conversation the rail has open, fetched on demand
@@ -1280,7 +1279,7 @@ export function AgentView({
         }}
         className="flex flex-1 items-center justify-center text-[13px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        Loading…
+        <Skeleton className="h-6 w-1/3" /><Skeleton className="h-20 w-2/3" />
       </div>
     );
   }
@@ -1511,202 +1510,51 @@ export function AgentView({
         ? 'failed'
         : shownRead;
 
+  const railProps = {
+    detail, learned: learnedBlock, openPastId: pastId, tab, onTab,
+    counts: { memory: memoryCount, files: fileCount },
+    onChanged,
+    busy: streaming || rereading,
+    onNew: async () => {
+      const created = await conversationControls.create(agent.id);
+      const next = await workspaceApi.agent(agent.id, created.conversationId);
+      conversationRef.current = created.conversationId;
+      setPastId(null);
+      setSent(null);
+      setTurnError(null);
+      setDetail(next);
+      onChanged();
+    },
+    panels: {
+      activity: <ActivityFeed rail events={activity} agents={agents} agentId={agent.id}
+        {...(activityHasMore !== undefined ? { hasMore: activityHasMore } : {})}
+        {...(onActivityLoadMore ? { onLoadMore: onActivityLoadMore } : {})}
+        {...(activityLoading !== undefined ? { loading: activityLoading } : {})}
+        {...(activityError !== undefined ? { error: activityError } : {})} />,
+      files: <AgentFiles agentId={agent.id} agentName={agent.name} onCount={setFileCount} />,
+      memory: <MemorySurface agentId={agent.id} memory={detail.memory} agentName={agent.name}
+        onCount={setMemoryCount}
+        onRetry={onChanged} onSaveRules={async (body: string) => {
+          const saved = await workspaceApi.saveRules(agent.id, body);
+          onChanged(); return saved.body;
+        }} />,
+    },
+  };
   return (
-    /*
-      THE `Tabs` ROOT SPANS THE WHOLE PANE (TASK-437), header and body together,
-      rather than wrapping the strip of triggers alone.
-
-      It has to: `TabsContent` finds its tab through React context, so a root
-      that closes at the bottom of the `<header>` can have no panels under it —
-      which is precisely the bug this card fixes. `Tabs` renders a plain `div`,
-      so it takes over the outer element's classes and adds no node.
-
-      The fixes provider (TASK-643) wraps it all so the "Used N memories" chip
-      under an answer and the rail's "What I learned" block read and write one
-      ledger — a fix saved on either shows on both at once.
-    */
     <MemoryFixesContext.Provider value={learnedFixes}>
-    <Tabs
-      value={tab}
-      onValueChange={(v) => onTab(v as AgentTab)}
-      className="flex min-h-0 flex-1 flex-col"
-    >
-      <header className="border-b border-border px-6 pt-4">
-        {/*
-          `flex-wrap` + `min-w-0`, not `truncate`. A long agent name in a narrow
-          header used to push the state label off the right edge — the label
-          that says whether the thing is working or stopped, which is the one
-          word on this row nobody can afford to lose. Wrapping keeps both whole;
-          clamping would trade a lost label for clipped text, and TASK-436 is
-          separately chasing clamped text that has no `title` to recover it.
-        */}
-        <div className="flex flex-wrap items-center gap-3">
-          {/*
-            DELIBERATELY NOT `md:`-GATED, unlike `WorkspaceHeader`'s wrap. That
-            one is gated because its desktop layout was fine and only the phone
-            needed changing. This row was never fine: with no wrap and no
-            `min-w-0`, an agent name long enough to fill the pane pushed the
-            state label out and `main`'s `overflow-hidden` clipped it — at ANY
-            width, desktop included. Wrapping fixes that everywhere, so gating
-            it would mean deliberately keeping the clipped version on desktop.
-            The cost is that a very long name now takes two lines there instead
-            of losing its label; that is the trade, taken knowingly.
-          */}
-          {/*
-            The door to the roster from inside a thread (TASK-404). Below `md`
-            the sidebar is off-canvas and this pane owns the whole screen, so
-            without this the only way to another agent is Back to Today — which
-            throws away where you were reading.
-          */}
-          {compact && onOpenNav && (
-            <Button
-              variant="ghost"
-              size="icon"
-              /* Same one-frame cover as the shell's own trigger — see there. */
-              className="md:hidden"
-              onClick={onOpenNav}
-              aria-label="Open navigation"
-              // TASK-474 — same compact stand-in restore target as the shell's
-              // trigger. See `lib/focus-when-ready.ts`.
-              {...{ [NAV_TRIGGER_ATTR]: '' }}
-            >
-              <Menu size={16} />
-            </Button>
-          )}
-          <Button variant="ghost" size="icon" onClick={onBack} aria-label="Back">
-            <ChevronLeft size={16} />
-          </Button>
-          <AgentTile agent={agent} size={30} />
-          <div className="flex min-w-0 items-center gap-2.5">
-            {/*
-              THE PAGE'S ONE `h1` (TASK-446). The agent is the object you
-              navigated to, so its name is the page title — the same call
-              `WorkspaceHeader` makes for Today and Activity, which is why the
-              typography here is already that header's (`text-[15px]
-              font-medium`). Nothing else on the agent route renders an `h1`:
-              the shell hands the whole `main` to this component on
-              `route.kind === 'agent'` and does not draw its own header, and
-              `WorkspaceShell`'s only other `h1` is the full-screen
-              board-read-failure pane, which replaces this one rather than
-              sitting beside it.
-
-              Preflight strips the browser's heading size/weight/margin, so
-              the rendered row is unchanged.
-            */}
-            <h1 className="text-[15px] font-medium">{agent.name}</h1>
-            <AgentStateLabel agent={agent} />
-          </div>
-          {/*
-            The only way to the rail below `md`, where it is no longer a column
-            on the page. Chat tab only, because that is the only tab that
-            renders a rail at all — a button that opens a panel the current tab
-            does not have is worse than no button.
-          */}
-          {compact && tab === 'chat' && (
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setRailOpen(true)}
-              aria-label={
-                learnedUnseen > 0 ? learnedToggleLabel(learnedUnseen) : 'Agent details'
-              }
-              className="relative ml-auto"
-            >
-              <PanelRight size={16} />
-              {/* New memories show here while the rail is shut — never a toast. */}
-              {learnedUnseen > 0 && (
-                <Badge
-                  aria-hidden="true"
-                  className="absolute -right-1 -top-1 h-4 min-w-4 justify-center px-1 text-[10px] leading-none"
-                >
-                  {learnedUnseen}
-                </Badge>
-              )}
-            </Button>
-          )}
-        </div>
-
-        {/*
-          The four triggers are ~309px of intrinsic width and they do not
-          shrink, so on a narrow header the last of them is simply unreachable
-          — the bug the TASK-356 walk measured. The negative margin cancels
-          the header's `px-6` so the rail scrolls edge to edge rather than
-          inside a 24px inset, and the padding puts the inset back on the
-          content; without the pair, the first and last tab sit flush against
-          the viewport when scrolled.
-
-          Scrollbar hidden both ways because Firefox honours only the first
-          and WebKit/Blink only the second. This is a strip of four words that
-          fits on any real desktop — a permanent horizontal bar under it would
-          be visible chrome bought for a case that mostly does not happen.
-
-          `mt-3` moved here off the `Tabs` root when that root grew to span the
-          whole pane (TASK-437) — it was always spacing the STRIP off the title
-          row, and on the root it would now be spacing the pane off its header.
-        */}
-        <div className="-mx-6 mt-3 overflow-x-auto px-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {/* `w-max` so the list keeps its intrinsic width and overflows into
-              the scroller above, instead of shrinking to fit and clipping. */}
-          <TabsList className="h-auto w-max bg-transparent p-0">
-            {WORKSPACE_AGENT_TABS.map((v) => (
-              <TabsTrigger
-                key={v}
-                value={v}
-                className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-[13px] text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none [&:not(:first-child)]:ml-6"
-              >
-                {TAB_LABELS[v]}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </div>
-      </header>
-
       <div className="flex min-h-0 flex-1">
-        {/*
-          THE OPEN TAB'S PANEL (TASK-437). This element used to be a bare `div`,
-          which is why the four triggers advertised `aria-controls` ids that
-          resolved to nothing: `TabsTrigger` emits `aria-controls` whether or not
-          a matching `TabsContent` exists, so the strip claimed a tab/panel
-          relationship the DOM did not keep. It is the same container it always
-          was — `TabsContent` renders a `div` — now carrying `role="tabpanel"`,
-          the id the open trigger points at, `aria-labelledby` back to that
-          trigger, and `tabIndex={0}` so Tab out of the strip lands in here.
+        <div className="flex min-w-0 flex-1 flex-col">
+          {(compact || railCollapsed) && <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
+            {compact && onOpenNav && <Button variant="ghost" size="icon" className="size-11 md:hidden" onClick={onOpenNav} aria-label="Open navigation" {...{ [NAV_TRIGGER_ATTR]: '' }}><Menu aria-hidden="true" /></Button>}
+            <AgentTile agent={agent} size={28} />
+            <h1 className="min-w-0 truncate font-brand text-[15px] font-semibold" title={agent.name}>{agent.name}</h1>
+            {compact && <Button variant="outline" size="sm" onClick={() => setRailOpen(true)} aria-label={learnedUnseen > 0 ? learnedToggleLabel(learnedUnseen) : 'Agent details'} className="ml-auto min-h-11 px-2">
+              Details{learnedUnseen > 0 && <Badge>{learnedUnseen}</Badge>}
+            </Button>}
+          </header>}
+          {!compact && !railCollapsed && <h1 className="sr-only">{agent.name}</h1>}
+          <h2 className="sr-only">Conversation</h2>
 
-          `forceMount` is NOT load-bearing on this one, and saying so is worth a
-          line: `value={tab}` means this panel's tab is open by definition, so
-          Radix would mount it anyway. It is here to keep all four panels one
-          shape — the three below, where `forceMount` is the entire point. If
-          that uniformity ever stops earning its keep, this is the prop to drop.
-
-          `mt-0` cancels the `mt-2` shadcn's `TabsContent` ships. This panel butts
-          straight up against the header, as the `div` it replaces did.
-        */}
-        <TabsContent
-          value={tab}
-          forceMount
-          className="mt-0 flex min-w-0 flex-1 flex-col"
-        >
-          {/*
-            THE OPEN PANEL'S HEADING (TASK-446) — the `h2` between the page's
-            `h1` (the agent's name, above) and the `SectionLabel` `h3`s that
-            Memory, Files and the rail draw inside it.
-
-            `sr-only` BECAUSE THE TAB STRIP ALREADY SAYS IT. A second copy of
-            "Conversation" in 15px type under a tab that is already highlighted
-            would be visual noise; the word is missing only from the
-            ACCESSIBILITY tree, so the fix belongs in `className`, not in the
-            element. (The same call `SheetTitle` makes for the rail sheet below
-            — sr-only, present, real.) The honest alternative would be a `div`
-            with `role="heading" aria-level="2"`, which is the same element
-            with worse support and no reason.
-
-            ONE heading, not four: only the open panel is mounted, so the
-            outline names where the reader actually is rather than listing
-            three regions that are not on screen.
-          */}
-          <h2 className="sr-only">{TAB_LABELS[tab]}</h2>
-          {tab === 'chat' && (
-            <>
               {past && (
                 <div className="flex items-center gap-2.5 border-b border-border bg-muted px-6 py-2.5">
                   <Archive size={13} className="text-muted-foreground" />
@@ -1920,189 +1768,16 @@ export function AgentView({
                   past ? `past:${agent.id}:${past.id}` : `live:${agent.id}`
                 }
               />
-            </>
-          )}
 
-          {tab === 'did' && (
-            <div className="flex-1 overflow-y-auto px-6 py-6">
-              {/*
-                NO `awaitingScope` HERE, and it is worth saying why rather than
-                leaving the asymmetry with the Activity page to look like an
-                oversight (TASK-453).
-
-                The feed hook re-scopes in an effect, so for one render after a
-                switch it holds the collection the reader just left — and this
-                tab drops the agent column, so those rows would paint as THIS
-                agent's. The Activity page takes a prop to refuse that frame.
-                This tab cannot reach it: `AgentView` is keyed on the agent id
-                so a switch remounts it, and the remount returns "Loading…"
-                above until its own `detail` read resolves — which is strictly
-                after the feed's reset effect has run. By the time this line
-                renders at all, the stale frame is over.
-
-                What it lands in instead is the feed's own not-yet-loaded
-                branch (empty list, still fetching), which shows the same
-                placeholders.
-
-                If this tab ever renders before `detail` resolves, it needs the
-                prop. Note that simply deleting the `!detail` gate would not
-                get you there quietly — `const { agent } = detail` below throws
-                on a null destructure, so that edit fails loudly. The change to
-                watch for is one that gives `detail` a synchronous seed.
-              */}
-              <ActivityFeed
-                events={activity}
-                agents={agents}
-                agentId={agent.id}
-                {...(activityHasMore !== undefined ? { hasMore: activityHasMore } : {})}
-                {...(onActivityLoadMore ? { onLoadMore: onActivityLoadMore } : {})}
-                {...(activityLoading !== undefined ? { loading: activityLoading } : {})}
-                {...(activityError !== undefined ? { error: activityError } : {})}
-              />
-            </div>
-          )}
-
-          {/*
-            The Files tab reads the agent's workspace itself (AW-12) rather
-            than taking a `files` array off `detail`. A sub-array of the detail
-            response could not carry the difference between "this agent has
-            written nothing" and "we could not read its workspace", and the tab
-            has to be able to say which.
-          */}
-          {tab === 'files' && (
-            <AgentFiles agentId={agent.id} agentName={agent.name} />
-          )}
-
-          {tab === 'memory' && (
-            <MemorySurface
-              agentId={agent.id}
-              memory={detail.memory}
-              agentName={agent.name}
-              /*
-                The "Try again" behind a FAILED memory read. `onChanged` re-pulls
-                the detail response, which is where both halves of the tab come
-                from, so the button can actually clear what put it on screen.
-                The tab shows it for `failed` only — see `RulesWithoutEditor`.
-              */
-              onRetry={onChanged}
-              onSaveRules={async (body) => {
-                const saved = await workspaceApi.saveRules(agent.id, body);
-                // Re-read so what the tab shows is what the server stored, not
-                // what we typed. If the write landed somewhere unexpected, the
-                // user finds out here rather than three weeks later.
-                onChanged();
-                // The editor adopts the STORED text (the writer normalizes),
-                // so it never sits one newline away from "saved".
-                return saved.body;
-              }}
-            />
-          )}
-        </TabsContent>
-
-        {/*
-          THE THREE CLOSED PANELS (TASK-437) — empty on purpose, and present on
-          purpose.
-
-          `TabsTrigger` sets `aria-controls` on all four tabs unconditionally,
-          but a `TabsContent` renders NOTHING while its tab is closed. So fitting
-          the open tab with a panel and stopping there would still leave three
-          ids pointing at nowhere — a fix that looks complete and is three
-          quarters of the way there. These keep every `aria-controls` resolvable.
-
-          They hold no children, so opening this pane does not mount
-          `ActivityFeed`, `AgentFiles` and `AgentMemory` side by side or fire
-          their reads. An empty `div` is what a closed panel costs.
-
-          `hidden` WITHOUT a display class, deliberately. Tailwind preflight
-          (3.4.19) hides them with
-          `[hidden]:where(:not([hidden="until-found"])) { display: none }` — and
-          `:where()` contributes NOTHING to specificity, so that rule is (0,1,0),
-          exactly a utility like `flex`. Ties go to source order and the
-          utilities come last, so `class="flex" hidden` renders VISIBLE. The open
-          panel above needs its `flex`; these must not have one.
-
-          And the `hidden` has to be ours. Radix computes `hidden: !present`,
-          which is `false` for a force-mounted panel however its tab is set —
-          then spreads our props over it. Without this attribute the three
-          closed panels would be present AND shown.
-        */}
-        {WORKSPACE_AGENT_TABS.filter((v) => v !== tab).map((v) => (
-          <TabsContent key={v} value={v} forceMount hidden className="mt-0" />
-        ))}
-
-        {/*
-          Above `md` the rail is a column. Below it the rail is a `Sheet` and
-          there is no column — see `AgentRail`'s own note for the 532px of
-          chrome that forced the split, and `use-compact.ts` for why the branch
-          is in JS rather than a `md:` class.
-        */}
-        {/*
-          Mounted on every tab and outside the rail sheet, so a batch is
-          announced wherever the person is (TASK-627).
-        */}
+        </div>
         <LearnedAnnouncer announcement={learned.announcement} />
-        {tab === 'chat' &&
-          (compact ? (
-            <Sheet open={railOpen} onOpenChange={setRailOpen}>
-              {/*
-                Radix warns when a dialog has no description; say that is
-                deliberate rather than inventing one. The title is `sr-only`
-                because the panel's contents announce themselves — but shadcn
-                requires one to exist, and a dialog with no accessible name is
-                unusable with a screen reader regardless.
-              */}
-              <SheetContent
-                side="right"
-                aria-describedby={undefined}
-                className="w-[85vw] max-w-sm overflow-y-auto"
-              >
-                <SheetTitle className="sr-only">Agent details</SheetTitle>
-                <AgentRailContent
-                  detail={detail}
-                  learned={learnedBlock}
-                  openPastId={pastId}
-                  /*
-                    CLOSE ON PICK, same rule the nav sheet follows. Opening a
-                    past conversation swaps the thread BEHIND this panel; left
-                    open, the sheet covers the only thing that changed and the
-                    tap reads as having done nothing. The desktop rail is a
-                    column with the thread beside it, so it has nothing to
-                    close and keeps the bare setter.
-
-                    WHAT CLOSING COSTS, stated plainly: `AgentRailContent` owns
-                    the notice a revoke leaves behind ("Revoked…", "already
-                    gone", "we couldn't take that back"), so unmounting it
-                    drops that line. This is the SAME loss as crossing `md`
-                    mid-revoke, but it is reachable by one ordinary tap rather
-                    than by resizing during a sub-second POST — so it is the
-                    common path, not the rare one, and the review note that
-                    called this rare was counting only the resize.
-
-                    Still not worth hoisting the notice into `AgentView`: the
-                    revoke itself always lands server-side, and reopening the
-                    rail re-reads the list, so what is lost is an
-                    acknowledgement of something the next read already shows.
-                    Hoisting would put rail state in the pane that mounts the
-                    rail, which is how the two shapes start disagreeing — the
-                    exact thing extracting `AgentRailContent` avoided.
-                  */
-                  onOpenPast={(id) => {
-                    setPastId(id);
-                    setRailOpen(false);
-                  }}
-                />
-              </SheetContent>
-            </Sheet>
-          ) : (
-            <AgentRail
-              detail={detail}
-              learned={learnedBlock}
-              openPastId={pastId}
-              onOpenPast={setPastId}
-            />
-          ))}
+        {compact ? <Sheet open={railOpen} onOpenChange={setRailOpen}>
+          <SheetContent side="right" aria-describedby={undefined} className="flex w-[320px] max-w-[calc(100vw-24px)] flex-col gap-0 p-0">
+            <SheetTitle className="sr-only">Agent details</SheetTitle>
+            <AgentRailContent {...railProps} mobile onOpenPast={id => { setPastId(id); setRailOpen(false); }} />
+          </SheetContent>
+        </Sheet> : <AgentRail {...railProps} collapsed={railCollapsed} onCollapse={() => setRailCollapsed(!railCollapsed)} onOpenPast={setPastId} />}
       </div>
-    </Tabs>
     </MemoryFixesContext.Provider>
   );
 }

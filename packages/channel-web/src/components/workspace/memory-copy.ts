@@ -204,7 +204,7 @@ function capitalize(s: string): string {
   return s.length === 0 ? s : s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function subjectText(row: FactMemoryStatement): string {
+export function memorySubjectText(row: FactMemoryStatement): string {
   if (row.aboutText === 'you') return 'You';
   if (row.aboutText !== undefined) return capitalize(row.aboutText);
   return capitalize(words(row.about));
@@ -212,7 +212,7 @@ function subjectText(row: FactMemoryStatement): string {
 
 /** "You — lives in: Boston". Every surface names a memory the same way. */
 export function memoryStatementText(row: FactMemoryStatement): string {
-  return `${subjectText(row)} — ${words(row.relation)}: ${row.value}`;
+  return `${memorySubjectText(row)} — ${words(row.relation)}: ${row.value}`;
 }
 
 /** The profile's short form: "lives in". */
@@ -223,7 +223,7 @@ export function memorySlotText(row: FactMemoryStatement): string {
 // ── The "Used N memories" chip (TASK-628) ────────────────────────────────────
 
 /**
- * The chip under an answer counts only what `memory_recall` handed the model
+ * The chip under an answer counts only the retrieved evidence selected with `memory_use`
  * for THAT answer — not everything the agent remembers, and not what it might
  * have looked at. A row that has been closed since says how, in words that
  * match what happened to it:

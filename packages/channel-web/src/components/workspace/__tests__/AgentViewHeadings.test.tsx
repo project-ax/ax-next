@@ -127,7 +127,7 @@ describe('AgentView heading outline', () => {
     THE CARD'S HEADLINE DEFECT, on every tab. Before the fix this array was
     empty on all four — the assertion that fails first, and loudest.
   */
-  for (const tab of ['chat', 'did', 'files', 'memory'] as const) {
+  for (const tab of ['activity', 'chat', 'files', 'memory', 'rules'] as const) {
     it(`gives the ${tab} tab an outline with no skipped levels and exactly one h1`, async () => {
       renderView({ tab });
 
@@ -154,7 +154,9 @@ describe('AgentView heading outline', () => {
     await waitFor(() =>
       expect(headingOutline()).toEqual([
         'h1: Quill',
+        'h2: Conversation',
         'h2: Memory',
+        'h3: What I learned in this chat',
         'h3: Rules you gave me',
       ]),
     );
@@ -168,7 +170,7 @@ describe('AgentView heading outline', () => {
     off the page title two levels up.
   */
   it('names the open panel and the rail, and hangs the rail sections off the rail', async () => {
-    renderView({ tab: 'chat' });
+    renderView({ tab: 'rules' });
     // The rail arrives on its own read; wait for one of its sections by TEXT,
     // which is there before the fix as well as after, so the wait itself never
     // becomes the thing under test.
@@ -177,7 +179,7 @@ describe('AgentView heading outline', () => {
     expect(headingOutline().slice(0, 3)).toEqual([
       'h1: Quill',
       'h2: Conversation',
-      'h2: Agent details',
+      'h2: What it may do alone',
     ]);
     // The rail's own sections — `SectionLabel`, now an `h3`. At least one, so
     // this cannot pass on a rail that rendered nothing.
@@ -191,11 +193,11 @@ describe('AgentView heading outline', () => {
     three describe regions that are not mounted.
   */
   it('heads the panel with the open tab, not with all four', async () => {
-    renderView({ tab: 'did' });
+    renderView({ tab: 'activity' });
 
     await waitFor(() => {
       const h2s = screen.getAllByRole('heading', { level: 2 });
-      expect(h2s.map((h) => h.textContent)).toEqual(['What it did']);
+      expect(h2s.map((h) => h.textContent)).toEqual(['Conversation', 'Activity']);
     });
   });
 
@@ -234,7 +236,7 @@ describe('AgentView heading outline', () => {
 
     // The compact rail lives behind a trigger; open it so its tree exists.
     fireEvent.click(await screen.findByRole('button', { name: 'Agent details' }));
-    await screen.findByText('Granted by you');
+    await screen.findByRole('heading', { name: 'Conversations' });
 
     const named = screen
       .getAllByRole('heading')
@@ -257,7 +259,7 @@ describe('AgentView heading outline', () => {
   screen when the assertion runs.
 */
 describe('AgentView loading pane name', () => {
-  for (const tab of ['chat', 'did', 'files', 'memory'] as const) {
+  for (const tab of ['chat', 'activity', 'files', 'memory'] as const) {
     it(`names the ${tab} tab's loading pane "Loading agent"`, () => {
       agentMock.mockReturnValue(new Promise<AgentDetail>(() => {}));
       renderView({ tab });

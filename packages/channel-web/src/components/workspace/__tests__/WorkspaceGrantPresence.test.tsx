@@ -308,14 +308,14 @@ describe('everything else is the queue alone', () => {
     expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
   });
 
-  it('does not draw it on a non-chat tab of the right agent', async () => {
+  it('keeps it beside the detail tabs of the right agent', async () => {
     renderAt('/workspace/agents/a-quill/files');
 
     expect(await screen.findByRole('tab', { name: /files/i })).toHaveAttribute(
       'aria-selected',
       'true',
     );
-    expect(threadRegion()).toBeNull();
+    expect(threadRegion()).not.toBeNull();
   });
 
   it('draws it in the queue on Today, and in no thread', async () => {

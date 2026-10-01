@@ -791,7 +791,7 @@ function Inner({
    * is the one-click path from the surface that is already about the record.
    */
   const openAgentRecord = (id: string) =>
-    navigate({ kind: 'agent', id, tab: 'did' });
+    navigate({ kind: 'agent', id, tab: 'activity' });
 
   /*
     One set of nav props, two frames. Written once because the rail and the

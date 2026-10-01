@@ -8,6 +8,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
+        brand: ['Poppins', 'sans-serif'],
         sans: [
           '"IBM Plex Sans"',
           'ui-sans-serif',
@@ -66,16 +67,18 @@ const config: Config = {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        bubble: 'hsl(var(--bubble))',
+        sidebar: 'hsl(var(--sidebar-background, var(--background)))',
         'rule-soft': 'hsl(var(--rule-soft))',
         'state-quiet': 'hsl(var(--state-quiet))',
       },
       borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
+        lg: 'calc(var(--radius) + 4px)',
+        md: 'var(--radius)',
+        sm: 'calc(var(--radius) - 2px)',
       },
       boxShadow: {
-        sm: '0 1px 2px hsl(0 0% 0% / 0.04), 0 1px 1px hsl(0 0% 0% / 0.03)',
+        sm: '0 1px 2px hsl(223 41% 30% / 0.06)',
         md: '0 8px 24px hsl(0 0% 0% / 0.06), 0 1px 2px hsl(0 0% 0% / 0.04)',
         popover: '0 12px 40px -8px hsl(0 0% 0% / 0.18), 0 2px 6px hsl(0 0% 0% / 0.04)',
       },

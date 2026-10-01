@@ -58,8 +58,8 @@ import {
   memoryForgetLabel,
   memoryReplacedBy,
   memorySlotText,
+  memorySubjectText,
   memoryStatementText,
-  type MemoryVisibility,
 } from './memory-copy';
 
 export interface MemorySurfaceProps {
@@ -68,6 +68,7 @@ export interface MemorySurfaceProps {
   memory: AgentMemoryRead;
   onSaveRules?: (body: string) => Promise<string>;
   onRetry?: () => void;
+  onCount?: (count: number | null) => void;
 }
 
 export function MemorySurface(props: MemorySurfaceProps) {
@@ -240,7 +241,7 @@ function ClosureNote({
   );
 }
 
-function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: MemorySurfaceProps) {
+function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry, onCount }: MemorySurfaceProps) {
   const { rules } = memory;
   const visibility =
     memory.factsVisibility === 'team' || memory.factsVisibility === 'personal'
@@ -256,14 +257,14 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
   const rootRef = useRef<HTMLDivElement>(null);
   /*
     When that receipt goes with focus in it (TASK-651): an Undo re-reads the
-    list, so focus waits on the Profile heading and moves to the row once it
+    list, so focus waits on the Memories heading and moves to the row once it
     is drawn; a receipt that runs out lands on the row, or on the heading when
     the row was forgotten.
   */
   const receipt = useMemoryReceipt(agentId, bump, { scope: rootRef });
 
   return (
-    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-6 py-6">
+    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-6">
       {receipt.announcer}
       {extractionPaused && <ExtractionPausedNotice />}
       {rules.status === 'ok' && rules.doc !== null ? (
@@ -289,13 +290,14 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
           <AlertDescription>{MEMORY_PERSONAL_NOTICE}</AlertDescription>
         </Alert>
       )}
-      <ProfileCard
+      <MemoriesCard
         agentId={agentId}
+        agentName={agentName}
         refresh={refresh}
-        visibility={visibility}
         extractionPaused={extractionPaused}
         onFix={setFixTarget}
         onForget={setForgetTarget}
+        {...(onCount ? { onCount } : {})}
       />
       <SearchCard agentId={agentId} refresh={refresh} onForget={setForgetTarget} />
       {receipt.element}
@@ -327,21 +329,24 @@ function FactsMemory({ agentId, agentName, memory, onSaveRules, onRetry }: Memor
   );
 }
 
-function ProfileCard({
+function MemoriesCard({
   agentId,
+  agentName,
   refresh,
-  visibility,
   extractionPaused = false,
   onFix,
   onForget,
+  onCount,
 }: {
   agentId: string;
   refresh: number;
-  visibility: MemoryVisibility;
+  agentName: string;
   extractionPaused?: boolean;
   onFix: (row: FactMemoryStatement) => void;
   onForget: (row: FactMemoryStatement) => void;
+  onCount?: (count: number | null) => void;
 }) {
+  const compact = useIsCompact();
   const [history, setHistory] = useState(false);
   const [tick, setTick] = useState(0);
   const [state, setState] = useState<ReadState>({ status: 'loading' });
@@ -351,7 +356,7 @@ function ProfileCard({
     let cancelled = false;
     const sequence = ++request.current;
     setState({ status: 'loading' });
-    workspaceApi.recallMemory(agentId, { profile: true, history }).then(
+    workspaceApi.recallMemory(agentId, { history }).then(
       (data) => {
         if (!cancelled && sequence === request.current) setState({ status: 'ready', data });
       },
@@ -367,19 +372,19 @@ function ProfileCard({
   const rows = state.status === 'ready' ? state.data.statements : [];
   const active = rows.filter(isCurrent);
   const closed = sortOldestFirst(rows.filter((r) => !isCurrent(r)));
+  const count = state.status === 'ready' ? active.length : null;
+  useEffect(() => { onCount?.(count); }, [count, onCount]);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle {...memoryHeadingLanding}>Profile</CardTitle>
-        {visibility === 'team' && (
-          <CardDescription>
-            These details are about you and are visible to the team.
-          </CardDescription>
-        )}
+        <CardTitle {...memoryHeadingLanding}>Memories</CardTitle>
+        <CardDescription>
+          Shared across conversations with {agentName}.
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        <HistoryToggle id="profile-history" checked={history} onChange={setHistory} />
+        <HistoryToggle id="memories-history" checked={history} onChange={setHistory} />
         {state.status === 'loading' && <LoadingMemories />}
         {state.status === 'failed' && <FailedRead onRetry={() => setTick((t) => t + 1)} />}
         {state.status === 'ready' && (
@@ -387,20 +392,21 @@ function ProfileCard({
             {state.data.degraded.length > 0 && <DegradedNotice />}
             {rows.length === 0 && extractionPaused ? (
               // Paused: the notice above explains why; don't promise what won't happen.
-              <EmptyMemories>No profile memories yet.</EmptyMemories>
+              <EmptyMemories>No memories yet.</EmptyMemories>
             ) : rows.length === 0 ? (
               <EmptyMemories>
-                No profile memories yet. Details we remember from your conversations will
+                No memories yet. Notes we remember from your conversations will
                 appear here.
               </EmptyMemories>
             ) : (
               <ul className="flex flex-col gap-3">
                 {active.map((row) => (
-                  <li key={row.id} className="flex items-start justify-between gap-3">
+                  <li key={row.id} className={cn('flex items-start gap-3', compact ? 'flex-col' : 'justify-between')}>
+
                     <div className="flex flex-col gap-0.5">
                       <span {...memoryRowLanding(row.id, 'text-sm')}>
                         <span className="text-muted-foreground">
-                          {memorySlotText(row)}:
+                          <span>{memorySubjectText(row)} — </span>{memorySlotText(row)}:
                         </span>{' '}
                         {row.value}
                       </span>
@@ -434,7 +440,7 @@ function ProfileCard({
                   <li key={row.id} className="flex flex-col gap-0.5">
                     <span className="text-sm">
                       <span className="text-muted-foreground">
-                        {memorySlotText(row)}:
+                        <span>{memorySubjectText(row)} — </span>{memorySlotText(row)}:
                       </span>{' '}
                       <RowValue row={row}>{row.value}</RowValue>
                     </span>
@@ -443,9 +449,9 @@ function ProfileCard({
                 ))}
               </ul>
             )}
-            {history && state.data.statements.length === 100 && (
+            {state.data.statements.length === 40 && (
               <p className="text-sm text-muted-foreground">
-                Showing 100 memories. There may be more.
+                Showing 40 memories. Use search to find more.
               </p>
             )}
           </>

@@ -151,6 +151,7 @@ export function createChannelWebServerPlugin(
         'conversations:get',
         'conversations:list',
         'conversations:delete',
+        'conversations:set-title',
         'agent:invoke',
         // JIT (TASK-36) — the permission-decision endpoint applies a
         // user-approved capability grant via the orchestrator. Orchestrator +

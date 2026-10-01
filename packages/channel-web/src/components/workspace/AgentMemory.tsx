@@ -76,7 +76,7 @@ export function AgentMemory({
   const { rules } = memory;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto px-6 py-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-6">
       {rules.status === 'ok' && rules.doc !== null ? (
         <RulesEditor
           agentName={agentName}

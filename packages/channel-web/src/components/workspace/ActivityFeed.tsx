@@ -92,6 +92,7 @@ interface Props {
    * emptiness, arrived at by a different route.
    */
   awaitingScope?: boolean;
+  rail?: boolean;
 }
 
 interface Bucket {
@@ -193,6 +194,7 @@ export function ActivityFeed({
   loading = false,
   error = null,
   awaitingScope = false,
+  rail = false,
 }: Props) {
   const name = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
 
@@ -321,16 +323,16 @@ export function ActivityFeed({
                 {rows.length}
               </span>
             </div>
-            <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+            <div className={cn('overflow-hidden', !rail && 'rounded-lg border border-border bg-card shadow-sm')}>
               {rows.map((e) => {
                 const k = KIND[e.kind];
                 const time = localTime(e.at);
                 return (
                   <div
                     key={e.id}
-                    className="flex items-center gap-3 border-b border-rule-soft px-5 py-3 last:border-b-0"
+                    className={cn('flex border-b border-rule-soft last:border-b-0', rail ? 'items-start gap-2 py-2.5' : 'items-center gap-3 px-5 py-3')}
                   >
-                    <k.Icon size={13} className={cn('shrink-0', k.tone)} />
+                    {rail ? <span className="w-[62px] shrink-0 text-[12px] tabular-nums text-muted-foreground">{time ?? 'Unknown'}</span> : <k.Icon size={13} className={cn('shrink-0', k.tone)} />}
                     {!agentId && (
                       <button
                         type="button"
@@ -343,7 +345,7 @@ export function ActivityFeed({
                     <span className="min-w-0 flex-1">
                       {/* `title` so the clamp hides nothing unrecoverably (TASK-436). */}
                       <span
-                        className="block truncate text-[13.5px] text-muted-foreground"
+                        className={cn('block text-[13px] text-muted-foreground', rail ? 'break-words' : 'truncate')}
                         title={e.text}
                       >
                         {e.text}
@@ -357,13 +359,14 @@ export function ActivityFeed({
                           {e.detail}
                         </span>
                       )}
+                      {rail && e.tag && <Badge variant="secondary" className="mt-1 text-[11px]">{e.tag}</Badge>}
                     </span>
-                    {e.tag && (
+                    {!rail && e.tag && (
                       <Badge variant="secondary" className="shrink-0 text-[11px]">
                         {e.tag}
                       </Badge>
                     )}
-                    {time !== null && (
+                    {!rail && time !== null && (
                       <span className="shrink-0 text-[12.5px] tabular-nums text-muted-foreground">
                         {time}
                       </span>

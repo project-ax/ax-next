@@ -50,7 +50,7 @@ const SIZE: Record<
 // multi-color logo should supply an explicit dark variant instead.
 const INVERT_FILTER = 'invert(1) hue-rotate(180deg)';
 
-export function BrandMark({ size = 'md', className }: BrandMarkProps) {
+export function BrandMark({ size = 'md', className, workspace = false }: BrandMarkProps & { workspace?: boolean }) {
   const cfg = SIZE[size];
   const { branding, loaded } = useBranding();
   const resolved = useResolvedTheme();
@@ -60,12 +60,8 @@ export function BrandMark({ size = 'md', className }: BrandMarkProps) {
   if (!showLogo) {
     return (
       <span className={cn('flex items-center', className)}>
-        <span
-          aria-hidden="true"
-          className="inline-block rounded-full bg-primary mr-2 -translate-y-[3px]"
-          style={cfg.dot}
-        />
-        <span className={cn(cfg.word, 'text-foreground')}>{name}</span>
+        {workspace ? <span aria-hidden="true" className="mr-2 flex size-6 items-center justify-center rounded-sm bg-primary font-brand text-[13px] text-primary-foreground">{name[0]?.toUpperCase()}</span> : <span aria-hidden="true" className="mr-2 inline-block -translate-y-[3px] rounded-full bg-primary" style={cfg.dot} />}
+        <span className={cn(cfg.word, 'text-foreground', workspace && 'font-brand text-[15px] font-semibold tracking-normal')}>{name}</span>
       </span>
     );
   }
@@ -88,7 +84,7 @@ export function BrandMark({ size = 'md', className }: BrandMarkProps) {
           className="mr-2 object-contain"
           style={iconStyle}
         />
-        <span className={cn(cfg.word, 'text-foreground')}>{name}</span>
+        <span className={cn(cfg.word, 'text-foreground', workspace && 'font-brand text-[15px] font-semibold tracking-normal')}>{name}</span>
       </span>
     );
   }

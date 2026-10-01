@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   makeAgentContext,
   PluginError,
@@ -5,9 +6,10 @@ import {
   type ToolDescriptor,
 } from '@ax/core';
 
+import { resolveMemoryAccess } from './access.js';
 import { renderRecallResult } from './evidence.js';
 import { PLUGIN_NAME } from './plugin-name.js';
-import { recordRecallReceipt } from './recall-receipts.js';
+import { recordRecallReceipt, selectRecallReceipt } from './recall-receipts.js';
 import type { MemoryRecallInput, MemoryRecallOutput } from './types.js';
 
 export const MEMORY_RECALL_TOOL_HOOK = 'tool:execute:memory_recall';
@@ -15,7 +17,7 @@ export const MEMORY_RECALL_TOOL_HOOK = 'tool:execute:memory_recall';
 export const MEMORY_RECALL_DESCRIPTOR: ToolDescriptor = {
   name: 'memory_recall',
   description:
-    'Search recalled observations from earlier conversations. Returns dated evidence for the current question. Use limit up to 40 when a broader search is needed.',
+    'Search recalled observations from earlier conversations. Returns dated evidence for the current question. Results are candidates, not used memories. Before answering, call memory_use with only the evidence IDs supporting your answer. Use limit up to 40 when a broader search is needed.',
   activityPhrase: 'Searching memory',
   executesIn: 'host',
   inputSchema: {
@@ -78,12 +80,56 @@ export async function registerMemoryRecall(bus: HookBus): Promise<void> {
       }
       // The receipt is the rows rendered below, exactly (TASK-628). Never
       // throws: a lost receipt costs a chip, never the answer.
-      await recordRecallReceipt(bus, ctx, result.statements, asOf);
-      return renderRecallResult(result, asOf);
+      const recallId = randomUUID();
+      await recordRecallReceipt(bus, ctx, result.statements, asOf, recallId);
+      return renderRecallResult(result, asOf, recallId);
     },
   );
   await bus.call('tool:register',
     makeAgentContext({ sessionId: 'init', agentId: PLUGIN_NAME, userId: 'system' }),
     MEMORY_RECALL_DESCRIPTOR,
+  );
+}
+
+export const MEMORY_USE_DESCRIPTOR: ToolDescriptor = {
+  name: 'memory_use',
+  description: 'After memory_recall and before answering, identify only the retrieved memories that support your answer. Pass the Recall ID and evidence IDs from that result. Exclude unrelated candidates. Use an empty ids array if none support the answer. Call once per recall result you used.',
+  activityPhrase: 'Choosing memory sources',
+  executesIn: 'host',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      recallId: { type: 'string', minLength: 1, maxLength: 256 },
+      ids: { type: 'array', maxItems: 40, items: { type: 'string', minLength: 1, maxLength: 256 } },
+    },
+    required: ['recallId', 'ids'],
+    additionalProperties: false,
+  },
+};
+
+export async function registerMemoryUse(bus: HookBus): Promise<void> {
+  bus.registerService<{ input?: unknown }, string>(
+    'tool:execute:memory_use', PLUGIN_NAME, async (ctx, call) => {
+      const raw = call?.input;
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME, hookName: 'tool:execute:memory_use',
+          message: 'Memory usage requires a recall ID and evidence IDs' });
+      }
+      const input = raw as Record<string, unknown>;
+      if (Object.keys(input).some((key) => key !== 'recallId' && key !== 'ids') ||
+          typeof input.recallId !== 'string' || input.recallId.length === 0 || input.recallId.length > 256 ||
+          !Array.isArray(input.ids) || input.ids.length > 40 ||
+          input.ids.some((id) => typeof id !== 'string' || id.length === 0 || id.length > 256)) {
+        throw new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME,
+          hookName: 'tool:execute:memory_use', message: 'Memory usage requires a recall ID and up to 40 evidence IDs' });
+      }
+      await resolveMemoryAccess(bus, ctx);
+      await selectRecallReceipt(bus, ctx, input.recallId, input.ids as string[]);
+      return 'Memory sources recorded. Answer using only the selected evidence; do not include evidence IDs or the Recall ID in your reply.';
+    },
+  );
+  await bus.call('tool:register',
+    makeAgentContext({ sessionId: 'init', agentId: PLUGIN_NAME, userId: 'system' }),
+    MEMORY_USE_DESCRIPTOR,
   );
 }

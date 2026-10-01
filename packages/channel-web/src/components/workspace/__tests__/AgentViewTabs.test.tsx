@@ -180,11 +180,11 @@ describe('AgentView tab set — the accessibility tree', () => {
     together and fire three reads for panels nobody is looking at.
   */
   it('mounts content in the open panel only, and hides the other three', async () => {
-    renderView({ tab: 'did' });
+    renderView({ tab: 'activity' });
 
     await waitFor(() => expect(panels()).toHaveLength(WORKSPACE_AGENT_TABS.length));
 
-    const open = screen.getByRole('tab', { name: 'What it did' });
+    const open = screen.getByRole('tab', { name: 'Activity' });
     const openId = open.getAttribute('aria-controls');
 
     for (const panel of panels()) {
@@ -251,7 +251,7 @@ describe('AgentView tab set — the accessibility tree', () => {
   */
   it('moves between tabs with the arrow keys, not the Tab key', async () => {
     const onTab = vi.fn();
-    renderView({ tab: 'chat', onTab });
+    renderView({ tab: 'activity', onTab });
 
     await waitFor(() => expect(tabs()).toHaveLength(WORKSPACE_AGENT_TABS.length));
     const [first, second] = tabs();

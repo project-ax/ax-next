@@ -21,7 +21,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
 export type AvatarTileShape = 'square' | 'round';
-export type AvatarTileBackground = 'gradient' | 'muted';
+export type AvatarTileBackground = 'gradient' | 'muted' | 'primary-soft';
 
 export interface AvatarTileProps {
   shape?: AvatarTileShape;
@@ -54,6 +54,7 @@ export function AvatarTile({
         'inline-flex items-center justify-center shrink-0 border border-border',
         shape === 'square' ? 'rounded-md' : 'rounded-full',
         background === 'muted' && 'bg-muted',
+        background === 'primary-soft' && 'border-transparent bg-primary-soft',
         className,
       )}
     >

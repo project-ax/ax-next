@@ -69,6 +69,12 @@ describe('parseWorkspaceRoute', () => {
     });
   });
 
+  it.each(['now', 'did'])('opens the combined activity tab for an old %s link', (tab) => {
+    expect(parseWorkspaceRoute(`/workspace/agents/a1/${tab}`)).toEqual({
+      kind: 'agent', id: 'a1', tab: 'activity',
+    });
+  });
+
   it('drops trailing segments it has no meaning for', () => {
     expect(parseWorkspaceRoute('/workspace/agents/a1/files/extra')).toEqual({
       kind: 'agent',
@@ -146,7 +152,7 @@ describe('the two halves agree', () => {
     { kind: 'today' },
     { kind: 'activity' },
     { kind: 'agent', id: 'a1', tab: 'chat' },
-    { kind: 'agent', id: 'a1', tab: 'did' },
+    { kind: 'agent', id: 'a1', tab: 'activity' },
     { kind: 'agent', id: 'a1', tab: 'files' },
     { kind: 'agent', id: 'a1', tab: 'memory' },
     { kind: 'agent', id: 'agent with spaces/and-slash', tab: 'files' },
