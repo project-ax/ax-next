@@ -15,12 +15,14 @@ import { cn } from '@/lib/utils';
 export interface ModelComboboxGroup {
   providerName: string;
   models: string[];
+  labels?: ReadonlyMap<string, string>;
 }
 
 export interface ModelComboboxProps {
   ariaLabel: string;
   groups: ModelComboboxGroup[];
   value: string;
+  valueLabel?: string;
   onChange: (model: string) => void;
   disabled?: boolean;
   placeholder?: string;
@@ -30,6 +32,7 @@ export function ModelCombobox({
   ariaLabel,
   groups,
   value,
+  valueLabel,
   onChange,
   disabled,
   placeholder = '— Select a model —',
@@ -47,12 +50,12 @@ export function ModelCombobox({
           aria-label={ariaLabel}
           disabled={disabled}
           className={cn(
-            'w-full justify-between font-mono text-[13px] tracking-[0.02em]',
+            'w-full justify-between',
             !value && 'text-muted-foreground',
           )}
         >
-          {value || placeholder}
-          <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
+          <span className="truncate">{valueLabel || value || placeholder}</span>
+          <ChevronDown data-icon="inline-end" />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="p-0 w-[var(--radix-popover-trigger-width)]" align="start">
@@ -66,15 +69,16 @@ export function ModelCombobox({
                   <CommandItem
                     key={model}
                     value={model}
-                    onSelect={(selected) => {
-                      onChange(selected);
+                    keywords={[group.labels?.get(model) ?? model, group.providerName]}
+                    title={model}
+                    onSelect={() => {
+                      onChange(model);
                       setOpen(false);
                     }}
-                    className="font-mono text-[12.5px]"
                   >
-                    <span className="flex-1">{model}</span>
+                    <span className="flex-1 truncate">{group.labels?.get(model) ?? model}</span>
                     {value === model && (
-                      <Check className="h-3.5 w-3.5 text-primary" strokeWidth={2.5} />
+                      <Check aria-hidden="true" strokeWidth={2.5} />
                     )}
                   </CommandItem>
                 ))}

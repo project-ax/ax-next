@@ -1,399 +1,133 @@
-/**
- * ModelConfigTab tests.
- *
- * Pinned behaviors:
- *   1. Unconfigured provider models don't appear in the combobox.
- *   2. Configured provider models appear in the combobox groups.
- *   3. Selecting a model and clicking Save calls PUT /admin/settings/fast-model
- *      with `{value: "<providerId>/<modelId>"}`.
- *   4. Save error shown near button.
- *   5. Save is disabled when no model is selected.
- *   6. The existing setting (GET /admin/settings/fast-model) preselects the
- *      combobox so the operator sees what's currently in effect.
- *
- * Interaction pattern for ModelCombobox (Radix Popover + cmdk):
- *   1. fireEvent.click(comboboxButton) — opens the popover.
- *   2. fireEvent.click(screen.getByText('model-name')) — selects the model.
- *      cmdk calls onSelect with the item value, which triggers onChange.
- */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+/** Helper model choices follow the saved enabled-model policy and shared catalog. */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ModelConfigTab } from '../components/admin/ModelConfigTab';
 
 const fetchMock = vi.fn();
+const SONNET = 'anthropic/claude-sonnet-4-6';
+const GROK = 'openrouter/x-ai/grok-4.6';
+const DISABLED = 'openrouter/google/gemini-3.7-flash';
+const catalog = [
+  { id: 'anthropic', name: 'Anthropic', status: 'live', models: [{ ref: SONNET, label: 'Claude Sonnet 4.6' }] },
+  { id: 'openrouter', name: 'OpenRouter', status: 'live', models: [
+    { ref: GROK, label: 'Grok 4.6' }, { ref: DISABLED, label: 'Gemini 3.7 Flash' },
+  ] },
+];
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 beforeEach(() => {
   fetchMock.mockReset();
-  globalThis.fetch = fetchMock as unknown as typeof fetch;
+  vi.stubGlobal('fetch', fetchMock);
 });
+afterEach(() => vi.unstubAllGlobals());
 
-function jsonOk(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-const configuredProvider = {
-  id: 'anthropic',
-  name: 'Anthropic',
-  ref: 'anthropic',
-  models: ['claude-sonnet-4-6', 'claude-opus-4-7'],
-  configured: true,
-};
-
-const unconfiguredProvider = {
-  id: 'openai',
-  name: 'OpenAI',
-  ref: 'openai',
-  models: ['gpt-4o', 'gpt-4o-mini'],
-  configured: false,
-};
-
-/**
- * OpenRouter model ids are themselves `vendor/model` slugs. They must
- * survive the `${providerId}/${modelId}` join and the strip-on-first-slash
- * preselect without losing the vendor segment.
- */
-const openrouterProvider = {
-  id: 'openrouter',
-  name: 'OpenRouter',
-  ref: 'provider:openrouter',
-  models: ['x-ai/grok-4.6', 'google/gemini-3.7-flash'],
-  configured: true,
-};
-
-/**
- * Default fetch script: providers list + an empty setting (no current
- * selection). Override before render() when a test wants other shapes.
- */
-function defaultFetchScript(providers: typeof configuredProvider[]) {
-  fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-    const url = typeof input === 'string' ? input : input.toString();
-    if (url === '/admin/credentials/providers') {
-      return jsonOk({ providers });
-    }
+function script(opts: { allowed?: string[]; current?: string | null; providers?: typeof catalog; policyStatus?: number; catalogStatus?: number; settingStatus?: number; saveStatus?: number } = {}) {
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/admin/models/policy') return json({ source: 'admin', version: 1, allowed: opts.allowed ?? [SONNET, GROK], default: SONNET }, opts.policyStatus ?? 200);
+    if (url === '/admin/models/catalog') return json({ providers: opts.providers ?? catalog }, opts.catalogStatus ?? 200);
     if (url === '/admin/settings/fast-model') {
-      return jsonOk({ value: null });
+      if (init?.method === 'PUT') return new Response(null, { status: opts.saveStatus ?? 204 });
+      return json({ value: opts.current ?? null }, opts.settingStatus ?? 200);
     }
+    // Keep the obsolete seed endpoint available: it must not control choices.
+    if (url === '/admin/credentials/providers') return json({ providers: [{ id: 'anthropic', name: 'Anthropic', models: ['old-seed-model'], configured: true }] });
     return new Response(null, { status: 404 });
   });
 }
-
-/** Open a combobox popover and select a model by its display text. */
-async function selectModel(comboboxButton: HTMLElement, modelName: string) {
-  fireEvent.click(comboboxButton);
-  // After clicking the trigger, the popover content is in the DOM (portal).
-  await waitFor(() => {
-    expect(screen.getByText(modelName)).toBeTruthy();
-  });
-  fireEvent.click(screen.getByText(modelName));
+const puts = () => fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT');
+async function openPicker() {
+  const trigger = await screen.findByRole('combobox', { name: 'Helper model' });
+  await waitFor(() => expect(trigger).not.toBeDisabled());
+  fireEvent.click(trigger);
+  await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(0));
+}
+async function choose(label: string) {
+  await openPicker();
+  fireEvent.click(screen.getByRole('option', { name: label }));
 }
 
-describe('ModelConfigTab', () => {
-  it('unconfigured provider models do not appear in combobox', async () => {
-    defaultFetchScript([unconfiguredProvider]);
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(screen.queryByText('gpt-4o')).toBeNull();
-    expect(screen.queryByText('gpt-4o-mini')).toBeNull();
+describe('ModelConfigTab enabled models', () => {
+  it('offers only enabled models with the same labels as Settings → Models', async () => {
+    script(); render(<ModelConfigTab />); await openPicker();
+    expect(screen.getByRole('option', { name: 'Claude Sonnet 4.6' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Grok 4.6' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Gemini 3.7 Flash' })).toBeNull();
+    expect(screen.queryByText('old-seed-model')).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => url === '/admin/models/policy')).toBe(true);
   });
 
-  it('configured provider models appear in combobox groups', async () => {
-    defaultFetchScript([configuredProvider]);
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    const combobox = screen.getByRole('combobox');
-    fireEvent.click(combobox);
-
-    await waitFor(() => {
-      expect(screen.getAllByText('claude-sonnet-4-6').length).toBeGreaterThan(0);
-    });
-    expect(screen.getAllByText('claude-opus-4-7').length).toBeGreaterThan(0);
+  it('saves the exact canonical ref, including an OpenRouter vendor segment', async () => {
+    script(); render(<ModelConfigTab />); await choose('Grok 4.6');
+    expect(puts()).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(JSON.parse(puts()[0]![1].body).value).toBe(GROK);
+    expect(puts()[0]![1]).toMatchObject({ credentials: 'include', headers: { 'x-requested-with': 'ax-admin' } });
   });
 
-  it('selecting a model and clicking Save PUTs /admin/settings/fast-model with the canonical provider/model ref', async () => {
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/admin/credentials/providers' && (init?.method ?? 'GET') === 'GET') {
-        return jsonOk({ providers: [configuredProvider] });
-      }
-      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
-        return jsonOk({ value: null });
-      }
-      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
-        return new Response(null, { status: 204 });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    const combobox = screen.getByRole('combobox');
-    await selectModel(combobox, 'claude-sonnet-4-6');
-
-    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
-
-    await waitFor(() => {
-      const putCalls = fetchMock.mock.calls.filter(
-        ([url, opts]) =>
-          url === '/admin/settings/fast-model' &&
-          (opts as RequestInit | undefined)?.method === 'PUT',
-      );
-      expect(putCalls).toHaveLength(1);
-
-      const body = JSON.parse((putCalls[0]![1] as RequestInit).body as string) as Record<
-        string,
-        unknown
-      >;
-      // Canonical `provider/model-id` ref. Provider chosen by which
-      // configured-providers group claims the model id.
-      expect(body.value).toBe('anthropic/claude-sonnet-4-6');
-    });
+  it('preselects the saved canonical ref and displays its catalog label', async () => {
+    script({ current: GROK }); render(<ModelConfigTab />);
+    await waitFor(() => expect(screen.getByRole('combobox')).toHaveTextContent('Grok 4.6'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(JSON.parse(puts()[0]![1].body).value).toBe(GROK);
   });
 
-  it('preselects the model id from an existing /admin/settings/fast-model value', async () => {
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/admin/credentials/providers') {
-        return jsonOk({ providers: [configuredProvider] });
-      }
-      if (url === '/admin/settings/fast-model') {
-        // GET returns a stored ref — the tab should preselect 'claude-opus-4-7'.
-        return jsonOk({ value: 'anthropic/claude-opus-4-7' });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    render(<ModelConfigTab />);
-
-    // The "Currently · <model>" caption renders the parsed model id; the
-    // combobox button also shows it. Multiple matches are fine — what we
-    // care about is that the storage value flowed into state.
-    await waitFor(() => {
-      expect(screen.getAllByText('claude-opus-4-7').length).toBeGreaterThan(0);
-    });
+  it('keeps provider identity when two providers offer the same model id and label', async () => {
+    const first = 'anthropic/shared-model'; const second = 'openrouter/shared-model';
+    script({ allowed: [first, second], providers: [
+      { id: 'anthropic', name: 'Anthropic', status: 'live', models: [{ ref: first, label: 'Shared model' }] },
+      { id: 'openrouter', name: 'OpenRouter', status: 'live', models: [{ ref: second, label: 'Shared model' }] },
+    ] });
+    render(<ModelConfigTab />); await openPicker();
+    fireEvent.click(screen.getAllByRole('option', { name: 'Shared model' })[1]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(JSON.parse(puts()[0]![1].body).value).toBe(second);
   });
 
-  it('saves a nested OpenRouter slug as openrouter/<vendor>/<model>', async () => {
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/admin/credentials/providers' && (init?.method ?? 'GET') === 'GET') {
-        return jsonOk({ providers: [openrouterProvider] });
-      }
-      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
-        return jsonOk({ value: null });
-      }
-      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
-        return new Response(null, { status: 204 });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    const combobox = screen.getByRole('combobox');
-    await selectModel(combobox, 'x-ai/grok-4.6');
-
-    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
-
-    await waitFor(() => {
-      const putCalls = fetchMock.mock.calls.filter(
-        ([url, opts]) =>
-          url === '/admin/settings/fast-model' &&
-          (opts as RequestInit | undefined)?.method === 'PUT',
-      );
-      expect(putCalls).toHaveLength(1);
-      const body = JSON.parse((putCalls[0]![1] as RequestInit).body as string) as Record<
-        string,
-        unknown
-      >;
-      // Three segments: provider, vendor, model. The vendor segment is
-      // part of the model id, not a second provider.
-      expect(body.value).toBe('openrouter/x-ai/grok-4.6');
-    });
+  it('shows a removed saved model without silently changing it or letting it be saved again', async () => {
+    script({ current: DISABLED }); render(<ModelConfigTab />);
+    expect(await screen.findByText(/saved helper model.*isn.t enabled/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    expect(puts()).toHaveLength(0);
+    await choose('Grok 4.6');
+    expect(screen.queryByText(/saved helper model.*isn.t enabled/i)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save changes' })).not.toBeDisabled();
   });
 
-  it('preselects a nested OpenRouter slug without eating the vendor segment', async () => {
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/admin/credentials/providers') {
-        return jsonOk({ providers: [openrouterProvider] });
-      }
-      if (url === '/admin/settings/fast-model') {
-        return jsonOk({ value: 'openrouter/x-ai/grok-4.6' });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    render(<ModelConfigTab />);
-
-    // Strip on the FIRST '/' only — a naive split would preselect 'x-ai'
-    // and silently fail to match any offered model id.
-    await waitFor(() => {
-      expect(screen.getAllByText('x-ai/grok-4.6').length).toBeGreaterThan(0);
-    });
-    expect(screen.queryByText('grok-4.6')).toBeNull();
+  it('retains enabled refs even if catalog labels cannot be fetched', async () => {
+    script({ catalogStatus: 500 }); render(<ModelConfigTab />); await openPicker();
+    expect(screen.getByRole('option', { name: SONNET })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: GROK })).toBeInTheDocument();
+    expect(screen.queryByText(DISABLED)).toBeNull();
   });
 
-  it('save error is shown near the button', async () => {
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/admin/credentials/providers') {
-        return jsonOk({ providers: [configuredProvider] });
-      }
-      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
-        return jsonOk({ value: null });
-      }
-      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
-        return new Response(null, { status: 500 });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    const combobox = screen.getByRole('combobox');
-    await selectModel(combobox, 'claude-sonnet-4-6');
-
-    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
-    });
+  it.each(['policyStatus', 'settingStatus'] as const)('shows a retryable error when %s fails', async (key) => {
+    script({ [key]: 500 }); render(<ModelConfigTab />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/couldn.t load/i);
+    script(); fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.getByRole('combobox')).not.toBeDisabled());
   });
 
-  it('refuses to save when the same model id is offered by multiple configured providers (ambiguous)', async () => {
-    // Two providers both list "shared-model" → buildModelRef should
-    // refuse to silently pick one and instead surface an error.
-    const second = {
-      id: 'other',
-      name: 'Other',
-      ref: 'other',
-      models: ['shared-model'],
-      configured: true,
-    };
-    const first = {
-      ...configuredProvider,
-      models: [...configuredProvider.models, 'shared-model'],
-    };
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/admin/credentials/providers') {
-        return jsonOk({ providers: [first, second] });
-      }
-      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
-        return jsonOk({ value: null });
-      }
-      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
-        return new Response(null, { status: 204 });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    const combobox = screen.getByRole('combobox');
-    fireEvent.click(combobox);
-    // Two providers both offer "shared-model" — pick the first match. The
-    // tab tracks model-id only, so either click ends up in the same
-    // ambiguous-save path.
-    await waitFor(() => {
-      expect(screen.getAllByText('shared-model').length).toBeGreaterThanOrEqual(2);
-    });
-    fireEvent.click(screen.getAllByText('shared-model')[0]!);
-
-    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toMatch(/couldn.t save that/i);
-    });
-
-    // Critical: no PUT was issued.
-    const putCalls = fetchMock.mock.calls.filter(
-      ([, opts]) => (opts as RequestInit | undefined)?.method === 'PUT',
-    );
-    expect(putCalls).toHaveLength(0);
+  it('disables selection when no models are enabled', async () => {
+    script({ allowed: [] }); render(<ModelConfigTab />);
+    expect(await screen.findByText(/enable a model in Settings.*Models/i)).toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
   });
 
-  it('surfaces load errors instead of silently emptying the picker (non-404 from settings GET)', async () => {
-    // The settings GET returns 500 — the tab should render its load-error
-    // banner, not silently behave as "no value set".
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/admin/credentials/providers') {
-        return jsonOk({ providers: [configuredProvider] });
-      }
-      if (url === '/admin/settings/fast-model') {
-        return new Response('boom', { status: 500 });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    render(<ModelConfigTab />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('alert').textContent).toMatch(/couldn.t load your model providers/i);
-    });
+  it('shows a save error without losing the selected model', async () => {
+    script({ saveStatus: 500 }); render(<ModelConfigTab />); await choose('Grok 4.6');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/couldn.t save/i);
+    expect(screen.getByRole('combobox')).toHaveTextContent('Grok 4.6');
   });
 
-  /**
-   * TASK-341 / audit D3, D7.
-   */
-  it('calls itself the Helper model, and says what that means', async () => {
-    // (D3) The tab picks the small, fast model used for titles and quick jobs.
-    // Calling it "Default AI model" told an admin they were choosing what their
-    // agents think with — which is set per-agent, on a different tab.
-    defaultFetchScript([configuredProvider]);
-    render(<ModelConfigTab />);
-
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: /helper model/i })).toBeTruthy(),
-    );
-    expect(screen.queryByText(/default ai model/i)).toBeNull();
-    expect(screen.getByText(/each agent picks its own chat model/i)).toBeTruthy();
-  });
-
-  it('offers a Try again that actually reloads after a failed load', async () => {
-    // (D7) The load error used to be a dead end: the raw message, and no way
-    // out short of reloading the page.
-    let failNext = true;
-    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/admin/credentials/providers') {
-        return jsonOk({ providers: [configuredProvider] });
-      }
-      if (url === '/admin/settings/fast-model') {
-        if (failNext) return new Response('boom', { status: 500 });
-        return jsonOk({ value: null });
-      }
-      return new Response(null, { status: 404 });
-    });
-
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
-
-    failNext = false;
-    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
-
-    // Recovered: the error is gone and the real pane is back.
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /save changes/i })).toBeTruthy(),
-    );
-    expect(screen.queryByRole('alert')).toBeNull();
-  });
-
-  it('Save button is disabled when no model is selected', async () => {
-    defaultFetchScript([configuredProvider]);
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    const saveBtn = screen.getByRole('button', { name: /Save changes/i }) as HTMLButtonElement;
-    expect(saveBtn.disabled).toBe(true);
+  it('keeps Save disabled until an enabled model is selected', async () => {
+    script(); render(<ModelConfigTab />);
+    await screen.findByRole('button', { name: 'Save changes' });
+    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
   });
 });

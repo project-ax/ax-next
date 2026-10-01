@@ -12,8 +12,9 @@
  * model is set per-agent via the Agents tab.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Info } from 'lucide-react';
-import { listProviders, type ProviderEntry } from '@/lib/providers';
+import { fetchCatalog, fetchPolicy, type CatalogProvider } from '@/lib/models-admin';
+import { labelFor } from '@/lib/models-picker';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { getAdminSetting, putAdminSetting } from '@/lib/admin-settings';
 import { Button } from '@/components/ui/button';
 import { RoleCard } from './RoleCard';
@@ -35,49 +36,10 @@ const ROLE: RoleMeta = {
     'Each agent picks its own primary chat model separately on the Agents tab.',
 };
 
-interface ProviderSelection {
-  providerId: string;
-  modelId: string;
-}
-
-/**
- * Build a `provider/model-id` ref from the configured-providers list +
- * a chosen model id. Returns null if:
- *  - the model isn't offered by any configured provider, OR
- *  - the same model id is offered by more than one configured provider
- *    (ambiguous — saving either would silently pick a provider for the
- *    operator). Surface this as a save error so the user gets a clear
- *    "ambiguous" message instead of a quiet wrong-provider flip.
- *
- * Today the UI doesn't have a separate provider picker, so the
- * unambiguous-match path is the only safe shape. A future "pick the
- * provider explicitly" step would replace this with a passed-through
- * providerId.
- */
-function buildModelRef(
-  providers: ProviderEntry[],
-  modelId: string,
-): ProviderSelection | null {
-  if (modelId.length === 0) return null;
-  const matches = providers.filter((p) => p.models.includes(modelId));
-  if (matches.length !== 1) return null;
-  return { providerId: matches[0]!.id, modelId };
-}
-
-/**
- * Reverse: given a stored `provider/model-id` ref, extract the model id
- * so the combobox can preselect it. Splits on the FIRST `/` to mirror
- * conversation-titles' parseModelRef.
- */
-function parseStoredRef(ref: string | null): string {
-  if (ref === null || ref.length === 0) return '';
-  const idx = ref.indexOf('/');
-  if (idx <= 0 || idx === ref.length - 1) return '';
-  return ref.slice(idx + 1);
-}
-
 export function ModelConfigTab() {
-  const [providers, setProviders] = useState<ProviderEntry[]>([]);
+  const [providers, setProviders] = useState<CatalogProvider[]>([]);
+  const [enabledModels, setEnabledModels] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   // (D7) Bumping this re-runs the load effect — what the Retry button needs.
   const [reloadTick, setReloadTick] = useState(0);
@@ -89,22 +51,24 @@ export function ModelConfigTab() {
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     void (async () => {
       try {
-        // Run in parallel — they share no state. The server returns
-        // 200 + { value: null } when nothing has been stored yet, so
-        // no per-error swallowing is needed: any thrown error
-        // (auth/network/5xx/unknown-key) surfaces to the outer catch
-        // and renders as the load-error banner. Previous code did
-        // `.catch(() => null)` which hid those real errors behind an
-        // empty picker.
-        const [list, current] = await Promise.all([
-          listProviders(),
+        // Policy and setting failures must not become an empty picker.
+        // Catalog labels are optional: the enabled refs remain usable when
+        // discovery fails, just as they do in the Models tab's selected list.
+        const [policy, current, catalog] = await Promise.all([
+          fetchPolicy(),
           getAdminSetting('fast-model'),
+          fetchCatalog().catch((err: unknown) => {
+            console.warn('[model-config] could not load model labels', err);
+            return []; // The saved enabled refs remain the authority.
+          }),
         ]);
         if (cancelled) return;
-        setProviders(list);
-        setSelectedModel(parseStoredRef(current));
+        setProviders(catalog);
+        setEnabledModels(policy.allowed);
+        setSelectedModel(current ?? '');
         setLoadError(false);
       } catch (err) {
         if (cancelled) return;
@@ -112,6 +76,8 @@ export function ModelConfigTab() {
         // a way to try again — which this pane had no way to do at all.
         console.warn('[model-config] could not load providers', err);
         setLoadError(true);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
@@ -123,15 +89,24 @@ export function ModelConfigTab() {
     };
   }, [reloadTick]);
 
-  const configured = providers.filter((p) => p.configured);
-  const noProviders = configured.length === 0;
-  const groups: ModelComboboxGroup[] = configured.map((p) => ({
-    providerName: p.name,
-    models: p.models,
+  const byProvider = new Map<string, string[]>();
+  for (const ref of enabledModels) {
+    const id = ref.split('/')[0]!;
+    const refs = byProvider.get(id) ?? [];
+    refs.push(ref);
+    byProvider.set(id, refs);
+  }
+  const groups: ModelComboboxGroup[] = [...byProvider].map(([id, refs]) => ({
+    providerName: providers.find((p) => p.id === id)?.name ?? id,
+    models: refs,
+    labels: new Map(refs.map((ref) => [ref, labelFor(ref, providers)])),
   }));
+  const noModels = enabledModels.length === 0;
+  const selectedEnabled = enabledModels.includes(selectedModel);
+  const selectedLabel = labelFor(selectedModel, providers);
 
   const handleSave = async () => {
-    if (selectedModel.length === 0) return;
+    if (!selectedEnabled) return;
     setSaving(true);
     setSaveError(false);
     setSavedOk(false);
@@ -140,17 +115,7 @@ export function ModelConfigTab() {
       savedTimeoutRef.current = null;
     }
     try {
-      const ref = buildModelRef(configured, selectedModel);
-      if (ref === null) {
-        // Either no configured provider supplies this model id, or two
-        // do — in either case we refuse to silently pick. The combobox
-        // shouldn't normally surface either shape, so this is a defensive
-        // last-resort message.
-        throw new Error(
-          `Model "${selectedModel}" is unavailable or ambiguous across configured providers.`,
-        );
-      }
-      await putAdminSetting('fast-model', `${ref.providerId}/${ref.modelId}`);
+      await putAdminSetting('fast-model', selectedModel);
       setSavedOk(true);
       savedTimeoutRef.current = setTimeout(() => {
         setSavedOk(false);
@@ -164,21 +129,27 @@ export function ModelConfigTab() {
     }
   };
 
+  if (loading) {
+    return <p role="status" className="text-sm text-muted-foreground">Loading enabled models…</p>;
+  }
+
   if (loadError) {
     // (D7) This used to be a dead end: the raw error message interpolated into
     // the banner, and no way to try again short of reloading the page.
     // AuthProvidersTab has had an error+retry pair for a while; this matches it.
     return (
-      <div className="max-w-[640px] mx-auto flex items-center justify-between gap-3 px-3 py-2 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive">
-        <span role="alert">We couldn’t load your model providers.</span>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setReloadTick((t) => t + 1)}
-        >
-          Try again
-        </Button>
-      </div>
+      <Alert variant="destructive" className="mx-auto max-w-[640px]">
+        <AlertDescription className="flex items-center justify-between gap-3">
+          <span>We couldn’t load your enabled models.</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setReloadTick((t) => t + 1)}
+          >
+            Try again
+          </Button>
+        </AlertDescription>
+      </Alert>
     );
   }
 
@@ -196,21 +167,22 @@ export function ModelConfigTab() {
         </h2>
         <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
           Used for conversation titles and quick tasks. Each agent picks its own
-          chat model on the Agents tab. Only providers with a saved key appear
-          here.
+          chat model on the Agents tab. Choose from the models enabled in
+          Settings → Models.
         </p>
       </div>
 
-      {noProviders && (
-        <div className="flex items-start gap-2.5 p-3.5 bg-primary-soft border border-primary/20 rounded-lg text-[13px] leading-[1.5] text-foreground/80 mb-4">
-          <Info
-            className="w-4 h-4 rounded-full bg-primary text-primary-foreground p-px shrink-0 mt-px"
-            strokeWidth={3}
-          />
-          <span>
-            Configure a provider key first, then come back here to choose a model.
-          </span>
-        </div>
+      {noModels && (
+        <Alert className="mb-4">
+          <AlertDescription>Enable a model in Settings → Models, then choose it here.</AlertDescription>
+        </Alert>
+      )}
+      {selectedModel.length > 0 && !selectedEnabled && (
+        <Alert className="mb-4">
+          <AlertDescription>
+            The saved helper model isn’t enabled in Settings → Models. Choose an enabled model to change it.
+          </AlertDescription>
+        </Alert>
       )}
 
       <div className="flex flex-col gap-3.5">
@@ -219,17 +191,18 @@ export function ModelConfigTab() {
             ariaLabel={ROLE.label}
             groups={groups}
             value={selectedModel}
+            valueLabel={selectedLabel}
             onChange={setSelectedModel}
-            disabled={noProviders}
+            disabled={noModels || saving}
             placeholder={
-              noProviders ? '— Configure a provider first —' : '— Select a model —'
+              noModels ? '— Enable a model first —' : '— Select a model —'
             }
           />
           {selectedModel.length > 0 && (
             <span className="flex items-center gap-1.5 mt-2 text-[11.5px] text-muted-foreground">
               Currently ·{' '}
               <code className="font-mono text-[11.5px] text-primary tracking-[0.02em]">
-                {selectedModel}
+                {selectedLabel}
               </code>
             </span>
           )}
@@ -240,7 +213,7 @@ export function ModelConfigTab() {
         <Button
           type="button"
           onClick={() => void handleSave()}
-          disabled={saving || selectedModel.length === 0}
+          disabled={saving || !selectedEnabled}
         >
           {saving ? 'Saving…' : savedOk ? '✓ Saved' : 'Save changes'}
         </Button>
@@ -258,12 +231,9 @@ export function ModelConfigTab() {
           // (D7) Was the raw thrown message — including the internal
           // "unavailable or ambiguous across configured providers" string,
           // which describes our resolver rather than anything the reader did.
-          <div
-            role="alert"
-            className="px-2.5 py-1.5 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive"
-          >
-            We couldn’t save that. Give it another try in a moment.
-          </div>
+          <Alert variant="destructive">
+            <AlertDescription>We couldn’t save that. Give it another try in a moment.</AlertDescription>
+          </Alert>
         )}
       </div>
     </div>

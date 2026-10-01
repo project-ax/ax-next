@@ -142,8 +142,9 @@ OrbStack settings were left unchanged.
 
 ## Scope retained
 
-Warm sessions keep their frozen model until a new session. Helper-model settings
-and initial onboarding configuration remain separate from agent policy. Dirty
+Warm sessions keep their frozen model until a new session. Helper-model storage
+and initial onboarding configuration remain separate from agent policy. The
+follow-up below limits helper-picker choices to enabled models. Dirty
 drafts prompt on browser unload; switching admin tabs still discards them.
 Unobserved credential changes can wait for refresh or catalog TTL/retry expiry.
 
@@ -157,3 +158,11 @@ The first implementation used the plugin name as the catalog request's agent ID.
 A composition regression uses the real HTTP route registration, OpenRouter plugin, credential facade, and database credential backend over in-memory SQLite. Global-only discovery failed before the fix; global and personal-key cases now pass. Model-policy: 94 tests passed. K8s preset: 225 tests passed with the explicit local Docker socket. Build/typecheck and scoped lint passed.
 
 After rebuilding the local kind image, authenticated catalog requests returned OpenRouter `live` with 444 models using the user's existing saved key. The browser rendered all 444 under an OpenRouter search and showed no missing-key notice. The allowed-model policy and saved credentials were not changed by verification.
+
+## Enabled helper models follow-up (2026-10-01)
+
+At the user's request, the Helper model picker now offers only the saved policy's enabled refs, with the same catalog labels as Settings → Models. Selection and saving preserve the full provider/model ref, including OpenRouter's vendor segment. Catalog discovery failure falls back to enabled refs; policy or setting failures show a retryable error. A saved helper outside the enabled list is displayed with a warning and cannot be saved again until an enabled replacement is selected. Loading and verification never rewrite the setting.
+
+New regressions failed against the seed-based picker before the fix. The final channel-web suite passed all 3,799 tests; scoped ESLint and the local image build passed. A browser walk at desktop and 390-pixel width found exactly four choices matching the four enabled refs, matching catalog labels, no horizontal overflow, and an unchanged saved helper setting. Screenshots are retained locally under `.playwright-mcp/model-policy/helper-enabled-{1280,390}.png`. The rebuilt preview is served at http://localhost:9090/.
+
+Security review: the picker reuses existing authenticated policy/catalog reads and the existing setting write; it adds no capabilities or hook changes. Catalog labels render as React text and search keywords; model refs remain data, with no command, path, or prompt interpretation. No dependencies were added or changed.

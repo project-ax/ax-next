@@ -32,7 +32,19 @@ const mockUser: AuthUser = {
 function emptyResponse(url: string): Response {
   // ProvidersPanel (default tab) calls adminCredentials.list() which hits
   // /admin/credentials (no trailing path) and expects { credentials: [] }.
-  // ModelConfigTab calls listProviders() → /admin/credentials/providers → { providers: [] }.
+  // ModelConfigTab reads the enabled-model policy and shared catalog.
+  if (/\/admin\/models\/policy(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ source: 'admin', version: 1, allowed: [], default: '' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/admin\/settings\/fast-model(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ value: null }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   if (/\/admin\/credentials(\?|$)/.test(url) || /\/settings\/credentials(\?|$)/.test(url)) {
     return new Response(JSON.stringify({ credentials: [] }), {
       status: 200,
