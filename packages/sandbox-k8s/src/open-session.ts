@@ -30,6 +30,7 @@ import {
   type ExitInfo,
 } from './lifecycle.js';
 import { buildPodSpec } from './pod-spec.js';
+import { prepareAgentSandboxMounts } from './prepare-mounts.js';
 
 // ---------------------------------------------------------------------------
 // sandbox:open-session — k8s impl.
@@ -122,6 +123,8 @@ function makePidGenerator(): () => number {
 
 export interface OpenSessionDeps {
   api: K8sCoreApi;
+  /** Core API for fixed ownership preparation; session API may target Sandbox CRs. */
+  preparationApi?: K8sCoreApi;
   config: ResolvedSandboxK8sConfig;
   bus: HookBus;
   /** Set by createSandboxK8sPlugin from a per-instance counter. */
@@ -383,6 +386,9 @@ export function createOpenSession(deps: OpenSessionDeps) {
     });
 
     try {
+      if (deps.config.backend === 'agent-sandbox') {
+        podSpec = await prepareAgentSandboxMounts(deps.preparationApi ?? deps.api, podSpec, deps.config, podLog);
+      }
       await deps.api.createNamespacedPod({
         namespace: deps.config.namespace,
         body: podSpec,
@@ -528,6 +534,13 @@ export function createOpenSession(deps: OpenSessionDeps) {
       .catch(() => undefined);
 
     const kill = async (): Promise<void> => {
+      if (deps.config.backend === 'agent-sandbox') {
+        // Revoke before asking a controller to delete: a failed deletion must
+        // never leave a replacement Pod with a usable AX capability token.
+        await deps.bus.call<SessionTerminateInput, Record<string, never>>(
+          'session:terminate', ctx, { sessionId: created.sessionId },
+        );
+      }
       // Idempotent. The cleanup-on-exit handler will also try to delete;
       // either is fine because killPod swallows 404.
       await killPod({

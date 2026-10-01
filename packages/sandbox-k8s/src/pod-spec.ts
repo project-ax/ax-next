@@ -965,6 +965,11 @@ export function buildPodSpec(
         env: [{ name: 'HOME', value: '/home/runner' }],
         volumeMounts: [{ name: 'home', mountPath: '/home/runner' }],
         securityContext: containerSecurity,
+        // GKE Agent Sandbox admission requires bounds on init containers too.
+        resources: {
+          requests: { cpu: config.cpuRequest, memory: config.memoryRequest },
+          limits: { cpu: config.cpuLimit, memory: config.memoryLimit },
+        },
       },
       // filestore-user-files (design §4 + §14) — align each WRITABLE durable
       // user-files mount's per-agent subPath dir to the runner uid/gid before

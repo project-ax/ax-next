@@ -190,6 +190,10 @@ spec:
             # Sandbox plugin reads these to size + place runner pods.
             - name: K8S_RUNTIME_CLASS
               value: {{ .Values.sandbox.runtimeClassName | quote }}
+            - name: K8S_SANDBOX_BACKEND
+              value: {{ .Values.sandbox.backend | quote }}
+            - name: K8S_AGENT_SANDBOX_API_VERSION
+              value: {{ .Values.sandbox.agentSandboxApiVersion | quote }}
             - name: K8S_NAMESPACE
               value: {{ include "ax-next.runnerNamespace" . | quote }}
             - name: K8S_POD_IMAGE

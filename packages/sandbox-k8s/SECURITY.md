@@ -202,3 +202,37 @@ One new runtime dependency. Pinned exactly. The transitive surface is the price 
 ## Security contact
 
 If we find a hole, we'd rather hear about it from you than read about it on Hacker News. Please email `vinay@canopyworks.com`.
+## Agent Sandbox lifecycle backend
+
+`backend: 'agent-sandbox'` changes the lifecycle owner, not the AX hook or IPC
+surface. The host receives namespaced `sandboxes` create/get/list/delete access;
+it receives no template, claim, patch, secret, exec or cluster-scoped permission.
+Auxiliary file-operation pods retain the existing CoreV1 permissions.
+
+Filesystem reach stays confined to the generated runner mounts. The writable
+user-files ownership step runs as a separate fixed-command preparation pod with
+only the agent's NFS subPath and CAP_CHOWN. Paths and owner values remain env
+arguments to the existing quoted script; no model or tool output enters the
+script. This pod receives no AX session token or proxy token. The Sandbox itself
+has non-root containers and no added capabilities; GKE's hardening policy stays
+enabled. Read-only memory projections and non-root service sidecars are preserved.
+The scaffold init container has explicit CPU and memory requests and limits,
+so every Sandbox container meets the managed controller's resource bounds.
+
+Network destinations remain the chart's IPC/proxy/storage/DNS allowance. Direct
+Sandbox resources do not use template-managed network defaults or a router.
+Do not overlay an internet-allowing NetworkPolicy: allowances are additive.
+The chart requires gVisor, enforced NetworkPolicies, and the TCP proxy in this mode.
+
+Resource identity is pinned by Sandbox and Pod UIDs. An unexpected replacement
+or disappearance terminates the session. Cancellation revokes the bearer token
+before foreground deletion of the Sandbox with a UID precondition. The absolute
+Sandbox shutdownTime bounds orphan lifetime after host death; snapshots and warm
+pool adoption are not enabled. Existing host-restart limitations still require
+the operational teardown order in deploy/README.md, with parent resources deleted first.
+
+## Security review
+
+- Sandbox: Namespaced Sandbox lifecycle permission added. Existing runner filesystem and network reach retained; fixed ownership preparation has only CAP_CHOWN and the agent subtree, with no session credential. Parent deletion uses UID preconditions and cancellation revokes first.
+- Injection: Session inputs still pass the existing schema and pod builder. Ownership paths remain quoted env values in a fixed script; API status and metadata are interpreted as state, never executed. No new runner IPC action or model-driven shell command.
+- Supply chain: N/A — no package.json or lockfile change; uses the existing exactly pinned Kubernetes client. The controller is an operator-managed prerequisite, with release/image pinning required for self-managed installs.

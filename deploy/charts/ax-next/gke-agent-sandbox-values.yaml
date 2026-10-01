@@ -1,0 +1,12 @@
+# Apply AFTER gke-values.yaml. Install/enable the Agent Sandbox controller first;
+# see deploy/GKE.md. This uses fresh Sandbox resources, without warm pools.
+sandbox:
+  backend: agent-sandbox
+  agentSandboxApiVersion: v1beta1
+  runtimeClassName: gvisor
+  proxySocketHostPath: ""
+credentialProxy:
+  tcp:
+    enabled: true
+networkPolicies:
+  enabled: true

@@ -15,5 +15,6 @@ export {
   type OpenSessionHandle,
 } from './open-session.js';
 export type { K8sCoreApi } from './k8s-api.js';
+export type { SandboxCustomApi } from './agent-sandbox.js';
 export { isPodGoneError } from './kill.js';
 export { buildPodSpec, type PodSpec } from './pod-spec.js';

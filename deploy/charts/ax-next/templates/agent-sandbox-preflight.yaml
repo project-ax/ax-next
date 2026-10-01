@@ -1,0 +1,14 @@
+{{- if eq .Values.sandbox.backend "agent-sandbox" -}}
+{{- if ne .Values.sandbox.runtimeClassName "gvisor" -}}
+{{- fail "sandbox.backend=agent-sandbox requires sandbox.runtimeClassName=gvisor" -}}
+{{- end -}}
+{{- if .Values.sandbox.proxySocketHostPath -}}
+{{- fail "sandbox.backend=agent-sandbox forbids proxy hostPath; use credentialProxy.tcp.enabled=true" -}}
+{{- end -}}
+{{- if not (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) -}}
+{{- fail "sandbox.backend=agent-sandbox requires credentialProxy.tcp.enabled=true" -}}
+{{- end -}}
+{{- if not (include "ax-next.bool" .Values.networkPolicies.enabled) -}}
+{{- fail "sandbox.backend=agent-sandbox requires networkPolicies.enabled=true to enforce AX proxy-only egress" -}}
+{{- end -}}
+{{- end -}}

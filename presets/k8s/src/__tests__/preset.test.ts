@@ -79,6 +79,13 @@ const stubConfig: K8sPresetConfig = {
 };
 
 describe('@ax/preset-k8s wiring', () => {
+  it('selects Agent Sandbox without adding a second hook registrant', () => {
+    const plugins = createK8sPlugins({ ...stubConfig, sandbox: { ...stubConfig.sandbox,
+      backend: 'agent-sandbox', agentSandboxApiVersion: 'v1alpha1' } });
+    expect(plugins.filter((plugin) => plugin.manifest.registers.includes('sandbox:open-session'))).toHaveLength(1);
+    expect(() => createK8sPlugins({ ...stubConfig, sandbox: { ...stubConfig.sandbox,
+      backend: 'agent-sandbox', runtimeClassName: '' } })).toThrow(/agent-sandbox requires/);
+  });
   it('returns a non-empty plugin array', () => {
     const plugins = createK8sPlugins(stubConfig);
     expect(plugins.length).toBeGreaterThan(0);
@@ -1543,6 +1550,14 @@ describe('loadK8sConfigFromEnv', () => {
       runtimeClassName: 'gvisor',
       imagePullSecrets: ['a', 'b', 'c'],
     });
+  });
+
+  it('passes Agent Sandbox backend and served API version through the preset loader', () => {
+    const cfg = loadK8sConfigFromEnv(minRequired({ K8S_SANDBOX_BACKEND: 'agent-sandbox',
+      K8S_AGENT_SANDBOX_API_VERSION: 'v1alpha1' }));
+    expect(cfg.sandbox).toMatchObject({ backend: 'agent-sandbox', agentSandboxApiVersion: 'v1alpha1' });
+    expect(() => loadK8sConfigFromEnv(minRequired({ K8S_SANDBOX_BACKEND: 'typo' }))).toThrow(/K8S_SANDBOX_BACKEND/);
+    expect(() => loadK8sConfigFromEnv(minRequired({ K8S_AGENT_SANDBOX_API_VERSION: 'typo' }))).toThrow(/K8S_AGENT_SANDBOX_API_VERSION/);
   });
 
   // Regression: empty K8S_RUNTIME_CLASS must be passed through as the

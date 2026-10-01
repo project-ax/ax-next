@@ -1,5 +1,87 @@
 # Deploying ax-next to GKE Autopilot
 
+## Optional Agent Sandbox lifecycle backend
+
+AX can use the GKE Agent Sandbox controller to own runner lifecycle instead of
+creating bare Pods. The default remains `sandbox.backend=pod`. Apply
+[`gke-agent-sandbox-values.yaml`](charts/ax-next/gke-agent-sandbox-values.yaml)
+after `gke-values.yaml` to select the controller backend on a staging deployment.
+
+Before selecting it:
+
+1. [Enable Agent Sandbox](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/how-install-agent-sandbox)
+   on the intended cluster and provision its gVisor nodes. The managed add-on
+   currently requires GKE `1.36.3-gke.1767000` or later for `v1beta1`.
+   This overlay does not install or upgrade
+   the controller. For a self-managed controller, pin its release and image digests.
+2. Confirm the served API version:
+   `kubectl get crd sandboxes.agents.x-k8s.io -o jsonpath='{.spec.versions[?(@.served==true)].name}'`.
+   The overlay uses `v1beta1`; the upstream `v0.4.6` controller serves `v1alpha1`,
+   so set `sandbox.agentSandboxApiVersion=v1alpha1` for that release.
+3. Confirm the runner nodes have `sandbox.gke.io/runtime=gvisor` and admit the
+   matching `NoSchedule` toleration. Keep the TCP credential proxy and the
+   chart's NetworkPolicies enabled. Helm rejects an unsafe combination; host
+   startup checks that its service account can list the configured Sandbox API.
+
+Use the existing image, credentials, storage, namespace and release arguments
+from the install procedure below, with this additional values file last:
+
+```bash
+-f deploy/charts/ax-next/gke-agent-sandbox-values.yaml
+```
+
+This stage creates one fresh `Sandbox` per AX session. The same runner image,
+session token, installed skills, service sidecars and mounts are supplied at
+creation. Writable user-file ownership is prepared by a short-lived, fixed
+`chown` pod before the non-root Sandbox starts; the preparation pod has only
+`CAP_CHOWN`, the agent's own mount, and no session credentials. Read-only memory
+mounts need no ownership preparation. File reads and agent-deletion cleanup
+continue using their existing host-managed pods.
+
+The runner connects out to AX IPC and the credential proxy. There is no Sandbox
+Router, inbound Service, template, claim or warm pool. Direct Sandbox resources
+use AX's existing network fence; do not add a policy permitting general internet
+egress. NetworkPolicy allowances combine, so a permissive policy would open a
+route around the credential proxy.
+
+The resource and Pod each have a lifetime cap. Cancellation revokes the AX
+token before deleting the parent Sandbox with foreground garbage collection and
+a UID precondition. A missing or replaced backing Pod ends the AX session;
+the host does not adopt a replacement as a continuation. Restarting the host
+requires deleting Sandbox resources **before** deleting runner Pods; see
+[the restart procedure](README.md#restarting-the-host-pod-delete-the-runner-pods-first).
+
+Before promotion, walk both runners on GKE: chat plus a tool call, warm reuse
+between turns, cancellation, Pod death, host restart, durable file writes,
+read-only memory, service sidecars, and attempts to access another agent's files
+or bypass the proxy. Measure first useful output, including workspace hydration.
+Warm pools and process snapshots remain separate work: pooling needs an
+authenticated session bootstrap, and snapshots must not restore stale tokens.
+
+Validation for this stage: the package canary exercises both runner selections,
+session revocation, rollback, replacement detection, mount preparation,
+read-only memory and sidecar rendering with mocked cluster APIs. An isolated
+kind cluster with upstream controller `v0.4.6` also passed real hook launch,
+foreground parent/child deletion, and backing-Pod recreation detection. That
+local lifecycle probe used a fixture process and a `gvisor` RuntimeClass backed
+by `runc`; it does not establish gVisor isolation, GKE admission compatibility,
+network enforcement, real model turns or startup performance. The GKE walk above
+is still required before switching the production backend.
+
+An isolated probe on GKE `1.36.4-gke.1247000` also passed managed `v1beta1`
+admission, real gVisor execution (`4.19.0-gvisor`), UID 1000 execution without
+a service-account token, cancellation with token revocation and parent/child
+cleanup, and session termination after backing-Pod deletion. The first admission
+attempt caught missing resource limits on `sdk-scaffold`; CPU and memory bounds
+now cover that init container, with a regression test. The fixture became ready
+in 4.4 s and 3.3 s on an existing node; these are fixture timings, not chat latency.
+A temporary deny-all NetworkPolicy blocked an outbound TCP connection. The probe
+used no production session credentials or persistent mounts, and its namespace
+was removed. It did not test real model turns, AX proxy allowances, Filestore,
+read-only memory, service sidecars, cross-agent isolation or host restart.
+
+## Existing deployment procedure
+
 This is the real-cluster companion to [`MANUAL-ACCEPTANCE.md`](MANUAL-ACCEPTANCE.md)
 (which covers kind). It walks a first production-shaped deploy onto a **GKE
 Autopilot** cluster, with the security posture the design actually targets:

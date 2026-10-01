@@ -321,6 +321,8 @@ export interface K8sPresetConfig {
    * optional; defaults live in @ax/sandbox-k8s/src/config.ts.
    */
   sandbox?: {
+    backend?: 'pod' | 'agent-sandbox';
+    agentSandboxApiVersion?: 'v1alpha1' | 'v1beta1';
     namespace?: string;
     image?: string;
     runtimeClassName?: string;
@@ -917,6 +919,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // sandbox-k8s registers `sandbox:open-session`. No subprocess fallback
   // here — this preset is k8s-only.
   const sandboxOpts = {
+    ...(config.sandbox?.backend !== undefined ? { backend: config.sandbox.backend } : {}),
+    ...(config.sandbox?.agentSandboxApiVersion !== undefined
+      ? { agentSandboxApiVersion: config.sandbox.agentSandboxApiVersion } : {}),
     hostIpcUrl: config.ipc.hostIpcUrl,
     ...(config.sandbox?.namespace !== undefined
       ? { namespace: config.sandbox.namespace }
@@ -1744,6 +1749,18 @@ export function loadK8sConfigFromEnv(
   }
 
   const sandbox: NonNullable<K8sPresetConfig['sandbox']> = {};
+  if (env.K8S_SANDBOX_BACKEND !== undefined) {
+    if (env.K8S_SANDBOX_BACKEND !== 'pod' && env.K8S_SANDBOX_BACKEND !== 'agent-sandbox') {
+      throw new Error('K8S_SANDBOX_BACKEND must be pod or agent-sandbox');
+    }
+    sandbox.backend = env.K8S_SANDBOX_BACKEND;
+  }
+  if (env.K8S_AGENT_SANDBOX_API_VERSION !== undefined) {
+    if (env.K8S_AGENT_SANDBOX_API_VERSION !== 'v1alpha1' && env.K8S_AGENT_SANDBOX_API_VERSION !== 'v1beta1') {
+      throw new Error('K8S_AGENT_SANDBOX_API_VERSION must be v1alpha1 or v1beta1');
+    }
+    sandbox.agentSandboxApiVersion = env.K8S_AGENT_SANDBOX_API_VERSION;
+  }
   if (env.K8S_NAMESPACE !== undefined && env.K8S_NAMESPACE !== '') {
     sandbox.namespace = env.K8S_NAMESPACE;
   }

@@ -446,6 +446,9 @@ The order is counter-intuitive, so here it is up front. (Both commands act on yo
 
 ```bash
 # 1. Evict any live runner pods.
+# For sandbox.backend=agent-sandbox, delete the PARENT resources first:
+# kubectl delete sandboxes.agents.x-k8s.io -n ax-next-runners -l ax.io/sandbox-backend=agent-sandbox --wait=true
+# Deleting only their Pods makes the controller recreate them.
 kubectl delete pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner
 
 # 2. THEN restart the host.
@@ -458,9 +461,9 @@ any session allowlist". It isn't an auth bug, and it isn't Anthropic — our own
 credential proxy short-circuits the request, which never leaves the cluster. So
 don't go rotating provider keys; the problem is a pod, not a credential.
 
-Here's why. A runner pod outlives the host that spawned it — it's a bare Pod
-with no ownerReference, which is deliberate (no controller gets to resurrect a
-sandbox). The conversation row still points at that pod's session, so the new
+Here's why. A runner pod outlives the host that spawned it. In the default
+`pod` backend it is a bare Pod with no ownerReference; in `agent-sandbox` mode
+its Sandbox controller owns it. The conversation row still points at that pod's session, so the new
 host happily routes the next turn into it. But the credential proxy keeps its
 session allowlist **in the host's memory**, and the new host never registered a
 session for a pod it didn't spawn. So the pod is alive, reachable, and holding a

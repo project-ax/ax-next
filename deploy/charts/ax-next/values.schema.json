@@ -158,6 +158,20 @@
               "description": "Bypass the 1.29+ SidecarContainers guard. A quoted value used to SKIP the safety check."
             }
           }
+        },
+        "backend": {
+          "type": "string",
+          "enum": [
+            "pod",
+            "agent-sandbox"
+          ]
+        },
+        "agentSandboxApiVersion": {
+          "type": "string",
+          "enum": [
+            "v1alpha1",
+            "v1beta1"
+          ]
         }
       }
     },

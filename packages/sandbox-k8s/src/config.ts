@@ -11,6 +11,10 @@
 import { PluginError } from '@ax/core';
 
 export interface SandboxK8sConfig {
+  /** Session lifecycle owner. Auxiliary file-operation pods stay ordinary Pods. */
+  backend?: 'pod' | 'agent-sandbox';
+  /** Served Agent Sandbox CRD version. v0.4.6 uses v1alpha1. */
+  agentSandboxApiVersion?: 'v1alpha1' | 'v1beta1';
   /**
    * Cluster-internal URL the runner pods use to reach the host's IPC
    * listener (e.g. `http://ax-next-host.ax-next.svc.cluster.local:80`).
@@ -166,6 +170,8 @@ export interface SandboxK8sConfig {
 }
 
 export interface ResolvedSandboxK8sConfig {
+  backend: 'pod' | 'agent-sandbox';
+  agentSandboxApiVersion: 'v1alpha1' | 'v1beta1';
   hostIpcUrl: string;
   namespace: string;
   image: string;
@@ -223,6 +229,8 @@ export function resolveConfig(
     });
   }
   const resolved: ResolvedSandboxK8sConfig = {
+    backend: raw.backend ?? 'pod',
+    agentSandboxApiVersion: raw.agentSandboxApiVersion ?? 'v1beta1',
     hostIpcUrl: raw.hostIpcUrl,
     namespace: raw.namespace ?? 'ax-next',
     image: raw.image ?? 'ax-next/agent:latest',
@@ -245,6 +253,17 @@ export function resolveConfig(
     orphanSweepIntervalMs: raw.orphanSweepIntervalMs ?? 300_000,
     orphanSweepTerminalAgeMs: raw.orphanSweepTerminalAgeMs ?? 600_000,
   };
+  if (!['pod', 'agent-sandbox'].includes(resolved.backend) ||
+      !['v1alpha1', 'v1beta1'].includes(resolved.agentSandboxApiVersion)) {
+    throw new PluginError({ code: 'invalid-config', plugin: '@ax/sandbox-k8s',
+      message: 'sandbox backend must be pod or agent-sandbox; Agent Sandbox API version must be v1alpha1 or v1beta1' });
+  }
+  if (resolved.backend === 'agent-sandbox' &&
+      (resolved.runtimeClassName !== 'gvisor' || resolved.proxySocketHostPath !== '' ||
+       !Number.isSafeInteger(resolved.activeDeadlineSeconds) || resolved.activeDeadlineSeconds <= 0)) {
+    throw new PluginError({ code: 'invalid-config', plugin: '@ax/sandbox-k8s',
+      message: 'agent-sandbox requires gvisor, no proxy hostPath, and a positive activeDeadlineSeconds' });
+  }
   if (raw.imagePullSecrets !== undefined) {
     resolved.imagePullSecrets = raw.imagePullSecrets;
   }

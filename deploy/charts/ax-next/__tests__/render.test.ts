@@ -119,6 +119,39 @@ if (GATE.mode === 'require-missing') {
 
 const STS_NAME = 'ax-test-ax-next-git-server-experimental';
 
+describeIfHelm('ax-next chart: Agent Sandbox backend', () => {
+  const enabled = ['--set', 'sandbox.backend=agent-sandbox', '--set', 'credentialProxy.tcp.enabled=true'];
+  it('wires the backend and least-privilege namespaced Sandbox RBAC', () => {
+    const docs = helmTemplate(enabled);
+    const deployment = docs.find((doc) => doc.kind === 'Deployment' && doc.metadata?.labels?.['app.kubernetes.io/component'] === 'host');
+    expect(deployment?.spec?.template.spec.containers[0].env).toEqual(expect.arrayContaining([
+      { name: 'K8S_SANDBOX_BACKEND', value: 'agent-sandbox' },
+      { name: 'K8S_AGENT_SANDBOX_API_VERSION', value: 'v1beta1' },
+    ]));
+    const role = docs.find((doc) => doc.kind === 'Role' && doc.rules.some((rule: { apiGroups: string[] }) => rule.apiGroups.includes('agents.x-k8s.io')));
+    expect(role?.rules).toEqual(expect.arrayContaining([{ apiGroups: ['agents.x-k8s.io'], resources: ['sandboxes'], verbs: ['create', 'get', 'list', 'delete'] }]));
+    expect(docs.some((doc) => doc.kind === 'ClusterRole')).toBe(false);
+    const fence = docs.find((doc) => doc.kind === 'NetworkPolicy' && doc.metadata?.name?.endsWith('sandbox-restrict'));
+    expect(fence).toBeDefined();
+    expect(JSON.stringify(fence)).not.toContain('0.0.0.0/0');
+    expect(docs.some((doc) => ['SandboxTemplate', 'SandboxWarmPool'].includes(doc.kind ?? ''))).toBe(false);
+  });
+  it('adds no Sandbox permissions in ordinary Pod mode', () => {
+    const docs = helmTemplate([]);
+    expect(docs.filter((doc) => doc.kind === 'Role').some((doc) => JSON.stringify(doc.rules).includes('agents.x-k8s.io'))).toBe(false);
+  });
+  it.each([
+    ['sandbox.runtimeClassName=', 'runtimeClassName=gvisor'],
+    ['networkPolicies.enabled=false', 'proxy-only egress'],
+    ['credentialProxy.tcp.enabled=false', 'credentialProxy.tcp.enabled=true'],
+    ['sandbox.proxySocketHostPath=/host/socket', 'hostPath'],
+  ])('fails unsafe configuration %s', (override, message) => {
+    const result = helmTemplateExpectFailure([...enabled, '--set', override]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(message);
+  });
+});
+
 // The subchart tarballs (postgresql) that `helm template` needs in charts/ are
 // fetched once per run by vitest's globalSetup — see __tests__/helm-deps.ts.
 // This file used to do it from its own `beforeAll`, as did blob-backend and
