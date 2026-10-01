@@ -58,7 +58,7 @@ export function createHandlers(deps: { bus: HookBus; store: PolicyStore; catalog
         res.status(400).json({ error: 'invalid-payload', message: 'baseVersion must be a whole number of 0 or more' });
         return;
       }
-      const result = await deps.store.save(ctxFor(actor.id), shape.data, actor.id);
+      const result = await deps.store.save(ctxFor(actor.id), { baseVersion: shape.data.baseVersion, allowed: shape.data.allowed, default: shape.data.default }, actor.id);
       if (result.ok) {
         res.status(200).json(result.policy);
         return;

@@ -31,7 +31,7 @@ describe('createModelPolicyPlugin', () => {
     const plugin = createModelPolicyPlugin({ builtinAllowed: [OPUS, SONNET] });
     expect(plugin.manifest.name).toBe('@ax/model-policy');
     expect(plugin.manifest.registers).toEqual(['models:get-policy']);
-    expect(plugin.manifest.calls).toEqual(['storage:get', 'storage:set']);
+    expect(plugin.manifest.calls).toEqual(['http:register-route', 'auth:require-user', 'storage:get', 'storage:set']);
   });
 
   it('refuses an empty or malformed built-in list at construction', () => {
