@@ -112,6 +112,12 @@ conversations, runners, temporary authentication sessions/user and usage buckets
 were removed. The original absent policy document was restored, then the host
 restarted to clear caches. Existing users and agents were preserved.
 
+The restoration rollout explicitly completed successfully. Later Kubernetes
+status probes timed out (TLS handshake/header timeouts), and a Docker status probe
+also stalled. Browser acceptance completed before these runtime availability
+problems; the final cluster state could not be queried again. Shared Docker and
+OrbStack settings were left unchanged.
+
 ## Boundaries and security
 
 - **`models:get-policy`:** alternate implementation is a remote policy service or
