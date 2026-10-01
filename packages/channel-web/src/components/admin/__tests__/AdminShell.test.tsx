@@ -105,6 +105,8 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
+  if (url.startsWith('/admin/models/policy')) return new Response(JSON.stringify({ source: 'builtin', version: 0, allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }), { status: 200 });
+  if (url.startsWith('/admin/models/catalog')) return new Response(JSON.stringify({ providers: [] }), { status: 200 });
   return new Response(JSON.stringify({ providers: [], agents: [], teams: [], connectors: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },

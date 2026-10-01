@@ -159,4 +159,13 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     screen.getByText('Connectors').click();
     expect(onTabChange).toHaveBeenCalledWith('connectors-user');
   });
+  it('lists Models right after AI model keys, for admins only', () => {
+    const { rerender } = render(<AdminSidebar activeTab="providers" isAdmin onTabChange={noop} onBack={noop} backLabel="chat" />);
+    const items = screen.getAllByRole('button').map((item) => item.textContent);
+    expect(items.indexOf('Models')).toBe(items.indexOf('AI model keys') + 1);
+    expect(items).toContain('Models');
+    rerender(<AdminSidebar activeTab="providers" isAdmin={false} onTabChange={noop} onBack={noop} backLabel="chat" />);
+    expect(screen.queryByText('Models')).not.toBeInTheDocument();
+  });
+
 });

@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   KeyRound,
   Cpu,
+  Layers,
   User,
   UsersRound,
   ShieldCheck,
@@ -36,6 +37,7 @@ export type AdminTabId =
   // were folded out of the nav (settings-unified epic); their admin curation
   // now lives inline inside the user Skills/Connectors tabs.
   | 'providers'
+  | 'models'
   | 'model-config'
   | 'auth-providers'
   | 'teams'
@@ -54,6 +56,7 @@ const USER_NAV: NavItem[] = [
 
 export const ADMIN_NAV: NavItem[] = [
   { id: 'providers', label: 'AI model keys', icon: KeyRound },
+  { id: 'models', label: 'Models', icon: Layers },
   { id: 'model-config', label: 'Helper model', icon: Cpu },
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'teams', label: 'Teams', icon: UsersRound },

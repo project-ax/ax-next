@@ -516,6 +516,11 @@ describe('AdminSettings — agents tab', () => {
     // (fetches authored-skills); return empty shapes so neither crashes.
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === '/admin/agents/agt-1') {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({
+          displayName: 'probe', allowedTools: ['bash', 'read_file'], connectorAttachments: ['gh'],
+        }) }));
+      }
       if (/\/admin\/connectors(\?|$)/.test(url)) {
         return Promise.resolve(
           jsonOk({
@@ -548,7 +553,7 @@ describe('AdminSettings — agents tab', () => {
     // Before the camelCase fix this threw "Cannot read properties of
     // undefined (reading 'join')" inside formFromAgent.
     fireEvent.click(screen.getByText(/^edit$/i));
-    const nameInput = screen.getByLabelText(/name/i) as HTMLInputElement;
+    const nameInput = await screen.findByLabelText(/name/i) as HTMLInputElement;
     expect(nameInput.value).toBe('probe');
     const tools = screen.getByLabelText(/allowed tools/i) as HTMLInputElement;
     expect(tools.value).toBe('bash, read_file');

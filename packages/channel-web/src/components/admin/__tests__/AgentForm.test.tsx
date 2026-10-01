@@ -12,6 +12,7 @@ import type { AdminAgent } from '@/lib/admin';
 // Mock the wire clients at the lib boundary — no network.
 vi.mock('@/lib/admin', () => ({
   listAdminAgents: vi.fn(),
+  getAdminAgent: vi.fn(),
   createAgent: vi.fn(),
   patchAgent: vi.fn(),
   patchAgentConnectorAttachments: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock('@/lib/admin', () => ({
   putAgentIdentity: vi.fn(),
   deleteAgent: vi.fn(),
   listTeams: vi.fn(),
-  listAgentModels: vi.fn(),
+  listAgentModelOptions: vi.fn(),
 }));
 vi.mock('@/lib/connectors', () => ({
   listConnectors: vi.fn(),
@@ -65,10 +66,11 @@ vi.mock('../AuthoredSkillsSection', () => ({
 
 import {
   listAdminAgents,
+  getAdminAgent,
   createAgent,
   deleteAgent,
   listTeams,
-  listAgentModels,
+  listAgentModelOptions,
   patchAgent,
   patchAgentConnectorAttachments,
   getAgentIdentity,
@@ -116,10 +118,19 @@ const BARE_AGENT: AdminAgent = {
   mcpConfigIds: [],
 };
 
+beforeEach(() => {
+  vi.mocked(getAdminAgent).mockImplementation(async (id) => {
+    const agents = await listAdminAgents();
+    const agent = agents.find((item) => item.id === id);
+    if (!agent) throw new Error('agent unavailable');
+    return agent;
+  });
+});
+
 describe('AgentForm — styled delete confirm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     mockList.mockResolvedValue([AGENT]);
     mockDelete.mockResolvedValue(undefined);
   });
@@ -207,7 +218,7 @@ describe('AgentForm — styled delete confirm', () => {
 describe('AgentForm — non-admin owner-scoped sources', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     mockList.mockResolvedValue([AGENT]);
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(listConnectors).mockResolvedValue([]);
@@ -258,7 +269,7 @@ describe('AgentForm — non-admin owner-scoped sources', () => {
 describe('AgentForm — file-based identity editor (TASK-142)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     mockList.mockResolvedValue([AGENT]);
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(listConnectors).mockResolvedValue([]);
@@ -334,7 +345,7 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
 describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(listConnectors).mockResolvedValue([]);
     vi.mocked(patchAgent).mockResolvedValue(undefined);
@@ -543,7 +554,7 @@ const PERSONAL_AGENT_WITH_APIKEY: AdminAgent = {
 describe('AgentForm — agent-editor OAuth affordances', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(patchAgent).mockResolvedValue(undefined);
     vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);
@@ -673,7 +684,7 @@ describe('AgentForm — access disclosure on the connector list (TASK-700)', () 
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(patchAgent).mockResolvedValue(undefined);
     vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);
@@ -742,4 +753,116 @@ describe('AgentForm — access disclosure on the connector list (TASK-700)', () 
     // … and the widget was told not to stack a second one on the same decision.
     expect(widget.getAttribute('data-access-notice')).toBe('false');
   });
+});
+
+describe('AgentForm — model policy (Default, moved notice, PATCH body)', () => {
+  const ADMIN_DEFAULT_OPTIONS = [
+    { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' as const },
+    { id: 'openrouter/moonshotai/kimi-k3', label: 'Kimi K3', kind: 'either' as const },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listTeams).mockResolvedValue([]);
+    vi.mocked(listConnectors).mockResolvedValue([]);
+    vi.mocked(patchAgent).mockResolvedValue(undefined);
+    vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);
+    vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
+    vi.mocked(createAgent).mockResolvedValue(AGENT);
+    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
+  });
+
+  const modelSelect = () => document.querySelector<HTMLSelectElement>('#agent-model')!;
+
+  it("pre-selects the admin's Default for a NEW agent (not just the first option)", async () => {
+    vi.mocked(listAgentModelOptions).mockResolvedValue({
+      models: ADMIN_DEFAULT_OPTIONS,
+      defaultModel: 'openrouter/moonshotai/kimi-k3',
+    });
+    mockList.mockResolvedValue([]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText(/No agents yet/i)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    await waitFor(() => expect(modelSelect().value).toBe('openrouter/moonshotai/kimi-k3'));
+  });
+
+  it('falls back to the first option when the server names no Default', async () => {
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: ADMIN_DEFAULT_OPTIONS, defaultModel: null });
+    mockList.mockResolvedValue([]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText(/No agents yet/i)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    await waitFor(() => expect(modelSelect().value).toBe('anthropic/claude-sonnet-4-6'));
+  });
+
+  it('an edit that leaves the model alone sends NO model in the PATCH (a swapped agent keeps its stored model)', async () => {
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: ADMIN_DEFAULT_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
+    // The server resolved this agent onto the Default because its own model was removed.
+    mockList.mockResolvedValue([{ ...AGENT, requestedModel: 'openrouter/moonshotai/kimi-k3' }]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await waitFor(() => expect(modelSelect().value).toBe('anthropic/claude-sonnet-4-6'));
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed Bot' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(patchAgent).toHaveBeenCalledTimes(1));
+    const body = vi.mocked(patchAgent).mock.calls[0]?.[1] ?? {};
+    expect(body).toMatchObject({ displayName: 'Renamed Bot' });
+    expect(body).not.toHaveProperty('model');
+  });
+
+  it('an edit that changes the model sends it', async () => {
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: ADMIN_DEFAULT_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
+    mockList.mockResolvedValue([AGENT]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await waitFor(() => expect(modelSelect().value).toBe('anthropic/claude-sonnet-4-6'));
+
+    fireEvent.change(modelSelect(), { target: { value: 'openrouter/moonshotai/kimi-k3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(patchAgent).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(patchAgent).mock.calls[0]?.[1]).toMatchObject({ model: 'openrouter/moonshotai/kimi-k3' });
+  });
+
+  it('tells the owner their agent moved, in plain words', async () => {
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: ADMIN_DEFAULT_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
+    mockList.mockResolvedValue([{ ...AGENT, requestedModel: 'openrouter/moonshotai/kimi-k3' }]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    expect(
+      await screen.findByText(
+        'Your admin changed the available models, so this agent is using Claude Sonnet 4.6 now. Pick a different model to change it.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no notice for an agent on its own model', async () => {
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: ADMIN_DEFAULT_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
+    mockList.mockResolvedValue([AGENT]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await waitFor(() => expect(modelSelect().value).toBe('anthropic/claude-sonnet-4-6'));
+    expect(screen.queryByText(/Your admin changed the available models/)).toBeNull();
+  });
+});
+
+it('opens resolved agent details so a stored removed model is shown as the Default', async () => {
+  vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
+  vi.mocked(listTeams).mockResolvedValue([]);
+  vi.mocked(listConnectors).mockResolvedValue([]);
+  vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
+  mockList.mockResolvedValue([{ ...AGENT, model: 'openrouter/removed' }]);
+  vi.mocked(getAdminAgent).mockResolvedValue({ ...AGENT, requestedModel: 'openrouter/removed' });
+  render(<AgentForm isAdmin />);
+  await screen.findByText('Research Bot');
+  fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+  expect(await screen.findByText(/Your admin changed the available models/)).toBeInTheDocument();
+  expect(getAdminAgent).toHaveBeenCalledWith(AGENT.id);
+  expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(AGENT.model);
 });

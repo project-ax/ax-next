@@ -45,6 +45,7 @@ export interface AdminAgent {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  requestedModel?: string;
   workspaceRef: string | null;
   skillAttachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>;
   /** TASK-107 — the connector ids attached to this agent (the first-class
@@ -136,18 +137,40 @@ export interface AgentModelOption {
 }
 
 /** GET the models this deployment can actually assign to an agent. */
-export async function listAgentModels(): Promise<AgentModelOption[]> {
+export interface AgentModelList {
+  models: AgentModelOption[];
+  /** The Default the admin chose; `null` when the server did not say (older host). */
+  defaultModel: string | null;
+}
+
+export async function listAgentModelOptions(): Promise<AgentModelList> {
   const res = await fetch('/admin/agents/models', { credentials: 'include' });
   if (!res.ok) throw new Error(`list agent models: ${res.status}`);
-  const body = (await res.json()) as { models?: AgentModelOption[] };
-  return body.models ?? [];
+  const body = (await res.json()) as { models?: AgentModelOption[]; defaultModel?: unknown };
+  return {
+    models: body.models ?? [],
+    defaultModel: typeof body.defaultModel === 'string' ? body.defaultModel : null,
+  };
 }
+
+export async function listAgentModels(): Promise<AgentModelOption[]> {
+  return (await listAgentModelOptions()).models;
+}
+
 
 export async function listAdminAgents(): Promise<AdminAgent[]> {
   const res = await fetch('/admin/agents', { credentials: 'include' });
   if (!res.ok) throw new Error(`list agents: ${res.status}`);
   const body = (await res.json()) as { agents: AdminAgent[] };
   return body.agents;
+}
+
+/** Read the agent as it will run, including a temporary model fallback. */
+export async function getAdminAgent(id: string): Promise<AdminAgent> {
+  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}`, { credentials: 'include' });
+  if (!res.ok) throw new Error(`read agent: ${res.status}`);
+  const body = (await res.json()) as { agent: AdminAgent };
+  return body.agent;
 }
 
 export async function createAgent(input: AdminAgentInput): Promise<AdminAgent> {

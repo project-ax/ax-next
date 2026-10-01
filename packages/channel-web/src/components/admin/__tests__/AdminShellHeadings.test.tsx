@@ -87,6 +87,8 @@ function emptyResponse(url: string): Response {
       totalBytes: 0,
     });
   }
+  if (url.startsWith('/admin/models/policy')) return json({ source: 'builtin', version: 0, allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' });
+  if (url.startsWith('/admin/models/catalog')) return json({ providers: [] });
   return json({ providers: [], agents: [], teams: [], connectors: [] });
 }
 
@@ -130,6 +132,7 @@ const TABS: ReadonlyArray<readonly [nav: string, title: string]> = [
   ['Skills', 'Skills'],
   ['Agents', 'Agents'],
   ['AI model keys', 'AI model keys'],
+  ['Models', 'Available models'],
   ['Helper model', 'Helper model'],
   ['Sign-in methods', 'Sign-in methods'],
   ['Teams', 'Teams'],

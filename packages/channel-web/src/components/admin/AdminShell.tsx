@@ -1,3 +1,4 @@
+import { ModelsTab } from './ModelsTab';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { ADMIN_NAV, AdminSidebar, type AdminTabId } from './AdminSidebar';
 import { AdminPane } from './AdminPane';
@@ -51,6 +52,7 @@ interface TabMeta {
 }
 
 const TAB_META: Record<AdminTabId, TabMeta> = {
+  models: { eyebrow: 'Admin', title: 'Available models' },
   skills: { eyebrow: 'Settings', title: 'Skills' },
   'connectors-user': { eyebrow: 'Settings', title: 'Connectors' },
   agents: { eyebrow: 'Settings', title: 'Agents' },
@@ -119,6 +121,7 @@ export function AdminShell({
         {activeTab === 'connectors-user' && <ConnectorsTab isAdmin={isAdmin} />}
         {activeTab === 'providers' && <ProvidersPanel />}
         {activeTab === 'model-config' && <ModelConfigTab />}
+        {activeTab === 'models' && <ModelsTab onOpenKeys={() => setActiveTab('providers')} />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}
         {activeTab === 'agents' && <AgentForm isAdmin={isAdmin} />}
         {activeTab === 'routines' && <RoutinesTab isAdmin={isAdmin} />}
