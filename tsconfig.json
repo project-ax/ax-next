@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [],
   "references": [
+    { "path": "packages/model-policy" },
     { "path": "packages/core" },
     { "path": "packages/agent-activity" },
     { "path": "packages/test-harness" },

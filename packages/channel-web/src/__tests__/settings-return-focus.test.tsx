@@ -151,7 +151,7 @@ async function openSettingsFromWorkspace(): Promise<void> {
   );
   fireEvent.click(entry);
   // AdminShell's back button names where you came from.
-  await waitFor(() => screen.getByRole('button', { name: /^workspace$/i }));
+  await screen.findByRole('heading', { level: 1, name: 'Skills' });
 }
 
 describe('closing Settings from the workspace (TASK-443)', () => {
@@ -213,6 +213,8 @@ describe('closing Settings on a compact viewport (TASK-474)', () => {
     render(<App />);
     await openSettingsFromCompactNav();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings navigation' }));
+    await screen.findByRole('dialog', { name: 'Settings navigation' });
     fireEvent.click(screen.getByRole('button', { name: /^workspace$/i }));
 
     await waitFor(() => {

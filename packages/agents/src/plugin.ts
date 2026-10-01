@@ -1,3 +1,4 @@
+import { applyPolicy, builtinPolicy, loadPolicy, type ModelPolicy } from './model-policy.js';
 import {
   makeAgentContext,
   PluginError,
@@ -98,6 +99,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
   let _store: AgentStore | undefined;
   let busRef: HookBus | undefined;
   const allowedModels = resolveAllowedModels(config.allowedModels);
+  const bootPolicy = builtinPolicy(allowedModels);
   const deletedSubscriberTimeoutMs =
     config.deletedSubscriberTimeoutMs ?? AGENTS_DELETED_SUBSCRIBER_TIMEOUT_MS;
   const unregisterRoutes: Array<() => void> = [];
@@ -154,6 +156,11 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           degradation:
             "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected",
         },
+        {
+          hook: 'models:get-policy',
+          degradation:
+            "the model allow-list, the Default model and the runner rule fall back to the built-in list (today's behaviour)",
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
     },
@@ -179,7 +186,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       bus.registerService<ResolveInput, ResolveOutput>(
         'agents:resolve',
         PLUGIN_NAME,
-        async (ctx, input) => resolveAgent(localStore, bus, ctx, input),
+        async (ctx, input) => resolveAgent(localStore, bus, ctx, input, bootPolicy),
         { returns: ResolveOutputSchema },
       );
 
@@ -193,14 +200,14 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:create',
         PLUGIN_NAME,
         async (ctx, input) =>
-          createAgent(localStore, bus, ctx, input, { allowedModels }),
+          createAgent(localStore, bus, ctx, input, { policy: await loadPolicy(bus, ctx, bootPolicy) }),
       );
 
       bus.registerService<UpdateInput, UpdateOutput>(
         'agents:update',
         PLUGIN_NAME,
         async (ctx, input) =>
-          updateAgent(localStore, bus, ctx, input, { allowedModels }),
+          updateAgent(localStore, bus, ctx, input, { policy: await loadPolicy(bus, ctx, bootPolicy) }),
       );
 
       bus.registerService<DeleteInput, DeleteOutput>(
@@ -472,7 +479,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // calls inside their handlers reach our own services, which were
       // registered above. The unregister callbacks are tracked so a
       // re-init in tests doesn't trip duplicate-route on the http-server.
-      const unregisters = await registerAdminAgentRoutes(bus, initCtx, allowedModels);
+      const unregisters = await registerAdminAgentRoutes(bus, initCtx, bootPolicy, localStore);
       unregisterRoutes.push(...unregisters);
 
       // Bootstrap-reset cleanup: when an operator runs `ax admin
@@ -520,6 +527,7 @@ async function resolveAgent(
   bus: HookBus,
   ctx: AgentContext,
   input: ResolveInput,
+  boot: ModelPolicy,
 ): Promise<ResolveOutput> {
   const agent = await store.getById(input.agentId);
   if (agent === null) {
@@ -555,7 +563,9 @@ async function resolveAgent(
     visibility: agent.visibility,
   };
   await bus.fire('agents:resolved', ctx, event);
-  return { agent };
+  // The swap lives only in what chats see. `agent` (the stored row) is never written back.
+  const policy = await loadPolicy(bus, ctx, boot);
+  return { agent: applyPolicy(agent, policy) };
 }
 
 async function listForUser(
@@ -572,10 +582,10 @@ async function createAgent(
   bus: HookBus,
   ctx: AgentContext,
   input: CreateInput,
-  cfg: { allowedModels: readonly string[] },
+  cfg: { policy: ModelPolicy },
 ): Promise<CreateOutput> {
   const validated = validateCreateInput(input.input, {
-    allowedModels: cfg.allowedModels,
+    allowedModels: cfg.policy.allowed,
   });
   let ownerId: string;
   let ownerType: 'user' | 'team';
@@ -639,7 +649,7 @@ async function updateAgent(
   bus: HookBus,
   ctx: AgentContext,
   input: UpdateInput,
-  cfg: { allowedModels: readonly string[] },
+  cfg: { policy: ModelPolicy },
 ): Promise<UpdateOutput> {
   const existing = await store.getById(input.agentId);
   if (existing === null) {
@@ -652,7 +662,8 @@ async function updateAgent(
   }
   await assertWriteAllowed(existing, bus, ctx, input.actor);
   const validated = validateUpdatePatch(input.patch, {
-    allowedModels: cfg.allowedModels,
+    allowedModels: cfg.policy.allowed,
+    currentModel: existing.model,
   });
   const updated = await store.update(input.agentId, validated);
   return { agent: updated };

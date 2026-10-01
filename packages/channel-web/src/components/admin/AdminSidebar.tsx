@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   KeyRound,
   Cpu,
+  Layers,
   User,
   UsersRound,
   ShieldCheck,
@@ -36,6 +37,7 @@ export type AdminTabId =
   // were folded out of the nav (settings-unified epic); their admin curation
   // now lives inline inside the user Skills/Connectors tabs.
   | 'providers'
+  | 'models'
   | 'model-config'
   | 'auth-providers'
   | 'teams'
@@ -54,6 +56,7 @@ const USER_NAV: NavItem[] = [
 
 export const ADMIN_NAV: NavItem[] = [
   { id: 'providers', label: 'AI model keys', icon: KeyRound },
+  { id: 'models', label: 'Models', icon: Layers },
   { id: 'model-config', label: 'Helper model', icon: Cpu },
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'teams', label: 'Teams', icon: UsersRound },
@@ -109,7 +112,7 @@ export function AdminSidebar({
   backLabel,
 }: AdminSidebarProps) {
   return (
-    <aside className="w-[240px] shrink-0 border-r border-border bg-background flex flex-col font-sans">
+    <aside className="h-full w-[240px] shrink-0 border-r border-border bg-background flex flex-col font-sans">
       <div className="px-3 pt-3.5 pb-2 min-h-[48px] flex items-center justify-between gap-2">
         <BrandMark />
         <button
@@ -125,7 +128,7 @@ export function AdminSidebar({
           {backLabel}
         </button>
       </div>
-      <div className="flex-1 overflow-hidden pt-2.5 pb-2 flex flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto pt-2.5 pb-2 flex flex-col">
         <NavSection
           label="Settings"
           items={USER_NAV}

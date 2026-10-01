@@ -1,3 +1,8 @@
+import {
+  fetchAnthropicModels,
+  ModelsListAvailableOutputSchema,
+  type ModelsListAvailableOutput,
+} from './models-available.js';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   LlmCallOutputSchema,
@@ -110,6 +115,9 @@ export interface LlmAnthropicConfig {
    * `credentials:set`). Override only for tests.
    */
   credentialRef?: string;
+  /** Test seam for `models:list-available:anthropic` (the SDK client is not used for the model list). Defaults to global `fetch`. */
+  fetchImpl?: typeof fetch;
+
 }
 
 // The credential the wizard stores at global scope (onboarding completion-tx)
@@ -129,7 +137,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
   const manifest: Plugin['manifest'] = {
     name: PLUGIN_NAME,
     version: PLUGIN_VERSION,
-    registers: ['llm:call:anthropic', 'models:list-supported:anthropic'],
+    registers: ['llm:call:anthropic', 'models:list-supported:anthropic', 'models:list-available:anthropic'],
     calls: [],
     subscribes: [],
     // `credentials:get` is OPTIONAL: present only in credentialResolution mode,
@@ -169,6 +177,8 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         return created;
       };
 
+      const fetchImpl = cfg.fetchImpl ?? fetch;
+      let keyFor: (ctx: AgentContext) => Promise<string>;
       if (!credentialResolution) {
         // Legacy static mode: resolve once at init; refuse to boot keyless —
         // a silent fallback to "no auth" would be a footgun.
@@ -182,6 +192,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
               'ANTHROPIC_API_KEY not set and cfg.apiKey not provided — refusing to init',
           });
         }
+        keyFor = async () => apiKey;
         const client = clientFor(apiKey);
         bus.registerService<LlmCallInput, LlmCallOutput>(
           'llm:call:anthropic',
@@ -191,6 +202,8 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         );
       } else {
         // Credential-resolution mode: resolve the key for each call.
+        keyFor = (ctx) => resolveApiKey(bus, ctx, cfg, credentialRef);
+
         bus.registerService<LlmCallInput, LlmCallOutput>(
           'llm:call:anthropic',
           PLUGIN_NAME,
@@ -232,6 +245,26 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         }),
         { returns: ModelsListSupportedOutputSchema },
       );
+      // Full live list for the admin model picker (@ax/model-policy). Fixed URL,
+      // the same key resolution as llm:call, and a structured answer on failure.
+      bus.registerService<unknown, ModelsListAvailableOutput>(
+        'models:list-available:anthropic',
+        PLUGIN_NAME,
+        async (ctx) => {
+          let apiKey: string;
+          try {
+            apiKey = await keyFor(ctx);
+          } catch (err) {
+            if (err instanceof PluginError && err.code === 'no-anthropic-credential') {
+              return { status: 'no-key', models: [] };
+            }
+            return { status: 'error', models: [] };
+          }
+          return fetchAnthropicModels(fetchImpl, apiKey);
+        },
+        { returns: ModelsListAvailableOutputSchema, timeoutMs: 60_000 },
+      );
+
     },
   };
 }

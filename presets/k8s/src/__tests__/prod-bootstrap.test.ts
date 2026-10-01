@@ -10,7 +10,7 @@ import {
 } from '@testcontainers/postgresql';
 
 import pg from 'pg';
-import { HookBus, bootstrap, type Plugin } from '@ax/core';
+import { HookBus, bootstrap, makeAgentContext, type Plugin } from '@ax/core';
 import { createSandboxK8sPlugin, type K8sCoreApi } from '@ax/sandbox-k8s';
 
 import {
@@ -226,6 +226,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     '@ax/skills',
     '@ax/admin-settings-routes',
     '@ax/branding',
+    '@ax/model-policy',
     '@ax/conversations',
     '@ax/attachments',
     '@ax/blob-store-fs',
@@ -342,6 +343,18 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         expect(bus.hasService('agent:invoke')).toBe(true);
         expect(bus.hasService('sandbox:open-session')).toBe(true);
         expect(bus.hasService('auth:require-user')).toBe(true);
+        expect(bus.hasService('models:get-policy')).toBe(true);
+        const policyCtx = makeAgentContext({ sessionId: 'model-policy-canary', agentId: 'canary', userId: 'model-policy-canary' });
+        const policy = await bus.call<Record<string, never>, { allowed: string[]; default: string; source: string }>('models:get-policy', policyCtx, {});
+        expect(policy.source).toBe('builtin');
+        expect(policy.default).toBe('anthropic/claude-sonnet-4-6');
+        expect(policy.allowed).toContain(policy.default);
+        const created = await bus.call('agents:create', policyCtx, {
+          actor: { userId: policyCtx.userId, isAdmin: true },
+          input: { displayName: 'Policy canary', allowedTools: ['bash'], mcpConfigIds: [], model: policy.default, visibility: 'personal' },
+        }) as { agent: { id: string; model: string; runner: string } };
+        expect(created.agent).toMatchObject({ model: policy.default, runner: 'claude-sdk' });
+
         expect(bus.hasService('conversations:create')).toBe(true);
         // TASK-423: the facts engine's init ran against the real postgres —
         // it borrows the shared Kysely via `database:get-instance` and

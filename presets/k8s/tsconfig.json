@@ -7,6 +7,7 @@
   "include": ["src/**/*"],
   "exclude": ["src/__tests__/**", "dist", "node_modules"],
   "references": [
+    { "path": "../../packages/model-policy" },
     { "path": "../../packages/core" },
     { "path": "../../packages/agent-activity" },
     { "path": "../../packages/database-postgres" },

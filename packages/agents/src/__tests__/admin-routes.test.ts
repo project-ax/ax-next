@@ -530,6 +530,7 @@ describe('@ax/agents admin routes', () => {
     const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
     expect(r.status).toBe(200);
     expect(r.body).toEqual({
+      defaultModel: 'anthropic/claude-sonnet-4-6',
       models: [
         { id: 'anthropic/claude-opus-4-7', label: 'anthropic/claude-opus-4-7', kind: 'either' },
         { id: 'anthropic/claude-sonnet-4-6', label: 'anthropic/claude-sonnet-4-6', kind: 'either' },
@@ -620,6 +621,7 @@ describe('@ax/agents admin routes', () => {
     const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
     expect(r.status).toBe(200);
     expect(r.body).toEqual({
+      defaultModel: 'anthropic/claude-sonnet-4-6',
       models: [
         { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
         { id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' },
@@ -677,6 +679,7 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(200);
     expect(openrouterCalls).toBe(0);
     expect(r.body).toEqual({
+      defaultModel: 'anthropic/claude-sonnet-4-6',
       models: [
         { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
       ],
@@ -1333,4 +1336,85 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(403);
     expect((r.body as { error: string }).error).toMatch(/workspace/i);
   });
+  it('GET /admin/agents/models follows models:get-policy: its allowed list and its Default', async () => {
+    await stack.harness.close({ onError: () => {} });
+    stack = await bootStack({
+      'models:get-policy': async () => ({
+        allowed: ['openrouter/moonshotai/kimi-k3', 'anthropic/claude-sonnet-4-6'],
+        default: 'openrouter/moonshotai/kimi-k3',
+        source: 'admin',
+        version: 2,
+      }),
+    });
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
+    expect(r.status).toBe(200);
+    const body = r.body as { models: Array<{ id: string }>; defaultModel: string };
+    expect(body.models.map((m) => m.id)).toEqual(['openrouter/moonshotai/kimi-k3', 'anthropic/claude-sonnet-4-6']);
+    expect(body.defaultModel).toBe('openrouter/moonshotai/kimi-k3');
+  });
+
+  it('GET /admin/agents/:id exposes requestedModel once the admin has removed the agent\'s model', async () => {
+    const state = { allowed: ['openrouter/deepseek/deepseek-v4-pro', 'anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' };
+    await stack.harness.close({ onError: () => {} });
+    stack = await bootStack({
+      'models:get-policy': async () => ({ allowed: state.allowed, default: state.default, source: 'admin', version: 1 }),
+    });
+    const cookie = await signIn(stack);
+    const made = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody({ model: 'openrouter/deepseek/deepseek-v4-pro' }),
+    });
+    expect(made.status).toBe(201);
+    const id = (made.body as { agent: { id: string } }).agent.id;
+
+    state.allowed = ['anthropic/claude-sonnet-4-6'];
+    const shown = await http(stack.port, 'GET', `/admin/agents/${id}`, { cookie });
+    expect(shown.status).toBe(200);
+    expect((shown.body as { agent: Record<string, unknown> }).agent).toMatchObject({
+      model: 'anthropic/claude-sonnet-4-6',
+      runner: 'claude-sdk',
+      requestedModel: 'openrouter/deepseek/deepseek-v4-pro',
+    });
+  });
+
+  // POST /admin/agents/models/impact — the save-time "N agents use this" count
+  it('POST /admin/agents/models/impact anonymous → 401', async () => {
+    const r = await http(stack.port, 'POST', '/admin/agents/models/impact', { body: { remove: [] } });
+    expect(r.status).toBe(401);
+  });
+
+  it('POST /admin/agents/models/impact as a non-admin → 403', async () => {
+    const { cookie } = await mintSecondUserCookie();
+    const r = await http(stack.port, 'POST', '/admin/agents/models/impact', { cookie, body: { remove: [] } });
+    expect(r.status).toBe(403);
+  });
+
+  it('POST /admin/agents/models/impact counts agents per removed model (counts only)', async () => {
+    const cookie = await signIn(stack);
+    for (const model of ['anthropic/claude-opus-4-7', 'anthropic/claude-opus-4-7', 'anthropic/claude-sonnet-4-6']) {
+      const made = await http(stack.port, 'POST', '/admin/agents', { cookie, body: makeBody({ model }) });
+      expect(made.status).toBe(201);
+    }
+    const r = await http(stack.port, 'POST', '/admin/agents/models/impact', {
+      cookie,
+      body: { remove: ['anthropic/claude-opus-4-7', 'openrouter/moonshotai/kimi-k3'] },
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ affected: [{ model: 'anthropic/claude-opus-4-7', agentCount: 2 }] });
+  });
+
+  it.each([
+    ['a missing remove', {}],
+    ['a non-array remove', { remove: 'x' }],
+    ['a non-string entry', { remove: [1] }],
+    ['an over-long entry', { remove: ['x'.repeat(201)] }],
+    ['more than 1000 entries', { remove: Array.from({ length: 1001 }, (_, i) => `a/${i}`) }],
+    ['an unknown key', { remove: [], extra: 1 }],
+  ])('POST /admin/agents/models/impact 400s on %s', async (_label, body) => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents/models/impact', { cookie, body });
+    expect(r.status).toBe(400);
+  });
+
 });

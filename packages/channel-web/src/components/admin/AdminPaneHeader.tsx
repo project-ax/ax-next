@@ -30,7 +30,7 @@ export interface AdminPaneHeaderProps {
  */
 export function AdminPaneHeader({ eyebrow, title, badge, headingRef }: AdminPaneHeaderProps) {
   return (
-    <header className="flex items-center justify-between gap-4 px-8 pt-[18px] pb-4 border-b border-rule-soft">
+    <header className="flex items-center justify-between gap-4 px-4 md:px-8 pt-[18px] pb-4 border-b border-rule-soft">
       <div className="flex flex-col gap-0.5 min-w-0">
         <span className="text-[11px] tracking-[0.06em] uppercase text-muted-foreground font-medium">
           {eyebrow}

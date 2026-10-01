@@ -86,4 +86,31 @@ describe('CredentialSlotForm', () => {
     expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /remove/i })).toBeNull();
   });
+
+  it('shows a rejected replacement reason, keeps the saved key cue, and allows retry', async () => {
+    const message = 'OpenRouter rejected that key. Double-check you copied the whole thing from openrouter.ai/keys.';
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: message }), { status: 422 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const onSaved = vi.fn();
+    render(
+      <CredentialSlotForm
+        destination={{ kind: 'provider', provider: 'openrouter' }}
+        slot={{ label: 'OPENROUTER_API_KEY', kind: 'api-key' }}
+        scope={{ scope: 'global', ownerId: null }}
+        current={{ set: true }}
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/replace api key/i), { target: { value: 'invalid-key' } });
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.getByText(/a key is saved/i)).toBeInTheDocument();
+    expect(onSaved).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText(/replace api key/i), { target: { value: 'valid-key' } });
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(message)).toBeNull();
+  });
 });

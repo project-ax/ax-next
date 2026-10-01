@@ -605,3 +605,33 @@ describe('store connector attachments', () => {
     expect(updated.connectorAttachments).toEqual(['gh']);
   });
 });
+
+describe('store.countByModel', () => {
+  const KIMI = 'openrouter/moonshotai/kimi-k3';
+  const SONNET = 'anthropic/claude-sonnet-4-6';
+  const OPUS = 'anthropic/claude-opus-4-7';
+
+  it('counts agents per model across every owner, only for the asked-about models', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const allowed = [KIMI, SONNET, OPUS];
+    const mk = (model: string, name: string) =>
+      validateCreateInput(makeInput({ model, displayName: name }), { allowedModels: allowed });
+    await store.create({ ownerId: 'u1', ownerType: 'user', validated: mk(KIMI, 'A') });
+    await store.create({ ownerId: 'u2', ownerType: 'user', validated: mk(KIMI, 'B') });
+    await store.create({ ownerId: 'u3', ownerType: 'user', validated: mk(OPUS, 'C') });
+
+    expect(await store.countByModel([KIMI, SONNET])).toEqual([{ model: KIMI, agentCount: 2 }]);
+    expect(await store.countByModel([OPUS, KIMI])).toEqual([
+      { model: OPUS, agentCount: 1 },
+      { model: KIMI, agentCount: 2 },
+    ]);
+  });
+
+  it('answers [] without touching the database for an empty list', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    expect(await createAgentStore(db).countByModel([])).toEqual([]);
+  });
+});

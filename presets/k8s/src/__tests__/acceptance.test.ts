@@ -209,6 +209,7 @@ const PLUGINS_TO_DROP = new Set<string>([
   // pinned in preset.test.ts; drop here so the chat-path canaries don't need
   // the control plane.
   '@ax/branding',
+  '@ax/model-policy',
   // Attachments: postgres-backed (database:get-instance) and not exercised
   // by any of these canaries. The static hook wiring is pinned in
   // preset.test.ts; drop here so these sub-tests don't need a postgres

@@ -66,6 +66,27 @@ function busWith(opts: {
 }
 
 describe('POST /api/agents/bootstrap', () => {
+  it('honors a changed Default while Sonnet remains allowed', async () => {
+    const { bus, created } = busWith({});
+    bus.registerService('models:get-policy', 'policy', async () => ({
+      allowed: ['anthropic/claude-sonnet-4-6', 'anthropic/claude-opus-4-7'], default: 'anthropic/claude-opus-4-7', source: 'admin', version: 1,
+    }));
+    const { res } = fakeRes();
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Default bot' } }), res);
+    expect(created[0]?.input).toMatchObject({ input: { model: 'anthropic/claude-opus-4-7' } });
+  });
+
+  it('uses the policy Default for a new personal agent even when Sonnet is removed', async () => {
+    const { bus, created } = busWith({});
+    bus.registerService('models:get-policy', 'policy', async () => ({
+      allowed: ['openrouter/vendor/model'], default: 'openrouter/vendor/model', source: 'admin', version: 1,
+    }));
+    const { res, captured } = fakeRes();
+    await makeAgentBootstrapHandler({ bus, initCtx }).bootstrap(fakeReq({ body: { displayName: 'Policy bot', model: 'spoof/model' } }), res);
+    expect(captured.statusCode).toBe(201);
+    expect(created[0]?.input).toMatchObject({ input: { model: 'openrouter/vendor/model', allowedTools: [], mcpConfigIds: [], visibility: 'personal' } });
+  });
+
   it('creates a BARE personal agent owned by the caller and seeds .ax/BOOTSTRAP.md', async () => {
     const { bus, created, applies } = busWith({ user: { id: 'u1', isAdmin: false } });
     const h = makeAgentBootstrapHandler({ bus, initCtx });

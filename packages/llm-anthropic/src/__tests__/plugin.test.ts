@@ -54,7 +54,7 @@ describe('@ax/llm-anthropic plugin manifest', () => {
     expect(plugin.manifest).toEqual({
       name: '@ax/llm-anthropic',
       version: '0.0.0',
-      registers: ['llm:call:anthropic', 'models:list-supported:anthropic'],
+      registers: ['llm:call:anthropic', 'models:list-supported:anthropic', 'models:list-available:anthropic'],
       calls: [],
       subscribes: [],
     });

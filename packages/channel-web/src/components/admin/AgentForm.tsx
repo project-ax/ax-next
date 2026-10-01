@@ -1,3 +1,4 @@
+import { movedNotice } from '@/lib/models-copy';
 /**
  * AgentForm — CRUD for agents, in the user "Settings" surface. Agents are
  * owner-scoped, so EVERY user manages their OWN agents here (the `/admin/agents`
@@ -27,10 +28,11 @@
  * store; the picker save runs AFTER the agent create/PATCH so the agent id
  * exists (mirroring the SkillAttachmentsSection two-step save).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   listAdminAgents,
-  listAgentModels,
+  listAgentModelOptions,
+  getAdminAgent,
   createAgent,
   patchAgent,
   patchAgentConnectorAttachments,
@@ -189,9 +191,13 @@ function ConnectorOAuthStatusHint({
 export function effectiveModelId(
   formModel: string,
   options: ReadonlyArray<{ id: string }>,
+  defaultModel: string | null = null,
 ): string {
-  return formModel !== '' ? formModel : (options[0]?.id ?? '');
+  if (formModel !== '') return formModel;
+  if (defaultModel !== null && options.some((o) => o.id === defaultModel)) return defaultModel;
+  return options[0]?.id ?? '';
 }
+
 
 /**
  * (TASK-341 / audit D1) What one agent's card says under its name.
@@ -240,10 +246,13 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   // id). `null` = not loaded yet, `[]` = loaded and genuinely empty (an empty
   // allow-list), which the form calls out instead of showing a blank picker.
   const [models, setModels] = useState<AgentModelOption[] | null>(null);
+  const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [editing, setEditing] = useState<AdminAgent | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(() => emptyForm());
   const [busy, setBusy] = useState(false);
+  const editRequest = useRef(0);
+  useEffect(() => () => { editRequest.current += 1; }, []);
   const [error, setError] = useState<string | null>(null);
   // Whether the agent's `.ax/` identity files are still loading (edit view).
   // The identity textareas are disabled until the fetch resolves so a save
@@ -292,8 +301,8 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     // explanation is how someone ends up staring at a form they can't submit.
     // A failure is surfaced in the form (see the Model field below).
     setModelsError(null);
-    void listAgentModels()
-      .then((m) => setModels(m))
+    void listAgentModelOptions()
+      .then(({ models: m, defaultModel: d }) => { setModels(m); setDefaultModel(d); })
       .catch((err: unknown) => {
         setModels([]);
         setModelsError(err instanceof Error ? err.message : String(err));
@@ -411,15 +420,29 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   }, [form.connectorIds, editing]);
 
   const startNew = () => {
+    editRequest.current += 1;
+    setBusy(false);
     setError(null);
     setForm(emptyForm());
     setEditing('new');
   };
 
-  const startEdit = (a: AdminAgent) => {
+  const startEdit = async (a: AdminAgent) => {
+    const request = ++editRequest.current;
     setError(null);
-    setForm(formFromAgent(a));
-    setEditing(a);
+    setBusy(true);
+    try {
+      const resolved = await getAdminAgent(a.id);
+      if (request !== editRequest.current) return;
+      setForm(formFromAgent(resolved));
+      setEditing(resolved);
+    } catch (err) {
+      if (request !== editRequest.current) return;
+      setError('We could not load this agent. Try opening it again.');
+      console.warn('could not read agent details', err);
+    } finally {
+      if (request === editRequest.current) setBusy(false);
+    }
   };
 
   // What the picker renders: the fetched options, plus the agent's CURRENT
@@ -436,9 +459,11 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       ]
     : fetchedModels;
 
-  const selectedModel = effectiveModelId(form.model, modelOptions);
+  const selectedModel = effectiveModelId(form.model, modelOptions, defaultModel);
 
   const cancelForm = () => {
+    editRequest.current += 1;
+    setBusy(false);
     setEditing(null);
     setError(null);
   };
@@ -515,10 +540,12 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       } else if (editing) {
         // PATCH cannot change visibility/teamId; send only fields the
         // backend accepts on update.
-        const patch: Partial<AdminAgentInput> = {
-          displayName: base.displayName,
-          model: base.model,
-        };
+// `model` goes out ONLY if the user changed it. For an agent the admin moved
+// onto the Default, `editing.model` is that Default; re-sending it would save
+// the swap as the owner's own choice.
+const patch: Partial<AdminAgentInput> = { displayName: base.displayName };
+if (base.model !== editing.model) patch.model = base.model;
+
         // TASK-147 — on a bare-stays-bare edit, OMIT the tool fields entirely.
         // The server's wildcard guard rejects a PATCH that sends BOTH
         // `allowedTools: []` AND `mcpConfigIds: []`; omitting them leaves the
@@ -784,6 +811,9 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
               Values are `provider/model-id` refs. */}
           <div className="flex flex-col gap-2">
             <Label htmlFor="agent-model">Model</Label>
+            {editing !== null && editing !== 'new' && editing.requestedModel !== undefined && (
+              <Alert><AlertDescription>{movedNotice(modelOptions.find((o) => o.id === editing.model)?.label ?? editing.model)}</AlertDescription></Alert>
+            )}
             {models !== null && modelOptions.length === 0 ? (
               <Alert variant="destructive">
                 <AlertDescription>

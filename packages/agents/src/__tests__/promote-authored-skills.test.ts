@@ -227,7 +227,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
   it('non-admin actor → 403 forbidden', async () => {
     // Non-admin user trying to promote.
     const h = await makeHarness({ id: 'alice', isAdmin: false });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     const { res, statusOf, bodyOf } = mkRes();
@@ -249,7 +249,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
   it('promote clean authored skill to global scope → 200; skills:get returns it cap-free', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     // Seed the authored skill (no capabilities — TASK-100).
@@ -282,7 +282,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
   it('authored file connectors are PRESERVED on promote (legacy admin grants are ignored — TASK-100)', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     // Authored file references a connector.
@@ -314,7 +314,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
   it('missing authored skill id → 404 authored-skill-not-found', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     // No SKILL.md seeded.
@@ -337,7 +337,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
   it('targetScope:user on personal agent → skill lands in user scope under agent owner', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     await seedAuthored(h, 'foo', 'alice', agentId, { connectors: ['github'] });
@@ -395,7 +395,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     });
     const teamAgentId = out.agent.id;
 
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
 
     const { res, statusOf, bodyOf } = mkRes();
     await handlers.promoteAuthoredSkill(
@@ -416,7 +416,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
   it('GET /admin/agents/:id/authored-skills non-admin → 403', async () => {
     const h = await makeHarness({ id: 'alice', isAdmin: false });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     const { res, statusOf } = mkRes();
@@ -430,7 +430,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
   it('GET /admin/agents/:id/authored-skills admin → 200 with skills list', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     await seedAuthored(h, 'bar', 'alice', agentId);
@@ -457,7 +457,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 describe('DELETE /admin/agents/:id/authored-skills/:skillId', () => {
   it('non-admin actor → 403 forbidden', async () => {
     const h = await makeHarness({ id: 'alice', isAdmin: false });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     const { res, statusOf, bodyOf } = mkRes();
@@ -471,7 +471,7 @@ describe('DELETE /admin/agents/:id/authored-skills/:skillId', () => {
 
   it('missing skill id → 400', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
 
     const { res, statusOf } = mkRes();
@@ -481,7 +481,7 @@ describe('DELETE /admin/agents/:id/authored-skills/:skillId', () => {
 
   it('admin deletes a draft → 204 and it drops from the authored listing', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
     await seedAuthored(h, 'foo', 'alice', agentId);
 
@@ -506,7 +506,7 @@ describe('DELETE /admin/agents/:id/authored-skills/:skillId', () => {
 
   it('deleting an already-gone draft is idempotent → 204', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
     const agentId = await createPersonalAgent(h, 'alice');
     await seedAuthored(h, 'foo', 'alice', agentId);
 
@@ -521,7 +521,7 @@ describe('DELETE /admin/agents/:id/authored-skills/:skillId', () => {
 
   it('delete on a nonexistent (non-personal) agent → 404 authored-skill-not-found', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
-    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus, boot: { allowed: ['anthropic/claude-sonnet-4-6'], default: 'anthropic/claude-sonnet-4-6' }, store: { countByModel: async () => [] } });
 
     const { res, statusOf, bodyOf } = mkRes();
     await handlers.deleteAuthoredSkill(
