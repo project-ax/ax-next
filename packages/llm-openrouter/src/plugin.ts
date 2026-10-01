@@ -1,4 +1,9 @@
 import {
+  fetchOpenRouterModels,
+  ModelsListAvailableOutputSchema,
+  type ModelsListAvailableOutput,
+} from './models-available.js';
+import {
   LlmCallOutputSchema,
   PluginError,
   fireLlmUsage,
@@ -205,6 +210,7 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
     registers: [
       'llm:call:openrouter',
       'models:list-supported:openrouter',
+      'models:list-available:openrouter',
       'credentials:validate:openrouter',
     ],
     calls: [],
@@ -231,6 +237,8 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
     manifest,
     async init({ bus }) {
       const fetchImpl = cfg.fetchImpl ?? fetch;
+      let keyFor: (ctx: AgentContext) => Promise<string>;
+
 
       if (!credentialResolution) {
         // Static mode: resolve once at init; refuse to boot keyless.
@@ -244,7 +252,8 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
               'OPENROUTER_API_KEY not set and cfg.apiKey not provided — refusing to init',
           });
         }
-        bus.registerService<LlmCallInput, LlmCallOutput>(
+                keyFor = async () => apiKey;
+bus.registerService<LlmCallInput, LlmCallOutput>(
           'llm:call:openrouter',
           PLUGIN_NAME,
           async (ctx, input) => callAndReportUsage(bus, ctx, fetchImpl, apiKey, input, cfg),
@@ -252,6 +261,8 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
         );
       } else {
         // Credential-resolution mode: resolve the key for each call.
+        keyFor = (ctx) => resolveApiKey(bus, ctx, cfg, credentialRef);
+
         bus.registerService<LlmCallInput, LlmCallOutput>(
           'llm:call:openrouter',
           PLUGIN_NAME,
@@ -275,6 +286,27 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
         async () => ({ models: SEED_CATALOG.models.map((m) => ({ ...m })) }),
         { returns: ModelsListSupportedOutputSchema },
       );
+      // Full live list for the admin model picker (@ax/model-policy). A fixed URL,
+      // the same key resolution as llm:call, and a structured answer even on
+      // failure: no-key when nothing is stored, error for anything else.
+      bus.registerService<unknown, ModelsListAvailableOutput>(
+        'models:list-available:openrouter',
+        PLUGIN_NAME,
+        async (ctx) => {
+          let apiKey: string;
+          try {
+            apiKey = await keyFor(ctx);
+          } catch (err) {
+            if (err instanceof PluginError && err.code === 'no-openrouter-credential') {
+              return { status: 'no-key', models: [] };
+            }
+            return { status: 'error', models: [] };
+          }
+          return fetchOpenRouterModels(fetchImpl, ENDPOINT.baseUrl, apiKey);
+        },
+        { returns: ModelsListAvailableOutputSchema, timeoutMs: 15_000 },
+      );
+
 
       // Pre-save key check for the admin Providers panel. The route
       // (`validateProviderKey` in @ax/credentials-admin-routes) prefers a

@@ -25,6 +25,7 @@ describe('@ax/llm-openrouter plugin manifest', () => {
       registers: [
         'llm:call:openrouter',
         'models:list-supported:openrouter',
+      'models:list-available:openrouter',
         'credentials:validate:openrouter',
       ],
       calls: [],
