@@ -159,6 +159,44 @@ export function refForDestination(dest: Destination): string {
   }
 }
 
+const KEY_VALIDATION_FAILED = 'We could not confirm this key. Check it and try again.';
+const openRouterValidationMessages = new Set([
+  'OpenRouter rejected that key. Double-check you copied the whole thing from openrouter.ai/keys.',
+  'We could not reach OpenRouter to confirm the key. Check network access and try again.',
+  'OpenRouter did not answer within 10 seconds, so we could not confirm the key. Worth trying again in a moment.',
+]);
+const anthropicValidationMessages = new Map([
+  ['key-rejected', 'Anthropic rejected that key. Check that you copied the whole API key.'],
+  ['validation-timeout', 'Anthropic did not answer in time to confirm the key. Try again in a moment.'],
+  ['validation-failed', 'We could not confirm this key with Anthropic. Try again in a moment.'],
+]);
+
+async function keyValidationMessage(res: Response, destination: Destination): Promise<string> {
+  // Validators are plugin-owned. Accept only known reasons; an arbitrary
+  // response could echo a secret or contain markup, so neither render nor log it.
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return KEY_VALIDATION_FAILED;
+  }
+  if (destination.kind !== 'provider' || body === null || typeof body !== 'object') {
+    return KEY_VALIDATION_FAILED;
+  }
+  const error = (body as { error?: unknown }).error;
+  if (typeof error !== 'string') return KEY_VALIDATION_FAILED;
+  if (destination.provider === 'openrouter') {
+    if (openRouterValidationMessages.has(error)) return error;
+    if (/^OpenRouter answered [1-5]\d{2}, so we could not confirm the key\. Worth trying again in a moment\.$/.test(error)) {
+      return 'OpenRouter could not confirm this key right now. Try again in a moment.';
+    }
+  }
+  if (destination.provider === 'anthropic') {
+    return anthropicValidationMessages.get(error) ?? KEY_VALIDATION_FAILED;
+  }
+  return KEY_VALIDATION_FAILED;
+}
+
 export async function setDestinationCredential(args: {
   destination: Destination;
   slot: { kind: 'api-key' };
@@ -172,19 +210,27 @@ export async function setDestinationCredential(args: {
     scope: args.scope.scope,
     ownerId: args.scope.ownerId,
     kind: args.slot.kind,
-    payloadB64: b64(args.payload),
+    // Provider keys are tokens carried in HTTP headers. Pasted surrounding
+    // whitespace (especially a newline) would make even a valid key fail.
+    // Other destinations may legitimately use whitespace in a secret.
+    payloadB64: b64(args.destination.kind === 'provider' ? args.payload.trim() : args.payload),
   };
-  const res = await httpFetch(url, {
-    method: 'POST',
-    headers: writeHeaders,
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await httpFetch(url, {
+      method: 'POST',
+      headers: writeHeaders,
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // A transport exception may carry request details, including the secret.
+    throw new HttpError(url, 0);
+  }
   if (!res.ok) {
-    // The body used to be spliced into the message and rendered by
-    // `PermissionCard` (TASK-288). It is a server diagnostic; it goes to the
-    // console and the reader gets a sentence.
-    console.warn(`[credentials] ${url} → ${res.status}: ${await res.text()}`);
-    throw new HttpError(url, res.status);
+    console.warn(`[credentials] ${url} → ${res.status}`);
+    throw new HttpError(url, res.status, res.status === 422
+      ? await keyValidationMessage(res, args.destination)
+      : undefined);
   }
 }
 
