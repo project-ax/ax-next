@@ -3,7 +3,6 @@ import { z } from 'zod';
 import type { Catalog } from './catalog.js';
 import type { PolicyStore } from './policy-store.js';
 import {
-  PLUGIN_NAME,
   POLICY_BODY_MAX_BYTES,
   parseRequestBody,
   requireAdmin,
@@ -26,10 +25,12 @@ const putBodySchema = z
   .strict();
 
 export function createHandlers(deps: { bus: HookBus; store: PolicyStore; catalog: Catalog }): RouteHandlers {
-  // Run every request as the admin who made it, so the provider hooks look up
-  // that admin's key first and the global one second (never a fixed 'system' user).
+  // Run every request as the admin who made it, without an agent scope: these
+  // are deployment settings, not an agent operation. credentials:get skips an
+  // empty agentId and resolves the admin's key, then the global key. Using the
+  // plugin name here causes an invalid agent-owner lookup before global scope.
   const ctxFor = (userId: string): AgentContext =>
-    makeAgentContext({ sessionId: 'model-policy', agentId: PLUGIN_NAME, userId });
+    makeAgentContext({ sessionId: 'model-policy', agentId: '', userId });
 
   return {
     async catalog(req, res) {

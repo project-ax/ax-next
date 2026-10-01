@@ -149,3 +149,11 @@ Unobserved credential changes can wait for refresh or catalog TTL/retry expiry.
 
 The branch and worktree are retained for review. PR description text is prepared
 locally; publishing the PR and production rollout remain separate actions.
+
+## Global-key discovery follow-up (2026-10-01)
+
+The first implementation used the plugin name as the catalog request's agent ID. A personal key resolved before this mattered, but a globally saved key hit the credential store's invalid agent-owner check before reaching global scope. Admin catalog requests now retain the authenticated user and use the credential facade's existing no-agent context convention.
+
+A composition regression uses the real HTTP route registration, OpenRouter plugin, credential facade, and database credential backend over in-memory SQLite. Global-only discovery failed before the fix; global and personal-key cases now pass. Model-policy: 94 tests passed. K8s preset: 225 tests passed with the explicit local Docker socket. Build/typecheck and scoped lint passed.
+
+After rebuilding the local kind image, authenticated catalog requests returned OpenRouter `live` with 444 models using the user's existing saved key. The browser rendered all 444 under an OpenRouter search and showed no missing-key notice. The allowed-model policy and saved credentials were not changed by verification.
