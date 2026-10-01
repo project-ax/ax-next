@@ -2792,6 +2792,9 @@ importers:
       '@ax/memory-facts-postgres':
         specifier: workspace:*
         version: link:../../packages/memory-facts-postgres
+      '@ax/model-policy':
+        specifier: workspace:*
+        version: link:../../packages/model-policy
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../../packages/onboarding

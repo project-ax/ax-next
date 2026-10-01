@@ -226,6 +226,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     '@ax/skills',
     '@ax/admin-settings-routes',
     '@ax/branding',
+  '@ax/model-policy',
     '@ax/conversations',
     '@ax/attachments',
     '@ax/blob-store-fs',

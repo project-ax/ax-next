@@ -342,6 +342,7 @@ classed by how settled each surface is.
 These carry `returns` zod schemas (ARCH-6/12) and have at least one real producer
 and consumer. Treat their *shape* as a contract; changing it is a boundary review.
 
+- **`models:get-policy`** (`@ax/model-policy`) — which models may be chosen and which is the Default, `{} → { allowed, default, source: 'admin' | 'builtin', version }`. Soft-consumed by `@ax/agents` for write validation, the picker and the lazy swap in `agents:resolve`; absent, agents use their built-in list. **`models:list-available:<provider>`** (`@ax/llm-anthropic`, `@ax/llm-openrouter`) — the live admin catalog, `{} → { status: 'live' | 'no-key' | 'error', models: { ref, label }[] }`, called by `@ax/model-policy`.
 - **Orchestration:** `agent:invoke`, `agent:interrupt` (`@ax/chat-orchestrator`).
 - **Workspace:** `workspace:read`, `workspace:list`, `workspace:apply` (via the
   core facade), and `workspace:diff`. The `workspace:pre-apply` / `workspace:applied`

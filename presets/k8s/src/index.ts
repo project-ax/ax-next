@@ -29,7 +29,8 @@ import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentActivityPlugin } from '@ax/agent-activity';
 import { createUsageLimitsPlugin } from '@ax/usage-limits';
 import { createDiskQuotaPlugin } from '@ax/disk-quota';
-import { createAgentsPlugin } from '@ax/agents';
+import { createAgentsPlugin, resolveAllowedModels } from '@ax/agents';
+import { createModelPolicyPlugin } from '@ax/model-policy';
 import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createHostGrantsPlugin } from '@ax/host-grants';
@@ -1062,6 +1063,14 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // until both upstream plugins have registered. Reuses the shared
   // postgres pool via `database:get-instance` (no second pool).
   plugins.push(createAgentsPlugin());
+  // @ax/model-policy owns the admin-editable list of models people may use in
+  // their agents (the Models tab) and the live provider catalog behind it.
+  // @ax/agents asks it for the policy through the soft `models:get-policy` hook.
+  // The built-in list below is what applies until an admin saves one; it is the
+  // SAME resolution `createAgentsPlugin()` does for itself (no config here), so
+  // the two plugins can never disagree about the starting list.
+  plugins.push(createModelPolicyPlugin({ builtinAllowed: resolveAllowedModels(undefined) }));
+
 
   // ----- 8a. skills ------------------------------------------------------
   // @ax/skills registers skills:* service hooks (list/get/upsert/delete/

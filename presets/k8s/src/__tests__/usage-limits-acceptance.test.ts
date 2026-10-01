@@ -101,6 +101,7 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/routines-admin-routes',
   '@ax/admin-settings-routes',
   '@ax/branding',
+  '@ax/model-policy',
   '@ax/attachments',
   '@ax/skills',
   '@ax/skill-broker',

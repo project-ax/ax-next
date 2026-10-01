@@ -214,6 +214,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/mcp-client',
         '@ax/mcp-oauth',
         '@ax/memory-facts-postgres',
+        '@ax/model-policy',
         '@ax/onboarding',
         '@ax/preset-k8s/retire-strata-index',
         '@ax/routines',
