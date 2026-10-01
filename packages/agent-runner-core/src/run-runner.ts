@@ -1,4 +1,5 @@
 import { promises as fsp } from 'node:fs';
+import * as path from 'node:path';
 import {
   createIpcClient,
   IpcRequestError,
@@ -27,7 +28,7 @@ import {
   type HostToolFlush,
 } from './commit-notify-resync.js';
 import { commitTrace } from './commit-trace.js';
-import { readRunnerEnv, type RunnerEnv } from './env.js';
+import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
 import {
   commitTurnAndBundle,
   materializeWorkspace,
@@ -117,7 +118,8 @@ export interface RunnerDeps {
   pythonVenvReady: boolean;
   /**
    * The agent's WORKING frame — the durable per-agent user-files mount when
-   * one was wired, else the governed workspace root. Loops use it for cwd/HOME.
+   * one was wired, otherwise session scratch. Loops use it for cwd/HOME.
+   * Ad-hoc callers with neither tier retain the governed-root fallback.
    */
   homeDir: string;
   /** The system prompt the file-based prompt-engine composed for this session. */
@@ -1311,8 +1313,8 @@ async function runRunnerInner(
   // (AX_USERFILES_ROOT, e.g. `/files`), the loop's subprocess cwd + HOME
   // move there, so relative-path file work, builds, `git clone .`, `~/bin`, and
   // tool caches all default to durable NFS instead of the ephemeral `/agent`
-  // emptyDir. When unset, this is `env.workspaceRoot` (=/agent) — today's
-  // behavior, byte-identical.
+  // emptyDir. Without a durable mount, use session scratch; only ad-hoc callers
+  // that wire neither tier fall back to the governed root.
   //
   // This is ONLY the agent's working frame. The GOVERNED frame
   // (`env.workspaceRoot`=/agent — the validated, git-backed tier) is unchanged
@@ -1321,18 +1323,29 @@ async function runRunnerInner(
   // prompt-engine's `${workspaceRoot}/.ax` reads, uploads materialization, and —
   // critically — the PreToolUse re-rooter's TARGET, so `.ax/**`+`.claude/**`
   // self-edits land back on /agent even though cwd is now ungoverned NFS (§14).
-  const homeDir = env.userFilesRoot ?? env.workspaceRoot;
+  const homeDir = runnerHomeDir(env);
   // Automatic publication goes through the same policy gate as a model call.
   // A denied/held publish never uploads bytes or sidesteps an approval.
   const generatedFilePolicy = createToolPolicy({ client, workspaceRoot: env.workspaceRoot });
   const publishGeneratedFile = createArtifactPublishExecutor({
     ...(env.userFilesRoot !== undefined ? { userFilesRoot: env.userFilesRoot } : {}),
+    ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
     client, conversationId,
   });
-  const generatedFiles = env.userFilesRoot !== undefined && conversationId !== null &&
-    localDispatcher.has(ARTIFACT_PUBLISH_TOOL_NAME)
+  const generatedRoot = env.userFilesRoot ?? (env.ephemeralRoot !== undefined
+    ? path.join(env.ephemeralRoot, 'artifacts') : undefined);
+  const canPublishGenerated = generatedRoot !== undefined && conversationId !== null &&
+    localDispatcher.has(ARTIFACT_PUBLISH_TOOL_NAME);
+  // Create the designated scratch output directory before the baseline scan,
+  // so files from the first turn are new rather than an unavailable baseline.
+  if (canPublishGenerated && env.userFilesRoot === undefined) {
+    await fsp.mkdir(generatedRoot, { recursive: true }).catch(() => {
+      process.stderr.write('runner: could not prepare generated file directory\n');
+    });
+  }
+  const generatedFiles = canPublishGenerated
     ? await trackGeneratedFiles({
-        root: env.userFilesRoot,
+        root: generatedRoot,
         warn: () => process.stderr.write('runner: could not attach a generated file\n'),
         publish: async call => {
           const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);

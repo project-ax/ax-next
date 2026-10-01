@@ -14,6 +14,7 @@ import {
   capabilityHandoffNote,
   communicationNote,
   ephemeralScratchNote,
+  fileOutputNote,
   memoryExportNote,
   pythonVenvNote,
   skillAuthoringNote,
@@ -256,7 +257,7 @@ describe('buildSystemPrompt — bootstrap mode (exclusive)', () => {
     await writeAx('IDENTITY.md', 'I am Ada.');
     const out = await buildSystemPrompt('Display Name', 'AUGMENT', dir, '/ephemeral', true);
     // Preamble names the agent, then the bootstrap script follows.
-    expect(out).toBe(`${bootstrapPreamble('Display Name')}\n\n${bootstrap}`);
+    expect(out).toBe(`${bootstrapPreamble('Display Name')}\n\n${fileOutputNote(dir, '/ephemeral')}\n\n${bootstrap}`);
     expect(out).toContain('Display Name');
     expect(out).toContain(bootstrap);
     // Exclusivity: none of the normal-mode content leaks in.
@@ -275,6 +276,15 @@ describe('buildSystemPrompt — bootstrap mode when cwd is not the governed root
   // never graduated out of bootstrap mode. Bootstrap mode injects no operational
   // notes, so nothing ever told the model where `.ax/` really is.
   const bootstrap = '# Bootstrap\nDelete `.ax/BOOTSTRAP.md` when you are done.';
+
+  it('directs user deliverables to scratch artifacts during bootstrap without a durable mount', async () => {
+    await writeAx('BOOTSTRAP.md', bootstrap);
+    const out = await buildSystemPrompt('Ada', '', dir, '/ephemeral', false, undefined, '/ephemeral');
+    expect(out).toContain('/ephemeral/artifacts/');
+    expect(out).toContain(`${dir}/.ax/BOOTSTRAP.md`);
+    expect(out).toContain('temporary');
+    expect(out).toMatch(/publish/i);
+  });
 
   it('spells the governed .ax path out for shell commands and leaves the script verbatim', async () => {
     await writeAx('BOOTSTRAP.md', bootstrap);
@@ -323,7 +333,7 @@ describe('buildSystemPrompt — bootstrap mode admits ONLY the bootstrap-safe au
       undefined,
       'RULES-SECTION',
     );
-    expect(out).toBe(`RULES-SECTION\n\n${bootstrapPreamble('Display Name')}\n\n${bootstrap}`);
+    expect(out).toBe(`RULES-SECTION\n\n${bootstrapPreamble('Display Name')}\n\n${fileOutputNote(dir, '/ephemeral')}\n\n${bootstrap}`);
     // Recalled facts are the half the exclusivity exists to keep out.
     expect(out).not.toContain('RECALLED-FACTS');
     expect(out).not.toContain(safetyFloorNote());

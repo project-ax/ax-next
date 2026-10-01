@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
 import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type { RunnerEnv } from '../env.js';
-import type { Loop, LoopContext, RunnerSeams, TranscriptSource } from '../index.js';
+import type { Loop, LoopContext, RunnerDeps, RunnerSeams, TranscriptSource } from '../index.js';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -135,7 +135,10 @@ beforeEach(() => {
 });
 
 describe('runRunner — generated file publication', () => {
-  it.each(['allow', 'reject', 'hold'] as const)('uses the policy gate (%s) and persists chips before SSE completion', async verdict => {
+  it.each([
+    ['durable', 'allow'], ['durable', 'reject'], ['durable', 'hold'],
+    ['scratch', 'allow'], ['scratch', 'reject'], ['scratch', 'hold'],
+  ] as const)('uses the policy gate (%s, %s) and persists chips before SSE completion', async (tier, verdict) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
     const original = fakeClient.call.getMockImplementation()!;
     fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
@@ -151,7 +154,7 @@ describe('runRunner — generated file publication', () => {
     const upload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 6 }));
     fakeClient.callBinaryUpload = upload;
     const loop: Loop = { run: async ctx => {
-      await fs.writeFile(path.join(root, 'report.txt'), 'report');
+      await fs.writeFile(path.join(root, tier === 'scratch' ? 'artifacts/report.txt' : 'report.txt'), 'report');
       await ctx.endTurn({
         contentBlocks: [{ type: 'text', text: 'Here is your report.' }],
         toolResultBlocks: [], usage: null, readTurnId: async () => undefined,
@@ -159,7 +162,9 @@ describe('runRunner — generated file publication', () => {
       return 0;
     } };
     try {
-      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), userFilesRoot: root })))).toBe(0);
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(),
+        ...(tier === 'scratch' ? { ephemeralRoot: root } : { userFilesRoot: root }),
+      })))).toBe(0);
       const first = fakeClient.event.mock.calls.find(call => call[0] === 'event.turn-end')!;
       expect(first[1].role).toBe('tool');
       if (verdict === 'allow') {
@@ -170,6 +175,20 @@ describe('runRunner — generated file publication', () => {
         expect(first[1].contentBlocks.some((block: { type: string }) => block.type === 'attachment')).toBe(false);
       }
     } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('runRunner — working directory', () => {
+  it.each([
+    [{ ephemeralRoot: '/tmp/scratch' }, '/tmp/scratch'],
+    [{ ephemeralRoot: '/tmp/scratch', userFilesRoot: '/tmp/files' }, '/tmp/files'],
+    [{}, '/tmp/workspace'],
+  ] as const)('selects the supplied user-files or scratch tier while preserving agent state', async (roots, expected) => {
+    const makeLoop = vi.fn((_deps: RunnerDeps) => ({ run: async () => 0 }));
+    expect(await runRunner(makeLoop, seams(() => ({ ...fakeEnv(), ...roots })))).toBe(0);
+    expect(makeLoop.mock.calls[0]?.[0]).toMatchObject({ homeDir: expected, env: { workspaceRoot: '/tmp/workspace' } });
+    const { buildSystemPrompt } = await import('../prompt-engine.js');
+    expect(vi.mocked(buildSystemPrompt).mock.calls.at(-1)?.[6]).toBe(expected);
   });
 });
 

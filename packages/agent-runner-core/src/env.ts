@@ -40,9 +40,8 @@ export interface RunnerEnv {
    * mount it resolved (k8s: the `/files` NFS subPath mount; subprocess: the
    * per-agent localDir). Optional with NO default (like `ephemeralRoot`): absent
    * means "no durable mount wired", and the runner then neither widens the
-   * agent's filesystem reach nor advertises a user-files location. Phase 1 ONLY
-   * adds it to `additionalDirectories` + a system-prompt note — it does NOT
-   * re-root cwd/HOME (that is Phase 2 / TASK-164).
+   * agent's filesystem reach nor advertises a durable location. When present it
+   * is cwd/HOME; when absent the runner uses the supplied session scratch tier.
    */
   userFilesRoot?: string;
   /**
@@ -73,6 +72,11 @@ export interface RunnerEnv {
    */
   proxyToken?: string;
   memoryRoot?: string;
+}
+
+/** User work prefers durable files, then session scratch; agent state stays separate. */
+export function runnerHomeDir(env: Pick<RunnerEnv, 'userFilesRoot' | 'ephemeralRoot' | 'workspaceRoot'>): string {
+  return env.userFilesRoot ?? env.ephemeralRoot ?? env.workspaceRoot;
 }
 
 export class MissingEnvError extends Error {

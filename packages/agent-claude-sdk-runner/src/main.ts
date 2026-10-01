@@ -24,6 +24,7 @@ import {
   createHoldLatch,
   drainHoldLatch,
   runRunner,
+  runnerHomeDir,
   scaffoldSdkProjectsSymlink,
   type Loop,
   type LoopContext,
@@ -529,13 +530,12 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     // filestore-user-files Phase 2 (TASK-164) §14 LINCHPIN:
                     // broaden the re-rooter from the `.ax/uploads/` safety-net to
                     // the FULL `.ax/**`+`.claude/**` validator policy iff cwd/HOME
-                    // moved to the ungoverned NFS mount (AX_USERFILES_ROOT set).
-                    // Forces every governed self-edit back onto /agent so it stays
-                    // validated + git-backed; when unset, no NFS to drift onto, so
-                    // the legacy uploads-only scope is preserved (today's behavior).
-                    broaden: env.userFilesRoot !== undefined,
+                    // moved to either the user-files mount or session scratch.
+                    // Every governed self-edit goes back onto /agent so it stays
+                    // validated and git-backed regardless of the working directory.
+                    broaden: sdkHome !== env.workspaceRoot,
                     // The roots a TOP-LEVEL governed path may be rooted against —
-                    // the cwd (=sdkHome, the NFS mount) and the scratch tier. Bounds
+                    // the cwd (=sdkHome) and the scratch tier. Bounds
                     // the broadened re-root to top-level governed dirs so a NESTED
                     // `.claude/` under a user subtree (e.g. a cloned repo) is left on
                     // the user tier, matching the validator's git-root-relative scope.
@@ -988,13 +988,13 @@ export async function main(): Promise<number> {
     //
     // Rooted at the governed tier (the `$CLAUDE_CONFIG_DIR/projects` symlink
     // target) but slugged by the SDK's actual cwd — run-runner's `homeDir`, i.e.
-    // `userFilesRoot ?? workspaceRoot`, which becomes `query({ cwd })`. Slugging
+    // selected by runnerHomeDir, which becomes `query({ cwd })`. Slugging
     // by workspaceRoot instead wrote the resume-restore where the SDK never
     // looked whenever a /files mount was wired ("No conversation found").
     createTranscriptSource: (env) =>
       createJsonlTranscriptSource(
         env.workspaceRoot,
-        env.userFilesRoot ?? env.workspaceRoot,
+        runnerHomeDir(env),
       ),
     // F2a guard, non-conversation branch: the legacy on-disk scan of the
     // materialized workspace's jsonl.

@@ -225,8 +225,24 @@ export function ephemeralScratchNote(ephemeralRoot: string): string {
     `Use it for throwaway files — temporary git clones, build caches, intermediate build`,
     `output — that you do not need to keep.`,
     `Anything you write under \`${ephemeralRoot}\` is discarded when the session ends.`,
-    `Your working directory persists; \`${ephemeralRoot}\` does not. Prefer`,
+    `Use a durable user-files directory, when available, for files you need in`,
+    `later sessions. Prefer`,
     `\`${ephemeralRoot}\` for any file that only matters until you are done with it.`,
+  ].join(' ');
+}
+
+/** Output paths are also needed during bootstrap, before normal operational notes. */
+export function fileOutputNote(workspaceRoot: string, ephemeralRoot?: string, userFilesRoot?: string): string {
+  const outputRoot = userFilesRoot ?? (ephemeralRoot !== undefined ? `${ephemeralRoot}/artifacts` : undefined);
+  if (outputRoot === undefined) return '';
+  return [
+    `Files for your user: save documents, code and other finished files under`,
+    `\`${outputRoot}/…\`. Keep user deliverables out of \`${workspaceRoot}\`;`,
+    `that directory is for your internal agent state and shared uploads.`,
+    ...(userFilesRoot === undefined ? [
+      `This is temporary storage. Publish finished files with \`artifact_publish\``,
+      `so their downloads remain available after the session ends.`,
+    ] : []),
   ].join(' ');
 }
 
@@ -403,6 +419,8 @@ export function operationalNotes(
   // adjacent to the roots note above: under Plan 2 they describe the same
   // directory, so they have to read as one thought.
   if (userFilesRoot !== undefined) notes.push(userFilesNote(userFilesRoot));
+  const outputNote = fileOutputNote(workspaceRoot, ephemeralRoot, userFilesRoot);
+  if (outputNote.length > 0) notes.push(outputNote);
   if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
   if (pythonVenvActive) notes.push(pythonVenvNote());
   if (memoryRoot !== undefined) notes.push(memoryExportNote(memoryRoot));

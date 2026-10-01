@@ -21,7 +21,8 @@
 //      that file's content behind a runner-authored name preamble. The agent
 //      wakes up inside the bootstrap script; nothing else is injected (no
 //      floor, no notes, no identity files) EXCEPT, when cwd is not the governed
-//      root, a short path note (`bootstrapPathNote`) — and the bootstrap-safe slice of
+//      root, a short path note (`bootstrapPathNote`), plus output-directory
+//      guidance when a user-files or scratch tier is wired — and the bootstrap-safe slice of
 //      the host augment (TASK-524): contributions a provider flagged
 //      `bootstrapSafe`, carried separately as
 //      `agentConfig.systemPromptBootstrapAugment` and prepended on top. Today
@@ -66,6 +67,7 @@ import { readFile, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   bootstrapPathNote,
+  fileOutputNote,
   communicationNote,
   operationalNotes,
   workPolicyNote,
@@ -313,7 +315,7 @@ export async function buildSystemPrompt(
   const files = await readAxIdentityFiles(workspaceRoot);
 
   // Bootstrap mode is exclusive: the BOOTSTRAP.md content IS the prompt, plus
-  // only the bootstrap-safe augment slice (TASK-524; see the file header).
+  // filesystem guidance and the bootstrap-safe augment slice (TASK-524).
   //
   // TRUST NOTE (TASK-142, conversational-agent-identity Phase 3↔4): `.ax/` files
   // are agent-writable, but a re-created/forged `.ax/BOOTSTRAP.md` can no longer
@@ -334,7 +336,8 @@ export async function buildSystemPrompt(
   // (`rm .ax/BOOTSTRAP.md`) hits the wrong directory and bootstrap never ends.
   if (files.bootstrap !== undefined) {
     const pathNote = cwd === workspaceRoot ? '' : `\n\n${bootstrapPathNote(workspaceRoot, cwd)}`;
-    const script = `${bootstrapPreamble(displayName)}${pathNote}\n\n${files.bootstrap}`;
+    const outputNote = fileOutputNote(workspaceRoot, ephemeralRoot, userFilesRoot);
+    const script = `${bootstrapPreamble(displayName)}${pathNote}${outputNote.length > 0 ? `\n\n${outputNote}` : ''}\n\n${files.bootstrap}`;
     return bootstrapAugment.length > 0 ? `${bootstrapAugment}\n\n${script}` : script;
   }
 
