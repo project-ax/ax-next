@@ -229,6 +229,37 @@ beforeEach(() => {
 });
 
 describe('mcp-oauth begin route', () => {
+  it.each([
+    { scopes: undefined, expected: 'discovered.read' },
+    { scopes: [] as string[], expected: 'discovered.read' },
+    { scopes: ['configured.read'], expected: 'configured.read' },
+  ])('threads the selected scope through registration, authorization and pending state: $expected', async ({ scopes, expected }) => {
+    const flow = fakeFlow({ discover: vi.fn(async () => ({
+      authServerUrl: 'https://auth.example.com',
+      metadata: {
+        issuer: 'https://auth.example.com',
+        authorization_endpoint: 'https://auth.example.com/authorize',
+        token_endpoint: 'https://auth.example.com/token',
+        response_types_supported: ['code'],
+      },
+      scope: 'discovered.read',
+    })) });
+    const { deps, store } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture({ credentials: [{
+        slot: 'oauth-main', kind: 'oauth', server: 'srv', ...(scopes ? { scopes } : {}),
+      }] }),
+    }, { flow });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }), res,
+    );
+    expect(state.status).toBe(200);
+    expect(flow.ensureClient).toHaveBeenCalledWith(expect.objectContaining({ scope: expected }));
+    expect(flow.buildAuthorization).toHaveBeenCalledWith(expect.objectContaining({ scope: expected }));
+    expect(store.putPending).toHaveBeenCalledWith(expect.objectContaining({ scope: expected }));
+  });
+
   it('1. happy path → 200 { authorizationUrl }; putPending(state,userId) called; the shared client row is never written', async () => {
     // The real store has no putClient any more. Plant one on the double so that a
     // stray begin -> putClient call (the TASK-696 bug) is observable, not a TypeError
@@ -263,6 +294,7 @@ describe('mcp-oauth begin route', () => {
     expect(pending.connectorId).toBe('conn-1');
     expect(pending.codeVerifier).toBe('verifier-0');
     expect(pending.resource).toBe('https://mcp.example.com/mcp');
+    expect(pending.issuerRequired).toBe(false);
     // The redirectUri threaded to the SDK is publicOrigin + the callback path.
     expect((flow.ensureClient as ReturnType<typeof vi.fn>).mock.calls[0]![0].redirectUri).toBe(
       REDIRECT_URI,
@@ -1220,7 +1252,7 @@ describe('mcp-oauth callback route', () => {
     expect(setSpy).not.toHaveBeenCalled();
   });
 
-  it('7. provider error (?error=access_denied) → redirect oauth=error; peek + consume + set NOT reached', async () => {
+  it('provider denial consumes the user-bound state and returns the connector so the popup can report failure', async () => {
     const setSpy = vi.fn();
     const store = storeWithPending(pending);
     const { deps } = makeDeps(
@@ -1237,9 +1269,74 @@ describe('mcp-oauth callback route', () => {
       res,
     );
     expect(state.redirectUrl).toContain('oauth=error');
-    expect(store.getPending).not.toHaveBeenCalled();
-    expect(store.consumePending).not.toHaveBeenCalled();
+    expect(state.redirectUrl).toContain('connector=conn-1');
+    expect(store.getPending).toHaveBeenCalledWith('STATE0');
+    expect(store.consumePending).toHaveBeenCalledTimes(1);
     expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it('another user cannot cancel a pending authorization with a provider error', async () => {
+    const store = storeWithPending(pending);
+    const { deps, flow } = makeDeps({
+      'auth:require-user': () => ({ user: { id: 'other-user', isAdmin: false } }),
+    }, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { error: 'access_denied', state: 'STATE0' } }), res,
+    );
+    expect(state.status).toBe(403);
+    expect(state.redirectUrl).toBeUndefined();
+    expect(store.consumePending).not.toHaveBeenCalled();
+    expect(flow.redeemCode).not.toHaveBeenCalled();
+  });
+
+  it('a provider denial with no state is rejected without touching pending authorizations', async () => {
+    const { deps, store } = makeDeps({ 'auth:require-user': () => OK_USER });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(fakeReq({ query: { error: 'access_denied' } }), res);
+    expect(state.status).toBe(400);
+    expect(store.getPending).not.toHaveBeenCalled();
+  });
+
+  it.each([{ code: 'c' }, { error: 'access_denied' }])('rejects a mismatching response issuer before consuming state: %j', async (response) => {
+    const store = storeWithPending(pending);
+    const { deps, flow } = makeDeps({ 'auth:require-user': () => OK_USER }, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { ...response, state: 'STATE0', iss: 'https://other.example.com' } }), res,
+    );
+    expect(state.status).toBe(400);
+    expect(state.json).toEqual({ error: 'authorization_server_mismatch' });
+    expect(store.consumePending).not.toHaveBeenCalled();
+    expect(flow.redeemCode).not.toHaveBeenCalled();
+  });
+
+  it('accepts a response issuer matching the pending authorization server', async () => {
+    const store = storeWithPending(pending);
+    const { deps, flow } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture(),
+      'credentials:set': () => undefined,
+    }, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { code: 'c', state: 'STATE0', iss: pending.authServerUrl } }), res,
+    );
+    expect(state.redirectUrl).toContain('oauth=success');
+    expect(flow.redeemCode).toHaveBeenCalledOnce();
+  });
+
+  it('requires iss when the authorization server advertised issuer identification', async () => {
+    const store = storeWithPending({ ...pending, issuerRequired: true });
+    const { deps, flow } = makeDeps({ 'auth:require-user': () => OK_USER }, { store });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { code: 'c', state: 'STATE0' } }), res,
+    );
+    expect(state.status).toBe(400);
+    expect(state.json).toEqual({ error: 'authorization_server_mismatch' });
+    expect(store.consumePending).not.toHaveBeenCalled();
+    expect(flow.redeemCode).not.toHaveBeenCalled();
   });
 
   it('unauthenticated callback → 401', async () => {

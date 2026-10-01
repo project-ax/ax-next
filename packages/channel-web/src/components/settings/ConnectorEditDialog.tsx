@@ -76,6 +76,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -904,23 +905,32 @@ export function ConnectorEditDialog({
               </div>
             )}
 
-            {/* Allowed hosts — relevant to direct-api + cli (MCP reach derives
-                from its own server config, so we hide it for the MCP mechanism). */}
-            {form.mechanism !== 'mcp' && (
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="connector-hosts">
-                  Allowed hosts (comma-separated)
-                </Label>
-                <Input
-                  id="connector-hosts"
-                  type="text"
-                  placeholder="e.g. api.stripe.com"
-                  value={form.allowedHosts}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, allowedHosts: e.target.value }))
-                  }
-                />
-              </div>
+            {/* OAuth metadata and token endpoints can live on different hosts
+                than the MCP server. Keep their reach explicit and editable. */}
+            {(form.mechanism !== 'mcp' || form.transport === 'http') && (
+              <FieldGroup>
+                <Field>
+                  <FieldLabel htmlFor="connector-hosts">
+                    Allowed hosts (comma-separated)
+                  </FieldLabel>
+                  <Input
+                    id="connector-hosts"
+                    type="text"
+                    placeholder="e.g. api.stripe.com"
+                    value={form.allowedHosts}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, allowedHosts: e.target.value }))
+                    }
+                  />
+                  {form.mechanism === 'mcp' && (
+                    <FieldDescription>
+                      The server’s host is included automatically. Add any hosts
+                      its sign-in flow uses, such as accounts.google.com and
+                      oauth2.googleapis.com for Google.
+                    </FieldDescription>
+                  )}
+                </Field>
+              </FieldGroup>
             )}
 
             {/* Structured credential-slot rows. */}
@@ -1081,6 +1091,10 @@ export function ConnectorEditDialog({
                                 Leave blank to register automatically (recommended).
                                 Fill these in only if the service doesn't support
                                 automatic registration.
+                              </p>
+                              <p className="break-words text-xs text-muted-foreground">
+                                Register this redirect URI with the service:{' '}
+                                <code className="break-all">{window.location.origin}/api/connectors/oauth/callback</code>
                               </p>
                               <div className="flex flex-col gap-1.5">
                                 <Label

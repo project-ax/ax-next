@@ -98,10 +98,21 @@ describe('runMcpOAuthMigration', () => {
       .executeTakeFirstOrThrow();
     expect(row.client_id).toBeNull();
     expect(row.client_secret).toBeNull();
+    expect(row.issuer_required).toBe(false);
   });
 });
 
 describe('createMcpOAuthStore', () => {
+  it('persists issuer identification support through both peek and consume', async () => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+    const pending = makePending({ issuerRequired: true });
+    await store.putPending(pending);
+    expect(await store.getPending(pending.state)).toMatchObject({ issuerRequired: true });
+    expect(await store.consumePending(pending.state, Date.now(), 60_000)).toMatchObject({ issuerRequired: true });
+  });
+
   function makePending(overrides?: Partial<PendingAuthorization>): PendingAuthorization {
     return {
       state: 'state-xyz',

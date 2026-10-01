@@ -2,6 +2,7 @@ import {
   discoverAuthorizationServerMetadata,
   discoverOAuthProtectedResourceMetadata,
   exchangeAuthorization,
+  extractWWWAuthenticateParams,
   refreshAuthorization,
   registerClient,
   startAuthorization,
@@ -57,19 +58,32 @@ export async function discover(opts: {
   pinnedAuthServerUrl?: string;
   allowedHosts: Set<string>;
   resolver?: HostResolver;
-}): Promise<{ authServerUrl: string; metadata: AuthorizationServerMetadata }> {
+}): Promise<{ authServerUrl: string; metadata: AuthorizationServerMetadata; scope?: string }> {
   const { resourceUrl, pinnedAuthServerUrl, allowedHosts, resolver } = opts;
   const fetchFn = guardedFetch(allowedHosts, resolver);
 
   let authServerUrl: string;
+  let scope: string | undefined;
   if (pinnedAuthServerUrl) {
     authServerUrl = pinnedAuthServerUrl;
   } else {
-    // Pre-gate the resource server's base. The SDK derives the
-    // `/.well-known/oauth-protected-resource` path from this same origin and we
-    // hand it the guarded fetchFn, so the derived probe is also checked.
-    await assertSafeUrl(resourceUrl, allowedHosts, resolver);
-    const prm = await discoverOAuthProtectedResourceMetadata(resourceUrl, undefined, fetchFn);
+    // Probe without credentials for the server's authentication challenge. Some
+    // servers publish metadata only at the URL in WWW-Authenticate. The guarded
+    // fetch checks both this request and every metadata/redirect hop; a challenge
+    // cannot expand the connector's network capability.
+    const response = await fetchFn(resourceUrl, {
+      headers: { Accept: 'application/json, text/event-stream' },
+    });
+    const challenge = response.status === 401 || response.status === 403
+      ? extractWWWAuthenticateParams(response)
+      : {};
+    // A successful GET can open an SSE stream. We need only its headers.
+    await response.body?.cancel();
+    const prm = await discoverOAuthProtectedResourceMetadata(
+      resourceUrl,
+      challenge.resourceMetadataUrl ? { resourceMetadataUrl: challenge.resourceMetadataUrl } : undefined,
+      fetchFn,
+    );
     // RFC 9728 §3.3: the `resource` value in the metadata MUST identify the same
     // resource we asked about. A compromised resource server shouldn't be able to
     // advertise an authorization server for a resource it doesn't own, so we refuse
@@ -87,6 +101,7 @@ export async function discover(opts: {
       );
     }
     authServerUrl = advertised;
+    scope = challenge.scope || prm.scopes_supported?.join(' ') || undefined;
   }
 
   // Pre-gate the authorization server's base. The SDK derives the
@@ -97,7 +112,16 @@ export async function discover(opts: {
   if (!metadata) {
     throw new Error(`authorization server ${authServerUrl} returned no usable metadata`);
   }
-  return { authServerUrl, metadata };
+  // The discovered URL is the issuer identifier, not an alias. Bind the callback
+  // to this exact identifier so metadata cannot substitute another issuer.
+  if (new URL(metadata.issuer).href !== new URL(authServerUrl).href) {
+    throw new Error('authorization server metadata issuer does not match the discovered server');
+  }
+  // URL construction treats an origin and its root-slash form as the same URL.
+  // Google PRM advertises the latter while its OIDC metadata uses the former.
+  // Keep the metadata's exact identifier for RFC 9207 callback comparison.
+  authServerUrl = metadata.issuer;
+  return { authServerUrl, metadata, ...(scope !== undefined ? { scope } : {}) };
 }
 
 /**
@@ -187,6 +211,14 @@ export async function buildAuthorization(opts: {
     // RFC 8707 resource indicator — the SDK expects a URL instance.
     resource: new URL(resource),
   });
+
+  // Google's web clients need offline access for a refresh token, and renewed
+  // consent to issue one when this client was authorized previously. Without it
+  // a successful Gmail connection stops working when its access token expires.
+  if (metadata.issuer === 'https://accounts.google.com') {
+    authorizationUrl.searchParams.set('access_type', 'offline');
+    authorizationUrl.searchParams.set('prompt', 'consent');
+  }
 
   return { authorizationUrl: authorizationUrl.toString(), codeVerifier };
 }

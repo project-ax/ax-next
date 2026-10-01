@@ -45,6 +45,8 @@ export interface PendingAuthorization {
   slot: string;
   codeVerifier: string;
   authServerUrl: string;
+  /** Whether this authorization server requires issuer identification in its callback. */
+  issuerRequired?: boolean;
   /** Legacy index to the shared client row. New rows also carry the client itself
    *  (`clientId`/`clientSecret`, below); the callback prefers those. */
   clientKey: string;

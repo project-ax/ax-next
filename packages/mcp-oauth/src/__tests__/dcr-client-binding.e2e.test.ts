@@ -64,6 +64,8 @@ const SHARED_CLIENT_KEY = `conn-1|${AS}`;
 // Fake authorization server (RFC 6749 / 7591 behaviour).
 // ---------------------------------------------------------------------------
 interface AsOpts {
+  /** Publish resource metadata only at the URL in the authentication challenge. */
+  challengeOnly: boolean;
   /** DCR hands back a client_secret (confidential client) instead of a public client. */
   issueSecret: boolean;
   /** RFC 6749 §6 / §10.4: a refresh token is bound to the client it was issued to. */
@@ -103,6 +105,7 @@ class FakeAs {
 
   constructor(opts: Partial<AsOpts> = {}) {
     this.opts = {
+      challengeOnly: false,
       issueSecret: false,
       bindRefreshToClient: true,
       errorDescription: 'The provided refresh token is invalid, expired, or was issued to another client.',
@@ -134,7 +137,19 @@ class FakeAs {
   fetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(typeof input === 'string' ? input : input.toString());
     const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.toString() === `${RS}/` && method === 'GET') {
+      return new Response(null, {
+        status: 401,
+        headers: { 'www-authenticate': this.opts.challengeOnly
+          ? `Bearer resource_metadata="${RS}/oauth/resource", scope="resource.read"`
+          : 'Bearer' },
+      });
+    }
+    if (url.host === 'mcp.example.com' && url.pathname === '/oauth/resource') {
+      return this.json(200, { resource: RS, authorization_servers: [AS] });
+    }
     if (url.host === 'mcp.example.com' && url.pathname.startsWith('/.well-known/oauth-protected-resource')) {
+      if (this.opts.challengeOnly) return this.json(404, {});
       return this.json(200, { resource: RS, authorization_servers: [AS] });
     }
     if (url.host === 'auth.example.com' && url.pathname.startsWith('/.well-known/oauth-authorization-server')) {
@@ -380,7 +395,7 @@ interface Stack {
 const clientIdOf = (authorizationUrl: string): string =>
   new URL(authorizationUrl).searchParams.get('client_id')!;
 
-async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<AsOpts> }): Promise<Stack> {
+async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<AsOpts>; scopes?: string[] }): Promise<Stack> {
   fas = new FakeAs(opts.asOpts);
   const routes: CapturedRoute[] = [];
   const services: Record<string, ServiceHandler> = {
@@ -401,7 +416,7 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
         id: 'conn-1',
         capabilities: {
           allowedHosts: ['mcp.example.com', 'auth.example.com'],
-          credentials: [{ slot: 'oauth-main', kind: 'oauth', server: 'srv', scopes: ['read'] }],
+          credentials: [{ slot: 'oauth-main', kind: 'oauth', server: 'srv', scopes: opts.scopes ?? ['read'] }],
           mcpServers: [{ name: 'srv', url: RS }],
         },
       },
@@ -503,6 +518,21 @@ const outcome = (r: ResolveResult): string =>
   r.ok ? 'ok' : `failed (${r.causeName ?? r.code ?? 'error'}): ${r.msg}`;
 
 const SUCCESS = expect.stringContaining('oauth=success');
+
+describe('challenge-only OAuth discovery through the production plugin', () => {
+  it('discovers, authorizes, stores and refreshes a token without well-known resource metadata', async () => {
+    const s = await boot({ visibility: 'personal', scopes: [], asOpts: { challengeOnly: true } });
+    const begun = await s.begin('alice', { connectorId: 'conn-1' });
+    expect(begun.status).toBe(200);
+    expect(new URL(begun.authorizationUrl!).searchParams.get('scope')).toBe('resource.read');
+    const { code, state } = fas.authorize(begun.authorizationUrl!);
+    expect(await s.callback('alice', code, state)).toEqual(SUCCESS);
+    const resolved = await s.resolve('alice', 'agent-A');
+    expect(outcome(resolved)).toBe('ok');
+    expect(refreshGrants()).toHaveLength(1);
+    expect(await s.status('alice', 'conn-1')).toEqual({ status: 200, json: { status: 'connected' } });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // The bug: two agents on one connector.

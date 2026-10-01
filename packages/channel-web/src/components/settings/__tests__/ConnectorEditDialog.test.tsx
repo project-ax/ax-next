@@ -179,6 +179,23 @@ describe('ConnectorEditDialog', () => {
     expect(screen.getByLabelText(/allowed hosts/i)).toBeInTheDocument();
   });
 
+  it('lets an HTTP MCP connector save the hosts needed for Google OAuth', async () => {
+    render(<ConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />);
+    fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Gmail' } });
+    fireEvent.click(screen.getByRole('combobox', { name: /transport/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /http/i }));
+    fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://gmailmcp.googleapis.com/mcp/v1' } });
+    fireEvent.change(screen.getByLabelText(/allowed hosts/i), {
+      target: { value: 'accounts.google.com, oauth2.googleapis.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const caps = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0].capabilities;
+    expect(caps.allowedHosts).toEqual(expect.arrayContaining([
+      'gmailmcp.googleapis.com', 'accounts.google.com', 'oauth2.googleapis.com',
+    ]));
+  });
+
   it('Command-line tool shows the npm/pypi package picker and submits packages', async () => {
     render(
       <ConnectorEditDialog

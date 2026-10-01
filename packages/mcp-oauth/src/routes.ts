@@ -303,7 +303,6 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
     const resource = server.url;
     const allowedHosts = new Set(caps.allowedHosts);
-    const scope = slot.scopes?.join(' ');
 
     // Resolve a pinned client (non-DCR). DCR is the default when no clientId.
     let pinned: { clientId: string; clientSecret?: string } | undefined;
@@ -334,11 +333,14 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // is an upstream/metadata problem; report a neutral 502 (message is a
     // host/url, never a secret) and store nothing.
     try {
-      const { authServerUrl, metadata } = await flow.discover({
+      const { authServerUrl, metadata, scope: discoveredScope } = await flow.discover({
         resourceUrl: resource,
         ...(slot.authServerUrl !== undefined ? { pinnedAuthServerUrl: slot.authServerUrl } : {}),
         allowedHosts,
       });
+      // Explicit connector scopes bound the grant. Otherwise use the resource's
+      // advertised requirements consistently for DCR, consent and token storage.
+      const scope = slot.scopes?.join(' ') || discoveredScope;
 
       const clientKey = clientKeyOf(connectorId, authServerUrl);
       const client = await flow.ensureClient({
@@ -379,6 +381,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         slot: slot.slot,
         codeVerifier,
         authServerUrl,
+        issuerRequired: (metadata as { authorization_response_iss_parameter_supported?: unknown })
+          .authorization_response_iss_parameter_supported === true,
         clientKey,
         // The client THIS authorization was started with. The callback redeems the
         // code as it, and the token blob records it, so the token is refreshed by
@@ -411,21 +415,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const user = await requireUser(req, res);
     if (!user) return;
 
-    // Provider-side denial (e.g. user clicked "Deny"). We don't yet have a
-    // trusted return target keyed off state, but the provider only ever
-    // redirects back here for a state we minted, so reflect the connector if we
-    // can recover it from the (still-present) pending row WITHOUT consuming it?
-    // No — keep it simple and safe: redirect to the generic return path with
-    // oauth=error. We do NOT consume the pending row (the user may retry).
     const providerError = req.query.error;
-    if (providerError) {
-      res.redirect(`${config.publicOrigin}${config.connectorReturnPath}?oauth=error`);
-      return;
-    }
-
     const state = req.query.state;
     const code = req.query.code;
-    if (!state || !code) {
+    if (!state || (!code && !providerError)) {
       res.status(400).json({ error: 'missing code or state' });
       return;
     }
@@ -446,11 +439,32 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(403).json({ error: 'state_user_mismatch' });
       return;
     }
+    // RFC 9207: when the provider identifies the response issuer, it must match
+    // the authorization server selected at begin. Reject before burning state
+    // or sending the code to a token endpoint. Providers that omit iss still
+    // use the server bound to this single-use state.
+    const issuer = req.query.iss;
+    if ((issuer !== undefined || peeked.issuerRequired) && issuer !== peeked.authServerUrl) {
+      res.status(400).json({ error: 'authorization_server_mismatch' });
+      return;
+    }
     // The user matches — now atomically consume (single-use + TTL gate). A null
     // here means it expired or a concurrent request already consumed it.
     const pending = await store.consumePending(state, now(), pendingTtlMs);
     if (!pending) {
       res.status(400).json({ error: 'invalid_or_expired_state' });
+      return;
+    }
+
+    // A denied grant ends this authorization too. Return the trusted connector
+    // id so the popup can notify its own connect widget, and discard the pending
+    // verifier/client secret. A retry starts with a fresh state and PKCE pair.
+    if (providerError) {
+      res.redirect(returnUrl(pending.connectorId, 'error'));
+      return;
+    }
+    if (!code) {
+      res.status(400).json({ error: 'missing code or state' });
       return;
     }
 
