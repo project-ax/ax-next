@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { AdminShell } from '../AdminShell';
 import { UserProvider } from '../../../lib/user-context';
 import type { AuthUser } from '../../../lib/auth';
@@ -314,4 +314,20 @@ describe('AdminShell — initialTab (TASK-627)', () => {
     expect(active('Skills')).toBe(true);
     expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
   });
+});
+
+it('moves Settings navigation into a closable sheet on narrow screens', async () => {
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: query === 'not all and (min-width: 768px)', media: query,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  })));
+  try {
+    renderShell();
+    expect(screen.queryByRole('complementary')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings navigation' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Settings navigation' });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Models' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('heading', { level: 1, name: 'Available models' })).toBeInTheDocument();
+  } finally { vi.unstubAllGlobals(); }
 });

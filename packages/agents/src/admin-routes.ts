@@ -512,7 +512,7 @@ async function listTeamIdsForUser(
 }
 
 export interface AdminRouteDeps {
-  store: AgentStore;
+  store: Pick<AgentStore, 'countByModel'>;
   bus: HookBus;
   /** The agents allow-list (`provider/model-id` refs) — GET /admin/agents/models
    *  emits exactly these ids, decorated with whatever metadata the matching

@@ -1,3 +1,7 @@
+import { Menu } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
+import { useIsCompact } from '@/lib/use-compact';
 import { ModelsTab } from './ModelsTab';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { ADMIN_NAV, AdminSidebar, type AdminTabId } from './AdminSidebar';
@@ -78,6 +82,8 @@ export function AdminShell({
       : 'skills',
   );
   const meta = TAB_META[activeTab];
+  const compact = useIsCompact();
+  const [navOpen, setNavOpen] = useState(false);
 
   // TASK-510 — opening Settings takes focus INTO it.
   //
@@ -101,19 +107,27 @@ export function AdminShell({
 
   return (
     <div className="flex flex-1 min-w-0 h-full bg-background">
-      <AdminSidebar
-        activeTab={activeTab}
-        isAdmin={isAdmin}
-        onTabChange={setActiveTab}
-        onBack={onClose}
-        backLabel={backLabel}
-      />
+      {compact ? (
+        <Sheet open={navOpen} onOpenChange={setNavOpen}>
+          <SheetContent side="left" aria-describedby={undefined} className="flex w-[280px] flex-col gap-0 p-0">
+            <SheetTitle className="sr-only">Settings navigation</SheetTitle>
+            <AdminSidebar activeTab={activeTab} isAdmin={isAdmin}
+              onTabChange={(tab) => { setActiveTab(tab); setNavOpen(false); }}
+              onBack={onClose} backLabel={backLabel} />
+          </SheetContent>
+        </Sheet>
+      ) : <AdminSidebar activeTab={activeTab} isAdmin={isAdmin} onTabChange={setActiveTab} onBack={onClose} backLabel={backLabel} />}
       <AdminPane
         header={
           <AdminPaneHeader
             eyebrow={meta.eyebrow}
             title={meta.title}
             headingRef={headingRef}
+            badge={compact ? (
+              <Button type="button" variant="ghost" size="icon" aria-label="Open settings navigation" onClick={() => setNavOpen(true)}>
+                <Menu aria-hidden="true" />
+              </Button>
+            ) : undefined}
           />
         }
       >

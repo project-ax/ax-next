@@ -252,7 +252,7 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
         </Alert>
       )}
 
-      <div className="sticky bottom-0 -mx-1 flex items-center justify-end gap-3 border-t border-border bg-background px-1 py-3">
+      <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center justify-end gap-3 border-t border-border bg-background px-1 py-3">
         {dirty && <span className="mr-auto text-sm text-muted-foreground">Unsaved changes</span>}
         <Button type="button" variant="outline" disabled={!dirty || saving || checking || confirm !== null} onClick={() => setDraft(draftOf(load.policy))}>
           Cancel
