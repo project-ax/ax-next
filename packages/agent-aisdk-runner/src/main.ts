@@ -211,7 +211,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       const policy = createToolPolicy({
         client,
         workspaceRoot: env.workspaceRoot,
-        broaden: env.userFilesRoot !== undefined,
+        broaden: homeDir !== env.workspaceRoot,
         recognizedRoots: [homeDir, env.ephemeralRoot].filter(
           (r): r is string => r !== undefined,
         ),

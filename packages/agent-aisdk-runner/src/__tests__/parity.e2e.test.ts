@@ -522,6 +522,38 @@ describe('aisdk runner — parity', () => {
     expect(assistantEnd).not.toHaveProperty('usage');
   });
 
+  it('writes user outputs to scratch, keeps identity in agent state, and automatically attaches scratch artifacts', async () => {
+    const scratch = path.join(tmp, 'scratch');
+    process.env.AX_EPHEMERAL_ROOT = scratch;
+    toolCatalog = [{ name: 'artifact_publish', executesIn: 'sandbox', inputSchema: {} }];
+    const originalCall = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
+      if (action === 'artifact.publish') return { artifactId: 'artifact-1', downloadUrl: 'ax://artifact/artifact-1' };
+      return originalCall(action, payload);
+    });
+    const originalUpload = fakeClient.callBinaryUpload.getMockImplementation()!;
+    fakeClient.callBinaryUpload.mockImplementation(async (action: string, payload: unknown, body: Buffer) => {
+      if (action === 'blob.put') {
+        const bytes = payload as Buffer;
+        return { sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length };
+      }
+      return originalUpload(action, payload, body);
+    });
+    scriptedModel.mockReturnValue(modelReplaying([
+      toolStep('Write', { file_path: 'artifacts/calculator.html', content: '<p>2</p>' }),
+      toolStep('Write', { file_path: '.ax/SOUL.md', content: 'Identity' }),
+      toolStep('Bash', { command: 'pwd' }),
+      textStep('Saved your calculator.'),
+    ]));
+    inboxEntries = [userMessage('create a calculator')];
+    await expect(main()).resolves.toBe(0);
+    await expect(fs.readFile(path.join(scratch, 'artifacts/calculator.html'), 'utf8')).resolves.toBe('<p>2</p>');
+    await expect(fs.readFile(path.join(workspaceRoot, '.ax/SOUL.md'), 'utf8')).resolves.toBe('Identity');
+    await expect(fs.stat(path.join(scratch, '.ax'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(JSON.stringify(turnEnds()[0])).toContain(scratch);
+    expect(turnEnds()[0]?.contentBlocks).toContainEqual(expect.objectContaining({ type: 'attachment', path: 'calculator.html' }));
+  });
+
   it('routes a model tool call through tool.pre-call and back as a tool result', async () => {
     scriptedModel.mockReturnValue(
       modelReplaying([

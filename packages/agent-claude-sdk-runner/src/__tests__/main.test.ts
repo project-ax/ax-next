@@ -3854,6 +3854,26 @@ describe('main()', () => {
       );
     }
 
+    it('uses scratch for cwd/HOME and the transcript slug without a user-files mount, while re-rooting identity writes', async () => {
+      setEnv({ ...COMPLETE_ENV, AX_EPHEMERAL_ROOT: '/ephemeral' });
+      wirePlan2Client();
+      const originalCall = fakeClient.call.getMockImplementation()!;
+      fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+        if (action === 'tool.pre-call') return { verdict: 'allow' };
+        return originalCall(action, ...args);
+      });
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      const options = queryMock.mock.calls[0]?.[0].options;
+      expect(options.cwd).toBe('/ephemeral');
+      expect(options.env.HOME).toBe('/ephemeral');
+      expect(options.additionalDirectories).toContain('/tmp/workspace');
+      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith('/tmp/workspace', '/ephemeral');
+      const hook = options.hooks.PreToolUse[0].hooks[0];
+      const result = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: '/ephemeral/.ax/SOUL.md', content: 'Identity' } }, 'test-scratch-identity', {});
+      expect(result.hookSpecificOutput.updatedInput.file_path).toBe('/tmp/workspace/.ax/SOUL.md');
+    });
+
     it('moves cwd + HOME to AX_USERFILES_ROOT and grants /agent + /ephemeral', async () => {
       setEnv({
         ...COMPLETE_ENV,
@@ -3956,9 +3976,7 @@ describe('main()', () => {
       expect(queryArg.options.additionalDirectories).not.toContain('/memory');
     });
 
-    it('UNSET (no AX_USERFILES_ROOT): cwd=HOME=/agent and /agent is the cwd (today)', async () => {
-      // Regression guard: the governed root is the cwd, so it dedups OUT of
-      // additionalDirectories — byte-identical to pre-Plan-2 behavior.
+    it('UNSET (no AX_USERFILES_ROOT): cwd=HOME=scratch and agent state stays separately accessible', async () => {
       setEnv({ ...COMPLETE_ENV, AX_EPHEMERAL_ROOT: '/ephemeral' });
       wirePlan2Client();
 
@@ -3972,11 +3990,10 @@ describe('main()', () => {
           additionalDirectories?: string[];
         };
       };
-      expect(queryArg.options.cwd).toBe('/tmp/workspace');
-      expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
-      // Only /ephemeral is granted; the governed root is the cwd (not listed).
-      expect(queryArg.options.additionalDirectories).toEqual(['/ephemeral']);
-      expect(queryArg.options.env.PATH?.endsWith(':/tmp/workspace/bin')).toBe(true);
+      expect(queryArg.options.cwd).toBe('/ephemeral');
+      expect(queryArg.options.env.HOME).toBe('/ephemeral');
+      expect(queryArg.options.additionalDirectories).toEqual(['/tmp/workspace']);
+      expect(queryArg.options.env.PATH?.endsWith(':/ephemeral/bin')).toBe(true);
     });
   });
 
@@ -4047,7 +4064,7 @@ describe('main()', () => {
       expect(queryArg.options.env.PATH.startsWith('/ephemeral/py/bin:')).toBe(
         true,
       );
-      expect(queryArg.options.env.PATH.endsWith(':/tmp/workspace/bin')).toBe(
+      expect(queryArg.options.env.PATH.endsWith(':/ephemeral/bin')).toBe(
         true,
       );
       expect(queryArg.options.env.PIP_CERT).toBe('/etc/ax/proxy-ca.crt');

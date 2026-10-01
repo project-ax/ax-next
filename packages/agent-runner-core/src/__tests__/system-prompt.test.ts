@@ -4,6 +4,7 @@ import {
   clarifyingQuestionsNote,
   communicationNote,
   ephemeralScratchNote,
+  fileOutputNote,
   operationalNotes,
   pythonVenvNote,
   skillAuthoringNote,
@@ -109,6 +110,25 @@ describe('ephemeral scratch note', () => {
     expect(note).toContain(`\`${root}\``);
     expect(note.toLowerCase()).toContain('discarded');
     expect(note.toLowerCase()).toContain('scratch');
+    expect(note).not.toContain('Your working directory persists');
+  });
+});
+
+describe('user output paths', () => {
+  it('uses scratch artifacts when no durable mount exists and avoids agent state', () => {
+    const note = fileOutputNote('/agent', '/tmp/scratch');
+    expect(note).toContain('/tmp/scratch/artifacts/…');
+    expect(note).toContain('Keep user deliverables out of `/agent`');
+    expect(note).toContain('temporary');
+    expect(note).toContain('artifact_publish');
+    expect(operationalNotes('/agent', '/tmp/scratch', false, undefined, '/tmp/scratch')).toContain(note);
+  });
+
+  it('prefers the durable directory when both tiers exist', () => {
+    const note = fileOutputNote('/agent', '/ephemeral', '/files');
+    expect(note).toContain('/files/…');
+    expect(note).not.toContain('/ephemeral/artifacts');
+    expect(note).not.toContain('temporary');
   });
 });
 
