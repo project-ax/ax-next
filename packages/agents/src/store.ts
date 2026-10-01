@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { isModelRef, PluginError } from '@ax/core';
+import { isModelRef, parseModelRef, PluginError } from '@ax/core';
 import { REWRITES_THE_SURFACE, replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
@@ -69,7 +69,6 @@ const DEFAULT_ALLOWED_MODELS: readonly string[] = [
  * runner id must map to a binary the host already has.)
  */
 export const SUPPORTED_RUNNERS = ['claude-sdk', 'aisdk'] as const;
-const DEFAULT_RUNNER: RunnerId = 'claude-sdk';
 
 function loadAllowedModelsFromEnv(): readonly string[] | null {
   const raw = process.env.AX_AGENT_MODELS_ALLOWED;
@@ -115,6 +114,8 @@ export function resolveAllowedModels(
 
 interface ValidationContext {
   allowedModels: readonly string[];
+  /** The agent's stored model, for a runner-only update. Absent on create. */
+  currentModel?: string;
 }
 
 function invalid(message: string): PluginError {
@@ -318,6 +319,23 @@ function validateRunner(value: unknown, allowed: readonly string[]): RunnerId {
   return value as RunnerId;
 }
 
+/**
+ * Which runner can run this model. The `claude-sdk` runner only talks to
+ * Anthropic (it throws on any other provider), so Anthropic models use it and
+ * everything else uses `aisdk`. Callers pass a valid `provider/model-id` ref.
+ */
+export function runnerForModel(ref: string): RunnerId {
+  return parseModelRef(ref).provider === 'anthropic' ? 'claude-sdk' : 'aisdk';
+}
+
+function assertRunnerCanRun(runner: RunnerId, model: string): void {
+  if (runner === 'claude-sdk' && runnerForModel(model) !== 'claude-sdk') {
+    throw invalid(
+      `runner 'claude-sdk' can only run Anthropic models; '${model}' needs runner 'aisdk'`,
+    );
+  }
+}
+
 function validateVisibility(value: unknown): 'personal' | 'team' {
   if (value !== 'personal' && value !== 'team') {
     throw invalid("visibility must be 'personal' or 'team'");
@@ -368,12 +386,18 @@ export function validateCreateInput(
   if (visibility === 'personal' && input.teamId !== undefined) {
     throw invalid('teamId must not be set for personal agents');
   }
+  const model = validateModel(input.model, vctx.allowedModels);
+  const runner =
+    input.runner === undefined
+      ? runnerForModel(model)
+      : validateRunner(input.runner, SUPPORTED_RUNNERS);
+  assertRunnerCanRun(runner, model);
   return {
     displayName: validateDisplayName(input.displayName),
     allowedTools: validateAllowedTools(input.allowedTools),
     mcpConfigIds: validateMcpConfigIds(input.mcpConfigIds),
-    model: validateModel(input.model, vctx.allowedModels),
-    runner: validateRunner(input.runner ?? DEFAULT_RUNNER, SUPPORTED_RUNNERS),
+    model,
+    runner,
     workspaceRef: validateWorkspaceRef(input.workspaceRef ?? null),
     visibility,
     teamId,
@@ -409,9 +433,15 @@ export function validateUpdatePatch(
   }
   if (patch.model !== undefined) {
     out.model = validateModel(patch.model, vctx.allowedModels);
-  }
-  if (patch.runner !== undefined) {
+    // A new model brings its own runner unless the caller named one.
+    out.runner =
+      patch.runner === undefined
+        ? runnerForModel(out.model)
+        : validateRunner(patch.runner, SUPPORTED_RUNNERS);
+    assertRunnerCanRun(out.runner, out.model);
+  } else if (patch.runner !== undefined) {
     out.runner = validateRunner(patch.runner, SUPPORTED_RUNNERS);
+    if (vctx.currentModel !== undefined) assertRunnerCanRun(out.runner, vctx.currentModel);
   }
   if (patch.workspaceRef !== undefined) {
     out.workspaceRef = validateWorkspaceRef(patch.workspaceRef);
