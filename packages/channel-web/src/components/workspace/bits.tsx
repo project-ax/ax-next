@@ -43,7 +43,7 @@ function initials(name: string): string {
   if (parts.length === 0) return '?';
   const first = parts[0]?.[0] ?? '';
   const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? '') : '';
-  return (first + last).toUpperCase();
+  return parts.length === 1 ? `${first.toUpperCase()}${parts[0]?.[1]?.toLowerCase() ?? ''}` : (first + last).toUpperCase();
 }
 
 export function AgentTile({
@@ -54,11 +54,11 @@ export function AgentTile({
   size?: number;
 }) {
   return (
-    <AvatarTile size={size} shape="square">
+    <AvatarTile size={size} shape="square" background="primary-soft">
       <span
         aria-hidden="true"
         style={{ fontSize: Math.max(9, Math.round(size * 0.38)) }}
-        className="font-medium leading-none text-foreground/70"
+        className="font-medium leading-none text-primary"
       >
         {initials(agent.name)}
       </span>
@@ -108,7 +108,7 @@ export const STATE_SHAPE: Record<AgentRunState | 'held', string> = {
   working: 'h-[7px] w-[7px] rounded-full',
   waiting: 'h-[6px] w-[6px] rotate-45 rounded-[1px]',
   held: 'h-[6px] w-[6px] rotate-45 rounded-[1px]',
-  resting: 'h-[3px] w-[8px] rounded-full',
+  resting: 'box-border size-[7px] rounded-full border-[1.5px] border-state-quiet',
   stopped: 'h-[7px] w-[7px] rounded-[1px]',
 };
 
@@ -148,7 +148,7 @@ export function StateDot({
         state === 'working' && 'bg-primary',
         state === 'waiting' && 'bg-warning',
         state === 'held' && 'bg-warning',
-        state === 'resting' && 'bg-state-quiet',
+        state === 'resting' && 'border-state-quiet',
         state === 'stopped' && 'bg-destructive',
         className,
       )}

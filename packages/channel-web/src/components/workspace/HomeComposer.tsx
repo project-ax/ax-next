@@ -17,12 +17,9 @@
  * to approve the only possible answer — see `sole` below (TASK-250). The rule
  * above holds unchanged from two agents up.
  */
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import {
-  ArrowUp,
   ChevronDown,
-  MessageSquare,
-  Paperclip,
   Zap,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -33,8 +30,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Input } from '@/components/ui/input';
-import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { StorageFullError } from '@/lib/storage-full';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import {
@@ -44,6 +39,7 @@ import {
 } from '@/lib/workspace-attachments';
 import { AgentTile } from './bits';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
+import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
 
 interface Proposal {
   agentId: string;
@@ -82,7 +78,6 @@ export function HomeComposer({
   const [routing, setRouting] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const { attachments, add, remove, retry, clear, sendable, sendBlock } =
     useWorkspaceAttachments();
 
@@ -211,7 +206,7 @@ export function HomeComposer({
   };
 
   return (
-    <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
+    <div className={`${CHAT_CONTENT_CLASS} pb-6`}>
       {error !== null && (
         <Alert variant="destructive" className="mb-2">
           <AlertDescription className="flex flex-wrap items-center gap-3">
@@ -314,113 +309,67 @@ export function HomeComposer({
         {blocked ?? ''}
       </span>
 
-      <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
-        <MessageSquare size={15} className="shrink-0 text-muted-foreground" />
-        <Input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void submit()}
-          /*
-            Promises nothing. The old placeholder — "try 'find me 30 minutes
-            with Marcus'" — presumed a scheduler agent, a calendar grant and a
-            contact named Marcus, none of which a brand-new agent has. A
-            suggestion the product cannot honour is a claim about reach.
-          */
-          placeholder={
-            picked
-              ? `Ask ${picked.name} to do something — or just say hi to get started`
-              : 'Ask for something — or just say hi to get started'
-          }
-          className="h-8 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
-        />
-
-        {sole ? (
-          /*
-            With one agent there is nothing to pick, so this is a label rather
-            than a menu — it still says who you are talking to, which is worth
-            having on day one, without dressing a foregone conclusion up as a
-            decision. A `<span>`, not a disabled `<button>`: a control that
-            cannot be used is still a control the eye has to rule out.
-          */
-          <span className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium">
-            <AgentTile agent={sole} size={16} />
-            {sole.name}
-          </span>
-        ) : (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium"
-              >
-                {picked ? (
-                  <AgentTile agent={picked} size={16} />
-                ) : (
-                  <Zap size={11} className="text-primary" />
-                )}
-                {picked ? picked.name : 'Auto'}
-                <ChevronDown size={11} className="text-muted-foreground" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setPick('auto')}>
-                <Zap size={13} className="text-primary" />
-                Anyone — pick for me
-              </DropdownMenuItem>
-              {agents.map((a) => (
-                <DropdownMenuItem key={a.id} onClick={() => setPick(a.id)}>
-                  <AgentTile agent={a} size={18} />
-                  {a.name}
+      <ChatComposer
+        label={picked ? `Message ${picked.name}` : 'Message an agent'}
+        input={{
+          value: draft,
+          onChange: (event) => setDraft(event.target.value),
+          placeholder: picked
+            ? `Ask ${picked.name} to do something — or just say hi to get started`
+            : 'Ask for something — or just say hi to get started',
+          disabled: routing || sending,
+        }}
+        onAttach={add}
+        attachDisabled={routing || sending}
+        onSend={() => void submit()}
+        sendDisabled={routing || sending || blocked !== null}
+        agentSelector={
+          sole ? (
+            /*
+              With one agent there is nothing to pick, so this is a label rather
+              than a menu — it still says who you are talking to, which is worth
+              having on day one, without dressing a foregone conclusion up as a
+              decision. A `<span>`, not a disabled `<button>`: a control that
+              cannot be used is still a control the eye has to rule out.
+            */
+            <span className="flex h-8 shrink-0 max-md:h-11 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium">
+              <AgentTile agent={sole} size={16} />
+              {sole.name}
+            </span>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  type="button"
+                  className="flex h-8 shrink-0 max-md:h-11 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium"
+                >
+                  {picked ? (
+                    <AgentTile agent={picked} size={16} />
+                  ) : (
+                    <Zap size={11} className="text-primary" />
+                  )}
+                  {picked ? picked.name : 'Auto'}
+                  <ChevronDown size={11} className="text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setPick('auto')}>
+                  <Zap size={13} className="text-primary" />
+                  Anyone — pick for me
                 </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-
-        {/*
-          The input is plumbing, not a control: the labelled Button below is
-          what a person (or a screen reader) operates, so the input stays out
-          of the accessibility tree and out of the tab order rather than
-          turning up as a second, unnamed thing to tab through.
-        */}
-        <input
-          ref={fileInput}
-          type="file"
-          multiple
-          accept={ATTACHMENT_ACCEPT}
-          className="sr-only"
-          tabIndex={-1}
-          aria-hidden="true"
-          onChange={(e) => {
-            add(e.target.files ?? []);
-            // Picking the SAME file twice in a row is a no-op unless the value
-            // is cleared — the input's value would not change, so no `change`
-            // event fires and the second pick silently does nothing.
-            e.target.value = '';
-          }}
-        />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 shrink-0"
-          aria-label="Attach a file"
-          disabled={routing || sending}
-          onClick={() => fileInput.current?.click()}
-        >
-          <Paperclip strokeWidth={1.5} aria-hidden="true" />
-        </Button>
-
-        <Button
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          aria-label="Send"
-          disabled={routing || sending || blocked !== null}
-          onClick={() => void submit()}
-        >
-          <ArrowUp size={14} />
-        </Button>
-      </div>
+                {agents.map((a) => (
+                  <DropdownMenuItem key={a.id} onClick={() => setPick(a.id)}>
+                    <AgentTile agent={a} size={18} />
+                    {a.name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )
+        }
+      />
     </div>
   );
 }

@@ -18,15 +18,12 @@ import {
 } from 'react';
 import {
   AlertTriangle,
-  ArrowUp,
   ChevronRight,
   CircleStop,
   Hand,
   Layers,
   ListChecks,
   MessageSquare,
-  Paperclip,
-  Square,
   type LucideIcon,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -43,14 +40,13 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from '@/components/ui/empty';
-import { Input } from '@/components/ui/input';
+import { workspaceApi } from '@/lib/workspace-api';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import type {
   WorkspaceStep,
   WorkspaceStepStatus,
 } from '@/lib/workspace-steps';
-import { ATTACHMENT_ACCEPT } from '@/lib/attachment-upload';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
 import { turnErrorText } from '@/lib/turn-error-labels';
@@ -98,6 +94,7 @@ import {
   type FindView,
 } from './ThreadFind';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
+import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
 import { AttachmentChip } from '@/components/AttachmentChip';
 import { AGENT_CONVERSATION_ATTR } from '@/lib/new-agent-return-focus';
 
@@ -361,7 +358,6 @@ export function AgentConversation({
     setDraftState(value);
     saveDraft(agent.id, value);
   };
-  const fileInput = useRef<HTMLInputElement>(null);
   const { attachments, add, remove, retry, clear, sendable, sendBlock } =
     useWorkspaceAttachments();
 
@@ -596,14 +592,14 @@ export function AgentConversation({
   });
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="group/thread relative flex min-h-0 flex-1 flex-col">
       {/*
         `|| findOpen` so an open bar survives the thread going empty underneath
         it — a failed excerpt read renders `[]`, and a control that vanishes
         mid-keystroke takes the keyboard user's focus with it.
       */}
       {(searchable || findOpen) && (
-        <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border px-6 py-1.5">
+        <div className={`absolute left-4 top-0 flex items-center justify-end gap-2 rounded-sm bg-background px-2 py-1 opacity-0 focus-within:opacity-100 group-hover/thread:opacity-100 ${findOpen ? 'right-4' : 'md:left-auto md:right-4'}`}>
           <ThreadFindToggle
             open={findOpen}
             onOpen={() => setFindOpen(true)}
@@ -655,9 +651,9 @@ export function AgentConversation({
         // Where a finished create lands focus (TASK-533) — see
         // `lib/new-agent-return-focus.ts`.
         {...{ [AGENT_CONVERSATION_ATTR]: agent.id }}
-        className="flex-1 overflow-y-auto px-6 py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="flex-1 overflow-y-auto py-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <div ref={contentRef} className="flex max-w-[720px] flex-col gap-5">
+        <div ref={contentRef} className={cn(CHAT_CONTENT_CLASS, "flex flex-col gap-[26px]")}>
           {thread.map((m, i) => {
             /*
               ONE KEY, not two. React's key and the find index's field key are
@@ -684,6 +680,12 @@ export function AgentConversation({
               decisions={decisions}
               onApprove={onApprove}
               onDismiss={onDismiss}
+              onEdit={readOnly ? undefined : async (decisionId, body) => {
+                await onDismiss(decisionId);
+                const read = await workspaceApi.decision(decisionId);
+                if (read.decision.status !== 'dismissed') throw new Error('Draft was not cancelled');
+                onSend(`Please prepare a revised draft using this text. Ask me before sending it:\n\n${body}`);
+              }}
               onUndo={onUndo}
               find={find}
               {...(busyIds !== undefined ? { busyIds } : {})}
@@ -867,7 +869,7 @@ export function AgentConversation({
         className={RESOLUTION_FOCUS_RING}
       >
         {grants.length > 0 && (
-          <div className="px-6 pt-4" data-testid="thread-grants">
+          <div className={cn(CHAT_CONTENT_CLASS, "pt-4")} data-testid="thread-grants">
             <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
               {grants.map((g) => (
                 <GrantRow
@@ -885,7 +887,7 @@ export function AgentConversation({
       </div>
 
       {!readOnly && (
-        <div className="border-t border-border px-6 py-4">
+        <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
           {attachments.length > 0 && (
             <div className="mb-2 flex max-w-[720px] flex-wrap gap-2">
               {attachments.map((a) => (
@@ -941,81 +943,27 @@ export function AgentConversation({
                 ? 'Your agent is waiting for your approval.'
                 : (attachBlock ?? (stoppedShown ? 'Stopped.' : ''))}
           </span>
-          <div className="flex max-w-[720px] items-center gap-2">
-            {/*
-              The input is plumbing, not a control: the labelled Button beside
-              it is what a person (or a screen reader) operates, so the input
-              stays out of the accessibility tree and out of the tab order
-              rather than turning up as a second, unnamed thing to tab through.
-            */}
-            <input
-              ref={fileInput}
-              type="file"
-              multiple
-              accept={ATTACHMENT_ACCEPT}
-              className="sr-only"
-              tabIndex={-1}
-              aria-hidden="true"
-              onChange={(e) => {
-                add(e.target.files ?? []);
-                // Picking the SAME file twice in a row is a no-op unless the
-                // value is cleared: the input's value would not change, so no
-                // `change` event fires and the second pick does nothing.
-                e.target.value = '';
-              }}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Attach a file"
-              disabled={busy || held}
-              onClick={() => fileInput.current?.click()}
-            >
-              <Paperclip strokeWidth={1.5} aria-hidden="true" />
-            </Button>
-            <Input
-              ref={fieldRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && send()}
-              placeholder={`Message ${agent.name}`}
-              className="h-10"
-              /*
-                Deliberately NOT disabled on `attachBlock`: one of the two
-                attachment holds is "you have not written anything", and the
-                field is where a person fixes that. Quieting it would leave
-                them with a hold they cannot clear.
-              */
-              disabled={busy || held}
-            />
-            {showStop ? (
-              <Button
-                ref={actionRef}
-                type="button"
-                size="icon"
-                onClick={() => {
-                  stopClicked.current = true;
-                  onStop();
-                }}
-                aria-label={stopping ? 'Stopping' : 'Stop'}
-                disabled={stopping}
-              >
-                {/* Filled, the way every player draws it. Decorative: the name is on the button. */}
-                <Square fill="currentColor" aria-hidden="true" />
-              </Button>
-            ) : (
-              <Button
-                ref={actionRef}
-                size="icon"
-                onClick={send}
-                aria-label="Send"
-                disabled={busy || held || attachBlock !== null}
-              >
-                <ArrowUp size={15} />
-              </Button>
-            )}
-          </div>
+          <ChatComposer
+            label={`Message ${agent.name}`}
+            inputRef={fieldRef}
+            input={{
+              value: draft,
+              onChange: (event) => setDraft(event.target.value),
+              placeholder: `Message ${agent.name}`,
+              // Attachment holds must leave the field available to fix the message.
+              disabled: busy || held,
+            }}
+            onAttach={add}
+            attachDisabled={busy || held}
+            onSend={send}
+            sendDisabled={busy || held || attachBlock !== null}
+            actionRef={actionRef}
+            onStop={showStop ? () => {
+              stopClicked.current = true;
+              onStop();
+            } : undefined}
+            stopping={stopping}
+          />
           {/*
             No suggestion chips. They were authored prose in the prototype and
             the wire never carried them — a chip that puts words in the user's
@@ -1066,6 +1014,7 @@ function Message({
   decisions,
   onApprove,
   onDismiss,
+  onEdit,
   onUndo,
   busyIds,
   notices,
@@ -1079,6 +1028,7 @@ function Message({
   decisions: Decision[];
   onApprove: (id: string) => void;
   onDismiss: (id: string) => void;
+  onEdit?: ((id: string, body: string) => Promise<void>) | undefined;
   onUndo: (id: string) => void;
   busyIds?: ReadonlySet<string>;
   notices?: ReadonlyMap<string, string>;
@@ -1215,7 +1165,7 @@ function Message({
           looking at, and one that touch has no way to open at all.
         */}
         {m.text.length > 0 && (
-          <div className="max-w-[80%] break-words rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[13.5px] leading-relaxed text-primary-foreground">
+          <div className="max-w-[80%] break-words rounded-lg bg-bubble px-3.5 py-2.5 text-[14px] leading-relaxed text-foreground">
             <FindHighlight fieldKey={fieldKey} text={m.text} find={find} />
           </div>
         )}
@@ -1331,7 +1281,7 @@ function Message({
     const failedAt = localTime(m.at);
     return (
       <div className="flex gap-3">
-        <AgentTile agent={agent} />
+        <AgentTile agent={agent} size={24} />
         <div className="min-w-0 flex-1">
           <Alert variant="destructive" className="max-w-[600px]">
             <AlertTriangle size={14} />
@@ -1385,12 +1335,13 @@ function Message({
     if (!d) return null;
     return (
       <ThreadApproval>
-        <AgentTile agent={agent} />
+        <AgentTile agent={agent} size={24} />
         <ApprovalCard
           decision={d}
           onApprove={() => onApprove(d.id)}
           onDismiss={() => onDismiss(d.id)}
           onUndo={() => onUndo(d.id)}
+          onEdit={onEdit ? body => onEdit(d.id, body) : undefined}
           busy={busyIds?.has(d.id) === true}
           notice={notices?.get(d.id) ?? null}
           find={find}
@@ -1419,7 +1370,7 @@ function Message({
       {...{ [TURN_ID_ATTR]: m.id }}
       className={`-mx-2 -my-1 flex gap-3 rounded-lg px-2 py-1 ${MEMORY_SOURCE_CLASS}`}
     >
-      <AgentTile agent={agent} />
+      <AgentTile agent={agent} size={24} />
       <div className="min-w-0 flex-1">
         {/*
           A turn that only ran tools has no prose, and the step panel IS the
@@ -1443,7 +1394,7 @@ function Message({
           (that needs a thread in scope to resolve against).
         */}
         {m.text.length > 0 && (
-          <div className="max-w-[600px] text-[13.5px] leading-relaxed text-pretty">
+          <div className="max-w-[604px] text-[15px] leading-[1.58] text-pretty">
             <FindHighlight fieldKey={fieldKey} text={m.text} find={find} markdown />
           </div>
         )}

@@ -153,8 +153,8 @@ describe('AgentConversation — Stop the control', () => {
     const stop = screen.getByRole('button', { name: 'Stop' });
     expect(stop.parentElement).toBe(row);
     expect(Array.from(row.children).indexOf(stop)).toBe(slot);
-    // Same shared-Button size variant: 40px square, both.
-    for (const cls of ['h-10', 'w-10']) {
+    // Same desktop square and 44px phone target, both.
+    for (const cls of ['size-8', 'max-md:size-11']) {
       expect(sendClasses).toContain(cls);
       expect(stop.className).toContain(cls);
     }

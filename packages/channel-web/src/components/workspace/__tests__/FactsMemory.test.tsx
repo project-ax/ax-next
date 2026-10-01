@@ -60,10 +60,27 @@ beforeEach(() => {
 });
 
 describe('MemorySurface', () => {
+  it('lists memories from earlier chats without a profile or conversation filter', async () => {
+    const earlierNote = fact({ id: 'from-earlier-chat', about: 'project:canopy',
+      aboutText: 'Canopy project', relation: 'launch_date', value: 'October 15' });
+    recallMock.mockImplementation(async (_agentId, options) => ({
+      statements: options?.profile || options?.conversationId ? [] : [earlierNote],
+      degraded: [],
+    }));
+    const { rerender } = render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    expect(await screen.findByText('October 15')).toBeInTheDocument();
+    expect(recallMock).toHaveBeenCalledWith('a1', { history: false });
+    expect(screen.getByText('Canopy project —')).toBeInTheDocument();
+    // Starting a new chat re-renders the same agent's memory surface.
+    rerender(<MemorySurface agentId="a1" agentName="Quill" memory={{ ...read(true) }} />);
+    expect(screen.getByText('October 15')).toBeInTheDocument();
+    expect(screen.getByText(/Shared across conversations with Quill/)).toBeInTheDocument();
+  });
+
   it('falls back to the rules-only surface when facts are unavailable', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(false)} />);
     expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
-    expect(screen.queryByText('Profile')).toBeNull();
+    expect(screen.queryByText('Memories')).toBeNull();
     expect(screen.queryByText('Search memories')).toBeNull();
     expect(recallMock).not.toHaveBeenCalled();
   });
@@ -71,10 +88,10 @@ describe('MemorySurface', () => {
   it('keeps the rules editor and renders the two facts cards when available', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
-    expect(screen.getByText('Profile')).toBeInTheDocument();
+    expect(screen.getByText('Memories')).toBeInTheDocument();
     expect(screen.getAllByText('Search memories')).not.toHaveLength(0);
     await waitFor(() =>
-      expect(recallMock).toHaveBeenCalledWith('a1', { profile: true, history: false }),
+      expect(recallMock).toHaveBeenCalledWith('a1', { history: false }),
     );
   });
 
@@ -126,7 +143,7 @@ describe('MemorySurface', () => {
   it('says the profile is empty only when the read worked', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(
-      await screen.findByText(/No profile memories yet/),
+      await screen.findByText(/No memories yet/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/could not read/)).toBeNull();
   });
@@ -135,7 +152,7 @@ describe('MemorySurface', () => {
     recallMock.mockRejectedValueOnce(new Error('down'));
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(await screen.findByText('We could not read these memories. Try again.')).toBeInTheDocument();
-    expect(screen.queryByText(/No profile memories yet/)).toBeNull();
+    expect(screen.queryByText(/No memories yet/)).toBeNull();
 
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
     fireEvent.click(screen.getAllByRole('button', { name: 'Retry' })[0]!);
@@ -340,7 +357,7 @@ describe('MemorySurface', () => {
 
     fireEvent.click(screen.getAllByRole('switch', { name: 'Show history' })[0]!);
     await waitFor(() =>
-      expect(recallMock).toHaveBeenCalledWith('a1', { profile: true, history: true }),
+      expect(recallMock).toHaveBeenCalledWith('a1', { history: true }),
     );
     expect(await screen.findByText(/Boston/)).toBeInTheDocument();
     expect(screen.getByText('Replaced')).toBeInTheDocument();
@@ -531,9 +548,9 @@ describe('MemorySurface', () => {
     rerender(<MemorySurface agentId="a2" agentName="Quill" memory={read(true)} />);
     await waitFor(() => expect(screen.queryByText(/AliceSecret/)).toBeNull());
     await waitFor(() =>
-      expect(recallMock).toHaveBeenCalledWith('a2', { profile: true, history: false }),
+      expect(recallMock).toHaveBeenCalledWith('a2', { history: false }),
     );
-    expect(await screen.findByText(/No profile memories yet/)).toBeInTheDocument();
+    expect(await screen.findByText(/No memories yet/)).toBeInTheDocument();
   });
 
   it('renders the owner\'s speaker as "You" and never the raw user id', async () => {
@@ -662,7 +679,7 @@ describe('MemorySurface', () => {
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('These details are about you and are visible to the team.'),
+      screen.getByText('Shared across conversations with Quill.'),
     ).toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Fix: Boston' }));
@@ -736,7 +753,7 @@ describe('MemorySurface — extraction paused', () => {
     // One notice for the whole surface, not one per card.
     expect(screen.getAllByText('Memory is paused')).toHaveLength(1);
 
-    expect(await screen.findByText('No profile memories yet.')).toBeInTheDocument();
+    expect(await screen.findByText('No memories yet.')).toBeInTheDocument();
     expect(screen.queryByText(/will appear here/)).toBeNull();
   });
 
@@ -744,7 +761,7 @@ describe('MemorySurface — extraction paused', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     expect(
       await screen.findByText(
-        'No profile memories yet. Details we remember from your conversations will appear here.',
+        'No memories yet. Notes we remember from your conversations will appear here.',
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText('Memory is paused')).toBeNull();
@@ -850,7 +867,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     await waitFor(() => expect(document.activeElement).toBe(outcome));
   }
 
-  it('Forget → Undo waits on the Profile heading while the list re-reads, then lands on the row', async () => {
+  it('Forget → Undo waits on the Memories heading while the list re-reads, then lands on the row', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     await forgetBoston();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull());
@@ -868,12 +885,12 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     });
     press(screen.getByRole('button', { name: /^Undo/ }));
 
-    const heading = screen.getByText('Profile');
+    const heading = screen.getByText('Memories');
     await waitFor(() => expect(document.activeElement).toBe(heading));
     act(() => finish());
     await screen.findByRole('button', { name: 'Fix: Boston' });
     await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
-    expect(document.activeElement?.textContent).toBe('lives in: Boston');
+    expect(document.activeElement?.textContent).toBe('You — lives in: Boston');
   });
 
   it('Fix → Undo lands on the row the Undo put back', async () => {
@@ -896,7 +913,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
   });
 
-  it('a Forgotten receipt from Search that runs out with focus hands focus to the Profile heading', async () => {
+  it('a Forgotten receipt from Search that runs out with focus hands focus to the Memories heading', async () => {
     const SEARCH_FORGET = memoryForgetLabel(memoryStatementText(fact({ id: 'm1' })));
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
@@ -915,10 +932,10 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
       await vi.advanceTimersByTimeAsync(11_000);
     });
     await waitFor(() => expect(screen.queryByText('Forgotten')).toBeNull());
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Profile')));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Memories')));
   });
 
-  it('a Forgotten receipt that runs out while it has focus hands focus to the Profile heading', async () => {
+  it('a Forgotten receipt that runs out while it has focus hands focus to the Memories heading', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     await forgetBoston();
@@ -926,7 +943,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
       await vi.advanceTimersByTimeAsync(11_000);
     });
     await waitFor(() => expect(screen.queryByText('Forgotten')).toBeNull());
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Profile')));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText('Memories')));
   });
 
   it('an Updated receipt that runs out while it has focus hands focus to the fixed row', async () => {

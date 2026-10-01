@@ -1,3 +1,4 @@
+import { CHAT_CONTENT_CLASS } from './ChatComposer';
 /**
  * Today — the queue of things waiting on a human, and nothing else.
  *
@@ -273,7 +274,7 @@ export function TodayView({
   };
 
   return (
-    <div className="mx-auto w-full max-w-[900px] px-6 py-6">
+    <div className={`${CHAT_CONTENT_CLASS} py-6`}>
       <div className="mb-6 flex flex-col gap-2.5">
         <h1 className="max-w-[620px] text-[21px] font-medium leading-snug tracking-[-0.02em] text-pretty">
           {headline}

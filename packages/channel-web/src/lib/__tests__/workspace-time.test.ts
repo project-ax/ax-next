@@ -121,3 +121,13 @@ describe('relativeDay', () => {
     expect(relativeDay('not a date', now)).toBe('a while ago');
   });
 });
+
+// An invalid date formerly threw while rendering the conversation rail.
+describe('conversationDate', () => {
+  it('keeps an unreadable date from crashing the conversation', async () => {
+    const { conversationDate } = await import('../workspace-time');
+    expect(conversationDate('not-a-date')).toBe('Unknown');
+    expect(conversationDate('')).toBe('Unknown');
+    expect(conversationDate('2026-08-18T12:00:00Z')).toMatch(/18/);
+  });
+});

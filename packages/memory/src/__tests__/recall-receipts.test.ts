@@ -94,8 +94,17 @@ async function setup(
       writeFailures = n;
     },
     ctx,
-    tool: (query, c = ctx()) =>
-      h.bus.call<{ input?: unknown }, string>(MEMORY_RECALL_TOOL_HOOK, c, { input: { query } }),
+    tool: async (query, c = ctx()) => {
+      const rendered = await h.bus.call<{ input?: unknown }, string>(MEMORY_RECALL_TOOL_HOOK, c, { input: { query } });
+      const recallId = rendered.match(/Recall ID: ([a-f0-9-]+)/)?.[1];
+      const raw = storage.get(recallReceiptsKey(c.conversationId ?? ''));
+      const stored = raw ? JSON.parse(new TextDecoder().decode(raw)) : undefined;
+      const candidate = stored?.receipts.find((r: { recallId: string }) => r.recallId === recallId);
+      if (candidate) await h.bus.call('tool:execute:memory_use', c, {
+        input: { recallId, ids: candidate.statements.map((s: { id: string }) => s.id) },
+      });
+      return rendered;
+    },
     receipts: (c = ctx(), conversationId = CONV) =>
       h.bus.call<MemoryRecallReceiptsInput, MemoryRecallReceiptsOutput>(
         MEMORY_RECALL_RECEIPTS_HOOK,
@@ -163,7 +172,7 @@ describe('memory_recall records a receipt', () => {
     const raw = env.storage.get(recallReceiptsKey(CONV));
     expect(raw).toBeDefined();
     const parsed = JSON.parse(new TextDecoder().decode(raw));
-    expect(parsed).toMatchObject({ v: 1, agentId: 'agent-1', userId: ALICE });
+    expect(parsed).toMatchObject({ v: 2, agentId: 'agent-1', userId: ALICE });
     expect(parsed.receipts).toHaveLength(1);
   });
 
@@ -367,5 +376,72 @@ describe('memory:recall-receipts — closedSince', () => {
     expect(out.receipts).toHaveLength(1);
     expect('closedSince' in out.receipts[0]!.statements[0]!).toBe(false);
     expect(eventsNamed(env.h.logs, RECALL_RECEIPT_FAILED_EVENT).length).toBeGreaterThan(0);
+  });
+});
+
+
+describe('answer memory attribution', () => {
+  it('shows only selected evidence, not all retrieved candidates, and survives reload', async () => {
+    const env = await setup();
+    const boston = await seedBoston(env);
+    const unrelated = (await env.h.remember({ about: 'acme_corp', relation: 'stage', value: 'series B' })).id;
+    const rendered = await env.h.bus.call<{ input: unknown }, string>(
+      MEMORY_RECALL_TOOL_HOOK, env.ctx(), { input: { query: 'Boston' } },
+    );
+    expect(rendered).toContain('Boston');
+    expect(rendered).toContain('series B');
+    expect((await env.receipts()).receipts).toEqual([]);
+    const recallId = rendered.match(/Recall ID: ([a-f0-9-]+)/)![1];
+    await env.h.bus.call('tool:execute:memory_use', env.ctx(), { input: { recallId, ids: [boston, boston] } });
+    const out = await env.receipts();
+    expect(out.receipts.flatMap((r) => r.statements.map((s) => s.id))).toEqual([boston]);
+    expect(JSON.stringify(out)).not.toContain(unrelated);
+    expect((await env.receipts()).receipts).toEqual(out.receipts);
+  });
+});
+
+
+describe('memory_use validation and isolation', () => {
+  async function recall(env: Env) {
+    const table = await env.h.bus.call<{ input: unknown }, string>(MEMORY_RECALL_TOOL_HOOK, env.ctx(), { input: { query: 'Boston' } });
+    return table.match(/Recall ID: ([a-f0-9-]+)/)![1];
+  }
+  it('rejects IDs outside the recalled pool and foreign users, agents and conversations', async () => {
+    const env = await setup({ agent: { visibility: 'team' } });
+    const id = await seedBoston(env);
+    const recallId = await recall(env);
+    const use = (input: unknown, ctx = env.ctx()) => env.h.bus.call('tool:execute:memory_use', ctx, { input });
+    await expect(use({ recallId, ids: ['not-recalled'] })).rejects.toMatchObject({ code: 'invalid-payload' });
+    for (const ctx of [env.ctx({ userId: BOB }), env.ctx({ agentId: 'agent-2' }), env.ctx({ conversationId: 'other' })]) {
+      await expect(use({ recallId, ids: [id] }, ctx)).rejects.toThrow();
+    }
+    expect((await env.receipts()).receipts).toEqual([]);
+    await use({ recallId, ids: [id] });
+    await use({ recallId, ids: [id] });
+    expect((await env.receipts()).receipts).toHaveLength(1);
+    await expect(use({ recallId, ids: [] })).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+  it('an empty selection shows no chip and can be repeated', async () => {
+    const env = await setup();
+    await seedBoston(env);
+    const recallId = await recall(env);
+    for (let i = 0; i < 2; i++) await env.h.bus.call('tool:execute:memory_use', env.ctx(), { input: { recallId, ids: [] } });
+    expect((await env.receipts()).receipts).toEqual([]);
+  });
+  it.each([undefined, [], {}, { recallId: 'x', ids: 'all' }, { recallId: 'x', ids: [42] },
+    { recallId: 'x', ids: ['x'.repeat(257)] }, { recallId: 'x', ids: Array(41).fill('x') },
+    { recallId: 'x', ids: [], ownerUserId: BOB }])('rejects malformed input %j', async (input) => {
+    const env = await setup();
+    await expect(env.h.bus.call('tool:execute:memory_use', env.ctx(), { input })).rejects.toMatchObject({ code: 'invalid-payload' });
+    expect(env.storage.size).toBe(0);
+  });
+  it('does not relabel old retrieval-only receipts as used evidence', async () => {
+    const env = await setup();
+    await seedBoston(env);
+    const { statements } = await env.h.recall({ about: 'user' }, env.ctx());
+    env.storage.set(recallReceiptsKey(CONV), new TextEncoder().encode(JSON.stringify({
+      v: 1, agentId: 'agent-1', userId: ALICE, receipts: [{ at: new Date().toISOString(), statements }],
+    })));
+    expect((await env.receipts()).receipts).toEqual([]);
   });
 });

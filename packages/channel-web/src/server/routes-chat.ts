@@ -10,6 +10,8 @@ import {
 import type { ContentBlock } from '@ax/ipc-protocol';
 import {
   ApproveAuthoredSkillRequest,
+  CreateConversationRequest,
+  RenameConversationRequest,
   extractText,
   GetConversationQuery,
   ListConversationsQuery,
@@ -1192,6 +1194,45 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
     },
 
+    /** Session-scoped controls, using the conversation store's existing ACLs. */
+    async createConversation(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      let body;
+      try { body = CreateConversationRequest.parse(JSON.parse(req.body.toString('utf8'))); }
+      catch { res.status(400).json({ error: 'invalid-payload' }); return; }
+      try {
+        const result = await bus.call<ConversationsCreateInput, ConversationsCreateOutput>(
+          'conversations:create', initCtx, { userId, agentId: body.agentId, origin: 'web' },
+        );
+        res.status(201).json({ conversationId: result.conversationId });
+      } catch (err) {
+        if (err instanceof PluginError && (err.code === 'forbidden' || err.code === 'not-found')) {
+          res.status(404).json({ error: 'agent-not-found' }); return;
+        }
+        throw err;
+      }
+    },
+
+    async renameConversation(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const conversationId = req.params.id;
+      if (!conversationId) { res.status(400).json({ error: 'missing-conversation-id' }); return; }
+      let body;
+      try { body = RenameConversationRequest.parse(JSON.parse(req.body.toString('utf8'))); }
+      catch { res.status(400).json({ error: 'invalid-payload' }); return; }
+      try {
+        await bus.call('conversations:set-title', initCtx, { conversationId, userId, title: body.title });
+        res.status(204).end();
+      } catch (err) {
+        if (err instanceof PluginError && (err.code === 'forbidden' || err.code === 'not-found')) {
+          res.status(404).json({ error: 'conversation-not-found' }); return;
+        }
+        throw err;
+      }
+    },
+
     /** DELETE /api/chat/conversations/:id — soft delete (J5). */
     async deleteConversation(
       req: RouteRequest,
@@ -1444,7 +1485,7 @@ export async function registerChatRoutes(
   // up the narrower-optional-fields surface.
   type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
   const routes: Array<{
-    method: 'GET' | 'POST' | 'DELETE';
+    method: 'GET' | 'POST' | 'DELETE' | 'PATCH';
     path: string;
     handler: RouteHandler;
   }> = [
@@ -1477,6 +1518,16 @@ export async function registerChatRoutes(
       method: 'DELETE',
       path: '/api/chat/conversations/:id',
       handler: handlers.deleteConversation as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/chat/conversations',
+      handler: handlers.createConversation,
+    },
+    {
+      method: 'PATCH',
+      path: '/api/chat/conversations/:id',
+      handler: handlers.renameConversation,
     },
     {
       method: 'POST',

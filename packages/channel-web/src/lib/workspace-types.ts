@@ -591,8 +591,8 @@ export type ThreadMessage =
        */
       at: string;
       /**
-       * TASK-628 — the statements `memory_recall` handed the model during this
-       * answer's exchange. A snapshot of what the model saw, not a re-query;
+       * The recalled statements explicitly selected with `memory_use` during
+       * this answer's exchange. A snapshot of supporting evidence, not a re-query;
        * `closedSince` marks one that has been closed since. Absent when the
        * model recalled nothing (or nothing could be attributed to this answer).
        */

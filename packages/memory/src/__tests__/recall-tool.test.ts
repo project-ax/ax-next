@@ -3,7 +3,7 @@ import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/c
 import type { RecallOutput } from '@ax/memory-facts-contract';
 
 import { MEMORY_NOTE_DESCRIPTOR } from '../note-tool.js';
-import { MEMORY_RECALL_DESCRIPTOR, MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
+import { MEMORY_RECALL_DESCRIPTOR, MEMORY_RECALL_TOOL_HOOK, MEMORY_USE_DESCRIPTOR } from '../recall-tool.js';
 import { createMemoryPlugin } from '../plugin.js';
 import { engineRecord, makeMemoryHarness, registerMemoryAgents, type MemoryHarness } from './harness.js';
 
@@ -55,6 +55,7 @@ describe('@ax/memory — the memory_recall tool', () => {
     harness = await makeMemoryHarness();
     expect(harness.toolDescriptors).toEqual([
       MEMORY_RECALL_DESCRIPTOR,
+      MEMORY_USE_DESCRIPTOR,
       MEMORY_NOTE_DESCRIPTOR,
     ]);
     expect(MEMORY_RECALL_DESCRIPTOR.executesIn).toBe('host');

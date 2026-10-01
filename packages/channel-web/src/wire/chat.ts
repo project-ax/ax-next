@@ -285,3 +285,7 @@ export const ListAgentsResponse = z.array(
   }),
 );
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponse>;
+
+// User-driven conversation controls; ownership always comes from the session.
+export const CreateConversationRequest = z.object({ agentId: z.string().min(1).max(256) });
+export const RenameConversationRequest = z.object({ title: z.string().trim().min(1).max(256) });

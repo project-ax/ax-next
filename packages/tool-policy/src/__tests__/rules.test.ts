@@ -323,6 +323,7 @@ describe('BUILTIN_RULES', () => {
         'connector_propose',
         'memory_note',
         'memory_recall',
+        'memory_use',
         'request_capability',
         'search_catalog',
         'skill_propose',

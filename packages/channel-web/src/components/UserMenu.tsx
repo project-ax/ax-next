@@ -30,6 +30,8 @@ import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
 import { AvatarTile } from './AvatarTile';
 import { SidebarSectionLabel } from './SidebarSectionLabel';
+import { Button } from './ui/button';
+import { IconTooltip } from './workspace/IconTooltip';
 
 interface ThemeOption {
   value: Theme;
@@ -45,8 +47,10 @@ const THEME_OPTIONS: ThemeOption[] = [
 
 export function UserMenu({
   onOpenAdminSettings,
+  collapsed = false,
 }: {
   onOpenAdminSettings?: (() => void) | undefined;
+  collapsed?: boolean;
 } = {}) {
   const user = useUser();
   const theme = useTheme();
@@ -56,9 +60,11 @@ export function UserMenu({
   return (
     <div className="user-row-wrap relative border-t border-border p-2">
       <DropdownMenu>
+        <IconTooltip label={`${user.name}, account menu`} side="right" className="w-full">
         <DropdownMenuTrigger asChild>
-      <button
+      <Button variant="ghost"
         type="button"
+        aria-label={collapsed ? `${user.name}, account menu` : undefined}
         // TASK-443 — where focus comes back to when Settings closes.
         //
         // Settings is a pane swap, not an overlay: opening it unmounts this
@@ -81,27 +87,27 @@ export function UserMenu({
         // right edge and pushed the avatar off-centre when collapsed.
         className="
           user-row group flex items-center gap-2.5 cursor-pointer w-full
-          px-2 py-[7px] rounded-lg transition-colors
+          h-auto min-h-11 px-1.5 py-[7px] rounded-md transition-colors
           hover:bg-muted aria-expanded:bg-muted
         "
       >
         <AvatarTile
-          shape="round"
+          shape="square"
           size={26}
-          gradientStrength={26}
+          background="muted"
           className="user-avatar text-[11px] tracking-[0.04em] text-foreground"
         >
-          {user.name[0]?.toUpperCase() ?? 'U'}
+          {user.name.split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase() || 'U'}
         </AvatarTile>
-        <span className="flex flex-col gap-px min-w-0 flex-1 text-left">
+        <span className={collapsed ? 'sr-only' : 'flex min-w-0 flex-1 flex-col gap-px text-left'}>
           <span className="user-name text-[12.5px] leading-[1.15] tracking-[-0.005em] text-foreground truncate">
             {user.name}
           </span>
           <span className="user-email text-[10.5px] leading-[1.15] text-muted-foreground truncate">
-            {user.email}
+            {user.role === 'admin' ? 'Admin' : 'Member'}
           </span>
         </span>
-        <svg
+        {!collapsed && <svg
           viewBox="0 0 10 10"
           aria-hidden="true"
           className="
@@ -117,9 +123,10 @@ export function UserMenu({
             strokeLinecap="round"
             strokeLinejoin="round"
           />
-        </svg>
-      </button>
+        </svg>}
+      </Button>
         </DropdownMenuTrigger>
+        </IconTooltip>
         <DropdownMenuContent
           side="top"
           align="start"

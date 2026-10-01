@@ -1,11 +1,9 @@
 /**
  * TASK-628 — "Used N memories" under an answer.
  *
- * `@ax/memory` records a RECALL RECEIPT every time `memory_recall` answers
- * inside a conversation: `{ at, statements }`, the exact rows the model was
- * handed. It serves them back over `memory:recall-receipts`. This module does
- * the channel-web half: decide which answer each receipt belongs to, and copy
- * the statements onto that answer's thread message.
+ * `@ax/memory` returns receipts containing only evidence the model explicitly
+ * selected with `memory_use`, not the broader search candidates. This module
+ * associates those snapshots with answers in the transcript.
  *
  * ATTRIBUTION IS BY TIME. A receipt taken at `t` belongs to the exchange opened
  * by the last person turn at or before `t` (an exchange runs up to the next

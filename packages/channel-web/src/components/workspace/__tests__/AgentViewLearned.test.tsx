@@ -105,7 +105,7 @@ function renderView({
     <UserProvider value={{ id: 'u1', email: 'u@example.com', name: 'Uma', role }}>
       <AgentView
         agentId="a-quill"
-        tab="chat"
+        tab="memory"
         onTab={onTab}
         decisions={[]}
         threadGrants={[]}
@@ -154,13 +154,10 @@ beforeEach(() => {
 afterEach(() => clearViewport());
 
 describe('AgentView — "What I learned in this chat"', () => {
-  it('sits directly under "Right now", above the permission sections, and follows this conversation', async () => {
+  it('shows the learned block in Memory and follows this conversation', async () => {
     renderView();
     await screen.findByText(LEARNED_TITLE);
-    const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
-    const i = headings.findIndex((h) => h?.startsWith(LEARNED_TITLE));
-    expect(headings[i - 1]).toBe('Right now');
-    expect(headings[i + 1]).toBe('What it may do alone');
+    expect(screen.getByRole('tab', { name: 'Memory' })).toHaveAttribute('aria-selected', 'true');
     await streamOpen();
     expect(recall).toHaveBeenCalledWith('a-quill', { conversationId: 'c-now' });
     expect(events.mock.calls[0]?.[0]).toBe('c-now');
@@ -336,7 +333,7 @@ describe('AgentView — the chip and the rail share one set of fixes', () => {
     expect(await within(railEl).findByText(fixedText)).toBeTruthy();
     expect(within(railEl).queryByText(bostonText)).toBeNull();
     // No re-read did it: the rail changed from the shared ledger alone.
-    expect(recall).toHaveBeenCalledTimes(1);
+    expect(recall.mock.calls.filter(([, options]) => options?.conversationId === 'c-now')).toHaveLength(1);
     expect(within(chipEl).getByText(MEMORY_USED_SINCE.replaced)).toBeTruthy();
 
     fireEvent.click(within(chipEl).getByRole('button', { name: memoryUndoFixLabel('Denver') }));

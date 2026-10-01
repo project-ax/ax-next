@@ -31,6 +31,13 @@
  * carries the argument for landing on the outcome line rather than on Undo
  * itself.
  */
+import { useState } from 'react';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Textarea } from '@/components/ui/textarea';
+import { StateDot } from './bits';
 import { RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -54,6 +61,7 @@ interface Props {
   onApprove: () => void;
   onDismiss: () => void;
   onUndo: () => void;
+  onEdit?: ((body: string) => Promise<void>) | undefined;
   /** A POST is in flight for this row: controls go quiet, never absent. */
   busy?: boolean;
   /** What the last action came back with, when it was not what was asked for. */
@@ -78,11 +86,16 @@ export function ApprovalCard({
   onApprove,
   onDismiss,
   onUndo,
+  onEdit,
   busy = false,
   notice = null,
   find = null,
   fieldKey,
 }: Props) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   // Same clock the queue row uses. The card sits in a transcript rather than a
   // live list, but the two claims it makes are the same two — how long undo has
   // left, and whether a deferred action has gone ahead — and a card that only
@@ -217,11 +230,12 @@ export function ApprovalCard({
     <>
       {announcement}
       <Card
-        className="max-w-[560px] border-warning/40 bg-warning-soft/40"
+        className="w-full max-w-[604px] rounded-md border-border bg-card shadow-sm"
         data-testid={`approval-${d.id}`}
         data-status={d.status}
       >
-        <CardContent className="p-4">
+        <CardContent className="p-3.5">
+          <Badge variant="warning" className="mb-2.5 gap-1.5 text-[12px] font-medium"><StateDot state="waiting" />Waiting on you</Badge>
           {/*
             THE QUESTION, and therefore a focus target (TASK-427). Undo re-opens
             this card, which unmounts the receipt the person was standing on — so
@@ -234,7 +248,7 @@ export function ApprovalCard({
             ref={answerRef}
             tabIndex={-1}
             data-testid={`approval-question-${d.id}`}
-            className={`text-[13.5px] font-medium ${RESOLUTION_FOCUS_RING}`}
+            className={`text-[14px] font-medium ${RESOLUTION_FOCUS_RING}`}
           >
             <FindHighlight fieldKey={`${fieldKey ?? ''}:summary`} text={d.summary} find={find} />
           </div>
@@ -284,10 +298,10 @@ export function ApprovalCard({
             </p>
           )}
           {d.preview && (
-            <div className="mt-3 rounded-md bg-background/70 px-3.5 py-3">
-              <div className="mb-1.5 text-[11.5px] text-muted-foreground">
+            <div className="mt-3 rounded-sm bg-muted px-3.5 py-2.5">
+              {d.preview.meta && <div className="mb-1.5 text-[11.5px] text-muted-foreground">
                 {d.preview.meta}
-              </div>
+              </div>}
               <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
             </div>
           )}
@@ -309,6 +323,7 @@ export function ApprovalCard({
           <div className="mt-3.5 flex flex-wrap items-center gap-2">
             <Button
               size="sm"
+              className="h-8 max-md:h-11"
               onClick={() => {
                 armForResolution();
                 onApprove();
@@ -317,9 +332,12 @@ export function ApprovalCard({
             >
               {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
             </Button>
+            {onEdit && d.preview && !stale && <Button size="sm" className="h-8 max-md:h-11" variant="outline" disabled={busy}
+              onClick={() => { setDraft(d.preview?.body ?? ''); setEditError(null); setEditing(true); }}>Edit first</Button>}
             <Button
               size="sm"
               variant="ghost"
+              className="h-8 max-md:h-11"
               onClick={() => {
                 armForResolution();
                 onDismiss();
@@ -329,13 +347,25 @@ export function ApprovalCard({
               {d.ghostLabel}
             </Button>
           </div>
-          <p className="mt-2.5 text-[11.5px] text-muted-foreground">
+          <p className="sr-only">
             {busy
               ? 'Working on it…'
               : 'Nothing is sent until you choose. I am holding here, so we can carry straight on.'}
           </p>
         </CardContent>
       </Card>
+      <Dialog open={editing} onOpenChange={open => { if (!editBusy) setEditing(open); }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Edit the draft</DialogTitle><DialogDescription>We’ll cancel the current draft and ask the agent to prepare this version. It will ask again before sending.</DialogDescription></DialogHeader>
+          <FieldGroup><Field><FieldLabel htmlFor={`draft-${d.id}`}>Draft</FieldLabel><Textarea id={`draft-${d.id}`} value={draft} maxLength={8000} onChange={e => setDraft(e.target.value)} rows={5} /></Field></FieldGroup>
+          {editError && <Alert variant="destructive"><AlertDescription>{editError}</AlertDescription></Alert>}
+          <DialogFooter><Button variant="outline" disabled={editBusy} onClick={() => setEditing(false)}>Cancel</Button><Button disabled={editBusy || !draft.trim()} onClick={() => {
+            if (!onEdit) return;
+            setEditBusy(true); setEditError(null);
+            void onEdit(draft.trim()).then(() => setEditing(false)).catch(() => setEditError('We couldn’t ask for that edit just now. Please try again.')).finally(() => setEditBusy(false));
+          }}>{editBusy ? 'Asking…' : 'Ask for this version'}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

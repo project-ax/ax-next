@@ -810,6 +810,25 @@ describe('@ax/preset-memory canary', () => {
     expect(again.json).toEqual({ undone: false });
   });
 
+  it('the registered attribution tool exposes only evidence selected for an answer', async () => {
+    const ctx = ctxFor(aliceAgentId, ALICE, { conversationId: 'canary-memory-usage' });
+    const listed = await bus.call<Record<string, never>, { tools: Array<{ name: string }> }>('tool:list', ctx, {});
+    expect(listed.tools.some((t) => t.name === 'memory_use')).toBe(true);
+    await bus.call('tool:execute:memory_note', ctx, { input: { about: 'usage_canary', relation: 'city', value: 'Boston' } });
+    const recalled = await bus.call<Record<string, unknown>, { statements: Array<{ id: string; value: string }> }>(
+      'memory:recall', ctx, { about: 'usage_canary' },
+    );
+    const id = recalled.statements.find((s) => s.value === 'Boston')!.id;
+    const table = await bus.call<{ input: unknown }, string>('tool:execute:memory_recall', ctx, { input: { query: 'Boston' } });
+    const recallId = table.match(/Recall ID: ([a-f0-9-]+)/)![1];
+    expect(await bus.call('memory:recall-receipts', ctx, { conversationId: ctx.conversationId })).toMatchObject({ receipts: [] });
+    await bus.call('tool:execute:memory_use', ctx, { input: { recallId, ids: [id] } });
+    const out = await bus.call<{ conversationId: string }, { receipts: Array<{ statements: Array<{ id: string }> }> }>(
+      'memory:recall-receipts', ctx, { conversationId: ctx.conversationId! },
+    );
+    expect(out.receipts.flatMap((r) => r.statements.map((s) => s.id))).toEqual([id]);
+  });
+
   it('memory_note is in the tool catalog, stores agent provenance; memory_recall renders fresh rows', async () => {
     const listed = await bus.call<
       Record<string, never>,
@@ -856,7 +875,7 @@ describe('@ax/preset-memory canary', () => {
       { input: { query: 'work' } },
     );
     // TASK-611: the Conv column carries the per-answer conversation number.
-    expect(table).toContain('| Network | When | Conv | Statement |');
+    expect(table).toContain('| ID | Network | When | Conv | Statement |');
     expect(table).toMatch(/Distinct conversations in this evidence: \d+\./);
     // TASK-526: a kind-less row says who saved it, and the caller's own
     // subject renders as DEM's literal `user`, never the stored `user:<id>`.

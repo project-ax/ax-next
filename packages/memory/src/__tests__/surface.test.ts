@@ -33,6 +33,7 @@ describe('@ax/memory — manifest', () => {
       // preset" enforced by the bus rather than by a convention.
       'system-prompt:augment',
       'tool:execute:memory_recall',
+      'tool:execute:memory_use',
       'tool:execute:memory_note',
     ]);
   });
@@ -78,6 +79,7 @@ describe('@ax/memory — manifest', () => {
         'system-prompt:augment',
         'tool:register',
         'tool:execute:memory_recall',
+        'tool:execute:memory_use',
         'tool:execute:memory_note',
       ].sort(),
     );

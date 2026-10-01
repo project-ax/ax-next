@@ -62,7 +62,7 @@ import {
   selectProfileRows,
 } from './profile.js';
 import { formatEvidenceWhen } from './evidence.js';
-import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall } from './recall-tool.js';
+import { MEMORY_RECALL_TOOL_HOOK, registerMemoryRecall, registerMemoryUse } from './recall-tool.js';
 import { MEMORY_NOTE_TOOL_HOOK, registerMemoryNote } from './note-tool.js';
 import {
   MAX_CONVERSATION_ID_CHARS,
@@ -527,10 +527,11 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
         MEMORY_UNFORGET_HOOK,
         MEMORY_UNCORRECT_HOOK,
         MEMORY_STATUS_HOOK,
-        // TASK-628: what memory_recall handed the model, per conversation.
+        // Selected memory evidence behind answer chips, per conversation.
         MEMORY_RECALL_RECEIPTS_HOOK,
         SYSTEM_PROMPT_AUGMENT_HOOK,
         MEMORY_RECALL_TOOL_HOOK,
+        'tool:execute:memory_use',
         MEMORY_NOTE_TOOL_HOOK,
         ...(exportsCfg !== undefined ? [MEMORY_EXPORT_FLUSH_HOOK] : []),
         ...(exportsCfg?.volume !== undefined ? ['sandbox:memory-mounts'] : []),
@@ -1546,8 +1547,8 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
       );
 
       // ---------------------------------------------------------------
-      // memory:recall-receipts (TASK-628) — what memory_recall handed the
-      // model in one conversation, each row with its since-state. Answers
+      // memory:recall-receipts (TASK-628) — explicitly selected recalled evidence
+      // in one conversation, each row with its since-state. Answers
       // only the caller's own receipts (stored agent AND user must match
       // ctx); the conversation id is a filter, never an authority.
       // ---------------------------------------------------------------
@@ -1576,6 +1577,7 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
 
       if (config.rules === true) registerRulesHooks(bus);
       await registerMemoryRecall(bus);
+      await registerMemoryUse(bus);
       await registerMemoryNote(bus, onFactsChanged, (ctx, query) => readPriorRows(bus, ctx, query));
     },
 

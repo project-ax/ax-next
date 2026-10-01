@@ -34,7 +34,7 @@ function widthPx(className: string): number {
       /^(min-w|max-w|basis|p|px|pl|pr|ps|pe)-/.test(c) ||
       /^border(-[xlrse])?(-(\d+|\[[^\]]+\]))?$/.test(c),
   );
-  if (sneaky) throw new Error(`"${sneaky}" also sets width; teach this test how to read it`);
+  if (sneaky && !(sneaky.startsWith('border') && tokens.includes('box-border'))) throw new Error(`"${sneaky}" also sets width; teach this test how to read it`);
   const widths = tokens
     .filter((c) => /^(w|size)-/.test(c))
     .map((c) => {
@@ -82,6 +82,14 @@ describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
     );
   });
 
+  it('resting is a hollow ring rather than a dash or filled circle', () => {
+    const { dot } = renderSlotted('resting');
+    expect(dot).toContain('rounded-full');
+    expect(dot).toContain('border-state-quiet');
+    expect(dot).not.toMatch(/\bbg-/);
+    expect(widthPx(dot)).toBe(7);
+  });
+
   it('reads the widths it is meant to read', () => {
     expect(widthPx('w-2')).toBe(8);
     expect(widthPx('h-[3px] w-[8px] rounded-full')).toBe(8);
@@ -89,6 +97,7 @@ describe('StateDotSlot fits every STATE_SHAPE (TASK-546)', () => {
     expect(() => widthPx('w-full')).toThrow(/can't read/);
     expect(() => widthPx('h-2')).toThrow(/exactly one/);
     expect(() => widthPx('w-[6px] min-w-[12px]')).toThrow(/also sets width/);
+    expect(() => widthPx('box-border w-[6px] min-w-[12px]')).toThrow(/also sets width/);
     expect(() => widthPx('w-[6px] px-1')).toThrow(/also sets width/);
     expect(() => widthPx('w-[6px] border')).toThrow(/also sets width/);
     expect(() => widthPx('w-[6px] border-x-2')).toThrow(/also sets width/);

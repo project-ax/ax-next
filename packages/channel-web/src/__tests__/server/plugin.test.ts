@@ -89,6 +89,7 @@ function conversationsMockPlugin(args: {
         'conversations:get',
         'conversations:list',
         'conversations:delete',
+        'conversations:set-title',
       ],
       calls: [],
       subscribes: [],
@@ -156,6 +157,13 @@ function conversationsMockPlugin(args: {
           );
         },
       );
+      bus.registerService('conversations:set-title', 'mock-conversations', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-conversations',
+          message: 'conversations:set-title stub (not exercised by this suite)',
+        });
+      });
       bus.registerService('conversations:delete', 'mock-conversations', async () => {
         throw new PluginError({
           code: 'not-implemented',
@@ -659,6 +667,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'conversations:get',
         'conversations:list',
         'conversations:delete',
+        'conversations:set-title',
         'agent:invoke',
         'agent:apply-capability-grant',
         'attachments:store-temp',

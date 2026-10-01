@@ -49,30 +49,47 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
   };
 }
 
+let initialTab: 'activity' | 'rules' = 'rules';
 function renderRail(d: AgentDetail = detail()) {
-  return render(<AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} />);
+  return render(<AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} />);
 }
 
-/** The permission list's disclosure trigger, once the rail has loaded. */
-function permissionsTrigger(): Promise<HTMLElement> {
-  return screen.findByRole('button', { name: /^Show (all \d+ rules|the 1 rule)$/ });
-}
-
-/**
- * Open the permission list. It is collapsed by default (TASK-685), so every
- * test about what a ROW says has to open it first — deliberately, rather than
- * the list being forced open under test and the default going untested.
- */
+/** Wait for the selected rules panel's live count. */
 async function openPermissions(): Promise<void> {
-  fireEvent.click(await permissionsTrigger());
+  await screen.findByText(/^\d+ rules?$/);
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  initialTab = 'rules';
   railMock.mockResolvedValue(rail());
 });
 
+describe('AgentRail — simplified tabs', () => {
+  it('keeps Current conversation without an empty-history message', async () => {
+    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /Current conversation/ })).toBeTruthy();
+    expect(screen.queryByText('No earlier conversations yet.')).toBeNull();
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+  });
+
+  it('combines current work and history in one Activity tab', async () => {
+    railMock.mockResolvedValue(rail({
+      activity: { status: 'ok', activity: railActivity({ phrase: 'Reading the Q3 notes' }) },
+    }));
+    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()}
+      panels={{ activity: <p>Finished the inbox sweep</p> }} />);
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    expect(screen.queryByRole('tab', { name: 'Right now' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'What it did' })).toBeNull();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Activity' }), { button: 0, ctrlKey: false });
+    expect(await screen.findByText('Reading the Q3 notes')).toBeTruthy();
+    expect(screen.getByText('Finished the inbox sweep')).toBeTruthy();
+  });
+});
+
 describe('AgentRail — "Right now"', () => {
+  beforeEach(() => { initialTab = 'activity'; });
   it('says only the state word when nothing is reporting an activity line', async () => {
     renderRail(detail({ agent: agent({ state: 'resting' }) }));
 
@@ -147,6 +164,7 @@ describe('AgentRail — "Right now"', () => {
 });
 
 describe('AgentRail — "What it may do alone"', () => {
+  beforeEach(() => { initialTab = 'rules'; });
   it('groups allow first, then hold, then deny', async () => {
     railMock.mockResolvedValue(
       rail({
@@ -645,17 +663,14 @@ describe('AgentRail — "What it may do alone"', () => {
     );
     const { container } = renderRail();
 
-    // Checked with the list COLLAPSED (TASK-685): this is a claim about the
-    // list's limits, and folding it away with the rows would let a tidy
-    // "Show the 1 rule" read as a leash the agent does not have.
-    await permissionsTrigger();
-    expect(screen.queryByText(/search the web/)).toBeNull();
+    // The tab's rule count must not read as a limit on tool reach.
+    await openPermissions();
+    expect(screen.getByText(/search the web/)).toBeTruthy();
     // Plain language, and it leads with the consequence. It fires for every
     // default personal agent, so it must not read as an error either.
     expect(container.textContent).toMatch(/Nothing limits which tools Quill can use/);
     expect(container.textContent).toMatch(/not a boundary/);
-    // It points at what IS on screen while shut — the "Show … rules" control
-    // above it — not at a list the reader cannot see (TASK-685 review).
+    // The warning refers to the visible rows.
     expect(container.textContent).toMatch(/The rules above are what's installed today/);
     expect(container.textContent).not.toMatch(/list above/);
   });
@@ -673,9 +688,9 @@ describe('AgentRail — "What it may do alone"', () => {
     );
     const { container } = renderRail();
 
-    // Visible with the list collapsed, for the same reason as the alert above.
-    await permissionsTrigger();
-    expect(screen.queryByText(/search the web/)).toBeNull();
+    // A short list still explains that one of its sources did not answer.
+    await openPermissions();
+    expect(screen.getByText(/search the web/)).toBeTruthy();
     expect(container.textContent).toMatch(/the rules above may be missing something/);
     expect(container.textContent).not.toMatch(/this list may be/);
   });
@@ -726,123 +741,56 @@ describe('AgentRail — "What it may do alone"', () => {
   });
 });
 
-describe('AgentRail — the permission list is collapsed by default (TASK-685)', () => {
-  /*
-    A first-run agent's rail used to open on a dozen rows, each ending in a
-    mono `rule:…` id. The list now sits behind one disclosure — but it is
-    DISCLOSURE, NOT REMOVAL, so the expanded state is pinned to be exactly
-    the rows the list always drew.
-  */
-  const rows = [
-    describedRow({ verdict: 'allow', capability: 'search the web', source: 'rule:web.search' }),
-    describedRow({
-      verdict: 'allow',
-      capability: 'write itself a note',
-      source: 'rule:memory.note',
-      effect: ['spends'],
-    }),
-    describedRow({
-      verdict: 'hold',
-      capability: 'post a message somewhere else',
-      source: 'rule:messaging.post',
-    }),
-    mcpRow(),
-    describedRow({
-      verdict: 'deny',
-      capability: 'start a hidden helper agent',
-      source: 'rule:builtins.task',
-    }),
-  ];
-
+describe('AgentRail — rules are disclosed by their tab', () => {
+  const rows = [describedRow(), mcpRow()];
   beforeEach(() => {
-    railMock.mockResolvedValue(
-      rail({
-        permissions: { status: 'ok', incomplete: false, unrestrictedTools: false, rows },
-      }),
-    );
+    railMock.mockResolvedValue(rail({ permissions: {
+      status: 'ok', incomplete: false, unrestrictedTools: false, rows,
+    } }));
   });
 
-  it('shows one summary control naming the count, and no rows and no raw ids', async () => {
-    const { container } = renderRail();
-    const trigger = await permissionsTrigger();
-
-    expect(trigger.textContent).toBe('Show all 5 rules');
-    expect(trigger.getAttribute('aria-expanded')).toBe('false');
-    const text = container.textContent ?? '';
-    expect(text).not.toMatch(/rule:|mcp:/);
-    for (const r of rows) {
-      if (r.capability !== '') expect(text).not.toContain(r.capability);
-    }
-    // The section it summarises still says what it is.
-    expect(screen.getByText('What it may do alone')).toBeTruthy();
+  it('starts on Conversations and reveals every rule when its tab is selected', async () => {
+    const { container } = render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
+    expect(screen.getByRole('tab', { name: 'Conversations' })).toHaveAttribute('aria-selected', 'true');
+    expect(container.textContent).not.toContain(rows[0]!.source);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'What it may do alone' }), { button: 0, ctrlKey: false });
+    await screen.findByText('2 rules');
+    for (const row of rows) expect(container.textContent).toContain(row.source);
+    expect(screen.queryByRole('button', { name: /^Show / })).toBeNull();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Conversations' }), { button: 0, ctrlKey: false });
+    expect(container.textContent).not.toContain(rows[0]!.source);
   });
 
-  it('is a real, focusable button, and nothing inside the fold is tabbable while shut', async () => {
-    const { container } = renderRail();
-    const trigger = await permissionsTrigger();
-
-    // A native <button> is keyboard-reachable and activates on Enter/Space
-    // with no handler of ours in the way.
-    expect(trigger.tagName).toBe('BUTTON');
-    expect(trigger.getAttribute('tabindex')).not.toBe('-1');
-    trigger.focus();
-    expect(document.activeElement).toBe(trigger);
-
-    // The rows' own controls (the effect badge, the vendor-prose popover) are
-    // not in the document at all while the list is shut.
-    expect(screen.queryByRole('button', { name: /Costs money/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /says it does/ })).toBeNull();
-    const controls = trigger.getAttribute('aria-controls');
-    if (controls !== null) {
-      expect(container.querySelector(`[id="${controls}"] button`)).toBeNull();
-    }
-  });
-
-  it('expands to exactly the rows it always drew, provenance included', async () => {
-    const { container } = renderRail();
-    const trigger = await permissionsTrigger();
-    fireEvent.click(trigger);
-
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    const text = container.textContent ?? '';
-    for (const r of rows) {
-      if (r.capability !== '') expect(text).toContain(r.capability);
-      // The provenance id survives in the expanded detail — the thing that
-      // makes a sentence drifting from its rule show up.
-      expect(text).toContain(r.source);
-    }
-    expect(text).toContain('mcp.linear.create_issue');
-    expect(screen.getByRole('button', { name: /Costs money/ })).toBeTruthy();
-
-    fireEvent.click(trigger);
-    expect(trigger.getAttribute('aria-expanded')).toBe('false');
-    expect(container.textContent).not.toContain('search the web');
-  });
-
-  it('counts a single rule in the singular', async () => {
-    railMock.mockResolvedValue(
-      rail({
-        permissions: {
-          status: 'ok',
-          incomplete: false,
-          unrestrictedTools: false,
-          rows: [describedRow()],
-        },
-      }),
-    );
+  it('counts one rule in the singular', async () => {
+    railMock.mockResolvedValue(rail({ permissions: {
+      status: 'ok', incomplete: false, unrestrictedTools: false, rows: [describedRow()],
+    } }));
     renderRail();
-    expect((await permissionsTrigger()).textContent).toBe('Show the 1 rule');
+    expect(await screen.findByText('1 rule')).toBeTruthy();
   });
 
-  it('offers no disclosure over an empty list — the empty-list sentence stands alone', async () => {
-    railMock.mockResolvedValue(
-      rail({
-        permissions: { status: 'ok', incomplete: false, unrestrictedTools: false, rows: [] },
-      }),
-    );
+  it('keeps the unknown-reach sentence for an empty list', async () => {
+    railMock.mockResolvedValue(rail({ permissions: {
+      status: 'ok', incomplete: false, unrestrictedTools: false, rows: [],
+    } }));
     renderRail();
     expect(await screen.findByText(/Nothing here describes Quill/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /^Show / })).toBeNull();
+    expect(screen.getByText('0 rules')).toBeTruthy();
+  });
+});
+
+describe('AgentRail icon tabs', () => {
+  it('preserves Radix active styling while each tab has a tooltip', () => {
+    renderRail();
+    const selected = screen.getByRole('tab', { name: 'What it may do alone' });
+    expect(selected).toHaveAttribute('data-state', 'active');
+    expect(screen.getByRole('tab', { name: 'Conversations' })).toHaveAttribute('data-state', 'inactive');
+  });
+  it('expands even when the clicked icon is the already selected tab', () => {
+    const expand = vi.fn();
+    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} collapsed onCollapse={expand} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Conversations' }));
+    expect(expand).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -934,9 +882,10 @@ describe('AgentRail — "Granted by you"', () => {
   the kind of green that reads as a guarantee and is not one.
 */
 describe('AgentRail — "This week"', () => {
+  beforeEach(() => { initialTab = 'activity'; });
   it('renders no panel at all when there is no number to put in it', async () => {
     renderRail();
-    await screen.findByText(/Granted by you/);
+    await screen.findByRole('heading', { name: 'Activity' });
     expect(screen.queryByText('This week')).toBeNull();
   });
 

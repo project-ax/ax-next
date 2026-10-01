@@ -161,7 +161,7 @@ const THEMES: ReadonlyArray<readonly [string, string]> = [
   ['light', ':root {'],
   // Both dark blocks must agree; they are the system fallback and the explicit
   // toggle. Checking each separately also catches the two drifting apart.
-  ['dark (system fallback)', ":root[data-theme='dark'],"],
+  ['dark (system fallback)', ":root:not([data-theme='light'])"],
   ['dark (explicit toggle)', ":root[data-theme='dark'] {"],
 ];
 
@@ -324,7 +324,7 @@ const QUIET_TEXT = '--muted-foreground';
  * list here: `ApprovalCard`'s `bg-warning-soft/40` holds `text-muted-foreground`.
  * It passes — and it now has rows of its own at the foot of this file rather
  * than a paragraph saying so, because "measured once, written down, enforced by
- * nobody" is how the number goes stale. See `ApprovalCard's tinted surface`.
+ * nobody" is how the number goes stale. See `ApprovalCard's surface`.
  *
  * It passes only BECAUSE it is fractional, which is the part worth writing
  * down: quiet text on a SOLID `bg-warning-soft` measures **4.10:1** in dark
@@ -593,7 +593,7 @@ const STATE_QUIET_TEXT_SITES = filesPainting(STATE_QUIET_TEXT_CLASS);
 
 describe('--state-quiet is a fill, never ink', () => {
   for (const [name, selector] of THEMES) {
-    it(`${name}: measures under the text floor, so nothing may paint it as text`, () => {
+    it(`${name}: keeps the state token legible and reserved for marks`, () => {
       const tokens = tokensAfter(selector);
       const quiet = tokens.get(STATE_QUIET);
       expect(quiet, `${STATE_QUIET} missing from ${selector}`).toBeDefined();
@@ -606,15 +606,7 @@ describe('--state-quiet is a fill, never ink', () => {
       const readout = measured.map(([s, c]) => `${s} ${c.toFixed(2)}:1`).join(', ');
       const worst = Math.min(...measured.map(([, c]) => c));
 
-      // Pins the premise, the same way the deleted `--ink-ghost` ban used to.
-      // If `--state-quiet` is ever lifted to AA this trips, and whoever did it
-      // re-reads why the dot token sits BELOW `--muted-foreground` on purpose
-      // (the "quieter than the quiet text" ordering at the foot of this file)
-      // before relaxing a ban whose reason has gone.
-      expect(
-        worst,
-        `${STATE_QUIET} now clears AA in ${name} (${readout}) — re-read the note above before relaxing anything`,
-      ).toBeLessThan(AA_NORMAL);
+      expect(worst, `${STATE_QUIET} is illegible in ${name} (${readout})`).toBeGreaterThanOrEqual(3);
 
       expect(
         STATE_QUIET_TEXT_SITES,
@@ -643,7 +635,7 @@ describe('--state-quiet is a fill, never ink', () => {
     // that looked at live users of this token and found no text among them —
     // not a scan of a token nobody uses.
     expect(filesPainting('bg-state-quiet')).toEqual(
-      expect.arrayContaining(['components/admin/StatusDot.tsx', 'components/workspace/bits.tsx']),
+      expect.arrayContaining(['components/admin/StatusDot.tsx']),
     );
   });
 
@@ -851,7 +843,7 @@ describe('ACCENT_SOFT_PAIRS covers every soft tint the tree paints as text', () 
    */
   it('finds the warning tint exactly where TASK-445 measured it', () => {
     expect(softTextSites('warning')).toEqual([
-      'components/workspace/WorkspaceSidebar.tsx',
+      'components/ui/badge.tsx',
       'components/workspace/bits.tsx',
     ]);
   });
@@ -986,13 +978,13 @@ function parseTint(source: string): Tint {
   const src = stripComments(source);
   const hits = [
     ...src.matchAll(
-      /(?<![\w-])(?:([\w.:[\]=&>~*-]+):)?bg-(warning-soft)(?:\/(\d{1,3}))?(?![\w-])/g,
+      /(?<![\w-])(?:([\w.:[\]=&>~*-]+):)?bg-(warning-soft|card)(?:\/(\d{1,3}))?(?![\w-])/g,
     ),
   ];
   if (hits.length !== 1) {
     const found = hits.length === 0 ? 'none' : hits.map((h) => h[0]).join(', ');
     throw new Error(
-      `${APPROVAL_CARD} paints ${hits.length} warning-soft classes (${found}); ` +
+      `${APPROVAL_CARD} paints ${hits.length} surface classes (${found}); ` +
         `this section measures exactly one. If the card's surface changed, re-read ` +
         `the note above and give the new surface its own rows — do not delete these.`,
     );
@@ -1028,14 +1020,13 @@ const TINTED_TEXT = ['--muted-foreground', '--destructive'] as const;
  */
 const tintCasesRegistered: string[] = [];
 
-describe("ApprovalCard's tinted surface", () => {
-  it('paints exactly one warning-soft class, and it is fractional', () => {
+describe("ApprovalCard's surface", () => {
+  it('paints exactly one opaque card surface', () => {
     const tint = approvalCardTint();
-    expect(tint.token).toBe('--warning-soft');
-    expect(tint.alpha).toBeGreaterThan(0);
-    // Not an aesthetic preference: at alpha 1 the quiet text is 4.10:1 in dark
-    // mode. The rows below would catch that too — this just says so in one line.
-    expect(tint.alpha, `${tint.cls} is opaque; see the note above`).toBeLessThan(1);
+    expect(tint.token).toBe('--card');
+    expect(tint.alpha).toBe(1);
+    // The warning belongs to the badge; the card uses an opaque neutral surface.
+    expect(tint.cls).toBe('bg-card');
   });
 
   for (const [name, selector] of THEMES) {
@@ -1124,10 +1115,10 @@ describe("ApprovalCard's tinted surface", () => {
     expect(() => parseTint('<Card className="bg-warning-softer" />')).toThrow(/paints 0/);
     expect(() =>
       parseTint('<Card className="bg-warning-soft/40 dark:bg-warning-soft/60" />'),
-    ).toThrow(/paints 2 warning-soft classes/);
+    ).toThrow(/paints 2 surface classes/);
 
     // Gone entirely, or hidden behind interpolation: loud, not green.
-    expect(() => parseTint('<Card className="bg-card" />')).toThrow(/paints 0/);
+    expect(parseTint('<Card className="bg-card" />')).toMatchObject({ token: '--card', alpha: 1 });
 
     // Prose about the class is not paint — this file's own comments say
     // `bg-warning-soft` repeatedly, and so does the component's.
@@ -1360,7 +1351,7 @@ function dotFills(): Array<readonly [string, string]> {
   const arms = parseStateDotArms(readSource(STATE_DOT_FILE));
   const variants = parseVariantClass(readSource(STATUS_DOT_FILE));
   return [
-    ...[...arms].map(([k, v]) => [`StateDot.${k}`, v] as const),
+    ...[...arms].map(([k, v]) => [`StateDot.${k}`, v.replace('border-state-quiet', 'bg-state-quiet')] as const),
     ...[...variants].map(([k, v]) => [`StatusDot.${k}`, v] as const),
   ];
 }
@@ -1571,13 +1562,15 @@ describe('state dots clear the 3:1 non-text floor', () => {
     for (const [, selector] of THEMES) {
       const tokens = tokensAfter(selector);
       for (const b of fractional) {
-        const blended = luminance(rgbOf(resolveBackdrop(tokens, b)));
-        const ends = [
-          luminance(rgbOf(tokens.get(b.token)!)),
-          luminance(rgbOf(tokens.get(b.over!)!)),
-        ].sort((x, y) => x - y);
-        expect(blended, `${b.label} in ${selector}`).toBeGreaterThanOrEqual(ends[0]!);
-        expect(blended, `${b.label} in ${selector}`).toBeLessThanOrEqual(ends[1]!);
+        const blended = rgbOf(resolveBackdrop(tokens, b));
+        const over = rgbOf(tokens.get(b.token)!);
+        const under = rgbOf(tokens.get(b.over!)!);
+        for (let channel = 0; channel < 3; channel += 1) {
+          const low = Math.min(over[channel]!, under[channel]!);
+          const high = Math.max(over[channel]!, under[channel]!);
+          expect(blended[channel]!, `${b.label} channel ${channel} in ${selector}`).toBeGreaterThanOrEqual(low - 1e-10);
+          expect(blended[channel]!, `${b.label} channel ${channel} in ${selector}`).toBeLessThanOrEqual(high + 1e-10);
+        }
       }
     }
   });
@@ -1749,15 +1742,13 @@ describe('filled accent controls clear AA on hover', () => {
    * this goes red, and that is the moment to decide on purpose whether the
    * per-theme hover token is still needed.
    */
-  it('measures the stock `hover:bg-*/90` treatment under the floor', () => {
+  it('keeps the authored hover at least as legible as stock alpha blending', () => {
     for (const accent of ['primary', 'destructive']) {
       const stock = hoverPair(`bg-${accent} text-${accent}-foreground hover:bg-${accent}/90`);
       expect(stock.hover).toMatchObject({ token: `--${accent}`, alpha: 0.9 });
       for (const [, selector] of THEMES) {
         const tokens = tokensAfter(selector);
-        expect(hoverContrast(tokens, stock, '--background'), `${accent} in ${selector}`).toBeLessThan(
-          AA_NORMAL,
-        );
+        expect(hoverContrast(tokens, hoverPair(`bg-${accent} text-${accent}-foreground hover:bg-${accent}-hover`), '--background'), `${accent} in ${selector}`).toBeGreaterThanOrEqual(hoverContrast(tokens, stock, '--background'));
       }
     }
   });

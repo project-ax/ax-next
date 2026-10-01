@@ -189,7 +189,7 @@ describe('Today\u2019s "done today" count across an agent switch', () => {
       from the URL (TASK-327), and the tab is a Radix trigger that jsdom does
       not drive from a bare `fireEvent.click`, so this is also the only way in.
     */
-    window.history.replaceState(null, '', '/workspace/agents/a-quill/did');
+    window.history.replaceState(null, '', '/workspace/agents/a-quill/activity');
     render(
       <UserProvider value={user}>
         <WorkspaceShell />

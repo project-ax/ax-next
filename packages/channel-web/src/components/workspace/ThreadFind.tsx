@@ -266,7 +266,7 @@ export function ThreadFindToggle({
       onClick={open ? onClose : onOpen}
     >
       <Search size={14} />
-      Find
+      <span className="max-md:sr-only">Find</span>
     </Button>
   );
 };

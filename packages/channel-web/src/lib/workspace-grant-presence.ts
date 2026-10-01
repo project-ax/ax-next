@@ -16,8 +16,8 @@
  * one store, so there is one grant and one answer however many places draw it.
  *
  * "IN A THREAD WITH THAT AGENT" is decided (2026-09-12) and deliberately cheap:
- * that agent's chat tab is the open route, and the tab is visible. Everything
- * else — another agent's thread, another tab of the same agent, Today, Activity,
+ * that agent's conversation is on screen, and the browser tab is visible. The
+ * detail tabs sit beside the conversation. Another agent's thread, Today, Activity,
  * a backgrounded tab, a closed laptop — is the queue alone. Visibility, not
  * focus: a visible but unfocused tab still has a human in front of it.
  *
@@ -45,9 +45,8 @@ export interface GrantPresence {
 /**
  * Should this agent's thread draw this grant, as well as the queue?
  *
- * The `tab` check matters as much as the id: on `/workspace/agents/A/files`
- * the route names agent A but the thread is not on screen, so a card "above
- * the composer" would be above a composer that is not there.
+ * Every agent detail tab keeps the conversation on screen. Ownership and
+ * browser visibility decide whether this thread also shows the grant.
  */
 export function grantBelongsInThread(
   grant: WorkspaceGrant,
@@ -55,7 +54,7 @@ export function grantBelongsInThread(
 ): boolean {
   if (!visible) return false;
   if (route.kind !== 'agent') return false;
-  if (route.tab !== 'chat') return false;
+  // The conversation remains visible beside every detail tab.
   return route.id === grant.agentId;
 }
 

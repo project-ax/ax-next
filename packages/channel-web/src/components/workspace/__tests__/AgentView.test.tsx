@@ -591,7 +591,7 @@ describe('the "What it did" tab', () => {
     agentMock.mockResolvedValue(detail());
 
     renderView({
-      tab: 'did',
+      tab: 'activity',
       activity: [
         {
           id: 'a-quill|daily.md|1',
@@ -615,7 +615,7 @@ describe('the "What it did" tab', () => {
   it('says the RECORD is empty, not that the agent did nothing', async () => {
     agentMock.mockResolvedValue(detail());
 
-    renderView({ tab: 'did', activity: [] });
+    renderView({ tab: 'activity', activity: [] });
 
     // The scoped phrasing — "what Quill does", not "what your agents do".
     expect(
@@ -626,7 +626,7 @@ describe('the "What it did" tab', () => {
   it('shows a read failure instead of an empty record', async () => {
     agentMock.mockResolvedValue(detail());
 
-    renderView({ tab: 'did', activity: [], activityError: 'boom' });
+    renderView({ tab: 'activity', activity: [], activityError: 'boom' });
 
     expect(await screen.findByText(/could not load the record/i)).toBeTruthy();
     expect(screen.queryByText(/Nothing recorded yet/)).toBeNull();
