@@ -2,6 +2,9 @@ import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
 import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type { RunnerEnv } from '../env.js';
 import type { Loop, LoopContext, RunnerSeams, TranscriptSource } from '../index.js';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Unit test for the runner shell's exit-code contract:
@@ -129,6 +132,45 @@ beforeEach(() => {
     event: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
   } as unknown as FakeClient;
+});
+
+describe('runRunner — generated file publication', () => {
+  it.each(['allow', 'reject', 'hold'] as const)('uses the policy gate (%s) and persists chips before SSE completion', async verdict => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-files-shell-'));
+    const original = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...await original(action, ...args), conversationId: 'c1' };
+      if (action === 'tool.list') return { tools: [{ name: 'artifact_publish', executesIn: 'sandbox', inputSchema: {} }] };
+      if (action === 'tool.pre-call') return verdict === 'allow' ? { verdict: 'allow' }
+        : verdict === 'reject' ? { verdict: 'reject', reason: 'blocked' }
+          : { verdict: 'hold', decisionId: 'd1', note: 'approval required' };
+      if (action === 'artifact.publish') return { artifactId: 'id', downloadUrl: 'ax://artifact/id' };
+      if (action === 'attachments.list') return { files: [] };
+      return original(action, ...args);
+    });
+    const upload = vi.fn(async () => ({ sha256: 'a'.repeat(64), size: 6 }));
+    fakeClient.callBinaryUpload = upload;
+    const loop: Loop = { run: async ctx => {
+      await fs.writeFile(path.join(root, 'report.txt'), 'report');
+      await ctx.endTurn({
+        contentBlocks: [{ type: 'text', text: 'Here is your report.' }],
+        toolResultBlocks: [], usage: null, readTurnId: async () => undefined,
+      });
+      return 0;
+    } };
+    try {
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), userFilesRoot: root })))).toBe(0);
+      const first = fakeClient.event.mock.calls.find(call => call[0] === 'event.turn-end')!;
+      expect(first[1].role).toBe('tool');
+      if (verdict === 'allow') {
+        expect(upload).toHaveBeenCalledOnce();
+        expect(first[1].contentBlocks).toContainEqual({ type: 'attachment', path: 'report.txt', displayName: 'report.txt', mediaType: 'text/plain', sizeBytes: 6 });
+      } else {
+        expect(upload).not.toHaveBeenCalled();
+        expect(first[1].contentBlocks.some((block: { type: string }) => block.type === 'attachment')).toBe(false);
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
 });
 
 describe('runRunner — bootstrap-safe augment (TASK-524)', () => {

@@ -112,6 +112,7 @@
  * so there is no flag to hide it behind (TASK-360 retired `agentWorkspace`).
  * Each handler is authenticated and owner-scoped on its own.
  */
+import { AttachmentBlockSchema } from '@ax/ipc-protocol';
 import {
   PluginError,
   isRejection,
@@ -522,6 +523,7 @@ type TurnBlock = {
   tool_use_id?: string;
   is_error?: boolean;
   held?: boolean;
+  content?: unknown;
   /**
    * `attachment`: a file the person sent, as `routes-chat.ts` writes it after
    * `attachments:commit` (TASK-424). `path` is workspace-relative and is what
@@ -2392,12 +2394,45 @@ function buildThread(
   const dated: Array<{ at: string; msg: ThreadMessage }> = [];
   const out: ThreadMessage[] = [];
   const outcomes = toolOutcomes(turns);
+  const publishIds = new Set(turns.flatMap(turn => (turn.contentBlocks ?? []).flatMap(block =>
+    block.type === 'tool_use' && typeof block.id === 'string' &&
+    (block.name === 'artifact_publish' || block.name === 'mcp__ax-sandbox-tools__artifact_publish')
+      ? [block.id] : [],
+  )));
   for (const turn of turns) {
-    // A tool-role turn carries `tool_result` blocks and nothing else worth
-    // drawing; `outcomes` has already read them, and the step row they belong
-    // to hangs off the assistant turn that made the call.
-    if (turn.role === 'tool') continue;
+    // Tool outcomes hang off the assistant's step panel. Published files are
+    // also drawn here, outside that collapsible panel, so a closed step list
+    // cannot hide the deliverable.
     const blocks = turn.contentBlocks ?? [];
+    if (turn.role === 'tool') {
+      // Runner-authored output references and successful explicit publications.
+      // Arbitrary assistant attachment blocks are still ignored. The download
+      // endpoint independently checks conversation access and a durable row.
+      const files = turnAttachments(blocks.filter(block => AttachmentBlockSchema.safeParse(block).success));
+      for (const block of blocks) {
+        if (block.type !== 'tool_result' || block.is_error || block.held ||
+          !publishIds.has(block.tool_use_id ?? '')) continue;
+        const texts = typeof block.content === 'string' ? [block.content]
+          : Array.isArray(block.content) ? block.content.flatMap((c: unknown) =>
+            c !== null && typeof c === 'object' && 'type' in c && c.type === 'text' &&
+            'text' in c && typeof c.text === 'string' ? [c.text] : []) : [];
+        for (const text of texts) {
+          try {
+            const value: unknown = JSON.parse(text);
+            if (value === null || typeof value !== 'object') continue;
+            const file = AttachmentBlockSchema.safeParse({ ...value, type: 'attachment' });
+            if (file.success) files.push(...turnAttachments([file.data]));
+          } catch { /* A failed/non-JSON publication has no download. */ }
+        }
+      }
+      const attachments = [...new Map(files.map(file => [file.path, file])).values()];
+      const text = renderableText(blocks);
+      if (attachments.length > 0 || text.length > 0) dated.push({
+        at: turn.createdAt,
+        msg: { kind: 'agent', id: turn.turnId, text, at: turn.createdAt, attachments },
+      });
+      continue;
+    }
     const text = renderableText(blocks);
     if (turn.role === 'user') {
       const attachments = turnAttachments(blocks);

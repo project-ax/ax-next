@@ -14,6 +14,8 @@ import {
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 import { SKILL_PROPOSE_TOOL_NAME } from '@ax/tool-skill-propose';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+import { trackGeneratedFiles, publishedAttachments } from './generated-files.js';
+import { createToolPolicy } from './tool-policy.js';
 import {
   translateContentBlocks,
   type WorkspaceReader,
@@ -1320,6 +1322,28 @@ async function runRunnerInner(
   // critically — the PreToolUse re-rooter's TARGET, so `.ax/**`+`.claude/**`
   // self-edits land back on /agent even though cwd is now ungoverned NFS (§14).
   const homeDir = env.userFilesRoot ?? env.workspaceRoot;
+  // Automatic publication goes through the same policy gate as a model call.
+  // A denied/held publish never uploads bytes or sidesteps an approval.
+  const generatedFilePolicy = createToolPolicy({ client, workspaceRoot: env.workspaceRoot });
+  const publishGeneratedFile = createArtifactPublishExecutor({
+    ...(env.userFilesRoot !== undefined ? { userFilesRoot: env.userFilesRoot } : {}),
+    client, conversationId,
+  });
+  const generatedFiles = env.userFilesRoot !== undefined && conversationId !== null &&
+    localDispatcher.has(ARTIFACT_PUBLISH_TOOL_NAME)
+    ? await trackGeneratedFiles({
+        root: env.userFilesRoot,
+        warn: () => process.stderr.write('runner: could not attach a generated file\n'),
+        publish: async call => {
+          const verdict = await generatedFilePolicy.preToolUse(call.name, call.input, call.id);
+          if (verdict.decision !== 'allow') throw new Error('publication not allowed');
+          const checkedCall = { ...call, input: verdict.updatedInput ?? call.input };
+          const output = await publishGeneratedFile(checkedCall);
+          await generatedFilePolicy.postToolUse(call.name, call.id, checkedCall.input, output, false);
+          return output;
+        },
+      })
+    : null;
 
   // Conversational-agent-identity: the file-based prompt-engine reads
   // `${workspaceRoot}/.ax/` and composes the system prompt for THIS turn —
@@ -1432,6 +1456,11 @@ async function runRunnerInner(
   }
 
   async function closeTurn(input: EndTurnInput): Promise<void> {
+    const explicitFiles = publishedAttachments(input.contentBlocks, input.toolResultBlocks);
+    const generatedBlocks = await generatedFiles?.collect(explicitFiles.map(file => file.path)) ?? [];
+    // Attach to the FIRST persisted turn-end: that is the one that closes SSE
+    // and triggers the live client's history re-read. No new wire/event shape.
+    const toolResultBlocks = [...input.toolResultBlocks, ...explicitFiles, ...generatedBlocks];
     // Set by the end-of-turn commit below iff the host refused the save; read
     // by the assistant turn-end. Scoped to THIS turn: a later turn's turn-end
     // must not repeat an earlier refusal.
@@ -1546,7 +1575,7 @@ async function runRunnerInner(
     //
     // Failures here MUST NOT terminate the chat (host may be tearing
     // down). Each call swallows independently.
-    if (input.toolResultBlocks.length > 0) {
+    if (toolResultBlocks.length > 0) {
       // Ask for the TOOL turn's id in the host's own display-role vocabulary
       // — the same `role` this event carries. How a given loop stores a tool
       // turn (the Claude SDK echoes them back as `user` jsonl lines; the aisdk
@@ -1569,7 +1598,7 @@ async function runRunnerInner(
         .event('event.turn-end', {
           reason: 'user-message-wait',
           role: 'tool',
-          contentBlocks: input.toolResultBlocks,
+          contentBlocks: toolResultBlocks,
           // Forward the inbox message's reqId so host-side per-request
           // subscribers (e.g., @ax/routines `pending.get(reqId)`) can
           // correlate this turn-end back to the originating request.

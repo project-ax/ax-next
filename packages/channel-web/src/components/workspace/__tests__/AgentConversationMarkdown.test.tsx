@@ -95,6 +95,27 @@ function reportedTotal(bar: HTMLElement): number {
 }
 
 describe('the agent bubble renders markdown', () => {
+  it('hides file download links during streaming and excludes them from find results', () => {
+    const { container } = render(conversation({ busy: true, thread: [agentTurn([
+      'Your poem is ready. [Download inline](ax://artifact/abc123) Enjoy it.',
+      '📄 [Download reference][poem]',
+      '[poem]: ax://artifact/abc123',
+      '[Download via API](/api/files?path=poem.md&conversationId=c1)',
+      '[Read more](https://example.com/poetry)',
+      '`[Download example](ax://artifact/example)`',
+    ].join('\n\n'))] }));
+    expect(screen.queryByText('Download inline')).not.toBeInTheDocument();
+    expect(screen.queryByText('Download reference')).not.toBeInTheDocument();
+    expect(screen.queryByText('Download via API')).not.toBeInTheDocument();
+    expect(container.textContent).not.toContain('📄');
+    expect(container.textContent).toContain('Enjoy it.');
+    expect(screen.getByRole('link', { name: 'Read more' })).toHaveAttribute('href', 'https://example.com/poetry');
+    expect(container.querySelector('code')?.textContent).toBe('[Download example](ax://artifact/example)');
+    const bar = search(container, 'Download inline');
+    expect(reportedTotal(bar)).toBe(0);
+    expect(container.querySelectorAll('mark')).toHaveLength(0);
+  });
+
   it('renders bold, headings and paragraphs instead of printing their syntax', () => {
     const { container } = render(
       conversation({
