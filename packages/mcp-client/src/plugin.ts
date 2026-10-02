@@ -136,7 +136,9 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
   }
   const connectorToolInventory = opts.connectorToolInventory === true;
   const registers: string[] = [];
+  const subscribes: string[] = [];
   if (connectorToolInventory) {
+    subscribes.push('agents:deleted');
     registers.push('connectors:describe-tools');
     calls.push('database:get-instance', 'connectors:resolve', 'agents:resolve');
   }
@@ -149,7 +151,7 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
       version: '0.0.0',
       registers,
       calls,
-      subscribes: [],
+      subscribes,
     },
     async init({ bus }) {
       // Synthesize a minimal init-time ctx: the hooks we call during init
@@ -170,9 +172,29 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
         );
         const typed = db as Kysely<McpClientDatabase>;
         await runMcpClientMigration(typed);
+        const store = createInventoryStore(typed);
+        // Purge the agent's cached inventories. Payload declared locally (no
+        // cross-plugin import); only `agentId` matters. A subscriber must never
+        // throw — a failed purge is logged and swallowed.
+        bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+          const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+          if (typeof agentId !== 'string' || agentId.length === 0) {
+            ctx.logger.warn('connector_inventory_purge_skipped', {
+              reason: 'agents:deleted payload has no non-empty string agentId',
+            });
+            return undefined;
+          }
+          try {
+            const { deleted } = await store.deleteForAgent(agentId);
+            ctx.logger.info('connector_inventory_purged_for_deleted_agent', { agentId, deleted });
+          } catch (err) {
+            ctx.logger.error('connector_inventory_purge_failed', { agentId, err });
+          }
+          return undefined;
+        });
         const describeTools = createDescribeTools({
           bus,
-          store: createInventoryStore(typed),
+          store,
           ...(opts.connectorInventoryListTools !== undefined
             ? { listTools: opts.connectorInventoryListTools }
             : {}),

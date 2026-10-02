@@ -42,6 +42,9 @@ function memoryStore(): InventoryStore & { rows: Map<string, InventoryRow> } {
     async put(key, row) {
       rows.set(k(key), row);
     },
+    async deleteForAgent() {
+      return { deleted: 0 };
+    },
   };
 }
 

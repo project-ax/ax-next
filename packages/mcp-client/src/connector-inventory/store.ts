@@ -9,7 +9,8 @@
 // so all three are part of the key. `agent_id` is '' when the caller named no
 // agent. There is deliberately no FK to connectors/agents: rows are a cache,
 // expire by TTL at read time, and a stale row for a deleted connector is
-// never reached because `connectors:resolve` refuses it first.
+// never reached because `connectors:resolve` refuses it first. An agent's
+// rows are deleted when `agents:deleted` fires (TASK-718 guard).
 // ---------------------------------------------------------------------------
 
 import { sql, type Kysely } from 'kysely';
@@ -59,6 +60,8 @@ export interface InventoryRow {
 export interface InventoryStore {
   get(key: InventoryKey): Promise<InventoryRow | null>;
   put(key: InventoryKey, row: InventoryRow): Promise<void>;
+  /** Drop every row cached under an agent (on `agents:deleted`). */
+  deleteForAgent(agentId: string): Promise<{ deleted: number }>;
 }
 
 const STATUSES: ReadonlySet<string> = new Set(['ok', 'unreachable', 'needs-auth', 'unknown']);
@@ -111,6 +114,13 @@ export function createInventoryStore(db: Kysely<McpClientDatabase>): InventorySt
           }),
         )
         .execute();
+    },
+    async deleteForAgent(agentId) {
+      const res = await db
+        .deleteFrom('mcp_client_v1_tool_inventory')
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return { deleted: Number(res.numDeletedRows) };
     },
   };
 }

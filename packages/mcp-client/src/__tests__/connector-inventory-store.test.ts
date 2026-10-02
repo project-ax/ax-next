@@ -25,7 +25,7 @@ const harnesses: TestHarness[] = [];
 beforeAll(async () => {
   container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
-}, 120_000);
+}, 60_000);
 
 afterEach(async () => {
   while (harnesses.length > 0) {
@@ -131,12 +131,33 @@ describe('plugin wiring', () => {
     expect(listed).toBe(1);
   });
 
+  it('purges an agent\'s cached inventories when agents:deleted fires, and nobody else\'s', async () => {
+    const h = await boot(async () => ({ kind: 'ok', dropped: 0, tools: [] }));
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    const store = createInventoryStore(db);
+    const row = { status: 'ok' as const, tools: [], fingerprint: 'f', checkedAt: new Date() };
+    await store.put({ userId: 'u', agentId: 'gone', connectorId: 'c' }, row);
+    await store.put({ userId: 'u2', agentId: 'gone', connectorId: 'c2' }, row);
+    await store.put({ userId: 'u', agentId: 'kept', connectorId: 'c' }, row);
+    await store.put({ userId: 'u', agentId: '', connectorId: 'c' }, row);
+    await h.bus.fire('agents:deleted', h.ctx(), { agentId: 'gone', ownerId: 'u', ownerType: 'user' });
+    expect(await store.get({ userId: 'u', agentId: 'gone', connectorId: 'c' })).toBeNull();
+    expect(await store.get({ userId: 'u2', agentId: 'gone', connectorId: 'c2' })).toBeNull();
+    expect(await store.get({ userId: 'u', agentId: 'kept', connectorId: 'c' })).not.toBeNull();
+    expect(await store.get({ userId: 'u', agentId: '', connectorId: 'c' })).not.toBeNull();
+    // A malformed payload is ignored, never thrown.
+    await h.bus.fire('agents:deleted', h.ctx(), { agentId: '' });
+    expect(await store.get({ userId: 'u', agentId: 'kept', connectorId: 'c' })).not.toBeNull();
+  });
+
   it('is off by default: no hook, no database call in the manifest', () => {
     const p = createMcpClientPlugin();
     expect(p.manifest.registers).toEqual([]);
     expect(p.manifest.calls).not.toContain('database:get-instance');
     const on = createMcpClientPlugin({ connectorToolInventory: true });
     expect(on.manifest.registers).toEqual(['connectors:describe-tools']);
+    expect(on.manifest.subscribes).toEqual(['agents:deleted']);
+    expect(p.manifest.subscribes).toEqual([]);
     expect(on.manifest.calls).toEqual(
       expect.arrayContaining(['database:get-instance', 'connectors:resolve', 'agents:resolve', 'credentials:get']),
     );

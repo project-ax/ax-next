@@ -18,6 +18,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ListToolsResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { stripSurfaceRewritersFromDocument } from '@ax/core/surface-text';
 import { createGuardedFetch, type AllAddressesResolver, type FetchLike } from './safe-fetch.js';
 
 /** Hard caps on what one server may hand us. */
@@ -48,13 +49,12 @@ export interface InventoryToolBase {
   outward: boolean | null;
 }
 
-// C0/C1 controls except \t and \n, plus the Unicode bidi overrides/isolates
-// and zero-width joiners that can make rendered text lie about its order.
-const UNSAFE_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩﻿]/g;
 
 function cleanText(raw: unknown, max: number): string {
   if (typeof raw !== 'string') return '';
-  const cleaned = raw.replace(UNSAFE_CHARS, '').trim();
+  // Controls (except tab/newline/CR) and invisible / bidi-override characters
+  // that can make rendered text lie about its order — the shared class.
+  const cleaned = stripSurfaceRewritersFromDocument(raw).trim();
   return cleaned.length > max ? `${cleaned.slice(0, max - 1)}…` : cleaned;
 }
 
