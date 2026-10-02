@@ -275,6 +275,16 @@ sandbox:
   # controller. Ordinary file-operation/preparation pods remain host-managed.
   backend: pod
   agentSandboxApiVersion: v1beta1 # v0.4.6 self-managed controller: v1alpha1
+  sharedPool:
+    enabled: false
+    replicas: 1 # Per execution class (Claude SDK / AI SDK), never per agent.
+    prefix: ax-shared
+    storageNamespace: ax-sandbox-system
+    serverName: ax-sandbox-storage.ax-sandbox-system.svc
+    clientTlsSecret: "" # ca.crt + tls.crt + tls.key; clientAuth certificate.
+    serverTlsSecret: "" # In storageNamespace; serverAuth certificate, same dedicated CA.
+    kubeletPodsPath: /var/lib/kubelet/pods
+    ledgerPath: /var/lib/ax-shared-storage
   runtimeClassName: gvisor
   # Node-filesystem path that the host pod and every runner pod both
   # mount at /var/run/ax. When set, the credential-proxy's Unix socket

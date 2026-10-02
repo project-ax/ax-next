@@ -43,6 +43,7 @@ export type {
   HostToolFlush,
 } from './commit-notify-resync.js';
 export { setupProxy } from './proxy-startup.js';
+export { waitForAssignment } from './standby.js';
 export { createInboxLoop } from './inbox-loop.js';
 export type { InboxLoop, InboxLoopEntry, InboxLoopOptions } from './inbox-loop.js';
 export { materializeInstalledSkillsFromEnv, validateMcpEntry } from './installed-skills.js';

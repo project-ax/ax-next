@@ -46,6 +46,11 @@ metadata:
   labels:
     {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
 rules:
+  {{- if (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) }}
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims", "sandboxwarmpools", "sandboxtemplates"]
+    verbs: ["create", "get", "list", "delete"]
+  {{- end }}
   {{- if eq .Values.sandbox.backend "agent-sandbox" }}
   # Namespaced session resources only. No claims/templates, patch, or cluster reach.
   - apiGroups: ["agents.x-k8s.io"]

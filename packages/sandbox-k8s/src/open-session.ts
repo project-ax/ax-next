@@ -31,6 +31,7 @@ import {
 } from './lifecycle.js';
 import { buildPodSpec } from './pod-spec.js';
 import { prepareAgentSandboxMounts } from './prepare-mounts.js';
+import { CLAIM_AGENT_LABEL } from './storage-node/protocol.js';
 
 // ---------------------------------------------------------------------------
 // sandbox:open-session — k8s impl.
@@ -364,6 +365,10 @@ export function createOpenSession(deps: OpenSessionDeps) {
       throw err;
     }
 
+    // Bind storage authority to the host-authorized owner, independently of
+    // potentially untrusted mount-resolver output. Generic templates have no owner.
+    if (deps.config.sharedPool && input.owner) podSpec.metadata.labels[CLAIM_AGENT_LABEL] = input.owner.agentId;
+
     podLog.info('creating_pod', {
       namespace: deps.config.namespace,
       image: deps.config.image,
@@ -386,7 +391,10 @@ export function createOpenSession(deps: OpenSessionDeps) {
     });
 
     try {
-      if (deps.config.backend === 'agent-sandbox') {
+      const pooled = deps.config.sharedPool &&
+        Object.values(deps.config.sharedPool.runnerBinaries).includes(input.runnerBinary) &&
+        (input.services?.length ?? 0) === 0;
+      if (deps.config.backend === 'agent-sandbox' && !pooled) {
         podSpec = await prepareAgentSandboxMounts(deps.preparationApi ?? deps.api, podSpec, deps.config, podLog);
       }
       await deps.api.createNamespacedPod({

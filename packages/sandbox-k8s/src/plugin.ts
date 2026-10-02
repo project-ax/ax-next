@@ -8,6 +8,8 @@ import type { ZodType } from 'zod';
 import { resolveConfig, type SandboxK8sConfig } from './config.js';
 import { createDefaultK8sApi, createDefaultSandboxApi, type K8sCoreApi } from './k8s-api.js';
 import { createAgentSandboxSessionApi, SANDBOX_SELECTOR, type SandboxCustomApi } from './agent-sandbox.js';
+import { createSharedPoolSessionApi } from './shared-pool.js';
+import { createStorageClient, type StorageClient } from './storage-client.js';
 import {
   createOpenSession,
   makePidGenerator,
@@ -47,12 +49,13 @@ export interface CreateSandboxK8sPluginOptions extends SandboxK8sConfig {
    */
   api?: K8sCoreApi;
   sandboxApi?: SandboxCustomApi;
+  storageClient?: StorageClient;
 }
 
 export function createSandboxK8sPlugin(
   opts: CreateSandboxK8sPluginOptions = {},
 ): Plugin {
-  const { api: apiOverride, sandboxApi: sandboxApiOverride, ...rawConfig } = opts;
+  const { api: apiOverride, sandboxApi: sandboxApiOverride, storageClient, ...rawConfig } = opts;
   const config = resolveConfig(rawConfig);
 
   // TASK-170: held across init → shutdown so the periodic orphan-sweep timer is
@@ -135,9 +138,11 @@ export function createSandboxK8sPlugin(
           version: config.agentSandboxApiVersion, plural: 'sandboxes',
           namespace: config.namespace, labelSelector: SANDBOX_SELECTOR, limit: 1 });
       }
-      const sessionApi = config.backend === 'agent-sandbox'
+      let sessionApi = config.backend === 'agent-sandbox'
         ? createAgentSandboxSessionApi(api, custom!, config)
         : api;
+      if (config.sharedPool) sessionApi = await createSharedPoolSessionApi(api, custom!, sessionApi,
+        storageClient ?? createStorageClient(api, config.sharedPool), config);
 
       // I5: warn loudly when an operator opts out of gVisor. The
       // userspace kernel is the second isolation layer and the cluster

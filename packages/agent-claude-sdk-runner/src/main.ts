@@ -24,6 +24,7 @@ import {
   createHoldLatch,
   drainHoldLatch,
   runRunner,
+  waitForAssignment,
   runnerHomeDir,
   scaffoldSdkProjectsSymlink,
   type Loop,
@@ -981,6 +982,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
 }
 
 export async function main(): Promise<number> {
+  await waitForAssignment();
   return runRunner((deps) => createClaudeSdkLoop(deps), {
     // TASK-67 split: the delta/prefixHash/resync protocol lives in
     // @ax/agent-runner-core; locating the SDK's jsonl (its private cwd-slug

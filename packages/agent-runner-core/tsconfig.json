@@ -6,6 +6,7 @@
   "references": [
     { "path": "../core" },
     { "path": "../ipc-protocol" },
+    { "path": "../sandbox-protocol" },
     { "path": "../credential-proxy-bridge" },
     { "path": "../agent-identity-templates" },
     { "path": "../tool-artifact-publish" },

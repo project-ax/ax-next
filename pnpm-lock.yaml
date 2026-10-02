@@ -241,6 +241,9 @@ importers:
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
+      '@ax/sandbox-protocol':
+        specifier: workspace:*
+        version: link:../sandbox-protocol
       '@ax/tool-artifact-publish':
         specifier: workspace:*
         version: link:../tool-artifact-publish
@@ -1603,6 +1606,9 @@ importers:
       '@ax/sandbox-mount-protocol':
         specifier: workspace:*
         version: link:../sandbox-mount-protocol
+      '@ax/sandbox-protocol':
+        specifier: workspace:*
+        version: link:../sandbox-protocol
     devDependencies:
       '@ax/memory-facts-contract':
         specifier: workspace:*

@@ -8,7 +8,7 @@ import { createSessionPostgresPlugin } from '@ax/session-postgres';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createWorkspaceGitServerPlugin } from '@ax/workspace-git-server';
 import { createWorkspaceFilestorePlugin } from '@ax/workspace-filestore';
-import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
+import { createSandboxK8sPlugin, type SharedPoolConfig } from '@ax/sandbox-k8s';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
@@ -321,6 +321,7 @@ export interface K8sPresetConfig {
    * optional; defaults live in @ax/sandbox-k8s/src/config.ts.
    */
   sandbox?: {
+    sharedPool?: Omit<SharedPoolConfig, 'runnerBinaries'>;
     backend?: 'pod' | 'agent-sandbox';
     agentSandboxApiVersion?: 'v1alpha1' | 'v1beta1';
     namespace?: string;
@@ -919,6 +920,8 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // sandbox-k8s registers `sandbox:open-session`. No subprocess fallback
   // here — this preset is k8s-only.
   const sandboxOpts = {
+    ...(config.sandbox?.sharedPool ? { sharedPool: { ...config.sandbox.sharedPool,
+      runnerBinaries: { ...defaultRunnerBinaries(), ...(config.chat?.runnerBinaries ?? {}) } } } : {}),
     ...(config.sandbox?.backend !== undefined ? { backend: config.sandbox.backend } : {}),
     ...(config.sandbox?.agentSandboxApiVersion !== undefined
       ? { agentSandboxApiVersion: config.sandbox.agentSandboxApiVersion } : {}),
@@ -1834,6 +1837,18 @@ export function loadK8sConfigFromEnv(
     }
   }
 
+  if (env.K8S_SHARED_POOL_REPLICAS !== undefined) {
+    if (!filestore) throw new Error('shared pools require configured Filestore storage');
+    sandbox.sharedPool = {
+      replicas: Number(env.K8S_SHARED_POOL_REPLICAS), prefix: env.K8S_SHARED_POOL_PREFIX ?? '',
+      storageNamespace: env.K8S_SHARED_POOL_STORAGE_NAMESPACE ?? '',
+      tlsDirectory: '/var/run/ax-storage-tls', serverName: env.K8S_SHARED_POOL_SERVER_NAME ?? '',
+      userFiles: { server: filestore.server, exportPath: filestore.exportPath },
+      ...(env.AX_MEMORY_EXPORT_NFS_SERVER && env.AX_MEMORY_EXPORT_NFS_PATH ? {
+        memory: { server: env.AX_MEMORY_EXPORT_NFS_SERVER, exportPath: env.AX_MEMORY_EXPORT_NFS_PATH },
+      } : {}),
+    };
+  }
   const ipc: K8sPresetConfig['ipc'] = { hostIpcUrl };
   if (env.BIND_HOST !== undefined && env.BIND_HOST !== '') {
     ipc.host = env.BIND_HOST;

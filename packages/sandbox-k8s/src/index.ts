@@ -6,6 +6,7 @@ export {
   resolveConfig,
   type SandboxK8sConfig,
   type ResolvedSandboxK8sConfig,
+  type SharedPoolConfig,
 } from './config.js';
 export {
   OpenSessionInputSchema,

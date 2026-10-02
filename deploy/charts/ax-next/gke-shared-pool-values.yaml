@@ -1,0 +1,12 @@
+# Apply after gke-values.yaml and gke-agent-sandbox-values.yaml, using an
+# image built from this change. Requires GKE Standard 1.36.0-gke.3302001+.
+# Run isolated Filestore and restart acceptance before enabling the live release.
+sandbox:
+  sharedPool:
+    enabled: true
+    replicas: 1 # One standby per runner class; agent count does not change this.
+    prefix: ax-shared
+    storageNamespace: ax-sandbox-system
+    serverName: ax-sandbox-storage.ax-sandbox-system.svc
+    clientTlsSecret: ax-storage-controller-tls
+    serverTlsSecret: ax-storage-node-tls

@@ -16,9 +16,7 @@
 // line including the `[commit-trace] ` prefix and trailing newline.
 // ---------------------------------------------------------------------------
 
-const ENABLED =
-  process.env.AX_COMMIT_TRACE === '1' || process.env.AX_COMMIT_TRACE === 'true';
-
 export function commitTrace(line: string): void {
-  if (ENABLED) process.stderr.write(line);
+  // Warm processes import this module before their assignment arrives.
+  if (process.env.AX_COMMIT_TRACE === '1' || process.env.AX_COMMIT_TRACE === 'true') process.stderr.write(line);
 }

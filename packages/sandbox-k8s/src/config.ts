@@ -10,7 +10,15 @@
 
 import { PluginError } from '@ax/core';
 
+export interface SharedPoolConfig {
+  replicas: number; prefix: string; storageNamespace: string; tlsDirectory: string; serverName: string;
+  runnerBinaries: Record<string, string>;
+  userFiles: { server: string; exportPath: string };
+  memory?: { server: string; exportPath: string };
+}
+
 export interface SandboxK8sConfig {
+  sharedPool?: SharedPoolConfig;
   /** Session lifecycle owner. Auxiliary file-operation pods stay ordinary Pods. */
   backend?: 'pod' | 'agent-sandbox';
   /** Served Agent Sandbox CRD version. v0.4.6 uses v1alpha1. */
@@ -170,6 +178,7 @@ export interface SandboxK8sConfig {
 }
 
 export interface ResolvedSandboxK8sConfig {
+  sharedPool?: SharedPoolConfig;
   backend: 'pod' | 'agent-sandbox';
   agentSandboxApiVersion: 'v1alpha1' | 'v1beta1';
   hostIpcUrl: string;
@@ -266,6 +275,17 @@ export function resolveConfig(
   }
   if (raw.imagePullSecrets !== undefined) {
     resolved.imagePullSecrets = raw.imagePullSecrets;
+  }
+  if (raw.sharedPool) {
+    const pool = raw.sharedPool;
+    if (resolved.backend !== 'agent-sandbox' || resolved.agentSandboxApiVersion !== 'v1beta1' || !hasEndpoint ||
+        !Number.isSafeInteger(pool.replicas) || pool.replicas < 1 || pool.replicas > 100 ||
+        !/^[a-z][a-z0-9-]{0,29}$/.test(pool.prefix) || !pool.storageNamespace || !pool.tlsDirectory || !pool.serverName ||
+        !pool.userFiles.server || !pool.userFiles.exportPath || Object.keys(pool.runnerBinaries).length === 0 ||
+        Object.keys(pool.runnerBinaries).some(k => !['claude-sdk', 'aisdk'].includes(k))) {
+      throw new PluginError({ code: 'invalid-config', plugin: '@ax/sandbox-k8s', message: 'shared pools require v1beta1 Agent Sandbox, TCP proxy, bounded replicas, known runners, storage and mutual TLS configuration' });
+    }
+    resolved.sharedPool = pool;
   }
   return resolved;
 }

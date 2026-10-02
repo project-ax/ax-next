@@ -1,6 +1,6 @@
 # GKE Agent Sandbox warm pool design
 
-**Status:** Proposed. GKE claim behavior verified; AX activation protocol and integration remain to be implemented.
+**Status:** Superseded by [the shared pool design](2026-10-01-agent-sandbox-shared-pool-design.md). The user requires shared capacity across agents. The original claim experiments below remain valid; the per-agent pool and separate activation-listener proposals are no longer the recommended implementation.
 **Date:** 2026-10-01
 
 AX can remove Pod startup from a new conversation by claiming an already running gVisor runner. The recommended first version keeps a bounded pool for each recently used agent and gives the claimed runner its session credentials through a separate activation step.

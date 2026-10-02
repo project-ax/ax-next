@@ -1,0 +1,191 @@
+{{- if (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) }}
+{{- include "ax-next.validateSharedPool" . }}
+{{- $pool := .Values.sandbox.sharedPool }}
+{{- $name := printf "%s-storage" (include "ax-next.fullname" .) }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $pool.storageNamespace }}
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $pool.storageNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "ax-next.runnerNamespace" . }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "patch", "delete"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "ax-next.runnerNamespace" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $pool.storageNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-discovery
+  namespace: {{ $pool.storageNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-discovery
+  namespace: {{ $pool.storageNamespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ax-next.hostComponentName" . }}
+    namespace: {{ include "ax-next.hostNamespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-discovery
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ $pool.storageNamespace }}
+spec:
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      ax.io/storage-helper: {{ $pool.prefix }}
+  template:
+    metadata:
+      labels:
+        ax.io/storage-helper: {{ $pool.prefix }}
+    spec:
+      serviceAccountName: {{ $name }}
+      hostNetwork: false
+      hostPID: false
+      nodeSelector:
+        sandbox.gke.io/runtime: gvisor
+      tolerations:
+        - key: sandbox.gke.io/runtime
+          operator: Equal
+          value: gvisor
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 120
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: storage
+          image: {{ include "ax-next.image" . | quote }}
+          # The ledger lock survives process crashes; two helpers cannot bind concurrently.
+          # Preserve the image's tini entrypoint. --no-fork makes Node hold
+          # the lock directly, so SIGTERM reaches its cleanup handler.
+          args: ["flock", "--no-fork", "/ledger/daemon.lock", "node", "/opt/ax-next/storage-node.mjs"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          ports:
+            - name: storage-tls
+              containerPort: 9443
+          env:
+            - name: AX_NODE_NAME
+              valueFrom:
+                fieldRef: {fieldPath: spec.nodeName}
+            - name: AX_RUNNER_NAMESPACE
+              value: {{ include "ax-next.runnerNamespace" . | quote }}
+            - name: AX_POOL_PREFIX
+              value: {{ $pool.prefix | quote }}
+            - name: AX_STORAGE_FILES_SERVER
+              value: {{ .Values.sandbox.filestore.server | quote }}
+            - name: AX_STORAGE_FILES_PATH
+              value: {{ .Values.sandbox.filestore.exportPath | quote }}
+            {{- if include "ax-next.memoryExportsEnabled" . }}
+            - name: AX_STORAGE_MEMORY
+              value: "1"
+            - name: AX_STORAGE_MEMORY_SERVER
+              value: {{ .Values.memory.exports.server | quote }}
+            - name: AX_STORAGE_MEMORY_PATH
+              value: {{ .Values.memory.exports.exportPath | quote }}
+            {{- end }}
+          readinessProbe:
+            exec: {command: ["/usr/bin/test", "-f", "/tmp/storage-ready"]}
+            periodSeconds: 2
+          volumeMounts:
+            - {name: kubelet-pods, mountPath: /kubelet-pods, mountPropagation: Bidirectional}
+            - {name: ledger, mountPath: /ledger}
+            - {name: user-files, mountPath: /backing/files}
+            - {name: tls, mountPath: /tls, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            {{- if include "ax-next.memoryExportsEnabled" . }}
+            - {name: memory, mountPath: /backing/memory, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: kubelet-pods
+          hostPath: {path: {{ $pool.kubeletPodsPath | quote }}, type: Directory}
+        - name: ledger
+          hostPath: {path: {{ printf "%s/%s" $pool.ledgerPath $pool.prefix | quote }}, type: DirectoryOrCreate}
+        - name: user-files
+          nfs: {server: {{ .Values.sandbox.filestore.server | quote }}, path: {{ .Values.sandbox.filestore.exportPath | quote }}}
+        - name: tls
+          secret: {secretName: {{ $pool.serverTlsSecret | quote }}, defaultMode: 0400}
+        - name: tmp
+          emptyDir: {}
+        {{- if include "ax-next.memoryExportsEnabled" . }}
+        - name: memory
+          nfs: {server: {{ .Values.memory.exports.server | quote }}, path: {{ .Values.memory.exports.exportPath | quote }}, readOnly: true}
+        {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $pool.storageNamespace }}
+spec:
+  podSelector:
+    matchLabels:
+      ax.io/storage-helper: {{ $pool.prefix }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "ax-next.hostNamespace" . }}
+          podSelector:
+            matchLabels:
+              {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 14 }}
+      ports: [{port: 9443, protocol: TCP}]
+  egress:
+    - ports: [{port: 443, protocol: TCP}, {port: 6443, protocol: TCP}]
+{{- end }}
