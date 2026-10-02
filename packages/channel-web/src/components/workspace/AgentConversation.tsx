@@ -50,6 +50,8 @@ import type {
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
 import { turnErrorText } from '@/lib/turn-error-labels';
+import { asSaveRefusedCode } from '@/lib/save-refused';
+import { SAVE_REFUSED_COPY } from './save-refused-copy';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import { localTime } from '@/lib/workspace-time';
 import {
@@ -160,8 +162,14 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
         case 'status':
         case 'fold':
         case 'stopped':
-        case 'save-refused':
           return `${m.kind}:${m.id}:${m.text.length}`;
+        /*
+          A save-refused row has no text (TASK-731): it carries a code, and the
+          sentence drawn for it is fixed per code — so the code is what can
+          change the row's height under one id.
+        */
+        case 'save-refused':
+          return `save-refused:${m.id}:${String(m.code)}`;
         /*
           A replayed failure (TASK-498). The id is NOT enough on its own: the
           display log folds turn-errors per originating turn, so a re-fire
@@ -1214,14 +1222,19 @@ function Message({
 
   if (m.kind === 'save-refused') {
     /*
-      "The files from this reply weren't saved" (TASK-720), at the foot of the
-      thread under the reply it is about.
+      "The files from this reply weren't saved" (TASK-720), under the reply it
+      is about — at the foot of the thread live, and in place on a reload,
+      where the host interleaves the persisted row by time (TASK-731).
 
       NOT `stopped`'s register. The person did not ask for this: the reply
       above likely says it made or changed files, and they are gone. So it is
       the destructive `Alert`, with its default `role="alert"` — announced
       when it appears, which is once, after the turn ends. The sentence is one
       of three fixed lines (`save-refused-copy.ts`), never the model's words.
+
+      The row carries a code, not a sentence (TASK-731), and the thread is JSON
+      off the wire — so the code is checked again here, and one this build
+      does not know reads as the catch-all rather than a blank alert.
 
       No control on it: there is nothing to retry from here. The sentence says
       what might help, and the composer beneath is live.
@@ -1230,7 +1243,7 @@ function Message({
       <Alert variant="destructive" className="max-w-[600px]">
         <AlertTriangle size={14} aria-hidden="true" />
         <AlertDescription className="text-[13px] leading-relaxed">
-          {m.text}
+          {SAVE_REFUSED_COPY[asSaveRefusedCode(m.code) ?? 'refused']}
         </AlertDescription>
       </Alert>
     );

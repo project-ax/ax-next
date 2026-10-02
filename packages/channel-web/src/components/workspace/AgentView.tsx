@@ -76,8 +76,7 @@ import { continuationActions } from '@/lib/continuation-actions';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
 import { STOPPED_NOTICE, STOP_COPY, STOP_FALLBACK_MS } from './stop-copy';
-import { SAVE_REFUSED_COPY } from './save-refused-copy';
-import type { SaveRefusedCode } from '@/lib/save-refused';
+import { saveRefusedRowId, type SaveRefusedCode } from '@/lib/save-refused';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
@@ -614,14 +613,22 @@ export function AgentView({
   const [stopping, setStopping] = useState(false);
   const [stopNotice, setStopNotice] = useState<string | null>(null);
   /*
-    TASK-720 — "the files from this reply weren't saved". Same lifetime as
-    `stopNotice` and for the same reasons: set when a turn's `done` carries a
-    `saveRefused` code, keyed by the conversation the turn ran in so it is only
-    drawn there and survives the post-done re-read, cleared by the next send,
-    the next stream, or an agent switch. Not persisted; a reload loses it.
+    TASK-720 — "the files from this reply weren't saved", the LIVE copy. Set
+    when a turn's `done` carries a `saveRefused` code, keyed by the
+    conversation the turn ran in so it is only drawn there, cleared by the next
+    send, the next stream, or an agent switch.
+
+    It is a bridge, not the record (TASK-731). The host persists the refusal as
+    a display event, and the thread read draws it as a row whose id is
+    `saveRefusedRowId(reqId)` — that row is what survives a reload. This copy
+    covers the gap between `done` and the re-read, and stops being drawn once
+    the thread holds the row for its `reqId` (see where `liveThread` is built).
+    If the persist failed, it is still the only notice, for this view's life.
   */
   const [saveRefusedNotice, setSaveRefusedNotice] = useState<{
     conversationId: string;
+    /** The turn it is about — what the persisted row's id is built from. */
+    reqId: string;
     code: SaveRefusedCode;
   } | null>(null);
   interface PendingStop {
@@ -894,7 +901,7 @@ export function AgentView({
           // `streamReply` has already checked the code is one of the three.
           const refused = info?.saveRefused;
           if (refused !== undefined && turnConversation !== null) {
-            setSaveRefusedNotice({ conversationId: turnConversation, code: refused });
+            setSaveRefusedNotice({ conversationId: turnConversation, reqId, code: refused });
           }
           // The durable thread is the source of truth — re-read it rather than
           // keeping our transient copy around to drift. `rereading` bridges the
@@ -1427,12 +1434,30 @@ export function AgentView({
     "The files from this reply weren't saved" (TASK-720), by the same rules as
     the Stop note above: at the end, only in the conversation it was earned in,
     one fixed sentence per code.
+
+    TASK-731 — and only until the durable row for this turn is in the thread.
+    The host persists the refusal before it acks the turn-end, so the post-done
+    re-read normally already has it, and drawing both would say it twice. The
+    match is by id, built in one place (`saveRefusedRowId`), and keyed on THIS
+    turn's reqId: a row from an earlier turn does not stand in for this one,
+    and a re-read that lacks the row (the persist is best-effort) keeps the
+    live copy.
   */
-  if (saveRefusedNotice !== null && saveRefusedNotice.conversationId === detail.conversationId) {
+  const persistedSaveRefused =
+    saveRefusedNotice !== null &&
+    detail.thread.some(
+      (m) =>
+        m.kind === 'save-refused' && m.id === saveRefusedRowId(saveRefusedNotice.reqId),
+    );
+  if (
+    saveRefusedNotice !== null &&
+    saveRefusedNotice.conversationId === detail.conversationId &&
+    !persistedSaveRefused
+  ) {
     liveThread.push({
       kind: 'save-refused',
       id: 'save-refused-notice',
-      text: SAVE_REFUSED_COPY[saveRefusedNotice.code],
+      code: saveRefusedNotice.code,
     });
   }
 

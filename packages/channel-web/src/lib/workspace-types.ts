@@ -43,6 +43,7 @@
   (`server/routes-workspace.ts`), and Node's ESM resolver does not guess.
 */
 import type { WorkspaceStep } from './workspace-steps.js';
+import type { SaveRefusedCode } from './save-refused.js';
 
 export type Attendance = 'attended' | 'unattended';
 
@@ -673,8 +674,11 @@ export type ThreadMessage =
    * the persisted `turn-error` display events off `conversations:get` and
    * interleaves them with the turns. `status` (AW-8) is the one still
    * waiting, and `fold` above. `stopped` (below) HAS A PRODUCER (TASK-688):
-   * `AgentView` appends it client-side after a Stop, and `save-refused`
-   * (TASK-720) the same way after a reply whose files were not saved. This
+   * `AgentView` appends it client-side after a Stop. `save-refused` HAS TWO
+   * (TASK-731): `buildThread` reads the persisted `save-refused` display
+   * events off `conversations:get` and interleaves them as it does
+   * turn-errors, and `AgentView` appends a live copy after a `done` carrying
+   * `saveRefused` (TASK-720) until the re-read holds the persisted row. This
    * list is meant to be exhaustive — if you add a producer, say so here,
    * because the next card scoped off this comment will believe it.
    */
@@ -696,19 +700,29 @@ export type ThreadMessage =
    */
   | { kind: 'stopped'; id: string; text: string }
   /**
-   * "The files from this reply weren't saved" (TASK-720). CLIENT-ONLY, with
-   * exactly `stopped`'s lifetime: `AgentView` appends it after a turn whose
-   * stream `done` carried a `saveRefused` code, and drops it on the next
-   * message, an agent switch, or a change of conversation. Not persisted — a
-   * reload loses it (cut from TASK-720 as a follow-up).
+   * "The files from this reply weren't saved" (TASK-720, persisted since
+   * TASK-731). NOT client-only any more; it has two producers:
+   *
+   *   - `buildThread` (`server/routes-workspace.ts`) projects each persisted
+   *     `save-refused` display event, with id `saveRefusedRowId(key)` — the
+   *     key is the turn's reqId, or `final:<uuid>` for a refusal at the
+   *     runner's last flush, which has no turn. This is the record; it
+   *     survives a reload.
+   *   - `AgentView` appends a live copy after a turn whose stream `done`
+   *     carried a `saveRefused` code. That copy only bridges the gap between
+   *     `done` and the re-read: it is not drawn once the thread holds the row
+   *     for that turn's reqId, and it goes on the next message, an agent
+   *     switch, or a change of conversation.
    *
    * Unlike `stopped` this IS bad news the person did not ask for: the reply
    * says it made files, and they are gone. So it is drawn as a warning, not a
-   * footnote. `text` is one fixed sentence from `save-refused-copy.ts`, never
-   * anything the model or the host veto wrote. Thread find skips it, as it
-   * does `stopped`: chrome, not something anyone said.
+   * footnote. It carries a closed `code`, never a sentence: the renderer
+   * words it from `save-refused-copy.ts`, as turn-error reasons are worded by
+   * `turn-error-labels.ts`, so nothing the model or the host veto wrote ever
+   * reaches the person. Thread find skips it, as it does `stopped`: chrome,
+   * not something anyone said.
    */
-  | { kind: 'save-refused'; id: string; text: string };
+  | { kind: 'save-refused'; id: string; code: SaveRefusedCode };
 
 /**
  * The human's memory tier: `rules`, verbatim, always injected, safe to
