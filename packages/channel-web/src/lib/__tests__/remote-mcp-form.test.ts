@@ -113,6 +113,18 @@ describe('remote MCP form data', () => {
     expect(oauth).not.toHaveProperty('clientSecretRef');
     expect(oauth).toHaveProperty('authServerUrl', 'https://auth.example.com');
   });
+  it('adds hosts without dropping the saved hosts that are displayed separately', () => {
+    const draft = remoteDraft(connector);
+    expect(draft.hosts).toBe('');
+    draft.hosts = 'extra.example.com, auth.example.com';
+    expect(
+      remoteCapabilities(draft, connector.id, connector).allowedHosts,
+    ).toEqual(['mcp.example.com', 'auth.example.com', 'extra.example.com']);
+    draft.hosts = '';
+    expect(
+      remoteCapabilities(draft, connector.id, connector).allowedHosts,
+    ).toEqual(connector.capabilities.allowedHosts);
+  });
   it('validates custom client IDs, duplicate names, OAuth overrides and header injection', () => {
     const draft = remoteDraft(connector);
     draft.clientId = '';

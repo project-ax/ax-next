@@ -1,8 +1,12 @@
 # Remote MCP connector editor
 
-Implemented from the [Figma connector design](https://www.figma.com/design/NrQ1AjWE6L2Op9NlsV3mOP?node-id=5-2002), using the existing channel-web shadcn components and semantic tokens.
+Refined against the [Figma connector design, node 14-468](https://www.figma.com/design/NrQ1AjWE6L2Op9NlsV3mOP/AX-Components?node-id=14-468), using the existing channel-web shadcn components and semantic tokens. The shared UI primitives, `src/index.css`, and `tailwind.config.ts` remain the design source of truth, including IBM Plex Sans typography; this refinement introduces no design-system changes.
 
 The editor starts with name, server URL, and sign-in. OAuth client settings, request headers, connection details, and admin workspace settings expand on demand. Selecting a custom client reveals its fields; Change method returns to the method choices. The body scrolls while the actions remain visible on small screens.
+
+Request headers use visible Add header and Remove header text actions. Selecting CIMD or DCR keeps an explanation beneath the OAuth client summary: CIMD shares AX's published client details without credentials to enter, while DCR registers a client when an account connects.
+
+Connection details list known server, saved, and discovered hosts separately from the blank Additional allowed hosts (optional) input. Saving unions added hosts with retained original permissions, discovered hosts, and the server hostname.
 
 New connectors are remote HTTPS MCP servers. Existing remote connectors use the new form. Existing connectors whose first server is not HTTP retain their original editor. Loading an existing connector must succeed before editing is allowed, so a failed request cannot replace full capabilities with a summary.
 

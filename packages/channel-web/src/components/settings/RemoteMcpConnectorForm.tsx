@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, Copy, Loader2, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, Loader2 } from 'lucide-react';
 import {
   createConnector,
   patchConnector,
@@ -69,13 +69,13 @@ const methods: {
     value: 'cimd',
     label: 'AX’s published identity (CIMD)',
     description: 'Use AX’s hosted client details. No setup needed.',
-    summary: 'Published identity',
+    summary: 'AX identity',
   },
   {
     value: 'dcr',
     label: 'Register automatically (DCR)',
     description: 'Create an OAuth client with this server.',
-    summary: 'Automatic registration',
+    summary: 'Auto-register',
   },
   {
     value: 'custom',
@@ -90,12 +90,14 @@ function Disclosure({
   summary,
   open,
   onOpenChange,
+  preview,
   children,
 }: {
   title: string;
   summary: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  preview?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -105,10 +107,10 @@ function Disclosure({
         <Button
           type="button"
           variant="ghost"
-          className="h-12 w-full justify-between gap-3 rounded-none px-0 hover:bg-transparent"
+          className="h-12 w-full justify-between gap-2 rounded-none px-0"
         >
           <span className="text-left font-medium">{title}</span>
-          <span className="flex min-w-0 items-center gap-3 text-muted-foreground">
+          <span className="flex min-w-0 items-center gap-2 text-muted-foreground">
             <span className="truncate font-normal">{summary}</span>
             <ChevronDown
               aria-hidden="true"
@@ -121,8 +123,9 @@ function Disclosure({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <FieldGroup className="pb-5 pt-1">{children}</FieldGroup>
+        <FieldGroup className="gap-4 pb-5 pt-1">{children}</FieldGroup>
       </CollapsibleContent>
+      {!open && preview && <div className="pb-5">{preview}</div>}
     </Collapsible>
   );
 }
@@ -186,23 +189,55 @@ export function RemoteMcpConnectorForm({
   );
   const changedDestination = Boolean(
     originalHost &&
-    host &&
-    host !== originalHost &&
-    draft.headers.some((h) => h.saved),
+      host &&
+      host !== originalHost &&
+      draft.headers.some((h) => h.saved),
   );
   const awaitingDiscovery = Boolean(
     draft.signIn === 'oauth' &&
-    host &&
-    !manualHosts &&
-    (!discovery || discovery.url !== url || discovery.status === 'loading'),
+      host &&
+      !manualHosts &&
+      (!discovery || discovery.url !== url || discovery.status === 'loading'),
   );
   const discoveryFailed = Boolean(
     draft.signIn === 'oauth' &&
-    !manualHosts &&
-    discovery?.url === url &&
-    discovery.status === 'failed',
+      !manualHosts &&
+      discovery?.url === url &&
+      discovery.status === 'failed',
   );
   const cimdAvailable = metadata?.clientId.startsWith('https://') ?? false;
+  const knownHosts = [
+    ...new Set([
+      ...(host ? [host] : []),
+      ...(connector?.capabilities.allowedHosts ?? []),
+      ...(discovery?.url === url ? discovery.hosts : []),
+    ]),
+  ];
+  const hostCount = new Set([
+    ...knownHosts,
+    ...draft.hosts.split(/[\s,]+/).filter(Boolean),
+  ]).size;
+  const addHeader = () =>
+    update('headers', [
+      ...draft.headers,
+      {
+        slot: `header-${crypto.randomUUID()}`,
+        name: '',
+        value: '',
+        saved: false,
+      },
+    ]);
+  const addHeaderButton = (
+    <Button
+      type="button"
+      variant="outline"
+      className="self-start"
+      disabled={draft.headers.length >= 4}
+      onClick={addHeader}
+    >
+      Add header
+    </Button>
+  );
 
   useEffect(() => {
     let stale = false;
@@ -397,7 +432,7 @@ export function RemoteMcpConnectorForm({
         if (!saving) onOpenChange(nextOpen);
       }}
     >
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[560px] flex-col gap-0 overflow-hidden rounded-xl border-border p-0 transition-none motion-reduce:animate-none [&>button:last-child]:right-5 [&>button:last-child]:top-6 [&>button:last-child]:flex [&>button:last-child]:size-11 [&>button:last-child]:items-center [&>button:last-child]:justify-center [&>button:last-child]:rounded-md sm:[&>button:last-child]:size-10">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[560px] flex-col gap-0 overflow-hidden rounded-xl border-border p-0 transition-none motion-reduce:animate-none [&>button:last-child]:right-6 [&>button:last-child]:top-6 [&>button:last-child]:flex [&>button:last-child]:size-11 [&>button:last-child]:items-center [&>button:last-child]:justify-center [&>button:last-child]:rounded-md sm:[&>button:last-child]:size-10">
         <DialogHeader className="shrink-0 px-6 pb-6 pt-6 text-left">
           <DialogTitle className="flex h-10 items-center pr-12 leading-6">
             {connector ? 'Edit connector' : 'Add connector'}
@@ -414,17 +449,14 @@ export function RemoteMcpConnectorForm({
           className="flex min-h-0 flex-1 flex-col"
           aria-busy={saving}
         >
-          <div
-            className="min-h-0 overflow-y-auto overscroll-contain px-6"
-            style={{ maxHeight: 660 }}
-          >
+          <div className="max-h-[660px] min-h-0 overflow-y-auto overscroll-contain px-6">
             <FieldSet disabled={saving} className="min-w-0 pb-6">
               <FieldGroup>
                 <FieldGroup>
                   {textField('name', 'Name', 'e.g. Linear')}
                   {textField('url', 'Server URL', 'https://example.com/mcp')}
                 </FieldGroup>
-                <Field>
+                <Field className="gap-2">
                   <FieldLabel id={fieldId('sign-in-label')}>Sign-in</FieldLabel>
                   <ToggleGroup
                     type="single"
@@ -437,15 +469,12 @@ export function RemoteMcpConnectorForm({
                     className="grid grid-cols-2 gap-1"
                     aria-labelledby={fieldId('sign-in-label')}
                   >
-                    <ToggleGroupItem
-                      value="none"
-                      className="h-11 px-3 text-sm sm:h-10"
-                    >
+                    <ToggleGroupItem value="none" className="h-11 px-3 sm:h-10">
                       No sign-in
                     </ToggleGroupItem>
                     <ToggleGroupItem
                       value="oauth"
-                      className="h-11 px-3 text-sm sm:h-10"
+                      className="h-11 px-3 sm:h-10"
                     >
                       OAuth
                     </ToggleGroupItem>
@@ -453,7 +482,7 @@ export function RemoteMcpConnectorForm({
                   <FieldDescription>
                     {draft.signIn === 'oauth'
                       ? 'Each user connects with their own account.'
-                      : 'Connect without an account. Add headers below if the server needs an API key.'}
+                      : 'Connect without OAuth. Add a header below if the server needs a key.'}
                   </FieldDescription>
                 </Field>
                 <div>
@@ -466,6 +495,16 @@ export function RemoteMcpConnectorForm({
                       }
                       open={clientOpen}
                       onOpenChange={setClientOpen}
+                      preview={
+                        draft.registration === 'cimd' ||
+                        draft.registration === 'dcr' ? (
+                          <FieldDescription>
+                            {draft.registration === 'cimd'
+                              ? 'AX shares its client details from a published URL. There are no credentials to enter.'
+                              : 'AX registers an OAuth client with this server when an account connects.'}
+                          </FieldDescription>
+                        ) : undefined
+                      }
                     >
                       {(draft.registration !== 'custom' || choosingClient) && (
                         <FieldSet className="gap-0">
@@ -569,6 +608,7 @@ export function RemoteMcpConnectorForm({
                               <Input
                                 id={fieldId('client-secret')}
                                 type="password"
+                                placeholder="Enter only if the service requires it"
                                 autoComplete="new-password"
                                 value={draft.clientSecret}
                                 onChange={(event) =>
@@ -576,14 +616,11 @@ export function RemoteMcpConnectorForm({
                                 }
                               />
                             )}
-                            <FieldDescription>
-                              Leave blank unless the service requires a secret.
-                            </FieldDescription>
                           </Field>
-                          <Field>
+                          <Field className="gap-2">
                             <FieldTitle>Redirect URL</FieldTitle>
                             <div className="flex items-center gap-3">
-                              <p className="min-w-0 flex-1 break-all text-xs leading-5">
+                              <p className="min-w-0 flex-1 break-all text-xs leading-4 text-muted-foreground">
                                 {metadata?.redirectUri ??
                                   'OAuth configuration unavailable'}
                               </p>
@@ -601,7 +638,6 @@ export function RemoteMcpConnectorForm({
                                     );
                                 }}
                               >
-                                <Copy data-icon="inline-start" />
                                 {copied ? 'Copied' : 'Copy'}
                               </Button>
                             </div>
@@ -624,14 +660,13 @@ export function RemoteMcpConnectorForm({
                     onOpenChange={setHeadersOpen}
                   >
                     <FieldDescription>
-                      Sent with every request to this server. Values are stored
-                      securely and never shown again.
+                      Sent with requests to this server. Values are hidden after
+                      saving.
                     </FieldDescription>
                     {draft.headers.map((header, index) => (
                       <FieldGroup key={header.slot} className="gap-3">
-                        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                        <FieldGroup className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,190fr)_minmax(0,310fr)]">
                           <Field
-                            className="col-span-2 sm:col-span-1"
                             data-invalid={Boolean(
                               errors[`name-${header.slot}`],
                             )}
@@ -725,10 +760,22 @@ export function RemoteMcpConnectorForm({
                               />
                             )}
                           </Field>
+                        </FieldGroup>
+                        {(errors[`name-${header.slot}`] ||
+                          errors[`value-${header.slot}`]) && (
+                          <FieldError
+                            id={fieldId(`header-${header.slot}-error`)}
+                          >
+                            {errors[`name-${header.slot}`] ||
+                              errors[`value-${header.slot}`]}
+                          </FieldError>
+                        )}
+                        <div className="flex flex-wrap gap-2">
+                          {index === draft.headers.length - 1 &&
+                            addHeaderButton}
                           <Button
                             type="button"
                             variant="ghost"
-                            size="icon"
                             aria-label={`Remove header ${index + 1}`}
                             onClick={() =>
                               update(
@@ -739,40 +786,18 @@ export function RemoteMcpConnectorForm({
                               )
                             }
                           >
-                            <Trash2 />
+                            Remove header
                           </Button>
                         </div>
-                        {(errors[`name-${header.slot}`] ||
-                          errors[`value-${header.slot}`]) && (
-                          <FieldError
-                            id={fieldId(`header-${header.slot}-error`)}
-                          >
-                            {errors[`name-${header.slot}`] ||
-                              errors[`value-${header.slot}`]}
-                          </FieldError>
-                        )}
                       </FieldGroup>
                     ))}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="self-start"
-                      disabled={draft.headers.length >= 4}
-                      onClick={() =>
-                        update('headers', [
-                          ...draft.headers,
-                          {
-                            slot: `header-${crypto.randomUUID()}`,
-                            name: '',
-                            value: '',
-                            saved: false,
-                          },
-                        ])
-                      }
-                    >
-                      <Plus data-icon="inline-start" />
-                      Add header
-                    </Button>
+                    {draft.headers.length === 0 && addHeaderButton}
+                    {draft.headers.length > 0 && (
+                      <FieldDescription>
+                        Only add a key with the permissions this assistant
+                        needs.
+                      </FieldDescription>
+                    )}
                     {draft.headers.length > 0 && (
                       <ConnectorAccessNotice kind="author" />
                     )}
@@ -814,35 +839,35 @@ export function RemoteMcpConnectorForm({
                   </Disclosure>
                   <Disclosure
                     title="Connection details"
-                    summary={`${new Set([...draft.hosts.split(/[\s,]+/).filter(Boolean), ...(discovery?.url === url ? discovery.hosts : []), ...(host ? [host] : [])]).size} hosts`}
+                    summary={`${hostCount} ${hostCount === 1 ? 'host' : 'hosts'}`}
                     open={detailsOpen}
                     onOpenChange={setDetailsOpen}
                   >
                     <FieldDescription>
-                      AX can connect only to these hosts. Saved headers and
-                      OAuth tokens are sent only to the server host.
+                      These hosts are used for the server and its sign-in flow.
                     </FieldDescription>
-                    {host && (
-                      <p className="break-all text-sm">
-                        {[
-                          ...new Set([
-                            host,
-                            ...(discovery?.url === url ? discovery.hosts : []),
-                          ]),
-                        ].join(', ')}
-                      </p>
-                    )}
+                    <ul
+                      aria-label="Connection hosts"
+                      className="flex flex-col gap-3 text-sm"
+                    >
+                      {knownHosts.map((knownHost) => (
+                        <li key={knownHost} className="break-all">
+                          {knownHost}
+                        </li>
+                      ))}
+                    </ul>
                     {textField(
                       'hosts',
-                      'Additional allowed hosts',
-                      'api.example.com, auth.example.com',
+                      'Additional allowed hosts (optional)',
+                      'api.example.com',
                     )}
                     {draft.signIn === 'oauth' && (
                       <>
-                        {textField('scopes', 'OAuth scopes', 'e.g. read write')}
-                        <FieldDescription>
-                          Optional. Separate scopes with spaces or commas.
-                        </FieldDescription>
+                        {textField(
+                          'scopes',
+                          'OAuth scopes (optional)',
+                          'Use the server’s defaults',
+                        )}
                       </>
                     )}
                   </Disclosure>
