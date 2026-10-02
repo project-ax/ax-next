@@ -4,8 +4,8 @@ import type { ConnectorDatabase } from './migrations.js';
 /**
  * Tenant-scoping helper (Invariant I7).
  *
- * Every multi-row read of `connectors_v1_connectors` MUST go through this
- * helper. The lint rule `local/no-bare-tenant-tables` enforces that a bare
+ * Owner-only multi-row reads go through this helper; shared-definition reads
+ * use availableConnectors below. The lint rule `local/no-bare-tenant-tables` enforces that a bare
  * `db.selectFrom('connectors_v1_*')` only appears in `store.ts` / `scope.ts` /
  * test files.
  *
@@ -33,6 +33,21 @@ export function scopedConnectors(
     .selectFrom('connectors_v1_connectors')
     .selectAll('connectors_v1_connectors')
     .where('owner_user_id', '=', scope.userId)
+    .where('deleted_at', 'is', null);
+}
+
+/** Shared definitions are readable by signed-in users; mutations remain owner-scoped. */
+export function availableConnectors(
+  db: Kysely<ConnectorDatabase>,
+  scope: ConnectorScope,
+) {
+  return db
+    .selectFrom('connectors_v1_connectors')
+    .selectAll('connectors_v1_connectors')
+    .where((eb) => eb.or([
+      eb('owner_user_id', '=', scope.userId),
+      eb('visibility', '=', 'shared'),
+    ]))
     .where('deleted_at', 'is', null);
 }
 

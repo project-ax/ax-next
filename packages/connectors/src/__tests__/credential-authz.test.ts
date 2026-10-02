@@ -211,6 +211,21 @@ describe('credentials:authorize-global:account — the allow path', () => {
 });
 
 describe('credentials:authorize-global:account — deny paths', () => {
+  it('shared workspace keys are authorized against the definition owner, never the reader role', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'root' }), {
+      userId: 'root', connectorId: 'shared', name: 'Shared', keyMode: 'workspace', visibility: 'shared', capabilities: caps('TOKEN'),
+    });
+    authLookup = (id) => id === 'root' ? adminUser(id) : plainUser(id);
+    expect(await authorize(h, 'reader', 'account:shared')).toEqual(ALLOWED);
+    expect(authCalls).toEqual([{ userId: 'root' }]);
+    authLookup = (id) => id === 'reader' ? adminUser(id) : plainUser(id);
+    expect(await authorize(h, 'reader', 'account:shared')).toEqual(DENIED);
+    await seed(h, 'reader', 'shared', 'personal', 'TOKEN');
+    authLookup = adminUser;
+    expect(await authorize(h, 'reader', 'account:shared')).toEqual(DENIED);
+  });
+
   it('keyMode personal never reads global, even for an admin owner', async () => {
     // vs always-allow: FAILS. The plan derives scope "user", so no global entry exists.
     authLookup = adminUser;

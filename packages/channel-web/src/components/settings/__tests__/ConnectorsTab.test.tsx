@@ -413,6 +413,30 @@ describe('ConnectorsTab', () => {
     ).toBeInTheDocument();
   });
 
+  it('an owner can edit a shared personal definition', async () => {
+    vi.mocked(connectorsLib.listConnectors).mockResolvedValue([
+      { ...PRIVATE_CONN, visibility: 'shared', canEdit: true },
+    ]);
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
+    expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
+  });
+
+  it('a shared definition owned by someone else is read-only even for an admin', async () => {
+    vi.mocked(connectorsLib.listConnectors).mockResolvedValue([
+      { ...SHARED_CONN, canEdit: false },
+    ]);
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('Salesforce');
+    const tile = screen.getByTestId('connector-tile-company-salesforce');
+    expect(within(tile).queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+    expect(within(tile).queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
+    expect(within(tile).queryByRole('button', { name: /set default/i })).not.toBeInTheDocument();
+    expect(within(tile).getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
+  });
+
   it('a non-admin sees NO Edit/Delete on a catalog/shared connector (read-only)', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('Salesforce');

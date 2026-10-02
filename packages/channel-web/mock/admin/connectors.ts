@@ -3,12 +3,10 @@ import type { Store } from '../store';
 import { requireSession } from '../auth';
 
 /**
- * Offline Vite mock for the connector REST wire surface. Two owner-scoped route
- * bundles, selected by `mode` (mirrors `@ax/connectors` `admin-routes.ts`):
- *   - `/admin/connectors[/:id]`    — admin registry (`mode: 'admin'`).
- *   - `/settings/connectors[/:id]` — user authoring (`mode: 'user'`, TASK-129):
- *     forces `visibility: 'private'`, rejects admin-only fields (400), and
- *     treats a catalog/shared connector as read-only (403).
+ * Offline Vite mock for the connector REST surface. Both route bundles list
+ * owned and shared definitions; writes stay owner-only. New definitions default
+ * to shared with automatic attachment off. User routes reject workspace keys
+ * and automatic attachment. Mirrors the real connectors plugin.
  *
  * The real backend registers these routes in `@ax/connectors`
  * (`mountAdminRoutes` → `admin-routes.ts`), bridging the `connectors:*` service
@@ -29,18 +27,8 @@ import { requireSession } from '../auth';
  * Note the path has NO `/api/` prefix (unlike the mock `/api/admin/mcp-servers`)
  * — it matches the real `@ax/connectors` routes, which the UI hits directly.
  *
- * SECURITY parity with the real route:
- *  - `auth:require-user` — ANY authenticated user, NOT admin-only (mock =
- *    `requireSession`; 401 when no session). Connectors are owner-scoped.
- *  - The owner is FORCED from the session, never read from the body — a
- *    client-supplied `userId` is stripped, so a connector can't be created /
- *    read / mutated in a foreign namespace.
- *  - A read/mutate of a connector the actor doesn't own surfaces as 404 (the
- *    foreign connector is simply not found for this user), never 403.
- *  - `mode: 'user'` additionally forces `visibility: 'private'`, rejects
- *    admin-only fields server-side (400), and 403s on a catalog/shared connector.
- *  - Responses carry credential SLOT names only (inside `capabilities`), never
- *    secret values — same posture as the hook bus.
+ * SECURITY parity: identity comes from the session. Private foreign rows are
+ * invisible; shared foreign rows are read-only. Credential values never appear.
  *
  * These type shapes are DUPLICATED from `@ax/connectors` (not imported):
  * channel-web is not a `@ax/connectors` dependency and plugins talk through the
@@ -83,6 +71,8 @@ interface Capabilities {
  *  `defaultAttached` is the admin workspace-default flag, on the summary
  *  (TASK-110) so the user list can badge a default-on connector as "Catalog". */
 export interface ConnectorSummary {
+  canEdit?: boolean;
+  requiresAttachment?: boolean;
   id: string;
   name: string;
   description: string;
@@ -126,8 +116,10 @@ function emptyCapabilities(): Capabilities {
   return { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
 }
 
-function toSummary(row: StoredConnector): ConnectorSummary {
+function toSummary(row: StoredConnector, actorId: string): ConnectorSummary {
   return {
+    canEdit: row.userId === actorId,
+    requiresAttachment: row.requiresAttachment ?? false,
     id: row.connectorId,
     name: row.name,
     description: row.description,
@@ -140,8 +132,8 @@ function toSummary(row: StoredConnector): ConnectorSummary {
   };
 }
 
-function toConnector(row: StoredConnector): Connector {
-  return { ...toSummary(row), capabilities: row.capabilities };
+function toConnector(row: StoredConnector, actorId: string): Connector {
+  return { ...toSummary(row, actorId), capabilities: row.capabilities };
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -208,7 +200,7 @@ function validateUpsert(
     return { ok: false, message: "keyMode must be 'personal' or 'workspace'" };
   }
 
-  const visibility = body.visibility ?? existing?.visibility;
+  const visibility = body.visibility ?? existing?.visibility ?? 'shared';
   if (visibility !== 'private' && visibility !== 'shared') {
     return { ok: false, message: "visibility must be 'private' or 'shared'" };
   }
@@ -231,17 +223,15 @@ function validateUpsert(
   };
 }
 
-/** A catalog/shared connector — admin-curated, read-only for a non-admin author
- *  (mirrors the real route's `isCatalogConnector` + channel-web's
- *  `connectorSource(...) === 'catalog'`). */
-function isCatalogConnector(row: StoredConnector): boolean {
-  return row.visibility === 'shared' || row.defaultAttached === true;
+function isReadOnly(row: StoredConnector, actorId: string, mode: RouteMode): boolean {
+  return row.userId !== actorId || (mode === 'user' &&
+    (row.defaultAttached || (row.visibility === 'shared' && row.keyMode === 'workspace')));
 }
 
 /** Reject admin-only write fields on the user surface (mirrors the real route's
  *  `rejectAdminOnlyFields`). Returns an error message, else null. */
 function rejectAdminOnlyFields(body: Record<string, unknown>): string | null {
-  if (body.visibility === 'shared') return 'visibility: shared is admin-only';
+  if (body.keyMode === 'workspace') return 'keyMode: workspace is admin-only';
   if (body.defaultAttached === true) return 'defaultAttached is admin-only';
   return null;
 }
@@ -249,8 +239,8 @@ function rejectAdminOnlyFields(body: Record<string, unknown>): string | null {
 /**
  * The shared connector-routes mock, parameterized by `base` (the bundle's path)
  * and `mode` (`'admin'` = the registry, `'user'` = locked-down authoring). One
- * implementation, two registrations — the user mode forces private, rejects
- * admin-only fields, and 403s on a catalog/shared connector (TASK-129).
+ * implementation, two registrations — user mode rejects admin-only fields.
+ * Sharing grants read access while mutations stay owner-scoped.
  */
 function connectorsMiddleware(
   store: Store,
@@ -275,37 +265,42 @@ function connectorsMiddleware(
 
     const connectors = store.collection<StoredConnector>(COLLECTION);
 
+    const availableRows = () => {
+      const grouped = new Map<string, StoredConnector[]>();
+      for (const row of connectors.list()) {
+        if (row.userId !== actor.id && row.visibility !== 'shared') continue;
+        const group = grouped.get(row.connectorId) ?? [];
+        group.push(row);
+        grouped.set(row.connectorId, group);
+      }
+      return [...grouped.values()].flatMap((rows) => {
+        const own = rows.find((row) => row.userId === actor.id);
+        return own ? [own] : rows.length === 1 ? rows : [];
+      });
+    };
+    const availableById = (id: string) => availableRows().find((row) => row.connectorId === id);
+
     // ---- collection routes -------------------------------------------------
     if (path === base && method === 'GET') {
-      const mine = connectors.list().filter((r) => r.userId === actor.id);
-      send(res, 200, { connectors: mine.map(toSummary) });
+      send(res, 200, { connectors: availableRows().map((row) => toSummary(row, actor.id)) });
       return true;
     }
 
     if (path === base && method === 'POST') {
       const body = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>;
-      // User-authoring surface: reject admin-only fields, then force the
-      // connector private + non-default (mirrors the real route).
       if (mode === 'user') {
         const rejected = rejectAdminOnlyFields(body);
         if (rejected !== null) {
           send(res, 400, { error: rejected });
           return true;
         }
-        // POST is create-or-update; a re-POST of an existing catalog/shared
-        // connector's id would silently demote it to private. 403 instead.
-        const cid = body.connectorId;
-        if (typeof cid === 'string' && cid.length > 0) {
-          const existing = connectors.get(rowKey(actor.id, cid));
-          if (existing && isCatalogConnector(existing)) {
-            send(res, 403, { error: 'read-only' });
-            return true;
-          }
-        }
-        body.visibility = 'private';
-        body.defaultAttached = false;
       }
-      const result = validateUpsert(body);
+      const available = typeof body.connectorId === 'string' ? availableById(body.connectorId) : undefined;
+      if (available && isReadOnly(available, actor.id, mode)) {
+        send(res, 403, { error: 'read-only' });
+        return true;
+      }
+      const result = validateUpsert(body, available);
       if (!result.ok) {
         send(res, 400, { error: result.message });
         return true;
@@ -320,11 +315,12 @@ function connectorsMiddleware(
         id: key,
         userId: actor.id,
         connectorId: result.value.id,
+        requiresAttachment: existing?.requiresAttachment ?? !existing,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       };
       connectors.upsert(row);
-      send(res, existing ? 200 : 201, { connector: toConnector(row), created: !existing });
+      send(res, existing ? 200 : 201, { connector: toConnector(row, actor.id), created: !existing });
       return true;
     }
 
@@ -335,25 +331,25 @@ function connectorsMiddleware(
       const key = rowKey(actor.id, connectorId);
 
       if (method === 'GET') {
-        const row = connectors.get(key);
+        const row = availableById(connectorId);
         if (!row) {
           send(res, 404, { error: 'not-found' });
           return true;
         }
-        send(res, 200, { connector: toConnector(row) });
+        send(res, 200, { connector: toConnector(row, actor.id) });
         return true;
       }
 
       if (method === 'PATCH') {
         // A PATCH cannot create: the connector must already exist AND be owned by
         // the actor. A foreign / missing connector 404s.
-        const existing = connectors.get(key);
+        const existing = availableById(connectorId);
         if (!existing) {
           send(res, 404, { error: 'not-found' });
           return true;
         }
         // User-authoring surface: a catalog/shared connector is read-only (403).
-        if (mode === 'user' && isCatalogConnector(existing)) {
+        if (isReadOnly(existing, actor.id, mode)) {
           send(res, 403, { error: 'read-only' });
           return true;
         }
@@ -364,8 +360,6 @@ function connectorsMiddleware(
             send(res, 400, { error: rejected });
             return true;
           }
-          body.visibility = 'private';
-          body.defaultAttached = false;
         }
         const result = validateUpsert(body, existing);
         if (!result.ok) {
@@ -379,16 +373,17 @@ function connectorsMiddleware(
           id: key,
           userId: actor.id,
           connectorId,
+          requiresAttachment: existing.requiresAttachment ?? false,
           createdAt: existing.createdAt,
           updatedAt: new Date().toISOString(),
         };
         connectors.upsert(row);
-        send(res, 200, { connector: toConnector(row), created: false });
+        send(res, 200, { connector: toConnector(row, actor.id), created: false });
         return true;
       }
 
       if (method === 'DELETE') {
-        const existing = connectors.get(key);
+        const existing = availableById(connectorId);
         if (!existing) {
           // Nothing (owned) to delete — surface as 404, same leak posture as a
           // foreign-owned read.
@@ -396,7 +391,7 @@ function connectorsMiddleware(
           return true;
         }
         // User-authoring surface: a catalog/shared connector is read-only (403).
-        if (mode === 'user' && isCatalogConnector(existing)) {
+        if (isReadOnly(existing, actor.id, mode)) {
           send(res, 403, { error: 'read-only' });
           return true;
         }

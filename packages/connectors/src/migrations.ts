@@ -1,4 +1,4 @@
-import { sql, type Kysely } from 'kysely';
+import { sql, type Generated, type Kysely } from 'kysely';
 
 /**
  * Per-plugin migration. @ax/connectors owns tables under the `connectors_v1_`
@@ -72,6 +72,20 @@ export async function runConnectorsMigration<DB>(
       ADD COLUMN IF NOT EXISTS default_attached BOOLEAN NOT NULL DEFAULT false
   `.execute(db);
 
+  // Existing definitions retain the legacy implicit owner attachment. New
+  // definitions are marked by the store and require an explicit agent/skill
+  // attachment unless an admin deliberately sets default_attached.
+  await sql`
+    ALTER TABLE connectors_v1_connectors
+      ADD COLUMN IF NOT EXISTS requires_attachment BOOLEAN NOT NULL DEFAULT false
+  `.execute(db);
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS connectors_v1_connectors_shared
+      ON connectors_v1_connectors (connector_id)
+      WHERE deleted_at IS NULL AND visibility = 'shared'
+  `.execute(db);
+
   // TASK-94 — agent-authored connector drafts. Keyed per-(owner, agent,
   // connector) because an authored draft is THIS agent's model-generated
   // proposal (the approved-caps wall is also per-(owner, agent, subject)); the
@@ -122,6 +136,7 @@ export interface ConnectorsRow {
   capabilities: unknown;
   /** TASK-97 — workspace-default flag (see migration). */
   default_attached: boolean;
+  requires_attachment: Generated<boolean>;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;

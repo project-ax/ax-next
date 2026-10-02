@@ -150,6 +150,15 @@ afterEach(async () => {
     const h = harnesses.pop();
     if (h) await h.close();
   }
+  // Shared definitions are visible across actors, so isolate each scenario.
+  const cleanup = new (await import('pg')).default.Client({ connectionString });
+  await cleanup.connect();
+  try {
+    await cleanup.query('TRUNCATE connectors_v1_connectors, connectors_v1_authored');
+  } finally {
+    await cleanup.end();
+  }
+
 });
 
 function mcpCaps(): Capabilities {
@@ -715,7 +724,7 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(captured.body).toEqual({ error: 'unauthenticated' });
   });
 
-  it('POST forces the connector private (a body visibility is ignored when absent)', async () => {
+  it('POST defaults a new connector to shared with automatic attachment off', async () => {
     const h = await makeHarness();
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
     currentActor = { id: 'userU', isAdmin: false };
@@ -726,7 +735,7 @@ describe('user connector routes (/settings/connectors)', () => {
           connectorId: 'mine',
           name: 'My connector',
           keyMode: 'personal',
-          // No visibility supplied — the route must force it private.
+          // No visibility supplied — new definitions default to shared.
           capabilities: mcpCaps(),
         },
       }),
@@ -735,32 +744,72 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(captured.status).toBe(201);
     const connector = (captured.body as { connector: { visibility: string } })
       .connector;
-    expect(connector.visibility).toBe('private');
+    expect(connector.visibility).toBe('shared');
+    expect(connector).toMatchObject({ defaultAttached: false });
   });
 
-  it('POST rejects visibility:shared (admin-only) with 400 — never silently downgrades', async () => {
+  it('a shared personal connector supports owner edits and is read-only for other users', async () => {
     const h = await makeHarness();
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'sneaky',
-          name: 'Sneaky',
-          keyMode: 'personal',
-          visibility: 'shared',
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(400);
-    expect((captured.body as { error: string }).error).toContain('admin-only');
-    // It must NOT have landed downgraded — the GET 404s.
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'sneaky' } }), gRes);
-    expect(gCap.status).toBe(404);
+    currentActor = { id: 'author', isAdmin: false };
+    const created = makeRes();
+    await handlers.create(makeReq({ body: {
+      connectorId: 'shared-personal', name: 'Shared', keyMode: 'personal',
+      visibility: 'shared', capabilities: mcpCaps(),
+    } }), created.res);
+    expect(created.captured.status).toBe(201);
+    const edited = makeRes();
+    await handlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Updated', requiresAttachment: false } }), edited.res);
+    expect(edited.captured.status).toBe(200);
+    expect(edited.captured.body).toMatchObject({ connector: { visibility: 'shared', defaultAttached: false, requiresAttachment: true } });
+
+    currentActor = { id: 'reader', isAdmin: false };
+    const list = makeRes();
+    await handlers.list(makeReq({}), list.res);
+    expect(list.captured.body).toMatchObject({ connectors: [{ id: 'shared-personal', canEdit: false }] });
+    const shown = makeRes();
+    await handlers.show(makeReq({ params: { id: 'shared-personal' } }), shown.res);
+    expect(shown.captured.status).toBe(200);
+    expect(shown.captured.body).toMatchObject({ connector: { name: 'Updated', canEdit: false } });
+    const patch = makeRes();
+    await handlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Hijack', canEdit: true } }), patch.res);
+    expect(patch.captured.status).toBe(403);
+    const post = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'shared-personal', name: 'Hijack', keyMode: 'personal', capabilities: mcpCaps(), canEdit: true } }), post.res);
+    expect(post.captured.status).toBe(403);
+    const del = makeRes();
+    await handlers.destroy(makeReq({ params: { id: 'shared-personal' } }), del.res);
+    expect(del.captured.status).toBe(403);
+
+    currentActor = { id: 'reader', isAdmin: true };
+    const adminHandlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    const adminPatch = makeRes();
+    await adminHandlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Hijack' } }), adminPatch.res);
+    expect(adminPatch.captured.status).toBe(403);
+    const adminDelete = makeRes();
+    await adminHandlers.destroy(makeReq({ params: { id: 'shared-personal' } }), adminDelete.res);
+    expect(adminDelete.captured.status).toBe(403);
+
+    currentActor = { id: 'author', isAdmin: false };
+    const ownDelete = makeRes();
+    await handlers.destroy(makeReq({ params: { id: 'shared-personal' } }), ownDelete.res);
+    expect(ownDelete.captured.status).toBe(204);
+  });
+
+  it('admin create defaults to shared/off; editing and POST upserts preserve legacy settings', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    const fresh = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'fresh', name: 'Fresh', keyMode: 'personal', capabilities: mcpCaps() } }), fresh.res);
+    expect(fresh.captured.body).toMatchObject({ connector: { visibility: 'shared', defaultAttached: false } });
+    await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Legacy', keyMode: 'workspace', visibility: 'private', defaultAttached: true, capabilities: mcpCaps() } }), makeRes().res);
+    const patch = makeRes();
+    await handlers.update(makeReq({ params: { id: 'legacy' }, body: { name: 'Edited' } }), patch.res);
+    expect(patch.captured.body).toMatchObject({ connector: { visibility: 'private', defaultAttached: true, keyMode: 'workspace' } });
+    const post = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Upserted', keyMode: 'workspace', capabilities: mcpCaps() } }), post.res);
+    expect(post.captured.body).toMatchObject({ connector: { visibility: 'private', defaultAttached: true, keyMode: 'workspace' } });
   });
 
   it('POST rejects defaultAttached:true (admin-only) with 400', async () => {
@@ -942,37 +991,6 @@ describe('user connector routes (/settings/connectors)', () => {
     const { res: gRes, captured: gCap } = makeRes();
     await handlers.show(makeReq({ params: { id: 'crud-conn' } }), gRes);
     expect(gCap.status).toBe(404);
-  });
-
-  it('PATCH cannot flip an owned private connector to shared (admin-only field rejected)', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'mine',
-          name: 'Mine',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      makeRes().res,
-    );
-    const { res, captured } = makeRes();
-    await handlers.update(
-      makeReq({ params: { id: 'mine' }, body: { visibility: 'shared' } }),
-      res,
-    );
-    expect(captured.status).toBe(400);
-    expect((captured.body as { error: string }).error).toContain('admin-only');
-    // Still private — the rejected patch never landed.
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'mine' } }), gRes);
-    expect((gCap.body as { connector: { visibility: string } }).connector.visibility).toBe(
-      'private',
-    );
   });
 
   it('PATCH on a SHARED (catalog) connector is read-only — 403', async () => {

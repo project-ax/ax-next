@@ -266,7 +266,8 @@ describe('remote connector editor', () => {
     expect(writes[0]!.url).toBe('/settings/connectors');
     expect(writes[0]!.body).toMatchObject({
       keyMode: 'personal',
-      visibility: 'private',
+      visibility: 'shared',
+      defaultAttached: false,
       capabilities: {
         credentials: [],
         allowedHosts: ['public.example.com'],
@@ -275,6 +276,17 @@ describe('remote connector editor', () => {
         ],
       },
     });
+  });
+  it('creates an admin connector shared and off by default without workspace controls', async () => {
+    const options = { ...props(), target: 'new' as const, isAdmin: true };
+    render(<ConnectorEditDialog {...options} />);
+    expect(screen.queryByRole('button', { name: /Workspace settings/ })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New MCP' } });
+    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://public.example.com/mcp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(writes[0]!.url).toBe('/admin/connectors');
+    expect(writes[0]!.body).toMatchObject({ visibility: 'shared', defaultAttached: false, keyMode: 'personal' });
   });
   it.each(['auto', 'cimd'] as const)(
     'saves the %s OAuth method and headers together',
@@ -321,11 +333,10 @@ describe('remote connector editor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes[0]!.url).toBe('/admin/connectors/linear');
-    expect(writes[0]!.body).toMatchObject({
-      keyMode: 'workspace',
-      visibility: 'shared',
-      defaultAttached: true,
-    });
+    expect(writes[0]!.body.keyMode).toBe('workspace');
+    expect(writes[0]!.body).not.toHaveProperty('visibility');
+    expect(writes[0]!.body).not.toHaveProperty('defaultAttached');
+    expect(screen.queryByRole('button', { name: /Workspace settings/ })).not.toBeInTheDocument();
     fixture.keyMode = original;
   });
   it('requires confirmation before sending saved headers to a changed host', async () => {

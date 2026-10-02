@@ -17,7 +17,7 @@ import type { AuthorizeGlobalInput, AuthorizeGlobalOutput } from './types.js';
 // for an `account:` ref. We allow it iff, for the REQUESTING user:
 //
 //   1. the ref parses as `account:<id>` / `account:<id>:<SLOT>` with a valid id,
-//   2. that user owns a LIVE (not soft-deleted) connector with that id,
+//   2. that user can read a LIVE owned or unambiguous shared connector with that id,
 //   3. the connector's derived credential plan contains EXACTLY this ref at
 //      scope `global` (i.e. `keyMode: 'workspace'`) — `deriveCredentialPlan` is
 //      the single function that decides both a slot's ref and its scope, so the
@@ -35,11 +35,6 @@ import type { AuthorizeGlobalInput, AuthorizeGlobalOutput } from './types.js';
 // walking, so the user sees the same `credential-not-found` a missing key gives.
 // Nothing here ever reads, returns or logs a secret value.
 //
-// TODAY the only user for whom a workspace connector resolves is its owner:
-// connectors are owner-scoped (`getByIdNotDeleted(userId, id)`) and the
-// orchestrator resolves every connector under the chat user. A future feature
-// that shares a workspace connector across users must extend THIS function, not
-// route around it.
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/connectors';
@@ -90,8 +85,9 @@ export async function authorizeGlobalAccountRead(
   if (connectorId === null) return deny('not-a-connector-ref');
 
   try {
-    const connector = await store.getByIdNotDeleted(userId, connectorId);
-    if (connector === null) return deny('no-such-connector');
+    const available = await store.getAvailableById(userId, connectorId);
+    if (available === null) return deny('no-such-connector');
+    const { connector, ownerUserId } = available;
 
     const grantsGlobalRef = deriveCredentialPlan(connector).some(
       (entry) => entry.scope === 'global' && entry.ref === ref,
@@ -104,7 +100,7 @@ export async function authorizeGlobalAccountRead(
     const owner = await bus.call<{ userId: string }, AuthUserLike | null>(
       'auth:get-user',
       ctx,
-      { userId },
+      { userId: ownerUserId },
     );
     if (owner === null || owner === undefined || owner.isAdmin !== true) {
       return deny('owner-not-admin');

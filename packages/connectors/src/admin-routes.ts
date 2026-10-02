@@ -73,11 +73,9 @@ interface AgentsResolveInputLike {
 // probe), and before the gate it was a bypass of the `/settings/connectors`
 // rejections. The `/settings/connectors*` bundle (mode 'user') stays open to any
 // signed-in user. Connectors are
-// owner-scoped by the calling user's id — the actor id is forced from the
-// authenticated session, never read from the client body, so a client can never
-// create / read / mutate a connector in a foreign namespace. A read or mutate of
-// a connector the actor doesn't own surfaces as 404 (the connector store scopes
-// by userId, so a foreign connector is simply not found for this user).
+// readable when owned by the actor or explicitly shared. Writes remain owner-only;
+// actor identity is forced from the session and canEdit is derived by the store.
+// Private foreign definitions stay invisible. Shared foreign definitions are read-only.
 //
 // Responses NEVER include resolved credential VALUES — a connector declares
 // credential SLOT names only (the `capabilities.credentials[].slot`); the actual
@@ -310,10 +308,11 @@ export interface AdminRouteDeps {
  */
 export type ConnectorRouteMode = 'admin' | 'user';
 
-/** A catalog/shared connector — admin-curated, hence read-only for a non-admin
- *  author. Mirrors channel-web's `connectorSource(...) === 'catalog'`. */
-function isCatalogConnector(c: Connector): boolean {
-  return c.visibility === 'shared' || c.defaultAttached === true;
+/** Shared reads grant no writes; workspace credentials/defaults remain admin-curated. */
+function isReadOnly(c: Connector, mode: ConnectorRouteMode): boolean {
+  return c.canEdit === false ||
+    (mode === 'user' && (c.defaultAttached === true ||
+      (c.visibility === 'shared' && c.keyMode === 'workspace')));
 }
 
 /**
@@ -323,9 +322,6 @@ function isCatalogConnector(c: Connector): boolean {
  * forced so a tampered client body surfaces as a clear rejection.
  */
 function rejectAdminOnlyFields(raw: Record<string, unknown>): string | null {
-  if (raw.visibility === 'shared') {
-    return 'visibility: shared is admin-only';
-  }
   if (raw.defaultAttached === true) {
     return 'defaultAttached is admin-only';
   }
@@ -335,7 +331,7 @@ function rejectAdminOnlyFields(raw: Record<string, unknown>): string | null {
   // company key. The global credential WRITE is already admin-gated
   // (/admin/destinations); the connector that drives the global PURGE must be too,
   // or a non-admin could create-then-delete a workspace connector to wipe a
-  // company key. A non-admin only ever authors their OWN PRIVATE personal
+  // company key. A non-admin only ever authors their OWN personal
   // connectors here.
   if (raw.keyMode === 'workspace') {
     return 'keyMode: workspace is admin-only';
@@ -427,43 +423,35 @@ export function createConnectorRouteHandlers(
       // Force userId from the authenticated actor — a client cannot create a
       // connector owned by someone else. Strip any client-supplied userId.
       const raw = (parsed.value ?? {}) as Record<string, unknown>;
-      // User-authoring surface: reject admin-only fields server-side (not merely
-      // ignore them) THEN force the connector private + non-default — a tampered
-      // client body can never smuggle a shared / default-on connector through.
       if (mode === 'user') {
         const rejected = rejectAdminOnlyFields(raw);
         if (rejected !== null) {
           res.status(400).json({ error: rejected });
           return;
         }
-        // POST is create-OR-update (upsert by id). If the id already names a
-        // catalog/shared connector the actor owns, this would silently DEMOTE it
-        // to private — the same read-only bypass PATCH/DELETE guard against. So
-        // pre-read and 403 before the forced-private upsert can land.
-        const cid = raw.connectorId;
-        if (typeof cid === 'string' && cid.length > 0) {
-          try {
-            const got = await deps.bus.call<GetInput, GetOutput>(
-              'connectors:get',
-              ctx,
-              { userId: actor.id, connectorId: cid },
-            );
-            if (isCatalogConnector(got.connector)) {
-              res.status(403).json({ error: 'read-only' });
-              return;
-            }
-          } catch (err) {
-            // not-found ⟹ a genuine create — fall through. Any other hook error
-            // (e.g. invalid id) surfaces here with the right status.
-            if (!(err instanceof PluginError && err.code === 'not-found')) {
-              handleHookError(err, res);
-              return;
-            }
+      }
+      // POST is an upsert. Preserve saved settings on updates; apply defaults
+      // only to genuinely new definitions. A shared read never grants a write.
+      let existing: Connector | undefined;
+      if (typeof raw.connectorId === 'string' && raw.connectorId.length > 0) {
+        try {
+          const got = await deps.bus.call<GetInput, GetOutput>(
+            'connectors:get', ctx, { userId: actor.id, connectorId: raw.connectorId },
+          );
+          existing = got.connector;
+          if (isReadOnly(existing, mode)) {
+            res.status(403).json({ error: 'read-only' });
+            return;
+          }
+        } catch (err) {
+          if (!(err instanceof PluginError && err.code === 'not-found')) {
+            handleHookError(err, res);
+            return;
           }
         }
-        raw.visibility = 'private';
-        raw.defaultAttached = false;
       }
+      raw.visibility ??= existing?.visibility ?? 'shared';
+      raw.defaultAttached ??= existing?.defaultAttached ?? false;
       const input = { ...raw, userId: actor.id } as unknown as UpsertInput;
       try {
         const out = await deps.bus.call<UpsertInput, UpsertOutput>(
@@ -493,9 +481,8 @@ export function createConnectorRouteHandlers(
         res.status(parsed.status).json({ error: parsed.message });
         return;
       }
-      // The connector must already exist AND be owned by the actor — a PATCH of a
-      // foreign / missing connector 404s (connectors:get scopes by userId). This
-      // also means PATCH cannot CREATE: the id in the URL is authoritative.
+      // PATCH requires a live owned definition. Missing/private foreign ids
+      // return 404; a readable shared foreign definition is rejected below.
       let existing: Connector;
       try {
         const got = await deps.bus.call<GetInput, GetOutput>(
@@ -508,11 +495,7 @@ export function createConnectorRouteHandlers(
         handleHookError(err, res);
         return;
       }
-      // User-authoring surface: a catalog/shared connector (admin-curated) is
-      // READ-ONLY for a non-admin author — editing it 403s, even when the actor
-      // happens to own the row. This is the server-side enforcement of
-      // "catalog/shared connectors are read-only for non-admins."
-      if (mode === 'user' && isCatalogConnector(existing)) {
+      if (isReadOnly(existing, mode)) {
         res.status(403).json({ error: 'read-only' });
         return;
       }
@@ -522,17 +505,14 @@ export function createConnectorRouteHandlers(
       delete patchRaw.userId;
       delete patchRaw.connectorId;
       delete patchRaw.id;
-      // User-authoring surface: reject admin-only fields server-side, then force
-      // the connector private + non-default after the spread below — a user PATCH
-      // can never flip an owned private connector to shared / default-on.
+      // Sharing a definition grants no authority to write global credentials
+      // or enable automatic attachment. Those fields remain admin-only.
       if (mode === 'user') {
         const rejected = rejectAdminOnlyFields(patchRaw);
         if (rejected !== null) {
           res.status(400).json({ error: rejected });
           return;
         }
-        patchRaw.visibility = 'private';
-        patchRaw.defaultAttached = false;
       }
       const input: UpsertInput = {
         name: existing.name,
@@ -569,25 +549,17 @@ export function createConnectorRouteHandlers(
         res.status(400).json({ error: 'missing-id' });
         return;
       }
-      // User-authoring surface: a catalog/shared connector is read-only for a
-      // non-admin author — deleting it 403s. Read it first so we can tell a
-      // catalog/shared connector (403) from a missing/foreign one (404).
-      if (mode === 'user') {
-        let existing: Connector;
-        try {
-          const got = await deps.bus.call<GetInput, GetOutput>('connectors:get', ctx, {
-            userId: actor.id,
-            connectorId: id,
-          });
-          existing = got.connector;
-        } catch (err) {
-          handleHookError(err, res);
-          return;
-        }
-        if (isCatalogConnector(existing)) {
+      try {
+        const got = await deps.bus.call<GetInput, GetOutput>('connectors:get', ctx, {
+          userId: actor.id, connectorId: id,
+        });
+        if (isReadOnly(got.connector, mode)) {
           res.status(403).json({ error: 'read-only' });
           return;
         }
+      } catch (err) {
+        handleHookError(err, res);
+        return;
       }
       try {
         const out = await deps.bus.call<DeleteInput, DeleteOutput>(

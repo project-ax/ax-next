@@ -233,6 +233,16 @@ describe('@ax/connectors hooks — CRUD round-trip', () => {
 });
 
 describe('@ax/connectors hooks — resolve', () => {
+  it('resolves a shared definition with personal credentials without automatically attaching it', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ visibility: 'shared' }));
+    const resolved = await h.bus.call<ResolveInput, ResolveOutput>('connectors:resolve', h.ctx({ userId: 'userB' }), { userId: 'userB', connectorId: 'gdrive' });
+    expect(resolved.credentialPlan).toMatchObject([{ scope: 'user', ref: 'account:gdrive' }]);
+    expect(resolved.capabilities).toEqual(mcpCaps());
+    const defaults = await h.bus.call('connectors:list-defaults', h.ctx({ userId: 'userB' }), { userId: 'userB' });
+    expect(defaults).toEqual({ connectors: [] });
+  });
+
   it('resolve returns the mechanism-agnostic spec descriptor (id + keyMode + capabilities)', async () => {
     const h = await makeHarness();
     await h.bus.call<UpsertInput, UpsertOutput>(

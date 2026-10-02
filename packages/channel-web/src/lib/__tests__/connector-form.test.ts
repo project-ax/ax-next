@@ -31,10 +31,10 @@ const baseConnector = (over: Partial<Connector> = {}): Connector => ({
 });
 
 describe('connector-form helpers', () => {
-  it('emptyConnectorForm is a private, personal, non-default MCP/stdio form', () => {
+  it('emptyConnectorForm is a shared, personal, non-default MCP/stdio form', () => {
     const f = emptyConnectorForm();
     expect(f.keyMode).toBe('personal');
-    expect(f.visibility).toBe('private');
+    expect(f.visibility).toBe('shared');
     expect(f.defaultAttached).toBe(false);
     expect(f.mechanism).toBe('mcp');
     expect(f.transport).toBe('stdio');
