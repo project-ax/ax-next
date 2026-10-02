@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "node-forge": "^1.3.1"
+    "node-forge": "1.4.0"
   },
   "devDependencies": {
     "@ax/credential-proxy-bridge": "workspace:*",
