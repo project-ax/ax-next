@@ -35,6 +35,7 @@
     "@ax/core": "workspace:*",
     "@ax/credential-proxy-bridge": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
+    "@ax/sandbox-protocol": "workspace:*",
     "@ax/tool-artifact-publish": "workspace:*",
     "@ax/tool-skill-propose": "workspace:*",
     "undici": "^6.28.0"

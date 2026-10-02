@@ -165,6 +165,8 @@ RUN apt-get update \
       git=1:2.39.5-0+deb12u3 \
       python3=3.11.2-1+b1 \
       xz-utils=5.4.1-1+deb12u1 \
+      util-linux=2.38.1-5+deb12u3 \
+      mount=2.38.1-5+deb12u3 \
  && rm -rf /var/lib/apt/lists/*
 # `git` is needed by the host pod's @ax/ipc-core workspace.materialize
 # handler (it runs `git bundle` to seed the runner's /agent dir at
@@ -226,6 +228,12 @@ RUN userdel --remove node 2>/dev/null || true \
  && mkdir -p /opt/ax-next/host \
  && chown -R 1000:1000 /opt/ax-next
 
+# Warm runners see only late-bound child mounts. The aliases are immutable in
+# the image; cold pods can still mount their ordinary NFS volumes at these paths.
+RUN mkdir -p /ax/late/files /ax/late/memory \
+ && ln -s /ax/late/files /files \
+ && ln -s /ax/late/memory /memory
+
 # Persisted PATH convention: put `$HOME/bin` on PATH so binaries the agent
 # installs there are found in later sessions.
 #
@@ -258,6 +266,7 @@ RUN printf '%s\n' \
  && chmod 0644 /home/axagent/.bashrc
 
 COPY --from=builder --chown=1000:1000 /tmp/deploy /opt/ax-next/host
+COPY container/agent/storage-node.mjs /opt/ax-next/storage-node.mjs
 
 # Stable path for the channel-web SPA bundle. `pnpm deploy --legacy`
 # buries workspace packages under

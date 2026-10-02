@@ -5,6 +5,7 @@
 {{- include "ax-next.validateProxyTransport" . -}}
 {{- include "ax-next.validateDevServicesKubeVersion" . -}}
 {{- include "ax-next.validateAllowedModels" . -}}
+{{- include "ax-next.validateSharedPool" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -190,6 +191,20 @@ spec:
             # Sandbox plugin reads these to size + place runner pods.
             - name: K8S_RUNTIME_CLASS
               value: {{ .Values.sandbox.runtimeClassName | quote }}
+            - name: K8S_SANDBOX_BACKEND
+              value: {{ .Values.sandbox.backend | quote }}
+            - name: K8S_AGENT_SANDBOX_API_VERSION
+              value: {{ .Values.sandbox.agentSandboxApiVersion | quote }}
+            {{- if (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) }}
+            - name: K8S_SHARED_POOL_REPLICAS
+              value: {{ .Values.sandbox.sharedPool.replicas | quote }}
+            - name: K8S_SHARED_POOL_PREFIX
+              value: {{ .Values.sandbox.sharedPool.prefix | quote }}
+            - name: K8S_SHARED_POOL_STORAGE_NAMESPACE
+              value: {{ .Values.sandbox.sharedPool.storageNamespace | quote }}
+            - name: K8S_SHARED_POOL_SERVER_NAME
+              value: {{ .Values.sandbox.sharedPool.serverName | quote }}
+            {{- end }}
             - name: K8S_NAMESPACE
               value: {{ include "ax-next.runnerNamespace" . | quote }}
             - name: K8S_POD_IMAGE
@@ -489,6 +504,11 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+            {{- if (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) }}
+            - name: storage-client-tls
+              mountPath: /var/run/ax-storage-tls
+              readOnly: true
+            {{- end }}
             - name: ax-config
               mountPath: /etc/ax-next
               readOnly: true
@@ -536,6 +556,12 @@ spec:
         # cross-pod Unix sockets have no good alternative on a single
         # kind node; production should switch the credential-proxy to
         # TCP listen mode + Service so the Unix socket disappears.
+        {{- if (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) }}
+        - name: storage-client-tls
+          secret:
+            secretName: {{ .Values.sandbox.sharedPool.clientTlsSecret | quote }}
+            defaultMode: 0440
+        {{- end }}
         - name: proxy-socket
         {{- if .Values.sandbox.proxySocketHostPath }}
           hostPath:

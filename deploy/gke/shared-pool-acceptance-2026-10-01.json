@@ -1,0 +1,337 @@
+{
+  "date": "2026-10-01",
+  "clusterVersion": "1.36.4-gke.1247000",
+  "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:sharedpool-20261001-prototype3@sha256:9cd431a45699f3ab783071a8a3cfaa32a9a81b5df34cd41d58e0f234b4fb129f",
+  "scope": "Isolated controller fixture, production helper and both real runner binaries; no provider/model messages were sent.",
+  "before": [
+    {
+      "name": "ax-spcheck-1-197cef06a9faed05-5dcwl",
+      "uid": "24b82ce7-9cd5-4f13-8bce-2fac97737b6a",
+      "containerId": "containerd://a0a23e8ac8be818ce91a8b4c2779be1a6311632181c4975a633513bab2f8463b",
+      "restarts": 0
+    },
+    {
+      "name": "ax-spcheck-1-5007de9449fc22fe-bhbcc",
+      "uid": "407fd3d8-d6a6-4171-a323-f7b3f3991102",
+      "containerId": "containerd://d85b25b8ee5417496908f417ba5ee3bc0befb76356255a3113954b5d7eb75daf",
+      "restarts": 0
+    }
+  ],
+  "beforeThird": [
+    {
+      "name": "ax-spcheck-1-197cef06a9faed05-5dcwl",
+      "uid": "24b82ce7-9cd5-4f13-8bce-2fac97737b6a",
+      "containerId": "containerd://a0a23e8ac8be818ce91a8b4c2779be1a6311632181c4975a633513bab2f8463b",
+      "restarts": 0
+    },
+    {
+      "name": "ax-spcheck-1-197cef06a9faed05-z4jr6",
+      "uid": "94f8764f-20f4-4319-9e0c-f6ec148e54ca",
+      "containerId": "containerd://2224601466b80080aca47eafa04017ae3324628646acfc2c52a20302bd5ee550",
+      "restarts": 0
+    },
+    {
+      "name": "ax-spcheck-1-5007de9449fc22fe-2zxnn",
+      "uid": "d66b0215-71d9-4a90-a360-0634724ff764",
+      "containerId": "containerd://bb56dd5d1406d7cdc943bded2b66631a8a1802c3dd99f023213dbabb4c58b8da",
+      "restarts": 0
+    },
+    {
+      "name": "ax-spcheck-1-5007de9449fc22fe-bhbcc",
+      "uid": "407fd3d8-d6a6-4171-a323-f7b3f3991102",
+      "containerId": "containerd://d85b25b8ee5417496908f417ba5ee3bc0befb76356255a3113954b5d7eb75daf",
+      "restarts": 0
+    }
+  ],
+  "after": [
+    {
+      "name": "ax-spcheck-1-197cef06a9faed05-5dcwl",
+      "uid": "24b82ce7-9cd5-4f13-8bce-2fac97737b6a",
+      "containerId": "containerd://a0a23e8ac8be818ce91a8b4c2779be1a6311632181c4975a633513bab2f8463b",
+      "restarts": 0
+    },
+    {
+      "name": "ax-spcheck-1-197cef06a9faed05-t6pt2",
+      "uid": "6a9ebc6a-ac5a-4a12-a4ed-4b4b9db7da01",
+      "containerId": "containerd://b455fa075a9b190d015ee7af010ad9160fd9f30d11d7315d671bba7a6f41f694",
+      "restarts": 0
+    },
+    {
+      "name": "ax-spcheck-1-197cef06a9faed05-z4jr6",
+      "uid": "94f8764f-20f4-4319-9e0c-f6ec148e54ca",
+      "containerId": "containerd://2224601466b80080aca47eafa04017ae3324628646acfc2c52a20302bd5ee550",
+      "restarts": 0
+    },
+    {
+      "name": "ax-spcheck-1-5007de9449fc22fe-2zxnn",
+      "uid": "d66b0215-71d9-4a90-a360-0634724ff764",
+      "containerId": "containerd://bb56dd5d1406d7cdc943bded2b66631a8a1802c3dd99f023213dbabb4c58b8da",
+      "restarts": 0
+    },
+    {
+      "name": "ax-spcheck-1-5007de9449fc22fe-bhbcc",
+      "uid": "407fd3d8-d6a6-4171-a323-f7b3f3991102",
+      "containerId": "containerd://d85b25b8ee5417496908f417ba5ee3bc0befb76356255a3113954b5d7eb75daf",
+      "restarts": 0
+    }
+  ],
+  "activations": [
+    {
+      "runner": "claude-sdk",
+      "agent": "agent-a",
+      "claim": "acceptance-a4990e7e-d4b2-4695-bbad-816bf4ea62bf",
+      "pod": "ax-spcheck-1-197cef06a9faed05-5dcwl",
+      "podUid": "24b82ce7-9cd5-4f13-8bce-2fac97737b6a",
+      "activationMs": 1068
+    },
+    {
+      "runner": "aisdk",
+      "agent": "agent-b",
+      "claim": "acceptance-ccd53ace-57ff-483e-814b-28c5bf2316e7",
+      "pod": "ax-spcheck-1-5007de9449fc22fe-bhbcc",
+      "podUid": "407fd3d8-d6a6-4171-a323-f7b3f3991102",
+      "activationMs": 1089
+    },
+    {
+      "runner": "claude-sdk",
+      "agent": "agent-b",
+      "claim": "acceptance-c34f977c-ce64-44f2-b99f-7c8939b4a7b6",
+      "pod": "ax-spcheck-1-197cef06a9faed05-z4jr6",
+      "podUid": "94f8764f-20f4-4319-9e0c-f6ec148e54ca",
+      "activationMs": 728
+    }
+  ],
+  "passed": [
+    "Same Pod UID and container ID, zero restarts for each adoption",
+    "Two agents share one Claude pool; one standby per runner class",
+    "Private user files and consumed bootstrap; no runner Kubernetes token",
+    "Read-only memory rejects writes even with 0666 source file",
+    "Same-agent concurrent writes and sibling/symlink isolation",
+    "Helper restart retains three live records and does not republish credentials",
+    "External claim deletion, direct Pod deletion, and claim expiry retain durable markers and clear records/mounts",
+    "Cold gVisor NFS mounts work with image /files and /memory aliases",
+    "Runner IPC permitted, helper/NFS/rpcbind denied; unauthenticated TLS rejected"
+  ],
+  "regressions": {
+    "warmPoolStrategy": "v1beta1 updateStrategy must be {type: OnReplenish}, not a string",
+    "diskEmptyDir": "Synthetic agent-b marker existed before release and was absent after disk emptyDir teardown. Finalizers did not prevent recursive kubelet removal.",
+    "fix": "16Mi memory-backed late volume, helper checks Pod medium and actual tmpfs filesystem before attach; final image teardown passed."
+  },
+  "notTested": [
+    "Quota refusal and service-sidecar application routes",
+    "Automatic host recovery/reaping of live claimed sessions",
+    "Interrupted assignment/forced detach failure on GKE",
+    "Node drain/loss on a dedicated test node"
+  ],
+  "cleanup": "First fixture fully removed: namespaces, synthetic Filestore root and helper ledger removed; no live records or child mounts remained before helper deletion.",
+  "applicationAcceptance": {
+    "started": "2026-10-02T00:04:31.029Z",
+    "turns": [
+      {
+        "runner": "claude-sdk",
+        "agentId": "agt_qZL-0_spxTyME2C2aidVvg",
+        "conversationId": "cnv_tWx3o2z5XR0rIgRvAFzZZQ",
+        "reqId": "req-5f4c9de5503a",
+        "firstTextMs": 6908,
+        "totalMs": 9114,
+        "turnCount": 3,
+        "bashAndPersistedResult": true
+      },
+      {
+        "runner": "aisdk",
+        "agentId": "agt_IDepc3HtsLrujYydb5aLjw",
+        "conversationId": "cnv_qoPsWeV7BDs-wExbutvBRw",
+        "reqId": "req-bd959d3617d1",
+        "firstTextMs": 6296,
+        "totalMs": 7863,
+        "turnCount": 3,
+        "bashAndPersistedResult": true
+      },
+      {
+        "runner": "claude-sdk",
+        "agentId": "agt_ILKca_eMbL5rMyOTn1fDUQ",
+        "conversationId": "cnv_bZMMwjfpZWSa80YIocBAeQ",
+        "reqId": "req-1b6d75cbddde",
+        "firstTextMs": 7139,
+        "totalMs": 10938,
+        "turnCount": 3,
+        "bashAndPersistedResult": true
+      },
+      {
+        "runner": "claude-sdk",
+        "agentId": "agt_qZL-0_spxTyME2C2aidVvg",
+        "conversationId": "cnv_tWx3o2z5XR0rIgRvAFzZZQ",
+        "reqId": "req-6e58196a2564",
+        "firstTextMs": 1654,
+        "totalMs": 5644,
+        "turnCount": 9,
+        "bashAndPersistedResult": true
+      },
+      {
+        "runner": "aisdk",
+        "agentId": "agt_IDepc3HtsLrujYydb5aLjw",
+        "conversationId": "cnv_qoPsWeV7BDs-wExbutvBRw",
+        "reqId": "req-477a02dc6e7a",
+        "firstTextMs": 2564,
+        "totalMs": 4302,
+        "turnCount": 8,
+        "bashAndPersistedResult": true
+      }
+    ],
+    "uiInterruptResults": [
+      {
+        "runner": "claude-sdk",
+        "conversationId": "cnv_tWx3o2z5XR0rIgRvAFzZZQ",
+        "elapsedMs": 12306,
+        "interrupted": true
+      },
+      {
+        "runner": "aisdk",
+        "conversationId": "cnv_qoPsWeV7BDs-wExbutvBRw",
+        "elapsedMs": 12202,
+        "interrupted": true
+      }
+    ],
+    "claims": [
+      {
+        "name": "ax-sandbox-3569ee52",
+        "uid": "62bf3955-30dd-408d-871e-02c20aee3092",
+        "agentId": "agt_IDepc3HtsLrujYydb5aLjw",
+        "pool": "ax-spwalk-1-d7f0901c4a08bb2a",
+        "pod": "ax-spwalk-1-d7f0901c4a08bb2a-sbbbb"
+      },
+      {
+        "name": "ax-sandbox-46a1bbe0",
+        "uid": "82d65618-2f55-4bab-8546-822f48ba0b92",
+        "agentId": "agt_ILKca_eMbL5rMyOTn1fDUQ",
+        "pool": "ax-spwalk-1-bc3f9b6c8733e04a",
+        "pod": "ax-spwalk-1-bc3f9b6c8733e04a-jrbv9"
+      },
+      {
+        "name": "ax-sandbox-77658f7e",
+        "uid": "66bd662b-ea85-4135-88e4-67ff3f277512",
+        "agentId": "agt_qZL-0_spxTyME2C2aidVvg",
+        "pool": "ax-spwalk-1-bc3f9b6c8733e04a",
+        "pod": "ax-spwalk-1-bc3f9b6c8733e04a-v2bd5"
+      },
+      {
+        "name": "ax-sandbox-95a79e66",
+        "uid": "0aec281e-866a-4f4e-960f-80b3624ef332",
+        "agentId": "agt_qZL-0_spxTyME2C2aidVvg",
+        "pool": "ax-spwalk-1-bc3f9b6c8733e04a",
+        "pod": "ax-spwalk-1-bc3f9b6c8733e04a-pvtj2"
+      }
+    ],
+    "before": [
+      {
+        "name": "ax-spwalk-1-bc3f9b6c8733e04a-pvtj2",
+        "uid": "e952a8bc-b3de-4af1-924a-6324bbe29ee9",
+        "createdAt": "2026-10-02T00:02:55Z",
+        "containerId": "containerd://42b80eb57459a595354694f45ad42c60efd0d0fd1ff9297a9a1bc86b6e145785",
+        "restarts": 0
+      },
+      {
+        "name": "ax-spwalk-1-bc3f9b6c8733e04a-v2bd5",
+        "uid": "a2b40f45-cea0-4218-886d-2684043a3ce2",
+        "createdAt": "2026-10-02T00:01:15Z",
+        "containerId": "containerd://2649f2f8eab9e72681df4d45ae1e60e4e59e1bf2813f305e9be2a6a9ba5d8578",
+        "restarts": 0
+      },
+      {
+        "name": "ax-spwalk-1-d7f0901c4a08bb2a-sbbbb",
+        "uid": "99d3e3ec-2481-439f-8834-7fe7afbcb575",
+        "createdAt": "2026-10-02T00:01:15Z",
+        "containerId": "containerd://3f7f717e98cbacb5bb5a0cb215a0bac7af282b1bbb93e160139ba952c374b741",
+        "restarts": 0
+      }
+    ],
+    "afterRows": [
+      "ax-spwalk-1-bc3f9b6c8733e04a-czkjw   d30ff7de-1a28-496b-9512-d3497c76fea4   2026-10-02T00:04:48Z   ax-spwalk-1-bc3f9b6c8733e04a-czkjw   containerd://b3aed2b145026fc9fabd303fa30a33e709fd4c7312887ed0e843ac7f562a59d4   0",
+      "ax-spwalk-1-bc3f9b6c8733e04a-jrbv9   01c72442-25c2-4d8b-97f0-ba894c1baeb0   2026-10-02T00:04:31Z   ax-spwalk-1-bc3f9b6c8733e04a-jrbv9   containerd://e1aa05016eae78d1986df752f293a431ddb19ea24b0246a44935d693624b2825   0",
+      "ax-spwalk-1-bc3f9b6c8733e04a-pvtj2   e952a8bc-b3de-4af1-924a-6324bbe29ee9   2026-10-02T00:02:55Z   ax-spwalk-1-bc3f9b6c8733e04a-pvtj2   containerd://42b80eb57459a595354694f45ad42c60efd0d0fd1ff9297a9a1bc86b6e145785   0",
+      "ax-spwalk-1-bc3f9b6c8733e04a-v2bd5   a2b40f45-cea0-4218-886d-2684043a3ce2   2026-10-02T00:01:15Z   ax-spwalk-1-bc3f9b6c8733e04a-v2bd5   containerd://2649f2f8eab9e72681df4d45ae1e60e4e59e1bf2813f305e9be2a6a9ba5d8578   0",
+      "ax-spwalk-1-d7f0901c4a08bb2a-cqx2j   d8c81014-681e-4cdc-9698-e09431ea462e   2026-10-02T00:04:40Z   ax-spwalk-1-d7f0901c4a08bb2a-cqx2j   containerd://fb7270170f8bd211549063fb91b750398e203d683abf111247aa2bd2a1315c1c   0",
+      "ax-spwalk-1-d7f0901c4a08bb2a-sbbbb   99d3e3ec-2481-439f-8834-7fe7afbcb575   2026-10-02T00:01:15Z   ax-spwalk-1-d7f0901c4a08bb2a-sbbbb   containerd://3f7f717e98cbacb5bb5a0cb215a0bac7af282b1bbb93e160139ba952c374b741   0"
+    ],
+    "activationStages": [
+      {
+        "reqId": "req-1c3ee652eea2",
+        "podName": "ax-sandbox-77658f7e",
+        "time": "2026-10-02T00:02:55.497Z",
+        "stage": "creating_pod"
+      },
+      {
+        "reqId": "req-1c3ee652eea2",
+        "podName": "ax-sandbox-77658f7e",
+        "time": "2026-10-02T00:02:56.518Z",
+        "stage": "pod_ready"
+      },
+      {
+        "reqId": "req-5f4c9de5503a",
+        "podName": "ax-sandbox-95a79e66",
+        "time": "2026-10-02T00:04:31.430Z",
+        "stage": "creating_pod"
+      },
+      {
+        "reqId": "req-5f4c9de5503a",
+        "podName": "ax-sandbox-95a79e66",
+        "time": "2026-10-02T00:04:32.544Z",
+        "stage": "pod_ready"
+      },
+      {
+        "reqId": "req-bd959d3617d1",
+        "podName": "ax-sandbox-3569ee52",
+        "time": "2026-10-02T00:04:40.401Z",
+        "stage": "creating_pod"
+      },
+      {
+        "reqId": "req-bd959d3617d1",
+        "podName": "ax-sandbox-3569ee52",
+        "time": "2026-10-02T00:04:41.429Z",
+        "stage": "pod_ready"
+      },
+      {
+        "reqId": "req-1b6d75cbddde",
+        "podName": "ax-sandbox-46a1bbe0",
+        "time": "2026-10-02T00:04:48.266Z",
+        "stage": "creating_pod"
+      },
+      {
+        "reqId": "req-1b6d75cbddde",
+        "podName": "ax-sandbox-46a1bbe0",
+        "time": "2026-10-02T00:04:49.310Z",
+        "stage": "pod_ready"
+      }
+    ],
+    "usage": {
+      "turns": 4,
+      "inputTokens": 12859,
+      "outputTokens": 226,
+      "cacheReadTokens": 46073,
+      "cacheWriteTokens": 13622,
+      "spendUsd": 0.1125,
+      "users": 1
+    },
+    "fixtureCleanup": "Complete: claims drained, helper ledger empty and child binds absent before helper removal; Helm release uninstalled; all three namespaces, two PVC/PVs, synthetic Filestore root and node ledger removed. Production host remained ready on image 3a3d07db860b, Helm revision 29.",
+    "limitations": [
+      "API/SSE acceptance, no browser UI walk",
+      "Memory extraction lacked OpenRouter credentials; not accepted",
+      "Stop API and resumed conversations returned, but filesystem assertions exposed Claude command survival"
+    ]
+  },
+  "failures": [
+    {
+      "check": "Claude shared-pool Stop kills the running Bash command",
+      "command": "printf STARTED > /files/stop-started.txt; sleep 30; printf COMPLETED > /files/stop-result.txt",
+      "commandStartedAt": "2026-10-02T00:08:06.212Z",
+      "completionWrittenAt": "2026-10-02T00:08:36.856Z",
+      "result": "FAIL: interrupted tool result (exit 137) and terminal SSE returned, but COMPLETED appeared after the original 30-second sleep.",
+      "aiSdkComparison": "AI SDK completion marker remained absent."
+    },
+    {
+      "check": "Cold-path early Stop",
+      "result": "Cold application accepted Stop before Bash began; Bash subsequently executed and wrote completion. A separate attempted in-flight baseline did not observe command start before completion, so it does not establish whether the identical in-flight orphan issue affects cold pods."
+    }
+  ],
+  "rollout": "Blocked on unresolved Claude Stop/process termination failure and remaining acceptance gates. Production release revision 29 and direct backend unchanged."
+}

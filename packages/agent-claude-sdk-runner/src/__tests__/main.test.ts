@@ -4963,6 +4963,48 @@ describe('main()', () => {
     }
     const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 
+    it('latches startup Stop through the prompt hook and clears it for the next turn', async () => {
+      setEnv(COMPLETE_ENV);
+      wireConfig();
+      const interrupted = deferred();
+      const continueInbox = deferred();
+      const nextTurn = deferred();
+      gatedInbox([
+        async () => userEntry('do work'),
+        async () => ({ type: 'interrupt' }),
+        async () => { await continueInbox.promise; return userEntry('next turn'); },
+        async () => { await nextTurn.promise; return cancelEntry; },
+      ]);
+      const interrupt = vi.fn(async () => { interrupted.resolve(); });
+      queryMock.mockImplementation(({ prompt, options }: {
+        prompt: AsyncIterable<SDKUserMessage>;
+        options: { hooks: { UserPromptSubmit: Array<{ hooks: Array<() => Promise<unknown>> }> } };
+      }) => {
+        const gen = (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // SDK interrupt can acknowledge while idle; the prompt gate must
+          // still stop work when the native process eventually consumes it.
+          await interrupted.promise;
+          expect(await options.hooks.UserPromptSubmit[0]!.hooks[0]!()).toMatchObject({ continue: false });
+          yield resultSuccess();
+          continueInbox.resolve();
+          await it.next();
+          expect(await options.hooks.UserPromptSubmit[0]!.hooks[0]!()).toEqual({});
+          yield assistantText('Ready again.');
+          yield resultSuccess();
+          nextTurn.resolve();
+          await it.next();
+        })();
+        return Object.assign(gen, { interrupt });
+      });
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      expect(interrupt).toHaveBeenCalledTimes(1);
+      const turns = fakeClient.event.mock.calls.filter(c => c[0] === 'event.turn-end' && (c[1] as { role?: string }).role === 'assistant');
+      expect(turns).toHaveLength(2);
+    });
+
     it.each(['aborted_streaming', 'aborted_tools'] as const)('an interrupt mid-turn (%s) asks the SDK to interrupt, once, and the turn ends through the normal result path', async (terminalReason) => {
       setEnv(COMPLETE_ENV);
       wireConfig();

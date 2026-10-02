@@ -1,0 +1,36 @@
+{
+  "checkedAt": "2026-10-02T09:46:13.915497+00:00",
+  "scope": "Read-only production preflight after restoring filesystem and network access; no deployment or shared-pool acceptance test.",
+  "context": "gke_canopy-ai-498321_us-central1-a_ax-next-std",
+  "release": {
+    "name": "ax-next",
+    "namespace": "ax-next",
+    "revision": 30,
+    "status": "deployed"
+  },
+  "host": {
+    "pod": "ax-next-host-6d7b77cf99-drzbv",
+    "ready": true,
+    "restarts": 0,
+    "imageId": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent@sha256:3677e2eebe71a2e2eacec0387b2d9a582ec6d6778bb15947b7c9b94be1155405",
+    "healthStatus": 200,
+    "healthBody": {
+      "ok": true
+    }
+  },
+  "sandbox": {
+    "backend": "agent-sandbox",
+    "apiVersion": "v1beta1",
+    "runtimeClass": "gvisor",
+    "sharedPoolEnvironmentPresent": false,
+    "warmPools": 0,
+    "templates": 0,
+    "claims": 0,
+    "sharedStorageHelperDaemonSetsObserved": 0
+  },
+  "git": {
+    "acceptanceGuideCommit": "8806fb12",
+    "indexRefreshSucceeded": true
+  },
+  "remainingGates": "Unchanged; see deploy/SHARED-POOL-ACCEPTANCE.md."
+}

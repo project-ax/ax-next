@@ -1,0 +1,5 @@
+# Shared pool acceptance handoff
+
+- The canonical acceptance status and resume procedure now live in `deploy/SHARED-POOL-ACCEPTANCE.md`: seven original gates with scoped passes and unchecked work, raw evidence links, recorded revision 30/image digest, source branch/commits, quota gap, isolated fixture setup, failure-test constraints, and cleanup. `deploy/SHARED-POOL.md` retains deployment/security/rollback and links to the consolidated guide; the design status links there too.
+- Historical JSON evidence remains unchanged. The original Claude Stop failure is superseded by native Linux/GKE acceptance of commit 21dab8fa; the full corrected-image shared application Stop fixture was not rerun. Active-write deletion ordering and separate claim-assignment timing also need explicit evidence beyond the recorded successful outcome/activation measurements.
+- Documentation consolidation only: no fresh cluster checks, deployment, or shared-pool enablement. Use the guide rather than historical evidence status fields to resume. Changes are in the isolated `codex/gke-agent-sandbox` worktree; primary checkout user changes were preserved.

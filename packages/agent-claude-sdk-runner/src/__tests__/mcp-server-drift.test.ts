@@ -94,12 +94,26 @@ describe('validateMcpEntry golden-vectors drift guard (runner side)', () => {
       path.join(repoRoot, 'packages', 'agent-runner-core', 'src'),
     ];
     const selfPath = fileURLToPath(import.meta.url);
+    // Standby consumes the shared assignment wire schema, not McpServerSchema.
+    // It is the single transport endpoint allowed to import the protocol; the
+    // independent MCP validator and both runners remain covered by this guard.
+    const assignmentEndpoint = path.join(repoRoot, 'packages', 'agent-runner-core', 'src', 'standby.ts');
+    const assignmentSource = readFileSync(assignmentEndpoint, 'utf-8');
+    const assignmentImportRe = /import\s*\{([^}]+)\}\s*from\s*['"]@ax\/sandbox-protocol['"]/g;
+    expect(importRe.test(assignmentSource.replace(assignmentImportRe, ''))).toBe(false);
+    const assignmentImports = [...assignmentSource.matchAll(
+      /import\s*\{([^}]+)\}\s*from\s*['"]@ax\/sandbox-protocol['"]/g,
+    )].flatMap(match => match[1]!.split(',').map(name => name.trim()).filter(Boolean));
+    expect(assignmentImports.sort()).toEqual([
+      'BOOTSTRAP_ACK', 'BOOTSTRAP_FILE', 'BOOTSTRAP_MAX_BYTES',
+      'BOOTSTRAP_ROOT', 'BootstrapAssignmentSchema',
+    ]);
     const offenders = srcRoots
       .flatMap((srcRoot) => collectTsFiles(srcRoot))
       .filter(
         // This guard file legitimately names the package in its assertion text;
         // exclude it so its own description can't trip the check.
-        (file) => file !== selfPath && importRe.test(readFileSync(file, 'utf-8')),
+        (file) => file !== selfPath && file !== assignmentEndpoint && importRe.test(readFileSync(file, 'utf-8')),
       );
     expect(offenders).toEqual([]);
   });

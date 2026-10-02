@@ -6,7 +6,10 @@ import type {
 } from '@ax/sandbox-mount-protocol';
 import type { ZodType } from 'zod';
 import { resolveConfig, type SandboxK8sConfig } from './config.js';
-import { createDefaultK8sApi, type K8sCoreApi } from './k8s-api.js';
+import { createDefaultK8sApi, createDefaultSandboxApi, type K8sCoreApi } from './k8s-api.js';
+import { createAgentSandboxSessionApi, SANDBOX_SELECTOR, type SandboxCustomApi } from './agent-sandbox.js';
+import { createSharedPoolSessionApi, retireSharedClaims } from './shared-pool.js';
+import { createStorageClient, type StorageClient } from './storage-client.js';
 import {
   createOpenSession,
   makePidGenerator,
@@ -45,17 +48,20 @@ export interface CreateSandboxK8sPluginOptions extends SandboxK8sConfig {
    * the plugin loads kubeconfig (in-cluster first, then ~/.kube/config).
    */
   api?: K8sCoreApi;
+  sandboxApi?: SandboxCustomApi;
+  storageClient?: StorageClient;
 }
 
 export function createSandboxK8sPlugin(
   opts: CreateSandboxK8sPluginOptions = {},
 ): Plugin {
-  const { api: apiOverride, ...rawConfig } = opts;
+  const { api: apiOverride, sandboxApi: sandboxApiOverride, storageClient, ...rawConfig } = opts;
   const config = resolveConfig(rawConfig);
 
   // TASK-170: held across init → shutdown so the periodic orphan-sweep timer is
   // cleared cleanly on kernel shutdown (the kernel calls shutdown() on SIGTERM).
   let sweeper: OrphanSweeperHandle | undefined;
+  let sandboxSweeper: OrphanSweeperHandle | undefined;
 
   return {
     manifest: {
@@ -123,6 +129,23 @@ export function createSandboxK8sPlugin(
       // explicit instance, this plugin needs a `shutdown()` that destroys
       // whatever long-lived handle the new version retains.
       const api = apiOverride ?? (await createDefaultK8sApi());
+      const custom = config.backend === 'agent-sandbox'
+        ? sandboxApiOverride ?? await createDefaultSandboxApi() : undefined;
+      if (custom) {
+        // Fail at boot for missing CRD, unsupported served version, or RBAC.
+        // Never silently fall back to ordinary Pods.
+        await custom.listNamespacedCustomObject({ group: 'agents.x-k8s.io',
+          version: config.agentSandboxApiVersion, plural: 'sandboxes',
+          namespace: config.namespace, labelSelector: SANDBOX_SELECTOR, limit: 1 });
+      }
+      let sessionApi = config.backend === 'agent-sandbox'
+        ? createAgentSandboxSessionApi(api, custom!, config)
+        : api;
+      if (config.sharedPool) {
+        await retireSharedClaims(custom!, config);
+        sessionApi = await createSharedPoolSessionApi(api, custom!, sessionApi,
+          storageClient ?? createStorageClient(api, config.sharedPool), config);
+      }
 
       // I5: warn loudly when an operator opts out of gVisor. The
       // userspace kernel is the second isolation layer and the cluster
@@ -140,7 +163,7 @@ export function createSandboxK8sPlugin(
       }
 
       const nextPid = makePidGenerator();
-      const impl = createOpenSession({ api, config, bus, nextPid });
+      const impl = createOpenSession({ api: sessionApi, preparationApi: api, config, bus, nextPid });
 
       // NO `stallWarnMs` override here, deliberately (TASK-505). This hook
       // declares a 300s timeout like `llm:call:*` does, and those opted OUT of
@@ -213,10 +236,18 @@ export function createSandboxK8sPlugin(
           intervalMs: config.orphanSweepIntervalMs,
           terminalAgeMs: config.orphanSweepTerminalAgeMs,
         });
+        if (config.backend === 'agent-sandbox') {
+          sandboxSweeper = startOrphanSweeper({ api: sessionApi, namespace: config.namespace,
+            intervalMs: config.orphanSweepIntervalMs, terminalAgeMs: config.orphanSweepTerminalAgeMs });
+        }
       }
     },
 
     async shutdown() {
+      if (sandboxSweeper !== undefined) {
+        await sandboxSweeper.stop();
+        sandboxSweeper = undefined;
+      }
       // Stop the periodic sweep so the kernel/test harness can drain. The
       // bus's service registration needs no explicit unregister — the bus is
       // single-use per process. Idempotent: handle.stop() no-ops on a second

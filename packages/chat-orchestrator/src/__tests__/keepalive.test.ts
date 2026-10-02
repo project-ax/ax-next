@@ -290,3 +290,58 @@ describe('chat-orchestrator keepalive', () => {
     }
   });
 });
+
+
+it('reopens a persisted conversation after host restart instead of routing into an unowned proxy session', async () => {
+  const hdl=makeHandle();const queued:string[]=[];const terminated:string[]=[];let opens=0;
+  const h=await createTestHarness({services:{
+    'agents:resolve':async()=>({agent:{...TEST_AGENT}}),
+    'conversations:get':async()=>({conversation:{conversationId:'restart-conversation',userId:'test-user',agentId:'test-agent',activeSessionId:'previous-host-session',activeReqId:null}}),
+    'conversations:bind-session':async()=>undefined,
+    'session:is-alive':async()=>({alive:true}),
+    'session:terminate':async(_c,input)=>{terminated.push((input as {sessionId:string}).sessionId);return {};},
+    'session:queue-work':async(_c,input)=>{queued.push((input as {sessionId:string}).sessionId);return {cursor:0};},
+    'sandbox:open-session':async()=>{opens++;return {runnerEndpoint:'unix:///tmp/restart.sock',handle:hdl.handle};},
+    'proxy:open-session':async()=>({proxyEndpoint:'tcp://127.0.0.1:1',caCertPem:'CA',envMap:{}}),
+    'proxy:close-session':async()=>({}),
+  },plugins:[createChatOrchestratorPlugin({runnerBinaries:{'claude-sdk':'/runner'},keepAlive:true,chatTimeoutMs:100,idleWindowMs:60000})]});
+  fireTurnEnd(h.bus,'new-host-session','restart-request');
+  const out=await h.bus.call('agent:invoke',ctxWith({sessionId:'new-host-session',conversationId:'restart-conversation',reqId:'restart-request'}),{message:{role:'user',content:'continue'}});
+  expect(out).toEqual({kind:'complete',messages:[]});expect(opens).toBe(1);expect(terminated).toContain('previous-host-session');expect(queued).not.toContain('previous-host-session');hdl.forceExit();
+});
+
+it('preserves the new stream binding while retiring the previous host session', async () => {
+  const hdl = makeHandle();
+  const conversation = { activeSessionId: 'previous-host-session' as string | null, activeReqId: 'restart-request' as string | null };
+  let reqIdDuringTermination: string | null = null;
+  let reqIdDuringOpen: string | null = null;
+  const h = await createTestHarness({ services: {
+    'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
+    'conversations:get': async () => ({ conversation: { conversationId: 'restart-conversation', userId: 'test-user', agentId: 'test-agent', ...conversation } }),
+    'conversations:bind-session': async (_c, input) => {
+      const i = input as { sessionId: string; reqId: string };
+      conversation.activeSessionId = i.sessionId; conversation.activeReqId = i.reqId;
+    },
+    'session:is-alive': async () => ({ alive: true }),
+    'session:terminate': async (_c, input) => {
+      // Match the real conversations subscriber's compare-and-clear behavior.
+      if (conversation.activeSessionId === (input as { sessionId: string }).sessionId) {
+        conversation.activeSessionId = null; conversation.activeReqId = null;
+      }
+      reqIdDuringTermination = conversation.activeReqId;
+      return {};
+    },
+    'session:queue-work': async () => ({ cursor: 0 }),
+    'sandbox:open-session': async () => {
+      reqIdDuringOpen = conversation.activeReqId;
+      return { runnerEndpoint: 'unix:///tmp/restart.sock', handle: hdl.handle };
+    },
+    'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+    'proxy:close-session': async () => ({}),
+  }, plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/runner' }, keepAlive: true, chatTimeoutMs: 100, idleWindowMs: 60000 })] });
+  fireTurnEnd(h.bus, 'new-host-session', 'restart-request');
+  await h.bus.call('agent:invoke', ctxWith({ sessionId: 'new-host-session', conversationId: 'restart-conversation', reqId: 'restart-request' }), { message: { role: 'user', content: 'continue' } });
+  hdl.forceExit();
+  expect(reqIdDuringTermination).toBe('restart-request');
+  expect(reqIdDuringOpen).toBe('restart-request');
+});

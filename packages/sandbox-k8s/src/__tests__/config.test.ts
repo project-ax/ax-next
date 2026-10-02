@@ -1,6 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { computeReadinessBudgetMs, resolveConfig } from '../config.js';
 
+describe('Agent Sandbox config', () => {
+  const base = { hostIpcUrl: 'http://host:80', backend: 'agent-sandbox' as const };
+  it('leaves ordinary Pod lifecycle as the default', () => {
+    expect(resolveConfig({ hostIpcUrl: base.hostIpcUrl }).backend).toBe('pod');
+  });
+  it.each([
+    { runtimeClassName: '' }, { runtimeClassName: 'runc' },
+    { proxySocketHostPath: '/host/socket' }, { activeDeadlineSeconds: 0 },
+    { activeDeadlineSeconds: -1 }, { activeDeadlineSeconds: Infinity },
+  ])('rejects unsupported isolation or unbounded lifetime: %j', (overrides) => {
+    expect(() => resolveConfig({ ...base, ...overrides })).toThrow(/agent-sandbox requires/);
+  });
+  it('accepts the alpha API served by the pinned self-managed controller', () => {
+    expect(resolveConfig({ ...base, agentSandboxApiVersion: 'v1alpha1' }).agentSandboxApiVersion).toBe('v1alpha1');
+  });
+});
+
 describe('sandbox-k8s config defaults', () => {
   it('defaults activeDeadlineSeconds to 6 hours (21600s) — keepalive ceiling', () => {
     const cfg = resolveConfig({ image: 'ax-runner:test', hostIpcUrl: 'http://host:8080' });

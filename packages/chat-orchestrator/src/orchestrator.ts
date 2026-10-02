@@ -1965,7 +1965,11 @@ export function createOrchestrator(
           if (aliveResult.alive) {
             const skillsDirty = respawnSessions.has(candidate);
             const augmentStale = isAugmentStale(candidate, ctx.agentId);
-            if (skillsDirty || augmentStale) {
+            // A database row can outlive the host's runner handle and proxy
+            // registration. Reopen the durable conversation after restart;
+            // never send a turn through an unowned credential-proxy session.
+            const hostSessionMissing = keepAlive && !warmSessions.has(candidate);
+            if (skillsDirty || augmentStale || hostSessionMissing) {
               // B3: this session's agent's draft-skills changed since it
               // spawned (the runner freezes the projection at spawn). Retire it
               // and fall through to a fresh spawn that re-derives the
@@ -1977,8 +1981,20 @@ export function createOrchestrator(
               // Rules). The fresh spawn re-runs `system-prompt:augment`.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
-                reason: skillsDirty ? 'skills-proposed' : 'system-prompt-augment-changed',
+                reason: hostSessionMissing ? 'host-session-lost' : skillsDirty ? 'skills-proposed' : 'system-prompt-augment-changed',
               });
+              // The channel has already bound this request to the conversation.
+              // Move that binding before terminating the old session: its
+              // subscriber clears rows still bound to that session, which
+              // would otherwise make the new SSE request 404 during startup.
+              await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
+                'conversations:bind-session', ctx, {
+                  conversationId: ctx.conversationId,
+                  sessionId: ctx.sessionId,
+                  reqId: ctx.reqId,
+                  runnerType: agent.runner,
+                },
+              );
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
               try {
@@ -3551,6 +3567,7 @@ export function createOrchestrator(
       );
       const candidate = conv.conversation.activeSessionId;
       if (candidate === null || candidate.length === 0) return null;
+      if (keepAlive && !warmSessions.has(candidate)) return null;
       const alive = await bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
         'session:is-alive', ctx, { sessionId: candidate },
       );

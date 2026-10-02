@@ -242,6 +242,33 @@ posture; TCP (credentialProxy.tcp.enabled) is the production-gVisor Service
 posture. Setting both is a config error — the runner can't key off an
 ambiguous transport.
 */}}
+{{- define "ax-next.validateSharedPool" -}}
+{{- $pool := .Values.sandbox.sharedPool -}}
+{{- if (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) -}}
+{{- if or (ne .Values.sandbox.backend "agent-sandbox") (ne .Values.sandbox.agentSandboxApiVersion "v1beta1") (ne .Values.sandbox.runtimeClassName "gvisor") -}}
+{{- fail "shared pools require v1beta1 Agent Sandbox and gvisor" -}}
+{{- end -}}
+{{- if not (semverCompare ">=1.36.0-gke.3302001" .Capabilities.KubeVersion.Version) -}}
+{{- fail "shared pools require GKE 1.36.0-gke.3302001 or newer for force-shared emptyDir" -}}
+{{- end -}}
+{{- if or (not .Values.sandbox.filestore.server) (ne .Values.sandbox.filestore.mountPath "/files") (not (include "ax-next.bool" .Values.networkPolicies.enabled)) -}}
+{{- fail "shared pools require Filestore at /files and NetworkPolicies" -}}
+{{- end -}}
+{{- if or (not $pool.clientTlsSecret) (not $pool.serverTlsSecret) (not $pool.serverName) (not (regexMatch "^[a-z][a-z0-9-]{0,29}$" $pool.prefix)) -}}
+{{- fail "shared pools require dedicated client/server TLS Secrets, serverName, and a valid prefix" -}}
+{{- end -}}
+{{- if or (eq $pool.storageNamespace (include "ax-next.hostNamespace" .)) (eq $pool.storageNamespace (include "ax-next.runnerNamespace" .)) -}}
+{{- fail "shared storage helpers require a dedicated administrator namespace" -}}
+{{- end -}}
+{{- if or (lt (int $pool.replicas) 1) (gt (int $pool.replicas) 100) -}}
+{{- fail "shared pool replicas must be between 1 and 100" -}}
+{{- end -}}
+{{- if or (ne $pool.kubeletPodsPath "/var/lib/kubelet/pods") (not (regexMatch "^/var/lib/ax-shared-storage(/[-a-zA-Z0-9_]+)?$" $pool.ledgerPath)) -}}
+{{- fail "shared storage host paths must stay within kubelet pods and the private storage ledger" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "ax-next.validateProxyTransport" -}}
 {{- if and .Values.sandbox.proxySocketHostPath (include "ax-next.bool" .Values.credentialProxy.tcp.enabled) -}}
 {{- fail "credential-proxy: sandbox.proxySocketHostPath (hostPath) and credentialProxy.tcp.enabled (TCP Service) are mutually exclusive — pick exactly one proxy transport. hostPath is kind/single-node; TCP is the production-gVisor posture (GKE Sandbox bans hostPath)." -}}

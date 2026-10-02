@@ -87,6 +87,22 @@ function prodDeps(pkgPath: string): Record<string, string> {
 describe('production image asset packaging', () => {
   const dockerfile = readFileSync(DOCKERFILE, 'utf8');
 
+  it('packages the storage helper and resolves it through declared production dependencies', () => {
+    const loader = readFileSync(`${REPO_ROOT}container/agent/storage-node.mjs`, 'utf8');
+    expect(dockerfile).toContain('COPY container/agent/storage-node.mjs /opt/ax-next/storage-node.mjs');
+    // CLI does not depend directly on preset-k8s. Bypassing memory only works
+    // in a hoisted dev tree and breaks under pnpm deploy --prod.
+    expect(loader).toContain("createRequire(host.resolve('@ax/preset-memory'))");
+    expect(loader).toContain("createRequire(memory.resolve('@ax/preset-k8s'))");
+    expect(loader).toContain("preset.resolve('@ax/sandbox-k8s')");
+    expect(loader).toContain("'./storage-node/main.js'");
+    for (const [path, dependency] of [
+      ['packages/cli/package.json', '@ax/preset-memory'],
+      ['presets/memory/package.json', '@ax/preset-k8s'],
+      ['presets/k8s/package.json', '@ax/sandbox-k8s'],
+    ]) expect(prodDeps(`${REPO_ROOT}${path}`)[dependency!]).toBeDefined();
+  });
+
   it.each([
     ['@ax/cli', `${REPO_ROOT}packages/cli/package.json`],
     ['@ax/preset-k8s', `${REPO_ROOT}presets/k8s/package.json`],

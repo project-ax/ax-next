@@ -826,3 +826,22 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
     ).toEqual({ changed: true, input: { file_path: '/.ax/SOUL.md' } });
   });
 });
+
+
+describe('Stop gates', () => {
+  it('denies before policy when Stop was latched during startup', async () => {
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', isInterrupted: () => true });
+    const out = await hook(preToolUseInput({ tool_name: 'Bash', tool_input: { command: 'touch marker' } }), 'call', HOOK_OPTS);
+    expect(out).toMatchObject({ continue: false, hookSpecificOutput: { permissionDecision: 'deny' } });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('denies an allow that returns after Stop', async () => {
+    let interrupted = false;
+    const { client } = mkClient(async () => { interrupted = true; return { verdict: 'allow' }; });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', isInterrupted: () => interrupted });
+    const out = await hook(preToolUseInput({ tool_name: 'Bash', tool_input: { command: 'touch marker' } }), 'call', HOOK_OPTS);
+    expect(out).toMatchObject({ continue: false, hookSpecificOutput: { permissionDecision: 'deny' } });
+  });
+});

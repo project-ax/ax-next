@@ -101,6 +101,16 @@ export interface K8sCoreApi {
  * pods in our namespace, nothing else."
  */
 export async function createDefaultK8sApi(): Promise<K8sCoreApi> {
+  const { k8s, kc } = await loadKubeConfig();
+  return kc.makeApiClient(k8s.CoreV1Api) as unknown as K8sCoreApi;
+}
+
+export async function createDefaultSandboxApi(): Promise<import('./agent-sandbox.js').SandboxCustomApi> {
+  const { k8s, kc } = await loadKubeConfig();
+  return kc.makeApiClient(k8s.CustomObjectsApi) as unknown as import('./agent-sandbox.js').SandboxCustomApi;
+}
+
+async function loadKubeConfig() {
   // Lazy-import so packages that pull in @ax/sandbox-k8s only for typing
   // don't pay the @kubernetes/client-node cold-start cost.
   const k8s = await import('@kubernetes/client-node');
@@ -114,5 +124,5 @@ export async function createDefaultK8sApi(): Promise<K8sCoreApi> {
     // crash loud at boot, not silently fall back to no-cluster.
     kc.loadFromDefault();
   }
-  return kc.makeApiClient(k8s.CoreV1Api) as unknown as K8sCoreApi;
+  return { k8s, kc };
 }

@@ -1,0 +1,320 @@
+{
+  "date": "2026-10-02",
+  "recordedAt": "2026-10-02T13:11:48.685323+00:00",
+  "result": "passed-with-stated-scope",
+  "clusterContext": "gke_canopy-ai-498321_us-central1-a_ax-next-std",
+  "fixture": {
+    "release": "ax-spfinal-20261002",
+    "hostNamespace": "ax-spfinal-20261002",
+    "runnerNamespace": "ax-spfinal-20261002-runners",
+    "storageNamespace": "ax-spfinal-20261002-storage",
+    "dedicatedNodePool": "ax-shared-final-20261002",
+    "runnerPodSecurity": "baseline",
+    "syntheticFilestoreRoot": "/vol1/_acceptance/ax-spfinal-20261002",
+    "hostPlacement": "existing default-pool; production deployment untouched",
+    "runnerHelperPlacement": "separately tainted disposable gVisor node",
+    "provider": "real Anthropic Sonnet 4.6 through credential proxy",
+    "credentials": "omitted; isolated CA/private bootstrap/cookies removed after evidence consolidation"
+  },
+  "source": {
+    "recoveryFix": "f18ed011a824aece32982355596d07ed8a35848a",
+    "assignmentRaceFix": "dbd4c7403d9e9d689f0493fc8ec642f9481ad453",
+    "streamBindingFix": "f998d9121f5a554ae91dbad2788a9637b52316a8",
+    "images": {
+      "sourceCommit": "f998d9121f5a554ae91dbad2788a9637b52316a8",
+      "imageA": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-stream-f998d912@sha256:2220f161dc8cfd4f7c3fa72412af9b097fd70f27378b30531a056956174a22a1",
+      "imageB": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-stream-f998d912-v2@sha256:684721572abf587c29dcb504b49bffb822d54f8e2d018a55c2f05fd342a1f33e",
+      "cloudBuildId": "be6b365b-6e49-4765-a513-a55c9060724f"
+    },
+    "differentImageBytes": "Image B adds one rootfs marker layer to A; same application code and schema",
+    "imageABefore": {
+      "imageAMarkerAbsent": true,
+      "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-stream-f998d912@sha256:2220f161dc8cfd4f7c3fa72412af9b097fd70f27378b30531a056956174a22a1"
+    }
+  },
+  "acceptance": {
+    "host-restart-gate": {
+      "passed": true,
+      "scope": "Existing completed conversations reopen fresh managed sessions; in-flight command continuity is not promised",
+      "sdkResults": [
+        {
+          "runner": "claude",
+          "durationMs": 8889,
+          "nativeContextRetained": true,
+          "actualBash": true,
+          "durableMarker": ""
+        },
+        {
+          "runner": "aisdk",
+          "durationMs": 6911,
+          "nativeContextRetained": true,
+          "actualBash": true,
+          "durableMarker": ""
+        }
+      ],
+      "oldClaimPodLedgerMountsAbsent": true,
+      "operatorFinalizerPatches": 0,
+      "sourceCommit": "f998d9121f5a554ae91dbad2788a9637b52316a8",
+      "testedImage": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-stream-f998d912@sha256:2220f161dc8cfd4f7c3fa72412af9b097fd70f27378b30531a056956174a22a1"
+    },
+    "image-rollout-gate": {
+      "passed": true,
+      "scope": "Completed conversations reopen managed sessions after host rollout; different rootfs/image digest, same application code and schema",
+      "sdkResults": [
+        {
+          "runner": "claude",
+          "durationMs": 9916,
+          "nativeContextRetained": true,
+          "actualBash": true,
+          "durableMarker": "IMAGE_B"
+        },
+        {
+          "runner": "aisdk",
+          "durationMs": 6882,
+          "nativeContextRetained": true,
+          "actualBash": true,
+          "durableMarker": "IMAGE_B"
+        }
+      ],
+      "actualHostAndRunnerImageBDigest": true,
+      "newFilesystemLayerObserved": true,
+      "oldClaimPodLedgerMountsAbsent": true,
+      "obsoletePoolTemplatesAbsent": true,
+      "operatorFinalizerPatches": 0,
+      "helper": {
+        "imageBDigest": true,
+        "replacedPodUid": true,
+        "liveBindingsPreserved": true,
+        "consumedBootstrapNotRepublished": true,
+        "actualFollowupBash": true,
+        "durationMs": 3971
+      },
+      "sourceCommit": "f998d9121f5a554ae91dbad2788a9637b52316a8",
+      "testedImage": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-stream-f998d912-v2@sha256:684721572abf587c29dcb504b49bffb822d54f8e2d018a55c2f05fd342a1f33e"
+    },
+    "node-loss-gate": {
+      "passed": true,
+      "scope": "Dedicated GKE VM stop/restart or managed same-name replacement with all local ledger JSON deliberately removed; same GCE UUID and different native kernel boot ID",
+      "ledgerLoss": {
+        "helperProcessFrozen": true,
+        "removedRecords": 2,
+        "remainingRecords": 0
+      },
+      "protectedObjects": [
+        {
+          "podUid": "7aeb9fbf-b816-4e52-addd-0cac0b17680c",
+          "claimUid": "e8d563c2-4ab9-481e-9400-b888d74c52d3",
+          "bothStorageFinalizersPresent": true,
+          "validatedSecretFreeRecoveryAnnotationPresent": true
+        },
+        {
+          "podUid": "dec93a99-0a05-4ad3-b068-24128e8f6dbf",
+          "claimUid": "1509db01-d67c-4f8e-ac4c-aeaf3ec9983d",
+          "bothStorageFinalizersPresent": true,
+          "validatedSecretFreeRecoveryAnnotationPresent": true
+        }
+      ],
+      "activeRealBash": true,
+      "boundedFailureMs": 30666,
+      "fixtureTimeoutMs": 30000,
+      "oldFence": {
+        "machineId": "d5fdf1e0-7859-9088-a539-8e8b7b120e2e",
+        "bootId": "15de8d07-6f7f-42a4-965d-346d2d041f44"
+      },
+      "newFence": {
+        "machineId": "d5fdf1e0-7859-9088-a539-8e8b7b120e2e",
+        "bootId": "6437d1bb-e4db-47b6-ac37-a01c7deee99e"
+      },
+      "sameMachineDifferentBoot": true,
+      "oldNodeUid": "aa945182-dee5-4b1d-a2b9-55a427ee2c9a",
+      "newNodeUid": "f15223cb-4356-4d10-aab1-e59c0951c6d9",
+      "oldComputeInstanceId": "7970740429950949023",
+      "newComputeInstanceId": "8086622392808510619",
+      "recoveryPollTransientRetries": 30,
+      "oldClaimPodLedgerMountsAbsent": true,
+      "independentDurableMarkerPreserved": true,
+      "delayedCompletionMarkerAbsentPastOriginal90SecondDeadline": true,
+      "actualFollowupBash": true,
+      "nativeContextRetained": true,
+      "followupDurationMs": 14779,
+      "operatorFinalizerPatches": 0,
+      "gateRecordedMsAfterActiveCommandCheckpoint": 203971,
+      "faultImageCheck": {
+        "sourceCommit": "f998d9121f5a554ae91dbad2788a9637b52316a8",
+        "oldPodUids": [
+          "7aeb9fbf-b816-4e52-addd-0cac0b17680c",
+          "dec93a99-0a05-4ad3-b068-24128e8f6dbf"
+        ],
+        "actualProtectedPodImages": [
+          {
+            "podUid": "dec93a99-0a05-4ad3-b068-24128e8f6dbf",
+            "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-stream-f998d912-v2@sha256:684721572abf587c29dcb504b49bffb822d54f8e2d018a55c2f05fd342a1f33e"
+          },
+          {
+            "podUid": "7aeb9fbf-b816-4e52-addd-0cac0b17680c",
+            "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-stream-f998d912-v2@sha256:684721572abf587c29dcb504b49bffb822d54f8e2d018a55c2f05fd342a1f33e"
+          }
+        ]
+      },
+      "sourceCommit": "f998d9121f5a554ae91dbad2788a9637b52316a8",
+      "testedImage": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-stream-f998d912-v2@sha256:684721572abf587c29dcb504b49bffb822d54f8e2d018a55c2f05fd342a1f33e"
+    },
+    "teardown-gate": {
+      "passed": true,
+      "claimsAbsentBeforeHelperRemoval": true,
+      "ledgerJsonCountBeforeHelperRemoval": 0,
+      "childMountCountBeforeHelperRemoval": 0,
+      "syntheticFilestoreRootAbsent": true,
+      "releaseAbsent": true,
+      "threeNamespacesAbsent": true,
+      "fixturePvcsAndPvsAbsent": true,
+      "fixturePersistentVolumes": [
+        "pvc-b3c6dcc3-4072-4233-959f-a4466a19d0ca",
+        "pvc-9f8c5eee-b318-4734-986b-fdf829403a48",
+        "pvc-7d299c99-6795-410a-ad76-93f75a6185e9"
+      ],
+      "nodePoolAbsent": true,
+      "dedicatedNodesAbsent": true,
+      "nodepoolDeletionOperation": "operation-1790946209477-dae3518b-6efe-40dd-99ea-bf523981ccec",
+      "nodepoolDeletionStatus": "DONE",
+      "hostLocalLedgerDestroyedWithDisposableNode": true,
+      "operatorFinalizerPatches": 0,
+      "computeVmAbsent": true,
+      "dedicatedBootDisksAbsent": true
+    }
+  },
+  "production": {
+    "before": {
+      "revision": 31,
+      "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:2c15e4b0",
+      "sharedConfigNames": [],
+      "readyReplicas": 1
+    },
+    "after": {
+      "revision": 31,
+      "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:2c15e4b0",
+      "sharedConfigNames": [],
+      "readyReplicas": 1,
+      "httpHealthStatus": 200,
+      "httpHealthBody": {
+        "ok": true
+      },
+      "httpHealthCheckTransport": "read-only exec; host loopback HTTP port 9090",
+      "sharedPoolsTemplatesClaimsHelpersAbsent": true,
+      "matchesBaseline": true
+    }
+  },
+  "validation": {
+    "sourceCommit": "f998d9121f5a554ae91dbad2788a9637b52316a8",
+    "commands": {
+      "build": "pnpm build",
+      "packages": "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm -r --workspace-concurrency=1 --no-bail run test",
+      "eslintRules": "pnpm test:eslint-rules",
+      "scripts": "pnpm test:scripts"
+    },
+    "exitCodes": {
+      "build": 0,
+      "packages": 0,
+      "eslintRules": 0,
+      "scripts": 0
+    },
+    "packageSuites": 85,
+    "packageTestsPassed": 15557,
+    "rootEslintRuleTestsPassed": 22,
+    "rootScriptTestsPassed": 1091,
+    "sandboxFinal": {
+      "files": 16,
+      "passed": 367,
+      "linuxOnlySkippedOnMacos": 1
+    },
+    "orchestratorFinal": {
+      "files": 17,
+      "passed": 280
+    },
+    "regressionsVerifiedRedThenGreen": [
+      "host-owned session recovery",
+      "lost-ledger annotation recovery and ownership/fencing",
+      "ContainerStatusUnknown does not prove termination",
+      "reconciliation cannot retire an assignment that finishes while queued",
+      "old-session termination cannot clear a new SSE binding"
+    ],
+    "targetedLintPassed": true,
+    "logSha256": {
+      "final-build.log": "4409d2ab57b36f85e401e2f70f5a61ef550295906e9ce46303a82eebfb370e18",
+      "final-packages.log": "08d604d744b755c5f85ec082490888c5a6560ea7aec337cc84721a38c12ad448",
+      "final-eslintRules.log": "1e0932b57282e8cf08db4397bf09fa3bd38f5050ca775db4eb884191ed731a4b",
+      "final-scripts.log": "891afd6a445fc01e55ada8cf07fffa326322a09c15d48efdba3ab88610ec5189",
+      "recovery-red.log": "bd9bf11a2ce7c906d57d73a310fd01339804bb3d3c906f27ec2c15abca83ad2d",
+      "host-red.log": "2108d859637abd2feb50088a061ff3d867feb21b0b39b675dee2d3f3a38322e9",
+      "unknown-terminal-red.log": "3bcf1e5913e30f1cbab7e14f4f71967a1f623350d4b2f603e8623d1b8553f24d",
+      "assignment-race-red.log": "085ce1d422cc5ed9a6e54b24c57322760ed0e32dcec561d87d629c03c8e659c1",
+      "stream-binding-red.log": "05e25b7b65ef363154a2190ba2e897813a2bdc4c09baaad2f8fbd1f8f62e6350"
+    }
+  },
+  "earlierAttempts": {
+    "f18ed011": {
+      "hostRestartAndImageRollout": "Both SDK conversations eventually continued; initial AI SDK activation failed and retried. Retained as historical partial evidence, not the final first-followup pass.",
+      "nodeLoss": {
+        "passed": true,
+        "scope": "Dedicated GKE VM stop/restart with all local ledger JSON deliberately removed; same VM UUID and different native kernel boot ID",
+        "ledgerLoss": {
+          "helperProcessFrozen": true,
+          "removedRecords": 2,
+          "remainingRecords": 0
+        },
+        "protectedObjects": [
+          {
+            "podUid": "be733f25-8643-466f-b1cc-0abfa6e3348c",
+            "claimUid": "50af7b83-8d42-4172-98ff-491495c61869",
+            "bothStorageFinalizersPresent": true,
+            "validatedSecretFreeRecoveryAnnotationPresent": true
+          },
+          {
+            "podUid": "d6dd7444-3c3b-4b20-acea-b3fed8f36d77",
+            "claimUid": "b9eaaa08-31da-4e61-bb29-ab2f4f35bc0e",
+            "bothStorageFinalizersPresent": true,
+            "validatedSecretFreeRecoveryAnnotationPresent": true
+          }
+        ],
+        "activeRealBash": true,
+        "boundedFailureMs": 30177,
+        "fixtureTimeoutMs": 30000,
+        "oldFence": {
+          "machineId": "d5fdf1e0-7859-9088-a539-8e8b7b120e2e",
+          "bootId": "6e1873e7-ff89-4083-8167-f2ecb5640132"
+        },
+        "newFence": {
+          "machineId": "d5fdf1e0-7859-9088-a539-8e8b7b120e2e",
+          "bootId": "dcde8a10-165f-4b68-96a6-370561acc906"
+        },
+        "sameMachineDifferentBoot": true,
+        "oldNodeUid": "e9e36b90-ed27-4f64-97fa-627acc3e774e",
+        "newNodeUid": "8c072431-3407-4e60-9859-bc3be044cadc",
+        "nodeApiTransientRetries": 27,
+        "oldClaimPodLedgerMountsAbsent": true,
+        "independentDurableMarkerPreserved": true,
+        "actualFollowupBash": true,
+        "nativeContextRetained": true,
+        "followupDurationMs": 9356,
+        "operatorFinalizerPatches": 0,
+        "delayedCompletionMarkerAbsentPastOriginal90SecondDeadline": true
+      }
+    },
+    "dbd4c740": {
+      "hostRestart": "SSE returned 404 in 273 ms while replacement runner was starting; stream-binding regression added and fixed in f998d912"
+    }
+  },
+  "limits": [
+    "Recovery reopens later turns in the same durable conversation with fresh process/proxy sessions; it does not promise uninterrupted in-flight Bash or unchanged claimed Pod UID across host rollout.",
+    "Node-loss proof covers same GCE VM UUID with a different native boot, including managed same-name VM replacement and deliberately lost local JSON ledgers. A permanently absent/differently named node or unconfirmed machine identity needs independent cloud fencing; Kubernetes deletion/unreachability alone never authorizes finalizer removal.",
+    "Fixture chat timeout is 30 seconds; product default is ten minutes.",
+    "Different image digests/rootfs bytes are exercised with identical application schema/code; incompatible migrations and browser UI behavior are outside this run.",
+    "Existing workspace/committed upload quotas were accepted separately; raw arbitrary Bash /files quotas remain separate work."
+  ],
+  "excludedFixtureAttempt": {
+    "cause": "The model explicitly launched Bash with run_in_background=true, so its short completed response did not test the request-timeout bound.",
+    "acceptedForBoundedTurn": false,
+    "automaticLostLedgerCleanupAndDurableFollowupPassed": true,
+    "correctedRetest": "Foreground command arguments verified before freezing the helper or stopping the node; final foreground retest recorded above."
+  }
+}

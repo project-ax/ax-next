@@ -11,6 +11,7 @@ import {
   createHoldLatch,
   createToolPolicy,
   runRunner,
+  waitForAssignment,
   type Loop,
   type LoopContext,
   type RunnerDeps,
@@ -695,6 +696,7 @@ function errorText(error: unknown): string {
 }
 
 export async function main(): Promise<number> {
+  await waitForAssignment();
   // Built here, outside `runRunner`, so the SAME instance is both the shell's
   // transcript source and the loop's message store (see AiSdkLoopDeps).
   const transcript = createMemoryTranscriptSource();

@@ -21,7 +21,8 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@ax/sandbox-mount-protocol": "workspace:*"
+    "@ax/sandbox-mount-protocol": "workspace:*",
+    "@ax/sandbox-protocol": "workspace:*"
   },
   "devDependencies": {
     "@ax/memory-facts-contract": "workspace:*",

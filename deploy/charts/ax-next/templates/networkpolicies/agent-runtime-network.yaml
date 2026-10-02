@@ -83,6 +83,16 @@ spec:
           protocol: TCP
     {{- end }}
   egress:
+    {{- if (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.sandbox.sharedPool.storageNamespace }}
+          podSelector:
+            matchLabels:
+              ax.io/storage-helper: {{ .Values.sandbox.sharedPool.prefix }}
+      ports: [{port: 9443, protocol: TCP}]
+    {{- end }}
     # PostgreSQL.
     - ports:
         - port: 5432

@@ -45,7 +45,8 @@ export const RUNNER_COMPONENT_SELECTOR =
 const TERMINAL_PHASES = new Set(['Succeeded', 'Failed']);
 
 interface PodListItemLike {
-  metadata?: { name?: string; creationTimestamp?: Date | string };
+  metadata?: { name?: string; creationTimestamp?: Date | string;
+    ownerReferences?: Array<{ kind?: string; apiVersion?: string; controller?: boolean }> };
   status?: { phase?: string };
 }
 interface PodListLike {
@@ -90,6 +91,10 @@ export async function sweepOrphanedPods(
   let reaped = 0;
 
   for (const item of items) {
+    // Deleting only a controller-owned Pod recreates it. Its Sandbox owns GC;
+    // the Agent Sandbox adapter lists/deletes the parent resources separately.
+    if (item.metadata?.ownerReferences?.some((owner) => owner.controller === true &&
+        owner.kind === 'Sandbox' && owner.apiVersion?.startsWith('agents.x-k8s.io/'))) continue;
     const name = item.metadata?.name;
     const phase = item.status?.phase;
     if (name === undefined || phase === undefined) continue;

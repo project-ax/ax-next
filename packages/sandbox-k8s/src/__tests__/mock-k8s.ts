@@ -48,6 +48,7 @@ export interface MockPod {
     namespace?: string;
     /** Real V1Pod carries this as a Date; the orphan-sweep ages off it. */
     creationTimestamp?: Date;
+    ownerReferences?: Array<{ kind?: string; apiVersion?: string; controller?: boolean }>;
   };
   status?: MockPodStatus;
 }

@@ -71,7 +71,7 @@ spec:
         - port: {{ .Values.credentialProxy.tcp.port | default 8888 }}
           protocol: TCP
     {{- end }}
-    {{- if .Values.sandbox.filestore.server }}
+    {{- if and .Values.sandbox.filestore.server (not (include "ax-next.bool" .Values.sandbox.sharedPool.enabled)) }}
     # filestore-user-files (design §4/§9) — the durable per-agent user-files
     # mount is a Google Cloud Filestore (managed NFS) export. The otherwise
     # internet-fenced runner needs NFS reach to mount it, so we open egress to
@@ -100,4 +100,31 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+{{- end }}
+{{- if and (include "ax-next.bool" .Values.networkPolicies.enabled) (include "ax-next.bool" .Values.sandbox.sharedPool.enabled) .Values.sandbox.filestore.server }}
+---
+# Shared runners must never contact NFS directly: a user-space NFS client
+# could bypass per-agent directory mounts. Preserve the existing cold-path
+# allowance only for auxiliary pods and sessions with service sidecars.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ax-next.fullname" . }}-cold-nfs
+  namespace: {{ include "ax-next.runnerNamespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      ax.io/plane: execution
+    matchExpressions:
+      - {key: ax.io/shared-standby, operator: DoesNotExist}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ printf "%s/32" .Values.sandbox.filestore.server | quote }}
+      ports:
+        - {port: 2049, protocol: TCP}
+        - {port: 2049, protocol: UDP}
+        - {port: 111, protocol: TCP}
+        - {port: 111, protocol: UDP}
 {{- end }}
