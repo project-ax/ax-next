@@ -70,10 +70,10 @@ describe('auth', () => {
     }
   });
 
-  it('registers the mutating routes with a 4 KiB body cap', async () => {
+  it('bounds control bodies at 4 KiB and the full model price table at 64 KiB', async () => {
     const b = await boot();
     for (const r of b.routes.filter((x) => x.method !== 'GET')) {
-      expect(r.maxBodyBytes).toBe(r.path === '/admin/usage/prices' ? 32768 : 4096);
+      expect(r.maxBodyBytes).toBe(r.path === '/admin/usage/prices' ? 65536 : 4096);
     }
   });
 });
