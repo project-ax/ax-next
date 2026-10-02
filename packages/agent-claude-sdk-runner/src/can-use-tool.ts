@@ -52,6 +52,7 @@ export function createCanUseTool(_opts: CreateCanUseToolOptions): CanUseTool {
       case 'builtin':
       case 'mcp-host':
       case 'mcp-sandbox':
+      case 'mcp-connector':
         // Allow pass-through. The host-side `tool:pre-call` subscriber
         // chain already ran inside the PreToolUse hook (see
         // pre-tool-use.ts); if it rejected, the SDK would never route the
@@ -63,7 +64,7 @@ export function createCanUseTool(_opts: CreateCanUseToolOptions): CanUseTool {
         // is identical.
         return { behavior: 'allow', updatedInput: input };
       default: {
-        // Unreachable, and the compiler is what proves it: the three cases
+        // Unreachable, and the compiler is what proves it: the cases
         // above exhaust `SdkToolClass`, so `klass` is narrowed to `never` here
         // and this assignment stops compiling the moment a variant is added
         // without a case. That build error is the actual safety mechanism.

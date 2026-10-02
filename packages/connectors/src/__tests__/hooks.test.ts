@@ -12,6 +12,8 @@ import {
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConnectorsPlugin } from '../plugin.js';
+import { ListDefaultsOutputSchema, ResolveOutputSchema } from '../types.js';
+import { deriveToolNamespace, TOOL_NAMESPACE_RE } from '../tool-namespace.js';
 import type {
   Capabilities,
   DeleteInput,
@@ -752,5 +754,146 @@ describe('@ax/connectors hooks — list-defaults', () => {
         upsertInput({ defaultAttached: 'yes' as unknown as boolean }),
       ),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+});
+
+describe('@ax/connectors hooks — toolNamespaces (TASK-734)', () => {
+  /** A connector with two MCP servers so ordering + per-server derivation show. */
+  function twoServerCaps(): Capabilities {
+    return {
+      allowedHosts: [],
+      credentials: [],
+      mcpServers: [
+        { name: 'alpha', transport: 'http', url: 'https://mcp.example.com/a', allowedHosts: ['mcp.example.com'], credentials: [] },
+        { name: 'beta', transport: 'http', url: 'https://mcp.example.com/b', allowedHosts: ['mcp.example.com'], credentials: [] },
+      ],
+      packages: { npm: [], pypi: [] },
+      services: [],
+    };
+  }
+
+  async function resolve(h: TestHarness, userId: string, connectorId: string): Promise<ResolveOutput> {
+    return h.bus.call<ResolveInput, ResolveOutput>('connectors:resolve', h.ctx({ userId }), { userId, connectorId });
+  }
+
+  it('resolve returns one toolNamespace per mcpServers entry, in order, derived from (owner, id, server)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ connectorId: 'duo', capabilities: twoServerCaps() }),
+    );
+    const resolved = await resolve(h, 'userA', 'duo');
+    expect(resolved.toolNamespaces).toEqual([
+      { server: 'alpha', toolNamespace: deriveToolNamespace('userA', 'duo', 'alpha') },
+      { server: 'beta', toolNamespace: deriveToolNamespace('userA', 'duo', 'beta') },
+    ]);
+    for (const entry of resolved.toolNamespaces) {
+      expect(entry.toolNamespace).toMatch(TOOL_NAMESPACE_RE);
+    }
+    expect(resolved.toolNamespaces[0]!.toolNamespace).not.toBe(resolved.toolNamespaces[1]!.toolNamespace);
+  });
+
+  it('a shared connector resolved by a NON-owner gets the SAME namespace as the owner (row owner, not requester)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ connectorId: 'shared-mcp', visibility: 'shared' }),
+    );
+    const asOwner = await resolve(h, 'userA', 'shared-mcp');
+    const asReader = await resolve(h, 'userB', 'shared-mcp');
+    expect(asOwner.toolNamespaces).toHaveLength(1);
+    expect(asReader.toolNamespaces).toEqual(asOwner.toolNamespaces);
+    // ...and it is the OWNER's derivation, not one keyed off the requesting user.
+    expect(asReader.toolNamespaces[0]!.toolNamespace).toBe(deriveToolNamespace('userA', 'shared-mcp', 'gdrive'));
+    expect(asReader.toolNamespaces[0]!.toolNamespace).not.toBe(deriveToolNamespace('userB', 'shared-mcp', 'gdrive'));
+  });
+
+  it('two distinct records (two owners, same connector id, same server name) get different namespaces', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ userId: 'userA', connectorId: 'linear' }));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userB' }), upsertInput({ userId: 'userB', connectorId: 'linear' }));
+    const a = await resolve(h, 'userA', 'linear');
+    const b = await resolve(h, 'userB', 'linear');
+    expect(a.toolNamespaces[0]!.server).toBe(b.toolNamespaces[0]!.server);
+    expect(a.toolNamespaces[0]!.toolNamespace).not.toBe(b.toolNamespaces[0]!.toolNamespace);
+  });
+
+  it('the namespace is stable across resolves and independent of unrelated edits to the record', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput());
+    const first = await resolve(h, 'userA', 'gdrive');
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ name: 'Renamed', usageNote: 'changed' }));
+    const second = await resolve(h, 'userA', 'gdrive');
+    expect(second.toolNamespaces).toEqual(first.toolNamespaces);
+  });
+
+  it('a connector with no mcpServers resolves toolNamespaces: []', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'sf', capabilities: cliCaps() }));
+    const resolved = await resolve(h, 'userA', 'sf');
+    expect(resolved.toolNamespaces).toEqual([]);
+  });
+
+  it('list-defaults returns toolNamespaces on each connector, equal to resolve for the same record', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'duo', capabilities: twoServerCaps(), defaultAttached: true }));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'sf', capabilities: cliCaps(), defaultAttached: true }));
+    const defaults = await h.bus.call<ListDefaultsInput, ListDefaultsOutput>('connectors:list-defaults', h.ctx({ userId: 'userA' }), { userId: 'userA' });
+    expect(defaults.connectors.map((c) => c.id)).toEqual(['duo', 'sf']);
+    const duo = defaults.connectors[0]!;
+    const sf = defaults.connectors[1]!;
+    expect(duo.toolNamespaces).toEqual((await resolve(h, 'userA', 'duo')).toolNamespaces);
+    expect(duo.toolNamespaces).toHaveLength(2);
+    expect(sf.toolNamespaces).toEqual([]);
+    // The rest of the full connector is still there.
+    expect(duo.capabilities).toEqual(twoServerCaps());
+  });
+
+  it('the return schemas keep toolNamespaces (a round-trip must not strip the field)', () => {
+    const toolNamespaces = [{ server: 'gdrive', toolNamespace: 'c0123456789' }];
+    const resolveOut = ResolveOutputSchema.parse({
+      id: 'gdrive',
+      keyMode: 'personal',
+      usageNote: '',
+      capabilities: mcpCaps(),
+      credentialPlan: [],
+      requiresSharedKeyConsent: false,
+      toolNamespaces,
+    });
+    expect(resolveOut.toolNamespaces).toEqual(toolNamespaces);
+
+    const defaultsOut = ListDefaultsOutputSchema.parse({
+      connectors: [
+        {
+          id: 'gdrive',
+          name: 'Google Drive',
+          description: '',
+          usageNote: '',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+          defaultAttached: true,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          toolNamespaces,
+        },
+      ],
+    });
+    expect(defaultsOut.connectors[0]!.toolNamespaces).toEqual(toolNamespaces);
+  });
+
+  it('the return schemas reject a payload that omits toolNamespaces (so a producer cannot silently drop it)', () => {
+    expect(() =>
+      ResolveOutputSchema.parse({
+        id: 'gdrive',
+        keyMode: 'personal',
+        usageNote: '',
+        capabilities: mcpCaps(),
+        credentialPlan: [],
+        requiresSharedKeyConsent: false,
+      }),
+    ).toThrow();
   });
 });

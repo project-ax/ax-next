@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CONNECTOR_TOOL_NAMESPACE_RE,
   DISABLED_BUILTINS,
   DISABLED_BUILTIN_REASONS,
   MCP_HOST_SERVER_NAME,
@@ -116,6 +117,95 @@ describe('classifySdkToolName', () => {
     });
   });
 
+  describe('host-minted connector namespaces (TASK-734)', () => {
+    // Connector MCP servers are written to the sandbox `.mcp.json` keyed by an
+    // opaque host-minted `toolNamespace` (`c` + 10 hex), so the SDK names
+    // their tools `mcp__<ns>__<tool>`. Those — and only those — are lifted
+    // into the canonical `mcp.<ns>.<tool>` key tool-policy sees.
+    it('lifts mcp__<ns>__<tool> to the canonical mcp.<ns>.<tool> key', () => {
+      expect(classifySdkToolName('mcp__c0123456789__send_message')).toEqual({
+        kind: 'mcp-connector',
+        axName: 'mcp.c0123456789.send_message',
+      });
+    });
+
+    it('accepts any lowercase-hex digit in the 10-char suffix', () => {
+      expect(classifySdkToolName('mcp__cabcdef0123__t')).toEqual({
+        kind: 'mcp-connector',
+        axName: 'mcp.cabcdef0123.t',
+      });
+    });
+
+    it('preserves a tool part that itself contains `__` verbatim', () => {
+      expect(classifySdkToolName('mcp__c0123456789__issue__create_v2')).toEqual({
+        kind: 'mcp-connector',
+        axName: 'mcp.c0123456789.issue__create_v2',
+      });
+    });
+
+    it('preserves a tool part containing dots and dashes verbatim', () => {
+      expect(classifySdkToolName('mcp__c0123456789__list-issues.v2')).toEqual({
+        kind: 'mcp-connector',
+        axName: 'mcp.c0123456789.list-issues.v2',
+      });
+    });
+
+    it('lifts a tool part carrying a newline too (cannot sidestep a namespace-scoped rule)', () => {
+      expect(classifySdkToolName('mcp__c0123456789__a\nb')).toEqual({
+        kind: 'mcp-connector',
+        axName: 'mcp.c0123456789.a\nb',
+      });
+    });
+
+    it.each([
+      ['a foreign (non-namespace) server name', 'mcp__linear__x'],
+      ['an uppercase C prefix', 'mcp__C0123456789__x'],
+      ['uppercase hex digits', 'mcp__c01234567AB__x'],
+      ['9 hex chars (too short)', 'mcp__c012345678__x'],
+      ['11 hex chars (too long)', 'mcp__c01234567890__x'],
+      ['a non-hex namespace char', 'mcp__cg123456789__x'],
+      ['an empty tool part', 'mcp__c0123456789__'],
+      ['a missing tool separator', 'mcp__c0123456789'],
+    ])('does NOT lift %s — verbatim builtin pass-through', (_label, name) => {
+      expect(classifySdkToolName(name)).toEqual({ kind: 'builtin', axName: name });
+    });
+
+    it('does not lift a namespace-looking name without the mcp__ lead', () => {
+      expect(classifySdkToolName('xmcp__c0123456789__x')).toEqual({
+        kind: 'builtin',
+        axName: 'xmcp__c0123456789__x',
+      });
+    });
+
+    it('leaves the ax host/sandbox prefixed names unchanged (they win)', () => {
+      expect(
+        classifySdkToolName(`mcp__${MCP_HOST_SERVER_NAME}__c0123456789__x`),
+      ).toEqual({ kind: 'mcp-host', axName: 'c0123456789__x' });
+      expect(
+        classifySdkToolName(`mcp__${MCP_SANDBOX_SERVER_NAME}__c0123456789__x`),
+      ).toEqual({ kind: 'mcp-sandbox', axName: 'c0123456789__x' });
+    });
+
+    it('exports a namespace regex that matches the host-minted shape only', () => {
+      expect(CONNECTOR_TOOL_NAMESPACE_RE.test('c0123456789')).toBe(true);
+      expect(CONNECTOR_TOOL_NAMESPACE_RE.test('c012345678')).toBe(false);
+      expect(CONNECTOR_TOOL_NAMESPACE_RE.test('C0123456789')).toBe(false);
+      expect(CONNECTOR_TOOL_NAMESPACE_RE.test('xc0123456789')).toBe(false);
+      expect(CONNECTOR_TOOL_NAMESPACE_RE.test('c0123456789\n')).toBe(false);
+    });
+
+    it('lifts a REAL namespace @ax/connectors derives (cross-package drift pin)', () => {
+      // `c5e0235982f` is the literal @ax/connectors' tool-namespace.test.ts pins
+      // for deriveToolNamespace('userA','linear','linear'). The regex is
+      // hand-mirrored (I2); if either side's shape drifts, one of the two pins
+      // reddens instead of real connector tools silently passing through raw.
+      expect(classifySdkToolName('mcp__c5e0235982f__create_issue')).toEqual({
+        kind: 'mcp-connector',
+        axName: 'mcp.c5e0235982f.create_issue',
+      });
+    });
+  });
+
   it('treats empty string as builtin pass-through (no crash)', () => {
     // Empty is degenerate — propagate rather than invent classification logic
     // the host shouldn't encode. Host-side subscribers will reject nameless
@@ -146,6 +236,12 @@ describe('activityPhraseForSdkName (TASK-271)', () => {
         `mcp__${MCP_HOST_SERVER_NAME}__memory_search`,
       ),
     ).toBe('Searching memory');
+  });
+
+  it('returns undefined for a connector-namespaced tool (not in the catalog)', () => {
+    expect(
+      activityPhraseForSdkName(phrases, 'mcp__c0123456789__artifact_publish'),
+    ).toBeUndefined();
   });
 
   it('returns undefined for names missing from the catalog', () => {

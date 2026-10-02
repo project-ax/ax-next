@@ -204,7 +204,11 @@ function selectAvailableRow(rows: StoredConnectorRow[], userId: string): StoredC
 
 export interface AvailableConnector {
   connector: Connector;
-  /** Internal only: used to authorize workspace credentials against their owner. */
+  /**
+   * Internal only: the connector ROW's owner (not the requesting user). Used to
+   * authorize workspace credentials against their owner and to derive the
+   * connector's tool namespace, which identifies the record `(owner, id)`.
+   */
   ownerUserId: string;
 }
 
@@ -237,8 +241,11 @@ export interface ConnectorStore {
    * TASK-97 — the owner's DEFAULT-attached connectors, FULL (capabilities
    * included), sorted by id ascending (stable, matches skills:list-defaults).
    * The orchestrator unions these into every agent's effective connector set.
+   * Each entry carries its row owner (`ownerUserId`, the same shape
+   * `getAvailableById` returns) so callers can derive owner-keyed values — the
+   * connector tool namespace — without re-deriving ownership.
    */
-  listDefaults(userId: string): Promise<Connector[]>;
+  listDefaults(userId: string): Promise<AvailableConnector[]>;
   /** Full connector by id for the owner; null if absent / tombstoned. */
   getByIdNotDeleted(
     userId: string,
@@ -374,7 +381,10 @@ export function createConnectorStore(
         .where('default_attached', '=', true)
         .orderBy('connector_id', 'asc')
         .execute();
-      return rows.map((r) => rowToConnector(r));
+      return rows.map((r) => ({
+        connector: rowToConnector(r),
+        ownerUserId: r.owner_user_id,
+      }));
     },
 
     async softDelete(userId, connectorId) {

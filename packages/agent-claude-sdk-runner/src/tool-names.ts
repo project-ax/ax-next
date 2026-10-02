@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // Tool-name classifier for claude-agent-sdk tool names.
 //
-// The claude-agent-sdk surfaces three flavors of tool in `canUseTool` and
+// The claude-agent-sdk surfaces four flavors of tool in `canUseTool` and
 // `PostToolUse`:
 //
 //   1. Built-in SDK tools — names like `Bash`, `Read`, `Edit`, ... These
@@ -55,6 +55,31 @@
 //      CLAUDE.md, and other SDK-config paths that would let an agent
 //      escalate via the now-enabled user/project setting sources).
 //      Skill is NOT a nested-agent bypass; `Task` still is.
+//
+//   4. Connector MCP tools (TASK-734). Connector MCP servers run INSIDE the
+//      sandbox via the per-directory `.mcp.json` the runner materializes
+//      (`@ax/agent-runner-core` installed-skills). The host keys each server
+//      by an opaque, host-minted `toolNamespace` (`c` + 10 lowercase hex) —
+//      never the connector author's free-text `spec.name` — so the SDK names
+//      their tools `mcp__<toolNamespace>__<tool>`. We lift exactly that shape
+//      to the canonical connector tool key
+//
+//          toolKey = `mcp.<toolNamespace>.<tool>`
+//
+//      which is what `tool.pre-call` / `event.tool-post-call` and therefore
+//      `@ax/tool-policy` see. The namespace is stable per connector record
+//      (same record -> same namespace for every user/agent/session), so a
+//      policy rule can address one connector's tool without being spoofable
+//      by a second connector that happens to pick the same server name.
+//      The `<tool>` part is passed through verbatim (it may contain `__`,
+//      `.` or `-`; the SDK's own name is the only source of truth for it).
+//
+//      The shape mirrors `@ax/connectors`' `TOOL_NAMESPACE_RE`. It is written
+//      out here rather than imported on purpose: that would be a cross-plugin
+//      import (invariant 2), and the runner runs in the sandbox where the
+//      connectors plugin does not exist. Only host-minted namespaces are
+//      lifted; a foreign `mcp__linear__x` is NOT (see below), so an agent
+//      cannot reach the canonical keyspace by naming a server cleverly.
 //
 // Anything else — including MCP tools from a DIFFERENT server (not ours) —
 // falls through as kind 'builtin' with the full name preserved. That's a
@@ -116,10 +141,21 @@ export const DISABLED_BUILTIN_REASONS: Record<DisabledBuiltin, string> = {
     'answer back. Ask in your reply instead, list the options, and wait.',
 };
 
+/**
+ * Shape of a host-minted connector `toolNamespace`: `c` + 10 lowercase hex.
+ * Mirrors `@ax/connectors`' `TOOL_NAMESPACE_RE` (no cross-plugin import, I2).
+ * Anchored and case-sensitive on purpose — `C0123456789`, 9/11 hex chars and
+ * non-hex characters are all NOT host-minted and are not lifted.
+ */
+export const CONNECTOR_TOOL_NAMESPACE_RE = /^c[0-9a-f]{10}$/;
+
 export type SdkToolClass =
   | { kind: 'builtin'; axName: string }
   | { kind: 'mcp-host'; axName: string }
   | { kind: 'mcp-sandbox'; axName: string }
+  // A connector MCP tool, `mcp__<toolNamespace>__<tool>` on the SDK wire.
+  // `axName` is the canonical toolKey `mcp.<toolNamespace>.<tool>`.
+  | { kind: 'mcp-connector'; axName: string }
   // No `axName`: a disabled built-in is refused by name at the call site and
   // never reaches `tool:pre-call`, so there is no ax-native name to carry.
   // `reason` is the per-cause sentence from `DISABLED_BUILTIN_REASONS`.
@@ -127,9 +163,32 @@ export type SdkToolClass =
 
 const MCP_HOST_PREFIX = `mcp__${MCP_HOST_SERVER_NAME}__`;
 const MCP_SANDBOX_PREFIX = `mcp__${MCP_SANDBOX_SERVER_NAME}__`;
+const MCP_PREFIX = 'mcp__';
 
 function isDisabledBuiltin(sdkName: string): sdkName is DisabledBuiltin {
   return (DISABLED_BUILTINS as readonly string[]).includes(sdkName);
+}
+
+/**
+ * Split `mcp__<toolNamespace>__<tool>` into its two parts, or `undefined` when
+ * the name does not carry a host-minted namespace. A valid namespace is `c` +
+ * hex and so can never contain `__`: the FIRST `__` after the `mcp__` lead is
+ * therefore the separator, and everything after it is the tool part verbatim
+ * (it may itself contain `__`, `.` or `-`). `CONNECTOR_TOOL_NAMESPACE_RE` is
+ * the single place the namespace shape is written down.
+ */
+function splitConnectorToolName(
+  sdkName: string,
+): { toolNamespace: string; tool: string } | undefined {
+  if (!sdkName.startsWith(MCP_PREFIX)) return undefined;
+  const sep = sdkName.indexOf('__', MCP_PREFIX.length);
+  if (sep === -1) return undefined;
+  const toolNamespace = sdkName.slice(MCP_PREFIX.length, sep);
+  const tool = sdkName.slice(sep + 2);
+  if (tool.length === 0 || !CONNECTOR_TOOL_NAMESPACE_RE.test(toolNamespace)) {
+    return undefined;
+  }
+  return { toolNamespace, tool };
 }
 
 export function classifySdkToolName(sdkName: string): SdkToolClass {
@@ -145,6 +204,15 @@ export function classifySdkToolName(sdkName: string): SdkToolClass {
   }
   if (sdkName.startsWith(MCP_SANDBOX_PREFIX)) {
     return { kind: 'mcp-sandbox', axName: sdkName.slice(MCP_SANDBOX_PREFIX.length) };
+  }
+  // After the ax host/sandbox prefixes (those names are ours and win) and
+  // before the verbatim fallback. Only a host-minted namespace is lifted.
+  const connector = splitConnectorToolName(sdkName);
+  if (connector !== undefined) {
+    return {
+      kind: 'mcp-connector',
+      axName: `mcp.${connector.toolNamespace}.${connector.tool}`,
+    };
   }
   // Fallback: pass the name through unchanged. Covers built-in SDK tools
   // (Bash, Read, Edit, …) AND unknown-to-us MCP tools from other servers.

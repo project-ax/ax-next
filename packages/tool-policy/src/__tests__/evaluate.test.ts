@@ -57,6 +57,24 @@ describe('evaluate', () => {
     });
   });
 
+  it('allows a canonical connector tool key (mcp.<toolNamespace>.<tool>) with no rule — TASK-734 changed the name, not the verdict', () => {
+    // The claude-sdk runner lifts a connector's sandbox-side MCP tool
+    // `mcp__c0123456789__send_message` to `mcp.c0123456789.send_message` before
+    // `tool.pre-call`. This documents that the canonical key reaches evaluate()
+    // as an ordinary name and, with no rule addressing it yet, is unguarded —
+    // the known hole in evaluate()'s doc comment. A future card that gates
+    // connector tools will change this fixture on purpose.
+    expect(
+      evaluate(RULES, { name: 'mcp.c0123456789.send_message', input: {} }),
+    ).toEqual({
+      verdict: 'allow',
+      ruleId: null,
+      capability: null,
+      irreversible: false,
+      effect: [],
+    });
+  });
+
   it('does not match a predicate against a non-primitive field', () => {
     expect(
       evaluate(RULES, { name: 'gmail_send', input: { intent: { nested: 'scheduling' } } }),
