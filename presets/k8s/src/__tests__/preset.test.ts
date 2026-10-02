@@ -639,12 +639,14 @@ describe('@ax/preset-k8s wiring', () => {
     // "may this user's model key stay unlocked?" and books what it measured.
     // Neither can be used to read or write another plugin's rows, and nothing
     // else about usage is callable from outside.
-    expect(usage!.manifest.registers).toEqual(['usage:provider-status', 'usage:provider-record']);
+    expect(usage!.manifest.registers).toEqual(['usage:provider-status', 'usage:provider-record', 'usage:check']);
     expect(usage!.manifest.subscribes).toEqual([
       'chat:start',
       'chat:resume',
       'chat:turn-end',
       'llm:usage',
+      'chat:turn-error',
+      'chat:end',
     ]);
 
     // Every hard call is registered by some OTHER plugin in the preset: the
@@ -1805,6 +1807,7 @@ describe('createK8sPlugins — title + host-LLM-tools plugins', () => {
       expect(llm).toBeDefined();
       expect(llm!.manifest.optionalCalls).toEqual([
         expect.objectContaining({ hook: 'credentials:get' }),
+        expect.objectContaining({ hook: 'usage:check' }),
       ]);
     },
   );

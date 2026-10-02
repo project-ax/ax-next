@@ -15,6 +15,8 @@ import type { AgentContext, HookBus } from '@ax/core';
 export interface UsageLimits {
   /** Estimated spend per user over a rolling 24 hours, in USD. */
   dailySpendUsd: number;
+  /** Estimated spend across all users over a rolling 24 hours. */
+  fleetDailySpendUsd: number;
   /** Turns per user per rolling hour. */
   turnsPerHour: number;
   /** Charged for a turn whose loop reported no usage, in USD. */
@@ -23,6 +25,7 @@ export interface UsageLimits {
 
 export const DEFAULT_LIMITS: Readonly<UsageLimits> = Object.freeze({
   dailySpendUsd: 5,
+  fleetDailySpendUsd: 100,
   turnsPerHour: 60,
   assumedTurnCostUsd: 0.25,
 });
@@ -31,6 +34,7 @@ export const LIMITS_STORAGE_KEY = 'settings:usage-limits';
 
 const FIELD_SCHEMAS = {
   dailySpendUsd: z.number().finite().min(0.01).max(10_000),
+  fleetDailySpendUsd: z.number().finite().min(0.01).max(1_000_000),
   turnsPerHour: z.number().int().min(1).max(100_000),
   assumedTurnCostUsd: z.number().finite().min(0).max(100),
 } as const;
@@ -38,6 +42,7 @@ const FIELD_SCHEMAS = {
 export const UsageLimitsSchema = z
   .object({
     dailySpendUsd: FIELD_SCHEMAS.dailySpendUsd,
+    fleetDailySpendUsd: FIELD_SCHEMAS.fleetDailySpendUsd,
     turnsPerHour: FIELD_SCHEMAS.turnsPerHour,
     assumedTurnCostUsd: FIELD_SCHEMAS.assumedTurnCostUsd,
   })
@@ -75,11 +80,15 @@ export function createLimitsStore(opts: {
     try {
       raw = JSON.parse(new TextDecoder().decode(bytes));
     } catch {
-      ctx.logger.warn('usage_limits_setting_corrupt', { key: LIMITS_STORAGE_KEY });
+      ctx.logger.warn('usage_limits_setting_corrupt', {
+        key: LIMITS_STORAGE_KEY,
+      });
       return out;
     }
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-      ctx.logger.warn('usage_limits_setting_corrupt', { key: LIMITS_STORAGE_KEY });
+      ctx.logger.warn('usage_limits_setting_corrupt', {
+        key: LIMITS_STORAGE_KEY,
+      });
       return out;
     }
     const rec = raw as Record<string, unknown>;

@@ -1,3 +1,5 @@
+import { UsagePricesCard } from './UsagePricesCard';
+import { UsageOverrideEditor } from './UsageOverrideEditor';
 /**
  * UsageTab — admin-only "Usage and limits" (TASK-692).
  *
@@ -14,23 +16,12 @@
  * cards. Card titles carry `role="heading"` (level 2) so the outline stays
  * h1 → h2 without the `h5` that `AlertTitle` would add (see TASK-446).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from '@/components/ui/empty';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -95,6 +86,7 @@ interface PauseTarget {
 
 export function UsageTab() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const [overrideUserId, setOverrideUserId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   // A problem with a re-read (as opposed to the first read): the numbers on
   // screen are still there, but they may be out of date, and we say so.
@@ -166,7 +158,9 @@ export function UsageTab() {
   }, [load]);
 
   const changeReport = (update: (r: UsageReport) => UsageReport) =>
-    setState((prev) => (prev.kind === 'ready' ? { kind: 'ready', report: update(prev.report) } : prev));
+    setState((prev) =>
+      prev.kind === 'ready' ? { kind: 'ready', report: update(prev.report) } : prev,
+    );
 
   const changeUser = (userId: string, update: (u: UsageUser, limits: UsageLimits) => UsageUser) =>
     changeReport((r) => ({
@@ -188,7 +182,11 @@ export function UsageTab() {
     try {
       const { suspended, interrupted } = await suspendUser(pauseTarget.userId, note);
       supersedeReads();
-      changeUser(pauseTarget.userId, (u) => ({ ...u, status: 'suspended', suspended }));
+      changeUser(pauseTarget.userId, (u) => ({
+        ...u,
+        status: 'suspended',
+        suspended,
+      }));
       setPauseOpen(false);
       toastActions.show({
         title:
@@ -217,10 +215,13 @@ export function UsageTab() {
       supersedeReads();
       changeUser(u.userId, (row, limits) => ({
         ...row,
-        status: statusWithoutPause(row, limits),
+        status: statusWithoutPause(row, row.limits ?? limits),
         suspended: null,
       }));
-      toastActions.show({ title: `Resumed agents for ${label}.`, kind: 'info' });
+      toastActions.show({
+        title: `Resumed agents for ${label}.`,
+        kind: 'info',
+      });
       // Whether they are also close to a limit is the server's call.
       void load('again');
     } catch (err) {
@@ -255,9 +256,21 @@ export function UsageTab() {
     <div className="max-w-[960px] mx-auto flex flex-col gap-6 font-sans">
       <UsageLimitsCard
         limits={report?.limits ?? null}
-        onSaved={(limits) => changeReport((r) => ({ ...r, limits }))}
+        onSaved={(limits) => {
+          supersedeReads();
+          changeReport((r) => ({ ...r, limits }));
+          void load('again');
+        }}
       />
 
+      {report?.fleetBlocked && (
+        <Alert variant="destructive">
+          <AlertDescription>
+            The workspace has reached its daily spend limit. New model calls are paused for everyone
+            until usage frees up or an admin raises the limit.
+          </AlertDescription>
+        </Alert>
+      )}
       <Card>
         <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
           <div className="flex flex-col gap-1.5">
@@ -326,27 +339,46 @@ export function UsageTab() {
                 </TableHeader>
                 <TableBody>
                   {report.users.map((u) => (
-                    <UsageRow
-                      key={u.userId}
-                      user={u}
-                      limits={report.limits}
-                      busy={busyUserId === u.userId}
-                      onPause={() => openPause(u)}
-                      onResume={() => void resume(u)}
-                    />
+                    <Fragment key={u.userId}>
+                      <UsageRow
+                        key={u.userId}
+                        user={u}
+                        limits={u.limits ?? report.limits}
+                        busy={busyUserId === u.userId}
+                        onPause={() => openPause(u)}
+                        onResume={() => void resume(u)}
+                        onEditLimits={() => setOverrideUserId(u.userId)}
+                      />
+                    </Fragment>
                   ))}
                 </TableBody>
               </Table>
+              {report.users.filter((u) => u.userId === overrideUserId).map((u) => (
+                <UsageOverrideEditor key={u.userId} user={u}
+                  onCancel={() => setOverrideUserId(null)}
+                  onSaved={() => { supersedeReads(); setOverrideUserId(null); void load('again'); }} />
+              ))}
               {report.truncated && (
-                <p className="text-sm text-muted-foreground">
-                  Showing the 200 biggest users.
-                </p>
+                <p className="text-sm text-muted-foreground">Showing the 200 biggest users.</p>
               )}
             </>
           )}
         </CardContent>
       </Card>
 
+      {report && (
+        <UsagePricesCard
+          prices={report.prices ?? []}
+          onSaved={(prices) => {
+            supersedeReads();
+            changeReport((r) => ({ ...r, prices }));
+          }}
+        />
+      )}
+      <p className="text-sm text-muted-foreground">
+        Pausing a person stops new model calls and tries to stop running tasks. A tool action they
+        already approved can still finish on the host.
+      </p>
       <PauseAgentsDialog
         open={pauseOpen}
         personLabel={pauseTarget?.label ?? ''}
@@ -365,9 +397,10 @@ interface UsageRowProps {
   busy: boolean;
   onPause: () => void;
   onResume: () => void;
+  onEditLimits: () => void;
 }
 
-function UsageRow({ user, limits, busy, onPause, onResume }: UsageRowProps) {
+function UsageRow({ user, limits, busy, onPause, onResume, onEditLimits }: UsageRowProps) {
   const label = personLabel(user);
   const subline = personSubline(user);
   const share = shareOfLimit(user.spendUsd, limits.dailySpendUsd);
@@ -394,37 +427,48 @@ function UsageRow({ user, limits, busy, onPause, onResume }: UsageRowProps) {
       </TableCell>
       <TableCell className="align-top">
         <div className="flex flex-col items-start gap-1">
-          <Badge variant={STATUS_VARIANT.get(user.status) ?? 'outline'} className="whitespace-nowrap">
+          <Badge
+            variant={STATUS_VARIANT.get(user.status) ?? 'outline'}
+            className="whitespace-nowrap"
+          >
             {statusLabel(user.status)}
           </Badge>
           {paused && note !== null && note.length > 0 && (
-            <div className="max-w-[16rem] text-xs text-muted-foreground break-words">
-              {note}
-            </div>
+            <div className="max-w-[16rem] text-xs text-muted-foreground break-words">{note}</div>
           )}
         </div>
       </TableCell>
       <TableCell className="align-top text-right">
-        {paused ? (
+        <div className="flex justify-end gap-2">
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
-            disabled={busy}
-            aria-label={`Resume agents for ${label}`}
-            onClick={onResume}
+            aria-label={`Edit limits for ${label}`}
+            onClick={onEditLimits}
           >
-            {busy ? 'Resuming…' : 'Resume'}
+            Edit limits
           </Button>
-        ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            aria-label={`Pause agents for ${label}`}
-            onClick={onPause}
-          >
-            Pause agents
-          </Button>
-        )}
+          {paused ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              aria-label={`Resume agents for ${label}`}
+              onClick={onResume}
+            >
+              {busy ? 'Resuming…' : 'Resume'}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={`Pause agents for ${label}`}
+              onClick={onPause}
+            >
+              Pause agents
+            </Button>
+          )}
+        </div>
       </TableCell>
     </TableRow>
   );

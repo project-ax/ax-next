@@ -91,3 +91,29 @@ describe('@ax/llm-openrouter reports usage on llm:usage', () => {
     expect(out.text).toBe('hello back');
   });
 });
+
+describe('spend circuit breaker (TASK-716)', () => {
+  it.each(['blocked', 'unavailable'])(
+    'makes no provider call when the usage gate is %s',
+    async (mode) => {
+      let calls = 0;
+      const { bus, seen } = await boot((async () => {
+        calls++;
+        return new Response(JSON.stringify(OK_BODY));
+      }) as typeof fetch);
+      bus.registerService('usage:check', 'test-limit', async () => {
+        if (mode === 'unavailable') throw new Error('database down');
+        return { blocked: true, reason: 'usage-limit-fleet' };
+      });
+      await expect(
+        bus.call(
+          'llm:call:openrouter',
+          makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' }),
+          INPUT,
+        ),
+      ).rejects.toBeInstanceOf(PluginError);
+      expect(calls).toBe(0);
+      expect(seen).toEqual([]);
+    },
+  );
+});

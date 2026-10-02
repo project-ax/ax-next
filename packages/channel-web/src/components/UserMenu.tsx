@@ -1,3 +1,4 @@
+import { PersonalUsageLine } from './PersonalUsageLine';
 /**
  * UserMenu — popover at the bottom of the sidebar.
  *
@@ -154,6 +155,7 @@ export function UserMenu({
               </div>
             </div>
           </div>
+          <PersonalUsageLine />
           <DropdownMenuItem
             className="gap-2.5 px-2.5 py-2 text-[12.5px] [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
             onSelect={() => onOpenAdminSettings?.()}

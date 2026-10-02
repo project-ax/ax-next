@@ -47,11 +47,10 @@ export async function requireAdmin(
 ): Promise<AuthedUser | null> {
   let actor: AuthedUser;
   try {
-    const result = await bus.call<{ req: RouteRequest }, { user: { id: string; isAdmin: boolean } }>(
-      'auth:require-user',
-      ctx,
-      { req },
-    );
+    const result = await bus.call<
+      { req: RouteRequest },
+      { user: { id: string; isAdmin: boolean } }
+    >('auth:require-user', ctx, { req });
     actor = { id: result.user.id, isAdmin: result.user.isAdmin };
   } catch (err) {
     if (err instanceof PluginError || isRejection(err)) {
@@ -71,8 +70,8 @@ export type ParseBodyResult =
   | { ok: true; value: unknown }
   | { ok: false; status: 400 | 413; message: string };
 
-export function parseRequestBody(body: Buffer): ParseBodyResult {
-  if (body.length > USAGE_BODY_MAX_BYTES) {
+export function parseRequestBody(body: Buffer, maxBytes = USAGE_BODY_MAX_BYTES): ParseBodyResult {
+  if (body.length > maxBytes) {
     return { ok: false, status: 413, message: 'body-too-large' };
   }
   if (body.length === 0) return { ok: true, value: {} };

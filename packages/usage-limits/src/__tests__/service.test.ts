@@ -46,6 +46,11 @@ function setup(
   const order: string[] = [];
   const admits: string[] = [];
   const store = {
+    async getUserLimits() { return null; },
+    async settleTurn({ userId, usage }: { userId: string; usage: RecordedUsage }) {
+      if (opts.recordThrows) throw new Error('db down');
+      recorded.push({ userId, usage });
+    },
     async admit({ userId }: { userId: string }) {
       if (opts.admitThrows) throw new Error('db down');
       admits.push(userId);

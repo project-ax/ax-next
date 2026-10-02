@@ -39,7 +39,7 @@ function headersOf(call: Captured): Record<string, string> {
 const REPORT: UsageReport = {
   windowHours: 24,
   truncated: false,
-  limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 },
+  limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 },
   totals: { turns: 3, spendUsd: 1.5, users: 1 },
   users: [
     {
@@ -98,7 +98,7 @@ describe('fetchUsage', () => {
 
 describe('putUsageLimits', () => {
   it('PUTs the two limits with the CSRF header and credentials, and returns the saved limits', async () => {
-    const saved = { dailySpendUsd: 12.5, turnsPerHour: 90, assumedTurnCostUsd: 0.25 };
+    const saved = { dailySpendUsd: 12.5, turnsPerHour: 90, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 };
     const { calls } = stubFetch(200, { limits: saved });
 
     await expect(

@@ -4,6 +4,12 @@ import { costMicros } from '../pricing.js';
 const M = 1_000_000;
 
 describe('costMicros', () => {
+  it('uses one Claude override for bare, Anthropic and OpenRouter-prefixed reports', () => {
+    const prices = [{ model: 'openrouter/anthropic/claude-sonnet-test', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cacheReadUsdPerMillion: 0.1, cacheWriteUsdPerMillion: 1.25 }];
+    for (const model of ['claude-sonnet-test', 'anthropic/claude-sonnet-test', 'openrouter/anthropic/claude-sonnet-test']) {
+      expect(costMicros(model, { inputTokens: M, outputTokens: 0 }, prices)).toBe(M);
+    }
+  });
   it('prices opus at {15, 75} per million in/out', () => {
     expect(costMicros('anthropic/claude-opus-4-1', { inputTokens: M, outputTokens: 0 })).toBe(15 * M);
     expect(costMicros('anthropic/claude-opus-4-1', { inputTokens: 0, outputTokens: M })).toBe(75 * M);

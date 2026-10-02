@@ -22,7 +22,7 @@ function makeKysely(max = 10): Kysely<UsageLimitsDatabase> {
   });
 }
 
-const LIMITS: UsageLimits = { dailySpendUsd: 1, turnsPerHour: 5, assumedTurnCostUsd: 0.25 };
+const LIMITS: UsageLimits = { dailySpendUsd: 1, turnsPerHour: 5, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 };
 const NOW = new Date('2026-09-29T12:30:30.000Z');
 const minutes = (n: number) => n * 60_000;
 const ago = (ms: number) => new Date(NOW.getTime() - ms);
@@ -46,7 +46,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  await sql`TRUNCATE usage_limits_v1_buckets, usage_limits_v1_suspensions`.execute(db);
+  await sql`TRUNCATE usage_limits_v1_buckets, usage_limits_v1_suspensions, usage_limits_v1_turns, usage_limits_v1_user_limits`.execute(db);
 });
 
 afterAll(async () => {

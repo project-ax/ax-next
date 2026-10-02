@@ -40,7 +40,11 @@ const DAY_MS = 24 * HOUR_MS;
  */
 export const PROVIDER_CEILING_MULTIPLE = 2;
 
-export type AdmitRefusal = 'usage-suspended' | 'usage-limit-daily' | 'usage-limit-rate';
+export type AdmitRefusal =
+  | 'usage-suspended'
+  | 'usage-limit-daily'
+  | 'usage-limit-rate'
+  | 'usage-limit-fleet';
 export type AdmitResult = { ok: true } | { ok: false; reason: AdmitRefusal };
 
 /**
@@ -52,7 +56,11 @@ export type ProviderVerdict =
   | { blocked: false }
   | {
       blocked: true;
-      reason: 'usage-suspended' | 'usage-limit-daily' | 'usage-check-unavailable';
+      reason:
+        | 'usage-suspended'
+        | 'usage-limit-daily'
+        | 'usage-limit-fleet'
+        | 'usage-check-unavailable';
     };
 
 /** The spend expression above, as an aggregate over a user's buckets. */
@@ -93,9 +101,31 @@ export interface UsageSummary {
   truncated: boolean;
 }
 
+export interface UserLimits {
+  dailySpendUsd?: number;
+  turnsPerHour?: number;
+}
+
 export interface UsageStore {
+  getUserLimits(userId: string): Promise<UserLimits | null>;
+  setUserLimits(userId: string, overrides: UserLimits | null): Promise<void>;
+  userSummary(input: { userId: string; now: Date }): Promise<UserUsageSummary>;
+  fleetSpend(now: Date): Promise<number>;
+  /** Atomic completion of an admitted turn, ignoring duplicate/error-after-success events. */
+  settleTurn(input: {
+    userId: string;
+    reqId: string;
+    usage: RecordedUsage;
+    now: Date;
+    allowUnadmitted?: boolean;
+  }): Promise<void>;
   /** Gate a new turn: refuse at 1x the daily limit, else count it. */
-  admit(input: { userId: string; limits: UsageLimits; now: Date }): Promise<AdmitResult>;
+  admit(input: {
+    userId: string;
+    limits: UsageLimits;
+    now: Date;
+    reqId?: string;
+  }): Promise<AdmitResult>;
   /** Runner-reported turn usage: tokens, and the cost into `cost_micros`. */
   record(input: { userId: string; usage: RecordedUsage; now: Date }): Promise<void>;
   /** A host-side helper call: tokens as `record`, but the cost into `helper_cost_micros`. */
@@ -111,10 +141,19 @@ export interface UsageStore {
    * no advisory lock and never counts a turn, because the proxy asks on every
    * provider call.
    */
-  providerStatus(input: { userId: string; limits: UsageLimits; now: Date }): Promise<ProviderVerdict>;
+  providerStatus(input: {
+    userId: string;
+    limits: UsageLimits;
+    now: Date;
+  }): Promise<ProviderVerdict>;
   summary(input: { now: Date; limit?: number; limits: UsageLimits }): Promise<UsageSummary>;
   getSuspension(userId: string): Promise<Suspension | null>;
-  suspend(input: { userId: string; by: string; note: string | null; now: Date }): Promise<Suspension>;
+  suspend(input: {
+    userId: string;
+    by: string;
+    note: string | null;
+    now: Date;
+  }): Promise<Suspension>;
   resume(userId: string): Promise<void>;
   prune(olderThan: Date): Promise<number>;
 }
@@ -183,9 +222,104 @@ async function addToBucket(
     .execute();
 }
 
+async function fleetSpend(connection: Kysely<UsageLimitsDatabase>, now: Date): Promise<number> {
+  const start = floorToMinute(now.getTime() - DAY_MS);
+  // Compare the two measurements PER USER, then sum. Comparing fleet
+  // totals would let one user's missing runner report hide another's calls.
+  const result = await sql<{ spend: string }>`
+        SELECT COALESCE(SUM(spend), 0) AS spend FROM (
+          SELECT ${SPEND_MICROS_SQL} AS spend FROM usage_limits_v1_buckets
+          WHERE bucket_start >= ${start} GROUP BY user_id
+        ) users
+      `.execute(connection);
+  return num(result.rows[0]?.spend);
+}
+
 export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
   return {
-    async admit({ userId, limits, now }) {
+    async getUserLimits(userId) {
+      const row = await db
+        .selectFrom('usage_limits_v1_user_limits')
+        .selectAll()
+        .where('user_id', '=', userId)
+        .executeTakeFirst();
+      return row === undefined
+        ? null
+        : {
+            ...(row.daily_spend_usd === null ? {} : { dailySpendUsd: Number(row.daily_spend_usd) }),
+            ...(row.turns_per_hour === null ? {} : { turnsPerHour: row.turns_per_hour }),
+          };
+    },
+    async setUserLimits(userId, overrides) {
+      if (overrides === null) {
+        await db.deleteFrom('usage_limits_v1_user_limits').where('user_id', '=', userId).execute();
+        return;
+      }
+      const values = {
+        user_id: userId,
+        daily_spend_usd: overrides.dailySpendUsd ?? null,
+        turns_per_hour: overrides.turnsPerHour ?? null,
+      };
+      await db
+        .insertInto('usage_limits_v1_user_limits')
+        .values(values)
+        .onConflict((oc) => oc.column('user_id').doUpdateSet(values))
+        .execute();
+    },
+    async userSummary({ userId, now }) {
+      const dayStart = floorToMinute(now.getTime() - DAY_MS);
+      const hourStart = floorToMinute(now.getTime() - HOUR_MS);
+      const result = await sql<{
+        spend: string;
+        turns_hour: string;
+        turns_day: string;
+      }>`
+        SELECT ${SPEND_MICROS_SQL} AS spend, COALESCE(SUM(turns),0) AS turns_day,
+          COALESCE(SUM(turns) FILTER (WHERE bucket_start >= ${hourStart}),0) AS turns_hour
+        FROM usage_limits_v1_buckets WHERE user_id = ${userId} AND bucket_start >= ${dayStart}
+      `.execute(db);
+      const row = result.rows[0];
+      return {
+        userId,
+        spendMicros: num(row?.spend),
+        turnsLastHour: num(row?.turns_hour),
+        turnsLast24h: num(row?.turns_day),
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        suspended: await this.getSuspension(userId),
+      };
+    },
+    async fleetSpend(now) {
+      return fleetSpend(db, now);
+    },
+    async settleTurn({ userId, reqId, usage, now, allowUnadmitted = false }) {
+      await db.transaction().execute(async (trx) => {
+        if (allowUnadmitted) {
+          await trx
+            .insertInto('usage_limits_v1_turns')
+            .values({ user_id: userId, request_id: reqId, admitted_at: now })
+            .onConflict((oc) => oc.columns(['user_id', 'request_id']).doNothing())
+            .execute();
+        }
+        const claimed = await trx
+          .updateTable('usage_limits_v1_turns')
+          .set({ settled: true })
+          .where('user_id', '=', userId)
+          .where('request_id', '=', reqId)
+          .where('settled', '=', false)
+          .returning('request_id')
+          .executeTakeFirst();
+        if (claimed)
+          await addToBucket(trx, userId, now, {
+            ...usage,
+            providerCostMicros: 0,
+            helperCostMicros: 0,
+          });
+      });
+    },
+    async admit({ userId, limits, now, reqId }) {
       const t = now.getTime();
       const dayStart = floorToMinute(t - DAY_MS);
       const hourStart = floorToMinute(t - HOUR_MS);
@@ -207,7 +341,10 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
           .executeTakeFirst();
         if (suspended !== undefined) return { ok: false, reason: 'usage-suspended' } as const;
 
-        const sums = await sql<{ spend: string | null; turns_hour: string | null }>`
+        const sums = await sql<{
+          spend: string | null;
+          turns_hour: string | null;
+        }>`
           SELECT
             ${SPEND_MICROS_SQL} AS spend,
             SUM(turns) FILTER (WHERE bucket_start >= ${hourStart}) AS turns_hour
@@ -215,11 +352,24 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
           WHERE user_id = ${userId} AND bucket_start >= ${dayStart}
         `.execute(trx);
         const row = sums.rows[0];
-        if (num(row?.spend) >= capMicros) return { ok: false, reason: 'usage-limit-daily' } as const;
+        if (num(row?.spend) >= capMicros)
+          return { ok: false, reason: 'usage-limit-daily' } as const;
         if (num(row?.turns_hour) >= limits.turnsPerHour) {
           return { ok: false, reason: 'usage-limit-rate' } as const;
         }
 
+        if ((await fleetSpend(trx, now)) >= Math.round(limits.fleetDailySpendUsd * 1_000_000)) {
+          return { ok: false, reason: 'usage-limit-fleet' } as const;
+        }
+        if (reqId !== undefined) {
+          const row = await trx
+            .insertInto('usage_limits_v1_turns')
+            .values({ user_id: userId, request_id: reqId, admitted_at: now })
+            .onConflict((oc) => oc.columns(['user_id', 'request_id']).doNothing())
+            .returning('request_id')
+            .executeTakeFirst();
+          if (!row) return { ok: true } as const;
+        }
         await trx
           .insertInto('usage_limits_v1_buckets')
           .values({ user_id: userId, bucket_start: bucket, turns: 1 })
@@ -288,6 +438,9 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
       if (num(res.rows[0]?.spend) >= ceilingMicros) {
         return { blocked: true, reason: 'usage-limit-daily' };
       }
+      if ((await this.fleetSpend(now)) >= Math.round(limits.fleetDailySpendUsd * 1_000_000)) {
+        return { blocked: true, reason: 'usage-limit-fleet' };
+      }
       return { blocked: false };
     },
 
@@ -332,7 +485,7 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
         ),
         merged AS (
           SELECT
-            COALESCE(u.user_id, s.user_id) AS user_id,
+            COALESCE(u.user_id, s.user_id, l.user_id) AS user_id,
             COALESCE(u.turns_hour, 0) AS turns_hour,
             COALESCE(u.turns_day, 0) AS turns_day,
             COALESCE(u.input_tokens, 0) AS input_tokens,
@@ -345,6 +498,7 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
             s.note
           FROM usage u
           FULL OUTER JOIN usage_limits_v1_suspensions s ON s.user_id = u.user_id
+          FULL OUTER JOIN usage_limits_v1_user_limits l ON l.user_id = COALESCE(u.user_id, s.user_id)
         )
         SELECT
           m.*,
@@ -378,7 +532,11 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
           spendMicros: num(r.spend),
           suspended:
             r.suspended_at !== null && r.suspended_by !== null
-              ? { at: new Date(r.suspended_at), by: r.suspended_by, note: r.note }
+              ? {
+                  at: new Date(r.suspended_at),
+                  by: r.suspended_by,
+                  note: r.note,
+                }
               : null,
         })),
         totals,
@@ -393,7 +551,11 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
         .where('user_id', '=', userId)
         .executeTakeFirst();
       if (row === undefined) return null;
-      return { at: new Date(row.suspended_at), by: row.suspended_by, note: row.note };
+      return {
+        at: new Date(row.suspended_at),
+        by: row.suspended_by,
+        note: row.note,
+      };
     },
 
     async suspend({ userId, by, note, now }) {
@@ -409,7 +571,11 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
         )
         .returningAll()
         .executeTakeFirstOrThrow();
-      return { at: new Date(row.suspended_at), by: row.suspended_by, note: row.note };
+      return {
+        at: new Date(row.suspended_at),
+        by: row.suspended_by,
+        note: row.note,
+      };
     },
 
     async resume(userId) {
@@ -417,6 +583,7 @@ export function createUsageStore(db: Kysely<UsageLimitsDatabase>): UsageStore {
     },
 
     async prune(olderThan) {
+      await db.deleteFrom('usage_limits_v1_turns').where('admitted_at', '<', olderThan).execute();
       const res = await db
         .deleteFrom('usage_limits_v1_buckets')
         .where('bucket_start', '<', olderThan)

@@ -435,7 +435,7 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
 
   /** Write the limits the way an admin change lands (the storage key), then
    *  step the plugin's clock past its cache so the next admit reads it. */
-  async function setLimits(limits: typeof DEFAULT_LIMITS): Promise<void> {
+  async function setLimits(limits: typeof DEFAULT_LIMITS & { fleetDailySpendUsd?: number }): Promise<void> {
     await live().bus.call(
       'storage:set',
       makeAgentContext({ sessionId: 'canary', agentId: 'canary', userId: 'system' }),
@@ -487,7 +487,7 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
   });
 
   beforeEach(async () => {
-    await sql`TRUNCATE usage_limits_v1_buckets, usage_limits_v1_suspensions`.execute(await db());
+    await sql`TRUNCATE usage_limits_v1_buckets, usage_limits_v1_suspensions, usage_limits_v1_user_limits, usage_limits_v1_turns`.execute(await db());
     await setLimits(DEFAULT_LIMITS);
   });
 
@@ -503,6 +503,10 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
 
   it('boots with the admin routes mounted through http:register-route', () => {
     expect(live().mountedPaths).toEqual([
+      'GET /api/usage',
+      'PUT /admin/usage/users/:userId/limits',
+      'DELETE /admin/usage/users/:userId/limits',
+      'PUT /admin/usage/prices',
       'GET /admin/usage',
       'PUT /admin/usage/limits',
       'PUT /admin/usage/users/:userId/suspension',
@@ -572,6 +576,23 @@ describe('@ax/preset-k8s usage limits canary (stub runner + postgres)', () => {
     await sql`DELETE FROM usage_limits_v1_suspensions WHERE user_id = ${USER_E}`.execute(handle);
     await expectAdmitted(USER_E, meteredScript());
     await waitForCost(USER_E, SONNET_COST_MICROS);
+  });
+
+  it('charges a real runner that exits without turn-end usage', async () => {
+    const outcome = await runTurn(USER_D, {entries:[{kind:'assistant-text',content:'interrupted'}]});
+    expect(outcome.kind).toBe('terminated');
+    expect(await waitForCost(USER_D, ASSUMED_COST_MICROS)).toMatchObject({turns:1,costMicros:ASSUMED_COST_MICROS});
+  });
+
+  it('stops a different person through the real chat path when workspace spend reaches its cap', async () => {
+    await setLimits({ ...DEFAULT_LIMITS, fleetDailySpendUsd: 0.01 });
+    await expectAdmitted(USER_A, meteredScript());
+    await waitForCost(USER_A, SONNET_COST_MICROS);
+    await expectRefused(USER_B, 'chat:start:usage-limit-fleet');
+    expect((await usageFor(USER_B)).turns).toBe(0);
+    const ctx = makeAgentContext({sessionId:'canary',agentId:AGENT_ID,userId:USER_B});
+    expect(await live().bus.call('usage:check',ctx,{})).toEqual({blocked:true,reason:'usage-limit-fleet'});
+    expect(await live().bus.call('usage:provider-status',ctx,{})).toEqual({blocked:true,reason:'usage-limit-fleet'});
   });
 
   it('(f) the counter survives a restart: a brand-new kernel on the same database still refuses', async () => {

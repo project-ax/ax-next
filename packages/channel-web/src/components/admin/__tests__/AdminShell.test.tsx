@@ -84,7 +84,7 @@ function emptyResponse(url: string): Response {
       JSON.stringify({
         windowHours: 24,
         truncated: false,
-        limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 },
+        limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 },
         totals: { turns: 0, spendUsd: 0, users: 0 },
         users: [],
       }),

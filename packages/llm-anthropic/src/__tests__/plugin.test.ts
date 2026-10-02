@@ -56,6 +56,7 @@ describe('@ax/llm-anthropic plugin manifest', () => {
       version: '0.0.0',
       registers: ['llm:call:anthropic', 'models:list-supported:anthropic', 'models:list-available:anthropic'],
       calls: [],
+      optionalCalls: [expect.objectContaining({ hook: 'usage:check' })],
       subscribes: [],
     });
   });
@@ -332,10 +333,11 @@ describe('@ax/llm-anthropic credentialResolution mode', () => {
     const plugin = createLlmAnthropicPlugin({ credentialResolution: true });
     expect(plugin.manifest.optionalCalls).toEqual([
       expect.objectContaining({ hook: 'credentials:get' }),
+      expect.objectContaining({ hook: 'usage:check' }),
     ]);
     // Static-mode plugin keeps the lean manifest (no optionalCalls).
     const staticPlugin = createLlmAnthropicPlugin({ apiKey: 'k' });
-    expect(staticPlugin.manifest.optionalCalls).toBeUndefined();
+    expect(staticPlugin.manifest.optionalCalls).toEqual([expect.objectContaining({ hook: 'usage:check' })]);
   });
 
   it('init does NOT throw without a static key (key is resolved per-call)', async () => {

@@ -1013,6 +1013,29 @@ describe('the wire: the client sees what the provider sent, and the provider see
   });
 });
 
+describe('non-metered tunnel lifecycle (TASK-722)', () => {
+  it.each(['client EOF', 'idle timeout'])('releases both sockets after %s', async (cause) => {
+    let upstream: net.Socket | undefined;
+    const provider = await startUpstream(PROVIDER, (_req, _n, socket) => {
+      upstream = socket;
+      return 'silence';
+    });
+    const registry = new SharedCredentialRegistry();
+    const ph = registerSession(registry, 's1');
+    const { port, audits } = await start(registry, [session('s1', [PROVIDER])], {
+      meteredTunnelIdleMs: cause === 'idle timeout' ? 200 : 5000,
+    });
+    const inner = await openTunnel(port, PROVIDER, provider.port, tokenFor('s1'));
+    collect(inner);
+    send(inner, { headers: { 'x-api-key': ph }, body: MODEL_BODY });
+    await waitFor(() => provider.requests.length === 1, 'upstream request');
+    if (cause === 'client EOF') inner.end();
+    await waitFor(() => upstream?.destroyed === true, 'upstream socket released', 3000);
+    await waitFor(() => audits.filter((a) => a.status === 200).length === 1, 'one cleanup audit');
+    inner.destroy();
+  });
+});
+
 describe('scope: only the session that opted in, only its metered host', () => {
   it('a session with no meter is exactly what it was: spliced everywhere it is bound, nothing counted', async () => {
     const provider = await startUpstream(PROVIDER);

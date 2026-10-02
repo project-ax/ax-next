@@ -26,6 +26,8 @@ const writeHeaders = {
  * server re-checks, and is the authority.
  */
 export const USAGE_LIMIT_BOUNDS = {
+  fleetDailySpendUsd: { min: 0.01, max: 1_000_000 },
+  assumedTurnCostUsd: { min: 0, max: 100 },
   dailySpendUsd: { min: 0.01, max: 10_000 },
   /** Whole numbers only. */
   turnsPerHour: { min: 1, max: 100_000 },
@@ -36,6 +38,7 @@ export type UsageStatus = 'ok' | 'near-limit' | 'at-limit' | 'suspended';
 
 export interface UsageLimits {
   dailySpendUsd: number;
+  fleetDailySpendUsd: number;
   turnsPerHour: number;
   /** What the host charges for a turn that reports no usage. Read-only here. */
   assumedTurnCostUsd: number;
@@ -45,6 +48,8 @@ export interface UsageLimits {
 export interface UsageLimitsInput {
   dailySpendUsd: number;
   turnsPerHour: number;
+  fleetDailySpendUsd?: number;
+  assumedTurnCostUsd?: number;
 }
 
 export interface UsageSuspension {
@@ -68,6 +73,8 @@ export interface UsageUser {
   spendUsd: number;
   status: UsageStatus;
   suspended: UsageSuspension | null;
+  overrides?: UserLimitsInput | null;
+  limits?: UsageLimits;
 }
 
 export interface UsageReport {
@@ -77,6 +84,8 @@ export interface UsageReport {
   limits: UsageLimits;
   totals: { turns: number; spendUsd: number; users: number };
   users: UsageUser[];
+  prices?: ModelPrice[];
+  fleetBlocked?: boolean;
 }
 
 export interface SuspendResult {
@@ -136,9 +145,7 @@ export async function fetchUsage(): Promise<UsageReport> {
   return body as unknown as UsageReport;
 }
 
-export async function putUsageLimits(
-  input: UsageLimitsInput,
-): Promise<UsageLimits> {
+export async function putUsageLimits(input: UsageLimitsInput): Promise<UsageLimits> {
   const res = await fetch('/admin/usage/limits', {
     method: 'PUT',
     headers: writeHeaders,
@@ -148,6 +155,12 @@ export async function putUsageLimits(
     body: JSON.stringify({
       dailySpendUsd: input.dailySpendUsd,
       turnsPerHour: input.turnsPerHour,
+      ...(input.fleetDailySpendUsd === undefined
+        ? {}
+        : { fleetDailySpendUsd: input.fleetDailySpendUsd }),
+      ...(input.assumedTurnCostUsd === undefined
+        ? {}
+        : { assumedTurnCostUsd: input.assumedTurnCostUsd }),
     }),
   });
   if (!res.ok) throw await failure(res);
@@ -159,10 +172,7 @@ function suspensionUrl(userId: string): string {
   return `/admin/usage/users/${encodeURIComponent(userId)}/suspension`;
 }
 
-export async function suspendUser(
-  userId: string,
-  note?: string,
-): Promise<SuspendResult> {
+export async function suspendUser(userId: string, note?: string): Promise<SuspendResult> {
   const trimmed = note?.trim() ?? '';
   const res = await fetch(suspensionUrl(userId), {
     method: 'PUT',
@@ -181,4 +191,54 @@ export async function resumeUser(userId: string): Promise<void> {
     credentials: 'include',
   });
   if (!res.ok) throw await failure(res);
+}
+
+export interface UserLimitsInput {
+  dailySpendUsd?: number;
+  turnsPerHour?: number;
+}
+export interface ModelPrice {
+  model: string;
+  inputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+  cacheReadUsdPerMillion: number;
+  cacheWriteUsdPerMillion: number;
+}
+export async function putUserLimits(userId: string, input: UserLimitsInput | null): Promise<void> {
+  const res = await fetch(`/admin/usage/users/${encodeURIComponent(userId)}/limits`, {
+    method: input === null ? 'DELETE' : 'PUT',
+    credentials: 'include',
+    headers: writeHeaders,
+    ...(input === null ? {} : { body: JSON.stringify(input) }),
+  });
+  if (!res.ok) throw await failure(res);
+}
+export async function putModelPrices(prices: ModelPrice[]): Promise<ModelPrice[]> {
+  const res = await fetch('/admin/usage/prices', {
+    method: 'PUT',
+    credentials: 'include',
+    headers: writeHeaders,
+    body: JSON.stringify({ prices }),
+  });
+  if (!res.ok) throw await failure(res);
+  return ((await res.json()) as { prices: ModelPrice[] }).prices;
+}
+export interface PersonalUsage {
+  spendUsd: number;
+  turnsLastHour: number;
+  limits: UsageLimits;
+  status: UsageStatus;
+}
+export async function fetchOwnUsage(): Promise<PersonalUsage> {
+  const res = await fetch('/api/usage', {
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) throw await failure(res);
+  const body: unknown = await res.json();
+  if (!isRecord(body) || !isRecord(body['limits']) ||
+      ![body['spendUsd'], body['turnsLastHour'], body['limits']['dailySpendUsd'], body['limits']['turnsPerHour']].every(v => typeof v === 'number' && Number.isFinite(v) && v >= 0)) {
+    throw new UsageHttpError(200, 'unexpected-response');
+  }
+  return body as unknown as PersonalUsage;
 }

@@ -152,9 +152,22 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
               degradation:
                 'the Anthropic key falls back to ANTHROPIC_API_KEY env / cfg.apiKey; if none, llm:call:anthropic errors per-call and best-effort callers (auto-titling) skip quietly',
             },
+            {
+              hook: 'usage:check',
+              degradation:
+                'Host helper model calls have no spend gate when usage limits are not installed.',
+            },
           ],
         }
-      : {}),
+      : {
+          optionalCalls: [
+            {
+              hook: 'usage:check',
+              degradation:
+                'Host helper model calls have no spend gate when usage limits are not installed.',
+            },
+          ],
+        }),
   };
   return {
     manifest,
@@ -284,6 +297,20 @@ async function callAndReportUsage(
   input: LlmCallInput,
   cfg: LlmAnthropicConfig,
 ): Promise<LlmCallOutput> {
+  if (bus.hasService('usage:check')) {
+    const verdict = await bus.call<Record<string, never>, { blocked: boolean; reason?: string }>(
+      'usage:check',
+      ctx,
+      {},
+    );
+    if (verdict.blocked)
+      throw new PluginError({
+        code: verdict.reason ?? 'usage-check-unavailable',
+        plugin: PLUGIN_NAME,
+        hookName: 'llm:call:anthropic',
+        message: 'Model usage is paused by the spend limit.',
+      });
+  }
   const out = await callWithRetry(client, input, cfg);
   await fireLlmUsage(bus, ctx, {
     model: `anthropic/${input.model ?? cfg.defaultModel ?? DEFAULT_MODEL}`,

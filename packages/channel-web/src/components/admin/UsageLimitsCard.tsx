@@ -1,5 +1,5 @@
 /**
- * The "Limits" card on the Usage tab: the two numbers every person is held to.
+ * The "Limits" card on the Usage tab: workspace protection and defaults for each person.
  *
  * The form mirrors the server's bounds so a typo gets a sentence at the field
  * rather than a refusal after the fact; the server re-checks and is the
@@ -20,26 +20,12 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-} from '@/components/ui/field';
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toastActions } from '@/lib/toast-store';
-import {
-  USAGE_LIMIT_BOUNDS,
-  putUsageLimits,
-  type UsageLimits,
-} from '@/lib/usage-admin';
-import {
-  DAILY_LIMIT_INVALID,
-  TURNS_LIMIT_INVALID,
-  failureMessage,
-} from '@/lib/usage-copy';
+import { USAGE_LIMIT_BOUNDS, putUsageLimits, type UsageLimits } from '@/lib/usage-admin';
+import { DAILY_LIMIT_INVALID, TURNS_LIMIT_INVALID, failureMessage } from '@/lib/usage-copy';
 
 const DAILY = USAGE_LIMIT_BOUNDS.dailySpendUsd;
 const TURNS = USAGE_LIMIT_BOUNDS.turnsPerHour;
@@ -66,6 +52,8 @@ function dailyText(n: number): string {
 interface Draft {
   daily: string;
   turns: string;
+  fleet: string;
+  assumed: string;
 }
 
 export interface UsageLimitsCardProps {
@@ -89,6 +77,14 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
   const dailyValue = draft?.daily ?? (limits ? dailyText(limits.dailySpendUsd) : '');
   const turnsValue = draft?.turns ?? (limits ? String(limits.turnsPerHour) : '');
 
+  const fleetValue = draft?.fleet ?? (limits ? dailyText(limits.fleetDailySpendUsd) : '');
+  const assumedValue = draft?.assumed ?? (limits ? dailyText(limits.assumedTurnCostUsd) : '');
+  const fleet = fleetValue.trim() === '' ? null : Number(fleetValue);
+  const assumed = assumedValue.trim() === '' ? null : Number(assumedValue);
+  const fleetValid =
+    fleet !== null && Number.isFinite(fleet) && fleet >= 0.01 && fleet <= 1_000_000;
+  const assumedValid =
+    assumed !== null && Number.isFinite(assumed) && assumed >= 0 && assumed <= 100;
   const daily = parseDaily(dailyValue);
   const turns = parseTurns(turnsValue);
   // A field can only be wrong once it has been edited: saved values are valid.
@@ -98,12 +94,23 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
     limits !== null &&
     daily !== null &&
     turns !== null &&
-    (daily !== limits.dailySpendUsd || turns !== limits.turnsPerHour);
+    fleetValid &&
+    assumedValid &&
+    (daily !== limits.dailySpendUsd ||
+      turns !== limits.turnsPerHour ||
+      fleet !== limits.fleetDailySpendUsd ||
+      assumed !== limits.assumedTurnCostUsd);
 
   const edit = (patch: Partial<Draft>) => {
     if (limits === null) return;
     setSaveError(null);
-    setDraft({ daily: dailyValue, turns: turnsValue, ...patch });
+    setDraft({
+      daily: dailyValue,
+      turns: turnsValue,
+      fleet: fleetValue,
+      assumed: assumedValue,
+      ...patch,
+    });
   };
 
   const save = async (e: FormEvent) => {
@@ -116,12 +123,14 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
       const saved = await putUsageLimits({
         dailySpendUsd: daily,
         turnsPerHour: turns,
+        fleetDailySpendUsd: fleet!,
+        assumedTurnCostUsd: assumed!,
       });
       setDraft(null);
       onSaved(saved);
       toastActions.show({
         title: 'Limits saved',
-        detail: 'Everyone now gets these limits.',
+        detail: 'Default limits updated. Individual overrides still apply.',
         kind: 'info',
       });
     } catch (err) {
@@ -143,7 +152,7 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
             Limits
           </CardTitle>
           <CardDescription>
-            Everyone gets the same two limits. You can change them any time.
+            Set workspace-wide protection and the default limits for each person.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
@@ -154,6 +163,33 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
             </div>
           ) : (
             <FieldGroup>
+              <Field
+                className="max-w-sm"
+                data-invalid={(draft !== null && !fleetValid) || undefined}
+              >
+                <FieldLabel htmlFor="usage-fleet-limit">
+                  Daily spend limit for the whole workspace (USD)
+                </FieldLabel>
+                <Input
+                  id="usage-fleet-limit"
+                  type="number"
+                  inputMode="decimal"
+                  min={0.01}
+                  max={1_000_000}
+                  step="0.01"
+                  value={fleetValue}
+                  onChange={(e) => edit({ fleet: e.target.value })}
+                  aria-invalid={(draft !== null && !fleetValid) || undefined}
+                  aria-describedby="usage-fleet-help"
+                />
+                <FieldDescription id="usage-fleet-help">
+                  At this total across all people over a rolling 24 hours, new model calls pause for
+                  everyone. Calls already running may finish and add spend.
+                </FieldDescription>
+                {draft !== null && !fleetValid && (
+                  <FieldError>Enter an amount between $0.01 and $1,000,000.</FieldError>
+                )}
+              </Field>
               <Field className="max-w-sm" data-invalid={dailyInvalid || undefined}>
                 <FieldLabel htmlFor="usage-daily-limit">
                   Daily spend limit per person (USD)
@@ -175,22 +211,19 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   }
                 />
                 <FieldDescription id="usage-daily-limit-help">
-                  We estimate spend from how much each person's agents use, over
-                  a rolling 24 hours. It's a safety limit, not a bill: models we
-                  don't recognize are counted at a high rate. At the limit,
-                  their next message waits until usage frees up.
+                  We estimate spend from how much each person's agents use, over a rolling 24 hours.
+                  It's a safety limit, not a bill: models we don't recognize are counted at a high
+                  rate. At the limit, their next message waits until usage frees up. A running task
+                  can continue up to twice this amount before its next model call is blocked. The
+                  workspace limit can stop it sooner.
                 </FieldDescription>
                 {dailyInvalid && (
-                  <FieldError id="usage-daily-limit-error">
-                    {DAILY_LIMIT_INVALID}
-                  </FieldError>
+                  <FieldError id="usage-daily-limit-error">{DAILY_LIMIT_INVALID}</FieldError>
                 )}
               </Field>
 
               <Field className="max-w-sm" data-invalid={turnsInvalid || undefined}>
-                <FieldLabel htmlFor="usage-turns-limit">
-                  Messages per person per hour
-                </FieldLabel>
+                <FieldLabel htmlFor="usage-turns-limit">Messages per person per hour</FieldLabel>
                 <Input
                   id="usage-turns-limit"
                   type="number"
@@ -211,9 +244,34 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   Includes messages that scheduled routines send for them.
                 </FieldDescription>
                 {turnsInvalid && (
-                  <FieldError id="usage-turns-limit-error">
-                    {TURNS_LIMIT_INVALID}
-                  </FieldError>
+                  <FieldError id="usage-turns-limit-error">{TURNS_LIMIT_INVALID}</FieldError>
+                )}
+              </Field>
+              <Field
+                className="max-w-sm"
+                data-invalid={(draft !== null && !assumedValid) || undefined}
+              >
+                <FieldLabel htmlFor="usage-assumed-cost">
+                  Estimate for an unreported or interrupted turn (USD)
+                </FieldLabel>
+                <Input
+                  id="usage-assumed-cost"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={100}
+                  step="0.01"
+                  value={assumedValue}
+                  onChange={(e) => edit({ assumed: e.target.value })}
+                  aria-invalid={(draft !== null && !assumedValid) || undefined}
+                  aria-describedby="usage-assumed-help"
+                />
+                <FieldDescription id="usage-assumed-help">
+                  Used when a turn ends without reporting usage. If the credential proxy measured
+                  more, we use its larger estimate.
+                </FieldDescription>
+                {draft !== null && !assumedValid && (
+                  <FieldError>Enter an amount between $0 and $100.</FieldError>
                 )}
               </Field>
             </FieldGroup>
