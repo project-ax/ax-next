@@ -14,11 +14,15 @@
  * The notice lands in the user-role slot, so it wears the same fixed label as
  * a host-started decision turn, and the host's reason goes through the same
  * sanitizer: flattened to one line, so nothing inside it can forge a line that
- * looks like it came from somewhere else.
+ * looks like it came from somewhere else. Unlike the decision note, though,
+ * this reason is NOT host constants: it is a `workspace:pre-apply` plugin's
+ * prose, and can embed text the model chose (validator-skill quotes the vetoed
+ * path). So it is also quoted, and any copy of the label inside it is
+ * replaced — the label appears once, where this module put it.
  *
- * The wording says the refused changes were UNDONE, never that every file was
- * removed: a scoped veto (TASK-287) resets `--mixed` and undoes only the paths
- * it refused, and this sentence must hold for both.
+ * The wording says SOME OR ALL of the changes were undone, never that every
+ * file was removed: a scoped veto (TASK-287) resets `--mixed` and undoes only
+ * the paths it refused, and this sentence must hold for both.
  */
 
 import { saveRefusedFrom, type CommitNotifyResult } from './commit-notify-resync.js';
@@ -34,19 +38,36 @@ const SYSTEM_PREFIX = 'System message (not from the user):';
  */
 export function saveRefusedNotice(result: CommitNotifyResult): string | undefined {
   if (saveRefusedFrom(result) === undefined) return undefined;
-  const reason = sanitizeDecisionNote(result.rejectionReason ?? '');
+  const reason = defuseLabel(sanitizeDecisionNote(result.rejectionReason ?? ''));
+  // "Some or all": a scoped veto undoes only the paths it refused, and the
+  // rest of the turn's work stays. "An earlier turn": a loop that pulls ahead
+  // can carry the notice a turn late (see run-runner's
+  // `pendingSaveRefusedNotice`).
   const head =
-    `${SYSTEM_PREFIX} The file changes from your previous turn were not saved. ` +
-    `The workspace refused them after that turn ended, and the refused changes ` +
-    `were undone, so they are no longer in the workspace.`;
-  // Host reasons are not required to end in a period; without one the advice
-  // below would run straight on from theirs.
-  const why =
-    reason.length > 0 ? ` Reason given: ${/[.!?…]$/.test(reason) ? reason : `${reason}.`}` : '';
+    `${SYSTEM_PREFIX} Some or all of the file changes you made in an earlier ` +
+    `turn were not saved. The workspace refused them after that turn ended, ` +
+    `and the refused changes were undone, so they are no longer in the workspace.`;
+  // Fenced as a quotation: the reason is a plugin's prose and can embed text
+  // the model itself chose (a vetoed file path, say), so it is presented as
+  // something quoted, never as more of this message.
+  const why = reason.length > 0 ? ` The workspace gave this reason (quoted): "${reason}"` : '';
   const advice =
     ` Check what is actually there before relying on those files, and do not ` +
     `write the same content again unchanged.`;
   return `${head}${why}${advice}`;
+}
+
+/**
+ * The label, matched loosely (any case, any whitespace run) — what forwarded
+ * text must never contain, or it could open a second "system message" inside
+ * this one. `sanitizeDecisionNote` has already flattened the line breaks and
+ * invisible characters that would otherwise slip between its words.
+ */
+const LABEL_RE = /system\s+message\s*\(\s*not\s+from\s+the\s+user\s*\)\s*:?/gi;
+
+/** Replace every copy of the label inside forwarded text with a marker. */
+function defuseLabel(text: string): string {
+  return text.replace(LABEL_RE, '[label removed]');
 }
 
 /**

@@ -1628,7 +1628,7 @@ describe('runRunner', () => {
   // The MODEL had stopped talking by then, so it hears about it at the start of
   // its NEXT turn — or it would carry on as if the files were saved.
   describe('refused save is told to the model next turn (TASK-732)', () => {
-    const NOTICE_HEAD = 'System message (not from the user): The file changes from your previous turn were not saved.';
+    const NOTICE_HEAD = 'System message (not from the user): Some or all of the file changes you made in an earlier turn were not saved.';
 
     /**
      * Turn 1's save gets `answer`; turns 2 and 3 save nothing. Returns what
@@ -1688,7 +1688,7 @@ describe('runRunner', () => {
       const content = (second as { content: unknown }).content;
       expect(typeof content).toBe('string');
       expect((content as string).startsWith(NOTICE_HEAD)).toBe(true);
-      expect(content as string).toContain('Reason given: The workspace is full.');
+      expect(content as string).toContain('"The workspace is full."');
       // The person's own words are still there, after the notice.
       expect((content as string).endsWith('\n\nand now?')).toBe(true);
     });
@@ -1732,6 +1732,59 @@ describe('runRunner', () => {
         const { second } = await threeTurns(answer);
         expect(second).toEqual({ content: 'and now?' });
       }
+    });
+
+    it('a message pulled AHEAD of the refused turn\'s close goes out bare; the notice rides the next one, even past an accepted save', async () => {
+      // The Claude Agent SDK pulls its next prompt while a turn streams
+      // (TASK-573), so turn 2's message can be built before turn 1's close
+      // learns the save was refused. The notice must not be lost — and an
+      // accepted save on turn 2 must not clear it: turn 1's files are still gone.
+      (commitTurnAndBundle as unknown as Mock)
+        .mockResolvedValueOnce(Buffer.from('BUNDLE-1')) // turn 1's close
+        .mockResolvedValueOnce(Buffer.from('BUNDLE-2')); // turn 2's close
+      const answers = [
+        { accepted: false, reason: 'no', recoverable: false }, // turn 1: refused
+        { accepted: true, version: 'v2', delta: null }, // turn 2: accepted
+      ];
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
+        async () => answers.shift(),
+      );
+      scriptInbox([
+        { type: 'user-message', payload: { role: 'user', content: 'write it' }, reqId: 'req-1', cursor: 1 },
+        { type: 'user-message', payload: { role: 'user', content: 'pulled early' }, reqId: 'req-2', cursor: 2 },
+        { type: 'user-message', payload: { role: 'user', content: 'thanks' }, reqId: 'req-3', cursor: 3 },
+      ]);
+      const seen: unknown[] = [];
+      const end = (ctx: LoopContext) =>
+        ctx.endTurn({
+          contentBlocks: [{ type: 'text', text: 'done' }],
+          toolResultBlocks: [],
+          readTurnId: async () => undefined,
+          usage: null,
+        });
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          // Pull ahead: turn 2's message is built BEFORE turn 1 closes.
+          seen.push(await ctx.nextMessage());
+          await end(ctx); // turn 1 closes: refused
+          await end(ctx); // turn 2 closes: accepted
+          seen.push(await ctx.nextMessage());
+          await end(ctx);
+          return 0;
+        }),
+      };
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(answers).toHaveLength(0);
+      expect(seen[0]).toEqual({ content: 'pulled early' });
+      const third = (seen[1] as { content: string }).content;
+      expect(third.startsWith(NOTICE_HEAD)).toBe(true);
+      expect(third.endsWith('\n\nthanks')).toBe(true);
     });
 
     it('keeps the notice out of the person-facing chat-end history', async () => {
