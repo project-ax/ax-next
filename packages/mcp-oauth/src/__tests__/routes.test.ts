@@ -22,6 +22,19 @@ it('publishes the configured CIMD identity and callback without requiring a user
   expect(calls).toEqual([]);
 });
 
+it('names the CIMD client after the branding and lets authorization servers cache it briefly', async () => {
+  const { deps } = makeDeps({});
+  const headers: Record<string, string> = {};
+  const { res, state } = fakeRes();
+  res.header = (name: string, value: string) => { headers[name.toLowerCase()] = value; return res; };
+  await createMcpOAuthRouteHandlers({ ...deps, clientName: async () => 'Canopy AI' }).clientMetadata(fakeReq() as never, res as never);
+  expect(state.json).toMatchObject({ client_name: 'Canopy AI' });
+  expect(headers['cache-control']).toBe('public, max-age=3600');
+  const fallback = fakeRes();
+  await createMcpOAuthRouteHandlers(deps).clientMetadata(fakeReq() as never, fallback.res as never);
+  expect(fallback.state.json).toMatchObject({ client_name: 'AX' });
+});
+
 interface BusStubs {
   'auth:require-user'?: (input: unknown) => unknown;
   'agents:resolve'?: (input: unknown) => unknown;
@@ -783,6 +796,21 @@ describe('mcp-oauth begin route', () => {
     expect(state.status).toBe(400);
     expect(state.json).toEqual({ error: 'oauth_with_multiple_slots_unsupported' });
     expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  it('passes the branded client name to client registration', async () => {
+    const flow = fakeFlow();
+    const { deps } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture({ credentials: [
+        { slot: 'oauth-main', kind: 'oauth', server: 'srv', clientRegistration: 'dcr' },
+      ] }),
+    }, { flow });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers({ ...deps, clientName: async () => 'Canopy AI' })
+      .begin(fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }), res);
+    expect(state.status).toBe(200);
+    expect(flow.ensureClient).toHaveBeenCalledWith(expect.objectContaining({ registration: 'dcr', clientName: 'Canopy AI' }));
   });
 
   it('begins OAuth with custom request headers while retaining the collapsed token reference', async () => {

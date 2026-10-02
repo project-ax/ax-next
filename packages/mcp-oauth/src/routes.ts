@@ -9,6 +9,7 @@ import type { discover, ensureClient, buildAuthorization, redeemCode } from './o
 import { isOwnClientSecretRef } from './client-secret-ref.js';
 import { NeedsReconnectError } from './resolver.js';
 import { discoverOAuthHosts, metadataUrl } from './host-discovery.js';
+import { DEFAULT_CLIENT_NAME } from './client-name.js';
 import type { McpOAuthStore } from './store.js';
 import {
   clientKeyOf,
@@ -92,6 +93,11 @@ export interface McpOAuthRouteDeps {
   /** Pending-authorization TTL (~10 minutes). */
   pendingTtlMs: number;
   /**
+   * The client name AX presents to authorization servers (CIMD document and
+   * DCR registration). Already sanitized; never throws. Defaults to "AX".
+   */
+  clientName?: () => Promise<string>;
+  /**
    * Operator-facing structured logger for callback/begin faults. Defaults to
    * the `initCtx.logger` we build below; tests inject a spy. We log only NEUTRAL
    * fields (stage/connectorId/error name/PluginError code) — NEVER a token,
@@ -141,6 +147,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   clientMetadata(req: RouteRequest, res: RouteResponse): Promise<void>;
 } {
   const { bus, store, flow, config, genState, now, pendingTtlMs } = deps;
+  const clientName = deps.clientName ?? (async () => DEFAULT_CLIENT_NAME);
   const redirectUri = `${config.publicOrigin}/api/connectors/oauth/callback`;
   const clientMetadataUrl = `${config.publicOrigin}/api/connectors/oauth/client-metadata`;
 
@@ -394,6 +401,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         clientKey,
         redirectUri,
         registration: slot.clientRegistration ?? (slot.clientId ? 'custom' : 'auto'),
+        clientName: await clientName(),
         ...(new URL(config.publicOrigin).protocol === 'https:' ? { clientMetadataUrl } : {}),
         ...(scope !== undefined ? { scope } : {}),
         ...(pinned !== undefined ? { pinned } : {}),
@@ -790,10 +798,13 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
   async function clientMetadata(_req: RouteRequest, res: RouteResponse): Promise<void> {
     // Public by design: authorization servers fetch this document. All URLs
-    // come from the configured origin, never the request's Host header.
+    // come from the configured origin, never the request's Host header. The
+    // name follows the operator's branding; a modest max-age lets a rename
+    // reach authorization servers that cache the document.
+    res.header('Cache-Control', 'public, max-age=3600');
     res.status(200).json({
       client_id: clientMetadataUrl,
-      client_name: 'AX',
+      client_name: await clientName(),
       redirect_uris: [redirectUri],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],

@@ -1,7 +1,15 @@
 import { type Plugin, makeAgentContext } from '@ax/core';
-import { registerBrandingRoutes } from './routes.js';
+import { z } from 'zod';
+import { readBrandingRecord, registerBrandingRoutes } from './routes.js';
 
 const PLUGIN_NAME = '@ax/branding';
+
+/** `branding:get` output. `name` is the operator-set product name, or null when
+ *  none is set (callers choose their own default). */
+export interface BrandingGetOutput {
+  name: string | null;
+}
+const BrandingGetOutputSchema = z.object({ name: z.string().min(1).nullable() });
 
 // ---------------------------------------------------------------------------
 // @ax/branding
@@ -10,8 +18,9 @@ const PLUGIN_NAME = '@ax/branding';
 // Mounts a PUBLIC read/serve surface (`GET /api/branding`, `GET
 // /api/branding/logo/:variant`) and an ADMIN write surface (`PUT
 // /admin/branding`). Persists a JSON pointer record via storage:* (key
-// `settings:branding`) and the logo bytes via blob:*. Registers no new
-// service hooks — it only mounts HTTP routes and calls existing kernel hooks.
+// `settings:branding`) and the logo bytes via blob:*. Registers
+// `branding:get` so other plugins can show the product name (e.g. the OAuth
+// client name AX presents on third-party consent screens).
 // ---------------------------------------------------------------------------
 
 export function createBrandingPlugin(): Plugin {
@@ -21,7 +30,7 @@ export function createBrandingPlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [],
+      registers: ['branding:get'],
       // Hard deps. http:register-route ← @ax/http-server; auth:require-user ←
       // the auth plugin; storage:get/set ← a storage plugin; blob:put/get/
       // delete ← a blob store. The topo-sort in bootstrap() wires these before
@@ -44,6 +53,15 @@ export function createBrandingPlugin(): Plugin {
         agentId: PLUGIN_NAME,
         userId: 'system',
       });
+      bus.registerService<Record<string, never>, BrandingGetOutput>(
+        'branding:get',
+        PLUGIN_NAME,
+        async (ctx) => {
+          const { name } = await readBrandingRecord(bus, ctx);
+          return { name: name.trim() || null };
+        },
+        { returns: BrandingGetOutputSchema },
+      );
       try {
         unregisterRoutes.push(...(await registerBrandingRoutes(bus, initCtx)));
       } catch (err) {

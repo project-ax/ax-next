@@ -1,4 +1,4 @@
-export { createBrandingPlugin } from './plugin.js';
+export { createBrandingPlugin, type BrandingGetOutput } from './plugin.js';
 export {
   registerBrandingRoutes,
   createBrandingHandlers,

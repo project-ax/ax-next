@@ -20,6 +20,7 @@ import {
   refresh,
 } from './oauth-flow.js';
 import { registerMcpOAuthRoutes } from './routes.js';
+import { DEFAULT_CLIENT_NAME, oauthClientName } from './client-name.js';
 
 const PLUGIN_NAME = '@ax/mcp-oauth';
 
@@ -144,6 +145,18 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       // Registered ALWAYS — harmless when @ax/credentials isn't loaded.
       registers: ['credentials:resolve:mcp-oauth'],
       calls,
+      // The routes name AX on third-party consent screens after the operator's
+      // branding when a branding plugin is loaded.
+      ...(mountRoutes
+        ? {
+            optionalCalls: [
+              {
+                hook: 'branding:get',
+                degradation: 'OAuth client name falls back to "AX"',
+              },
+            ],
+          }
+        : {}),
       // TASK-718: `@ax/agents` fires this after the agent row is gone; an
       // in-flight handshake for it can never complete. Subscribed whether or
       // not the routes are mounted — the pending table exists either way.
@@ -272,6 +285,22 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
           genState: () => randomBytes(32).toString('hex'),
           now: () => Date.now(),
           pendingTtlMs: config.pendingTtlMs ?? 10 * 60_000,
+          clientName: async () => {
+            if (!bus.hasService('branding:get')) return DEFAULT_CLIENT_NAME;
+            try {
+              const { name } = await bus.call<
+                Record<string, never>,
+                { name: string | null }
+              >('branding:get', initCtx, {});
+              return oauthClientName(name);
+            } catch (err) {
+              // A branding read failure must never block a sign-in.
+              initCtx.logger.warn('mcp_oauth_branding_unavailable', {
+                name: err instanceof Error ? err.name : 'unknown',
+              });
+              return DEFAULT_CLIENT_NAME;
+            }
+          },
         });
         unregisterRoutes.push(...unregs);
       }
