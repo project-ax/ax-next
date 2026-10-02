@@ -11,6 +11,7 @@ import type {
   ImageBlock,
   TextBlock,
 } from '@ax/ipc-protocol';
+import { createInterruptProcesses } from './interrupt-processes.js';
 import { createCanUseTool } from './can-use-tool.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import {
@@ -299,9 +300,13 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
         );
       }
 
+      let stopRequested = false;
+      let interruptPending: Promise<void> | null = null;
+      const interruptProcesses = createInterruptProcesses();
       const queryIter = query({
         prompt: userMessages(),
         options: {
+          spawnClaudeCodeProcess: (options) => interruptProcesses.spawn(options),
           // Phase C: SDK resume(sessionId). When the conversation has a
           // bound runner session id, the SDK rehydrates the transcript
           // from its own on-disk store under HOME (workspaceRoot, see
@@ -518,6 +523,14 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // input don't reach it). See pre-tool-use.ts for the rationale.
           canUseTool: createCanUseTool({ client }),
           hooks: {
+            // An interrupt during CLI startup can be acknowledged while idle.
+            // Latch it until this prompt is consumed, before any model/tool work.
+            UserPromptSubmit: [{ hooks: [async () => {
+              interruptProcesses.preserveStartupProcesses();
+              return stopRequested
+                ? { continue: false, stopReason: 'Request interrupted by user' }
+                : {};
+            }] }],
             PreToolUse: [
               {
                 hooks: [
@@ -546,6 +559,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                       (r): r is string => r !== undefined,
                     ),
                     holdLatch,
+                    isInterrupted: () => stopRequested,
                     onHold: (id) => heldCalls.record(id),
                   }),
                 ],
@@ -603,24 +617,21 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
         },
       });
 
-      // TASK-688 — Stop. The shell calls this when a person presses Stop while a
-      // turn is running (`interrupt` in the inbox; an idle press never gets
-      // here). `Query.interrupt()` is the SDK's own "abort this turn": it kills
-      // the running tool (Bash exits 137), ends the model request, and the turn
-      // then closes through the ordinary `result` branch below — `endTurn`,
-      // turn-end, the person's stream closes — with the words already written
-      // and the interrupted tool_result (flagged is_error) in the durable turn.
-      // Probed against the real binary (see main.test.ts); the SAME query serves
-      // the next message, so nothing here ends the session. `cancel` does that.
-      //
-      // Deliberately NOT `options.abortController`: aborting that tears the whole
-      // query down, and this runner has to stay warm.
-      //
-      // Fire-and-forget by design — the shell calls handlers synchronously from
-      // its inbox reader — and a rejection (control channel already closed) is
-      // logged, never thrown: the turn ends on its own `result` regardless.
+      // Stop must kill the actual Linux tool descendants BEFORE asking the SDK
+      // to interrupt: its native cancellation can orphan a nested shell while
+      // reporting exit 137. Keep the SDK child alive for transcript and reuse.
       ctx.onInterrupt(() => {
-        queryIter.interrupt().catch((err: unknown) => {
+        stopRequested = true;
+        try {
+          interruptProcesses.killTools();
+        } catch (err) {
+          process.stderr.write(`runner: tool termination failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          // Failing to establish process ownership must not publish a false
+          // successful Stop. Close the SDK rather than allowing more tool work.
+          queryIter.close();
+          return;
+        }
+        interruptPending = queryIter.interrupt().catch((err: unknown) => {
           process.stderr.write(
             `runner: query.interrupt() failed: ${err instanceof Error ? err.message : String(err)}\n`,
           );
@@ -865,6 +876,10 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             }
           }
         } else if (msg.type === 'result') {
+          await interruptPending;
+          interruptPending = null;
+          const wasStopped = stopRequested;
+          stopRequested = false;
           const heldDecisionId = drainHoldLatch(holdLatch);
           // SDK failures arrive as result messages, sometimes BEFORE the CLI
           // throws on exit. endTurn emits the success heartbeat that closes
@@ -874,7 +889,8 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // its normal commit; the SDK labels those as errors too.
           const interrupted =
             msg.terminal_reason === 'aborted_streaming' ||
-            msg.terminal_reason === 'aborted_tools';
+            msg.terminal_reason === 'aborted_tools' ||
+            (wasStopped && msg.terminal_reason === 'hook_stopped');
           const held = heldDecisionId !== null &&
             (msg.terminal_reason === 'hook_stopped' ||
               msg.terminal_reason === 'tool_deferred');

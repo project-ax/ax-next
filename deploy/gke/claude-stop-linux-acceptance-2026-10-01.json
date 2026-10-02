@@ -1,0 +1,26 @@
+{
+  "scope": "Local Linux amd64 container, not GKE/gVisor acceptance",
+  "sdk": "@anthropic-ai/claude-agent-sdk 0.2.119 / native Claude 2.1.119",
+  "runtime": "Node 24.19.0 / Debian bookworm agent image",
+  "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:sharedpool-20261001-prototype3@sha256:9cd431a45699f3ab783071a8a3cfaa32a9a81b5df34cd41d58e0f234b4fb129f",
+  "provider": "scripted loopback Anthropic-compatible HTTP server; fake key; no provider account",
+  "execution": "Committed native-SDK test bodies executed via Node type stripping and node:assert shim for Vitest; final helper source mounted read-only into existing agent image",
+  "before": {
+    "queryInterrupt": "aborted_tools returned and recorded wrapper PID disappeared",
+    "delayedWrite": "completion marker appeared after the original five-second command duration"
+  },
+  "after": {
+    "nativeCasesPassed": 4,
+    "commandTermination": "completion marker absent after waiting six seconds beyond interrupt; original command sleeps five seconds",
+    "sessionReuse": "same query accepts next message after Bash Stop",
+    "startupStop": "no provider call or Bash marker; same query accepts next message",
+    "mcpReuse": "startup stdio MCP server still answers ping after Bash Stop",
+    "streamingStop": "partial text retained; aborted_streaming; final word absent"
+  },
+  "checks": {
+    "nonNativeRunnerTests": 292,
+    "build": "passed",
+    "eslint": "passed"
+  },
+  "gke": "not rerun: OAuth token refresh failed because oauth2.googleapis.com could not resolve in this environment; no production deployment or shared-pool enablement"
+}

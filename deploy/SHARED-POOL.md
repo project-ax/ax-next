@@ -8,8 +8,8 @@ destroyed after cleanup.
 
 This implementation is opt-in. The image and integrated helper passed isolated
 GKE/Filestore lifecycle checks, and both SDKs completed real provider/Bash turns
-through an isolated application release. **Live rollout is blocked by a Claude
-Stop/process termination failure and the remaining acceptance gates.**
+through an isolated application release. **Live rollout remains blocked until the Claude
+Stop fix passes on GKE and the remaining acceptance gates pass.**
 See the [recorded evidence](gke/shared-pool-acceptance-2026-10-01.json).
 
 The late-attachment volume must be a **memory-backed 16 MiB emptyDir** with the
@@ -185,6 +185,16 @@ termination from an interrupted result or a closed stream. Wait beyond the
 command's original duration and check storage independently. Use `&&` in any
 follow-up assertions so a later successful command cannot mask a failed check.
 
+The follow-up fix reproduces the orphaned command with SDK 0.2.119 in a local
+Linux container. The runner now tracks its SDK child, freezes and kills tool
+descendants before sending the SDK interrupt, and preserves startup MCP
+servers. Stop stays latched through startup and an outstanding policy decision.
+The native tests check a delayed write past its original deadline, reuse of the
+same query, MCP tool reuse, and partial streamed text. These checks pass locally;
+GKE/gVisor acceptance is still pending because OAuth token refresh could not
+resolve Google's endpoint. See the [Linux evidence](gke/claude-stop-linux-acceptance-2026-10-01.json).
+
+
 Transcript reads survived an isolated host restart, but automatic recovery and
 reaping of live claims was not accepted. Quota refusal, sidecar application
 routes, interrupted assignment, forced detach failure, and node drain/loss
@@ -198,3 +208,13 @@ interrupt live conversations on the cluster's shared gVisor node. Provisioning
 that node was blocked by Google Cloud OAuth/API DNS access in this session.
 All test namespaces, database/PVCs, synthetic storage, and helper ledger were
 removed after draining claims and verifying no child mounts or live records.
+
+## Claude Stop security review
+
+- Sandbox: Signals target descendants of the SDK child created by this runner in
+  its existing PID namespace. Kernel PID/start-time checks guard reuse. Startup
+  MCP processes and the SDK remain alive. No host PID access or new privilege.
+- Injection: Model commands still cross the existing host policy. Process IDs
+  come from the child handle and kernel metadata, never command text or
+  model-writable PID files. Stop denies a pending policy allow after interruption.
+- Supply chain: N/A — no dependency manifests or lockfile entries changed.

@@ -31,6 +31,8 @@ export type CreatePreToolUseHookOptions = CreateToolPolicyOptions & {
    * boundary so a held turn is distinguishable from a finished one.
    */
   holdLatch?: HoldLatch;
+  /** Stop remains latched even when the SDK acknowledged it during startup. */
+  isInterrupted?: () => boolean;
   /**
    * Called with the SDK's tool-call id when a call is held, so `main.ts` can
    * recognise that call's tool_result later in the turn and publish the
@@ -54,6 +56,17 @@ export function createPreToolUseHook(
     if (input.hook_event_name !== 'PreToolUse') {
       return {};
     }
+
+    const stopped = () => ({
+      continue: false,
+      stopReason: 'Request interrupted by user',
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse' as const,
+        permissionDecision: 'deny' as const,
+        permissionDecisionReason: 'Request interrupted by user',
+      },
+    });
+    if (opts.isInterrupted?.()) return stopped();
 
     const klass = classifySdkToolName(input.tool_name);
     if (klass.kind === 'disabled') {
@@ -89,6 +102,9 @@ export function createPreToolUseHook(
       input.tool_input,
       toolUseID,
     );
+
+    // Stop may arrive while host policy is deciding; never grant that stale allow.
+    if (opts.isInterrupted?.()) return stopped();
 
     if (verdict.decision === 'deny') {
       return {

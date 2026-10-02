@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { promises as fs, existsSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createInterruptProcesses } from '../interrupt-processes.js';
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,9 @@ import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claud
 // Anthropic-compatible server (no network, no key), interrupts mid-turn, and
 // checks the OS and the message stream — the same probe that was run by hand
 // while designing the card (2026-09-29, 0.2.119).
+//
+// Linux needs runner-owned descendant cleanup in addition to Query.interrupt;
+// the delayed-write and MCP cases below exercise that production helper.
 //
 // It skips itself when the native binary is not installed (an unsupported
 // platform, or an install that skipped optional dependencies).
@@ -124,16 +128,16 @@ afterEach(async () => {
 });
 
 /** A model step that emits some text, then a Bash tool call, then stops for tool results. */
-function bashStep(command: string, preamble = 'Running it now. '): (sse: Sse, res: http.ServerResponse) => Promise<void> {
+function bashStep(command: string, preamble = 'Running it now. ', toolName = 'Bash'): (sse: Sse, res: http.ServerResponse) => Promise<void> {
   return async (sse, res) => {
     sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
     sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: preamble } });
     sse('content_block_stop', { type: 'content_block_stop', index: 0 });
-    sse('content_block_start', { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_probe', name: 'Bash', input: {} } });
+    sse('content_block_start', { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_probe', name: toolName, input: {} } });
     sse('content_block_delta', {
       type: 'content_block_delta',
       index: 1,
-      delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command, description: 'slow' }) },
+      delta: { type: 'input_json_delta', partial_json: JSON.stringify(toolName === 'Bash' ? { command, description: 'slow' } : {}) },
     });
     sse('content_block_stop', { type: 'content_block_stop', index: 1 });
     sse('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 30 } });
@@ -163,7 +167,7 @@ function slowTextStep(words: number): (sse: Sse, res: http.ServerResponse) => Pr
  * Open a streaming-input query the way the runner does (an async generator that
  * stays open), and hand back pull-style access to its messages.
  */
-function openQuery() {
+function openQuery(withMcp = false) {
   const inputs: SDKUserMessage[] = [];
   let wake: (() => void) | null = null;
   let closed = false;
@@ -179,9 +183,19 @@ function openQuery() {
       wake = null;
     }
   }
+  const processes = createInterruptProcesses();
+  let stopped = false;
   const q = query({
     prompt: prompt(),
     options: {
+      spawnClaudeCodeProcess: (options) => processes.spawn(options),
+      hooks: { UserPromptSubmit: [{ hooks: [async () => {
+        processes.preserveStartupProcesses();
+        return stopped ? { continue: false, stopReason: 'Request interrupted by user' } : {};
+      }] }] },
+      ...(withMcp ? { mcpServers: { probe: {
+        type: 'stdio' as const, command: process.execPath, args: [path.join(tmp, 'probe-mcp.mjs')],
+      } } } : {}),
       cwd: tmp,
       env: {
         ...process.env,
@@ -201,7 +215,13 @@ function openQuery() {
   const iterator = q[Symbol.asyncIterator]();
   return {
     q,
+    async interrupt(): Promise<void> {
+      stopped = true;
+      processes.killTools();
+      await q.interrupt();
+    },
     send(text: string): void {
+      stopped = false;
       inputs.push({ type: 'user', parent_tool_use_id: null, message: { role: 'user', content: text } } as SDKUserMessage);
       wake?.();
     },
@@ -242,13 +262,13 @@ async function processGone(pid: number, ms: number): Promise<boolean> {
   return false;
 }
 
-describe.skipIf(!HAVE_BINARY)('claude-agent-sdk Query.interrupt() — the real binary (TASK-688)', () => {
+describe.skipIf(!HAVE_BINARY)('Claude Stop — the real SDK binary (TASK-688 / Linux regression)', () => {
   it('kills the command that is running, ends the turn with an aborted result, and the query serves the next message', async () => {
     const pidFile = path.join(tmp, 'child.pid');
     const marker = path.join(tmp, 'cancel-probe.txt');
     script = [
       // The card's own probe, scaled down: record our pid, sleep, THEN touch the marker.
-      bashStep(`echo $$ > ${pidFile}; sleep 20; touch ${marker}`),
+      bashStep(`echo $$ > ${pidFile}; sleep 5; touch ${marker}`),
       slowTextStep(2),
     ];
     const s = openQuery();
@@ -265,7 +285,7 @@ describe.skipIf(!HAVE_BINARY)('claude-agent-sdk Query.interrupt() — the real b
       const pid = Number((await fs.readFile(pidFile, 'utf8')).trim());
       expect(Number.isInteger(pid)).toBe(true);
 
-      await s.q.interrupt();
+      await s.interrupt();
       const messages = await reader;
 
       // (1) The turn ended through an ordinary `result`, flagged as aborted in
@@ -275,6 +295,9 @@ describe.skipIf(!HAVE_BINARY)('claude-agent-sdk Query.interrupt() — the real b
       expect(terminalReason(result)).toBe('aborted_tools');
       // (2) The running command is dead and never got to touch the marker.
       expect(await processGone(pid, 5000)).toBe(true);
+      // Check past the original deadline: SDK exit 137 and a dead wrapper
+      // alone missed the orphan shell that kept running on Linux/GKE.
+      await delay(6000);
       expect(existsSync(marker)).toBe(false);
       // (3) The tool_result the durable turn will carry says why, flagged as an error.
       const toolResult = JSON.stringify(messages.filter((m) => m.type === 'user'));
@@ -292,6 +315,63 @@ describe.skipIf(!HAVE_BINARY)('claude-agent-sdk Query.interrupt() — the real b
     }
   }, 60_000);
 
+  it('Stop during startup prevents a queued Bash command and leaves the query reusable', async () => {
+    const marker = path.join(tmp, 'early-stop.txt');
+    script = [bashStep(`touch ${marker}`), slowTextStep(2)];
+    const s = openQuery();
+    try {
+      s.send('run the command');
+      const reader = s.readUntil(isResult);
+      await s.interrupt();
+      const messages = await reader;
+      // The pinned CLI returns an empty success for UserPromptSubmit continue:false.
+      expect(messages.find(isResult)).toMatchObject({ subtype: 'success', result: '' });
+      expect(modelCalls).toHaveLength(0);
+      expect(existsSync(marker)).toBe(false);
+      script = [slowTextStep(2)];
+      s.send('say hi');
+      const next = await s.readUntil(isResult);
+      expect(next.find(isResult)).toMatchObject({ subtype: 'success' });
+      expect(modelCalls).toHaveLength(1);
+    } finally { s.close(); }
+  }, 60_000);
+
+  it('keeps a startup MCP server usable after stopping Bash', async () => {
+    await fs.writeFile(path.join(tmp, 'probe-mcp.mjs'), `
+      import { createInterface } from 'node:readline';
+      createInterface({ input: process.stdin }).on('line', line => {
+        const req = JSON.parse(line);
+        if (req.id === undefined) return;
+        const result = req.method === 'initialize'
+          ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'probe', version: '1' } }
+          : req.method === 'tools/list'
+          ? { tools: [{ name: 'ping', description: 'Return pong', inputSchema: { type: 'object', properties: {} } }] }
+          : req.method === 'tools/call'
+          ? { content: [{ type: 'text', text: 'pong-from-preserved-mcp' }] }
+          : {};
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result }) + '\\n');
+      });
+    `);
+    const started = path.join(tmp, 'mcp-bash-started');
+    script = [bashStep(`touch ${started}; sleep 20`),
+      bashStep('', 'Checking MCP. ', 'mcp__probe__ping'), slowTextStep(2)];
+    const s = openQuery(true);
+    try {
+      s.send('run the slow command');
+      const reader = s.readUntil(isResult);
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(started)) {
+        if (Date.now() > deadline) throw new Error('Bash never started with MCP configured');
+        await delay(50);
+      }
+      await s.interrupt(); await reader;
+      s.send('call ping');
+      const next = await s.readUntil(isResult);
+      expect(next.find(isResult)).toMatchObject({ subtype: 'success' });
+      expect(JSON.stringify(next.filter(m => m.type === 'user'))).toContain('pong-from-preserved-mcp');
+    } finally { s.close(); }
+  }, 60_000);
+
   it('keeps the words written so far when a reply is stopped mid-stream', async () => {
     script = [slowTextStep(40)];
     const s = openQuery();
@@ -307,7 +387,7 @@ describe.skipIf(!HAVE_BINARY)('claude-agent-sdk Query.interrupt() — the real b
         if (Date.now() - start > 30_000) throw new Error('the reply never started streaming');
         await delay(25);
       }
-      await s.q.interrupt();
+      await s.interrupt();
       const messages = await reader;
       const result = messages.find(isResult)!;
       expect(terminalReason(result)).toBe('aborted_streaming');
