@@ -6,6 +6,7 @@ import {
   BOOTSTRAP_ROOT, BOOTSTRAP_FILE, BOOTSTRAP_ACK, BOOTSTRAP_MAX_BYTES,
   BootstrapAssignmentSchema,
 } from '@ax/sandbox-protocol';
+import { scaffoldPythonVenv } from './python-venv.js';
 
 /** Called before constructing runner state, IPC, or the model loop. Single assignment. */
 export async function waitForAssignment(options: {
@@ -16,6 +17,11 @@ export async function waitForAssignment(options: {
   const root = options.root ?? BOOTSTRAP_ROOT;
   const file = join(root, BOOTSTRAP_FILE);
   if (!env.AX_INSTANCE_ID) throw new Error('standby instance identity missing');
+  // Image-only preparation, before reading tenant configuration or credentials.
+  // The shared template and bootstrap schema fix the ephemeral tier at this path.
+  // Await completion so the session cannot race a half-copied venv; failure is
+  // best-effort and the ordinary session scaffold retains its existing fallback.
+  await scaffoldPythonVenv('/ephemeral', { offlineOnly: true }).catch(() => false);
   for (;;) {
     options.signal?.throwIfAborted();
     let handle;

@@ -109,8 +109,9 @@ async function templatePresent(templateDir: string): Promise<boolean> {
  * from pypi.org, so when pypi egress is denied `uv` retries the blocked host
  * for ~5-23s before giving up — that fallback is bounded by `opts.timeoutMs`.
  *
- * This call is fired NON-BLOCKING from the startup path (see main.ts); it must
- * never sit on the cold-start critical path.
+ * Session startup waits a bounded time for this optional scaffold. Shared-pool
+ * standbys copy the image template before accepting an assignment, so a warm
+ * session can use the ready venv without paying for that copy after activation.
  *
  * Best-effort: returns true when the venv is ready (created OR already
  * present), false when provisioning failed OR timed out. On failure it logs to
@@ -123,7 +124,7 @@ async function templatePresent(templateDir: string): Promise<boolean> {
  */
 export async function scaffoldPythonVenv(
   ephemeralRoot: string,
-  opts: { uvBin?: string; timeoutMs?: number; templateDir?: string } = {},
+  opts: { uvBin?: string; timeoutMs?: number; templateDir?: string; offlineOnly?: boolean } = {},
 ): Promise<boolean> {
   const venvDir = pythonVenvDir(ephemeralRoot);
   if (await venvAlreadyPresent(venvDir)) return true;
@@ -133,19 +134,32 @@ export async function scaffoldPythonVenv(
   // valid venv. On any copy error, log and fall through to the uv fallback.
   const templateDir = opts.templateDir ?? DEFAULT_VENV_TEMPLATE_DIR;
   if (await templatePresent(templateDir)) {
+    let staging: string | undefined;
     try {
-      await fs.cp(templateDir, venvDir, {
+      // Publish only a complete copy. A failed copy must not leave pyvenv.cfg
+      // at the final path and make session startup accept an incomplete venv.
+      await fs.mkdir(ephemeralRoot, { recursive: true });
+      staging = await fs.mkdtemp(path.join(ephemeralRoot, '.ax-python-venv-'));
+      const stagedVenv = path.join(staging, 'py');
+      await fs.cp(templateDir, stagedVenv, {
         recursive: true,
         verbatimSymlinks: true,
       });
+      await fs.rename(stagedVenv, venvDir);
       return true;
     } catch (e) {
       process.stderr.write(
-        `runner: python venv scaffold could not copy baked template ${templateDir}: ${(e as Error).message}; falling back to uv venv --seed\n`,
+        `runner: python venv scaffold could not copy baked template ${templateDir}: ${(e as Error).message}${opts.offlineOnly ? '' : '; falling back to uv venv --seed'}\n`,
       );
       // fall through to the uv fallback
+    } finally {
+      if (staging !== undefined) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
     }
   }
+
+  // An unassigned standby has no session, proxy, or tenant authority. It may
+  // copy image-owned files but must never spawn an online installer.
+  if (opts.offlineOnly) return false;
 
   const uvBin = opts.uvBin ?? 'uv';
   const timeoutMs = opts.timeoutMs ?? DEFAULT_VENV_TIMEOUT_MS;

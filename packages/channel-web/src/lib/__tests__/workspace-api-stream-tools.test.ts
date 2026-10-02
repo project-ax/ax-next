@@ -117,6 +117,7 @@ describe('the workspace reply stream', () => {
   it('surfaces a phase frame', async () => {
     stubStream([
       { reqId: 'r1', phase: 'sandbox-starting' },
+      { reqId: 'r1', phase: 'sandbox-ready' },
       { reqId: 'r1', kind: 'text', text: 'hi', seq: 1 },
       { reqId: 'r1', done: true },
     ]);
@@ -127,7 +128,7 @@ describe('the workspace reply stream', () => {
       onError: () => undefined,
       onPhase: (p) => phases.push(p),
     });
-    expect(phases).toEqual(['sandbox-starting']);
+    expect(phases).toEqual(['sandbox-starting', 'sandbox-ready']);
   });
 
   it('gives a thinking frame to NOBODY — invariant J4', async () => {

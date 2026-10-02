@@ -771,7 +771,7 @@ export function createPhaseFillSubscriber(buffer: ChunkBuffer) {
     if (
       typeof payload?.reqId !== 'string' ||
       payload.reqId.length === 0 ||
-      payload?.phase !== 'sandbox-starting'
+      (payload?.phase !== 'sandbox-starting' && payload?.phase !== 'sandbox-ready')
     ) {
       return undefined;
     }

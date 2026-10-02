@@ -2,8 +2,12 @@ import { mkdtemp, writeFile, readFile, rm, symlink, stat } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitForAssignment } from '../standby.js';
+import { scaffoldPythonVenv } from '../python-venv.js';
+
+vi.mock('../python-venv.js', () => ({ scaffoldPythonVenv: vi.fn() }));
+beforeEach(() => { vi.mocked(scaffoldPythonVenv).mockReset().mockResolvedValue(false); });
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(p => rm(p, { recursive: true, force: true }))); });
@@ -19,6 +23,21 @@ async function fixture() {
 describe('single-use standby activation', () => {
   it('leaves ordinary startup untouched', async () => {
     const env = { AX_AUTH_TOKEN: 'existing' }; await waitForAssignment({ env }); expect(env.AX_AUTH_TOKEN).toBe('existing');
+    expect(scaffoldPythonVenv).not.toHaveBeenCalled();
+  });
+  it('prepares only the offline image template before accepting credentials', async () => {
+    const f = await fixture();
+    let finishCopy!: (ready: boolean) => void;
+    vi.mocked(scaffoldPythonVenv).mockImplementation(() => new Promise(resolve => { finishCopy = resolve; }));
+    const waiting = waitForAssignment({ ...f, pollMs: 1 });
+    await f.publish();
+    expect(scaffoldPythonVenv).toHaveBeenCalledWith('/ephemeral', { offlineOnly: true });
+    expect(f.env.AX_AUTH_TOKEN).toBeUndefined();
+    await expect(stat(join(f.root, 'accepted.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    finishCopy(true);
+    await waiting;
+    expect(f.env.AX_AUTH_TOKEN).toBe('private-token');
+    await expect(stat(join(f.root, 'accepted.json'))).resolves.toBeDefined();
   });
   it('waits without credentials, consumes the file, and acknowledges only identity', async () => {
     const f = await fixture(); const waiting = waitForAssignment({ ...f, pollMs: 1 });

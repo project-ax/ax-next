@@ -565,6 +565,13 @@ export function createOpenSession(deps: OpenSessionDeps) {
     };
 
     podLog.info('pod_created', { runnerEndpoint });
+    // Provisioning has finished. Model/SDK initialization and response latency
+    // are separate from sandbox readiness; don't leave the UI in setup until
+    // the first content chunk. The phase has the same meaning for any provider.
+    await deps.bus.fire('chat:phase', ctx, {
+      reqId: ctx.reqId,
+      phase: 'sandbox-ready' as const,
+    });
     return { runnerEndpoint, handle: { kill, exited } };
   };
 }

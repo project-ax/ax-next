@@ -142,6 +142,34 @@ describe('scaffoldPythonVenv', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('never spawns uv in a credential-free standby when the template is absent', async () => {
+    const sentinel = path.join(tmp, 'uv-ran');
+    const uvBin = await writeFakeUv(`: > "${sentinel}"`);
+    await expect(scaffoldPythonVenv(path.join(tmp, 'ephemeral'), {
+      offlineOnly: true, uvBin, templateDir: path.join(tmp, 'missing'),
+    })).resolves.toBe(false);
+    await expect(fs.access(sentinel)).rejects.toThrow();
+  });
+
+  it('a failed offline copy leaves no partial venv that startup could mistake for ready', async () => {
+    const root = path.join(tmp, 'ephemeral');
+    const template = path.join(tmp, 'template');
+    await fs.mkdir(template);
+    await fs.writeFile(path.join(template, 'pyvenv.cfg'), 'home = /usr/bin\n');
+    // An unsupported socket file makes cp fail, even if it has copied the marker.
+    const { createServer } = await import('node:net');
+    const server = createServer();
+    await new Promise<void>(resolve => server.listen(path.join(template, 'socket'), resolve));
+    try {
+      const sentinel = path.join(tmp, 'uv-ran');
+      const uvBin = await writeFakeUv(`: > "${sentinel}"`);
+      await expect(scaffoldPythonVenv(root, { offlineOnly: true, uvBin, templateDir: template })).resolves.toBe(false);
+      await expect(fs.access(path.join(pythonVenvDir(root), 'pyvenv.cfg'))).rejects.toThrow();
+      expect(await fs.readdir(root)).toEqual([]);
+      await expect(fs.access(sentinel)).rejects.toThrow();
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+
   it('is idempotent: skips uv when a venv already exists', async () => {
     const root = path.join(tmp, 'ephemeral');
     const venvDir = pythonVenvDir(root);

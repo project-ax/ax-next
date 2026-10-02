@@ -54,6 +54,31 @@ Keep the sanitized JSON records as historical evidence. Their status fields
 reflect the time of each run; the reconciled status below supersedes those
 fields where later evidence exists.
 
+## First-message latency — 2026-10-02
+
+Production warm-sandbox provisioning took **1.1–1.7 seconds** across ten new
+sessions. A subsequent Claude chat provisioned in **1.03 seconds**, recorded
+its user message in the SDK at **6.05 seconds**, and stored the finished assistant
+turn at **10.98 seconds**. These server timestamps do not measure browser first
+token latency. Existing logs do not split every workspace, SDK, and model stage.
+
+The production UI keeps “Getting set up…” until content arrives because the
+server emits only `sandbox-starting`. That label includes work after provisioning.
+The candidate change emits `sandbox-ready` after provisioning and preserves the
+latest phase for clients connecting late, allowing the UI to show “Thinking…”.
+
+The candidate also prepares the image's baked Python environment while a standby
+waits for assignment. Preparation uses only fixed image/ephemeral paths, cannot
+run the online installer, and publishes a completed copy atomically. A GKE gVisor
+component probe measured **1.37 seconds** to prepare it and **0.2 milliseconds**
+to reuse it; Python imported pip successfully. This moves template-copy work off
+prepared-standby activation. SDK initialization and model waiting still remain.
+
+These changes are **not deployed** in revision 32. The component probe used a
+separate scratch directory and changed no assignment or tenant files. It is not
+an end-to-end before/after measurement. See the
+[sanitized latency record](gke/shared-pool-startup-latency-2026-10-02.json).
+
 ## Recorded pre-activation deployment and source state
 
 These historical observations precede production activation. They are not a

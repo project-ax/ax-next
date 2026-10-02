@@ -943,7 +943,7 @@ describe('@ax/channel-web SSE handler', () => {
   // captures phase for replay-on-attach.
   // -----------------------------------------------------------------------
 
-  it('phase fires on bus → SSE phase frame written to the connection', async () => {
+  it.each(['sandbox-starting', 'sandbox-ready'] as const)('phase %s fires on bus → SSE phase frame written to the connection', async phase => {
     const { bus, initCtx, handler, buffer } = bootHandler();
     try {
       const req = fakeReq();
@@ -952,16 +952,29 @@ describe('@ax/channel-web SSE handler', () => {
 
       await bus.fire<PhaseEvent>('chat:phase', initCtx, {
         reqId: 'r-test',
-        phase: 'sandbox-starting',
+        phase,
       });
 
       const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
       expect(frames).toEqual([
-        'data: {"reqId":"r-test","phase":"sandbox-starting"}\n\n',
+        `data: ${JSON.stringify({ reqId: 'r-test', phase })}\n\n`,
       ]);
     } finally {
       buffer.dispose();
     }
+  });
+
+  it('a late connection replays sandbox-ready instead of the stale setup phase', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      await bus.fire('chat:phase', initCtx, { reqId: 'r-test', phase: 'sandbox-starting' });
+      await bus.fire('chat:phase', initCtx, { reqId: 'r-test', phase: 'sandbox-ready' });
+      const { res, captured } = fakeRes();
+      await handler(fakeReq(), res);
+      expect(captured.streamWrites.filter(s => s.startsWith('data:'))).toEqual([
+        'data: {"reqId":"r-test","phase":"sandbox-ready"}\n\n',
+      ]);
+    } finally { buffer.dispose(); }
   });
 
   it('phase frames with non-matching reqId are NOT emitted', async () => {
