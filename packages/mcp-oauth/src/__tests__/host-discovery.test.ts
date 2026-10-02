@@ -33,7 +33,7 @@ describe('OAuth host discovery preview', () => {
     const get = fixture();
     expect(await discoverOAuthHosts({ resourceUrl, resolver, request: get })).toEqual({ hosts: [
       'auth.example.com', 'login.example.com', 'mcp.example.com', 'metadata.example.com', 'registration.example.com', 'tokens.example.com',
-    ] });
+    ], auth: 'oauth', clientRegistration: { cimd: false, dcr: true } });
     expect(get.mock.calls.map(([url]) => url.href)).toEqual([
       resourceUrl, 'https://metadata.example.com/resource', 'https://auth.example.com/.well-known/oauth-authorization-server',
     ]);
@@ -57,8 +57,40 @@ describe('OAuth host discovery preview', () => {
     });
     expect(await discoverOAuthHosts({ resourceUrl: gmail, resolver, request: get })).toEqual({ hosts: [
       'accounts.google.com', 'gmailmcp.googleapis.com', 'oauth2.googleapis.com',
-    ] });
+    ], auth: 'oauth', clientRegistration: { cimd: false, dcr: false } });
     expect(get.mock.calls.map(([url]) => url.hostname)).not.toContain('oauth2.googleapis.com');
+  });
+
+  it('reports published client identity support from the authorization server', async () => {
+    const get = fixture({ ...meta, client_id_metadata_document_supported: true } as typeof meta);
+    expect(await discoverOAuthHosts({ resourceUrl, resolver, request: get })).toMatchObject({
+      auth: 'oauth', clientRegistration: { cimd: true, dcr: true },
+    });
+  });
+
+  it.each([[405, 'none'], [200, 'none'], [401, 'other'], [403, 'other']] as const)(
+    'classifies a server that answers %s with no OAuth metadata as %s',
+    async (status, auth) => {
+      const get = vi.fn<typeof requestMetadata>(async (url) =>
+        url.href === resourceUrl ? new Response(null, { status }) : new Response(null, { status: 404 }));
+      expect(await discoverOAuthHosts({ resourceUrl, resolver, request: get })).toEqual({ hosts: ['mcp.example.com'], auth });
+    },
+  );
+
+  it('still fails when OAuth metadata exists but discovery breaks part-way', async () => {
+    const get = vi.fn<typeof requestMetadata>(async (url) => {
+      if (url.href === resourceUrl) return new Response(null, { status: 405 });
+      if (url.pathname.startsWith('/.well-known/oauth-protected-resource')) {
+        return json({ resource: resourceUrl, authorization_servers: [meta.issuer] });
+      }
+      return new Response(null, { status: 500 });
+    });
+    await expect(discoverOAuthHosts({ resourceUrl, resolver, request: get })).rejects.toThrow();
+  });
+
+  it('fails rather than reporting no sign-in when the server cannot be reached', async () => {
+    const get = vi.fn<typeof requestMetadata>(async () => { throw new Error('ECONNREFUSED'); });
+    await expect(discoverOAuthHosts({ resourceUrl, resolver, request: get })).rejects.toThrow();
   });
 
   it.each([

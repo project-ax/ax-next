@@ -224,7 +224,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const attempts = previewAttempts.get(user.id) ?? [];
     if (activePreviews >= 4 || attempts.length >= 6 || (!previewAttempts.has(user.id) && previewAttempts.size >= 512)) {
       res.header('Retry-After', '60');
-      res.status(429).json({ error: 'discovery-rate-limited', message: 'Please wait a minute before retrying OAuth host discovery.' });
+      res.status(429).json({ error: 'discovery-rate-limited', message: 'Please wait a minute before checking this server again.' });
       return;
     }
     previewAttempts.set(user.id, [...attempts, now()]);
@@ -234,7 +234,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(200).json(result);
     } catch (err) {
       logger.warn('mcp_oauth_host_discovery_failed', { name: err instanceof Error ? err.name : 'unknown' });
-      res.status(502).json({ error: 'oauth-host-discovery-failed', message: 'Could not discover OAuth hosts. Check the MCP URL, retry, or enter the hosts manually.' });
+      res.status(502).json({ error: 'oauth-host-discovery-failed', message: 'Could not check this server. Check the MCP URL and retry.' });
     } finally {
       activePreviews--;
     }

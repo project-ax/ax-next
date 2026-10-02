@@ -88,6 +88,17 @@ async function resolveBeforeTimeout(resolver: HostResolver, host: string, signal
   });
 }
 
+/** What the authoring form needs to pick its sign-in options.
+ * - `oauth`: the server publishes OAuth metadata; `clientRegistration` says
+ *   which automatic client methods its authorization server advertises.
+ * - `none`: the server answered without an auth challenge and publishes no
+ *   OAuth metadata.
+ * - `other`: the server challenged (401/403) but publishes no OAuth metadata,
+ *   so it expects some other credential (typically a request header). */
+export type OAuthDiscovery =
+  | { hosts: string[]; auth: 'oauth'; clientRegistration: { cimd: boolean; dcr: boolean } }
+  | { hosts: string[]; auth: 'none' | 'other' };
+
 /** Discover only the hosts needed for PRM/AS discovery and OAuth endpoints.
  * This is an authenticated authoring preview, never an OAuth/client-secret
  * request. Its result grants nothing until the owner saves the connector. */
@@ -96,7 +107,7 @@ export async function discoverOAuthHosts(opts: {
   resolver?: HostResolver;
   request?: typeof requestMetadata;
   signal?: AbortSignal;
-}): Promise<{ hosts: string[] }> {
+}): Promise<OAuthDiscovery> {
   const resource = metadataUrl(opts.resourceUrl);
   const resolver = opts.resolver ?? (async (host: string) => (await lookup(host)).address);
   const get = opts.request ?? requestMetadata;
@@ -104,6 +115,11 @@ export async function discoverOAuthHosts(opts: {
   const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout;
   const hosts = new Set<string>();
   let requests = 0;
+  // Status of the unauthenticated resource probe, and whether any metadata
+  // request after it succeeded. Together they separate "this server has no
+  // OAuth" from "OAuth discovery broke part-way".
+  let resourceStatus: number | undefined;
+  let metadataSeen = false;
 
   async function check(value: string): Promise<{ url: URL; address: string }> {
     signal.throwIfAborted();
@@ -126,8 +142,13 @@ export async function discoverOAuthHosts(opts: {
     for (let hop = 0; ; hop++) {
       if (++requests > MAX_REQUESTS) throw new BlockedUrlError('too many OAuth metadata requests');
       const { url, address } = await check(current);
-      const response = await get(url, { address, signal, headersOnly: input.toString() === resource.href });
-      if (response.status < 300 || response.status >= 400) return response;
+      const isResource = input.toString() === resource.href;
+      const response = await get(url, { address, signal, headersOnly: isResource });
+      if (response.status < 300 || response.status >= 400) {
+        if (isResource) resourceStatus = response.status;
+        else if (response.ok) metadataSeen = true;
+        return response;
+      }
       const location = response.headers.get('location');
       if (!location) return response;
       if (hop >= 5) throw new BlockedUrlError('too many OAuth metadata redirects');
@@ -135,11 +156,20 @@ export async function discoverOAuthHosts(opts: {
     }
   };
 
-  const { metadata } = await discoverMetadata({
-    resourceUrl: resource.href,
-    fetchFn,
-    checkUrl: async (url) => { await check(url); },
-  });
+  let metadata: Awaited<ReturnType<typeof discoverMetadata>>['metadata'];
+  try {
+    ({ metadata } = await discoverMetadata({
+      resourceUrl: resource.href,
+      fetchFn,
+      checkUrl: async (url) => { await check(url); },
+    }));
+  } catch (err) {
+    // Only a server that answered and published no metadata at all is
+    // classified; blocked hosts, timeouts and partial metadata stay failures.
+    if (err instanceof BlockedUrlError || signal.aborted || resourceStatus === undefined || metadataSeen) throw err;
+    const challenged = resourceStatus === 401 || resourceStatus === 403;
+    return { hosts: [resource.hostname.replace(/^\[|\]$/g, '')], auth: challenged ? 'other' : 'none' };
+  }
   // Authorization is opened in the browser; token and registration endpoints
   // receive credentials later. Validate and show them, but never fetch them here.
   if (!metadata.authorization_endpoint || !metadata.token_endpoint) {
@@ -148,5 +178,12 @@ export async function discoverOAuthHosts(opts: {
   for (const endpoint of [metadata.issuer, metadata.authorization_endpoint, metadata.token_endpoint, metadata.registration_endpoint]) {
     if (endpoint) await check(endpoint);
   }
-  return { hosts: [...hosts].sort() };
+  return {
+    hosts: [...hosts].sort(),
+    auth: 'oauth',
+    clientRegistration: {
+      cimd: metadata.client_id_metadata_document_supported === true,
+      dcr: Boolean(metadata.registration_endpoint),
+    },
+  };
 }

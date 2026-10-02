@@ -9,6 +9,7 @@ import { connectorIdFromName } from '@/lib/connector-form';
 import {
   discoverOAuthHosts,
   getOAuthClientMetadata,
+  type OAuthDiscovery,
 } from '@/lib/connectors-oauth';
 import { setDestinationCredential, refForDestination } from '@/lib/credentials';
 import {
@@ -16,7 +17,7 @@ import {
   remoteCapabilities,
   remoteErrors,
   serverHost,
-  type ClientRegistration,
+  type RemoteMcpDraft,
 } from '@/lib/remote-mcp-form';
 import { cn } from '@/lib/utils';
 import {
@@ -35,7 +36,6 @@ import {
   FieldDescription,
   FieldError,
   FieldSet,
-  FieldLegend,
   FieldTitle,
 } from '@/components/ui/field';
 import {
@@ -43,59 +43,23 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { Separator } from '@/components/ui/separator';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import type { ConnectorEditDialogProps } from './LegacyConnectorEditDialog';
 
-const methods: {
-  value: ClientRegistration;
-  label: string;
-  description: string;
-  summary: string;
-}[] = [
-  {
-    value: 'auto',
-    label: 'Automatic (recommended)',
-    description: 'Use the method supported by this server.',
-    summary: 'Automatic',
-  },
-  {
-    value: 'cimd',
-    label: 'AX’s published identity (CIMD)',
-    description: 'Use AX’s hosted client details. No setup needed.',
-    summary: 'AX identity',
-  },
-  {
-    value: 'dcr',
-    label: 'Register automatically (DCR)',
-    description: 'Create an OAuth client with this server.',
-    summary: 'Auto-register',
-  },
-  {
-    value: 'custom',
-    label: 'Use my own client',
-    description: 'Enter the client details registered with this service.',
-    summary: 'Custom client',
-  },
-];
-
 function Disclosure({
   title,
   summary,
   open,
   onOpenChange,
-  preview,
   children,
 }: {
   title: string;
   summary: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  preview?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -123,7 +87,6 @@ function Disclosure({
       <CollapsibleContent>
         <FieldGroup className="gap-4 pb-5 pt-1">{children}</FieldGroup>
       </CollapsibleContent>
-      {!open && preview && <div className="pb-5">{preview}</div>}
     </Collapsible>
   );
 }
@@ -138,20 +101,15 @@ export function RemoteMcpConnectorForm({
   const id = useId();
   const formRef = useRef<HTMLFormElement>(null);
   const [draft, setDraft] = useState(() => remoteDraft(connector));
-  const [choosingClient, setChoosingClient] = useState(
-    draft.registration !== 'custom',
-  );
-  const [clientOpen, setClientOpen] = useState(false);
   const [headersOpen, setHeadersOpen] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const keyMode = connector?.keyMode ?? 'personal';
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
-  const [metadata, setMetadata] = useState<{
-    clientId: string;
-    redirectUri: string;
-  } | null>(null);
+  const [metadata, setMetadata] = useState<
+    { clientId: string; redirectUri: string } | 'loading' | 'unavailable'
+  >('loading');
   const [copied, setCopied] = useState(false);
   const [editingClientSecret, setEditingClientSecret] = useState(false);
   const [newId] = useState(
@@ -159,12 +117,11 @@ export function RemoteMcpConnectorForm({
       `${connectorIdFromName(connector?.name ?? 'remote').slice(0, 48)}-${crypto.randomUUID().slice(0, 8)}`,
   );
   const [retry, setRetry] = useState(0);
-  const [discovery, setDiscovery] = useState<{
-    url: string;
-    status: 'loading' | 'ready' | 'failed';
-    hosts: string[];
-  } | null>(null);
-  const [manualHosts, setManualHosts] = useState(false);
+  const [discovery, setDiscovery] = useState<
+    | { url: string; status: 'loading' | 'failed' }
+    | { url: string; status: 'ready'; result: OAuthDiscovery }
+    | null
+  >(null);
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const fieldId = (name: string) => `${id}-${name}`;
   const update = <K extends keyof typeof draft>(
@@ -173,39 +130,55 @@ export function RemoteMcpConnectorForm({
   ) => setDraft((current) => ({ ...current, [key]: value }));
   const url = draft.url.trim();
   const host = serverHost(url);
-  const originalHost = serverHost(
-    connector?.capabilities.mcpServers[0]?.url ?? '',
-  );
+  const savedUrl = connector?.capabilities.mcpServers[0]?.url ?? '';
+  const originalHost = serverHost(savedUrl);
   const changedDestination = Boolean(
     originalHost &&
       host &&
       host !== originalHost &&
       draft.headers.some((h) => h.saved),
   );
+  const discovered =
+    discovery?.url === url && discovery.status === 'ready'
+      ? discovery.result
+      : undefined;
   const awaitingDiscovery = Boolean(
-    draft.signIn === 'oauth' &&
-      host &&
-      !manualHosts &&
+    host &&
       (!discovery || discovery.url !== url || discovery.status === 'loading'),
   );
   const discoveryFailed = Boolean(
-    draft.signIn === 'oauth' &&
-      !manualHosts &&
-      discovery?.url === url &&
-      discovery.status === 'failed',
+    host && discovery?.url === url && discovery.status === 'failed',
   );
-  const cimdAvailable = metadata?.clientId.startsWith('https://') ?? false;
-  const knownHosts = [
-    ...new Set([
-      ...(host ? [host] : []),
-      ...(connector?.capabilities.allowedHosts ?? []),
-      ...(discovery?.url === url ? discovery.hosts : []),
-    ]),
-  ];
-  const hostCount = new Set([
-    ...knownHosts,
-    ...draft.hosts.split(/[\s,]+/).filter(Boolean),
-  ]).size;
+  // When the saved server can't be reached, its saved sign-in still stands,
+  // so the rest of the connector stays editable. A new or changed URL has no
+  // saved answer to fall back on.
+  const usingSavedSignIn = discoveryFailed && Boolean(connector) && url === savedUrl;
+  const signIn: RemoteMcpDraft['signIn'] = discovered
+    ? discovered.auth === 'oauth'
+      ? 'oauth'
+      : 'none'
+    : draft.signIn;
+  const signInKnown = Boolean(discovered) || usingSavedSignIn;
+  // The server picks CIMD over DCR for 'auto'; CIMD also needs AX itself to be
+  // reachable at a public HTTPS URL.
+  const clientMetadata = typeof metadata === 'object' ? metadata : null;
+  const cimdAvailable =
+    metadata === 'loading' ||
+    (clientMetadata?.clientId.startsWith('https://') ?? false);
+  const automaticMethod =
+    discovered?.auth === 'oauth'
+      ? discovered.clientRegistration.cimd && cimdAvailable
+        ? ('cimd' as const)
+        : discovered.clientRegistration.dcr
+          ? ('dcr' as const)
+          : undefined
+      : undefined;
+  const registration: RemoteMcpDraft['registration'] = !discovered
+    ? draft.registration
+    : draft.registration === 'custom' || !automaticMethod
+      ? 'custom'
+      : 'auto';
+  const effectiveDraft: RemoteMcpDraft = { ...draft, signIn, registration };
   const addHeader = () =>
     update('headers', [
       ...draft.headers,
@@ -234,7 +207,9 @@ export function RemoteMcpConnectorForm({
       (value) => {
         if (!stale) setMetadata(value);
       },
-      () => {},
+      () => {
+        if (!stale) setMetadata('unavailable');
+      },
     );
     return () => {
       stale = true;
@@ -242,22 +217,21 @@ export function RemoteMcpConnectorForm({
   }, []);
   useEffect(() => {
     setDestinationConfirmed(false);
-    setManualHosts(false);
-    if (!host || draft.signIn !== 'oauth') {
+    if (!host) {
       setDiscovery(null);
       return;
     }
     const controller = new AbortController();
-    setDiscovery({ url, status: 'loading', hosts: [] });
+    setDiscovery({ url, status: 'loading' });
     const timer = setTimeout(() => {
       void discoverOAuthHosts(url, controller.signal).then(
         (result) => {
           if (!controller.signal.aborted)
-            setDiscovery({ url, status: 'ready', hosts: result.hosts });
+            setDiscovery({ url, status: 'ready', result });
         },
         () => {
           if (!controller.signal.aborted)
-            setDiscovery({ url, status: 'failed', hosts: [] });
+            setDiscovery({ url, status: 'failed' });
         },
       );
     }, 500);
@@ -265,14 +239,20 @@ export function RemoteMcpConnectorForm({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [url, host, draft.signIn, retry]);
+  }, [url, host, retry]);
+  useEffect(() => {
+    // A server that wants a key but has no OAuth needs the header section.
+    if (discovered?.auth === 'other') setHeadersOpen(true);
+  }, [discovered?.auth]);
+
+  const blocked = awaitingDiscovery || (discoveryFailed && !usingSavedSignIn);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (saving || awaitingDiscovery || discoveryFailed) return;
-    const nextErrors = remoteErrors(draft);
+    if (saving || blocked) return;
+    const nextErrors = remoteErrors(effectiveDraft);
     if (
-      draft.signIn === 'oauth' &&
+      signIn === 'oauth' &&
       keyMode === 'workspace' &&
       !(
         connector?.keyMode === 'workspace' &&
@@ -284,19 +264,11 @@ export function RemoteMcpConnectorForm({
       )
     )
       nextErrors.workspace =
-        'This connector uses a workspace key. Create a separate connector to use OAuth.';
-    if (
-      draft.signIn === 'oauth' &&
-      draft.registration === 'cimd' &&
-      !cimdAvailable
-    )
-      nextErrors.clientId =
-        'Published identity requires AX to have a public HTTPS URL.';
+        'This connector uses a workspace key, but this server signs in with OAuth. Create a separate connector for it.';
     if (changedDestination && !destinationConfirmed)
       nextErrors.destination = 'Confirm the destination for saved headers.';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
-      if (nextErrors.clientId) setClientOpen(true);
       if (
         Object.keys(nextErrors).some(
           (key) => key.startsWith('name-') || key.startsWith('value-'),
@@ -321,11 +293,7 @@ export function RemoteMcpConnectorForm({
         ownerId: null,
       };
       let clientSecretRef = draft.clientSecretRef;
-      if (
-        draft.signIn === 'oauth' &&
-        draft.registration === 'custom' &&
-        draft.clientSecret
-      ) {
+      if (signIn === 'oauth' && registration === 'custom' && draft.clientSecret) {
         const destination = {
           kind: 'account' as const,
           service: connectorId,
@@ -353,12 +321,10 @@ export function RemoteMcpConnectorForm({
           });
       }
       const capabilities = remoteCapabilities(
-        { ...draft, clientSecretRef },
+        { ...effectiveDraft, clientSecretRef },
         connectorId,
         connector,
-        discovery?.url === url && discovery.status === 'ready'
-          ? discovery.hosts
-          : [],
+        discovered?.hosts ?? [],
       );
       const input = {
         connectorId,
@@ -390,7 +356,7 @@ export function RemoteMcpConnectorForm({
   }
 
   const textField = (
-    name: 'name' | 'url' | 'clientId' | 'hosts' | 'scopes',
+    name: 'name' | 'url' | 'clientId' | 'scopes',
     label: string,
     placeholder?: string,
   ) => (
@@ -411,6 +377,19 @@ export function RemoteMcpConnectorForm({
       )}
     </Field>
   );
+
+  const signInDescription =
+    signIn === 'none'
+      ? discovered?.auth === 'other'
+        ? undefined
+        : 'This server doesn’t need sign-in. If it expects a key, add it as a request header.'
+      : registration === 'custom'
+        ? automaticMethod
+          ? 'Each person connects with their own account, using the OAuth client you registered with this service.'
+          : 'Each person connects with their own account. This server doesn’t support automatic setup, so enter the OAuth client you registered with it.'
+        : automaticMethod === 'cimd'
+          ? 'Each person connects with their own account. AX identifies itself with its published client details, so there’s nothing to set up.'
+          : 'Each person connects with their own account. AX registers itself with this server automatically, so there’s nothing to set up.';
 
   return (
     <Dialog
@@ -443,121 +422,84 @@ export function RemoteMcpConnectorForm({
                   {textField('name', 'Name', 'e.g. Linear')}
                   {textField('url', 'Server URL', 'https://example.com/mcp')}
                 </FieldGroup>
-                <Field className="gap-2">
-                  <FieldLabel id={fieldId('sign-in-label')}>Sign-in</FieldLabel>
-                  <ToggleGroup
-                    type="single"
-                    value={draft.signIn}
-                    onValueChange={(value) => {
-                      if (value === 'none' || value === 'oauth')
-                        update('signIn', value);
-                    }}
-                    variant="outline"
-                    className="grid grid-cols-2 gap-1"
-                    aria-labelledby={fieldId('sign-in-label')}
+                {awaitingDiscovery && (
+                  <p
+                    role="status"
+                    className="flex items-center gap-2 text-sm text-muted-foreground"
                   >
-                    <ToggleGroupItem value="none" className="h-11 px-3 sm:h-10">
-                      No sign-in
-                    </ToggleGroupItem>
-                    <ToggleGroupItem
-                      value="oauth"
-                      className="h-11 px-3 sm:h-10"
-                    >
-                      OAuth
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                  <FieldDescription>
-                    {draft.signIn === 'oauth'
-                      ? 'Each user connects with their own account.'
-                      : 'Connect without OAuth. Add a header below if the server needs a key.'}
-                  </FieldDescription>
-                </Field>
-                <div>
-                  {draft.signIn === 'oauth' && (
-                    <Disclosure
-                      title="OAuth client"
-                      summary={
-                        methods.find((m) => m.value === draft.registration)!
-                          .summary
-                      }
-                      open={clientOpen}
-                      onOpenChange={setClientOpen}
-                      preview={
-                        draft.registration === 'cimd' ||
-                        draft.registration === 'dcr' ? (
-                          <FieldDescription>
-                            {draft.registration === 'cimd'
-                              ? 'AX shares its client details from a published URL. There are no credentials to enter.'
-                              : 'AX registers an OAuth client with this server when an account connects.'}
-                          </FieldDescription>
-                        ) : undefined
-                      }
-                    >
-                      {(draft.registration !== 'custom' || choosingClient) && (
-                        <FieldSet className="gap-0">
-                          <FieldLegend className="sr-only">
-                            OAuth client method
-                          </FieldLegend>
-                          <RadioGroup
-                            value={draft.registration}
-                            onValueChange={(value) => {
+                    <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                    Checking how this server signs in…
+                  </p>
+                )}
+                {discoveryFailed && (
+                  <Alert>
+                    <AlertDescription className="flex flex-col gap-3">
+                      <p>
+                        {usingSavedSignIn
+                          ? 'We couldn’t reach this server to check how it signs in, so we’ll keep its saved settings.'
+                          : 'We couldn’t reach this server to check how it signs in. Check the URL and try again.'}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="self-start"
+                        onClick={() => setRetry((n) => n + 1)}
+                      >
+                        Retry
+                      </Button>
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {signInKnown && (
+                  <>
+                    <Field className="gap-2">
+                      <FieldTitle>
+                        {signIn === 'oauth'
+                          ? 'Sign-in: OAuth'
+                          : discovered?.auth === 'other'
+                            ? 'Sign-in: request header'
+                            : 'Sign-in: none'}
+                      </FieldTitle>
+                      {signInDescription && (
+                        <FieldDescription>{signInDescription}</FieldDescription>
+                      )}
+                      {discovered?.auth === 'other' && (
+                        <Alert>
+                          <AlertDescription>
+                            This server asks for credentials but doesn’t
+                            support OAuth. Add the key it expects as a request
+                            header.
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                      {signIn === 'oauth' &&
+                        discovered &&
+                        automaticMethod && (
+                          // Field stretches direct children; the wrapper keeps
+                          // the link at its natural width, left-aligned.
+                          <div>
+                          <Button
+                            type="button"
+                            variant="link"
+                            size="sm"
+                            className="h-auto p-0"
+                            onClick={() =>
                               update(
                                 'registration',
-                                value as ClientRegistration,
-                              );
-                              setChoosingClient(value !== 'custom');
-                            }}
-                            aria-label="OAuth client method"
-                            className="gap-4"
+                                registration === 'custom' ? 'auto' : 'custom',
+                              )
+                            }
                           >
-                            {methods.map((method) => (
-                              <Field
-                                key={method.value}
-                                orientation="horizontal"
-                                className="items-start gap-3"
-                                data-disabled={
-                                  method.value === 'cimd' && !cimdAvailable
-                                }
-                              >
-                                <RadioGroupItem
-                                  id={fieldId(method.value)}
-                                  value={method.value}
-                                  className="mt-1 shrink-0"
-                                  disabled={
-                                    method.value === 'cimd' && !cimdAvailable
-                                  }
-                                />
-                                <div className="flex min-w-0 flex-col gap-1">
-                                  <FieldLabel htmlFor={fieldId(method.value)}>
-                                    {method.label}
-                                  </FieldLabel>
-                                  <FieldDescription>
-                                    {method.value === 'cimd' && !cimdAvailable
-                                      ? 'Available when AX has a public HTTPS URL.'
-                                      : method.description}
-                                  </FieldDescription>
-                                </div>
-                              </Field>
-                            ))}
-                          </RadioGroup>
-                        </FieldSet>
-                      )}
-                      {draft.registration === 'custom' && !choosingClient && (
-                        <FieldGroup className="gap-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <FieldDescription>
-                              Enter the client registered with this service.
-                            </FieldDescription>
-                            <Button
-                              type="button"
-                              variant="link"
-                              size="sm"
-                              className="h-auto shrink-0 p-0"
-                              onClick={() => setChoosingClient(true)}
-                            >
-                              Change method
-                            </Button>
+                            {registration === 'custom'
+                              ? 'Use automatic setup instead'
+                              : 'Use my own OAuth client instead'}
+                          </Button>
                           </div>
+                        )}
+                    </Field>
+                    {signIn === 'oauth' && registration === 'custom' && (
+                      <FieldGroup className="gap-4">
                           {textField('clientId', 'Client ID')}
                           <Field>
                             <FieldLabel htmlFor={fieldId('client-secret')}>
@@ -608,17 +550,17 @@ export function RemoteMcpConnectorForm({
                             <FieldTitle>Redirect URL</FieldTitle>
                             <div className="flex items-center gap-3">
                               <p className="min-w-0 flex-1 break-all text-xs leading-4 text-muted-foreground">
-                                {metadata?.redirectUri ??
+                                {clientMetadata?.redirectUri ??
                                   'OAuth configuration unavailable'}
                               </p>
                               <Button
                                 type="button"
                                 variant="outline"
                                 aria-label="Copy redirect URL"
-                                disabled={!metadata}
+                                disabled={!clientMetadata}
                                 onClick={() => {
                                   void navigator.clipboard
-                                    .writeText(metadata!.redirectUri)
+                                    .writeText(clientMetadata!.redirectUri)
                                     .then(
                                       () => setCopied(true),
                                       () => setCopied(false),
@@ -632,10 +574,9 @@ export function RemoteMcpConnectorForm({
                               Register this URL with the service.
                             </FieldDescription>
                           </Field>
-                        </FieldGroup>
-                      )}
-                    </Disclosure>
-                  )}
+                      </FieldGroup>
+                    )}
+                    <div>
                   <Disclosure
                     title="Request headers"
                     summary={
@@ -824,81 +765,27 @@ export function RemoteMcpConnectorForm({
                       </Field>
                     )}
                   </Disclosure>
-                  <Disclosure
-                    title="Connection details"
-                    summary={`${hostCount} ${hostCount === 1 ? 'host' : 'hosts'}`}
-                    open={detailsOpen}
-                    onOpenChange={setDetailsOpen}
-                  >
-                    <FieldDescription>
-                      These hosts are used for the server and its sign-in flow.
-                    </FieldDescription>
-                    <ul
-                      aria-label="Connection hosts"
-                      className="flex flex-col gap-3 text-sm"
-                    >
-                      {knownHosts.map((knownHost) => (
-                        <li key={knownHost} className="break-all">
-                          {knownHost}
-                        </li>
-                      ))}
-                    </ul>
-                    {textField(
-                      'hosts',
-                      'Additional allowed hosts (optional)',
-                      'api.example.com',
-                    )}
-                    {draft.signIn === 'oauth' && (
-                      <>
-                        {textField(
-                          'scopes',
-                          'OAuth scopes (optional)',
-                          'Use the server’s defaults',
-                        )}
-                      </>
-                    )}
-                  </Disclosure>
-                  <Separator />
-                </div>
-                {awaitingDiscovery && (
-                  <p
-                    role="status"
-                    className="flex items-center gap-2 text-sm text-muted-foreground"
-                  >
-                    <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
-                    Checking OAuth connection details…
-                  </p>
-                )}
-                {discoveryFailed && (
-                  <Alert>
-                    <AlertDescription className="flex flex-col gap-3">
-                      <p>
-                        We couldn’t discover OAuth hosts. Retry, or enter the
-                        required hosts in Connection details.
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setRetry((n) => n + 1)}
+                      {signIn === 'oauth' && (
+                        <Disclosure
+                          title="Advanced"
+                          summary={
+                            draft.scopes.trim()
+                              ? 'Custom scopes'
+                              : 'Default scopes'
+                          }
+                          open={advancedOpen}
+                          onOpenChange={setAdvancedOpen}
                         >
-                          Retry
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setManualHosts(true);
-                            setDetailsOpen(true);
-                          }}
-                        >
-                          Enter hosts manually
-                        </Button>
-                      </div>
-                    </AlertDescription>
-                  </Alert>
+                          {textField(
+                            'scopes',
+                            'OAuth scopes (optional)',
+                            'Use the server’s defaults',
+                          )}
+                        </Disclosure>
+                      )}
+                      <Separator />
+                    </div>
+                  </>
                 )}
                 {errors.workspace && (
                   <FieldError>{errors.workspace}</FieldError>
@@ -924,7 +811,7 @@ export function RemoteMcpConnectorForm({
             <Button
               type="submit"
               className="h-11 sm:h-10"
-              disabled={saving || awaitingDiscovery || discoveryFailed}
+              disabled={saving || blocked}
             >
               {saving
                 ? 'Saving…'
