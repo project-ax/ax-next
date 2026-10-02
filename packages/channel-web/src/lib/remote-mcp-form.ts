@@ -23,7 +23,6 @@ export interface RemoteMcpDraft {
   clientSecret: string;
   clientSecretRef: string;
   headers: HeaderDraft[];
-  hosts: string;
   scopes: string;
 }
 
@@ -67,8 +66,6 @@ export function remoteDraft(connector?: Connector): RemoteMcpDraft {
         ? [{ slot: s.slot, name: s.headerName, value: '', saved: true }]
         : [],
     ),
-    // Existing hosts are displayed separately; this field adds hosts to that set.
-    hosts: '',
     scopes: (oauth?.scopes ?? []).join(' '),
   };
 }
@@ -185,7 +182,6 @@ export function remoteCapabilities(
     allowedHosts: [
       ...new Set([
         ...base.allowedHosts,
-        ...draft.hosts.split(/[\s,]+/).filter(Boolean),
         ...discoveredHosts,
         serverHost(draft.url.trim())!,
       ]),

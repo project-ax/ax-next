@@ -4,8 +4,9 @@ import { beginOAuth, discoverOAuthHosts, getOAuthStatus } from '../connectors-oa
 describe('discoverOAuthHosts', () => {
   it('POSTs only the draft URL, with authentication/CSRF headers and a cancellation signal', async () => {
     const signal = new AbortController().signal;
-    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ hosts: ['accounts.google.com', 'oauth2.googleapis.com'] })));
-    expect(await discoverOAuthHosts('https://gmailmcp.googleapis.com/mcp/v1', signal)).toEqual({ hosts: ['accounts.google.com', 'oauth2.googleapis.com'] });
+    const preview = { hosts: ['accounts.google.com', 'oauth2.googleapis.com'], auth: 'oauth', clientRegistration: { cimd: false, dcr: true } };
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(preview)));
+    expect(await discoverOAuthHosts('https://gmailmcp.googleapis.com/mcp/v1', signal)).toEqual(preview);
     expect(fetch).toHaveBeenCalledWith('/api/connectors/oauth/discover-hosts', expect.objectContaining({
       method: 'POST', credentials: 'include', signal,
       headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
@@ -15,12 +16,18 @@ describe('discoverOAuthHosts', () => {
 
   it('returns a neutral discovery failure rather than reflecting provider content', async () => {
     globalThis.fetch = vi.fn(async () => new Response('untrusted response', { status: 502 }));
-    await expect(discoverOAuthHosts('https://mcp.example.com')).rejects.toThrow('Retry or enter the hosts manually');
+    await expect(discoverOAuthHosts('https://mcp.example.com')).rejects.toThrow('Check the URL and retry');
   });
 
-  it.each([null, {}, { hosts: 'wrong' }, { hosts: [1] }, { hosts: [''] }, { hosts: Array(13).fill('example.com') }])('rejects an invalid host preview %j before it reaches the dialog', async (body) => {
+  it.each(['none', 'other'] as const)('passes through a %s sign-in preview without client methods', async (auth) => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ hosts: ['mcp.example.com'], auth, clientRegistration: { cimd: true, dcr: true } })));
+    expect(await discoverOAuthHosts('https://mcp.example.com')).toEqual({ hosts: ['mcp.example.com'], auth });
+  });
+
+  it.each([null, {}, { hosts: 'wrong' }, { hosts: [1] }, { hosts: [''] }, { hosts: Array(13).fill('example.com') },
+    { hosts: [] }, { hosts: [], auth: 'basic' }, { hosts: [], auth: 'oauth' }, { hosts: [], auth: 'oauth', clientRegistration: { cimd: 'yes', dcr: true } }])('rejects an invalid host preview %j before it reaches the dialog', async (body) => {
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(body)));
-    await expect(discoverOAuthHosts('https://mcp.example.com')).rejects.toThrow('Retry or enter the hosts manually');
+    await expect(discoverOAuthHosts('https://mcp.example.com')).rejects.toThrow('Check the URL and retry');
   });
 });
 

@@ -2,7 +2,7 @@
  * OAuth REST client for MCP connector OAuth flows.
  *
  * Wraps the OAuth backend endpoints:
- *   POST /api/connectors/oauth/discover-hosts → { hosts }
+ *   POST /api/connectors/oauth/discover-hosts → { hosts, auth, clientRegistration? }
  *   POST /api/connectors/oauth/begin  → { authorizationUrl }
  *   GET  /api/connectors/oauth/status → { status }
  *
@@ -21,8 +21,17 @@ export async function getOAuthClientMetadata(): Promise<{ clientId: string; redi
   return { clientId: metadata.client_id, redirectUri: metadata.redirect_uris[0] };
 }
 
+/** What a remote MCP server's public metadata says about signing in.
+ *  `oauth` carries the automatic client methods its authorization server
+ *  advertises; `other` means it challenged without publishing OAuth metadata. */
+export type OAuthDiscovery =
+  | { hosts: string[]; auth: 'oauth'; clientRegistration: { cimd: boolean; dcr: boolean } }
+  | { hosts: string[]; auth: 'none' | 'other' };
+
+const DISCOVERY_FAILED = 'We couldn’t check this server. Check the URL and retry.';
+
 /** Credential-free metadata preview for an unsaved HTTP MCP connector. */
-export async function discoverOAuthHosts(url: string, signal?: AbortSignal): Promise<{ hosts: string[] }> {
+export async function discoverOAuthHosts(url: string, signal?: AbortSignal): Promise<OAuthDiscovery> {
   const res = await fetch('/api/connectors/oauth/discover-hosts', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
@@ -30,13 +39,19 @@ export async function discoverOAuthHosts(url: string, signal?: AbortSignal): Pro
     body: JSON.stringify({ url }),
     ...(signal ? { signal } : {}),
   });
-  if (!res.ok) throw new Error('Could not discover OAuth hosts. Retry or enter the hosts manually.');
-  const result = await res.json() as { hosts?: unknown } | null;
+  if (!res.ok) throw new Error(DISCOVERY_FAILED);
+  const result = await res.json() as { hosts?: unknown; auth?: unknown; clientRegistration?: unknown } | null;
   if (!result || !Array.isArray(result.hosts) || result.hosts.length > 12 ||
       !result.hosts.every((host: unknown) => typeof host === 'string' && host.length > 0 && host.length <= 253)) {
-    throw new Error('Could not discover OAuth hosts. Retry or enter the hosts manually.');
+    throw new Error(DISCOVERY_FAILED);
   }
-  return { hosts: result.hosts as string[] };
+  const hosts = result.hosts as string[];
+  if (result.auth === 'none' || result.auth === 'other') return { hosts, auth: result.auth };
+  const registration = result.clientRegistration as { cimd?: unknown; dcr?: unknown } | null | undefined;
+  if (result.auth !== 'oauth' || typeof registration?.cimd !== 'boolean' || typeof registration.dcr !== 'boolean') {
+    throw new Error(DISCOVERY_FAILED);
+  }
+  return { hosts, auth: 'oauth', clientRegistration: { cimd: registration.cimd, dcr: registration.dcr } };
 }
 
 /**

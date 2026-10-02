@@ -4,7 +4,6 @@ import {
   render,
   screen,
   waitFor,
-  within,
 } from '@testing-library/react';
 import { ConnectorEditDialog } from '../ConnectorEditDialog';
 import type { Connector } from '@/lib/connectors';
@@ -47,6 +46,8 @@ const fixture: Connector = {
 let writes: { url: string; body: Record<string, unknown> }[];
 let failLoad = false;
 let failDiscovery = false;
+let discovery: Record<string, unknown>;
+let clientIdUrl: string;
 let stallRepeatedConnectorLoad = false;
 let connectorReads = 0;
 const initialCapabilities = structuredClone(fixture.capabilities);
@@ -56,6 +57,12 @@ beforeEach(() => {
   writes = [];
   failLoad = false;
   failDiscovery = false;
+  discovery = {
+    hosts: ['auth.example.com'],
+    auth: 'oauth',
+    clientRegistration: { cimd: true, dcr: true },
+  };
+  clientIdUrl = 'https://ax.example.com/api/connectors/oauth/client-metadata';
   stallRepeatedConnectorLoad = false;
   connectorReads = 0;
   vi.stubGlobal(
@@ -64,8 +71,7 @@ beforeEach(() => {
       if (input.endsWith('/client-metadata'))
         return new Response(
           JSON.stringify({
-            client_id:
-              'https://ax.example.com/api/connectors/oauth/client-metadata',
+            client_id: clientIdUrl,
             redirect_uris: [
               'https://ax.example.com/api/connectors/oauth/callback',
             ],
@@ -74,7 +80,7 @@ beforeEach(() => {
       if (input.endsWith('/discover-hosts'))
         return failDiscovery
           ? new Response('', { status: 503 })
-          : new Response(JSON.stringify({ hosts: ['auth.example.com'] }));
+          : new Response(JSON.stringify(discovery));
       if (init?.method === 'POST' || init?.method === 'PATCH') {
         writes.push({
           url: input,
@@ -106,6 +112,25 @@ async function openEditor() {
   );
   return options;
 }
+async function openNew(isAdmin = false) {
+  const options = { ...props(), target: 'new' as const, isAdmin };
+  render(<ConnectorEditDialog {...options} />);
+  fireEvent.change(screen.getByLabelText('Name'), {
+    target: { value: 'New MCP' },
+  });
+  fireEvent.change(screen.getByLabelText('Server URL'), {
+    target: { value: 'https://public.example.com/mcp' },
+  });
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Add connector' })).toBeEnabled(),
+  );
+  return options;
+}
+const withoutClientId = () => {
+  fixture.capabilities.credentials = [
+    { kind: 'oauth', slot: 'TOKEN', server: 'linear' },
+  ];
+};
 describe('remote connector editor', () => {
   it('opens invalid header fields and associates their errors for assistive technology', async () => {
     await openEditor();
@@ -125,12 +150,24 @@ describe('remote connector editor', () => {
     await waitFor(() => expect(input).toHaveFocus());
     expect(writes).toEqual([]);
   });
-  it('starts with compact disclosures and preserves hidden data on the user route', async () => {
-    const options = await openEditor();
-    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+  it('asks only for a name and URL until the server has been checked', async () => {
+    render(<ConnectorEditDialog {...props()} target="new" />);
+    expect(screen.getByLabelText('Name')).toBeVisible();
+    expect(screen.getByLabelText('Server URL')).toBeVisible();
+    expect(screen.queryByText(/Sign-in/)).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /OAuth client Custom client/ }),
-    ).toHaveAttribute('aria-expanded', 'false');
+      screen.queryByRole('button', { name: /Request headers/ }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Server URL'), {
+      target: { value: 'https://public.example.com/mcp' },
+    });
+    expect(await screen.findByText('Sign-in: OAuth')).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: /Request headers/ }),
+    ).toBeVisible();
+  });
+  it('preserves hidden data on the user route', async () => {
+    const options = await openEditor();
     fireEvent.change(screen.getByLabelText('Name'), {
       target: { value: 'Linear updated' },
     });
@@ -146,29 +183,25 @@ describe('remote connector editor', () => {
       credentials: [fixture.capabilities.credentials[0]],
     });
   });
-  it('supports all OAuth methods and custom fields only when requested', async () => {
+  it('switches a custom client to automatic setup without asking CIMD or DCR', async () => {
     await openEditor();
-    fireEvent.click(screen.getByRole('button', { name: /OAuth client/ }));
     expect(screen.getByLabelText('Client ID')).toHaveValue('existing-client');
     expect(screen.getByText('Saved securely')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Change method' }));
-    expect(
-      within(
-        screen.getByRole('radiogroup', { name: 'OAuth client method' }),
-      ).getAllByRole('radio'),
-    ).toHaveLength(4);
-    fireEvent.click(screen.getByLabelText('Register automatically (DCR)'));
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Use automatic setup instead' }),
+    );
     expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+    expect(screen.queryByText(/CIMD|DCR/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(JSON.stringify(writes[0]!.body)).toContain(
-      '"clientRegistration":"dcr"',
+      '"clientRegistration":"auto"',
     );
     expect(JSON.stringify(writes[0]!.body)).not.toContain('existing-client');
   });
   it('stores client secrets in the vault and writes only their reference to the connector', async () => {
     await openEditor();
-    fireEvent.click(screen.getByRole('button', { name: /OAuth client/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
     fireEvent.change(screen.getByLabelText(/Client secret/), {
       target: { value: 'new-confidential-value' },
@@ -186,7 +219,6 @@ describe('remote connector editor', () => {
   });
   it('preserves a saved secret if Replace is opened and left empty', async () => {
     await openEditor();
-    fireEvent.click(screen.getByRole('button', { name: /OAuth client/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toHaveLength(1));
@@ -194,8 +226,12 @@ describe('remote connector editor', () => {
       credentials: [{ clientSecretRef: 'account:linear:client' }],
     });
   });
-  it('adds headers with OAuth or no sign-in without sending values in connector JSON', async () => {
+  it('hides OAuth when the server needs no sign-in and keeps header values out of connector JSON', async () => {
+    discovery = { hosts: ['mcp.example.com'], auth: 'none' };
     await openEditor();
+    expect(screen.getByText('Sign-in: none')).toBeVisible();
+    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+    expect(screen.queryByText(/OAuth/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
     fireEvent.change(screen.getByLabelText('Header name'), {
@@ -204,10 +240,6 @@ describe('remote connector editor', () => {
     fireEvent.change(screen.getByLabelText('Value'), {
       target: { value: 'header-secret' },
     });
-    fireEvent.click(screen.getByRole('radio', { name: 'No sign-in' }));
-    expect(
-      screen.queryByRole('button', { name: /OAuth client/ }),
-    ).not.toBeInTheDocument();
     expect(screen.getByTestId('connector-access-notice')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toHaveLength(2));
@@ -223,6 +255,14 @@ describe('remote connector editor', () => {
     });
     expect(JSON.stringify(writes[1]!.body)).not.toContain('header-secret');
   });
+  it('points a server that challenges without OAuth at request headers', async () => {
+    discovery = { hosts: ['mcp.example.com'], auth: 'other' };
+    await openEditor();
+    expect(screen.getByText('Sign-in: request header')).toBeVisible();
+    expect(screen.getByText(/doesn’t\s+support OAuth/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Add header' })).toBeVisible();
+    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+  });
   it('blocks saving on a load failure and offers a safe retry', async () => {
     failLoad = true;
     render(<ConnectorEditDialog {...props()} />);
@@ -235,31 +275,43 @@ describe('remote connector editor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByLabelText('Name');
   });
-  it('requires an explicit manual-host decision when OAuth discovery fails', async () => {
+  it('keeps saved sign-in settings when the saved server cannot be checked', async () => {
     failDiscovery = true;
-    render(<ConnectorEditDialog {...props()} />);
-    await screen.findByText(/couldn’t discover/);
-    expect(screen.getByRole('button', { name: 'Save changes' })).toBeDisabled();
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Enter hosts manually' }),
-    );
+    await openEditor();
+    expect(screen.getByText(/keep its saved settings/)).toBeVisible();
+    expect(screen.getByLabelText('Client ID')).toHaveValue('existing-client');
     expect(
-      screen.getByLabelText('Additional allowed hosts (optional)'),
-    ).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled();
-  });
-  it('creates a remote server with no sign-in on the personal route', async () => {
-    const options = { ...props(), target: 'new' as const };
-    render(<ConnectorEditDialog {...options} />);
-    fireEvent.change(screen.getByLabelText('Name'), {
-      target: { value: 'Public MCP' },
+      screen.queryByLabelText(/allowed hosts/i),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]!.body.capabilities).toMatchObject({
+      credentials: [fixture.capabilities.credentials[0]],
+      allowedHosts: fixture.capabilities.allowedHosts,
     });
+  });
+  it('blocks a new connector until its server can be checked, then retries', async () => {
+    failDiscovery = true;
+    render(<ConnectorEditDialog {...props()} target="new" />);
     fireEvent.change(screen.getByLabelText('Server URL'), {
       target: { value: 'https://public.example.com/mcp' },
     });
-    expect(
-      screen.queryByRole('button', { name: /OAuth client/ }),
-    ).not.toBeInTheDocument();
+    await screen.findByText(/Check the URL and try again/);
+    expect(screen.getByRole('button', { name: 'Add connector' })).toBeDisabled();
+    expect(screen.queryByText(/Sign-in/)).not.toBeInTheDocument();
+    failDiscovery = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Sign-in: OAuth')).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Add connector' }),
+      ).toBeEnabled(),
+    );
+  });
+  it('creates a remote server with no sign-in on the personal route', async () => {
+    discovery = { hosts: ['public.example.com'], auth: 'none' };
+    const options = await openNew();
+    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes).toHaveLength(1);
@@ -278,29 +330,38 @@ describe('remote connector editor', () => {
     });
   });
   it('creates an admin connector shared and off by default without workspace controls', async () => {
-    const options = { ...props(), target: 'new' as const, isAdmin: true };
-    render(<ConnectorEditDialog {...options} />);
+    discovery = { hosts: ['public.example.com'], auth: 'none' };
+    const options = await openNew(true);
     expect(screen.queryByRole('button', { name: /Workspace settings/ })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New MCP' } });
-    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://public.example.com/mcp' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes[0]!.url).toBe('/admin/connectors');
     expect(writes[0]!.body).toMatchObject({ visibility: 'shared', defaultAttached: false, keyMode: 'personal' });
   });
-  it.each(['auto', 'cimd'] as const)(
-    'saves the %s OAuth method and headers together',
-    async (registration) => {
+  it.each([
+    {
+      method: 'CIMD',
+      clientRegistration: { cimd: true, dcr: false },
+      text: /published client details/,
+    },
+    {
+      method: 'DCR',
+      clientRegistration: { cimd: false, dcr: true },
+      text: /registers itself with this server automatically/,
+    },
+  ])(
+    'uses automatic setup for a $method server and saves headers with it',
+    async ({ clientRegistration, text }) => {
+      withoutClientId();
+      discovery = {
+        hosts: ['auth.example.com'],
+        auth: 'oauth',
+        clientRegistration,
+      };
       await openEditor();
-      fireEvent.click(screen.getByRole('button', { name: /OAuth client/ }));
-      fireEvent.click(screen.getByRole('button', { name: 'Change method' }));
-      fireEvent.click(
-        screen.getByLabelText(
-          registration === 'auto'
-            ? 'Automatic (recommended)'
-            : 'AX’s published identity (CIMD)',
-        ),
-      );
+      expect(screen.getByText(text)).toBeVisible();
+      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
       fireEvent.change(screen.getByLabelText('Header name'), {
@@ -313,12 +374,33 @@ describe('remote connector editor', () => {
       await waitFor(() => expect(writes).toHaveLength(2));
       expect(writes[1]!.body.capabilities).toMatchObject({
         credentials: [
-          { kind: 'oauth', clientRegistration: registration },
+          { kind: 'oauth', clientRegistration: 'auto' },
           { kind: 'api-key', headerName: 'X-Key' },
         ],
       });
     },
   );
+  it('requires a custom client when the server offers no automatic setup AX can use', async () => {
+    withoutClientId();
+    // CIMD needs AX at a public HTTPS URL; this deployment has none.
+    clientIdUrl = 'http://localhost/api/connectors/oauth/client-metadata';
+    discovery = {
+      hosts: ['auth.example.com'],
+      auth: 'oauth',
+      clientRegistration: { cimd: true, dcr: false },
+    };
+    await openEditor();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Client ID')).toBeVisible(),
+    );
+    expect(screen.getByText(/doesn’t support automatic setup/)).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: /automatic setup instead/ }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText(/Enter the client ID/)).toBeVisible();
+    expect(writes).toEqual([]);
+  });
   it('preserves existing sharing, default attachment and workspace key permissions', async () => {
     const original = fixture.keyMode;
     fixture.keyMode = 'workspace';
@@ -353,6 +435,11 @@ describe('remote connector editor', () => {
     fireEvent.change(screen.getByLabelText('Server URL'), {
       target: { value: 'https://other.example.com/mcp' },
     });
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Save changes' }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     const confirm = await screen.findByLabelText(
       'Send saved headers to other.example.com',
@@ -363,35 +450,27 @@ describe('remote connector editor', () => {
     await waitFor(() => expect(writes).toHaveLength(1));
     fixture.capabilities.credentials = original;
   });
-  it('shows saved and discovered hosts separately from additional hosts', async () => {
+  it('saves discovered hosts without showing or asking for a host list', async () => {
+    discovery = {
+      hosts: ['auth.example.com', 'tokens.example.com'],
+      auth: 'oauth',
+      clientRegistration: { cimd: true, dcr: true },
+    };
     await openEditor();
-    fireEvent.click(
-      screen.getByRole('button', { name: /Connection details 2 hosts/ }),
-    );
     expect(
-      within(screen.getByRole('list', { name: 'Connection hosts' }))
-        .getAllByRole('listitem')
-        .map((item) => item.textContent),
-    ).toEqual(['mcp.example.com', 'auth.example.com']);
+      screen.queryByRole('list', { name: 'Connection hosts' }),
+    ).not.toBeInTheDocument();
     expect(
-      screen.getByLabelText('Additional allowed hosts (optional)'),
-    ).toHaveValue('');
-    fireEvent.change(
-      screen.getByLabelText('Additional allowed hosts (optional)'),
-      {
-        target: { value: 'extra.example.com, auth.example.com' },
-      },
-    );
-    expect(
-      screen.getByRole('button', { name: /Connection details 3 hosts/ }),
-    ).toBeVisible();
+      screen.queryByRole('button', { name: /Connection details/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/allowed hosts/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(writes[0]!.body.capabilities).toMatchObject({
       allowedHosts: [
         'mcp.example.com',
         'auth.example.com',
-        'extra.example.com',
+        'tokens.example.com',
       ],
     });
   });
@@ -423,34 +502,6 @@ describe('remote connector editor', () => {
     expect(writes[0]!.body.payloadB64).toBe(btoa('second-secret'));
     expect(JSON.stringify(writes)).not.toContain('first-secret');
   });
-  it.each(['cimd', 'dcr'] as const)(
-    'explains %s without expanding the OAuth client choices',
-    async (method) => {
-      fixture.capabilities.credentials = [
-        {
-          kind: 'oauth',
-          slot: 'TOKEN',
-          server: 'linear',
-          clientRegistration: method,
-        },
-      ];
-      await openEditor();
-      expect(
-        screen.getByText(
-          method === 'cimd'
-            ? 'AX shares its client details from a published URL. There are no credentials to enter.'
-            : 'AX registers an OAuth client with this server when an account connects.',
-        ),
-      ).toBeVisible();
-      expect(
-        screen.queryByRole('radiogroup', { name: 'OAuth client method' }),
-      ).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: /OAuth client/ }));
-      expect(
-        screen.getByRole('radiogroup', { name: 'OAuth client method' }),
-      ).toBeVisible();
-    },
-  );
   it.each(['api', 'cli', 'stdio'] as const)(
     'keeps the %s connector editor reachable without converting it to remote MCP',
     async (mechanism) => {

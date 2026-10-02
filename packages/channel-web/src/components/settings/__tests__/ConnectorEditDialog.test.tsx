@@ -38,9 +38,15 @@ const FULL: Connector = {
   },
 };
 
+const oauthResult = (hosts: string[]): oauthLib.OAuthDiscovery => ({
+  hosts,
+  auth: 'oauth',
+  clientRegistration: { cimd: false, dcr: true },
+});
+
 describe('ConnectorEditDialog', () => {
   beforeEach(() => {
-    vi.spyOn(oauthLib, 'discoverOAuthHosts').mockResolvedValue({ hosts: [] });
+    vi.spyOn(oauthLib, 'discoverOAuthHosts').mockResolvedValue(oauthResult([]));
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(FULL);
     vi.spyOn(connectorsLib, 'createConnector').mockResolvedValue(FULL);
     vi.spyOn(connectorsLib, 'patchConnector').mockResolvedValue(FULL);
@@ -70,7 +76,7 @@ describe('ConnectorEditDialog', () => {
   }
 
   it('shows discovered Gmail hosts before saving, then merges them with manual hosts without duplicates', async () => {
-    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue({ hosts: gmailHosts });
+    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue(oauthResult(gmailHosts));
     await httpDraft();
     expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
     await screen.findByText('accounts.google.com', { exact: true });
@@ -105,7 +111,7 @@ describe('ConnectorEditDialog', () => {
       mcpServers: [{ name: 'gmail', transport: 'http', url: gmailUrl, allowedHosts: [], credentials: [] }, secondServer],
     } };
     vi.mocked(connectorsLib.getConnector).mockResolvedValue(existing);
-    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue({ hosts: gmailHosts });
+    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue(oauthResult(gmailHosts));
     render(<ConnectorEditDialog target={existing} open isAdmin onOpenChange={() => {}} onSaved={() => {}} />);
     await screen.findByText('accounts.google.com', { exact: true });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
@@ -119,17 +125,17 @@ describe('ConnectorEditDialog', () => {
   });
 
   it('ignores a stale response after the URL changes and never saves the old hosts', async () => {
-    let finishOld!: (value: { hosts: string[] }) => void;
+    let finishOld!: (value: oauthLib.OAuthDiscovery) => void;
     vi.mocked(oauthLib.discoverOAuthHosts).mockImplementation((url) => url === gmailUrl
       ? new Promise((resolve) => { finishOld = resolve; })
-      : Promise.resolve({ hosts: ['new.example.com', 'new-auth.example.com'] }));
+      : Promise.resolve(oauthResult(['new.example.com', 'new-auth.example.com'])));
     await httpDraft();
     await waitFor(() => expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledTimes(1));
     const oldSignal = vi.mocked(oauthLib.discoverOAuthHosts).mock.calls[0]![1]!;
     fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://new.example.com/mcp' } });
     expect(oldSignal.aborted).toBe(true);
     await screen.findByText('new-auth.example.com', { exact: true });
-    await act(async () => { finishOld({ hosts: gmailHosts }); });
+    await act(async () => { finishOld(oauthResult(gmailHosts)); });
     expect(screen.queryByText('accounts.google.com', { exact: true })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
@@ -137,7 +143,7 @@ describe('ConnectorEditDialog', () => {
   });
 
   it('offers retry after discovery fails and allows manual host entry', async () => {
-    vi.mocked(oauthLib.discoverOAuthHosts).mockRejectedValueOnce(new Error('failed')).mockResolvedValue({ hosts: gmailHosts });
+    vi.mocked(oauthLib.discoverOAuthHosts).mockRejectedValueOnce(new Error('failed')).mockResolvedValue(oauthResult(gmailHosts));
     await httpDraft();
     await screen.findByText(/could not discover oauth hosts/i);
     expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled();
@@ -158,7 +164,7 @@ describe('ConnectorEditDialog', () => {
   });
 
   it('drops the preview when switching away from HTTP MCP', async () => {
-    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue({ hosts: gmailHosts });
+    vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue(oauthResult(gmailHosts));
     await httpDraft();
     await screen.findByText('accounts.google.com', { exact: true });
     fireEvent.click(screen.getByRole('radio', { name: /direct api/i }));
