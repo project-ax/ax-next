@@ -11,7 +11,7 @@ import type {
   ImageBlock,
   TextBlock,
 } from '@ax/ipc-protocol';
-import { createInterruptProcesses } from './interrupt-processes.js';
+import { createInterruptProcesses, ToolTerminationError } from './interrupt-processes.js';
 import { createCanUseTool } from './can-use-tool.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import {
@@ -617,24 +617,24 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
         },
       });
 
-      // Stop must kill the actual Linux tool descendants BEFORE asking the SDK
-      // to interrupt: its native cancellation can orphan a nested shell while
-      // reporting exit 137. Keep the SDK child alive for transcript and reuse.
+      // Stop must reach the actual Linux tool descendants itself: the SDK's
+      // native cancellation can orphan a nested shell while reporting exit 137.
+      // `stop` freezes them, sends the interrupt while they cannot finish, then
+      // kills them — killing first let the SDK see a finished tool and start
+      // one more model call before the interrupt landed (TASK-746). Keep the
+      // SDK child alive for transcript and reuse.
       ctx.onInterrupt(() => {
         stopRequested = true;
-        try {
-          interruptProcesses.killTools();
-        } catch (err) {
-          process.stderr.write(`runner: tool termination failed: ${err instanceof Error ? err.message : String(err)}\n`);
-          // Failing to establish process ownership must not publish a false
-          // successful Stop. Close the SDK rather than allowing more tool work.
-          queryIter.close();
-          return;
-        }
-        interruptPending = queryIter.interrupt().catch((err: unknown) => {
-          process.stderr.write(
-            `runner: query.interrupt() failed: ${err instanceof Error ? err.message : String(err)}\n`,
-          );
+        interruptPending = interruptProcesses.stop(() => queryIter.interrupt()).catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          if (err instanceof ToolTerminationError) {
+            process.stderr.write(`runner: tool termination failed: ${message}\n`);
+            // Failing to establish process ownership must not publish a false
+            // successful Stop. Close the SDK rather than allowing more tool work.
+            queryIter.close();
+            return;
+          }
+          process.stderr.write(`runner: query.interrupt() failed: ${message}\n`);
         });
       });
 

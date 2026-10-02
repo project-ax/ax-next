@@ -18,11 +18,32 @@ function identity(pid: number): ProcessIdentity | null {
   }
 }
 
+/** How long Stop keeps tools frozen waiting for the SDK to take the interrupt. */
+export const INTERRUPT_ACK_MS = 2000;
+
+/** Stop could not establish ownership of, or kill, the tool processes. */
+export class ToolTerminationError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'ToolTerminationError';
+  }
+}
+
+function killOwned(owned: ProcessIdentity[]): void {
+  // Children before parents: the reverse of the freeze order.
+  for (const proc of [...owned].reverse()) {
+    if (identity(proc.pid)?.started !== proc.started) continue;
+    try { process.kill(proc.pid, 'SIGKILL'); } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+    }
+  }
+}
+
 /** Own the SDK child, never infer process ownership from model-writable files. */
 export function createInterruptProcesses() {
   let root: ProcessIdentity | null = null;
   let startup: Map<number, ProcessIdentity> | null = null;
-  return {
+  const self = {
     spawn(options: SpawnOptions): SpawnedProcess {
       const child = spawn(options.command, options.args, {
         cwd: options.cwd, env: options.env, signal: options.signal,
@@ -53,10 +74,20 @@ export function createInterruptProcesses() {
         for (const proc of next) { startup.set(proc.pid, proc); parents.add(proc.pid); }
       }
     },
-    killTools(): void {
+    /**
+     * SIGSTOP every model-tool descendant of the SDK child and hand back the
+     * function that SIGKILLs them. Freezing first and killing later is what
+     * keeps Stop deterministic: a KILLED tool is a finished tool, and the SDK
+     * reacts to a finished tool by sending its result to the model — so if the
+     * kill reaches the SDK before the interrupt does, Stop starts one more
+     * model call and the turn ends `aborted_streaming` (TASK-746). A frozen
+     * tool can neither finish nor write; it just waits for the interrupt.
+     */
+    freezeTools(): () => void {
+      const none = (): void => {};
       // Before the first prompt there are no model tools to kill. In particular,
       // an early Stop must not tear down the SDK's initializing MCP servers.
-      if (startup === null || root === null || identity(root.pid)?.started !== root.started) return;
+      if (startup === null || root === null || identity(root.pid)?.started !== root.started) return none;
       const table = new Map<number, ProcessIdentity>();
       for (const name of readdirSync('/proc')) {
         if (!/^\d+$/.test(name)) continue;
@@ -65,7 +96,7 @@ export function createInterruptProcesses() {
       }
       // Recheck after the snapshot as well: PID reuse must never grant reach
       // into a different process tree if the SDK exited during enumeration.
-      if (identity(root.pid)?.started !== root.started) return;
+      if (identity(root.pid)?.started !== root.started) return none;
       const owned: ProcessIdentity[] = [];
       const parents = new Set([root.pid]);
       const protectedParents = new Set<number>();
@@ -110,17 +141,51 @@ export function createInterruptProcesses() {
             if (proc !== null) table.set(proc.pid, proc);
           }
         }
-      } finally {
+      } catch (err) {
         // Even an unexpected /proc read failure must not leave frozen tools.
-        for (const proc of owned.reverse()) {
-          if (identity(proc.pid)?.started !== proc.started) continue;
-          try { process.kill(proc.pid, 'SIGKILL'); } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
-          }
-        }
+        killOwned(owned);
+        throw err;
       }
       // The SDK itself remains alive to persist the interrupted tool result,
       // finish this turn, and accept the next message in the same warm session.
+      let killed = false;
+      return () => {
+        if (killed) return;
+        killed = true;
+        killOwned(owned);
+      };
+    },
+    /**
+     * The Stop order: freeze the tools, let the SDK take the interrupt while
+     * they cannot finish, then kill them. The SIGKILL waits for the SDK's
+     * interrupt acknowledgement, bounded by `ackMs` so a wedged SDK can never
+     * keep a frozen tool alive. Resolves once the interrupt itself settles.
+     * Tool-termination failures reject with {@link ToolTerminationError}
+     * (without sending the interrupt, if freezing failed); an interrupt
+     * failure rejects with its own error, after the tools are dead.
+     */
+    async stop(interrupt: () => Promise<void>, ackMs = INTERRUPT_ACK_MS): Promise<void> {
+      let release: () => void;
+      try {
+        release = self.freezeTools();
+      } catch (err) {
+        throw new ToolTerminationError(err);
+      }
+      const settled = (async () => interrupt())().then(
+        () => null,
+        (err: unknown) => ({ err }),
+      );
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([settled, new Promise<void>((r) => { timer = setTimeout(r, ackMs); })]);
+      clearTimeout(timer);
+      try {
+        release();
+      } catch (err) {
+        throw new ToolTerminationError(err);
+      }
+      const failed = await settled;
+      if (failed !== null) throw failed.err;
     },
   };
+  return self;
 }
