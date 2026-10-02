@@ -8,7 +8,7 @@ const chart = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const base = ['template', 'ax-test', chart, '--namespace', 'host', '--kube-version', '1.36.4-gke.1247000',
   '--set', 'credentials.key=test', '--set', 'http.cookieKey=' + '0'.repeat(64),
   '--set', 'sandbox.backend=agent-sandbox', '--set', 'credentialProxy.tcp.enabled=true',
-  '--set', 'sandbox.sharedPool.enabled=true', '--set', 'sandbox.filestore.server=10.0.0.9',
+  '--set', 'sandbox.sharedPool.enabled=true', '--set', 'sandbox.filestore.server=192.0.2.9',
   '--set', 'sandbox.sharedPool.clientTlsSecret=controller-tls', '--set', 'sandbox.sharedPool.serverTlsSecret=storage-tls'];
 type Port = { port: number; protocol: string };
 type Volume = { name: string; hostPath?: { path: string }; secret?: { secretName: string } };

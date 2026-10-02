@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
-import type { Plugin } from '@ax/core';
+import { createLogger, type Plugin } from '@ax/core';
 import { buildSharedTemplate, createSharedPoolSessionApi } from '../shared-pool.js';
 import { resolveConfig } from '../config.js';
 import { buildPodSpec } from '../pod-spec.js';
@@ -11,6 +11,7 @@ import type { OpenSessionResult } from '../open-session.js';
 import type { SandboxCustomApi } from '../agent-sandbox.js';
 import type { StorageClient } from '../storage-client.js';
 import { makeMockK8sApi } from './mock-k8s.js';
+import { sweepOrphanedPods } from '../sweep.js';
 
 const config = resolveConfig({ backend: 'agent-sandbox', namespace: 'runners',
   hostIpcUrl: 'http://host:80', proxyEndpoint: 'http://proxy:8888', readinessPollMs: 1, readinessTimeoutMs: 1000,
@@ -131,6 +132,105 @@ describe('shared Agent Sandbox pool', () => {
     await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() }); f.changePod();
     await expect(api.readNamespacedPodLog({ namespace: config.namespace, name: 'session', container: 'runner', tailLines: 10 })).rejects.toThrow('ownership changed');
     expect(f.pods.logReads).toHaveLength(0);
+  });
+  it('reaps a terminal claimed pod after restart through its claim, not its Pod owner', async () => {
+    const f = fixture();
+    const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const claim = { metadata: { name: 'session', uid: uid.claim, creationTimestamp: '2026-01-01T00:00:00Z',
+      labels: { 'ax.io/shared-pool': buildSharedTemplate(config, '/runner.js').name } },
+      status: { sandbox: { name: 'adopted-sandbox' } } };
+    vi.mocked(f.custom.listNamespacedCustomObject).mockImplementation(async req => ({ items: req.plural === 'sandboxclaims' ? [claim] : [] }));
+    vi.mocked(f.custom.getNamespacedCustomObject).mockImplementation(async req => req.plural === 'sandboxclaims' ? claim : {
+      metadata: { name: 'adopted-sandbox', uid: uid.sandbox, ownerReferences: [{ kind: 'SandboxClaim', uid: uid.claim, controller: true }] },
+    });
+    const pod = { metadata: { name: 'original-standby', uid: uid.pod,
+      ownerReferences: [{ apiVersion: 'agents.x-k8s.io/v1beta1', kind: 'Sandbox', uid: uid.sandbox, controller: true }] },
+      spec: { nodeName: 'gvisor-node' }, status: { phase: 'Succeeded' } };
+    vi.mocked(f.pods.listNamespacedPod).mockResolvedValue({ items: [pod] });
+    vi.mocked(f.pods.readNamespacedPod).mockResolvedValue(pod);
+    expect(await sweepOrphanedPods({ api, namespace: config.namespace, terminalAgeMs: 60_000,
+      podLog: createLogger({ reqId: 'recovery', writer: () => {} }) })).toBe(1);
+    expect(f.storage.release).toHaveBeenCalledWith('gvisor-node', expect.objectContaining({ podUid: uid.pod, claimUid: uid.claim }));
+    expect(f.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({ plural: 'sandboxclaims',
+      body: { propagationPolicy: 'Foreground', preconditions: { uid: uid.claim } } }));
+    expect(f.direct.deletes).toHaveLength(0);
+  });
+  it('reaps an assigned claim whose Sandbox is gone without bypassing cleanup finalizers', async () => {
+    const f = fixture();
+    const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const claim = { metadata: { name: 'session', uid: uid.claim, creationTimestamp: '2026-01-01T00:00:00Z',
+      finalizers: ['ax.io/storage-cleanup'], labels: { 'ax.io/shared-pool': buildSharedTemplate(config, '/runner.js').name } },
+      status: { sandbox: { name: 'adopted-sandbox' } } };
+    vi.mocked(f.custom.listNamespacedCustomObject).mockImplementation(async req => ({ items: req.plural === 'sandboxclaims' ? [claim] : [] }));
+    vi.mocked(f.custom.getNamespacedCustomObject).mockImplementation(async req => {
+      if (req.plural === 'sandboxclaims') return claim;
+      throw { code: 404 };
+    });
+    expect(await sweepOrphanedPods({ api, namespace: config.namespace, terminalAgeMs: 60_000,
+      podLog: createLogger({ reqId: 'recovery', writer: () => {} }) })).toBe(1);
+    expect(f.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({ plural: 'sandboxclaims',
+      body: { propagationPolicy: 'Foreground', preconditions: { uid: uid.claim } } }));
+    expect(f.storage.release).not.toHaveBeenCalled();
+    expect(claim.metadata.finalizers).toEqual(['ax.io/storage-cleanup']);
+    expect(f.direct.deletes).toHaveLength(0);
+  });
+  it.each(['pending', 'foreign', 'unavailable'])('does not reap a %s claim during recovery', async kind => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const claim = { metadata: { name: 'session', uid: uid.claim, creationTimestamp: '2026-01-01T00:00:00Z',
+      labels: { 'ax.io/shared-pool': kind === 'foreign' ? 'someone-else-1234567890abcdef' : buildSharedTemplate(config, '/runner.js').name } },
+      ...(kind === 'pending' ? {} : { status: { sandbox: { name: 'adopted-sandbox' } } }) };
+    vi.mocked(f.custom.listNamespacedCustomObject).mockImplementation(async req => ({ items: req.plural === 'sandboxclaims' ? [claim] : [] }));
+    vi.mocked(f.custom.getNamespacedCustomObject).mockImplementation(async req => {
+      if (req.plural === 'sandboxclaims') return claim;
+      throw { code: kind === 'unavailable' ? 503 : 404 };
+    });
+    expect(await sweepOrphanedPods({ api, namespace: config.namespace, terminalAgeMs: 60_000,
+      podLog: createLogger({ reqId: 'recovery', writer: () => {} }) })).toBe(0);
+    expect(f.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(f.storage.release).not.toHaveBeenCalled();
+  });
+  it('preserves a running claimed conversation during the startup sweep', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() });
+    const claim = { metadata: { name: 'session', uid: uid.claim, creationTimestamp: '2026-01-01T00:00:00Z',
+      labels: { 'ax.io/shared-pool': buildSharedTemplate(config, '/runner.js').name } },
+      status: { sandbox: { name: 'adopted-sandbox' } } };
+    vi.mocked(f.custom.listNamespacedCustomObject).mockImplementation(async req => ({ items: req.plural === 'sandboxclaims' ? [claim] : [] }));
+    expect(await sweepOrphanedPods({ api, namespace: config.namespace, terminalAgeMs: 60_000,
+      podLog: createLogger({ reqId: 'recovery', writer: () => {} }) })).toBe(0);
+    expect(f.storage.release).not.toHaveBeenCalled();
+    expect(f.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+  it('keeps the observed UID guard when a retired claim is replaced', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const claim = { metadata: { name: 'session', uid: uid.claim,
+      labels: { 'ax.io/shared-pool': buildSharedTemplate(config, '/runner.js').name } },
+      status: { sandbox: { name: 'adopted-sandbox' } } };
+    vi.mocked(f.custom.listNamespacedCustomObject).mockImplementation(async req => ({ items: req.plural === 'sandboxclaims' ? [claim] : [] }));
+    vi.mocked(f.custom.getNamespacedCustomObject).mockImplementation(async req => {
+      if (req.plural === 'sandboxclaims') return claim;
+      throw { code: 404 };
+    });
+    await api.listNamespacedPod({ namespace: config.namespace });
+    vi.mocked(f.custom.deleteNamespacedCustomObject).mockRejectedValue({ code: 409 });
+    await expect(api.deleteNamespacedPod({ namespace: config.namespace, name: 'session' })).rejects.toEqual({ code: 409 });
+    expect(f.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({
+      body: { propagationPolicy: 'Foreground', preconditions: { uid: uid.claim } } }));
+    expect(f.storage.release).not.toHaveBeenCalled();
+    expect(f.direct.deletes).toHaveLength(0);
+  });
+  it('does not treat a temporarily missing Pod under a live Sandbox as retired', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    await api.createNamespacedPod({ namespace: config.namespace, body: sessionPod() });
+    const claim = { metadata: { name: 'session', uid: uid.claim, creationTimestamp: '2026-01-01T00:00:00Z',
+      labels: { 'ax.io/shared-pool': buildSharedTemplate(config, '/runner.js').name } },
+      status: { sandbox: { name: 'adopted-sandbox' } } };
+    vi.mocked(f.custom.listNamespacedCustomObject).mockImplementation(async req => ({ items: req.plural === 'sandboxclaims' ? [claim] : [] }));
+    vi.mocked(f.pods.listNamespacedPod).mockResolvedValue({ items: [] });
+    expect(await sweepOrphanedPods({ api, namespace: config.namespace, terminalAgeMs: 60_000,
+      podLog: createLogger({ reqId: 'recovery', writer: () => {} }) })).toBe(0);
+    expect(f.custom.deleteNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(f.storage.release).not.toHaveBeenCalled();
   });
   it('rejects an existing template that adds privileges even when its hash name is unchanged', async () => {
     const f = fixture(); const template = buildSharedTemplate(config, '/runner.js');

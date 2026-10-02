@@ -104,6 +104,7 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
     }
   }
   const live = new Map<string, StorageIdentity & { node: string }>();
+  const retiredClaims = new Map<string, string>();
   const key = (req: PodReadRequest) => `${req.namespace}/${req.name}`;
   const claimReq = (name: string) => ({ ...extension(config.namespace, 'sandboxclaims'), name });
   const sandboxReq = (name: string) => ({ group: 'agents.x-k8s.io', version: 'v1beta1', plural: 'sandboxes', namespace: config.namespace, name });
@@ -204,6 +205,15 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
       if (pod.metadata?.uid !== assigned.podUid) throw new Error('shared pod ownership changed');
       return pods.readNamespacedPodLog({ ...req, name: assigned.podName }); },
     async deleteNamespacedPod(req) {
+      const retiredUid = retiredClaims.get(key(req));
+      if (retiredUid) {
+        // A confirmed missing Sandbox cannot supply a node binding. The helper
+        // still owns storage finalizers; deletion must never remove those.
+        await custom.deleteNamespacedCustomObject({ ...extension(req.namespace, 'sandboxclaims'), name: req.name,
+          body: { propagationPolicy: 'Foreground', preconditions: { uid: retiredUid } } }).catch(e => { if (!isNotFound(e)) throw e; });
+        retiredClaims.delete(key(req));
+        return;
+      }
       const assigned = live.get(key(req)); if (!assigned) return direct.deleteNamespacedPod(req);
       const { node, ...id } = assigned;
       await storage.release(node, id);
@@ -211,14 +221,35 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
       live.delete(key(req));
     },
     async listNamespacedPod(req) {
+      if (req.namespace !== config.namespace) throw new Error('shared session namespace mismatch');
       const cold = await direct.listNamespacedPod(req) as { items: unknown[] };
       const claims = await custom.listNamespacedCustomObject({ ...extension(req.namespace, 'sandboxclaims'), labelSelector: CLAIM_POOL_LABEL }) as { items?: Resource[] };
       for (const claim of claims.items ?? []) {
         if (!claim.metadata?.uid || !claim.metadata.name) continue;
+        const className = claim.metadata.labels?.[CLAIM_POOL_LABEL];
+        if (!className?.startsWith(`${pool.prefix}-`) || !/^[0-9a-f]{16}$/.test(className.slice(pool.prefix.length + 1))) continue;
         const assigned = await identity(claim.metadata.name, claim.metadata.uid, false).catch(() => undefined);
-        if (assigned) { live.set(key({ namespace: req.namespace, name: claim.metadata.name }), assigned);
+        if (assigned) {
+          const claimKey = key({ namespace: req.namespace, name: claim.metadata.name });
+          retiredClaims.delete(claimKey);
+          live.set(claimKey, assigned);
           const pod = await read({ namespace: req.namespace, name: claim.metadata.name }) as Resource;
-          cold.items.push({ ...pod, metadata: { ...pod.metadata, name: claim.metadata.name } }); }
+          // This observation represents the claim, not the owned Pod. Keeping
+          // the Pod's Sandbox owner makes the sweeper deliberately skip it.
+          cold.items.push({ ...pod, metadata: { ...claim.metadata } });
+        } else if (claim.status?.sandbox?.name) {
+          // An unassigned claim may legitimately await capacity. Only a 404
+          // for an already assigned Sandbox establishes a retired instance;
+          // API outages and temporarily absent Pods do not authorize reaping.
+          try { await custom.getNamespacedCustomObject(sandboxReq(claim.status.sandbox.name)); }
+          catch (e) {
+            if (!isNotFound(e)) continue;
+            const claimKey = key({ namespace: req.namespace, name: claim.metadata.name });
+            live.delete(claimKey);
+            retiredClaims.set(claimKey, claim.metadata.uid);
+            cold.items.push({ metadata: { ...claim.metadata }, status: { phase: 'Failed', reason: 'shared-instance-gone' } });
+          }
+        }
       }
       return cold;
     },
