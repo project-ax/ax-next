@@ -52,7 +52,7 @@ export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
   if (loaded?.id === id) {
     if (loaded.connector.capabilities.mcpServers[0]?.transport === 'http')
       return <RemoteMcpConnectorForm {...props} connector={loaded.connector} />;
-    return <LegacyConnectorEditDialog {...props} />;
+    return <LegacyConnectorEditDialog {...props} connector={loaded.connector} />;
   }
   return (
     <Dialog open={open} onOpenChange={props.onOpenChange}>

@@ -41,6 +41,7 @@ import {
   getConnector,
   createConnector,
   patchConnector,
+  type Connector,
   type ConnectorSummary,
   type ConnectorKeyMode,
   type ConnectorVisibility,
@@ -472,8 +473,11 @@ export function LegacyConnectorEditDialog({
   onOpenChange,
   onSaved,
   isAdmin = false,
-}: ConnectorEditDialogProps) {
-  const [form, setForm] = useState<ConnectorFormState>(() => emptyConnectorForm());
+  connector,
+}: ConnectorEditDialogProps & { connector?: Connector }) {
+  const [form, setForm] = useState<ConnectorFormState>(() =>
+    connector ? formFromConnector(connector) : emptyConnectorForm(),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hostDiscovery, setHostDiscovery] = useState<{
@@ -527,15 +531,19 @@ export function LegacyConnectorEditDialog({
     ? '/admin/connectors'
     : '/settings/connectors';
 
-  // (Re)load the form each time the dialog opens. For edit, fetch the full
-  // connector so the mechanism + capabilities round-trip; fall back to the
-  // summary subset if the fetch fails (mechanism stays at the default).
+  // The shared wrapper supplies the full connector before mounting this editor.
+  // Initialize synchronously from it so Save never serializes summary-only data.
+  // Standalone callers retain the original loading path.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setError(null);
     setBusy(false);
     setOauthClientSecrets({});
+    if (connector) {
+      setForm(formFromConnector(connector));
+      return;
+    }
     if (target === 'new') {
       setForm(emptyConnectorForm());
       return;
@@ -551,7 +559,7 @@ export function LegacyConnectorEditDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, target, base]);
+  }, [open, target, base, connector]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();

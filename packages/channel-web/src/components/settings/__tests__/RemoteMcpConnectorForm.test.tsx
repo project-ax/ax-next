@@ -47,6 +47,8 @@ const fixture: Connector = {
 let writes: { url: string; body: Record<string, unknown> }[];
 let failLoad = false;
 let failDiscovery = false;
+let stallRepeatedConnectorLoad = false;
+let connectorReads = 0;
 const initialCapabilities = structuredClone(fixture.capabilities);
 beforeEach(() => {
   fixture.keyMode = 'personal';
@@ -54,6 +56,8 @@ beforeEach(() => {
   writes = [];
   failLoad = false;
   failDiscovery = false;
+  stallRepeatedConnectorLoad = false;
+  connectorReads = 0;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -78,6 +82,9 @@ beforeEach(() => {
         });
         return new Response(JSON.stringify({ connector: fixture }));
       }
+      connectorReads++;
+      if (stallRepeatedConnectorLoad && connectorReads > 1)
+        return new Promise<Response>(() => {});
       return failLoad
         ? new Response('', { status: 503 })
         : new Response(JSON.stringify({ connector: fixture }));
@@ -436,6 +443,8 @@ describe('remote connector editor', () => {
   it.each(['api', 'cli', 'stdio'] as const)(
     'keeps the %s connector editor reachable without converting it to remote MCP',
     async (mechanism) => {
+      // A redundant fetch must not leave Save operating on summary-only data.
+      stallRepeatedConnectorLoad = true;
       fixture.capabilities.credentials = [];
       fixture.capabilities.mcpServers =
         mechanism === 'stdio'
@@ -464,6 +473,7 @@ describe('remote connector editor', () => {
         mcpServers: fixture.capabilities.mcpServers,
         packages: fixture.capabilities.packages,
       });
+      expect(connectorReads).toBe(1);
     },
   );
 });
