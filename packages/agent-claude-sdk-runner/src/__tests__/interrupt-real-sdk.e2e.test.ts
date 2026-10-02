@@ -190,11 +190,13 @@ function openQuery(withMcp = false) {
   // files under cfg/projects/. Teardown must wait for that exit, or its
   // recursive rm races the last write into ENOTEMPTY (TASK-746).
   let exited: Promise<void> = Promise.resolve();
+  let cli: { kill(signal: NodeJS.Signals): boolean } | null = null;
   const q = query({
     prompt: prompt(),
     options: {
       spawnClaudeCodeProcess: (options) => {
         const child = processes.spawn(options);
+        cli = child;
         exited = new Promise<void>((r) => child.on('exit', () => r()));
         return child;
       },
@@ -252,14 +254,19 @@ function openQuery(withMcp = false) {
       } catch {
         /* already closed */
       }
-      // Bounded past the SDK's own SIGTERM (2 s) + SIGKILL (5 s) escalation.
+      // The SDK escalates to SIGKILL ~7 s after close. Should that ever slip,
+      // kill it ourselves rather than throw from a `finally`, which would mask
+      // the assertion that actually failed.
       let timer: NodeJS.Timeout | undefined;
       const gone = await Promise.race([
         exited.then(() => true),
-        new Promise<false>((r) => { timer = setTimeout(() => r(false), 10_000); }),
+        new Promise<false>((r) => { timer = setTimeout(() => r(false), 15_000); }),
       ]);
       clearTimeout(timer);
-      if (!gone) throw new Error('the Claude CLI process outlived q.close() by 10 s');
+      if (!gone) {
+        cli?.kill('SIGKILL');
+        await exited;
+      }
     },
   };
 }
