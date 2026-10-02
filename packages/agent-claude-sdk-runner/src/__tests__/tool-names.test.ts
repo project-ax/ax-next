@@ -193,6 +193,17 @@ describe('classifySdkToolName', () => {
       expect(CONNECTOR_TOOL_NAMESPACE_RE.test('xc0123456789')).toBe(false);
       expect(CONNECTOR_TOOL_NAMESPACE_RE.test('c0123456789\n')).toBe(false);
     });
+
+    it('lifts a REAL namespace @ax/connectors derives (cross-package drift pin)', () => {
+      // `c5e0235982f` is the literal @ax/connectors' tool-namespace.test.ts pins
+      // for deriveToolNamespace('userA','linear','linear'). The regex is
+      // hand-mirrored (I2); if either side's shape drifts, one of the two pins
+      // reddens instead of real connector tools silently passing through raw.
+      expect(classifySdkToolName('mcp__c5e0235982f__create_issue')).toEqual({
+        kind: 'mcp-connector',
+        axName: 'mcp.c5e0235982f.create_issue',
+      });
+    });
   });
 
   it('treats empty string as builtin pass-through (no crash)', () => {

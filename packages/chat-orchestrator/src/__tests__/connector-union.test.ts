@@ -13,6 +13,7 @@ import {
   connectorCredentialEnvName,
   connectorSandboxDirId,
   ConnectorServiceCollisionError,
+  CONNECTOR_TOOL_NAMESPACE_RE,
   type ResolvedConnectorForOrch,
 } from '../connector-union.js';
 
@@ -857,6 +858,12 @@ describe('foldConnectorCaps', () => {
 // tool-policy) and two connectors with the same spec.name cannot collide.
 // ---------------------------------------------------------------------------
 describe('toolNamespace keys (TASK-734)', () => {
+  it('accepts a REAL namespace @ax/connectors derives (cross-package drift pin)', () => {
+    // The literal @ax/connectors' tool-namespace.test.ts pins for
+    // deriveToolNamespace('userA','linear','linear'); the regex is mirrored (I2).
+    expect(CONNECTOR_TOOL_NAMESPACE_RE.test('c5e0235982f')).toBe(true);
+  });
+
   const HTTP = (name: string, url = `https://${name}.example/mcp`) => ({
     name,
     transport: 'http' as const,
