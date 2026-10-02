@@ -28,7 +28,8 @@ These are observations from the last accepted run, not a fresh cluster check.
 - Shared-pool implementation commit: `b9189606`; Claude Stop fix: `21dab8fa`;
   rollout evidence commit: `82d82548`. Work is on local branch
   `codex/gke-agent-sandbox`, in worktree
-  `/private/tmp/ax-next-agent-sandbox-rollout-20261001` at this checkpoint.
+  `/Users/vpulim/dev/ai/ax-next/.worktrees/gke-agent-sandbox`.
+  The worktree was moved out of temporary storage on 2026-10-02.
   These commits were not pushed or merged as part of the recorded acceptance.
 - All acceptance fixtures were removed. No isolated release, synthetic storage,
   or helper ledger should be assumed to still exist.
