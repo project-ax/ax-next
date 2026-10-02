@@ -11,7 +11,9 @@ GKE/Filestore lifecycle checks, and both SDKs completed real provider/Bash turns
 through an isolated application release. The Claude Stop fix passed on GKE and
 was deployed for direct Agent Sandbox sessions. The required isolated recovery
 and upgrade gates now pass within the documented scope. **Production shared pools
-remain disabled; activation is a separate rollout.**
+were enabled at Helm revision 32 on 2026-10-02**, after PR #834 merged. Both SDK
+pools have one standby each; adoption and replenishment passed production smoke
+checks. See the [production evidence](gke/shared-pool-production-rollout-2026-10-02.json).
 See the [consolidated acceptance and resume guide](SHARED-POOL-ACCEPTANCE.md).
 
 The late-attachment volume must be a **memory-backed 16 MiB emptyDir** with the
