@@ -22,7 +22,11 @@ export interface Booted {
   request(
     method: string,
     path: string,
-    opts?: { body?: unknown; rawBody?: Buffer; params?: Record<string, string> },
+    opts?: {
+      body?: unknown;
+      rawBody?: Buffer;
+      params?: Record<string, string>;
+    },
   ): Promise<{ status: number; json: unknown }>;
 }
 
@@ -34,7 +38,10 @@ export async function bootUsageLimits(opts: {
   const routes: CapturedRoute[] = [];
   const unregistered: string[] = [];
   const storage = new Map<string, Uint8Array>();
-  let auth: { id: string; isAdmin: boolean } | 'throw' = { id: 'admin-1', isAdmin: true };
+  let auth: { id: string; isAdmin: boolean } | 'throw' = {
+    id: 'admin-1',
+    isAdmin: true,
+  };
   let now = opts.start ?? new Date('2026-09-29T12:00:00.000Z');
   const clock = {
     get now() {
@@ -66,7 +73,11 @@ export async function bootUsageLimits(opts: {
     }) as ServiceHandler,
     'auth:require-user': (async () => {
       if (auth === 'throw') {
-        throw new PluginError({ code: 'unauthenticated', plugin: 'test', message: 'no cookie' });
+        throw new PluginError({
+          code: 'unauthenticated',
+          plugin: 'test',
+          message: 'no cookie',
+        });
       }
       return { user: auth };
     }) as ServiceHandler,
@@ -130,7 +141,9 @@ export async function truncateUsageTables(connectionString: string): Promise<voi
   const c = new pg.Client({ connectionString });
   await c.connect();
   try {
-    await c.query('TRUNCATE usage_limits_v1_buckets, usage_limits_v1_suspensions');
+    await c.query(
+      'TRUNCATE usage_limits_v1_buckets, usage_limits_v1_suspensions, usage_limits_v1_turns, usage_limits_v1_user_limits',
+    );
   } catch {
     /* tables not created yet */
   } finally {

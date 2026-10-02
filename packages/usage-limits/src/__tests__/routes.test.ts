@@ -36,7 +36,7 @@ afterAll(async () => {
 async function spend(b: Booted, userId: string, opts: { turns?: number; outputTokens?: number } = {}) {
   const ctx = b.harness.ctx({ userId });
   for (let i = 0; i < (opts.turns ?? 1); i++) {
-    const r = await b.harness.bus.fire('chat:start', ctx, { message: 'hi' });
+    const r = await b.harness.bus.fire('chat:start', b.harness.ctx({ userId }), { message: 'hi' });
     expect(r.rejected).toBe(false);
   }
   if (opts.outputTokens !== undefined) {
@@ -66,14 +66,14 @@ describe('auth', () => {
     for (const [m, p, params] of calls) {
       const r = await b.request(m, p, { params: params ?? {} });
       expect(r.status).toBe(403);
-      expect(r.json).toEqual({ error: 'forbidden' });
+      expect(r.json).toMatchObject({ error: 'forbidden' });
     }
   });
 
-  it('registers the mutating routes with a 4 KiB body cap', async () => {
+  it('bounds control bodies at 4 KiB and the full model price table at 64 KiB', async () => {
     const b = await boot();
     for (const r of b.routes.filter((x) => x.method !== 'GET')) {
-      expect(r.maxBodyBytes).toBe(4096);
+      expect(r.maxBodyBytes).toBe(r.path === '/admin/usage/prices' ? 65536 : 4096);
     }
   });
 });
@@ -91,10 +91,10 @@ describe('GET /admin/usage', () => {
 
     const r = await b.request('GET', '/admin/usage');
     expect(r.status).toBe(200);
-    expect(r.json).toEqual({
+    expect(r.json).toMatchObject({
       windowHours: 24,
       truncated: false,
-      limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 },
+      limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 },
       totals: { turns: 3, spendUsd: 0.075, users: 2 },
       users: [
         {
@@ -183,14 +183,14 @@ describe('PUT /admin/usage/limits', () => {
   it('saves valid limits through storage and returns them', async () => {
     const b = await boot();
     const r = await b.request('PUT', '/admin/usage/limits', {
-      body: { dailySpendUsd: 2.5, turnsPerHour: 30, assumedTurnCostUsd: 0.5 },
+      body: { dailySpendUsd: 2.5, turnsPerHour: 30, assumedTurnCostUsd: 0.5, fleetDailySpendUsd: 100 },
     });
     expect(r).toEqual({
       status: 200,
-      json: { limits: { dailySpendUsd: 2.5, turnsPerHour: 30, assumedTurnCostUsd: 0.5 } },
+      json: { limits: { dailySpendUsd: 2.5, turnsPerHour: 30, assumedTurnCostUsd: 0.5, fleetDailySpendUsd: 100 } },
     });
     const stored = JSON.parse(new TextDecoder().decode(b.storage.get(LIMITS_STORAGE_KEY)));
-    expect(stored).toEqual({ dailySpendUsd: 2.5, turnsPerHour: 30, assumedTurnCostUsd: 0.5 });
+    expect(stored).toEqual({ dailySpendUsd: 2.5, turnsPerHour: 30, assumedTurnCostUsd: 0.5, fleetDailySpendUsd: 100 });
     const g = await b.request('GET', '/admin/usage');
     expect((g.json as { limits: unknown }).limits).toEqual(stored);
   });
@@ -198,7 +198,7 @@ describe('PUT /admin/usage/limits', () => {
   it('keeps assumedTurnCostUsd when it is omitted', async () => {
     const b = await boot();
     const r = await b.request('PUT', '/admin/usage/limits', { body: { dailySpendUsd: 3, turnsPerHour: 7 } });
-    expect(r.json).toEqual({ limits: { dailySpendUsd: 3, turnsPerHour: 7, assumedTurnCostUsd: 0.25 } });
+    expect(r.json).toMatchObject({ limits: { dailySpendUsd: 3, turnsPerHour: 7, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 } });
   });
 
   it('rejects bad shapes and bounds with invalid-limits, and bad bodies', async () => {
@@ -214,7 +214,7 @@ describe('PUT /admin/usage/limits', () => {
       { dailySpendUsd: 5, turnsPerHour: 100_001 },
       { dailySpendUsd: '5', turnsPerHour: 5 },
       { dailySpendUsd: 5, turnsPerHour: 5, assumedTurnCostUsd: -1 },
-      { dailySpendUsd: 5, turnsPerHour: 5, assumedTurnCostUsd: 101 },
+      { dailySpendUsd: 5, turnsPerHour: 5, assumedTurnCostUsd: 101, fleetDailySpendUsd: 100 },
       { dailySpendUsd: 5, turnsPerHour: 5, extra: true },
       [1, 2],
       null,

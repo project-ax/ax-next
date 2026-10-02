@@ -47,6 +47,17 @@ export interface UsageSuspensionsTable {
 }
 
 export interface UsageLimitsDatabase {
+  usage_limits_v1_user_limits: {
+    user_id: string;
+    daily_spend_usd: number | null;
+    turns_per_hour: number | null;
+  };
+  usage_limits_v1_turns: {
+    user_id: string;
+    request_id: string;
+    admitted_at: Date;
+    settled: ColumnType<boolean, boolean | undefined, boolean>;
+  };
   usage_limits_v1_buckets: UsageBucketsTable;
   usage_limits_v1_suspensions: UsageSuspensionsTable;
 }
@@ -84,6 +95,23 @@ export async function runUsageLimitsMigration<DB>(db: Kysely<DB>): Promise<void>
   await sql`
     CREATE INDEX IF NOT EXISTS usage_limits_v1_buckets_bucket_start_idx
       ON usage_limits_v1_buckets (bucket_start)
+  `.execute(db);
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS usage_limits_v1_user_limits (
+      user_id TEXT PRIMARY KEY,
+      daily_spend_usd DOUBLE PRECISION NULL CHECK (daily_spend_usd BETWEEN 0.01 AND 10000),
+      turns_per_hour INTEGER NULL CHECK (turns_per_hour BETWEEN 1 AND 100000)
+    )
+  `.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS usage_limits_v1_turns (
+      user_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      admitted_at TIMESTAMPTZ NOT NULL,
+      settled BOOLEAN NOT NULL DEFAULT FALSE,
+      PRIMARY KEY (user_id, request_id)
+    )
   `.execute(db);
 
   await sql`

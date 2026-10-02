@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { AgentContext } from '@ax/core';
 import type { LimitsStore } from './config.js';
-import { costMicros } from './pricing.js';
+import { costMicros, type PriceStore } from './pricing.js';
 import type { AdmitRefusal, ProviderVerdict, UsageStore } from './store.js';
 
 // ---------------------------------------------------------------------------
@@ -115,9 +115,13 @@ const UNMEASURED_BYTES_PER_TOKEN = 3;
 const PARTIAL_STREAMED_BYTES_PER_TOKEN = 8;
 const PARTIAL_OTHER_BYTES_PER_TOKEN = 3;
 
-function partialOutputFloor(partial: { bytes: number; streamed: boolean } | null | undefined): number {
+function partialOutputFloor(
+  partial: { bytes: number; streamed: boolean } | null | undefined,
+): number {
   if (partial === null || partial === undefined) return 0;
-  const perToken = partial.streamed ? PARTIAL_STREAMED_BYTES_PER_TOKEN : PARTIAL_OTHER_BYTES_PER_TOKEN;
+  const perToken = partial.streamed
+    ? PARTIAL_STREAMED_BYTES_PER_TOKEN
+    : PARTIAL_OTHER_BYTES_PER_TOKEN;
   return Math.min(MAX_TOKENS, Math.ceil(partial.bytes / perToken));
 }
 
@@ -135,6 +139,8 @@ function unmeasuredCostMicros(
 
 export interface UsageService {
   admitTurn(ctx: AgentContext): Promise<AdmitDecision>;
+  recordAbnormalEnd(ctx: AgentContext, payload: unknown): Promise<void>;
+  checkUsage(ctx: AgentContext): Promise<ProviderVerdict>;
   recordTurnEnd(ctx: AgentContext, payload: unknown): Promise<void>;
   recordLlmUsage(ctx: AgentContext, event: unknown): Promise<void>;
   /** Read-only verdict for `ctx.userId`. Never throws; fails closed. */
@@ -169,17 +175,76 @@ function logQuietly(
 export function createUsageService(deps: {
   store: UsageStore;
   limits: LimitsStore;
+  prices?: PriceStore;
   now?: () => Date;
 }): UsageService {
   const { store, limits } = deps;
   const now = deps.now ?? (() => new Date());
 
+  async function effectiveLimits(userId: string) {
+    const defaults = await limits.get();
+    const overrides = await store.getUserLimits(userId);
+    return { ...defaults, ...overrides };
+  }
+  const currentPrices = () => deps.prices?.get() ?? Promise.resolve([]);
   return {
+    async checkUsage(ctx) {
+      try {
+        if (!hasUser(ctx)) return PROVIDER_UNAVAILABLE;
+        const current = await effectiveLimits(ctx.userId);
+        const user = await store.userSummary({
+          userId: ctx.userId,
+          now: now(),
+        });
+        if (user.suspended) return { blocked: true, reason: 'usage-suspended' };
+        if ((await store.fleetSpend(now())) >= Math.round(current.fleetDailySpendUsd * 1_000_000))
+          return { blocked: true, reason: 'usage-limit-fleet' };
+        if (user.spendMicros >= Math.round(current.dailySpendUsd * 1_000_000))
+          return { blocked: true, reason: 'usage-limit-daily' };
+        return { blocked: false };
+      } catch (err) {
+        logQuietly(ctx, 'error', 'usage_check_failed', { err });
+        return PROVIDER_UNAVAILABLE;
+      }
+    },
+    async recordAbnormalEnd(ctx, payload) {
+      try {
+        if (!hasUser(ctx) || payload === null || typeof payload !== 'object') return;
+        const event = payload as {
+          reqId?: unknown;
+          outcome?: { kind?: unknown };
+        };
+        // chat:end is also sent after a refusal before admission. Only a
+        // persisted pending admission can be claimed; a duplicate is a no-op.
+        if (event.outcome !== undefined && event.outcome.kind !== 'terminated') return;
+        const reqId = typeof event.reqId === 'string' ? event.reqId : ctx.reqId;
+        const { assumedTurnCostUsd } = await limits.get();
+        await store.settleTurn({
+          userId: ctx.userId,
+          reqId,
+          now: now(),
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            costMicros: Math.ceil(assumedTurnCostUsd * 1_000_000),
+          },
+        });
+      } catch (err) {
+        logQuietly(ctx, 'error', 'usage_abnormal_record_failed', { err });
+      }
+    },
     async admitTurn(ctx) {
       if (!hasUser(ctx)) return { ok: false, reason: 'usage-check-unavailable' };
       try {
-        const current = await limits.get();
-        return await store.admit({ userId: ctx.userId, limits: current, now: now() });
+        const current = await effectiveLimits(ctx.userId);
+        return await store.admit({
+          userId: ctx.userId,
+          limits: current,
+          now: now(),
+          reqId: ctx.reqId,
+        });
       } catch (err) {
         try {
           ctx.logger.error('usage_admit_failed', { err });
@@ -193,14 +258,26 @@ export function createUsageService(deps: {
     async recordTurnEnd(ctx, payload) {
       try {
         if (payload === null || typeof payload !== 'object') return;
-        const p = payload as { role?: unknown; usage?: unknown };
+        const p = payload as {
+          role?: unknown;
+          usage?: unknown;
+          reqId?: unknown;
+        };
         // Only the assistant turn-end closes a model turn. The role='tool'
         // turn-end (and heartbeats, which carry no role) cost nothing extra.
         if (p.role !== 'assistant') return;
         if (!hasUser(ctx)) return;
 
+        const reqId = typeof p.reqId === 'string' ? p.reqId : ctx.reqId;
+        const record = (input: {
+          userId: string;
+          usage: import('./store.js').RecordedUsage;
+          now: Date;
+        }) => store.settleTurn({ ...input, reqId, allowUnadmitted: true });
         const parsed =
-          p.usage === undefined || p.usage === null ? undefined : TurnUsageSchema.safeParse(p.usage);
+          p.usage === undefined || p.usage === null
+            ? undefined
+            : TurnUsageSchema.safeParse(p.usage);
         // A usage object carrying no token figure at all (`{}`, or just a model
         // name) is not a measurement, so it is treated like an absent one. Only
         // an explicit count, zero included, says "this turn cost that much".
@@ -217,7 +294,7 @@ export function createUsageService(deps: {
           ctx.logger.info('usage_unreported', {
             cause: parsed === undefined ? 'absent' : 'invalid',
           });
-          await store.record({
+          await record({
             userId: ctx.userId,
             usage: {
               inputTokens: 0,
@@ -236,9 +313,12 @@ export function createUsageService(deps: {
           cacheReadTokens: parsed.data.cacheReadTokens ?? 0,
           cacheWriteTokens: parsed.data.cacheWriteTokens ?? 0,
         };
-        await store.record({
+        await record({
           userId: ctx.userId,
-          usage: { ...u, costMicros: costMicros(parsed.data.model, u) },
+          usage: {
+            ...u,
+            costMicros: costMicros(parsed.data.model, u, await currentPrices()),
+          },
           now: now(),
         });
       } catch (err) {
@@ -269,7 +349,10 @@ export function createUsageService(deps: {
         // OUTSIDE the "larger of runner / proxy" comparison.
         await store.recordHelper({
           userId: ctx.userId,
-          usage: { ...u, costMicros: costMicros(parsed.data.model, u) },
+          usage: {
+            ...u,
+            costMicros: costMicros(parsed.data.model, u, await currentPrices()),
+          },
           now: now(),
         });
       } catch (err) {
@@ -284,8 +367,12 @@ export function createUsageService(deps: {
     async providerStatus(ctx) {
       try {
         if (!hasUser(ctx)) return PROVIDER_UNAVAILABLE;
-        const current = await limits.get();
-        return await store.providerStatus({ userId: ctx.userId, limits: current, now: now() });
+        const current = await effectiveLimits(ctx.userId);
+        return await store.providerStatus({
+          userId: ctx.userId,
+          limits: current,
+          now: now(),
+        });
       } catch (err) {
         logQuietly(ctx, 'error', 'usage_provider_status_failed', { err });
         return PROVIDER_UNAVAILABLE;
@@ -300,25 +387,40 @@ export function createUsageService(deps: {
         let cost: number;
         if (parsed.success && parsed.data.usage !== null) {
           const u = parsed.data.usage;
-          cost = costMicros(parsed.data.model, {
-            ...u,
-            outputTokens: Math.max(u.outputTokens, partialOutputFloor(parsed.data.partial)),
-          });
+          cost = costMicros(
+            parsed.data.model,
+            {
+              ...u,
+              outputTokens: Math.max(u.outputTokens, partialOutputFloor(parsed.data.partial)),
+            },
+            await currentPrices(),
+          );
         } else {
           // Billable but unread, or not a payload we understand: charge the
           // estimate rather than nothing. An unparseable payload also forgets
           // its requestBytes (we cannot trust any of it), so it pays the flat
           // guess, never a cheaper one.
           const requestBytes = parsed.success ? parsed.data.requestBytes : null;
-          cost = unmeasuredCostMicros(requestBytes, parsed.success ? parsed.data.partial : undefined);
+          cost = unmeasuredCostMicros(
+            requestBytes,
+            parsed.success ? parsed.data.partial : undefined,
+          );
           logQuietly(ctx, 'info', 'usage_provider_unmeasured', {
             cause: parsed.success ? 'unreadable' : 'invalid',
           });
         }
-        await store.recordProvider({ userId: ctx.userId, costMicros: cost, now: now() });
+        await store.recordProvider({
+          userId: ctx.userId,
+          costMicros: cost,
+          now: now(),
+        });
         // Written BEFORE the verdict is read, so the verdict includes this call.
-        const current = await limits.get();
-        return await store.providerStatus({ userId: ctx.userId, limits: current, now: now() });
+        const current = await effectiveLimits(ctx.userId);
+        return await store.providerStatus({
+          userId: ctx.userId,
+          limits: current,
+          now: now(),
+        });
       } catch (err) {
         logQuietly(ctx, 'error', 'usage_provider_record_failed', { err });
         return PROVIDER_UNAVAILABLE;

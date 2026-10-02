@@ -225,7 +225,7 @@ export interface ProxyListenerOptions {
    */
   maxHttpRequestBodyBytes?: number;
   /**
-   * How long a metered tunnel (TASK-715) may be silent in both directions before
+   * How long any MITM tunnel may be silent in both directions before
    * it is torn down and its outstanding requests settled. Defaults to 15 minutes,
    * longer than a model provider's own request timeout; tests shorten it.
    */
@@ -1036,23 +1036,13 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     targetTls.on('close', cleanup);
     targetTls.on('error', cleanup);
 
-    // A metered tunnel must always END, because ending is what settles its
-    // outstanding requests and frees the user's in-flight slots (TASK-715): a
-    // tunnel that never ends leaks a slot until the user is stuck at their cap.
-    // Two ways one used to hang on forever, both closed here for metered tunnels
-    // only (the rest of the proxy keeps its behaviour):
-    //  - The client hangs up (a pod killed mid-request, an aborted fetch). The TLS
-    //    wrapper reports 'end' but, being half-open, never 'close'. Pass the EOF on
-    //    to the upstream, the way any proxy does; the upstream then closes and the
-    //    normal cleanup runs.
-    //  - A peer that vanishes without a FIN or RST (a node lost outright). Nothing
-    //    ever arrives to tell us, so a tunnel that has been silent this long is
-    //    torn down. Longer than a provider's own request timeout.
-    if (metered !== undefined) {
-      clientTls.on('end', () => targetTls.end());
-      clientTls.setTimeout(meteredTunnelIdleMs, cleanup);
-      targetTls.setTimeout(meteredTunnelIdleMs, cleanup);
-    }
+    // Every MITM tunnel needs an EOF and idle path. A TLSSocket wrapping
+    // an HTTP server socket can emit end without close (half-open), leaving
+    // the upstream and listener bookkeeping alive indefinitely. Forward FIN
+    // so final response bytes can drain; destroy both sides on inactivity.
+    clientTls.on('end', () => targetTls.end());
+    clientTls.setTimeout(meteredTunnelIdleMs, cleanup);
+    targetTls.setTimeout(meteredTunnelIdleMs, cleanup);
   }
 
   // ── HTTPS CONNECT — MITM (default) or raw TCP tunnel (bypassMITM hosts) ──

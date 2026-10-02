@@ -127,3 +127,29 @@ describe('@ax/llm-anthropic reports usage on llm:usage', () => {
     expect(seen).toHaveLength(1);
   });
 });
+
+describe('spend circuit breaker (TASK-716)', () => {
+  it.each(['blocked', 'unavailable'])(
+    'makes no provider call when the usage gate is %s',
+    async (mode) => {
+      let calls = 0;
+      const { bus, seen } = await boot({}, async () => {
+        calls++;
+        return makeMessage('hi');
+      });
+      bus.registerService('usage:check', 'test-limit', async () => {
+        if (mode === 'unavailable') throw new Error('database down');
+        return { blocked: true, reason: 'usage-limit-fleet' };
+      });
+      await expect(
+        bus.call(
+          'llm:call:anthropic',
+          makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' }),
+          INPUT,
+        ),
+      ).rejects.toBeInstanceOf(PluginError);
+      expect(calls).toBe(0);
+      expect(seen).toEqual([]);
+    },
+  );
+});

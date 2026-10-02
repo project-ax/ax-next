@@ -1,6 +1,12 @@
+import { PricesSchema, type PriceStore } from './pricing.js';
 import { z } from 'zod';
 import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
-import { InvalidLimitsError, UsageLimitsSchema, type LimitsStore, type UsageLimits } from './config.js';
+import {
+  InvalidLimitsError,
+  UsageLimitsSchema,
+  type LimitsStore,
+  type UsageLimits,
+} from './config.js';
 import type { Suspension, UsageStore, UserUsageSummary } from './store.js';
 import {
   parseRequestBody,
@@ -18,7 +24,8 @@ import {
 //   PUT    /admin/usage/users/:userId/suspension     — kill switch on
 //   DELETE /admin/usage/users/:userId/suspension     — kill switch off
 //
-// Everything goes through `requireAdmin` first (401 / 403). CSRF on the
+// Admin controls go through `requireAdmin` first (401 / 403). GET /api/usage
+// authenticates the caller and reads only that identity. CSRF on the
 // mutating verbs is enforced by http-server before these handlers run.
 // ---------------------------------------------------------------------------
 
@@ -28,7 +35,17 @@ const NEAR_LIMIT_RATIO = 0.8;
 const NAME_LOOKUP_CONCURRENCY = 8;
 const USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 
-const PutLimitsSchema = UsageLimitsSchema.partial({ assumedTurnCostUsd: true });
+const PutLimitsSchema = UsageLimitsSchema.partial({
+  assumedTurnCostUsd: true,
+  fleetDailySpendUsd: true,
+});
+const UserLimitsSchema = UsageLimitsSchema.pick({
+  dailySpendUsd: true,
+  turnsPerHour: true,
+})
+  .partial()
+  .refine((v) => Object.keys(v).length > 0);
+const PutPricesSchema = z.object({ prices: PricesSchema }).strict();
 
 const PutSuspensionSchema = z
   .object({
@@ -51,6 +68,8 @@ interface WireUser {
   spendUsd: number;
   status: UsageStatus;
   suspended: WireSuspension | null;
+  overrides: import('./store.js').UserLimits | null;
+  limits: UsageLimits;
 }
 
 interface WireSuspension {
@@ -92,6 +111,10 @@ async function mapBounded<T, R>(items: T[], limit: number, fn: (t: T) => Promise
 }
 
 export interface UsageRouteHandlers {
+  getOwnUsage(req: RouteRequest, res: RouteResponse): Promise<void>;
+  putUserLimits(req: RouteRequest, res: RouteResponse): Promise<void>;
+  deleteUserLimits(req: RouteRequest, res: RouteResponse): Promise<void>;
+  putPrices(req: RouteRequest, res: RouteResponse): Promise<void>;
   getUsage(req: RouteRequest, res: RouteResponse): Promise<void>;
   putLimits(req: RouteRequest, res: RouteResponse): Promise<void>;
   putSuspension(req: RouteRequest, res: RouteResponse): Promise<void>;
@@ -102,25 +125,27 @@ export function createUsageRouteHandlers(deps: {
   bus: HookBus;
   store: UsageStore;
   limits: LimitsStore;
+  prices: PriceStore;
   now: () => Date;
 }): UsageRouteHandlers {
-  const { bus, store, limits, now } = deps;
+  const { bus, store, limits, prices, now } = deps;
   const ctx: AgentContext = makeAgentContext({
     sessionId: 'usage-limits',
     agentId: PLUGIN_NAME,
     userId: 'system',
   });
 
-  async function lookupName(userId: string): Promise<{ displayName: string | null; email: string | null }> {
+  async function lookupName(
+    userId: string,
+  ): Promise<{ displayName: string | null; email: string | null }> {
     // Optional hook: without it, or on any failure, the admin sees the raw id.
     // A name is never worth failing the whole page over.
     if (!bus.hasService('auth:get-user')) return { displayName: null, email: null };
     try {
-      const u = await bus.call<{ userId: string }, { displayName?: unknown; email?: unknown } | null>(
-        'auth:get-user',
-        ctx,
-        { userId },
-      );
+      const u = await bus.call<
+        { userId: string },
+        { displayName?: unknown; email?: unknown } | null
+      >('auth:get-user', ctx, { userId });
       return {
         displayName: typeof u?.displayName === 'string' ? u.displayName : null,
         email: typeof u?.email === 'string' ? u.email : null,
@@ -138,25 +163,36 @@ export function createUsageRouteHandlers(deps: {
   async function interruptInFlight(userId: string): Promise<number> {
     if (!bus.hasService('conversations:list') || !bus.hasService('agent:interrupt')) return 0;
     // Both hooks are ownership-checked by userId, so act AS the target user.
-    const targetCtx = makeAgentContext({ sessionId: 'usage-limits-suspend', agentId: PLUGIN_NAME, userId });
+    const targetCtx = makeAgentContext({
+      sessionId: 'usage-limits-suspend',
+      agentId: PLUGIN_NAME,
+      userId,
+    });
     let conversations: unknown;
     try {
-      conversations = await bus.call('conversations:list', targetCtx, { userId });
+      conversations = await bus.call('conversations:list', targetCtx, {
+        userId,
+      });
     } catch (err) {
       ctx.logger.warn('usage_suspend_list_failed', { err });
       return 0;
     }
     if (!Array.isArray(conversations)) return 0;
     let interrupted = 0;
-    for (const c of conversations as Array<{ conversationId?: unknown; activeReqId?: unknown }>) {
+    for (const c of conversations as Array<{
+      conversationId?: unknown;
+      activeReqId?: unknown;
+    }>) {
       if (typeof c?.conversationId !== 'string') continue;
       if (typeof c.activeReqId !== 'string' || c.activeReqId.length === 0) continue;
       try {
-        const out = await bus.call<{ conversationId: string; userId: string }, { interrupted?: unknown }>(
-          'agent:interrupt',
-          targetCtx,
-          { conversationId: c.conversationId, userId },
-        );
+        const out = await bus.call<
+          { conversationId: string; userId: string },
+          { interrupted?: unknown }
+        >('agent:interrupt', targetCtx, {
+          conversationId: c.conversationId,
+          userId,
+        });
         if (out?.interrupted === true) interrupted++;
       } catch (err) {
         ctx.logger.warn('usage_suspend_interrupt_failed', { err });
@@ -174,17 +210,90 @@ export function createUsageRouteHandlers(deps: {
     return id;
   }
 
+  async function readBody(
+    req: RouteRequest,
+    res: RouteResponse,
+    schema: z.ZodTypeAny,
+    maxBytes = USAGE_BODY_MAX_BYTES,
+  ) {
+    const parsed = parseRequestBody(req.body, maxBytes);
+    if (!parsed.ok) {
+      res.status(parsed.status).json({ error: parsed.message });
+      return null;
+    }
+    const body = schema.safeParse(parsed.value);
+    if (!body.success) {
+      res.status(400).json({ error: 'invalid-payload' });
+      return null;
+    }
+    return body.data;
+  }
   return {
+    async getOwnUsage(req, res) {
+      let userId: string;
+      try {
+        const { user } = await bus.call<{ req: RouteRequest }, { user: { id: string } }>(
+          'auth:require-user',
+          ctx,
+          { req },
+        );
+        userId = user.id;
+      } catch {
+        res.status(401).json({ error: 'unauthenticated' });
+        return;
+      }
+      // Identity comes only from the authenticated session, never params/query.
+      const current = {
+        ...(await limits.get()),
+        ...(await store.getUserLimits(userId)),
+      };
+      const summary = await store.userSummary({ userId, now: now() });
+      res
+        .header('Cache-Control', 'no-store')
+        .status(200)
+        .json({
+          windowHours: WINDOW_HOURS,
+          spendUsd: toUsd(summary.spendMicros),
+          turnsLastHour: summary.turnsLastHour,
+          limits: current,
+          status: deriveStatus(summary, current),
+        });
+    },
+    async putUserLimits(req, res) {
+      if ((await requireAdmin(bus, ctx, req, res)) === null) return;
+      const userId = targetUserId(req, res);
+      if (userId === null) return;
+      const body = await readBody(req, res, UserLimitsSchema);
+      if (body === null) return;
+      await store.setUserLimits(userId, body);
+      res.status(200).json({ overrides: body });
+    },
+    async deleteUserLimits(req, res) {
+      if ((await requireAdmin(bus, ctx, req, res)) === null) return;
+      const userId = targetUserId(req, res);
+      if (userId === null) return;
+      await store.setUserLimits(userId, null);
+      res.status(200).json({ overrides: null });
+    },
+    async putPrices(req, res) {
+      if ((await requireAdmin(bus, ctx, req, res)) === null) return;
+      const body = await readBody(req, res, PutPricesSchema, 64 * 1024);
+      if (body === null) return;
+      res.status(200).json({ prices: await prices.set(body.prices) });
+    },
     async getUsage(req, res) {
       const actor = await requireAdmin(bus, ctx, req, res);
       if (actor === null) return;
       const current = await limits.get();
       const summary = await store.summary({ now: now(), limits: current });
-      const names = await mapBounded(summary.users, NAME_LOOKUP_CONCURRENCY, (u) => lookupName(u.userId));
+      const details = await mapBounded(summary.users, NAME_LOOKUP_CONCURRENCY, async (u) => ({
+        ...(await lookupName(u.userId)),
+        overrides: await store.getUserLimits(u.userId),
+      }));
       const users: WireUser[] = summary.users.map((u, i) => ({
         userId: u.userId,
-        displayName: names[i]!.displayName,
-        email: names[i]!.email,
+        displayName: details[i]!.displayName,
+        email: details[i]!.email,
         turnsLastHour: u.turnsLastHour,
         turnsLast24h: u.turnsLast24h,
         inputTokens: u.inputTokens,
@@ -192,13 +301,18 @@ export function createUsageRouteHandlers(deps: {
         cacheReadTokens: u.cacheReadTokens,
         cacheWriteTokens: u.cacheWriteTokens,
         spendUsd: toUsd(u.spendMicros),
-        status: deriveStatus(u, current),
+        status: deriveStatus(u, { ...current, ...details[i]!.overrides }),
+        overrides: details[i]!.overrides,
+        limits: { ...current, ...details[i]!.overrides },
         suspended: u.suspended === null ? null : toWireSuspension(u.suspended),
       }));
       res.status(200).json({
         windowHours: WINDOW_HOURS,
         truncated: summary.truncated,
         limits: current,
+        prices: await prices.get(),
+        fleetBlocked:
+          summary.totals.spendMicros >= Math.round(current.fleetDailySpendUsd * 1_000_000),
         totals: {
           turns: summary.totals.turns,
           spendUsd: toUsd(summary.totals.spendMicros),
@@ -222,10 +336,12 @@ export function createUsageRouteHandlers(deps: {
         return;
       }
       try {
-        const { assumedTurnCostUsd, ...required } = body.data;
-        const saved = await limits.set(
-          assumedTurnCostUsd === undefined ? required : { ...required, assumedTurnCostUsd },
-        );
+        const { assumedTurnCostUsd, fleetDailySpendUsd, ...required } = body.data;
+        const saved = await limits.set({
+          ...required,
+          ...(assumedTurnCostUsd === undefined ? {} : { assumedTurnCostUsd }),
+          ...(fleetDailySpendUsd === undefined ? {} : { fleetDailySpendUsd }),
+        });
         res.status(200).json({ limits: saved });
       } catch (err) {
         if (err instanceof InvalidLimitsError) {
@@ -295,6 +411,25 @@ export async function registerUsageRoutes(
   handlers: UsageRouteHandlers,
 ): Promise<Array<() => void>> {
   const routes: RouteSpec[] = [
+    { method: 'GET', path: '/api/usage', handler: handlers.getOwnUsage },
+    {
+      method: 'PUT',
+      path: '/admin/usage/users/:userId/limits',
+      handler: handlers.putUserLimits,
+      maxBodyBytes: USAGE_BODY_MAX_BYTES,
+    },
+    {
+      method: 'DELETE',
+      path: '/admin/usage/users/:userId/limits',
+      handler: handlers.deleteUserLimits,
+      maxBodyBytes: USAGE_BODY_MAX_BYTES,
+    },
+    {
+      method: 'PUT',
+      path: '/admin/usage/prices',
+      handler: handlers.putPrices,
+      maxBodyBytes: 64 * 1024,
+    },
     { method: 'GET', path: '/admin/usage', handler: handlers.getUsage },
     {
       method: 'PUT',

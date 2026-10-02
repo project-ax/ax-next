@@ -167,7 +167,8 @@ export async function deliverResolution({
   // never settles.
   const gate = await bus.fire(
     CHAT_RESUME_HOOK,
-    deliveryCtx,
+    // Admission and terminal metering must name the same continuation turn.
+    streamReqId === null ? deliveryCtx : { ...deliveryCtx, reqId: streamReqId },
     { decisionId: decision.id, outcome },
     { subscriberTimeoutMs: CHAT_RESUME_SUBSCRIBER_TIMEOUT_MS },
   );

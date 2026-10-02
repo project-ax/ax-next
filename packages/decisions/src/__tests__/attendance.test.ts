@@ -377,6 +377,16 @@ describe('deliverResolution', () => {
       expect(queued).toHaveLength(1);
     });
 
+    it('gates the continuation under the request id its terminal events carry', async () => {
+      const bus = new HookBus();
+      withConversations(bus, { 'conv-web': { origin: 'web', activeSessionId: 'sess-1' } });
+      withSessionQueue(bus);
+      const asked: string[] = [];
+      bus.subscribe<unknown>('chat:resume', 'test-gate', async (c) => { asked.push(c.reqId); });
+      await deliverResolution({ bus, ctx: ctx(), decision: decision(), outcome: 'approved', continuationReqId: 'req-metered' });
+      expect(asked).toEqual(['req-metered']);
+    });
+
     it('does NOT wake the agent when the gate says no, for a dismissal as well', async () => {
       const bus = new HookBus();
       withConversations(bus, { 'conv-web': { origin: 'web', activeSessionId: 'sess-1' } });

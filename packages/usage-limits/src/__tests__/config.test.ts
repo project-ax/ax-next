@@ -69,7 +69,7 @@ describe('createLimitsStore', () => {
   it('returns the defaults when nothing is stored', async () => {
     const { limits, logger } = setup();
     expect(await limits.get()).toEqual(DEFAULT_LIMITS);
-    expect(DEFAULT_LIMITS).toEqual({ dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 });
+    expect(DEFAULT_LIMITS).toEqual({ dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 });
     expect(logger.warns).toEqual([]);
   });
 
@@ -80,11 +80,12 @@ describe('createLimitsStore', () => {
   });
 
   it('falls back field-by-field on out-of-bounds values, with a warn', async () => {
-    const { limits, logger } = setup({ dailySpendUsd: -1, turnsPerHour: 7.5, assumedTurnCostUsd: 3 });
+    const { limits, logger } = setup({ dailySpendUsd: -1, turnsPerHour: 7.5, assumedTurnCostUsd: 3, fleetDailySpendUsd: 100 });
     expect(await limits.get()).toEqual({
       dailySpendUsd: DEFAULT_LIMITS.dailySpendUsd,
+      fleetDailySpendUsd: DEFAULT_LIMITS.fleetDailySpendUsd,
       turnsPerHour: DEFAULT_LIMITS.turnsPerHour,
-      assumedTurnCostUsd: 3,
+      assumedTurnCostUsd: 3, fleetDailySpendUsd: 100,
     });
     expect(logger.warns.length).toBeGreaterThan(0);
   });

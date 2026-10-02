@@ -54,8 +54,8 @@ describe('manifest', () => {
   it('subscribes to the gate + meters, registers the two provider hooks, declares its calls', () => {
     const m = createUsageLimitsPlugin().manifest;
     expect(m.name).toBe('@ax/usage-limits');
-    expect(m.registers).toEqual(['usage:provider-status', 'usage:provider-record']);
-    expect(m.subscribes).toEqual(['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage']);
+    expect(m.registers).toEqual(['usage:provider-status', 'usage:provider-record', 'usage:check']);
+    expect(m.subscribes).toEqual(['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage', 'chat:turn-error', 'chat:end']);
     expect(m.calls).toEqual([
       'database:get-instance',
       'storage:get',
@@ -453,6 +453,10 @@ describe('lifecycle', () => {
     expect(b.unregistered.sort()).toEqual(
       [
         'DELETE /admin/usage/users/:userId/suspension',
+        'DELETE /admin/usage/users/:userId/limits',
+        'GET /api/usage',
+        'PUT /admin/usage/prices',
+        'PUT /admin/usage/users/:userId/limits',
         'GET /admin/usage',
         'PUT /admin/usage/limits',
         'PUT /admin/usage/users/:userId/suspension',

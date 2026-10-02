@@ -37,8 +37,7 @@
  * runtime `onError` falls back to when the AI-SDK error carries no message.
  * Kept client-side so wording/i18n is one place.
  */
-export const DEFAULT_TURN_ERROR =
-  'The agent stopped unexpectedly. Retry to continue.';
+export const DEFAULT_TURN_ERROR = 'The agent stopped unexpectedly. Retry to continue.';
 
 /**
  * Map a wire turn-error reason code (backend-agnostic, from the orchestrator)
@@ -72,6 +71,8 @@ export const ERROR_LABELS: Record<string, string> = {
   // their message away. Each says what happened and the one thing to do next;
   // none names a dollar amount, because the reader cannot act on our estimate.
   // The operator's side of the same feature is `components/admin/UsageTab.tsx`.
+  'chat:start:usage-limit-fleet':
+    'The workspace has reached its daily usage limit. Usage frees up gradually over the next 24 hours. Ask an admin if work needs to continue sooner.',
   'chat:start:usage-limit-daily':
     "You've reached your daily usage limit. It frees up gradually over the next 24 hours. If you need more right now, ask an admin to raise it.",
   'chat:start:usage-limit-rate':
@@ -91,7 +92,7 @@ export const ERROR_LABELS: Record<string, string> = {
   // one true next step for most people is an admin. The settings side is
   // `components/admin/StorageTab.tsx`.
   'chat:start:storage-full':
-    "Your storage is full, so nothing new can be saved right now. Ask an admin for more room, then try again.",
+    'Your storage is full, so nothing new can be saved right now. Ask an admin for more room, then try again.',
 };
 
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
@@ -135,7 +136,6 @@ export function turnErrorText(reason: string, detail?: string | null): string {
   */
   const found: unknown = ERROR_LABELS[reason];
   const label = typeof found === 'string' ? found : DEFAULT_TURN_ERROR;
-  const line =
-    typeof detail === 'string' ? detail.slice(0, MAX_DETAIL_CHARS).trim() : '';
+  const line = typeof detail === 'string' ? detail.slice(0, MAX_DETAIL_CHARS).trim() : '';
   return line.length > 0 ? `${label}\n${line}` : label;
 }

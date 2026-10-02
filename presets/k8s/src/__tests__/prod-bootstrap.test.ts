@@ -75,6 +75,9 @@ function makeFakeK8sApi(): K8sCoreApi {
     async deleteNamespacedPod() {
       return { status: 'Success' };
     },
+    async readNamespacedPodLog() {
+      return '';
+    },
     async listNamespacedPod() {
       return { items: [] };
     },

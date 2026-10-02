@@ -228,9 +228,22 @@ export function createLlmOpenRouterPlugin(cfg: LlmOpenRouterConfig = {}): Plugin
               degradation:
                 'the OpenRouter key falls back to OPENROUTER_API_KEY env / cfg.apiKey; if none, llm:call:openrouter errors per-call and best-effort callers (auto-titling, memory extraction) skip quietly',
             },
+            {
+              hook: 'usage:check',
+              degradation:
+                'Host helper model calls have no spend gate when usage limits are not installed.',
+            },
           ],
         }
-      : {}),
+      : {
+          optionalCalls: [
+            {
+              hook: 'usage:check',
+              degradation:
+                'Host helper model calls have no spend gate when usage limits are not installed.',
+            },
+          ],
+        }),
   };
 
   return {
@@ -353,6 +366,20 @@ async function callAndReportUsage(
   input: LlmCallInput,
   cfg: LlmOpenRouterConfig,
 ): Promise<LlmCallOutput> {
+  if (bus.hasService('usage:check')) {
+    const verdict = await bus.call<Record<string, never>, { blocked: boolean; reason?: string }>(
+      'usage:check',
+      ctx,
+      {},
+    );
+    if (verdict.blocked)
+      throw new PluginError({
+        code: verdict.reason ?? 'usage-check-unavailable',
+        plugin: PLUGIN_NAME,
+        hookName: 'llm:call:openrouter',
+        message: 'Model usage is paused by the spend limit.',
+      });
+  }
   const out = await callWithRetry(fetchImpl, apiKey, input, cfg);
   await fireLlmUsage(bus, ctx, {
     // `input.model` is a bare slug on this hook; the ref the limiter prices is

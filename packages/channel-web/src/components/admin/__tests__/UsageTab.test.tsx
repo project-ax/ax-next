@@ -56,7 +56,7 @@ function makeReport(): UsageReport {
   return {
     windowHours: 24,
     truncated: false,
-    limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25 },
+    limits: { dailySpendUsd: 5, turnsPerHour: 60, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 },
     totals: { turns: 150, spendUsd: 12.86, users: 5 },
     users: [
       makeUser({
@@ -366,7 +366,7 @@ describe('UsageTab — the two limits', () => {
     expect(screen.getByLabelText(turnsLabel)).toHaveValue(60);
     expect(
       screen.getByText(
-        "We estimate spend from how much each person's agents use, over a rolling 24 hours. It's a safety limit, not a bill: models we don't recognize are counted at a high rate. At the limit, their next message waits until usage frees up.",
+        "We estimate spend from how much each person's agents use, over a rolling 24 hours. It's a safety limit, not a bill: models we don't recognize are counted at a high rate. At the limit, their next message waits until usage frees up. A running task can continue up to twice this amount before its next model call is blocked. The workspace limit can stop it sooner.",
       ),
     ).toBeInTheDocument();
     expect(
@@ -390,8 +390,9 @@ describe('UsageTab — the two limits', () => {
   it('saves both limits as numbers and confirms', async () => {
     handler = (call) => {
       if (call.method === 'PUT' && call.path === '/admin/usage/limits') {
+        report.limits = { ...report.limits, ...(call.body as Partial<typeof report.limits>) };
         return json(200, {
-          limits: { dailySpendUsd: 12.5, turnsPerHour: 90, assumedTurnCostUsd: 0.25 },
+          limits: { dailySpendUsd: 12.5, turnsPerHour: 90, assumedTurnCostUsd: 0.25, fleetDailySpendUsd: 100 },
         });
       }
       return defaultHandler(call);
@@ -404,7 +405,7 @@ describe('UsageTab — the two limits', () => {
 
     await waitFor(() => expect(callsTo('PUT', '/admin/usage/limits')).toHaveLength(1));
     const put = callsTo('PUT', '/admin/usage/limits')[0]!;
-    expect(put.body).toEqual({ dailySpendUsd: 12.5, turnsPerHour: 90 });
+    expect(put.body).toEqual({ dailySpendUsd: 12.5, turnsPerHour: 90, fleetDailySpendUsd: 100, assumedTurnCostUsd: 0.25 });
     expect(put.headers['x-requested-with']).toBe('ax-admin');
 
     await waitFor(() => expect(showToast).toHaveBeenCalled());

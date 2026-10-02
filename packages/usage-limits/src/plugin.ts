@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { createPriceStore } from './pricing.js';
 import { makeAgentContext, reject, type Plugin, type HookBus } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { createLimitsStore } from './config.js';
@@ -15,7 +17,14 @@ const DEFAULT_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** Keep 8 days of buckets: the 24h window plus a week of look-back. */
 const PRUNE_RETENTION_MS = 8 * 24 * 60 * 60 * 1000;
 
-const SUBSCRIBED = ['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage'] as const;
+const SUBSCRIBED = [
+  'chat:start',
+  'chat:resume',
+  'chat:turn-end',
+  'llm:usage',
+  'chat:turn-error',
+  'chat:end',
+] as const;
 
 // ---------------------------------------------------------------------------
 // @ax/usage-limits — per-user spend and rate limits (TASK-692).
@@ -47,7 +56,8 @@ const SUBSCRIBED = ['chat:start', 'chat:resume', 'chat:turn-end', 'llm:usage'] a
 // this user's requests: blocked when suspended, or when estimated spend passes
 // PROVIDER_CEILING_MULTIPLE x the daily limit. The proxy's measurement is a
 // second ledger column beside the runner's; spend takes the LARGER of the two
-// (never their sum, they describe the same traffic). Both hooks fail closed and
+// (never their sum, they describe the same traffic). A third service,
+// usage:check {}, applies the 1x user/fleet gate to host helper calls. All fail closed and
 // never throw. See docs/plans/2026-09-29-provider-call-metering.md and
 // docs/plans/2026-09-29-usage-limits.md.
 // ---------------------------------------------------------------------------
@@ -91,7 +101,7 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [SERVICE_PROVIDER_STATUS, SERVICE_PROVIDER_RECORD],
+      registers: [SERVICE_PROVIDER_STATUS, SERVICE_PROVIDER_RECORD, 'usage:check'],
       calls: [
         'database:get-instance',
         'storage:get',
@@ -102,8 +112,7 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
       optionalCalls: [
         {
           hook: 'auth:get-user',
-          degradation:
-            'The admin usage view shows user ids instead of display names and emails.',
+          degradation: 'The admin usage view shows user ids instead of display names and emails.',
         },
         {
           hook: 'conversations:list',
@@ -137,13 +146,14 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
 
         const store = createUsageStore(db);
         const limits = createLimitsStore({ bus, ctx: initCtx, now });
-        const service = createUsageService({ store, limits, now });
+        const prices = createPriceStore({ bus, ctx: initCtx });
+        const service = createUsageService({ store, limits, prices, now });
 
         unregisterRoutes.push(
           ...(await registerUsageRoutes(
             bus,
             initCtx,
-            createUsageRouteHandlers({ bus, store, limits, now }),
+            createUsageRouteHandlers({ bus, store, limits, prices, now }),
           )),
         );
 
@@ -175,6 +185,13 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
           return undefined;
         });
 
+        for (const hook of ['chat:turn-error', 'chat:end']) {
+          bus.subscribe<unknown>(hook, PLUGIN_NAME, async (ctx, payload) => {
+            await service.recordAbnormalEnd(ctx, payload);
+            return undefined;
+          });
+        }
+
         const prune = async (): Promise<void> => {
           try {
             await store.prune(new Date(now().getTime() - PRUNE_RETENTION_MS));
@@ -191,6 +208,21 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
         // then leaves no half-registered service behind. (A handler left on a
         // bus after shutdown reaches a closed database and answers "blocked",
         // never "not blocked".)
+        const verdictSchema = z.union([
+          z.object({ blocked: z.literal(false) }),
+          z.object({
+            blocked: z.literal(true),
+            reason: z.enum([
+              'usage-suspended',
+              'usage-limit-daily',
+              'usage-limit-fleet',
+              'usage-check-unavailable',
+            ]),
+          }),
+        ]);
+        bus.registerService('usage:check', PLUGIN_NAME, async (ctx) => service.checkUsage(ctx), {
+          returns: verdictSchema,
+        });
         bus.registerService<Record<string, never>, ProviderVerdict>(
           SERVICE_PROVIDER_STATUS,
           PLUGIN_NAME,

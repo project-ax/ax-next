@@ -29,6 +29,7 @@ describe('@ax/llm-openrouter plugin manifest', () => {
         'credentials:validate:openrouter',
       ],
       calls: [],
+      optionalCalls: [expect.objectContaining({ hook: 'usage:check' })],
       subscribes: [],
     });
   });
@@ -37,13 +38,14 @@ describe('@ax/llm-openrouter plugin manifest', () => {
     const resolving = createLlmOpenRouterPlugin({ credentialResolution: true });
     expect(resolving.manifest.optionalCalls).toEqual([
       expect.objectContaining({ hook: 'credentials:get' }),
+      expect.objectContaining({ hook: 'usage:check' }),
     ]);
     // The degradation string is the operator-facing explanation of what
     // breaks when @ax/credentials isn't loaded; it must name the fallback.
     expect(resolving.manifest.optionalCalls?.[0].degradation).toContain('OPENROUTER_API_KEY');
 
     const staticMode = createLlmOpenRouterPlugin({ apiKey: 'k' });
-    expect(staticMode.manifest.optionalCalls).toBeUndefined();
+    expect(staticMode.manifest.optionalCalls).toEqual([expect.objectContaining({ hook: 'usage:check' })]);
   });
 
   it('registers the same three hooks in both modes (manifest matches reality)', async () => {
