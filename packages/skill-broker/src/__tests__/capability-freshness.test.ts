@@ -29,6 +29,8 @@ interface StubSlot {
   server?: string;
   scopes?: string[];
   clientId?: string;
+  clientRegistration?: string;
+  headerName?: string;
   clientSecretRef?: string;
   authServerUrl?: string;
   tokenUrl?: string;
@@ -344,6 +346,8 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
 
   const REPOINTED: Array<Partial<StubSlot>> = [
     { clientId: 'client-b' },
+    { clientRegistration: 'cimd' },
+    { headerName: 'X-New-Key' },
     { clientSecretRef: 'account:someone-else:oauth' },
     { authServerUrl: 'https://auth.evil.example' },
     { tokenUrl: 'https://auth.evil.example/token' },

@@ -89,6 +89,12 @@ export const McpServerSchema = z
       })
       .optional(),
     url: z.string().url().optional(),
+    headers: z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/), z.string().regex(/^(Bearer )?ax-cred:[a-f0-9]{32}$/))
+      .refine((headers) => Object.keys(headers).length <= 5, 'At most five credential headers')
+      .refine((headers) => {
+        const names = Object.keys(headers).map(name => name.toLowerCase());
+        return new Set(names).size === names.length && names.every(name => !['host', 'content-length', 'transfer-encoding', 'connection', 'cookie', 'set-cookie', 'proxy-authorization', 'proxy-connection', 'upgrade', 'trailer', 'te', 'content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'].includes(name));
+      }, 'Headers must be unique and must not override the transport').optional(),
     allowedHosts: z.array(z.string()).default([]),
     credentials: z
       .array(z.object({ slot: z.string(), kind: z.literal('api-key') }))
@@ -106,7 +112,7 @@ export const McpServerSchema = z
         return (
           typeof v.command === 'string' &&
           v.command.length > 0 &&
-          v.url === undefined
+          v.url === undefined && v.headers === undefined
         );
       }
       // transport === 'http'

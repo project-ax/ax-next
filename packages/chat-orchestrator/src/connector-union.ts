@@ -59,6 +59,7 @@ export interface ConnectorMcpServerSpec {
   args?: string[];
   env?: Record<string, string>;
   url?: string;
+  headers?: Record<string, string>;
   allowedHosts: string[];
   credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
 }
@@ -73,7 +74,7 @@ export interface ConnectorMcpServerSpec {
 // `credentials:resolve:mcp-oauth` resolver own them store-side). Drift surfaces as
 // a runtime shape error at the connectors:resolve bus call site.
 export type ConnectorCredentialSlot =
-  | { slot: string; kind: 'api-key'; description?: string; account?: string }
+  | { slot: string; kind: 'api-key'; description?: string; account?: string; headerName?: string; server?: string }
   | {
       slot: string;
       kind: 'oauth';
@@ -396,6 +397,7 @@ export interface FoldConnectorResult {
     /** The connector id (NOT the sandbox dir id) — used to stamp per-connector
      *  credential placeholders after proxy:open-session. */
     connectorId: string;
+    headerBindings?: Array<{ server: string; name: string; slot: string; bearer: boolean }>;
   }>;
   /** Connector credential slots in fold order, for the bare-env projection. */
   connectorSlotEnvNames: Array<{ envName: string; bareSlot: string }>;
@@ -462,7 +464,7 @@ export function foldConnectorCaps(
     // which DOES carry `account`) flows through the same shape elsewhere. Re-derived
     // locally (I2 — no @ax/connectors runtime import). `connector-union.test.ts`
     // pins the shape; a drift here would silently address an empty/colliding row.
-    const isMulti = c.capabilities.credentials.length >= 2;
+    const isMulti = c.capabilities.credentials.filter((slot) => slot.kind !== 'api-key' || !slot.headerName).length >= 2;
     for (const slotDef of c.capabilities.credentials) {
       const envName = connectorCredentialEnvName(c.id, slotDef.slot);
       if (slotOwners.has(envName)) continue; // idempotent on a duplicate slot
@@ -470,7 +472,7 @@ export function foldConnectorCaps(
         slotDef.account !== undefined && slotDef.account.length > 0
           ? slotDef.account
           : c.id;
-      const ref = isMulti ? `account:${service}:${slotDef.slot}` : `account:${service}`;
+      const ref = isMulti || (slotDef.kind === 'api-key' && slotDef.headerName) ? `account:${service}:${slotDef.slot}` : `account:${service}`;
       // An `oauth` connector slot folds to the `mcp-oauth` credential kind —
       // the vault envelope kind the OAuth callback STORES (so resolve/refresh
       // dispatches to `credentials:resolve:mcp-oauth`) AND the kind the proxy
@@ -479,11 +481,20 @@ export function foldConnectorCaps(
       // classification/materialization, not resolution. The `api-key` path is
       // unchanged (identity map).
       const credKind = slotDef.kind === 'oauth' ? 'mcp-oauth' : slotDef.kind;
-      // TASK-687 — bind this slot's credential to THIS connector's OWN declared
-      // hosts (not the union across connectors): the proxy substitutes the
-      // placeholder only on egress to one of them, and a connector with no
-      // hosts binds to none (default deny). Applies to api-key and oauth alike.
-      baseCreds[envName] = { ref, kind: credKind, allowedHosts: [...c.capabilities.allowedHosts] };
+      // Legacy API slots retain their declared hosts. Remote headers and OAuth
+      // tokens bind only to their resource server, never an authorization host.
+      const server = slotDef.server ? c.capabilities.mcpServers.find((s) => s.name === slotDef.server) : undefined;
+      let hosts = [...c.capabilities.allowedHosts];
+      if (slotDef.kind === 'oauth' || slotDef.headerName) {
+        hosts = [];
+        try {
+          if (server?.transport === 'http' && server.url) {
+            const resource = new URL(server.url);
+            if (resource.protocol === 'https:' && !resource.username && !resource.password && !resource.hash) hosts = [resource.hostname];
+          }
+        } catch { /* An invalid legacy resource binds no credential. */ }
+      }
+      baseCreds[envName] = { ref, kind: credKind, allowedHosts: hosts };
       slotOwners.set(envName, `connector:${c.id}`);
       connectorSlotEnvNames.push({ envName, bareSlot: slotDef.slot });
     }
@@ -529,7 +540,11 @@ export function foldConnectorCaps(
           contents: `---\n${synthManifest}\n---\n${body}`,
         },
       ],
-      mcpServers: c.capabilities.mcpServers,
+      mcpServers: c.capabilities.mcpServers.map((s) => ({ ...s })),
+      headerBindings: c.capabilities.credentials.flatMap<{ server: string; name: string; slot: string; bearer: boolean }>((slot) => {
+        if (slot.kind === 'oauth') return [{ server: slot.server, name: 'Authorization', slot: slot.slot, bearer: true }];
+        return slot.headerName && slot.server ? [{ server: slot.server, name: slot.headerName, slot: slot.slot, bearer: false }] : [];
+      }),
       allowedHosts: c.capabilities.allowedHosts,
       // The installed-entry `kind` stays `'api-key'` even for an oauth slot — it
       // is NOT the resolution/classification kind (that's the `baseCreds` entry
@@ -547,4 +562,14 @@ export function foldConnectorCaps(
 
   const services = [...servicesByName.values()].map((v) => v.descriptor);
   return { installedEntries, connectorSlotEnvNames, needsNpmRegistry, needsPypiRegistry, services };
+}
+
+/** Carry only proxy placeholders into SDK request headers. Secrets stay on the host. */
+export function stampConnectorHeaders(entry: FoldConnectorResult['installedEntries'][number], envMap: Record<string, string>): void {
+  for (const binding of entry.headerBindings ?? []) {
+    const server = entry.mcpServers.find((s) => s.name === binding.server && s.transport === 'http');
+    const placeholder = envMap[connectorCredentialEnvName(entry.connectorId, binding.slot)];
+    if (!server || !placeholder || !/^ax-cred:[a-f0-9]{32}$/.test(placeholder)) continue;
+    server.headers = { ...server.headers, [binding.name]: binding.bearer ? `Bearer ${placeholder}` : placeholder };
+  }
 }

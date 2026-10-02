@@ -151,6 +151,8 @@ export async function ensureClient(opts: {
   redirectUri: string;
   scope?: string;
   pinned?: { clientId: string; clientSecret?: string };
+  registration?: 'auto' | 'cimd' | 'dcr' | 'custom';
+  clientMetadataUrl?: string;
   allowedHosts: Set<string>;
   resolver?: HostResolver;
 }): Promise<ClientRegistration> {
@@ -163,6 +165,19 @@ export async function ensureClient(opts: {
       clientSecret: pinned.clientSecret,
       dynamic: false,
     };
+  }
+
+  const registration = opts.registration ?? 'dcr';
+  if (registration === 'custom') throw new Error('A custom OAuth client ID is required');
+  if (registration === 'cimd' || (registration === 'auto' && metadata.client_id_metadata_document_supported === true && opts.clientMetadataUrl)) {
+    if (metadata.client_id_metadata_document_supported !== true || !opts.clientMetadataUrl) {
+      throw new Error('This server or deployment does not support published client identity');
+    }
+    const clientId = new URL(opts.clientMetadataUrl);
+    if (clientId.protocol !== 'https:' || clientId.pathname === '/' || clientId.username || clientId.password || clientId.hash || clientId.search) {
+      throw new Error('Published client identity requires a public HTTPS metadata URL');
+    }
+    return { clientKey, clientId: clientId.href, clientSecret: undefined, dynamic: false };
   }
 
   // The SDK hits `metadata.registration_endpoint` (it throws if absent). Pre-gate

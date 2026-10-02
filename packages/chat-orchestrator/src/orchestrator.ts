@@ -30,6 +30,7 @@ import {
   resolveEffectiveConnectors,
   resolveSkillReferencedConnectors,
   foldConnectorCaps,
+  stampConnectorHeaders,
   connectorCredentialEnvName,
   ConnectorServiceCollisionError,
   type FoldConnectorResult,
@@ -438,6 +439,7 @@ interface McpServerSpecForOrch {
   url?: string;
   allowedHosts: string[];
   credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
+  headers?: Record<string, string>;
 }
 export interface ResolvedSkillForOrch {
   id: string;
@@ -2789,7 +2791,7 @@ export function createOrchestrator(
     // their own stamping loop below. The entry `id` is the sandbox-safe derived
     // dir id; `connectorId` is the original id used for the namespaced lookup.
     const connectorInstalledEntries: Array<
-      InstalledSkillForSandbox & { connectorId: string }
+      InstalledSkillForSandbox & { connectorId: string; headerBindings?: Array<{ server: string; name: string; slot: string; bearer: boolean }> }
     > = connectorFold.installedEntries.map((e) => ({
       id: e.id,
       files: e.files,
@@ -2797,6 +2799,7 @@ export function createOrchestrator(
       allowedHosts: e.allowedHosts,
       credentials: e.credentials,
       connectorId: e.connectorId,
+      ...(e.headerBindings ? { headerBindings: e.headerBindings } : {}),
     }));
 
     // TASK-687 — `unionedAllowlist` (where the session MAY reach) and each
@@ -2841,6 +2844,7 @@ export function createOrchestrator(
       // credential entry, so connector git HTTP-Basic wiring resolves the right
       // credential regardless of which subject won the flat-env stamp.
       for (const entry of connectorInstalledEntries) {
+        stampConnectorHeaders(entry, opened.envMap);
         for (const cred of entry.credentials) {
           const ph = opened.envMap[connectorCredentialEnvName(entry.connectorId, cred.slot)];
           if (typeof ph === 'string') cred.placeholder = ph;
@@ -2961,7 +2965,7 @@ export function createOrchestrator(
       // `connectorId` (a stamping-loop join key, not part of the wire shape).
       const allInstalledSkills: InstalledSkillForSandbox[] = [
         ...installedSkillsForSandbox,
-        ...connectorInstalledEntries.map(({ connectorId: _cid, ...e }) => e),
+        ...connectorInstalledEntries.map(({ connectorId: _cid, headerBindings: _headers, ...e }) => e),
       ];
       const sandboxInput: OpenSessionInput = {
         sessionId,

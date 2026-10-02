@@ -143,6 +143,11 @@ export class CredentialPlaceholderMap {
       for (const ph of eligible()) {
         const real = this.placeholderToReal.get(ph);
         if (real === undefined) continue;
+        // Vault writes also serve env credentials, which can be multiline.
+        // At HTTP substitution, control bytes must never become wire framing.
+        if (result.includes(ph) && /[\x00-\x1f\x7f]/.test(real)) {
+          throw new Error('Credential cannot be used in an HTTP request');
+        }
         // split+join for global replacement (no regex special chars concern)
         result = result.split(ph).join(real);
       }

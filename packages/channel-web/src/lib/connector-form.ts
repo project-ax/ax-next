@@ -79,6 +79,10 @@ export interface CredentialSlotRow {
   clientId?: string;
   /** oauth only — vault ref for the client secret. */
   clientSecretRef?: string;
+  clientRegistration?: ConnectorOAuthSlot['clientRegistration'];
+  headerName?: string;
+  authServerUrl?: string;
+  tokenUrl?: string;
 }
 
 export const emptySlotRow = (): CredentialSlotRow => ({
@@ -194,6 +198,9 @@ function slotToRow(s: ConnectorCredentialSlot): CredentialSlotRow {
     };
     if (s.clientId !== undefined) row.clientId = s.clientId;
     if (s.clientSecretRef !== undefined) row.clientSecretRef = s.clientSecretRef;
+    if (s.clientRegistration !== undefined) row.clientRegistration = s.clientRegistration;
+    if (s.authServerUrl !== undefined) row.authServerUrl = s.authServerUrl;
+    if (s.tokenUrl !== undefined) row.tokenUrl = s.tokenUrl;
     return row;
   }
   // api-key (the original shape + kind discriminant)
@@ -202,6 +209,8 @@ function slotToRow(s: ConnectorCredentialSlot): CredentialSlotRow {
     description: s.description ?? '',
     kind: 'api-key',
   };
+  if (s.headerName !== undefined) row.headerName = s.headerName;
+  if (s.server !== undefined) row.server = s.server;
   return row;
 }
 
@@ -263,11 +272,16 @@ function rowsToSlots(
       if (clientId) oauthSlot.clientId = clientId;
       const clientSecretRef = r.clientSecretRef?.trim();
       if (clientSecretRef) oauthSlot.clientSecretRef = clientSecretRef;
+      if (r.clientRegistration) oauthSlot.clientRegistration = r.clientRegistration;
+      if (r.authServerUrl) oauthSlot.authServerUrl = r.authServerUrl;
+      if (r.tokenUrl) oauthSlot.tokenUrl = r.tokenUrl;
       result.push(oauthSlot);
     } else {
       // api-key
       const apiKeySlot: ConnectorApiKeySlot = { slot, kind: 'api-key' };
       if (r.description.trim().length > 0) apiKeySlot.description = r.description.trim();
+      if (r.headerName) apiKeySlot.headerName = r.headerName;
+      if (r.server) apiKeySlot.server = r.server;
       result.push(apiKeySlot);
     }
   }

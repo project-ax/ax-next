@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { ConnectorEditDialog } from '../ConnectorEditDialog';
+import { LegacyConnectorEditDialog as ConnectorEditDialog } from '../LegacyConnectorEditDialog';
 import * as connectorsLib from '@/lib/connectors';
 import * as credentialsLib from '@/lib/credentials';
 import * as oauthLib from '@/lib/connectors-oauth';

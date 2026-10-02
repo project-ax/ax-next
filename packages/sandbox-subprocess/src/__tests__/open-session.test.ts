@@ -1490,6 +1490,7 @@ describe('sandbox:open-session', () => {
                 name: 'remote',
                 transport: 'http',
                 url: 'https://mcp.example.com',
+                headers: { 'X-API-Key': 'ax-cred:0123456789abcdef0123456789abcdef' },
                 allowedHosts: [],
                 credentials: [],
               },
@@ -1510,6 +1511,7 @@ describe('sandbox:open-session', () => {
     expect(mcpJson.mcpServers.remote).toEqual({
       url: 'https://mcp.example.com',
       type: 'http',
+      headers: { 'X-API-Key': 'ax-cred:0123456789abcdef0123456789abcdef' },
     });
 
     await result.handle.kill();

@@ -88,6 +88,17 @@ describe('refresh', () => {
 });
 
 describe('ensureClient', () => {
+  it.each(['auto', 'cimd'] as const)('uses published identity for %s without dynamic registration', async registration => {
+    const reg = await ensureClient({ metadata: { ...meta, client_id_metadata_document_supported: true }, clientKey: 'c|a', redirectUri: 'https://app.example.com/api/connectors/oauth/callback', registration, clientMetadataUrl: 'https://app.example.com/api/connectors/oauth/client-metadata', allowedHosts: allow, resolver });
+    expect(reg).toMatchObject({ clientId: 'https://app.example.com/api/connectors/oauth/client-metadata', dynamic: false });
+    expect(reg.clientSecret).toBeUndefined();
+  });
+  it('fails explicitly when published identity is unsupported, or the custom client ID is missing', async () => {
+    const common = { metadata: meta, clientKey: 'c|a', redirectUri: 'https://app.example.com/callback', allowedHosts: allow, resolver };
+    await expect(ensureClient({ ...common, registration: 'cimd', clientMetadataUrl: 'https://app.example.com/client.json' })).rejects.toThrow(/published client/);
+    await expect(ensureClient({ ...common, registration: 'custom' })).rejects.toThrow(/client ID/);
+    await expect(ensureClient({ ...common, metadata: { ...meta, client_id_metadata_document_supported: true }, registration: 'cimd', clientMetadataUrl: 'http://app.example.com/client.json' })).rejects.toThrow(/HTTPS/);
+  });
   it('returns a pinned registration without any network call', async () => {
     const reg = await ensureClient({
       metadata: meta,
