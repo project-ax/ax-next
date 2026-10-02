@@ -97,6 +97,50 @@ describe('createPreToolUseHook', () => {
     });
   });
 
+  it('sends the canonical mcp.<ns>.<tool> name to tool.pre-call for a connector namespace (TASK-734)', async () => {
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-c1' });
+    const out = await hook(
+      preToolUseInput({
+        tool_name: 'mcp__c0123456789__send_message',
+        tool_input: { text: 'hi' },
+      }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toEqual([
+      {
+        action: 'tool.pre-call',
+        payload: {
+          call: {
+            id: 'tu_abc',
+            name: 'mcp.c0123456789.send_message',
+            input: { text: 'hi' },
+          },
+        },
+      },
+    ]);
+    expect(out).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+      },
+    });
+  });
+
+  it('keeps a foreign mcp__<server>__<tool> name verbatim on tool.pre-call (only host-minted namespaces are lifted)', async () => {
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-c2' });
+    await hook(
+      preToolUseInput({ tool_name: 'mcp__linear__create_issue', tool_input: {} }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(
+      (calls[0]?.payload as { call: { name: string } }).call.name,
+    ).toBe('mcp__linear__create_issue');
+  });
+
   it('propagates modifiedCall.input as hookSpecificOutput.updatedInput on allow', async () => {
     const { client } = mkClient(async () => ({
       verdict: 'allow',

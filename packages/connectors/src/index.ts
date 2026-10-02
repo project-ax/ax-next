@@ -56,6 +56,12 @@ export type {
   ConnectorsAuthoredRow,
   ConnectorsRow,
 } from './migrations.js';
+export {
+  TOOL_NAMESPACE_RE,
+  deriveToolNamespace,
+  deriveToolNamespaces,
+} from './tool-namespace.js';
+export type { ToolNamespaceEntry } from './tool-namespace.js';
 export { createConnectorStore } from './store.js';
 export type { ConnectorStore, UpsertArgs } from './store.js';
 export { createAuthoredConnectorsStore } from './authored-store.js';

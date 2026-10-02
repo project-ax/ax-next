@@ -122,14 +122,34 @@ function declaredEffectsFor(rules: readonly PolicyRule[], tool: string): ToolEff
  * than hidden; it is simply not gated.
  *
  * WHAT SUCH A TOOL IS ACTUALLY CALLED HERE, because a guard written against the
- * wrong spelling would catch none of them: `@ax/mcp-client` re-keys every
- * MCP-sourced tool as `mcp.${serverId}.${tool}` — DOT-separated — and registers
- * it as a host tool. Host tools are multiplexed through our own
- * `ax-host-tools` server, so the SDK sees `mcp__ax-host-tools__mcp.<id>.<tool>`
- * and `classifySdkToolName` strips that wrapper, leaving `mcp.<id>.<tool>`. On
- * the aisdk runner there is no `mcp__` prefix at all. So the double-underscore
- * form belongs to OUR two in-process servers and is already stripped; a real
- * connector tool never wears it. Gate on `mcp.`, not `mcp__`.
+ * wrong spelling would catch none of them. There are two routes, and both now
+ * arrive in the dotted `mcp.` keyspace:
+ *
+ *   - Host-side MCP (`@ax/mcp-client`): it re-keys every MCP-sourced tool as
+ *     `mcp.${serverId}.${tool}` and registers it as a host tool. Host tools are
+ *     multiplexed through our own `ax-host-tools` server, so the SDK sees
+ *     `mcp__ax-host-tools__mcp.<id>.<tool>` and `classifySdkToolName` strips
+ *     that wrapper, leaving `mcp.<id>.<tool>`. On the aisdk runner there is no
+ *     `mcp__` prefix at all.
+ *   - Sandbox-side connector MCP servers: a connector's `mcpServers` run INSIDE
+ *     the sandbox, via the per-directory `.mcp.json` the runner writes from
+ *     the installed-skill entry (`foldConnectorCaps` in `@ax/chat-orchestrator`
+ *     -> `installed-skills.ts` in `@ax/agent-runner-core`). That is the
+ *     claude-sdk runner's own MCP client, so the SDK names those tools
+ *     `mcp__<server key in .mcp.json>__<tool>`. BEFORE TASK-734 the key was the
+ *     connector author's free-text `spec.name`, and the call reached this gate
+ *     as `mcp__<spec.name>__<tool>` — passed through verbatim, ambiguous between
+ *     connectors that picked the same name, and unmatchable by any `mcp.` rule.
+ *     SINCE TASK-734 the host keys each server by an opaque, host-minted
+ *     `toolNamespace` (`c` + 10 hex, stable per connector record) and the
+ *     claude-sdk runner's `classifySdkToolName` lifts exactly that shape to
+ *     `mcp.<toolNamespace>.<tool>`. A foreign `mcp__linear__x` is NOT lifted; it
+ *     still arrives verbatim.
+ *
+ * Either way the canonical form is dotted: gate on `mcp.`, not `mcp__`. (The
+ * double-underscore form is the SDK's wire spelling; it is stripped or lifted
+ * before a call reaches here.) TASK-734 changed the NAME these calls carry, not
+ * the verdict — no rule matches them yet, so they are still `allow`.
  *
  * WHY IT IS STILL `allow`. Two separate obstacles, worth not conflating:
  *

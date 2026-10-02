@@ -2678,6 +2678,11 @@ export function createOrchestrator(
     let foldedServices: ServiceDescriptorParsed[];
     try {
       connectorFold = foldConnectorCaps(allConnectors, baseAllowSet, baseCreds, slotOwners);
+      // TASK-734 — a server the fold refused to key (no/invalid/duplicate tool
+      // namespace) is absent from the sandbox; say so instead of silently losing it.
+      for (const d of connectorFold.droppedMcpServers) {
+        ctx.logger.warn('connector_mcp_server_unnamespaced', { connectorId: d.connectorId, server: d.server });
+      }
       foldedServices = connectorFold.services;
       if (foldedServices.length > 0 && bus.hasService('services:validate')) {
         const verdict = await bus.call<

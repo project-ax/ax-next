@@ -107,6 +107,20 @@ export interface ConnectorCapabilities {
   services?: ServiceDescriptorParsed[];
 }
 
+/**
+ * TASK-734 — structural mirror of @ax/connectors' per-record tool namespace
+ * (I2). One entry per `capabilities.mcpServers[]` entry: `server` is the
+ * author's spec name, `toolNamespace` is `c` + 10 hex chars derived from the
+ * connector RECORD (owner + id + server), stable across agents/sessions.
+ */
+export interface ConnectorToolNamespace {
+  server: string;
+  toolNamespace: string;
+}
+
+/** The only namespace shape the fold will materialize as a `.mcp.json` key. */
+export const CONNECTOR_TOOL_NAMESPACE_RE = /^c[0-9a-f]{10}$/;
+
 // Structural mirror of @ax/connectors' ResolveOutput / list-defaults connector
 // (I2 — no @ax/connectors import). Only the fields the union folds.
 export interface ResolvedConnectorForOrch {
@@ -116,12 +130,21 @@ export interface ResolvedConnectorForOrch {
    *  model knows the connector exists and how to drive it. Optional for
    *  back-compat with a resolve impl that predates the field. */
   usageNote?: string;
+  /** TASK-734 — per-server tool namespaces. Optional on the mirror so an older
+   *  resolve impl still type-checks; a server without one is DROPPED by the fold
+   *  (fail closed), never materialized under its author-chosen name. */
+  toolNamespaces?: ConnectorToolNamespace[];
 }
 
 // connectors:list-defaults — registered by @ax/connectors (TASK-97). Returns
 // FULL connectors (capabilities included). Structural mirror per I2.
 interface ConnectorsListDefaultsOutput {
-  connectors: Array<{ id: string; capabilities: ConnectorCapabilities; usageNote?: string }>;
+  connectors: Array<{
+    id: string;
+    capabilities: ConnectorCapabilities;
+    usageNote?: string;
+    toolNamespaces?: ConnectorToolNamespace[];
+  }>;
 }
 // connectors:list — owned and shared summaries (no capabilities). Structural
 // mirror per I2.
@@ -133,6 +156,19 @@ interface ConnectorsResolveOutput {
   id: string;
   capabilities: ConnectorCapabilities;
   usageNote?: string;
+  toolNamespaces?: ConnectorToolNamespace[];
+}
+
+/** Project a hook result onto the orchestrator's connector shape, carrying the
+ *  optional fields only when present. Shared by every resolve source so a new
+ *  field cannot be carried by one path and silently dropped by another. */
+function toResolvedConnector(c: ConnectorsResolveOutput): ResolvedConnectorForOrch {
+  return {
+    id: c.id,
+    capabilities: c.capabilities,
+    ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}),
+    ...(c.toolNamespaces !== undefined ? { toolNamespaces: c.toolNamespaces } : {}),
+  };
 }
 
 /**
@@ -169,7 +205,7 @@ export async function resolveEffectiveConnectors(
       );
       for (const c of r.connectors) {
         if (!byId.has(c.id)) {
-          byId.set(c.id, { id: c.id, capabilities: c.capabilities, ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}) });
+          byId.set(c.id, toResolvedConnector(c));
         }
       }
     } catch (err) {
@@ -193,11 +229,7 @@ export async function resolveEffectiveConnectors(
           { userId: string; connectorId: string },
           ConnectorsResolveOutput
         >('connectors:resolve', ctx, { userId: ctx.userId, connectorId });
-        byId.set(resolved.id, {
-          id: resolved.id,
-          capabilities: resolved.capabilities,
-          ...(resolved.usageNote !== undefined ? { usageNote: resolved.usageNote } : {}),
-        });
+        byId.set(resolved.id, toResolvedConnector(resolved));
       } catch (err) {
         ctx.logger.warn('connector_attachment_resolve_failed', {
           connectorId,
@@ -227,11 +259,7 @@ export async function resolveEffectiveConnectors(
             { userId: string; connectorId: string },
             ConnectorsResolveOutput
           >('connectors:resolve', ctx, { userId: ctx.userId, connectorId: summary.id });
-          byId.set(resolved.id, {
-            id: resolved.id,
-            capabilities: resolved.capabilities,
-            ...(resolved.usageNote !== undefined ? { usageNote: resolved.usageNote } : {}),
-          });
+          byId.set(resolved.id, toResolvedConnector(resolved));
         } catch (err) {
           ctx.logger.warn('connector_resolve_failed', {
             connectorId: summary.id,
@@ -298,11 +326,7 @@ export async function resolveSkillReferencedConnectors(
         { userId: string; connectorId: string },
         ConnectorsResolveOutput
       >('connectors:resolve', ctx, { userId: ctx.userId, connectorId });
-      out.push({
-        id: resolved.id,
-        capabilities: resolved.capabilities,
-        ...(resolved.usageNote !== undefined ? { usageNote: resolved.usageNote } : {}),
-      });
+      out.push(toResolvedConnector(resolved));
     } catch (err) {
       // Same convention as connector_resolve_failed — non-fatal, additive reach.
       ctx.logger.warn('skill_connector_resolve_failed', {
@@ -415,6 +439,13 @@ export interface FoldConnectorResult {
    * instead of landing here. Empty when no connector declares a service.
    */
   services: ServiceDescriptorParsed[];
+  /**
+   * TASK-734 — MCP servers the fold REFUSED to materialize because they carry no
+   * valid tool namespace (absent, malformed, or a duplicate of a key an earlier
+   * server already took). Fail closed: an unattributable `.mcp.json` key would
+   * surface tools tool-policy cannot address. The orchestrator logs each one.
+   */
+  droppedMcpServers: Array<{ connectorId: string; server: string }>;
 }
 
 /**
@@ -445,6 +476,9 @@ export function foldConnectorCaps(
   // connector contributed the descriptor so a cross-connector collision can name
   // BOTH connectors in the loud error.
   const servicesByName = new Map<string, { connectorId: string; descriptor: ServiceDescriptorParsed }>();
+  // TASK-734 — every `.mcp.json` key materialized so far, across ALL connectors.
+  const usedNamespaces = new Set<string>();
+  const droppedMcpServers: FoldConnectorResult['droppedMcpServers'] = [];
 
   for (const c of connectors) {
     // Hosts → shared egress allowlist (idempotent dedup vs skill hosts).
@@ -535,6 +569,40 @@ export function foldConnectorCaps(
         ? c.usageNote
         : `Connector "${c.id}" is available. Its access (network reach, credentials, MCP servers) is wired into this session.`;
     const synthManifest = `name: ${connectorSandboxDirId(c.id)}\ndescription: Connector ${c.id}`;
+
+    // TASK-734 — key each server by its per-record TOOL NAMESPACE, not the
+    // author's spec.name. The runner writes `.mcp.json` keyed by `name`, and the
+    // SDK names the tools `mcp__<key>__<tool>`; the runner normalizes
+    // `mcp__<ns>__<tool>` to the canonical `mcp.<toolNamespace>.<tool>` that
+    // tool-policy rules address. Keying by spec.name let two connectors that
+    // both call themselves "linear" collide on one key (and one policy target).
+    // The namespace is derived from the connector RECORD, so it is stable across
+    // agents/sessions and distinct across records. A server with no namespace,
+    // a malformed one, or one whose key is already taken is DROPPED (fail
+    // closed) and reported — never materialized under an unattributable key.
+    // The host-side credential binding ABOVE still matches `slotDef.server`
+    // against the ORIGINAL spec names; only the sandbox-facing key changes.
+    const nsByServer = new Map<string, string>();
+    for (const t of c.toolNamespaces ?? []) {
+      if (!nsByServer.has(t.server)) nsByServer.set(t.server, t.toolNamespace);
+    }
+    const mcpServers: ConnectorMcpServerSpec[] = [];
+    for (const s of c.capabilities.mcpServers) {
+      const ns = nsByServer.get(s.name);
+      if (ns === undefined || !CONNECTOR_TOOL_NAMESPACE_RE.test(ns) || usedNamespaces.has(ns)) {
+        droppedMcpServers.push({ connectorId: c.id, server: s.name });
+        continue;
+      }
+      usedNamespaces.add(ns);
+      mcpServers.push({ ...s, name: ns });
+    }
+    // Header bindings follow their server's rename so `stampConnectorHeaders`
+    // (which matches `server.name === binding.server`) still finds it. A binding
+    // for a dropped server has nothing to stamp, so it is dropped too.
+    const renamedServer = (server: string | undefined): string | undefined => {
+      const ns = server === undefined ? undefined : nsByServer.get(server);
+      return ns !== undefined && mcpServers.some((s) => s.name === ns) ? ns : undefined;
+    };
     installedEntries.push({
       id: connectorSandboxDirId(c.id),
       connectorId: c.id,
@@ -544,10 +612,15 @@ export function foldConnectorCaps(
           contents: `---\n${synthManifest}\n---\n${body}`,
         },
       ],
-      mcpServers: c.capabilities.mcpServers.map((s) => ({ ...s })),
+      mcpServers,
       headerBindings: c.capabilities.credentials.flatMap<{ server: string; name: string; slot: string; bearer: boolean }>((slot) => {
-        if (slot.kind === 'oauth') return [{ server: slot.server, name: 'Authorization', slot: slot.slot, bearer: true }];
-        return slot.headerName && slot.server ? [{ server: slot.server, name: slot.headerName, slot: slot.slot, bearer: false }] : [];
+        if (slot.kind === 'oauth') {
+          const target = renamedServer(slot.server);
+          return target === undefined ? [] : [{ server: target, name: 'Authorization', slot: slot.slot, bearer: true }];
+        }
+        if (!slot.headerName) return [];
+        const target = renamedServer(slot.server);
+        return target === undefined ? [] : [{ server: target, name: slot.headerName, slot: slot.slot, bearer: false }];
       }),
       allowedHosts: c.capabilities.allowedHosts,
       // The installed-entry `kind` stays `'api-key'` even for an oauth slot — it
@@ -565,7 +638,7 @@ export function foldConnectorCaps(
   }
 
   const services = [...servicesByName.values()].map((v) => v.descriptor);
-  return { installedEntries, connectorSlotEnvNames, needsNpmRegistry, needsPypiRegistry, services };
+  return { installedEntries, connectorSlotEnvNames, needsNpmRegistry, needsPypiRegistry, services, droppedMcpServers };
 }
 
 /** Carry only proxy placeholders into SDK request headers. Secrets stay on the host. */

@@ -8,6 +8,7 @@ import type {
 // Type-only import of the derived plan entry — no runtime cycle (types are
 // erased; credential-plan.ts imports the domain types from here).
 import type { CredentialPlanEntry } from './credential-plan.js';
+import type { ToolNamespaceEntry } from './tool-namespace.js';
 
 /**
  * @ax/connectors public types.
@@ -381,6 +382,19 @@ export interface ResolveOutput {
    * connector's `visibility === 'shared'` (bound to a shared/team agent).
    */
   requiresSharedKeyConsent: boolean;
+  /**
+   * The canonical tool namespace of each MCP server this connector declares —
+   * one entry per `capabilities.mcpServers[]` entry, in that order; empty when
+   * the connector declares none. The orchestrator materializes each server into
+   * the sandbox under its `toolNamespace` (not its spec `name`), so the tool the
+   * model calls (`mcp__<toolNamespace>__<tool>`) maps to the permission toolKey
+   * `mcp.<toolNamespace>.<tool>` and can never collide with another connector's
+   * server of the same name. Derived from the connector ROW owner + id + server
+   * name (see `tool-namespace.ts`) — NOT the requesting user and NOT the agent,
+   * so a shared connector resolves to the same namespace for everyone.
+   * Storage-agnostic: an opaque alias, no backend vocabulary.
+   */
+  toolNamespaces: ToolNamespaceEntry[];
 }
 
 /**
@@ -400,7 +414,13 @@ export interface ListDefaultsInput {
   userId?: string;
 }
 export interface ListDefaultsOutput {
-  connectors: Connector[];
+  /**
+   * Each default connector carries its `toolNamespaces` (same field, same
+   * derivation as `connectors:resolve` — row owner + id + server name), so the
+   * orchestrator union can namespace default connectors' MCP servers without a
+   * second round trip.
+   */
+  connectors: Array<Connector & { toolNamespaces: ToolNamespaceEntry[] }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +624,14 @@ const CredentialPlanEntrySchema = z.object({
   slotTag: z.string().optional(),
 });
 
+// TASK-734 — one opaque namespace per declared MCP server. `server` is the spec's
+// own name (an input to the derivation); `toolNamespace` is the derived alias the
+// tools are exposed under. Both are neutral strings, never backend vocabulary.
+const ToolNamespaceEntrySchema = z.object({
+  server: z.string(),
+  toolNamespace: z.string(),
+});
+
 export const ResolveOutputSchema = z.object({
   id: z.string(),
   keyMode: KeyModeSchema,
@@ -611,10 +639,13 @@ export const ResolveOutputSchema = z.object({
   capabilities: CapabilitiesSchema,
   credentialPlan: z.array(CredentialPlanEntrySchema),
   requiresSharedKeyConsent: z.boolean(),
+  toolNamespaces: z.array(ToolNamespaceEntrySchema),
 }) as unknown as ZodType<ResolveOutput>;
 
 export const ListDefaultsOutputSchema = z.object({
-  connectors: z.array(ConnectorSchema),
+  connectors: z.array(
+    ConnectorSchema.extend({ toolNamespaces: z.array(ToolNamespaceEntrySchema) }),
+  ),
 }) as unknown as ZodType<ListDefaultsOutput>;
 
 const AuthoredConnectorDraftSchema = z.object({

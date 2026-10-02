@@ -37,6 +37,7 @@ import {
 } from './admin-routes.js';
 import { authorizeGlobalAccountRead } from './credential-authz.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
+import { deriveToolNamespaces } from './tool-namespace.js';
 import {
   ActivateAuthoredOutputSchema,
   AuthorizeGlobalOutputSchema,
@@ -407,8 +408,16 @@ async function listDefaultConnectors(
   // there's nothing to list without an owner.
   if (input.userId === undefined) return { connectors: [] };
   const userId = requireUserId(input.userId, 'connectors:list-defaults');
-  const connectors = await store.listDefaults(userId);
-  return { connectors };
+  const defaults = await store.listDefaults(userId);
+  // TASK-734 — each default carries its tool namespaces, derived from the ROW
+  // owner (listDefaults is owner-scoped today, but the row owner is the identity
+  // that matters if the scope ever widens to a catalog overlay).
+  return {
+    connectors: defaults.map(({ connector, ownerUserId }) => ({
+      ...connector,
+      toolNamespaces: deriveToolNamespaces(ownerUserId, connector),
+    })),
+  };
 }
 
 async function getConnector(
@@ -557,8 +566,7 @@ async function resolveConnector(
   const userId = requireUserId(input.userId, hookName);
   const connectorId = validateConnectorId(input.connectorId);
   const available = await store.getAvailableById(userId, connectorId);
-  const connector = available?.connector ?? null;
-  if (connector === null) {
+  if (available === null) {
     throw new PluginError({
       code: 'not-found',
       plugin: PLUGIN_NAME,
@@ -566,6 +574,7 @@ async function resolveConnector(
       message: `connector '${connectorId}' not found`,
     });
   }
+  const { connector, ownerUserId } = available;
   // The mechanism-agnostic spec descriptor the future router routes on — id +
   // keyMode + the opaque capabilities fill. Deliberately NOT the management
   // metadata (name/description): the resolve surface can evolve (union shared +
@@ -595,6 +604,11 @@ async function resolveConnector(
     capabilities: connector.capabilities,
     credentialPlan: deriveCredentialPlan(connector),
     requiresSharedKeyConsent: requiresSharedKeyConsent(connector),
+    // TASK-734 — keyed by the ROW owner (`ownerUserId`), NOT the
+    // requesting `userId`: a shared connector resolved by a non-owner must
+    // yield the same namespace the owner gets, or one connector would present
+    // several tool names (and several permission toolKeys).
+    toolNamespaces: deriveToolNamespaces(ownerUserId, connector),
   };
 }
 

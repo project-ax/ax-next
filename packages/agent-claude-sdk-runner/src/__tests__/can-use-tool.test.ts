@@ -59,6 +59,19 @@ describe('createCanUseTool', () => {
     expect(result).toEqual({ behavior: 'allow', updatedInput: input });
   });
 
+  it('allows and echoes input verbatim for a host-minted connector namespace (TASK-734)', async () => {
+    const { client } = mkClient();
+    const canUseTool = createCanUseTool({ client });
+    const input = { channel: 'C1', text: 'hi' };
+    const result = await canUseTool(
+      'mcp__c0123456789__send_message',
+      input,
+      OPTS,
+    );
+    expect(result).toEqual({ behavior: 'allow', updatedInput: input });
+    expect((result as { updatedInput: unknown }).updatedInput).toBe(input);
+  });
+
   it('denies disabled tool names without touching IPC', async () => {
     const { client } = mkClient();
     const canUseTool = createCanUseTool({ client });

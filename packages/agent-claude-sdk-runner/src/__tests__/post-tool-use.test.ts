@@ -106,6 +106,32 @@ describe('createPostToolUseHook', () => {
     });
   });
 
+  it('normalizes a host-minted connector namespace to mcp.<ns>.<tool> (TASK-734)', async () => {
+    const { client, events } = mkClient();
+    const hook = createPostToolUseHook({ client });
+    await hook(
+      postToolUseInput({
+        tool_name: 'mcp__c0123456789__send_message',
+        tool_input: { text: 'hi' },
+        tool_response: { ok: true },
+      }),
+      'tu_conn',
+      HOOK_OPTS,
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(events[0]).toEqual({
+      name: 'event.tool-post-call',
+      payload: {
+        call: {
+          id: 'tu_conn',
+          name: 'mcp.c0123456789.send_message',
+          input: { text: 'hi' },
+        },
+        output: { ok: true },
+      },
+    });
+  });
+
   it('falls back to empty-string id when toolUseID is undefined', async () => {
     // The SDK types say toolUseID can be undefined; the IPC schema requires
     // a string. Empty-string is the agreed "unknown" sentinel.
@@ -253,6 +279,36 @@ describe('createPostToolUseHook — agent-visible egress-block note', () => {
     );
     expect(drainCalls).toBe(0);
     expect(result).toEqual({});
+  });
+
+  it('does NOT drain for a connector tool, even one named `Bash` (TASK-734)', async () => {
+    // A connector MCP tool is not the built-in Bash and must never ride its
+    // egress drain: `mcp-connector` is not `builtin`, and its canonical name
+    // (`mcp.<ns>.Bash`) is not `Bash`.
+    const { client, events } = mkClient();
+    let drainCalls = 0;
+    const hook = createPostToolUseHook({
+      client,
+      drainEgressBlocks: async () => {
+        drainCalls += 1;
+        return ['github.com'];
+      },
+    });
+    const result = await hook(
+      postToolUseInput({
+        tool_name: 'mcp__c0123456789__Bash',
+        tool_input: { command: 'ls' },
+        tool_response: {},
+      }),
+      'tu_conn_bash',
+      HOOK_OPTS,
+    );
+    expect(drainCalls).toBe(0);
+    expect(result).toEqual({});
+    await new Promise((r) => setImmediate(r));
+    expect(
+      (events[0]?.payload as { call: { name: string } }).call.name,
+    ).toBe('mcp.c0123456789.Bash');
   });
 
   it('produces no note when drainEgressBlocks is not wired (CLI / degradation)', async () => {

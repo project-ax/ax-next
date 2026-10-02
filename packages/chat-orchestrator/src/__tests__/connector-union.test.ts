@@ -49,7 +49,7 @@ const CAPS = (over: Partial<ResolvedConnectorForOrch['capabilities']> = {}) => (
 });
 
 it('carries OAuth and custom headers through session placeholders bound only to the remote host', () => {
-  const connector: ResolvedConnectorForOrch = { id: 'remote', usageNote: '', capabilities: CAPS({ allowedHosts: ['mcp.example.com', 'auth.example.com'], credentials: [{ kind: 'oauth', slot: 'TOKEN', server: 'remote' }, { kind: 'api-key', slot: 'header-one', headerName: 'X-Key', server: 'remote' }], mcpServers: [{ name: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', allowedHosts: [], credentials: [] }] }) };
+  const connector: ResolvedConnectorForOrch = { id: 'remote', usageNote: '', capabilities: CAPS({ allowedHosts: ['mcp.example.com', 'auth.example.com'], credentials: [{ kind: 'oauth', slot: 'TOKEN', server: 'remote' }, { kind: 'api-key', slot: 'header-one', headerName: 'X-Key', server: 'remote' }], mcpServers: [{ name: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', allowedHosts: [], credentials: [] }] }), toolNamespaces: [{ server: 'remote', toolNamespace: 'c0123456789' }] };
   const creds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }> = {};
   const folded = foldConnectorCaps([connector], new Set(), creds, new Map());
   expect(creds[connectorCredentialEnvName('remote', 'TOKEN')]).toMatchObject({ ref: 'account:remote', allowedHosts: ['mcp.example.com'] });
@@ -57,6 +57,8 @@ it('carries OAuth and custom headers through session placeholders bound only to 
   const entry = folded.installedEntries[0]!;
   const token = 'ax-cred:' + 'a'.repeat(32), key = 'ax-cred:' + 'b'.repeat(32);
   stampConnectorHeaders(entry, { [connectorCredentialEnvName('remote', 'TOKEN')]: token, [connectorCredentialEnvName('remote', 'header-one')]: key });
+  // TASK-734 — the binding was renamed to the namespace alongside the server, so it still stamps.
+  expect(entry.mcpServers[0]!.name).toBe('c0123456789');
   expect(entry.mcpServers[0]!.headers).toEqual({ Authorization: `Bearer ${token}`, 'X-Key': key });
   expect(connector.capabilities.mcpServers[0]).not.toHaveProperty('headers');
 });
@@ -496,6 +498,7 @@ describe('foldConnectorCaps', () => {
         {
           id: 'example',
           usageNote: '',
+          toolNamespaces: [{ server: 'example', toolNamespace: 'c1111111111' }],
           capabilities: {
             allowedHosts: ['mcp.example.com'],
             packages: { npm: [], pypi: [] },
@@ -610,6 +613,7 @@ describe('foldConnectorCaps', () => {
         [
           {
             id: 'mcpsvc',
+            toolNamespaces: [{ server: 'mcpsvc', toolNamespace: 'c2222222222' }],
             capabilities: {
               allowedHosts: ['mcp.svc.example', 'auth.svc.example'],
               credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'mcpsvc' }],
@@ -693,6 +697,7 @@ describe('foldConnectorCaps', () => {
         {
           id: 'gdrive',
           usageNote: 'Use this to read Drive docs.',
+          toolNamespaces: [{ server: 'gdrive', toolNamespace: 'cabcdef0123' }],
           capabilities: {
             allowedHosts: ['drive.googleapis.com'],
             credentials: [],
@@ -721,6 +726,8 @@ describe('foldConnectorCaps', () => {
     expect(skillMd.contents).toMatch(/^---\n/);
     expect(skillMd.contents).toContain('Use this to read Drive docs.');
     expect(e.mcpServers).toHaveLength(1);
+    expect(e.mcpServers[0]!.name).toBe('cabcdef0123');
+    expect(r.droppedMcpServers).toEqual([]);
   });
 
   it('emits an entry with a fallback body when usageNote is empty (still materializes mcpServers)', () => {
@@ -840,5 +847,172 @@ describe('foldConnectorCaps', () => {
     expect(err.message).toContain('postgres');
     expect(err.message).toContain('alpha');
     expect(err.message).toContain('beta');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-734 — the sandbox `.mcp.json` key is the connector's per-record
+// toolNamespace, never the author-chosen spec.name, so the SDK's tool names are
+// `mcp__<ns>__<tool>` (normalized by the runner to `mcp.<ns>.<tool>` for
+// tool-policy) and two connectors with the same spec.name cannot collide.
+// ---------------------------------------------------------------------------
+describe('toolNamespace keys (TASK-734)', () => {
+  const HTTP = (name: string, url = `https://${name}.example/mcp`) => ({
+    name,
+    transport: 'http' as const,
+    url,
+    allowedHosts: [],
+    credentials: [],
+  });
+  const NS = (server: string, toolNamespace: string) => [{ server, toolNamespace }];
+
+  it('fold writes the namespaced key in place of spec.name', () => {
+    const r = foldConnectorCaps(
+      [{ id: 'linear', toolNamespaces: NS('linear', 'c0a1b2c3d4e'), capabilities: CAPS({ mcpServers: [HTTP('linear')] }) }],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.installedEntries[0]!.mcpServers.map((s) => s.name)).toEqual(['c0a1b2c3d4e']);
+    expect(r.droppedMcpServers).toEqual([]);
+  });
+
+  it('two connectors both named "linear" with different namespaces → two distinct keys', () => {
+    const r = foldConnectorCaps(
+      [
+        { id: 'linear-a', toolNamespaces: NS('linear', 'caaaaaaaaaa'), capabilities: CAPS({ mcpServers: [HTTP('linear')] }) },
+        { id: 'linear-b', toolNamespaces: NS('linear', 'cbbbbbbbbbb'), capabilities: CAPS({ mcpServers: [HTTP('linear')] }) },
+      ],
+      new Set(),
+      {},
+      new Map(),
+    );
+    const keys = r.installedEntries.flatMap((e) => e.mcpServers.map((s) => s.name));
+    expect(keys).toEqual(['caaaaaaaaaa', 'cbbbbbbbbbb']);
+  });
+
+  it('maps each server of a multi-server connector to its own namespace (by name, not position)', () => {
+    const r = foldConnectorCaps(
+      [
+        {
+          id: 'multi',
+          toolNamespaces: [
+            { server: 'one', toolNamespace: 'c1111111111' },
+            { server: 'two', toolNamespace: 'c2222222222' },
+          ],
+          capabilities: CAPS({ mcpServers: [HTTP('two'), HTTP('one')] }),
+        },
+      ],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.installedEntries[0]!.mcpServers.map((s) => [s.name, s.url])).toEqual([
+      ['c2222222222', 'https://two.example/mcp'],
+      ['c1111111111', 'https://one.example/mcp'],
+    ]);
+  });
+
+  it('header binding still stamps after the rename (binding.server renamed too)', () => {
+    const connector: ResolvedConnectorForOrch = {
+      id: 'remote',
+      toolNamespaces: NS('remote', 'cfedcba9876'),
+      capabilities: CAPS({
+        allowedHosts: ['mcp.example.com'],
+        credentials: [{ kind: 'api-key', slot: 'K', headerName: 'X-Key', server: 'remote' }],
+        mcpServers: [HTTP('remote', 'https://mcp.example.com/mcp')],
+      }),
+    };
+    const creds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }> = {};
+    const r = foldConnectorCaps([connector], new Set(), creds, new Map());
+    const entry = r.installedEntries[0]!;
+    expect(entry.headerBindings).toEqual([{ server: 'cfedcba9876', name: 'X-Key', slot: 'K', bearer: false }]);
+    // Host-side binding still resolves against the ORIGINAL spec name.
+    expect(creds[connectorCredentialEnvName('remote', 'K')]!.allowedHosts).toEqual(['mcp.example.com']);
+    const key = 'ax-cred:' + 'c'.repeat(32);
+    stampConnectorHeaders(entry, { [connectorCredentialEnvName('remote', 'K')]: key });
+    expect(entry.mcpServers[0]!.headers).toEqual({ 'X-Key': key });
+  });
+
+  it('a server with NO namespace is dropped (fail closed) and reported', () => {
+    const r = foldConnectorCaps(
+      [{ id: 'legacy', capabilities: CAPS({ mcpServers: [HTTP('legacy')] }) }],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.installedEntries).toHaveLength(1); // usage note still surfaces
+    expect(r.installedEntries[0]!.mcpServers).toEqual([]);
+    expect(r.droppedMcpServers).toEqual([{ connectorId: 'legacy', server: 'legacy' }]);
+  });
+
+  it('a malformed namespace is dropped and reported; well-formed siblings survive', () => {
+    const r = foldConnectorCaps(
+      [
+        {
+          id: 'mixed',
+          toolNamespaces: [
+            { server: 'good', toolNamespace: 'c0000000001' },
+            { server: 'bad', toolNamespace: 'linear' },
+            { server: 'upper', toolNamespace: 'cABCDEF0123' },
+          ],
+          capabilities: CAPS({ mcpServers: [HTTP('good'), HTTP('bad'), HTTP('upper')] }),
+        },
+      ],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.installedEntries[0]!.mcpServers.map((s) => s.name)).toEqual(['c0000000001']);
+    expect(r.droppedMcpServers).toEqual([
+      { connectorId: 'mixed', server: 'bad' },
+      { connectorId: 'mixed', server: 'upper' },
+    ]);
+  });
+
+  it('a duplicate namespace across connectors keeps the first and drops + reports the second', () => {
+    const r = foldConnectorCaps(
+      [
+        { id: 'first', toolNamespaces: NS('srv', 'c9999999999'), capabilities: CAPS({ mcpServers: [HTTP('srv')] }) },
+        { id: 'second', toolNamespaces: NS('srv', 'c9999999999'), capabilities: CAPS({ mcpServers: [HTTP('srv')] }) },
+      ],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.installedEntries[0]!.mcpServers.map((s) => s.name)).toEqual(['c9999999999']);
+    expect(r.installedEntries[1]!.mcpServers).toEqual([]);
+    expect(r.droppedMcpServers).toEqual([{ connectorId: 'second', server: 'srv' }]);
+  });
+
+  it('resolveEffectiveConnectors carries toolNamespaces from list-defaults, attachments and owned paths', async () => {
+    const bus = busWith({
+      'connectors:list-defaults': async () => ({
+        connectors: [{ id: 'def', capabilities: CAPS(), toolNamespaces: NS('def', 'cdddddddddd') }],
+      }),
+      'connectors:list': async () => ({ connectors: [{ id: 'owned' }] }),
+      'connectors:resolve': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        return { id, capabilities: CAPS(), toolNamespaces: NS(id, id === 'att' ? 'caaaaaaaaaa' : 'c0000000000') };
+      },
+    });
+    const out = await resolveEffectiveConnectors(bus, ctx(), ['att']);
+    const byId = Object.fromEntries(out.map((c) => [c.id, c.toolNamespaces]));
+    expect(byId).toEqual({
+      def: NS('def', 'cdddddddddd'),
+      att: NS('att', 'caaaaaaaaaa'),
+      owned: NS('owned', 'c0000000000'),
+    });
+  });
+
+  it('resolveSkillReferencedConnectors carries toolNamespaces', async () => {
+    const bus = busWith({
+      'connectors:resolve': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        return { id, capabilities: CAPS(), toolNamespaces: NS(id, 'ceeeeeeeeee') };
+      },
+    });
+    const out = await resolveSkillReferencedConnectors(bus, ctx(), ['sk'], new Set());
+    expect(out[0]!.toolNamespaces).toEqual(NS('sk', 'ceeeeeeeeee'));
   });
 });

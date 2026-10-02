@@ -151,7 +151,7 @@ describe('createConnectorStore', () => {
     expect(await store.getByIdNotDeleted('reader', 'shared')).toBeNull();
     expect(await store.softDelete('reader', 'shared')).toBe(false);
     expect(await store.listDefaults('reader')).toEqual([]);
-    expect(await store.listDefaults('author')).toMatchObject([{ id: 'private', defaultAttached: true }]);
+    expect(await store.listDefaults('author')).toMatchObject([{ ownerUserId: 'author', connector: { id: 'private', defaultAttached: true } }]);
     await store.softDelete('author', 'shared');
     expect(await store.getAvailableById('reader', 'shared')).toBeNull();
     expect(await store.listForUser('reader')).toEqual([]);
@@ -319,11 +319,16 @@ describe('createConnectorStore', () => {
 
     const defaults = await store.listDefaults('u1');
     // Sorted by id asc; only u1's live defaults; full connectors (capabilities present).
-    expect(defaults.map((c) => c.id)).toEqual(['a', 'b']);
-    expect(defaults[0]!.capabilities).toEqual(caps());
-    expect(defaults.every((c) => c.defaultAttached)).toBe(true);
+    expect(defaults.map((c) => c.connector.id)).toEqual(['a', 'b']);
+    expect(defaults[0]!.connector.capabilities).toEqual(caps());
+    expect(defaults.every((c) => c.connector.defaultAttached)).toBe(true);
+    // Each entry carries the ROW owner (TASK-734: the tool namespace is derived
+    // from the row owner, not the requester).
+    expect(defaults.every((c) => c.ownerUserId === 'u1')).toBe(true);
 
-    expect((await store.listDefaults('u2')).map((c) => c.id)).toEqual(['other']);
+    const u2Defaults = await store.listDefaults('u2');
+    expect(u2Defaults.map((c) => c.connector.id)).toEqual(['other']);
+    expect(u2Defaults[0]!.ownerUserId).toBe('u2');
     expect(await store.listDefaults('nobody')).toEqual([]);
   });
 

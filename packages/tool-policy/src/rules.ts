@@ -13,9 +13,13 @@ import type { PolicyRule } from './types.js';
 // (with `when`) must precede the broad rule for the same tool. rules.test.ts
 // fails the build if that inverts.
 //
-// Rules match on the **ax-native tool name** — post-classifier, `mcp__` prefixes
-// already stripped (`agent-runner-core/src/tool-policy.ts:54`, sent as
-// `call.name` at `:64`).
+// Rules match on the **ax-native tool name** — post-classifier, sent as
+// `call.name` by `agent-runner-core/src/tool-policy.ts`. The claude-sdk runner's
+// `classifySdkToolName` strips the `mcp__ax-host-tools__` / `mcp__ax-sandbox-tools__`
+// wrappers off OUR two in-process servers, and (TASK-734) lifts a connector's
+// sandbox-side MCP tool `mcp__<toolNamespace>__<tool>` to
+// `mcp.<toolNamespace>.<tool>`. A foreign `mcp__<server>__<tool>` is NOT
+// rewritten and reaches here verbatim — no rule below matches one.
 //
 // A rule matching a tool that is not registered in a given deployment is INERT
 // in the EVALUATOR, not an error: nothing ever calls that tool, so the rule

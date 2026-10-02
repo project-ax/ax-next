@@ -3913,6 +3913,7 @@ describe('chat-orchestrator', () => {
             },
           },
           mcpsvc: {
+            toolNamespaces: [{ server: 'mcpsvc', toolNamespace: 'c2222222222' }],
             capabilities: {
               allowedHosts: ['mcp.svc.example'],
               credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'mcpsvc' }],
@@ -4130,12 +4131,19 @@ describe('chat-orchestrator', () => {
     mcpServers: Array<Record<string, unknown>>;
     packages?: { npm?: string[]; pypi?: string[] };
   }
+  // TASK-734 — `toolNamespaces` mirrors @ax/connectors' per-record namespace
+  // (one per mcpServers entry); the orchestrator keys `.mcp.json` by it.
+  interface ConnectorFixture {
+    capabilities: ConnectorCapsLike;
+    usageNote?: string;
+    toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
+  }
   /** Stubs the connector hooks the orchestrator soft-couples to. `defaults` are
    *  returned full from connectors:list-defaults; `owned` are listed (id-only)
    *  + resolved on demand. `listDefaultsThrows` exercises the non-fatal path. */
   function buildConnectorHooks(opts: {
-    defaults?: Record<string, { capabilities: ConnectorCapsLike; usageNote?: string }>;
-    owned?: Record<string, { capabilities: ConnectorCapsLike; usageNote?: string }>;
+    defaults?: Record<string, ConnectorFixture>;
+    owned?: Record<string, ConnectorFixture>;
     listDefaultsThrows?: Error;
   }): Record<string, ServiceHandler> {
     const defaults = opts.defaults ?? {};
@@ -4148,6 +4156,7 @@ describe('chat-orchestrator', () => {
             id,
             capabilities: c.capabilities,
             ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}),
+            ...(c.toolNamespaces !== undefined ? { toolNamespaces: c.toolNamespaces } : {}),
           })),
         };
       },
@@ -4162,6 +4171,7 @@ describe('chat-orchestrator', () => {
           id,
           capabilities: c.capabilities,
           ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}),
+          ...(c.toolNamespaces !== undefined ? { toolNamespaces: c.toolNamespaces } : {}),
         };
       },
     };
@@ -4173,6 +4183,7 @@ describe('chat-orchestrator', () => {
       defaults: {
         gdrive: {
           usageNote: 'Use this to read Drive docs.',
+          toolNamespaces: [{ server: 'gdrive', toolNamespace: 'c0123abcdef' }],
           capabilities: {
             allowedHosts: ['drive.googleapis.com'],
             credentials: [{ slot: 'GDRIVE', kind: 'api-key', account: 'google' }],
@@ -4250,13 +4261,15 @@ describe('chat-orchestrator', () => {
       installedSkills?: Array<{
         id: string;
         files: Array<{ path: string; contents: string }>;
-        mcpServers: Array<unknown>;
+        mcpServers: Array<{ name: string }>;
       }>;
     };
     const entries = sandboxIn.installedSkills ?? [];
     const gdriveEntry = entries.find((e) => e.id.startsWith('cx-gdrive-'));
     expect(gdriveEntry).toBeTruthy();
     expect(gdriveEntry!.mcpServers).toHaveLength(1);
+    // TASK-734 — the `.mcp.json` key is the connector's toolNamespace, not spec.name.
+    expect(gdriveEntry!.mcpServers[0]!.name).toBe('c0123abcdef');
     const skillMd = gdriveEntry!.files.find((f) => f.path === 'SKILL.md');
     expect(skillMd!.contents).toContain('Use this to read Drive docs.');
   });
@@ -4270,7 +4283,7 @@ describe('chat-orchestrator', () => {
     } });
     const busRef: { current: HookBus | null } = { current: null };
     const mocks = buildMocks({ openSession: makeChatEndOpenSession(busRef) });
-    Object.assign(mocks.services, proxy.services, buildConnectorHooks({ owned: { remote: { capabilities: {
+    Object.assign(mocks.services, proxy.services, buildConnectorHooks({ owned: { remote: { toolNamespaces: [{ server: 'remote', toolNamespace: 'c00000000ab' }], capabilities: {
       allowedHosts: ['mcp.example.com', 'auth.example.com'],
       credentials: [{ kind: 'oauth', slot: 'TOKEN', server: 'remote' }, { kind: 'api-key', slot: 'HEADER', server: 'remote', headerName: 'X-Key' }],
       mcpServers: [{ name: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', allowedHosts: [], credentials: [] }],
@@ -4280,14 +4293,45 @@ describe('chat-orchestrator', () => {
     busRef.current = h.bus;
     const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('remote-header-session'), { message: { role: 'user', content: 'hi' } });
     expect(outcome.kind).toBe('complete');
-    const sandboxInput = mocks.calls.lastSandboxInput as { installedSkills: Array<{ id: string; mcpServers: Array<{ headers?: Record<string, string> }> }> };
+    const sandboxInput = mocks.calls.lastSandboxInput as { installedSkills: Array<{ id: string; mcpServers: Array<{ name: string; headers?: Record<string, string> }> }> };
     const entry = sandboxInput.installedSkills.find(skill => skill.id.startsWith('cx-remote-'))!;
+    expect(entry.mcpServers[0]!.name).toBe('c00000000ab');
     expect(entry.mcpServers[0]!.headers).toEqual({ Authorization: `Bearer ${token}`, 'X-Key': key });
     expect(entry).not.toHaveProperty('headerBindings');
     expect(proxy.state.lastOpenInput).toMatchObject({ credentials: {
       'connector:remote:TOKEN': { ref: 'account:remote', allowedHosts: ['mcp.example.com'] },
       'connector:remote:HEADER': { ref: 'account:remote:HEADER', allowedHosts: ['mcp.example.com'] },
     } });
+  });
+
+  it('TASK-734: an un-namespaced connector MCP server is dropped from the sandbox and warned about', async () => {
+    const proxy = buildProxyHooks();
+    const logLines: string[] = [];
+    const capturingCtx = makeAgentContext({
+      sessionId: 'unnamespaced-session',
+      agentId: 'test-agent',
+      userId: 'test-user',
+      logger: createLogger({ reqId: 'orch-test', writer: (line) => logLines.push(line) }),
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({ openSession: makeChatEndOpenSession(busRef) });
+    Object.assign(mocks.services, proxy.services, buildConnectorHooks({ owned: { legacy: { capabilities: {
+      allowedHosts: ['mcp.legacy.example'],
+      credentials: [],
+      mcpServers: [{ name: 'legacy', transport: 'http', url: 'https://mcp.legacy.example/mcp', allowedHosts: [], credentials: [] }],
+      packages: { npm: [], pypi: [] },
+    } } } }));
+    const h = await createTestHarness({ services: mocks.services, plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })] });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', capturingCtx, { message: { role: 'user', content: 'hi' } });
+    expect(outcome.kind).toBe('complete');
+    const sandboxInput = mocks.calls.lastSandboxInput as { installedSkills: Array<{ id: string; mcpServers: unknown[] }> };
+    const entry = sandboxInput.installedSkills.find((skill) => skill.id.startsWith('cx-legacy-'))!;
+    expect(entry.mcpServers).toEqual([]);
+    const warn = logLines.find((l) => l.includes('connector_mcp_server_unnamespaced'));
+    expect(warn).toBeDefined();
+    expect(warn).toContain('"connectorId":"legacy"');
+    expect(warn).toContain('"server":"legacy"');
   });
 
   it('TASK-107: a per-agent connectorAttachments id folds its host + slot into proxy:open-session', async () => {

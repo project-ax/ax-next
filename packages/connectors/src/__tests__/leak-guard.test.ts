@@ -122,4 +122,17 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
     expect(keys).toContain('service');
     expect(keys).toContain('slotTag');
   });
+
+  it('the tool namespaces on resolve + list-defaults are an opaque alias, not mechanism vocabulary (TASK-734)', () => {
+    // `toolNamespaces: [{ server, toolNamespace }]` — `server` is the spec's own
+    // declared name, `toolNamespace` the derived hash alias. Neither is a
+    // backing-mechanism field (no transport / command / url / mcp), and the
+    // field sits at the top level of BOTH shapes (resolve and each default).
+    for (const schema of [ResolveOutputSchema, ListDefaultsOutputSchema]) {
+      const keys = topLevelKeysOutsideCapabilities(schema);
+      expect(keys).toContain('toolNamespaces');
+      expect(keys).toContain('toolNamespace');
+      expect(keys).toContain('server');
+    }
+  });
 });
