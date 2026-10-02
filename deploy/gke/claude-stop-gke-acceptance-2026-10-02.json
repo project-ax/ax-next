@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-02",
+  "commit": "21dab8fa01a9df4941bac535eb2a1fdd9fc5e639",
+  "clusterVersion": "1.36.4-gke.1247000",
+  "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:claude-stop-21dab8fa@sha256:3677e2eebe71a2e2eacec0387b2d9a582ec6d6778bb15947b7c9b94be1155405",
+  "provider": "scripted loopback Anthropic-compatible HTTP server; fake key; no provider account",
+  "tests": {
+    "restrictedGvisorPod": {
+      "phase": "Succeeded",
+      "exitCode": 0,
+      "network": "default deny",
+      "credentials": "none mounted",
+      "casesPassed": 4
+    },
+    "managedAgentSandboxFilestore": {
+      "phase": "Succeeded",
+      "exitCode": 0,
+      "storage": "synthetic isolated Filestore subdirectory",
+      "casesPassed": 4,
+      "independentDelayedCompletionMarkers": 0
+    },
+    "coverage": [
+      "in-flight Bash Stop prevents a delayed write past the original command deadline",
+      "the same persistent Claude query accepts the next message",
+      "Stop during SDK startup prevents the provider call and Bash execution, then permits the next turn",
+      "a startup stdio MCP server remains usable after stopping Bash",
+      "partial streamed text remains durable while the unfinished tail is absent"
+    ]
+  },
+  "deployment": {
+    "release": "ax-next",
+    "namespace": "ax-next",
+    "revisionBefore": 29,
+    "revisionAfter": 30,
+    "status": "deployed",
+    "hostReady": true,
+    "hostRestarts": 0,
+    "health": "200 {\"ok\":true}",
+    "secretKeysPreserved": [
+      "auth-secret",
+      "credentials-key",
+      "http-cookie-key"
+    ],
+    "sandboxBackend": "agent-sandbox",
+    "agentSandboxApiVersion": "v1beta1",
+    "runtimeClassName": "gvisor",
+    "sharedPoolEnabled": false,
+    "sharedPoolResources": 0
+  },
+  "cleanup": {
+    "namespacesRemoved": [
+      "ax-stopcheck-20261002",
+      "ax-stopprep-20261002"
+    ],
+    "persistentVolumesRemoved": [
+      "ax-stopcheck-prep-20261002",
+      "ax-stopcheck-files-20261002",
+      "ax-stopprep-root-20261002"
+    ],
+    "syntheticFilestoreDirectoryRemoved": true
+  },
+  "limits": "This accepts the Claude Stop fix on GKE and deploys it for direct Agent Sandbox sessions. It does not accept or enable the shared-pool feature; its remaining gates are tracked in deploy/SHARED-POOL.md."
+}

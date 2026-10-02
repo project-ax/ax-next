@@ -8,8 +8,9 @@ destroyed after cleanup.
 
 This implementation is opt-in. The image and integrated helper passed isolated
 GKE/Filestore lifecycle checks, and both SDKs completed real provider/Bash turns
-through an isolated application release. **Live rollout remains blocked until the Claude
-Stop fix passes on GKE and the remaining acceptance gates pass.**
+through an isolated application release. The Claude Stop fix passed on GKE and
+was deployed for direct Agent Sandbox sessions. **Shared-pool rollout remains
+blocked until the remaining acceptance gates pass.**
 See the [recorded evidence](gke/shared-pool-acceptance-2026-10-01.json).
 
 The late-attachment volume must be a **memory-backed 16 MiB emptyDir** with the
@@ -190,10 +191,13 @@ Linux container. The runner now tracks its SDK child, freezes and kills tool
 descendants before sending the SDK interrupt, and preserves startup MCP
 servers. Stop stays latched through startup and an outstanding policy decision.
 The native tests check a delayed write past its original deadline, reuse of the
-same query, MCP tool reuse, and partial streamed text. These checks pass locally;
-GKE/gVisor acceptance is still pending because OAuth token refresh could not
-resolve Google's endpoint. See the [Linux evidence](gke/claude-stop-linux-acceptance-2026-10-01.json).
-
+same query, MCP tool reuse, and partial streamed text. The same four checks pass
+in a restricted gVisor Pod and in a managed Agent Sandbox with a synthetic
+Filestore directory. An independent Filestore scan after the command deadline
+found no completion marker. Production release revision 30 runs the accepted
+image for direct Agent Sandbox sessions; shared pools remain disabled. See the
+[Linux evidence](gke/claude-stop-linux-acceptance-2026-10-01.json) and
+[GKE evidence](gke/claude-stop-gke-acceptance-2026-10-02.json).
 
 Transcript reads survived an isolated host restart, but automatic recovery and
 reaping of live claims was not accepted. Quota refusal, sidecar application
