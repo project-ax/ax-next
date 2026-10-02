@@ -186,7 +186,7 @@ describe('ConnectorEditDialog', () => {
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
     expect(body.connectorId).toBe('stripe-billing');
     expect(body.name).toBe('Stripe Billing');
-    expect(body.visibility).toBe('private');
+    expect(body.visibility).toBe('shared');
     expect(onSaved).toHaveBeenCalled();
   });
 
@@ -397,7 +397,7 @@ describe('ConnectorEditDialog', () => {
     expect(screen.getByText(/default-on for all agents/i)).toBeInTheDocument();
   });
 
-  it('user variant hides Sharing + default-on and forces visibility private', async () => {
+  it('user variant hides Sharing + default-on and defaults new connectors to shared', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -414,7 +414,7 @@ describe('ConnectorEditDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
-    expect(body.visibility).toBe('private');
+    expect(body.visibility).toBe('shared');
     expect(body.defaultAttached).toBe(false);
   });
 

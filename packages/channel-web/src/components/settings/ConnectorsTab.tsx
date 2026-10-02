@@ -4,7 +4,7 @@
  * two shelves, mirroring the Skills tab's Installed / Not-installed:
  *
  *   - **Connected** — services every credential slot has a stored key for; the
- *     assistant can reach them now. Per-row Manage (status / replace / remove keys).
+ *     credentials are configured. Agent/skill attachment grants access.
  *   - **Available** — services in your library still missing a key. Per-row
  *     **Connect** opens the capability-consent handshake (ConnectorConnectDialog)
  *     before the user-scoped key write completes — the self-connect path.
@@ -15,28 +15,15 @@
  * plain-language, mechanism-agnostic vocabulary (TASK-130): Ready / Needs a key
  * / Can't reach it / Checking… (see STATUS_COPY).
  *
- * AUTHORING: the standalone admin Connector Registry is gone (TASK-125). Both
- * users and admins author connectors INLINE here via the shared connector form
- * (ConnectorEditDialog, reusing `lib/connector-form`, the one source of truth,
- * invariant #4):
- *   - Every user (TASK-129) gets "New connector" + per-row Edit / Delete on the
- *     connectors they OWN AND that are PRIVATE. Their writes go to the
- *     locked-down `/settings/connectors` routes (owner forced, visibility forced
- *     private, admin-only fields rejected server-side).
- *   - Admins additionally get per-row set-default / Test (workspace curation) and
- *     may edit ANY connector, writing to `/admin/connectors` (where they may set
- *     visibility:shared + default-on).
- * Catalog/shared connectors are READ-ONLY for non-admins: they see the source
- * badge + Connect/Manage only, never edit/delete — mirrored by the user
- * route's server-side 403.
+ * AUTHORING: users and admins configure integrations here. New definitions
+ * are shared with automatic attachment off. Authors may edit/delete their
+ * personal definitions; definitions owned by someone else are read-only.
+ * Workspace keys and default attachment remain admin-curated. The actor’s role
+ * selects `/settings/connectors` or `/admin/connectors` for writes.
  *
- * SCOPE NOTE: the connector store is owner-scoped at every layer — `listConnectors`
- * returns only the caller's own connectors (the admin and user route bundles are
- * both owner-scoped). There is no cross-owner workspace-catalog read (deferred
- * per the design's Out-of-scope §); so the Available shelf is
- * "owned-but-not-yet-connected", and authoring edits the caller's own rows.
- * Connected/Available derive from REAL credential presence, not a separate
- * attach state.
+ * SCOPE: the list includes owned and shared definitions. Credential presence
+ * determines Connected/Available; agent attachment is a separate permission.
+ * Personal credentials stay in the connecting user’s vault.
  *
  * Untrusted text (connector name / description) renders through React text
  * nodes (auto-escaped) — never raw HTML. shadcn primitives + semantic tokens
@@ -366,11 +353,10 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     // Workspace curation (Test / Set-default) is admin-only — it shapes the
     // shared catalog, which a non-admin never controls.
     const canManageWorkspace = isAdmin;
-    // Edit / Delete: admins may curate any connector; a non-admin author may
-    // edit/delete only the connectors they OWN AND that are private. A
-    // catalog/shared connector (`source === 'catalog'`) is read-only for a
-    // non-admin (mirrors the server-side 403 on the user route).
-    const canEdit = isAdmin || source === 'private';
+    // Availability and edit permission are separate: shared definitions stay
+    // editable by their author and read-only for everyone else.
+    const canEdit = (c.canEdit ?? (isAdmin || source === 'private')) &&
+      (isAdmin || (!c.defaultAttached && !(c.visibility === 'shared' && c.keyMode === 'workspace')));
     return (
       <div key={c.id} data-testid={`connector-tile-${c.id}`}>
         <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
@@ -396,13 +382,15 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
                 >
                   Test
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void onToggleDefault(c)}
-                >
-                  {c.defaultAttached ? 'Unset default' : 'Set default'}
-                </Button>
+                {canEdit && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void onToggleDefault(c)}
+                  >
+                    {c.defaultAttached ? 'Unset default' : 'Set default'}
+                  </Button>
+                )}
               </>
             )}
             {canEdit && (
@@ -448,9 +436,8 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
             a key, the data it talks to — behind a single name.
           </p>
         </div>
-        {/* Every user may author their OWN private connectors (TASK-129); the
-            New connector form opens the user variant for a non-admin (forces
-            visibility private) and the admin variant for an admin. */}
+        {/* New definitions are shared; credential and edit permissions remain
+            scoped to the user. The role determines which route bundle saves. */}
         <Button size="sm" onClick={() => setEditing('new')}>
           New connector
         </Button>

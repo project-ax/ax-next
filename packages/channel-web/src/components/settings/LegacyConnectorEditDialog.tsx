@@ -115,8 +115,8 @@ export interface ConnectorEditDialogProps {
   onSaved: () => void;
   /**
    * Admin variant. When true the workspace-level fields (Sharing / default-on)
-   * are exposed; when false they are hidden and `visibility` is forced `private`
-   * (user authoring). Defaults to false — the safe, least-privilege variant.
+   * are exposed. User edits preserve saved sharing settings; new definitions
+   * are shared with automatic attachment off. Defaults to false.
    */
   isAdmin?: boolean;
 }
@@ -525,8 +525,8 @@ export function LegacyConnectorEditDialog({
 
   // The route bundle this variant targets (TASK-129): the admin variant curates
   // via `/admin/connectors`; the user variant authors via the locked-down
-  // `/settings/connectors` (owner forced, visibility forced private, admin-only
-  // fields rejected server-side, catalog/shared read-only).
+  // `/settings/connectors` (owner forced; workspace keys and defaults rejected
+  // server-side; shared definitions owned by others are read-only).
   const base: ConnectorRouteBase = isAdmin
     ? '/admin/connectors'
     : '/settings/connectors';
@@ -571,10 +571,9 @@ export function LegacyConnectorEditDialog({
     const connectorId = form.connectorId || connectorIdFromName(form.name);
     setBusy(true);
     setError(null);
-    // The user variant cannot set workspace-level fields — force them off so a
-    // tampered form state can't smuggle a shared / default-on connector through
-    // (the server also rejects them for a non-admin owner; this is belt + braces).
-    const visibility: ConnectorVisibility = isAdmin ? form.visibility : 'private';
+    // Preserve sharing on user edits. Workspace keys and automatic attachment
+    // remain admin-only on the server.
+    const visibility: ConnectorVisibility = isAdmin ? form.visibility : connector?.visibility ?? 'shared';
     const defaultAttached = isAdmin ? form.defaultAttached : false;
 
     // --- oauth client_secret persistence ------------------------------------

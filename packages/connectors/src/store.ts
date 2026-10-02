@@ -1,5 +1,5 @@
 import { PluginError } from '@ax/core';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 import {
   CapabilitiesSchema,
   type Capabilities,
@@ -10,9 +10,10 @@ import {
   type Visibility,
 } from './types.js';
 import type { ConnectorDatabase, ConnectorsRow } from './migrations.js';
-import { scopedConnectors } from './scope.js';
+import { availableConnectors, scopedConnectors } from './scope.js';
 
 const PLUGIN_NAME = '@ax/connectors';
+type StoredConnectorRow = Selectable<ConnectorsRow>;
 
 // ---------------------------------------------------------------------------
 // Validation helpers — caller-supplied values are bounded BEFORE INSERT. The
@@ -157,7 +158,7 @@ export function validateCapabilities(value: unknown): Capabilities {
 // an unvalidated shape.
 // ---------------------------------------------------------------------------
 
-function rowToConnector(row: ConnectorsRow): Connector {
+function rowToConnector(row: StoredConnectorRow): Connector {
   return {
     id: row.connector_id,
     name: row.name,
@@ -169,13 +170,14 @@ function rowToConnector(row: ConnectorsRow): Connector {
     // Coerce to a real boolean — a NULL from a row written before the column
     // existed (greenfield, so unlikely, but cheap defense) reads as false.
     defaultAttached: row.default_attached === true,
+    requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
 }
 
 function rowToSummary(
-  row: Omit<ConnectorsRow, 'capabilities'>,
+  row: Omit<StoredConnectorRow, 'capabilities'>,
 ): ConnectorSummary {
   return {
     id: row.connector_id,
@@ -188,9 +190,22 @@ function rowToSummary(
     // list can badge an admin default-on connector as "Catalog". Same NULL-safe
     // coercion as rowToConnector (a pre-column NULL reads as false).
     defaultAttached: row.default_attached === true,
+    requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
+}
+
+/** Prefer the caller's definition. Ambiguous shared ids fail closed. */
+function selectAvailableRow(rows: StoredConnectorRow[], userId: string): StoredConnectorRow | null {
+  return rows.find((row) => row.owner_user_id === userId) ??
+    (rows.length === 1 ? rows[0]! : null);
+}
+
+export interface AvailableConnector {
+  connector: Connector;
+  /** Internal only: used to authorize workspace credentials against their owner. */
+  ownerUserId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +231,7 @@ export interface UpsertArgs {
 }
 
 export interface ConnectorStore {
-  /** Metadata-only list for the owner, newest-updated first. */
+  /** Owned and unambiguous shared definitions, newest-updated first. */
   listForUser(userId: string): Promise<ConnectorSummary[]>;
   /**
    * TASK-97 — the owner's DEFAULT-attached connectors, FULL (capabilities
@@ -229,6 +244,8 @@ export interface ConnectorStore {
     userId: string,
     connectorId: string,
   ): Promise<Connector | null>;
+  /** Read-only lookup: own definition first, otherwise an unambiguous shared one. */
+  getAvailableById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
   /** Idempotent create-or-update keyed (owner, connectorId). */
   upsert(args: UpsertArgs): Promise<{ connector: Connector; created: boolean }>;
   /** Soft-delete; true iff a live row was tombstoned. */
@@ -240,10 +257,31 @@ export function createConnectorStore(
 ): ConnectorStore {
   return {
     async listForUser(userId) {
-      const rows = await scopedConnectors(db, { userId })
+      const rows = await availableConnectors(db, { userId })
         .orderBy('updated_at', 'desc')
         .execute();
-      return rows.map((r) => rowToSummary(r as ConnectorsRow));
+      const grouped = new Map<string, StoredConnectorRow[]>();
+      for (const row of rows) {
+        const group = grouped.get(row.connector_id) ?? [];
+        group.push(row);
+        grouped.set(row.connector_id, group);
+      }
+      return [...grouped.values()]
+        .map((group) => selectAvailableRow(group, userId))
+        .filter((row): row is StoredConnectorRow => row !== null)
+        .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime())
+        .map((row) => ({ ...rowToSummary(row), canEdit: row.owner_user_id === userId }));
+    },
+
+    async getAvailableById(userId, connectorId) {
+      const rows = await availableConnectors(db, { userId })
+        .where('connector_id', '=', connectorId)
+        .execute();
+      const row = selectAvailableRow(rows, userId);
+      return row === null ? null : {
+        connector: { ...rowToConnector(row), canEdit: row.owner_user_id === userId },
+        ownerUserId: row.owner_user_id,
+      };
     },
 
     async getByIdNotDeleted(userId, connectorId) {
@@ -254,7 +292,7 @@ export function createConnectorStore(
         .where('connector_id', '=', connectorId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
-      return row === undefined ? null : rowToConnector(row as ConnectorsRow);
+      return row === undefined ? null : rowToConnector(row);
     },
 
     async upsert(args) {
@@ -297,6 +335,7 @@ export function createConnectorStore(
         // connector under the same id is allowed.
         deleted_at: null,
         updated_at: now,
+        ...(created ? { requires_attachment: true, default_attached: args.defaultAttached ?? false } : {}),
         ...(args.defaultAttached !== undefined
           ? { default_attached: args.defaultAttached }
           : {}),
@@ -314,6 +353,7 @@ export function createConnectorStore(
           visibility: args.visibility,
           capabilities: capabilitiesJson,
           default_attached: args.defaultAttached ?? false,
+          requires_attachment: true,
           deleted_at: null,
           created_at: now,
           updated_at: now,
@@ -323,7 +363,7 @@ export function createConnectorStore(
         )
         .returningAll()
         .executeTakeFirstOrThrow();
-      return { connector: rowToConnector(row as ConnectorsRow), created };
+      return { connector: rowToConnector(row), created };
     },
 
     async listDefaults(userId) {
@@ -334,7 +374,7 @@ export function createConnectorStore(
         .where('default_attached', '=', true)
         .orderBy('connector_id', 'asc')
         .execute();
-      return rows.map((r) => rowToConnector(r as ConnectorsRow));
+      return rows.map((r) => rowToConnector(r));
     },
 
     async softDelete(userId, connectorId) {

@@ -18,7 +18,8 @@ import { createHash } from 'node:crypto';
 // (TASK-107 added the third): workspace DEFAULTS (`connectors:list-defaults`),
 // the manager-added per-agent ATTACHMENTS (the connector ids the agent row's
 // `connector_attachments` store carries, resolved via `connectors:resolve`), and
-// the owner's PRIVATE items (`connectors:list` + `connectors:resolve`).
+// legacy owned items (`connectors:list` + `connectors:resolve`). New definitions
+// require an explicit attachment; foreign shared items never attach implicitly.
 // `resolveEffectiveConnectors` dedupes all three by id. (TASK-97 wired defaults +
 // private with the attachment slot left for TASK-107 to fill — which it now does;
 // the per-agent attachment store replaced TASK-98's `mcpConfigIds` stopgap.)
@@ -122,10 +123,10 @@ export interface ResolvedConnectorForOrch {
 interface ConnectorsListDefaultsOutput {
   connectors: Array<{ id: string; capabilities: ConnectorCapabilities; usageNote?: string }>;
 }
-// connectors:list — owner's connector summaries (no capabilities). Structural
+// connectors:list — owned and shared summaries (no capabilities). Structural
 // mirror per I2.
 interface ConnectorsListOutput {
-  connectors: Array<{ id: string }>;
+  connectors: Array<{ id: string; canEdit?: boolean; requiresAttachment?: boolean }>;
 }
 // connectors:resolve — the mechanism-agnostic spec descriptor. Structural mirror.
 interface ConnectorsResolveOutput {
@@ -206,8 +207,8 @@ export async function resolveEffectiveConnectors(
     }
   }
 
-  // 3. The owner's PRIVATE items — every connector they own. `connectors:list`
-  //    is metadata-only, so resolve each id for its capabilities. A per-connector
+  // 3. Legacy owned items retain their existing implicit attachment. Listing
+  //    is metadata-only, so resolve eligible ids for capabilities. A per-connector
   //    resolve failure skips that one connector (non-fatal), never the session.
   if (bus.hasService('connectors:list') && bus.hasService('connectors:resolve')) {
     try {
@@ -217,6 +218,9 @@ export async function resolveEffectiveConnectors(
         { userId: ctx.userId },
       );
       for (const summary of listed.connectors) {
+        // Listing grants discovery, never automatic execution of shared or new
+        // definitions. Preserve implicit attachment only for legacy owned rows.
+        if (summary.canEdit === false || summary.requiresAttachment === true) continue;
         if (byId.has(summary.id)) continue; // already folded as a default
         try {
           const resolved = await bus.call<

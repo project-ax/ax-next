@@ -4,8 +4,6 @@ import {
   createConnector,
   patchConnector,
   type Connector,
-  type ConnectorKeyMode,
-  type ConnectorVisibility,
 } from '@/lib/connectors';
 import { connectorIdFromName } from '@/lib/connector-form';
 import {
@@ -146,16 +144,7 @@ export function RemoteMcpConnectorForm({
   const [clientOpen, setClientOpen] = useState(false);
   const [headersOpen, setHeadersOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const [keyMode, setKeyMode] = useState<ConnectorKeyMode>(
-    connector?.keyMode ?? 'personal',
-  );
-  const [visibility, setVisibility] = useState<ConnectorVisibility>(
-    connector?.visibility ?? 'private',
-  );
-  const [defaultAttached, setDefaultAttached] = useState(
-    connector?.defaultAttached ?? false,
-  );
+  const keyMode = connector?.keyMode ?? 'personal';
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -295,7 +284,7 @@ export function RemoteMcpConnectorForm({
       )
     )
       nextErrors.workspace =
-        'OAuth requires each user’s account. Choose that option in Workspace settings.';
+        'This connector uses a workspace key. Create a separate connector to use OAuth.';
     if (
       draft.signIn === 'oauth' &&
       draft.registration === 'cimd' &&
@@ -308,7 +297,6 @@ export function RemoteMcpConnectorForm({
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
       if (nextErrors.clientId) setClientOpen(true);
-      if (nextErrors.workspace) setWorkspaceOpen(true);
       if (
         Object.keys(nextErrors).some(
           (key) => key.startsWith('name-') || key.startsWith('value-'),
@@ -377,7 +365,6 @@ export function RemoteMcpConnectorForm({
         name: draft.name.trim(),
         capabilities,
         keyMode,
-        ...(isAdmin ? { visibility, defaultAttached } : {}),
       };
       if (connector)
         await patchConnector(
@@ -387,7 +374,7 @@ export function RemoteMcpConnectorForm({
         );
       else
         await createConnector(
-          { ...input, visibility: isAdmin ? visibility : 'private' },
+          { ...input, visibility: 'shared', defaultAttached: false },
           isAdmin ? '/admin/connectors' : '/settings/connectors',
         );
       update('clientSecret', '');
@@ -871,96 +858,6 @@ export function RemoteMcpConnectorForm({
                       </>
                     )}
                   </Disclosure>
-                  {isAdmin && (
-                    <Disclosure
-                      title="Workspace settings"
-                      summary={visibility === 'shared' ? 'Shared' : 'Private'}
-                      open={workspaceOpen}
-                      onOpenChange={setWorkspaceOpen}
-                    >
-                      <Field>
-                        <FieldLabel id={fieldId('sharing')}>Sharing</FieldLabel>
-                        <ToggleGroup
-                          type="single"
-                          value={visibility}
-                          onValueChange={(value) => {
-                            if (value === 'shared' || value === 'private')
-                              setVisibility(value);
-                          }}
-                          aria-labelledby={fieldId('sharing')}
-                          variant="outline"
-                        >
-                          <ToggleGroupItem value="private" className="flex-1">
-                            Private
-                          </ToggleGroupItem>
-                          <ToggleGroupItem value="shared" className="flex-1">
-                            Shared
-                          </ToggleGroupItem>
-                        </ToggleGroup>
-                      </Field>
-                      <Field>
-                        <FieldLabel id={fieldId('credentials')}>
-                          Credentials
-                        </FieldLabel>
-                        <ToggleGroup
-                          type="single"
-                          value={keyMode}
-                          onValueChange={(value) => {
-                            if (value === 'personal' || value === 'workspace') {
-                              setKeyMode(value);
-                              update(
-                                'headers',
-                                draft.headers.map((header) => ({
-                                  ...header,
-                                  saved:
-                                    value === connector?.keyMode &&
-                                    Boolean(
-                                      connector?.capabilities.credentials.some(
-                                        (slot) =>
-                                          slot.kind === 'api-key' &&
-                                          slot.headerName &&
-                                          slot.slot === header.slot,
-                                      ),
-                                    ),
-                                })),
-                              );
-                              setHeadersOpen(draft.headers.length > 0);
-                            }
-                          }}
-                          aria-labelledby={fieldId('credentials')}
-                          variant="outline"
-                        >
-                          <ToggleGroupItem value="personal" className="flex-1">
-                            Each user’s account
-                          </ToggleGroupItem>
-                          <ToggleGroupItem
-                            value="workspace"
-                            className="flex-1"
-                            disabled={draft.signIn === 'oauth'}
-                          >
-                            Workspace key
-                          </ToggleGroupItem>
-                        </ToggleGroup>
-                        <FieldDescription>
-                          {keyMode === 'workspace'
-                            ? 'Credentials are shared across the workspace.'
-                            : 'Each user supplies their own credentials.'}
-                        </FieldDescription>
-                      </Field>
-                      <Field orientation="horizontal">
-                        <Checkbox
-                          id={fieldId('default')}
-                          checked={defaultAttached}
-                          onCheckedChange={(checked) =>
-                            setDefaultAttached(checked === true)
-                          }
-                        />
-                        <FieldLabel htmlFor={fieldId('default')}>
-                          Enabled by default for all agents
-                        </FieldLabel>
-                      </Field>
-                    </Disclosure>
-                  )}
                   <Separator />
                 </div>
                 {awaitingDiscovery && (

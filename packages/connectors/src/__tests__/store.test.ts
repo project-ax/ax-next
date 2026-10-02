@@ -138,6 +138,64 @@ describe('createConnectorStore', () => {
     expect(await store.softDelete('u', 'c')).toBe(false);
   });
 
+  it('shared reads do not grant writes, leak private rows, or attach connectors by default', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = { userId: 'author', name: 'Connector', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
+    await store.upsert({ ...base, connectorId: 'shared', visibility: 'shared' });
+    await store.upsert({ ...base, connectorId: 'private', visibility: 'private', defaultAttached: true });
+    expect(await store.listForUser('reader')).toMatchObject([{ id: 'shared', canEdit: false, defaultAttached: false }]);
+    expect(await store.getAvailableById('reader', 'shared')).toMatchObject({ ownerUserId: 'author', connector: { id: 'shared', canEdit: false } });
+    expect(await store.getAvailableById('reader', 'private')).toBeNull();
+    expect(await store.getByIdNotDeleted('reader', 'shared')).toBeNull();
+    expect(await store.softDelete('reader', 'shared')).toBe(false);
+    expect(await store.listDefaults('reader')).toEqual([]);
+    expect(await store.listDefaults('author')).toMatchObject([{ id: 'private', defaultAttached: true }]);
+    await store.softDelete('author', 'shared');
+    expect(await store.getAvailableById('reader', 'shared')).toBeNull();
+    expect(await store.listForUser('reader')).toEqual([]);
+  });
+
+  it('migration and edits preserve legacy attachment while new and recreated definitions require attachment', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    await db.schema.alterTable('connectors_v1_connectors').dropColumn('requires_attachment').execute();
+    const base = { userId: 'author', name: 'Connector', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
+    await db.insertInto('connectors_v1_connectors').values({
+      owner_user_id: 'author', connector_id: 'legacy', name: 'Legacy', description: '', usage_note: '',
+      key_mode: 'workspace', visibility: 'private', default_attached: true,
+      capabilities: JSON.stringify(caps()) as unknown as object, deleted_at: null,
+      created_at: new Date(), updated_at: new Date(),
+    }).execute();
+    await runConnectorsMigration(db);
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false, defaultAttached: true, visibility: 'private', keyMode: 'workspace' });
+    await store.upsert({ ...base, connectorId: 'legacy', keyMode: 'workspace', visibility: 'private' });
+    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false, defaultAttached: true });
+    await store.upsert({ ...base, connectorId: 'new', visibility: 'shared' });
+    expect(await store.getByIdNotDeleted('author', 'new')).toMatchObject({ requiresAttachment: true, defaultAttached: false });
+    await store.softDelete('author', 'legacy');
+    await store.upsert({ ...base, connectorId: 'legacy', visibility: 'shared' });
+    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: true, defaultAttached: false });
+  });
+
+  it('prefers owned ids and denies ambiguous shared ids consistently', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = { connectorId: 'duplicate', name: 'Connector', description: '', usageNote: '', keyMode: 'personal' as const, visibility: 'shared' as const, capabilities: caps() };
+    await store.upsert({ ...base, userId: 'alice', name: 'Alice' });
+    await store.upsert({ ...base, userId: 'bob', name: 'Bob' });
+    expect(await store.getAvailableById('reader', 'duplicate')).toBeNull();
+    expect(await store.listForUser('reader')).toEqual([]);
+    expect(await store.getAvailableById('alice', 'duplicate')).toMatchObject({ ownerUserId: 'alice', connector: { name: 'Alice', canEdit: true } });
+    await store.upsert({ ...base, userId: 'reader', name: 'Private override', visibility: 'private' });
+    expect(await store.listForUser('reader')).toMatchObject([{ id: 'duplicate', name: 'Private override', canEdit: true }]);
+    expect(await store.getAvailableById('reader', 'duplicate')).toMatchObject({ ownerUserId: 'reader', connector: { visibility: 'private' } });
+  });
+
   it('defaultAttached round-trips; upsert preserves it on a content-only update, clears on explicit false', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);

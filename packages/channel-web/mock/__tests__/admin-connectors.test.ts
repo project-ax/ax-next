@@ -284,8 +284,8 @@ describe('mock admin connectors', () => {
 
 // ---------------------------------------------------------------------------
 // User-authoring mock — /settings/connectors[/:id] (TASK-129). Same offline UI
-// parity as the admin mock, but the user-mode policy: forces private, rejects
-// admin-only fields (400), and 403s on a catalog/shared connector.
+// parity as the admin mock: shared reads, owner-only writes, and admin-only
+// workspace keys/default attachment.
 // ---------------------------------------------------------------------------
 
 async function startUserServer(
@@ -294,7 +294,7 @@ async function startUserServer(
   const auth = authMiddleware(store);
   const settingsConnectors = settingsConnectorsMiddleware(store);
   // Mount the admin mock too so a test can SEED a catalog/shared connector the
-  // user route must treat as read-only (the user route can't create one).
+  // user route must treat as read-only for other users.
   const adminConnectors = adminConnectorsMiddleware(store);
   const server = createServer(async (req, res) => {
     if (await auth(req, res)) return;
@@ -333,7 +333,7 @@ describe('mock user connectors (/settings/connectors)', () => {
     }
   });
 
-  it('POST forces the connector private (a body with no visibility is fine)', async () => {
+  it('POST defaults a new connector to shared with automatic attachment off', async () => {
     const { url, close } = await startUserServer(store);
     try {
       const res = await fetch(`${url}/settings/connectors`, {
@@ -343,13 +343,14 @@ describe('mock user connectors (/settings/connectors)', () => {
       });
       await expectStatus(res, 201);
       const body = (await res.json()) as { connector: { visibility: string } };
-      expect(body.connector.visibility).toBe('private');
+      expect(body.connector.visibility).toBe('shared');
+      expect(body.connector).toMatchObject({ defaultAttached: false, requiresAttachment: true });
     } finally {
       await close();
     }
   });
 
-  it('POST rejects visibility:shared (admin-only) with 400', async () => {
+  it('POST permits a shared personal definition', async () => {
     const { url, close } = await startUserServer(store);
     try {
       const res = await fetch(`${url}/settings/connectors`, {
@@ -357,9 +358,10 @@ describe('mock user connectors (/settings/connectors)', () => {
         headers: { cookie: ALICE, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ visibility: 'shared' })),
       });
-      await expectStatus(res, 400);
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toMatch(/admin-only/);
+      await expectStatus(res, 201);
+      const shown = await fetch(`${url}/settings/connectors/gdrive`, { headers: { cookie: ADMIN } });
+      await expectStatus(shown, 200);
+      expect(await shown.json()).toMatchObject({ connector: { canEdit: false, visibility: 'shared' } });
     } finally {
       await close();
     }
@@ -418,7 +420,7 @@ describe('mock user connectors (/settings/connectors)', () => {
   it('PATCH / DELETE on a catalog (shared) connector is read-only — 403', async () => {
     const { url, close } = await startUserServer(store);
     try {
-      // Seed a SHARED connector via the admin route (the user route can't make one).
+      // Seed a shared definition owned by Alice; other users may read only.
       const seed = await fetch(`${url}/admin/connectors`, {
         method: 'POST',
         headers: { cookie: ALICE, 'content-type': 'application/json' },
@@ -430,14 +432,14 @@ describe('mock user connectors (/settings/connectors)', () => {
 
       const patch = await fetch(`${url}/settings/connectors/shared-conn`, {
         method: 'PATCH',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'hijack' }),
       });
       await expectStatus(patch, 403);
 
       const del = await fetch(`${url}/settings/connectors/shared-conn`, {
         method: 'DELETE',
-        headers: { cookie: ALICE },
+        headers: { cookie: ADMIN },
       });
       await expectStatus(del, 403);
     } finally {
@@ -459,7 +461,7 @@ describe('mock user connectors (/settings/connectors)', () => {
       // A re-POST of the same id via the user route must 403, not demote it.
       const res = await fetch(`${url}/settings/connectors`, {
         method: 'POST',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify(upsertBody({ connectorId: 'shared-conn' })),
       });
       await expectStatus(res, 403);

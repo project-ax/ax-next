@@ -148,6 +148,27 @@ describe('resolveEffectiveConnectors', () => {
     expect(out.map((c) => c.id)).toEqual(['ok']);
   });
 
+  it('new and foreign shared definitions add no reach until explicitly attached', async () => {
+    const resolvedIds: string[] = [];
+    const bus = busWith({
+      'connectors:list': async () => ({ connectors: [
+        { id: 'legacy', canEdit: true, requiresAttachment: false },
+        { id: 'new', canEdit: true, requiresAttachment: true },
+        { id: 'foreign', canEdit: false, requiresAttachment: false },
+      ] }),
+      'connectors:resolve': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        resolvedIds.push(id);
+        return { id, capabilities: CAPS() };
+      },
+    });
+    expect((await resolveEffectiveConnectors(bus, ctx())).map((c) => c.id)).toEqual(['legacy']);
+    expect(resolvedIds).toEqual(['legacy']);
+    resolvedIds.length = 0;
+    expect((await resolveEffectiveConnectors(bus, ctx(), ['new', 'foreign'])).map((c) => c.id).sort()).toEqual(['foreign', 'legacy', 'new']);
+    expect(resolvedIds.sort()).toEqual(['foreign', 'legacy', 'new']);
+  });
+
   it('returns [] when no connector hooks are registered (stripped preset)', async () => {
     const out = await resolveEffectiveConnectors(busWith({}), ctx());
     expect(out).toEqual([]);

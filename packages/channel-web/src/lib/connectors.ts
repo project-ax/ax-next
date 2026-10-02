@@ -1,15 +1,10 @@
 /**
  * Connector client — typed wrappers around the connector REST routes.
  *
- * The connector registry's wire surface. Bridges the `connectors:*` hooks via
- * REST routes registered by `@ax/connectors`. There are TWO owner-scoped route
- * bundles, selected by {@link ConnectorRouteBase} (TASK-129):
- *
- *   - `/admin/connectors`    — the folded admin Connector registry (TASK-98).
- *     The admin may set `visibility: 'shared'` + `defaultAttached: true`.
- *   - `/settings/connectors` — user authoring (TASK-129). Owner forced to the
- *     caller, `visibility` forced `private`, admin-only fields REJECTED
- *     server-side, catalog/shared connectors read-only (403).
+ * Shared definitions are readable by all signed-in users. Writes remain
+ * owner-scoped. New definitions default to shared with automatic attachment off.
+ * `/admin/connectors` additionally requires an admin role; ordinary users use
+ * `/settings/connectors`, which rejects workspace keys and default attachment.
  *
  * Both bundles share the same path shape + CSRF posture as `lib/admin.ts`:
  *
@@ -26,14 +21,9 @@
  * probe is admin-only — it lives only under `/admin/connectors/:id/test`, never
  * the user base.)
  *
- * SECURITY — every endpoint is guarded server-side by `auth:require-user` (the
- * admin bundle additionally by an admin-role check); the
- * connector is owner-scoped to the calling user. The actor id is forced from the
- * session server-side, never the body. The user routes additionally force
- * `visibility: private` + reject admin-only fields server-side, so the UI
- * forcing is belt-and-braces, not the security boundary. A connector declares
- * credential SLOT names only — never values; the secret resolves inside the
- * sandbox proxy.
+ * SECURITY — actor identity comes from the session, never the request body.
+ * Shared definitions contain credential references, never secret values.
+ * Personal credentials remain scoped to the user connecting the service.
  *
  * CSRF — state-changing methods carry `X-Requested-With: ax-admin`, same as
  * `lib/admin.ts`.
@@ -135,6 +125,10 @@ export type ConnectorVisibility = 'private' | 'shared';
  *  workspace-default flag, surfaced here (TASK-110) so the user list can badge a
  *  default-on connector as "Catalog" even when its `visibility` is `private`. */
 export interface ConnectorSummary {
+  /** Server-derived permission for the authenticated caller. */
+  canEdit?: boolean;
+  /** Skip legacy implicit owner attachment; defaults and explicit attachments still apply. */
+  requiresAttachment?: boolean;
   id: string;
   name: string;
   description: string;

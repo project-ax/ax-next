@@ -463,6 +463,27 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'mallory', entry.ref));
   });
 
+  it('shared personal definitions keep each user’s vault separate; shared workspace keys require an admin owner', async () => {
+    const h = await makeHarness();
+    await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), {
+      userId: 'root', connectorId: 'shared-personal', name: 'Shared personal',
+      keyMode: 'personal', visibility: 'shared', capabilities: caps('acme.example', 'TOKEN'),
+    });
+    await setKey(h, 'user', 'root', 'account:shared-personal', 'AUTHOR-KEY');
+    await expectNotFound(getKey(h, 'victim', 'account:shared-personal'));
+    await setKey(h, 'user', 'victim', 'account:shared-personal', VICTIM_KEY);
+    expect(await getKey(h, 'victim', 'account:shared-personal')).toBe(VICTIM_KEY);
+    expect(await getKey(h, 'root', 'account:shared-personal')).toBe('AUTHOR-KEY');
+    await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), {
+      userId: 'root', connectorId: 'shared-workspace', name: 'Shared workspace',
+      keyMode: 'workspace', visibility: 'shared', capabilities: caps('acme.example', 'TOKEN'),
+    });
+    await setCompanyKey(h, 'account:shared-workspace', COMPANY_KEY);
+    expect(await getKey(h, 'victim', 'account:shared-workspace')).toBe(COMPANY_KEY);
+    users.set('root', { id: 'root', isAdmin: false });
+    await expectNotFound(getKey(h, 'victim', 'account:shared-workspace'));
+  });
+
   it('7) refs outside the account: namespace still resolve from global for everyone', async () => {
     // UNFIXED: passes (unchanged-behaviour pin; the guard must not touch provider:/skill:/mcp: refs).
     const h = await makeHarness();

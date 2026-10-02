@@ -207,6 +207,10 @@ export type Visibility = 'private' | 'shared';
  * plus the neutral {@link Capabilities} spec.
  */
 export interface Connector {
+  /** Whether the requesting user owns this definition and may edit it. */
+  canEdit?: boolean;
+  /** Skip legacy implicit owner attachment; defaults and explicit attachments still apply. */
+  requiresAttachment?: boolean;
   /** Stable connector identity (slug). Frozen for the connector's lifetime. */
   id: string;
   name: string;
@@ -243,6 +247,10 @@ export interface Connector {
  * (it fetches the full connector via `connectors:get` on demand).
  */
 export interface ConnectorSummary {
+  /** Whether the requesting user owns this definition and may edit it. */
+  canEdit?: boolean;
+  /** Skip legacy implicit owner attachment; defaults and explicit attachments still apply. */
+  requiresAttachment?: boolean;
   id: string;
   name: string;
   description: string;
@@ -530,6 +538,8 @@ const KeyModeSchema = z.union([z.literal('personal'), z.literal('workspace')]);
 const VisibilitySchema = z.union([z.literal('private'), z.literal('shared')]);
 
 const ConnectorSummarySchema = z.object({
+  canEdit: z.boolean().optional(),
+  requiresAttachment: z.boolean().optional(),
   id: z.string(),
   name: z.string(),
   description: z.string(),
@@ -542,6 +552,8 @@ const ConnectorSummarySchema = z.object({
 });
 
 const ConnectorSchema = z.object({
+  canEdit: z.boolean().optional(),
+  requiresAttachment: z.boolean().optional(),
   id: z.string(),
   name: z.string(),
   description: z.string(),

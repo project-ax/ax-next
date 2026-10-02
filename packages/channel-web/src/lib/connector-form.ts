@@ -142,7 +142,7 @@ export const emptyConnectorForm = (): ConnectorFormState => ({
   description: '',
   usageNote: '',
   keyMode: 'personal',
-  visibility: 'private',
+  visibility: 'shared',
   defaultAttached: false,
   mechanism: 'mcp',
   transport: 'stdio',

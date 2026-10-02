@@ -418,7 +418,8 @@ async function getConnector(
   const hookName = 'connectors:get';
   const userId = requireUserId(input.userId, hookName);
   const connectorId = validateConnectorId(input.connectorId);
-  const connector = await store.getByIdNotDeleted(userId, connectorId);
+  const available = await store.getAvailableById(userId, connectorId);
+  const connector = available?.connector ?? null;
   if (connector === null) {
     throw new PluginError({
       code: 'not-found',
@@ -555,7 +556,8 @@ async function resolveConnector(
   const hookName = 'connectors:resolve';
   const userId = requireUserId(input.userId, hookName);
   const connectorId = validateConnectorId(input.connectorId);
-  const connector = await store.getByIdNotDeleted(userId, connectorId);
+  const available = await store.getAvailableById(userId, connectorId);
+  const connector = available?.connector ?? null;
   if (connector === null) {
     throw new PluginError({
       code: 'not-found',
