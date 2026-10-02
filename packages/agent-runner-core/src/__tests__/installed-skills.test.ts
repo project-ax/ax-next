@@ -330,6 +330,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
             name: 'remote',
             transport: 'http',
             url: 'https://mcp.example.com',
+            headers: { Authorization: 'Bearer ax-cred:' + 'a'.repeat(32), 'X-Key': 'ax-cred:' + 'b'.repeat(32) },
             allowedHosts: [],
             credentials: [],
           },
@@ -343,6 +344,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     expect(mcpJson.mcpServers.remote).toEqual({
       url: 'https://mcp.example.com',
       type: 'http',
+      headers: { Authorization: 'Bearer ax-cred:' + 'a'.repeat(32), 'X-Key': 'ax-cred:' + 'b'.repeat(32) },
     });
   });
 

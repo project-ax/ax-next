@@ -3,6 +3,7 @@ import { sql, type Kysely } from 'kysely';
 import {
   CapabilitiesSchema,
   type Capabilities,
+  type CapabilitySlot,
   type Connector,
   type ConnectorSummary,
   type KeyMode,
@@ -128,7 +129,26 @@ export function validateCapabilities(value: unknown): Capabilities {
       `capabilities must be a valid Capabilities object: ${parsed.error.message}`,
     );
   }
-  return parsed.data;
+  const caps = parsed.data;
+  const names = new Set<string>();
+  const headerCounts = new Map<string, number>();
+  for (const slot of caps.credentials as CapabilitySlot[]) {
+    if (slot.kind !== 'api-key' || !slot.headerName) continue;
+    if (!slot.server || !caps.mcpServers.some((server) => server.name === slot.server && server.transport === 'http')) {
+      throw invalid('A request header must name a remote MCP server.');
+    }
+    const key = `${slot.server}:${slot.headerName.toLowerCase()}`;
+    if (names.has(key)) throw invalid('Request header names must be unique.');
+    names.add(key);
+    const count = (headerCounts.get(slot.server) ?? 0) + 1;
+    headerCounts.set(slot.server, count);
+    if (count > 4) throw invalid('At most four request headers per server are supported.');
+    if (slot.headerName.toLowerCase() === 'authorization' && (caps.credentials as CapabilitySlot[]).some((candidate) => candidate.kind === 'oauth' && candidate.server === slot.server)) {
+      throw invalid('Authorization is managed by OAuth for this server.');
+    }
+  }
+
+  return caps;
 }
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,14 @@ import { NeedsReconnectError } from '../resolver.js';
 
 const REDIRECT_URI = 'https://app.example.com/api/connectors/oauth/callback';
 
+it('publishes the configured CIMD identity and callback without requiring a user session', async () => {
+  const { deps, calls } = makeDeps({});
+  const { res, state } = fakeRes();
+  await createMcpOAuthRouteHandlers(deps).clientMetadata(fakeReq() as never, res as never);
+  expect(state.json).toMatchObject({ client_id: 'https://app.example.com/api/connectors/oauth/client-metadata', redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: 'none' });
+  expect(calls).toEqual([]);
+});
+
 interface BusStubs {
   'auth:require-user'?: (input: unknown) => unknown;
   'agents:resolve'?: (input: unknown) => unknown;
@@ -775,6 +783,22 @@ describe('mcp-oauth begin route', () => {
     expect(state.status).toBe(400);
     expect(state.json).toEqual({ error: 'oauth_with_multiple_slots_unsupported' });
     expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  it('begins OAuth with custom request headers while retaining the collapsed token reference', async () => {
+    const flow = fakeFlow();
+    const { deps, store } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture({ credentials: [
+        { slot: 'oauth-main', kind: 'oauth', server: 'srv', clientRegistration: 'cimd' },
+        { slot: 'header-one', kind: 'api-key', server: 'srv', headerName: 'X-API-Key' },
+      ] }),
+    }, { flow });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }), res);
+    expect(state.status).toBe(200);
+    expect(flow.ensureClient).toHaveBeenCalledWith(expect.objectContaining({ registration: 'cimd', clientMetadataUrl: 'https://app.example.com/api/connectors/oauth/client-metadata' }));
+    expect(store.putPending).toHaveBeenCalled();
   });
 
   // The single-oauth-slot happy path is unchanged: when oauth is the connector's

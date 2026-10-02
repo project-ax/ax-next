@@ -9,6 +9,7 @@ import {
   resolveEffectiveConnectors,
   resolveSkillReferencedConnectors,
   foldConnectorCaps,
+  stampConnectorHeaders,
   connectorCredentialEnvName,
   connectorSandboxDirId,
   ConnectorServiceCollisionError,
@@ -45,6 +46,19 @@ const CAPS = (over: Partial<ResolvedConnectorForOrch['capabilities']> = {}) => (
   mcpServers: [],
   packages: { npm: [], pypi: [] },
   ...over,
+});
+
+it('carries OAuth and custom headers through session placeholders bound only to the remote host', () => {
+  const connector: ResolvedConnectorForOrch = { id: 'remote', usageNote: '', capabilities: CAPS({ allowedHosts: ['mcp.example.com', 'auth.example.com'], credentials: [{ kind: 'oauth', slot: 'TOKEN', server: 'remote' }, { kind: 'api-key', slot: 'header-one', headerName: 'X-Key', server: 'remote' }], mcpServers: [{ name: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', allowedHosts: [], credentials: [] }] }) };
+  const creds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }> = {};
+  const folded = foldConnectorCaps([connector], new Set(), creds, new Map());
+  expect(creds[connectorCredentialEnvName('remote', 'TOKEN')]).toMatchObject({ ref: 'account:remote', allowedHosts: ['mcp.example.com'] });
+  expect(creds[connectorCredentialEnvName('remote', 'header-one')]).toMatchObject({ ref: 'account:remote:header-one', allowedHosts: ['mcp.example.com'] });
+  const entry = folded.installedEntries[0]!;
+  const token = 'ax-cred:' + 'a'.repeat(32), key = 'ax-cred:' + 'b'.repeat(32);
+  stampConnectorHeaders(entry, { [connectorCredentialEnvName('remote', 'TOKEN')]: token, [connectorCredentialEnvName('remote', 'header-one')]: key });
+  expect(entry.mcpServers[0]!.headers).toEqual({ Authorization: `Bearer ${token}`, 'X-Key': key });
+  expect(connector.capabilities.mcpServers[0]).not.toHaveProperty('headers');
 });
 
 // TASK-153 — a well-formed dev SERVICE descriptor (digest-pinned image, the
@@ -569,16 +583,16 @@ describe('foldConnectorCaps', () => {
       ]);
     });
 
-    it('an oauth slot folds to mcp-oauth WITH its connector hosts', () => {
+    it('an oauth slot folds to mcp-oauth bound only to its resource host', () => {
       const creds: Creds = {};
       foldConnectorCaps(
         [
           {
             id: 'mcpsvc',
             capabilities: {
-              allowedHosts: ['mcp.svc.example'],
+              allowedHosts: ['mcp.svc.example', 'auth.svc.example'],
               credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'mcpsvc' }],
-              mcpServers: [],
+              mcpServers: [{ name: 'mcpsvc', transport: 'http', url: 'https://mcp.svc.example/mcp', allowedHosts: [], credentials: [] }],
               packages: { npm: [], pypi: [] },
             },
           },

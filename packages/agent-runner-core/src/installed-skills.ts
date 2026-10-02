@@ -77,11 +77,12 @@ function toMcpJsonShape(s: {
   args?: string[];
   env?: Record<string, string>;
   url?: string;
+  headers?: Record<string, string>;
 }): unknown {
   if (s.transport === 'stdio') {
     return { command: s.command, args: s.args ?? [], env: s.env ?? {} };
   }
-  return { url: s.url, type: 'http' };
+  return { url: s.url, type: 'http', ...(s.headers ? { headers: s.headers } : {}) };
 }
 
 // Symmetric with the manifest parser + sandbox schemas: 32 entries per array,
@@ -127,6 +128,7 @@ export function validateMcpEntry(value: unknown): {
   args?: string[];
   env?: Record<string, string>;
   url?: string;
+  headers?: Record<string, string>;
 } {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('mcpServers entries must be objects');
@@ -145,6 +147,7 @@ export function validateMcpEntry(value: unknown): {
     args?: string[];
     env?: Record<string, string>;
     url?: string;
+    headers?: Record<string, string>;
   } = { name: v['name'], transport: v['transport'] };
   if (v['command'] !== undefined) {
     if (typeof v['command'] !== 'string' || v['command'].length === 0) {
@@ -215,6 +218,17 @@ export function validateMcpEntry(value: unknown): {
       throw new Error(`mcpServers entry '${v['name']}' url is not a valid URL`);
     }
     out.url = v['url'];
+  }
+
+  if (v['headers'] !== undefined) {
+    const headers = v['headers'];
+    if (v['transport'] !== 'http' || !headers || typeof headers !== 'object' || Array.isArray(headers) || Object.keys(headers).length > 5) throw new Error('Invalid MCP headers');
+    const names = Object.keys(headers).map(name => name.toLowerCase());
+    if (new Set(names).size !== names.length || names.some(name => ['host', 'content-length', 'transfer-encoding', 'connection', 'cookie', 'set-cookie', 'proxy-authorization', 'proxy-connection', 'upgrade', 'trailer', 'te', 'content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'].includes(name))) throw new Error('MCP headers must not override the transport');
+    for (const [name, value] of Object.entries(headers)) {
+      if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/.test(name) || typeof value !== 'string' || !/^(Bearer )?ax-cred:[a-f0-9]{32}$/.test(value)) throw new Error('MCP headers must contain credential placeholders');
+    }
+    out.headers = headers as Record<string, string>;
   }
 
   // Transport-specific invariants — symmetric with the sandbox schemas'

@@ -67,7 +67,7 @@ interface ConnectorsResolveOutput {
   id: string;
   capabilities: {
     allowedHosts: string[];
-    credentials: { slot: string; kind: 'api-key'; account?: string }[];
+    credentials: { slot: string; kind: 'api-key'; account?: string; headerName?: string }[];
     packages?: { npm?: string[]; pypi?: string[] };
   };
 }
@@ -229,7 +229,7 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
               ConnectorsResolveOutput
             >('connectors:resolve', toolCtx, { userId: toolCtx.userId, connectorId });
             for (const h of resolved.capabilities.allowedHosts) connectorHosts.push(h);
-            const isMulti = resolved.capabilities.credentials.length >= 2;
+            const isMulti = resolved.capabilities.credentials.filter(c => c.kind !== 'api-key' || !c.headerName).length >= 2;
             for (const c of resolved.capabilities.credentials) {
               // service = the connector id (mirrors @ax/connectors' serviceTagForSlot:
               // each connector owns its own key, no share-by-service). The
@@ -238,13 +238,14 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
               // `resolved.id` here.
               const service =
                 c.account !== undefined && c.account.length > 0 ? c.account : resolved.id;
-              const ref = isMulti ? `account:${service}:${c.slot}` : `account:${service}`;
+              const perSlot = isMulti || Boolean(c.kind === 'api-key' && c.headerName);
+              const ref = perSlot ? `account:${service}:${c.slot}` : `account:${service}`;
               connectorSlots.push({
                 slot: c.slot,
                 kind: 'api-key',
                 ...(c.account !== undefined ? { account: c.account } : {}),
                 service,
-                ...(isMulti ? { slotTag: c.slot } : {}),
+                ...(perSlot ? { slotTag: c.slot } : {}),
                 ref,
               });
             }

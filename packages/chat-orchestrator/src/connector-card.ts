@@ -15,7 +15,7 @@
 /** The declared connector proposal, as the card reads it. */
 export interface ConnectorProposalLike {
   allowedHosts: string[];
-  credentials: Array<{ slot: string; kind: string; account?: string }>;
+  credentials: Array<{ slot: string; kind: string; account?: string; headerName?: string }>;
   packages?: { npm?: string[]; pypi?: string[] };
   mcpServers?: unknown[];
 }
@@ -79,7 +79,7 @@ export function buildAuthoredConnectorCard(
   // @ax/connectors' deriveCredentialPlan): exactly 1 slot keeps the collapsed
   // `account:<service>` ref; ≥2 slots expand to `account:<service>:<slot>` per
   // slot so two slots that share a service tag no longer collide.
-  const isMulti = proposal.credentials.length >= 2;
+  const isMulti = proposal.credentials.filter(c => c.kind !== 'api-key' || !c.headerName).length >= 2;
   const slots = proposal.credentials.map((c) => {
     // The service tag the key binds is the connectorId (credentials-into-connectors:
     // each connector owns its own key, no share-by-service — matches
@@ -88,13 +88,14 @@ export function buildAuthoredConnectorCard(
     // slots, so it is always `connectorId` here; retained only because the shape is
     // shared with skill-slot capability cards (which can carry `account`).
     const service = c.account !== undefined && c.account.length > 0 ? c.account : connectorId;
-    const ref = isMulti ? `account:${service}:${c.slot}` : `account:${service}`;
+    const perSlot = isMulti || Boolean(c.kind === 'api-key' && c.headerName);
+    const ref = perSlot ? `account:${service}:${c.slot}` : `account:${service}`;
     return {
       slot: c.slot,
       kind: 'api-key' as const,
       ...(c.account !== undefined ? { account: c.account } : {}),
       service,
-      ...(isMulti ? { slotTag: c.slot } : {}),
+      ...(perSlot ? { slotTag: c.slot } : {}),
       haveExisting: vaultedRefs.has(ref),
     };
   });

@@ -3916,7 +3916,7 @@ describe('chat-orchestrator', () => {
             capabilities: {
               allowedHosts: ['mcp.svc.example'],
               credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'mcpsvc' }],
-              mcpServers: [],
+              mcpServers: [{ name: 'mcpsvc', transport: 'http', url: 'https://mcp.svc.example/mcp', allowedHosts: [], credentials: [] }],
               packages: { npm: [], pypi: [] },
             },
           },
@@ -4259,6 +4259,35 @@ describe('chat-orchestrator', () => {
     expect(gdriveEntry!.mcpServers).toHaveLength(1);
     const skillMd = gdriveEntry!.files.find((f) => f.path === 'SKILL.md');
     expect(skillMd!.contents).toContain('Use this to read Drive docs.');
+  });
+
+  it('passes remote OAuth and header placeholders from the proxy into the running sandbox MCP config', async () => {
+    const token = 'ax-cred:' + 'a'.repeat(32);
+    const key = 'ax-cred:' + 'b'.repeat(32);
+    const proxy = buildProxyHooks({ openOutput: {
+      proxyEndpoint: 'tcp://127.0.0.1:54321', caCertPem: 'TEST-CA-PEM',
+      envMap: { 'connector:remote:TOKEN': token, 'connector:remote:HEADER': key },
+    } });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({ openSession: makeChatEndOpenSession(busRef) });
+    Object.assign(mocks.services, proxy.services, buildConnectorHooks({ owned: { remote: { capabilities: {
+      allowedHosts: ['mcp.example.com', 'auth.example.com'],
+      credentials: [{ kind: 'oauth', slot: 'TOKEN', server: 'remote' }, { kind: 'api-key', slot: 'HEADER', server: 'remote', headerName: 'X-Key' }],
+      mcpServers: [{ name: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', allowedHosts: [], credentials: [] }],
+      packages: { npm: [], pypi: [] },
+    } } } }));
+    const h = await createTestHarness({ services: mocks.services, plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })] });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('remote-header-session'), { message: { role: 'user', content: 'hi' } });
+    expect(outcome.kind).toBe('complete');
+    const sandboxInput = mocks.calls.lastSandboxInput as { installedSkills: Array<{ id: string; mcpServers: Array<{ headers?: Record<string, string> }> }> };
+    const entry = sandboxInput.installedSkills.find(skill => skill.id.startsWith('cx-remote-'))!;
+    expect(entry.mcpServers[0]!.headers).toEqual({ Authorization: `Bearer ${token}`, 'X-Key': key });
+    expect(entry).not.toHaveProperty('headerBindings');
+    expect(proxy.state.lastOpenInput).toMatchObject({ credentials: {
+      'connector:remote:TOKEN': { ref: 'account:remote', allowedHosts: ['mcp.example.com'] },
+      'connector:remote:HEADER': { ref: 'account:remote:HEADER', allowedHosts: ['mcp.example.com'] },
+    } });
   });
 
   it('TASK-107: a per-agent connectorAttachments id folds its host + slot into proxy:open-session', async () => {

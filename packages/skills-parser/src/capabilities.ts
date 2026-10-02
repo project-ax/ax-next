@@ -19,6 +19,9 @@ export interface CapabilitySlot {
    * instead of a per-skill ref. Lowercase slug; absent = today's per-skill behavior.
    */
   account?: string;
+  /** Remote MCP request header; values live in the credential vault. */
+  headerName?: string;
+  server?: string;
 }
 
 export interface McpServerSpec {
@@ -28,6 +31,8 @@ export interface McpServerSpec {
   args?: string[];
   env?: Record<string, string>;
   url?: string;
+  /** Session-only credential placeholders, never persisted secret values. */
+  headers?: Record<string, string>;
   allowedHosts: string[];     // unioned with the url host on parse
   credentials: CapabilitySlot[];
 }
@@ -94,6 +99,8 @@ const CapabilitySlotSchema = z.object({
   kind: z.literal('api-key'),
   description: z.string().optional(),
   account: z.string().optional(),
+  headerName: z.string().optional(),
+  server: z.string().optional(),
 });
 
 const McpServerSpecSchema = z.object({

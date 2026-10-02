@@ -168,6 +168,62 @@
       "schema": "reject",
       "runner": "reject",
       "value": []
+    },
+    {
+      "desc": "remote placeholder headers",
+      "core": true,
+      "schema": "accept",
+      "runner": "accept",
+      "value": {"name": "remote", "transport": "http", "url": "https://mcp.example.com", "allowedHosts": [], "credentials": [], "headers": {"Authorization": "Bearer ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "X-API-Key": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    },
+    {
+      "desc": "raw secret header",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": {"name": "remote", "transport": "http", "url": "https://mcp.example.com", "allowedHosts": [], "credentials": [], "headers": {"X-Key": "secret"}}
+    },
+    {
+      "desc": "header control character",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": {"name": "remote", "transport": "http", "url": "https://mcp.example.com", "allowedHosts": [], "credentials": [], "headers": {"X-Key": "secret\r\nInjected: yes"}}
+    },
+    {
+      "desc": "invalid header name",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": {"name": "remote", "transport": "http", "url": "https://mcp.example.com", "allowedHosts": [], "credentials": [], "headers": {"X-Key\r\n": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    },
+    {
+      "desc": "too many headers",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": {"name": "remote", "transport": "http", "url": "https://mcp.example.com", "allowedHosts": [], "credentials": [], "headers": {"X-0": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "X-1": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "X-2": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "X-3": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "X-4": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "X-5": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    },
+    {
+      "desc": "stdio may not carry headers",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": {"name": "local", "transport": "stdio", "command": "npx", "allowedHosts": [], "credentials": [], "headers": {"X-Key": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    },
+    {
+      "desc": "transport header override",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": {"name": "remote", "transport": "http", "url": "https://mcp.example.com", "allowedHosts": [], "credentials": [], "headers": {"Host": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    },
+    {
+      "desc": "case insensitive duplicate headers",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": {"name": "remote", "transport": "http", "url": "https://mcp.example.com", "allowedHosts": [], "credentials": [], "headers": {"X-Key": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "x-key": "ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
     }
   ]
 }

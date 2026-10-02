@@ -196,6 +196,8 @@ interface ConnectorSlot {
   server?: string;
   scopes?: string[];
   clientId?: string;
+  clientRegistration?: string;
+  headerName?: string;
   clientSecretRef?: string;
   authServerUrl?: string;
   tokenUrl?: string;
@@ -315,6 +317,8 @@ function slotShapes(credentials: ConnectorSlot[] | undefined): unknown[] {
       server: c.server ?? '',
       scopes: asSet(c.scopes),
       clientId: c.clientId ?? '',
+      clientRegistration: c.clientRegistration ?? '',
+      headerName: c.headerName ?? '',
       // A vault REFERENCE, never a secret. Swapping the ref points the flow at
       // a different client secret, which is a changed world; the value behind
       // it never crosses this boundary.
