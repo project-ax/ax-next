@@ -208,8 +208,13 @@ export class StorageNodeEngine {
     for (const file of readdirSync(this.config.ledgerRoot)) {
       if (!/^[0-9a-f-]{36}\.json$/.test(file)) continue;
       try {
-        const record = this.load(file.slice(0, -5));
-        if (record && (!record.published || await this.authority.abandoned(record))) await this.release(record);
+        const uid = file.slice(0, -5);
+        await this.serial(uid, async () => {
+          // Assignment may finish while discovery or cleanup waits for this
+          // lock. Decide from the current ledger, never a pre-lock snapshot.
+          const record = this.load(uid);
+          if (record && (!record.published || await this.authority.abandoned(record))) await this.releaseLocked(record);
+        });
       } catch { failed = true; }
     }
     if (failed) throw new Error('storage recovery pending');

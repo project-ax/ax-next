@@ -93,6 +93,26 @@ describe('storage-node ledger and lifecycle', () => {
     await expect(f.make().assign({ ...f.data, agentId: 'agent-b' })).rejects.toThrow('already assigned');
     await expect(f.make().assign({ ...f.data, bootstrap: { ...f.data.bootstrap, assignmentId: randomUUID() } })).rejects.toThrow('already assigned');
   });
+  it('does not retire an assignment that finishes while reconciliation waits for its lock', async () => {
+    const f = engineFixture(); const engine = f.make();
+    let protectedIntent!: () => void; let continueProtection!: () => void;
+    const protectedStarted = new Promise<void>(resolve => { protectedIntent = resolve; });
+    const protectionPaused = new Promise<void>(resolve => { continueProtection = resolve; });
+    vi.mocked(f.authority.protect).mockImplementation(async () => {
+      protectedIntent(); await protectionPaused;
+    });
+    // Discovery can race ahead of the annotation patch and see no intent yet.
+    f.authority.recover = vi.fn(async () => []);
+    const assignment = engine.assign(f.data); await protectedStarted;
+    const reconciliation = engine.reconcile();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    continueProtection(); await assignment; await reconciliation;
+    expect(f.authority.stop).not.toHaveBeenCalled();
+    expect(f.authority.finish).not.toHaveBeenCalled();
+    const record = JSON.parse(readFileSync(join(f.config.ledgerRoot, `${f.data.podUid}.json`), 'utf8'));
+    expect(record.published).toBe(true);
+    expect(JSON.parse(readFileSync(join(f.volume, 'bootstrap/session.json'), 'utf8'))).toEqual(f.data.bootstrap);
+  });
   it('stops, flushes, detaches even with open Gofer descriptors, then releases finalizers', async () => {
     const f = engineFixture(); const engine = f.make(); await engine.assign(f.data); f.events.length = 0;
     await engine.release(identity(f.data));
