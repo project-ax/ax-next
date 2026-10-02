@@ -26,7 +26,8 @@ These are observations from the last accepted run, not a fresh cluster check.
 - Deployed image:
   `us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:claude-stop-21dab8fa@sha256:3677e2eebe71a2e2eacec0387b2d9a582ec6d6778bb15947b7c9b94be1155405`.
 - Shared-pool implementation commit: `b9189606`; Claude Stop fix: `21dab8fa`;
-  rollout evidence commit: `82d82548`. Work is on local branch
+  rollout evidence commit: `82d82548`; guarded claim-reaping fix: `0567279a`.
+  Work is on local branch
   `codex/gke-agent-sandbox`, in worktree
   `/Users/vpulim/dev/ai/ax-next/.worktrees/gke-agent-sandbox`.
   The worktree was moved out of temporary storage on 2026-10-02.
@@ -46,6 +47,14 @@ storage helper DaemonSets were observed. The guide was already committed as
 [preflight record](gke/shared-pool-preflight-2026-10-02.json).
 This retry changed no production configuration and accepted no additional gate.
 
+The final resumed-run check observed production revision **31**, image
+`us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:2c15e4b0`, a ready host,
+zero restarts, and `200 {"ok":true}` from the public HTTP health endpoint.
+Revision 31 was deployed at `2026-10-02T06:10:52-04:00`; acceptance operations
+targeted only the isolated release. Shared pools, templates, claims, and helpers
+remain absent in production. Revision 30 above records the earlier accepted
+Claude Stop deployment. The resumed evidence contains the fresh snapshot.
+
 ## Acceptance checklist
 
 Checked items have recorded evidence within the stated scope. Unchecked items
@@ -60,9 +69,9 @@ preserve the original runbook's coverage.
   when adopted; claimed standbys are replenished.
 - [x] Claude SDK and AI SDK execute real provider turns and Bash tools through
   an isolated full application release.
-- [ ] Record claim assignment, activation, and first SDK reply as separate
-  timings in the resumed run. Existing samples record activation and first
-  text, but do not separately quantify the assignment stage.
+- [x] Record storage assignment, activation, and first SDK reply separately.
+  The resumed application run records the mTLS `/assign` round trip, host
+  `creating_pod` → `pod_ready`, and submission → first text. See resumed evidence.
 
 ### Gate 2 Storage durability and isolation
 
@@ -81,19 +90,26 @@ preserve the original runbook's coverage.
   application fixture.
 - [x] Claude Stop fix passes native Linux and GKE regressions, including a
   managed Agent Sandbox with synthetic Filestore. See the scope below.
-- [ ] Recheck Claude Stop through the full shared-pool application release
-  using the corrected image. The later native GKE acceptance did not repeat
-  that application fixture.
-- [ ] Verify quota refusal and disk quota enforcement through the application.
-- [ ] Verify normal idle cleanup through the application. Claim expiry passed
-  separately; that does not establish the full idle lifecycle.
-- [ ] Verify sessions requiring service sidecars use the cold path and their
-  application routes remain reachable.
+- [x] Recheck Claude Stop through the full shared-pool application release
+  using the corrected image. The delayed marker stayed absent beyond the
+  original command deadline; the same conversation completed a later Bash turn.
+- [x] Verify existing workspace and committed upload quota accounting and
+  refusal through the application. Identity writes and upload commits returned
+  `413 storage-full`; a full owner received `chat:start:storage-full`.
+- [x] Verify normal idle cleanup through the application. The default five-minute
+  idle window and grace period terminated an idle runner and removed its claim,
+  helper record, and mounts while keeping its durable marker.
+- [x] Verify sessions requiring service sidecars use the cold path. An approved
+  Redis connector produced a direct Sandbox with a native sidecar; a real
+  application turn reached Redis at loopback, received `+PONG`, and wrote `/files`.
 
-**Quota gap:** Existing disk accounting covers Git workspaces and
-uploaded/published blobs, but does not count arbitrary writes directly into
-raw `/files`. The 16 MiB staging limit does not cap attached NFS data. Define
-and enforce the intended storage quota behavior before recording this as a pass.
+**Quota scope (user decision, 2026-10-02):** Verify the existing Git workspace
+and uploaded/published blob limits. Track hard limits on arbitrary Bash writes
+to raw `/files` separately; they are not a shared-pool acceptance prerequisite.
+The 16 MiB staging limit does not cap attached NFS data. Temporary uploads have
+their own pending-upload limit; disk accounting charges the committed blob.
+The quota tests used a synthetic near-full ledger row, as the repository canary
+does, and removed it afterward.
 
 ### Gate 4 Network and credential boundaries
 
@@ -109,10 +125,10 @@ acceptance evidence.
 
 - [x] External claim deletion, direct Pod deletion, and claim expiry preserve
   durable markers and clear helper records and child mounts.
-- [ ] Explicitly capture deletion while writes are active, with runner
-  termination before flush/detach and finalizer removal. The existing summary
-  records the durable outcome, but does not independently establish every
-  ordering step required by this gate.
+- [x] Capture deletion during active writes. At a trusted operator checkpoint
+  before `sync -f`, every runner container was terminated, both mounts remained,
+  and the Pod/claim finalizers and ledger were present. After successful detach
+  they disappeared and the independent Filestore marker survived.
 
 **Required storage invariant:** Late attachment uses a memory-backed 16 MiB
 `emptyDir` with the force-shared annotation. The helper verifies both the Pod
@@ -127,38 +143,57 @@ Filestore files through the bind mount despite finalizers. Prototype images
   credentials.
 - [x] Transcript reads survive an isolated host restart.
 - [x] Claim expiry preserves markers and clears records and mounts.
-- [ ] Restart the helper during activation; recover partial assignments.
-- [ ] Interrupt assignment at intermediate stages and prove bounded failure
-  with no leaked mount, claim, or credential.
-- [ ] Force detach to fail, restart the helper, and retain cleanup state until
-  detach succeeds. Never report successful cleanup while a mount remains.
+- [x] Restart the helper during activation; recover an unpublished partial bind.
+- [x] Interrupt assignment after the first bind and before bootstrap publication.
+  The turn failed in 12.4 seconds; subsequent convergence removed its claim,
+  Pod, mounts, and unpublished bootstrap. Other bindings remained intact.
+  Unit tests cover the other rollback stages; this live run interrupted one stage.
+- [x] Force detach to fail and restart the helper. It stayed unready with the
+  mount and ledger retained. Removing the injected fault restored readiness
+  and cleared the claim, Pod, ledger, and mounts without losing the marker.
 - [ ] Restart the host with live claims; verify automatic recovery or bounded
   failure, reaping, and mount/ledger cleanup.
-- [ ] Drain a dedicated disposable gVisor node and test node loss. Retain durable
-  data and report bounded failure rather than silently successful cleanup.
+- [x] Drain a dedicated disposable gVisor node. Cleanup completed in 5.5 seconds;
+  the independent Filestore marker survived.
+- [ ] Recover after dedicated-node loss. The fixture returned `chat-run-timeout`
+  in 30.3 seconds and retained its durable file, but node replacement lost the
+  local helper ledger. The recovered helper reported ready while the old Pod
+  and claim remained held by storage finalizers. Automatic cleanup failed.
 
 Do not drain the existing gVisor node hosting production conversations.
-Dedicated-node provisioning was previously blocked by Google Cloud OAuth/API
-DNS access; recheck access before resuming that test.
+The resumed run provisioned a separately tainted disposable gVisor node.
+Its runner-only drain passed and preserved durable data. The 30-second chat
+limit was a fixture override; the product default remains ten minutes.
+Node-loss recovery and teardown are recorded in the resumed evidence.
 
 ### Gate 7 Upgrades and fixture teardown
 
-- [ ] Upgrade the image and change pool capacity. New runner classes start,
-  obsolete standbys disappear, and existing claimed conversations continue.
+- [ ] Upgrade to different image bytes through the application release and
+  preserve claimed-conversation continuity. The class initializer separately
+  passed a capacity change from one to two standbys per SDK and an image-reference
+  change using the same digest: four new standbys, obsolete pools/templates gone,
+  claimed Pod UID preserved, and a real follow-up Bash turn completed. That
+  establishes class replacement, not transparent host/image rollout continuity.
 - [x] Previous fixtures were fully removed after claims drained and ledger
   entries and child mounts were verified absent.
-- [ ] Repeat complete teardown for the next fixture, including namespaces,
+- [x] Repeat complete teardown for this fixture, including namespaces,
   release/database, PVCs/PVs, synthetic Filestore directories, and node ledgers.
+  Lost-ledger finalizers required manual cleanup after deleting the disposable
+  node pool and independently confirming its old VM was gone. UID and resource
+  version checks guarded removal. This passes teardown, not automatic recovery.
 
 ### Additional application coverage
 
-- [ ] Memory extraction with a valid OpenRouter credential. The earlier fixture
-  lacked that credential. This remains unaccepted; decide explicitly whether
-  it is part of shared-pool rollout acceptance or a separate application check.
+- [x] Memory extraction with a valid OpenRouter credential. Observer logs
+  recorded facts; an independent read of the isolated facts database found
+  20 extracted facts across five synthetic agent keys. No credential values
+  are included in the evidence.
 - [ ] Browser UI acceptance if required for release. Existing application
   evidence exercised API/SSE, not a browser walk.
-- [ ] Complete the repository-wide test gate. Targeted validation passed, but
-  no full green repository gate is recorded.
+- [x] Complete repository-wide coverage: build, every recursive package suite,
+  root ESLint-rule tests, and root script tests. Docker-outage failures were
+  rerun; container-start queue failures then passed in serial retries. This
+  is complete coverage across runs and retries, not a single green invocation.
 
 ## Evidence and observed results
 
@@ -167,6 +202,51 @@ DNS access; recheck access before resuming that test.
 | [Shared pool GKE evidence](gke/shared-pool-acceptance-2026-10-01.json) | Isolated controller fixture plus isolated full application release; storage, sharing, both SDKs, usage, network fences, deletion/expiry, helper restart, and complete teardown. Also retains the original Claude Stop failure. |
 | [Claude Stop Linux evidence](gke/claude-stop-linux-acceptance-2026-10-01.json) | Native SDK reproduction and corrected process termination behavior on Linux. |
 | [Claude Stop GKE evidence](gke/claude-stop-gke-acceptance-2026-10-02.json) | Four native cases passed in a restricted gVisor Pod and a managed Agent Sandbox with synthetic Filestore; zero independently observed delayed completion markers. Direct backend deployed at revision 30; shared pools disabled. |
+| [Resumed shared-pool acceptance](gke/shared-pool-resumed-acceptance-2026-10-02.json) | Full application timings, Stop, existing quotas, idle cleanup, sidecar cold path, memory extraction, interrupted activation, active-write ordering, forced detach, class replacement, dedicated-node drain/loss, new-image claim-reaping scope, test retries, and teardown. Host/node recovery gates remain open. |
+
+### Resumed acceptance and remaining recovery gaps
+
+The isolated release used separate PostgreSQL, workspace/facts PVCs, TLS leaves,
+and synthetic Filestore paths. A dedicated tainted gVisor node kept fault tests
+off production runners. Trusted fixture wrappers paused bind/flush and rejected
+detach; they were removed with the fixture. Runner Pod Security matched the
+production namespace's `baseline` policy.
+
+Two real Claude turns used the shared runner class. Assignment round trips were
+368 and 343 ms; activation was 934 and 1032 ms; first text arrived after 8.0 and
+7.1 seconds. The first AI SDK activation failed and cleaned up; a later real
+Bash turn produced a marker independently read from Filestore. An intermediate
+model reply without a tool call was excluded from tool acceptance.
+
+Host restart preserved transcript reads, but resuming a live session returned
+proxy `407` in 476 ms because the host no longer knew its credential-proxy
+registration. Storage detached; the claim survived. A surviving claim can let
+the Sandbox controller recreate a standby after the helper removes the old
+Pod. Keep the existing operational requirement to drain runners before host
+restart. Transparent host/image rollout continuity remains unaccepted.
+
+Commit `0567279a` fixes the sweeper's view of terminal claims and claims with a
+confirmed absent assigned Sandbox. Claim aliases now carry claim metadata,
+and deletion uses the observed claim UID while preserving storage finalizers.
+Pending claims, running sessions, temporarily missing Pods under an existing
+Sandbox, foreign prefixes, and API errors are left alone. Eight regression
+cases cover these boundaries and same-name UID replacement.
+
+Cloud Build produced an immutable image containing that commit:
+`sharedpool-reap-20261002-cloud@sha256:1267ad38d758a1d4b624873b44b76210d3ac7a7e2ee3a89b99392709b7492b45`.
+Only the isolated release was upgraded, after draining its healthy claims.
+A new real Bash turn passed, and terminated-session cleanup converged within
+a one-minute polling window with the durable file intact. That normal cleanup
+check does not isolate the reaping fix. A separate operator-seeded claim whose
+status pointed to an absent Sandbox was reaped by the exact production sweeper
+with its terminal-age threshold set to zero. The stranded node-loss finalizer
+remained untouched. Neither check accepts transparent host restart recovery.
+
+Node replacement exposed a separate blocker: the new helper had an empty
+host-local ledger and reported ready, while the old claim and Pod remained
+finalized. The durable marker survived. Recovery needs a safe node-fencing and
+lost-ledger strategy; an unreachable node or a Kubernetes terminal status alone
+must not authorize detaching storage or dropping finalizers.
 
 ### Shared pool observations
 
@@ -230,10 +310,14 @@ tests, and chart render tests have run. The chart suite used its cached pinned
 PostgreSQL tarball because the standard global setup's registry fetch was
 blocked. Linux descriptor tests are explicitly skipped on macOS.
 
-Earlier broad local runs failed Docker/listener checks under session
-restrictions. A full repository test gate has not passed. Later continuation
-could use the configured Docker builder and standalone kubectl commands, so
-image build and isolated cluster checks proceeded.
+The resumed run completed the build and all three test suites. The recursive
+no-bail run covered every package, but OrbStack stopped answering during it.
+All 21 failing packages were rerun after Docker recovered. Eighteen passed in
+that retry; `auth-better`, `connectors`, and `conversations` then passed serially
+after container-start slot contention. The final sandbox suite passed 358 tests
+with one Linux-only test skipped on macOS. Root ESLint-rule and script suites
+passed. The immutable Linux image was built and pushed by Cloud Build when
+the local Docker image build stalled.
 
 ## Resume procedure
 
@@ -253,10 +337,12 @@ image build and isolated cluster checks proceeded.
    sharing, isolation, durable writes, and full-application Stop on that image.
    Record standby UID/container identity, assignment, activation, and first
    reply separately.
-5. Work through the unchecked gates: quotas and sidecars; idle/host recovery;
-   interrupted activation and detach; dedicated-node drain/loss; image/capacity
-   upgrade. Supply the missing memory-extraction credential if that check stays
-   in rollout scope. Provision a disposable node before destructive node tests.
+5. Resolve the remaining required gates: host restart credential/session recovery
+   and surviving-claim cleanup; node replacement with lost helper ledgers; actual
+   different-image rollout with live-conversation continuity. Repeat those
+   cases in a fresh isolated fixture. Provision a disposable node before node
+   fault tests. Run a browser walk if required for release; API/SSE acceptance
+   does not establish browser behavior.
 6. Record each result here with date, image digest, fixture scope, assertion,
    outcome, and a relative link to sanitized raw evidence. Leave failures and
    historical evidence intact; explain later results that supersede them.
@@ -275,8 +361,20 @@ pnpm test:scripts
 ```
 
 Record each command's result. Docker-backed tests require an explicit intended
-`DOCKER_HOST`; see the repository instructions. No new application or cluster
-tests were run for this documentation consolidation.
+`DOCKER_HOST`; see the repository instructions. This continuation reran both
+application and cluster checks; the original consolidation was documentation-only.
+
+## Claim-reaping security review
+
+- Sandbox: Claim deletion uses observed UIDs and existing RBAC. Storage finalizers
+  remain owned by the helper; the reaper never removes them. Pending capacity,
+  another pool prefix, a running session, a temporarily absent Pod, and an API
+  error do not authorize deletion. Node-loss finalizers remained intact in GKE.
+- Injection: Decisions use trusted Kubernetes metadata and confirmed API `404`
+  results. No model text, command output, or runner-provided path authorizes
+  reaping. Bootstrap and credential values are excluded from evidence.
+- Supply chain: No dependency manifest or lockfile change. The immutable image
+  was built from committed source with the existing pinned base images.
 
 ## Claude Stop security review
 

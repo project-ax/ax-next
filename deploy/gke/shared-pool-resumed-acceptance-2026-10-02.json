@@ -1,0 +1,532 @@
+{
+  "date": "2026-10-02",
+  "productionSharedPoolsEnabled": false,
+  "status": "partial-acceptance-recovery-gates-open",
+  "context": "gke_canopy-ai-498321_us-central1-a_ax-next-std",
+  "fixture": {
+    "release": "ax-spaccept-20261002",
+    "dedicatedNodePool": "ax-shared-accept-20261002",
+    "separateDatabaseAndPVCs": true,
+    "syntheticStorageRoot": "/vol1/_acceptance/ax-spaccept-20261002",
+    "runnerPodSecurity": "baseline, matching production",
+    "networkPoliciesEnabled": true,
+    "trustedOperatorOverrides": [
+      "dedicated-node placement preloader and DaemonSet post-renderer",
+      "secret-free /assign duration logging",
+      "mount/sync/umount fault wrappers used only for checkpoint and failure tests",
+      "chat timeout 30000 ms only for node-loss/new-image tests"
+    ]
+  },
+  "originalImage": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:claude-stop-21dab8fa@sha256:3677e2eebe71a2e2eacec0387b2d9a582ec6d6778bb15947b7c9b94be1155405",
+  "adoption": {
+    "before": [
+      {
+        "name": "ax-spaccept-20261002-d5bd962685e29bed-gpgkh",
+        "uid": "28d21989-4a0d-43f4-bd90-739a68694949",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://06b893574d81b4af54603a873e8f2930be010cc27e43257897efecb14afe7171",
+            "restartCount": 0
+          }
+        ]
+      },
+      {
+        "name": "ax-spaccept-20261002-f25bcefecb7f910a-8zhmk",
+        "uid": "52ab69ae-8277-474d-95c4-64468efdc78e",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://935ad4d9a03f93ac4602ed6da6013ef73acc3fa17211248cbe9d56b37d7b4c9b",
+            "restartCount": 0
+          }
+        ]
+      }
+    ],
+    "afterClaudeA": [
+      {
+        "name": "ax-spaccept-20261002-d5bd962685e29bed-cjk8w",
+        "uid": "014e2889-2de7-49cb-9fe5-bd0a57a23262",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://50b2e07e968c7ffd87612f9e0c6a06fd9b48feb57a49bfa66e622c840e08476d",
+            "restartCount": 0
+          }
+        ]
+      },
+      {
+        "name": "ax-spaccept-20261002-d5bd962685e29bed-gpgkh",
+        "uid": "28d21989-4a0d-43f4-bd90-739a68694949",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://06b893574d81b4af54603a873e8f2930be010cc27e43257897efecb14afe7171",
+            "restartCount": 0
+          }
+        ]
+      },
+      {
+        "name": "ax-spaccept-20261002-f25bcefecb7f910a-8zhmk",
+        "uid": "52ab69ae-8277-474d-95c4-64468efdc78e",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://935ad4d9a03f93ac4602ed6da6013ef73acc3fa17211248cbe9d56b37d7b4c9b",
+            "restartCount": 0
+          }
+        ]
+      }
+    ],
+    "afterClaudeB": [
+      {
+        "name": "ax-spaccept-20261002-d5bd962685e29bed-6jbws",
+        "uid": "b1f9f402-e81f-414d-b72f-9f7a9774b8de",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://f10fcf4e3654fc3c10d68fa582f4fc596e3c9da8f746460d5db31400216828fb",
+            "restartCount": 0
+          }
+        ]
+      },
+      {
+        "name": "ax-spaccept-20261002-d5bd962685e29bed-cjk8w",
+        "uid": "014e2889-2de7-49cb-9fe5-bd0a57a23262",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://50b2e07e968c7ffd87612f9e0c6a06fd9b48feb57a49bfa66e622c840e08476d",
+            "restartCount": 0
+          }
+        ]
+      },
+      {
+        "name": "ax-spaccept-20261002-d5bd962685e29bed-gpgkh",
+        "uid": "28d21989-4a0d-43f4-bd90-739a68694949",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://06b893574d81b4af54603a873e8f2930be010cc27e43257897efecb14afe7171",
+            "restartCount": 0
+          }
+        ]
+      },
+      {
+        "name": "ax-spaccept-20261002-f25bcefecb7f910a-8zhmk",
+        "uid": "52ab69ae-8277-474d-95c4-64468efdc78e",
+        "containers": [
+          {
+            "name": "runner",
+            "containerID": "containerd://935ad4d9a03f93ac4602ed6da6013ef73acc3fa17211248cbe9d56b37d7b4c9b",
+            "restartCount": 0
+          }
+        ]
+      }
+    ],
+    "timings": [
+      {
+        "runner": "claude-sdk",
+        "agent": "synthetic-a",
+        "assignmentRoundTripMs": 368,
+        "activationMs": 934,
+        "durationMs": 8701,
+        "firstTextMs": 7999,
+        "toolNames": [
+          "Bash"
+        ],
+        "errors": []
+      },
+      {
+        "runner": "claude-sdk",
+        "agent": "synthetic-b",
+        "assignmentRoundTripMs": 343,
+        "activationMs": 1032,
+        "durationMs": 7907,
+        "firstTextMs": 7118,
+        "toolNames": [
+          "Bash"
+        ],
+        "errors": []
+      },
+      {
+        "runner": "aisdk",
+        "initialFailure": {
+          "durationMs": 2740,
+          "firstTextMs": null,
+          "toolNames": [],
+          "errors": [
+            "sandbox-terminated"
+          ]
+        },
+        "actualToolTurn": {
+          "durationMs": 6397,
+          "firstTextMs": 6284,
+          "toolNames": [
+            "Bash"
+          ],
+          "errors": []
+        },
+        "independentFilestoreMarker": "ACTUAL_AISDK"
+      }
+    ],
+    "timingScope": "Acceptance samples, not a benchmark. Assignment is the mTLS /assign round trip; activation is creating_pod to pod_ready; first text starts at message submission."
+  },
+  "claudeStop": {
+    "interruptReturnedTrue": true,
+    "completionMarkerAbsentAfter70Seconds": true,
+    "sameConversationBashReuseCompleted": true,
+    "falseStartExcluded": "First attempt observed an NFS negative dentry cache late and did not interrupt before command completion. The accepted repeat verified STARTED inside the runner, then waited beyond the command deadline and NFS cache window."
+  },
+  "quotas": {
+    "scope": "Existing Git workspace and committed uploaded/published blobs; arbitrary raw /files writes separate",
+    "limitBytes": 67108864,
+    "syntheticNearFullLedgerUsedAndRemoved": true,
+    "identityWrite": {
+      "httpStatus": 413,
+      "error": "storage-full",
+      "identityUnchanged": true
+    },
+    "fullOwnerTurnError": "chat:start:storage-full",
+    "temporaryUploadsAllowedUntilCommit": true,
+    "committedUpload": {
+      "baselineChargedBytes": 4096,
+      "rejectedBytes": 16384,
+      "httpStatus": 413,
+      "error": "storage-full",
+      "usageUnchanged": true
+    }
+  },
+  "idleCleanup": {
+    "defaultIdleMs": 300000,
+    "claimLedgerAndMountsRemoved": true,
+    "durableMarkerRetained": true,
+    "hostPodKilledAt": "2026-10-02T10:20:30.524Z"
+  },
+  "serviceSidecar": {
+    "coldSandbox": true,
+    "nativeSidecar": "svc-redis",
+    "image": "redis@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952",
+    "actualBashReachedLoopbackRedis": true,
+    "pingReply": "+PONG",
+    "durableMarker": "SERVICE_OK",
+    "turn": {
+      "durationMs": 27328,
+      "firstTextMs": 21647,
+      "toolNames": [
+        "Bash"
+      ],
+      "errors": []
+    },
+    "fixtureAdjustment": "Initial restricted namespace blocked the existing NFS prepare Pod. Repeat used baseline, matching production."
+  },
+  "memoryExtraction": {
+    "credentialProvider": "OpenRouter",
+    "independentFactsDatabaseQuery": true,
+    "extractedFacts": 20,
+    "syntheticAgentKeys": 5,
+    "perKeyCounts": [
+      7,
+      3,
+      2,
+      3,
+      5
+    ],
+    "factTextAndCredentialValuesExcluded": true
+  },
+  "interruptedActivation": {
+    "checkpoint": "After first bind, before bootstrap publication",
+    "publishedAtCheckpoint": false,
+    "turnFailureMs": 12422,
+    "error": "sandbox-terminated",
+    "initialLedgerCleanupObservedMs": 14041,
+    "claimPodMountBootstrapAbsenceConfirmedOnLaterPoll": true,
+    "unrelatedLedgersRetained": true,
+    "scope": "One live interruption checkpoint; unit tests cover other rollback stages. Later poll did not measure end-to-end cleanup duration."
+  },
+  "activeWriteDeletionAndDetachFailure": {
+    "terminationBeforeFlushCheckpoint": {
+      "allRunnerContainersTerminated": true,
+      "mountStillAttachedBeforeFlush": true,
+      "ledgerStillPresent": true,
+      "podFinalizer": [
+        "ax.io/storage-cleanup"
+      ],
+      "claimFinalizer": [
+        "ax.io/storage-cleanup"
+      ],
+      "sinceDeleteMs": 3488
+    },
+    "failedDetach": {
+      "ledgerRetained": true,
+      "mountRetained": true
+    },
+    "failedRestart": {
+      "ready": false,
+      "restartCount": 0,
+      "ledgerRetained": true,
+      "mountRetained": true
+    },
+    "recovered": {
+      "helperReady": true,
+      "ledgerAbsent": true,
+      "claimAbsent": true,
+      "podAbsent": true,
+      "mountsAbsent": true,
+      "durableMarkerStartsActive": true,
+      "durableBytes": 22
+    }
+  },
+  "classReplacement": {
+    "initializer": {
+      "replicasPerClass": 2,
+      "oldImage": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:claude-stop-21dab8fa@sha256:3677e2eebe71a2e2eacec0387b2d9a582ec6d6778bb15947b7c9b94be1155405",
+      "newImage": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent@sha256:3677e2eebe71a2e2eacec0387b2d9a582ec6d6778bb15947b7c9b94be1155405",
+      "sameImageBytes": true,
+      "scope": "exact pool initializer; application host not restarted"
+    },
+    "newPools": [
+      {
+        "name": "ax-spaccept-20261002-454357f842665955",
+        "replicas": 2
+      },
+      {
+        "name": "ax-spaccept-20261002-96a4f963dd99be8d",
+        "replicas": 2
+      }
+    ],
+    "runningStandbys": 4,
+    "obsoletePoolsAbsent": true,
+    "claimedPodUidsPreserved": true,
+    "claimedConversationContinues": true,
+    "oldTemplatesAbsent": true
+  },
+  "hostRestart": {
+    "transcriptReadsRetained": true,
+    "failureMs": 476,
+    "proxyErrorHttpStatus": 407,
+    "transparentResume": false,
+    "oldClaimsAbsent": false,
+    "oldPodsAbsent": true,
+    "oldLedgersAbsent": true,
+    "oldMountsAbsent": true,
+    "accepted": false,
+    "reason": "Host restart does not restore credential-proxy registrations. A surviving claim can recreate a standby after helper cleanup. Drain runners before host restart; transparent live-conversation rollout remains open."
+  },
+  "dedicatedNodeDrain": {
+    "durationMs": 5548,
+    "ledgerAbsent": true,
+    "mountsAbsent": true,
+    "durableMarker": "DRAIN_DURABLE"
+  },
+  "nodeLoss": {
+    "fixtureChatTimeoutMs": 30000,
+    "failureMs": 30307,
+    "error": "chat-run-timeout",
+    "storageFinalizerRetainedWhileUnavailable": true,
+    "durableMarker": "NODE_LOSS_DURABLE",
+    "recovery": {
+      "automaticCleanupPassed": false,
+      "nodeReady": true,
+      "nodeObjectReplaced": true,
+      "helperReady": true,
+      "ledgerFiles": [
+        "daemon.lock"
+      ],
+      "claimStillPending": true,
+      "storageFinalizerRetained": true,
+      "oldPodMountsVisible": false,
+      "durableMarker": "NODE_LOSS_DURABLE",
+      "reason": "Node replacement lost the hostPath ledger; helper reports ready but cannot finish old storage finalizers."
+    },
+    "accepted": false
+  },
+  "claimReapingFix": {
+    "deployment": {
+      "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:sharedpool-reap-20261002-cloud@sha256:1267ad38d758a1d4b624873b44b76210d3ac7a7e2ee3a89b99392709b7492b45",
+      "sourceCommit": "0567279a",
+      "cloudBuildId": "9dacd12f-1b78-42ba-a99f-52ba7bec6780",
+      "fixtureOnly": true,
+      "healthyOldClaimsDrained": true,
+      "nodeLossFinalizerPreserved": true,
+      "chatTimeoutMs": 30000
+    },
+    "newImageRealApplicationTurn": {
+      "durationMs": 9258,
+      "firstTextMs": 6485,
+      "toolNames": [
+        "Bash"
+      ],
+      "errors": []
+    },
+    "terminatedSessionCleanup": {
+      "claimAbsent": true,
+      "oldPodAbsent": true,
+      "ledgerAbsent": true,
+      "mountsAbsent": true,
+      "durableMarker": "REAPER_DURABLE",
+      "nodeLossClaimStillFinalized": true
+    },
+    "cleanupScope": "Claim, Pod, ledger and mounts converged within a 60-second polling window. The manually triggered sweep saw a temporary missing Pod and reaped zero; this turn does not isolate the code change.",
+    "operatorMissingSandboxCase": {
+      "scope": "Trusted operator seeded a claim status pointing to an absent Sandbox under a retired matching-prefix class; exact production sweeper with terminalAgeMs=0",
+      "claimAbsent": true,
+      "sweep": {
+        "scope": "Operator-triggered exact production sweeper in immutable acceptance image; terminal age overridden to zero",
+        "observations": [
+          {
+            "name": "acceptance-retired-claim",
+            "uid": "ca291fcb-5209-408e-adad-9f27289049b0",
+            "phase": "Failed"
+          }
+        ],
+        "reaped": 1,
+        "events": [
+          {
+            "message": "pod_killed"
+          },
+          {
+            "message": "orphan_pod_reaped",
+            "podName": "acceptance-retired-claim",
+            "phase": "Failed"
+          },
+          {
+            "message": "orphan_sweep_done",
+            "reaped": 1,
+            "scanned": 1
+          }
+        ]
+      },
+      "nodeLossFinalizerRetained": true
+    },
+    "unitRegressionCount": 8,
+    "transparentHostRestartNotImplemented": true
+  },
+  "validation": {
+    "build": 0,
+    "rootEslintRules": 0,
+    "rootScripts": 0,
+    "recursiveNoBailRun": "Completed every package; Docker outage caused failures in 21 packages",
+    "dockerRetries": "All 21 rerun; 18 passed together, remaining auth-better/connectors/conversations passed serially after container-start slot contention",
+    "allPackageSuitesPassedAcrossRunAndRetries": true,
+    "sandboxPackageTestsPassed": 358,
+    "sandboxLinuxOnlySkippedOnMacOS": 1,
+    "commands": [
+      "pnpm build",
+      "DOCKER_HOST=unix:///Users/vpulim/.orbstack/run/docker.sock pnpm -r --no-bail run test",
+      "pnpm test:eslint-rules",
+      "pnpm test:scripts",
+      "Retry all failing package names via pnpm -r --no-bail --filter <package> run test",
+      "Serial pnpm --filter <package> test for auth-better, connectors and conversations"
+    ],
+    "rootEslintTestsPassed": 22,
+    "rootScriptTestsPassed": 1091,
+    "rootScriptTestsSkipped": 3,
+    "finalRunExitCodes": {
+      "build": 0,
+      "packages": 1,
+      "eslintRules": 0,
+      "scripts": 0
+    },
+    "packageRetry": {
+      "packages": [
+        "@ax/chart-tests",
+        "@ax/agents",
+        "@ax/attachments",
+        "@ax/auth-better",
+        "@ax/channel-web",
+        "@ax/connectors",
+        "@ax/conversations",
+        "@ax/decisions",
+        "@ax/disk-quota",
+        "@ax/host-grants",
+        "@ax/mcp-oauth",
+        "@ax/memory-facts-postgres",
+        "@ax/onboarding",
+        "@ax/routines",
+        "@ax/session-postgres",
+        "@ax/skills",
+        "@ax/storage-postgres",
+        "@ax/teams",
+        "@ax/tool-policy",
+        "@ax/usage-limits",
+        "@ax/preset-k8s"
+      ],
+      "exitCode": 1,
+      "scope": "Retry every package that failed during the Docker outage; unaffected packages passed in packages-final.log"
+    },
+    "serialRetryExitCodes": {
+      "@ax/auth-better": 0,
+      "@ax/connectors": 0,
+      "@ax/conversations": 0
+    },
+    "logSha256": {
+      "build-final.log": "4409d2ab57b36f85e401e2f70f5a61ef550295906e9ce46303a82eebfb370e18",
+      "packages-final.log": "4abf716bf4d8c8457780d1de34c277dc3bfaef079252c0e00c87b6d965d6a64a",
+      "packages-docker-retry.log": "3b8dc687aa71915f58a44350ca5347528324b51050646284862ef5d4b7259ed4",
+      "serial-auth-better.log": "911c9860974ecee8deeb1b5772ba055adb78f5edbaf6417b1f8049673102cf83",
+      "serial-connectors.log": "18ff6f400388a4f7b8ed29eae64a8ca9df9ece5ac6aec5f042e12e9e7aacde59",
+      "serial-conversations.log": "5d1d9d5db94c1613a58cc2caa8f2a7ef4207c49a96924424ccb358051e015462",
+      "eslint-rules-final.log": "235b4fba97eb375c9cba1be56dcccef23e798ab78ea0a693c4777b45d6ba6780",
+      "scripts-final.log": "d2d036e3e0016dc00f30d8515f0d8060d6368c4706efac2fe4de5c587bdaf16e",
+      "scripts-evidence-staged.log": "9248d4b3e7aad02b62e2a6a2d6d8720ef1c6e557035ad73a980a09bedded174d"
+    },
+    "stagedDocumentationAndEvidenceRootScriptsExitCode": 0
+  },
+  "teardown": {
+    "status": "complete",
+    "releaseAbsent": true,
+    "namespacesAbsent": true,
+    "databasePVCsAndPVsAbsent": true,
+    "syntheticFilestoreAbsent": true,
+    "helperLedgerAndChildMountsVerifiedEmptyBeforeRemoval": true,
+    "dedicatedNodePoolDeleted": true,
+    "oldComputeInstanceConfirmedAbsent": true,
+    "nodeLedgerDiskRemovedWithDisposableVM": true,
+    "manualLostLedgerFinalizerCleanup": {
+      "required": true,
+      "reason": "Automatic node-loss recovery left storage finalizers without a local ledger",
+      "fencing": "Completed disposable node-pool deletion and confirmed old Compute Engine instance absent before patch",
+      "uidAndResourceVersionGuarded": true,
+      "resources": [
+        {
+          "kind": "pod",
+          "name": "ax-spaccept-20261002-d5bd962685e29bed-p75qj",
+          "uid": "dd908fa5-0a4b-446b-83ea-f2eb567996e4"
+        },
+        {
+          "kind": "sandboxclaim",
+          "name": "ax-sandbox-9eec3219",
+          "uid": "62767795-74e7-4a9a-88cb-43278d94f4a1"
+        }
+      ]
+    },
+    "automaticNodeLossGatePassed": false
+  },
+  "productionFinalSnapshot": {
+    "context": "gke_canopy-ai-498321_us-central1-a_ax-next-std",
+    "release": "ax-next",
+    "revision": 31,
+    "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:2c15e4b0",
+    "ready": true,
+    "restarts": 0,
+    "health": {
+      "status": 200,
+      "body": {
+        "ok": true
+      }
+    },
+    "sharedPoolEnabled": false,
+    "productionWarmPools": 0,
+    "productionTemplates": 0,
+    "productionClaims": 0,
+    "productionStorageHelpers": 0,
+    "observedProductionChange": {
+      "previousRevision": 30,
+      "currentRevision": 31,
+      "currentRevisionUpdatedAt": "2026-10-02T06:10:52.838459-04:00",
+      "acceptanceOperationsChangedProductionRelease": false
+    },
+    "sharedPoolEnvironmentVariableNames": []
+  }
+}
