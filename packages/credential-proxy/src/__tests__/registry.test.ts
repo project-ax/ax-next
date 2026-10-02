@@ -14,6 +14,13 @@ const PROVIDER = 'api.provider.test';
 const OTHER = 'attacker.test';
 
 describe('CredentialPlaceholderMap', () => {
+  it('refuses a vault value that could inject another HTTP header', () => {
+    const m = new CredentialPlaceholderMap();
+    const ph = m.register('K', 'secret\r\nInjected: yes', [PROVIDER]);
+    expect(() => m.forHost(PROVIDER).replaceAll(`X-Key: ${ph}\r\n`)).toThrow('Credential cannot be used in an HTTP request');
+    expect(m.forHost(OTHER).replaceAll(ph)).toBe(ph);
+    expect(m.forHost(PROVIDER).replaceAll('unrelated')).toBe('unrelated');
+  });
   it('register returns ax-cred: prefixed placeholder', () => {
     const m = new CredentialPlaceholderMap();
     const ph = m.register('ANTHROPIC_API_KEY', 'sk-real', [PROVIDER]);

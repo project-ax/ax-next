@@ -13,6 +13,14 @@
 
 export type OAuthStatus = 'connected' | 'needs-reconnect' | 'not-connected';
 
+export async function getOAuthClientMetadata(): Promise<{ clientId: string; redirectUri: string }> {
+  const res = await fetch('/api/connectors/oauth/client-metadata', { credentials: 'include' });
+  if (!res.ok) throw new Error('OAuth configuration is unavailable.');
+  const metadata = await res.json() as { client_id?: unknown; redirect_uris?: unknown };
+  if (typeof metadata.client_id !== 'string' || !Array.isArray(metadata.redirect_uris) || typeof metadata.redirect_uris[0] !== 'string') throw new Error('OAuth configuration is unavailable.');
+  return { clientId: metadata.client_id, redirectUri: metadata.redirect_uris[0] };
+}
+
 /** Credential-free metadata preview for an unsaved HTTP MCP connector. */
 export async function discoverOAuthHosts(url: string, signal?: AbortSignal): Promise<{ hosts: string[] }> {
   const res = await fetch('/api/connectors/oauth/discover-hosts', {

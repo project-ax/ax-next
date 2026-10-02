@@ -52,6 +52,7 @@ export interface OAuthCapabilitySlot {
   server: string;
   scopes?: string[];
   clientId?: string;
+  clientRegistration?: 'auto' | 'cimd' | 'dcr' | 'custom';
   clientSecretRef?: string;
   authServerUrl?: string;
   tokenUrl?: string;
@@ -65,7 +66,7 @@ export interface OAuthCapabilitySlot {
  * @ax/connectors consumers.
  */
 export type CapabilitySlot =
-  | { slot: string; kind: 'api-key'; description?: string; account?: string }
+  | { slot: string; kind: 'api-key'; description?: string; account?: string; headerName?: string; server?: string }
   | OAuthCapabilitySlot;
 
 /**
@@ -92,6 +93,9 @@ const ApiKeySlotSchema = z.object({
   slot: z.string(),
   kind: z.literal('api-key'),
   description: z.string().optional(),
+  headerName: z.string().max(64).regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/)
+    .refine((name) => !['host', 'content-length', 'transfer-encoding', 'connection', 'cookie', 'set-cookie', 'proxy-authorization', 'proxy-connection', 'upgrade', 'trailer', 'te', 'content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'].includes(name.toLowerCase()), 'This header is managed by the transport.').optional(),
+  server: z.string().optional(),
 });
 
 // OAuth slot: `server` names the mcpServers[] entry whose `url` is the OAuth
@@ -104,6 +108,7 @@ const OAuthSlotSchema = z
     server: z.string(),
     scopes: z.array(z.string()).optional(),
     clientId: z.string().optional(),
+    clientRegistration: z.enum(['auto', 'cimd', 'dcr', 'custom']).optional(),
     clientSecretRef: z.string().optional(),
     authServerUrl: z.string().url().optional(),
     tokenUrl: z.string().url().optional(),

@@ -110,6 +110,7 @@ interface OAuthSlot {
   server: string;
   scopes?: string[];
   clientId?: string;
+  clientRegistration?: 'auto' | 'cimd' | 'dcr' | 'custom';
   clientSecretRef?: string;
   authServerUrl?: string;
   tokenUrl?: string;
@@ -137,9 +138,11 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   begin(req: RouteRequest, res: RouteResponse): Promise<void>;
   callback(req: RouteRequest, res: RouteResponse): Promise<void>;
   status(req: RouteRequest, res: RouteResponse): Promise<void>;
+  clientMetadata(req: RouteRequest, res: RouteResponse): Promise<void>;
 } {
   const { bus, store, flow, config, genState, now, pendingTtlMs } = deps;
   const redirectUri = `${config.publicOrigin}/api/connectors/oauth/callback`;
+  const clientMetadataUrl = `${config.publicOrigin}/api/connectors/oauth/client-metadata`;
 
   // A neutral ctx for the auth probe; the per-user hooks (`connectors:get`,
   // `agents:resolve`, `credentials:*`) key on the explicit `userId` in their
@@ -321,15 +324,9 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(400).json({ error: 'multiple_oauth_slots_unsupported' });
       return;
     }
-    if (caps.credentials.length > 1) {
-      // ONE SOURCE OF TRUTH (invariant #4): the callback always writes the
-      // COLLAPSED ref `account:<connectorId>`, but `foldConnectorCaps` /
-      // `deriveCredentialPlan` switch to the PER-SLOT ref
-      // `account:<connectorId>:<slot>` the moment a connector carries ≥2 total
-      // credential slots. So a connector with one oauth slot PLUS any other slot
-      // would store the token at a ref the orchestrator never resolves → silent
-      // no-credential. Until the callback learns the per-slot ref shape, reject a
-      // multi-slot connector that includes an oauth slot (no discovery yet).
+    // Header slots always have independent refs. They do not change the legacy
+    // OAuth token ref, so OAuth and up to four custom headers can coexist.
+    if (caps.credentials.filter(c => c.kind !== 'api-key' || !c.headerName).length > 1) {
       res.status(400).json({ error: 'oauth_with_multiple_slots_unsupported' });
       return;
     }
@@ -396,6 +393,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         metadata,
         clientKey,
         redirectUri,
+        registration: slot.clientRegistration ?? (slot.clientId ? 'custom' : 'auto'),
+        ...(new URL(config.publicOrigin).protocol === 'https:' ? { clientMetadataUrl } : {}),
         ...(scope !== undefined ? { scope } : {}),
         ...(pinned !== undefined ? { pinned } : {}),
         allowedHosts,
@@ -789,7 +788,19 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
   }
 
-  return { discoverHosts, begin, callback, status };
+  async function clientMetadata(_req: RouteRequest, res: RouteResponse): Promise<void> {
+    // Public by design: authorization servers fetch this document. All URLs
+    // come from the configured origin, never the request's Host header.
+    res.status(200).json({
+      client_id: clientMetadataUrl,
+      client_name: 'AX',
+      redirect_uris: [redirectUri],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    });
+  }
+  return { discoverHosts, begin, callback, status, clientMetadata };
 }
 
 /**
@@ -809,6 +820,7 @@ export async function registerMcpOAuthRoutes(
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
+    { method: 'GET', path: '/api/connectors/oauth/client-metadata', handler: handlers.clientMetadata },
     { method: 'POST', path: '/api/connectors/oauth/discover-hosts', handler: handlers.discoverHosts },
     { method: 'POST', path: '/api/connectors/oauth/begin', handler: handlers.begin },
     { method: 'GET', path: '/api/connectors/oauth/callback', handler: handlers.callback },

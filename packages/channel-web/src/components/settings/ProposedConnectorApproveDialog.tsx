@@ -54,11 +54,11 @@ export function ProposedConnectorApproveDialog({
   const [error, setError] = useState<string | null>(null);
 
   const slots = draft.proposal.credentials;
-  const isMulti = slots.length >= 2;
+  const isMulti = slots.filter(c => c.kind !== 'api-key' || !c.headerName).length >= 2;
   // The user's secret lands at user scope (mirrors the in-chat card, which always
   // writes scope:'user'); a connector owns its key keyed by its id.
   const refFor = (slotName: string): string =>
-    accountRef(serviceTagForSlot({ slot: slotName, kind: 'api-key' }, draft.connectorId), isMulti ? slotName : undefined);
+    accountRef(serviceTagForSlot({ slot: slotName, kind: 'api-key' }, draft.connectorId), isMulti || slots.some(c => c.slot === slotName && c.kind === 'api-key' && c.headerName) ? slotName : undefined);
 
   // Mark slots whose key is already in the user's vault ("use existing"). A
   // failed lookup just means every slot prompts — never blocks approval.
@@ -102,7 +102,7 @@ export function ProposedConnectorApproveDialog({
         const destination: Destination = {
           kind: 'account',
           service,
-          ...(isMulti ? { slot: s.slot } : {}),
+          ...(isMulti || Boolean(s.kind === 'api-key' && s.headerName) ? { slot: s.slot } : {}),
         };
         await setDestinationCredential({
           destination,

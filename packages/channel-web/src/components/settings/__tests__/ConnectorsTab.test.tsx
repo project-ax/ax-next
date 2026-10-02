@@ -461,7 +461,7 @@ describe('ConnectorsTab', () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('My Notion');
     fireEvent.click(screen.getByRole('button', { name: /new connector/i }));
-    expect(await screen.findByLabelText(/service name/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/^name$/i)).toBeInTheDocument();
     // The user variant hides the admin-only Sharing field.
     expect(screen.queryByLabelText(/^sharing$/i)).toBeNull();
   });
@@ -499,7 +499,7 @@ describe('ConnectorsTab', () => {
     render(<ConnectorsTab isAdmin />);
     await screen.findByText('My Notion');
     fireEvent.click(screen.getByRole('button', { name: /new connector/i }));
-    expect(await screen.findByLabelText(/service name/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/^name$/i)).toBeInTheDocument();
   });
 
   it('admin per-row Edit opens the edit form prefilled', async () => {

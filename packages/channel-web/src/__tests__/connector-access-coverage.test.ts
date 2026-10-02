@@ -91,7 +91,8 @@ describe('connector access disclosure: coverage (TASK-700)', () => {
     const rels = scanned.map((s) => s.rel);
     for (const expected of [
       'components/settings/ConnectorConnectDialog.tsx',
-      'components/settings/ConnectorEditDialog.tsx',
+      'components/settings/LegacyConnectorEditDialog.tsx',
+      'components/settings/RemoteMcpConnectorForm.tsx',
       'components/settings/ProposedConnectorApproveDialog.tsx',
       'components/workspace/GrantRow.tsx',
       'components/admin/AgentForm.tsx',

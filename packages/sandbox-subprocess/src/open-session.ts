@@ -133,11 +133,12 @@ function toMcpJsonShape(s: {
   args?: string[] | undefined;
   env?: Record<string, string> | undefined;
   url?: string | undefined;
+  headers?: Record<string, string> | undefined;
 }): unknown {
   if (s.transport === 'stdio') {
     return { command: s.command, args: s.args ?? [], env: s.env ?? {} };
   }
-  return { url: s.url, type: 'http' };
+  return { url: s.url, type: 'http', ...(s.headers ? { headers: s.headers } : {}) };
 }
 
 // OpenSessionInputSchema + its OpenSessionInput / OpenSessionParsed types now

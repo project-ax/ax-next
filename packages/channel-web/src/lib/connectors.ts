@@ -83,6 +83,8 @@ export interface ConnectorApiKeySlot {
   slot: string;
   kind: 'api-key';
   description?: string;
+  headerName?: string;
+  server?: string;
   // No share-by-service `account` tag — each connector owns its own key, keyed by
   // the connector id (mirrors @ax/connectors' CapabilitySlot). The server strips
   // any legacy `account` on read, so it never reaches the client.
@@ -97,6 +99,7 @@ export interface ConnectorOAuthSlot {
   scopes?: string[];
   /** Optional OAuth client id — overrides the server-level default. */
   clientId?: string;
+  clientRegistration?: 'auto' | 'cimd' | 'dcr' | 'custom';
   /** Vault ref where the client secret lives (never the raw secret). */
   clientSecretRef?: string;
   /** Authorization server URL (if not derived from `server`). */
@@ -468,15 +471,16 @@ export function deriveCredentialPlan(
   // TASK-124 — the collapse-vs-expand rule keys on the connector's slot COUNT
   // (mirrors @ax/connectors): exactly 1 slot keeps `account:<service>`; ≥2 slots
   // derive a distinct `account:<service>:<slot>` per slot (fixes the collision).
-  const isMulti = connector.capabilities.credentials.length >= 2;
+  const isMulti = connector.capabilities.credentials.filter((slot) => slot.kind !== 'api-key' || !slot.headerName).length >= 2;
   return connector.capabilities.credentials.map((slot) => {
     const service = serviceTagForSlot(slot, connector.id);
+    const perSlot = isMulti || (slot.kind === 'api-key' && Boolean(slot.headerName));
     return {
       slot: slot.slot,
       scope,
-      ref: accountRef(service, isMulti ? slot.slot : undefined),
+      ref: accountRef(service, perSlot ? slot.slot : undefined),
       service,
-      ...(isMulti ? { slotTag: slot.slot } : {}),
+      ...(perSlot ? { slotTag: slot.slot } : {}),
     };
   });
 }

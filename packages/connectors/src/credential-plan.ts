@@ -126,15 +126,16 @@ function scopeForKeyMode(keyMode: KeyMode): Extract<CredentialScope, 'user' | 'g
  */
 export function deriveCredentialPlan(connector: Connector): CredentialPlanEntry[] {
   const scope = scopeForKeyMode(connector.keyMode);
-  const isMulti = connector.capabilities.credentials.length >= 2;
+  const isMulti = connector.capabilities.credentials.filter((slot) => slot.kind !== 'api-key' || !slot.headerName).length >= 2;
   return connector.capabilities.credentials.map((slot) => {
     const service = serviceTagForSlot(slot, connector.id);
+    const perSlot = isMulti || (slot.kind === 'api-key' && Boolean(slot.headerName));
     return {
       slot: slot.slot,
       scope,
-      ref: accountRef(service, isMulti ? slot.slot : undefined),
+      ref: accountRef(service, perSlot ? slot.slot : undefined),
       service,
-      ...(isMulti ? { slotTag: slot.slot } : {}),
+      ...(perSlot ? { slotTag: slot.slot } : {}),
     };
   });
 }
