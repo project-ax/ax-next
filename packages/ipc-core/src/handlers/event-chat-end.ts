@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentContext, HookBus } from '@ax/core';
 import { EventChatEndSchema, type EventChatEnd } from '@ax/ipc-protocol';
 import { validationError } from '../errors.js';
+import { appendSaveRefusedBestEffort } from './event-turn-end.js';
 import type { HandlerErr } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -10,6 +12,10 @@ import type { HandlerErr } from './types.js';
 // durable persistence of chat outcomes — any change to the payload shape here
 // breaks audit-log silently. The wire shape is `{ outcome: AgentOutcome }`
 // and the hook fires with the same key name, matching chat-loop.ts.
+//
+// TASK-731 added an OPTIONAL `saveRefused` (a refused final/idle save). It is
+// persisted by `persistEventChatEnd` before the fire; subscribers that only
+// read `outcome` see no change.
 // ---------------------------------------------------------------------------
 
 /**
@@ -46,6 +52,47 @@ export function validateEventChatEnd(rawPayload: unknown):
   }
   return { ok: true, payload: parsed.data };
 }
+
+/**
+ * TASK-731 — persist a refused FINAL/idle save before `chat:end` fires (the
+ * dispatcher's `persist` slot, awaited before the 202).
+ *
+ * The final flush runs after the last turn-end, so there is no turn-end to
+ * carry its refusal and no stream open to show it. It bundles everything
+ * since the baseline, which can include files from earlier replies whose own
+ * save came back `kept`, so the person may have seen those files being made.
+ * We write a `save-refused` display event and the next read of the thread
+ * shows it.
+ *
+ * The key is minted HERE, on the host (`final:<uuid>`), never taken from the
+ * runner: each final refusal is its own row, and nothing the runner sends can
+ * fold it onto (and so overwrite) another row. Best-effort: the helper logs
+ * and swallows, so this never throws and the chat-end ack and the `chat:end`
+ * that resolves the waiting turn are unaffected. With no `saveRefused` (the
+ * common case) it returns at once, so chat-end's ack gains no latency.
+ */
+export async function persistEventChatEnd(
+  ctx: AgentContext,
+  bus: HookBus,
+  payload: unknown,
+): Promise<void> {
+  const code = (payload as Partial<EventChatEnd>).saveRefused;
+  if (code === undefined) return;
+  await appendSaveRefusedBestEffort(
+    ctx,
+    bus,
+    code,
+    FINAL_SAVE_REFUSED_KEY_PREFIX + randomUUID(),
+  );
+}
+
+/**
+ * Prefix of the fold key for a final/idle `save-refused` row (TASK-731). Built
+ * by concatenation, not a template literal: the dependency-sync test reads a
+ * template literal that opens with a colon-segmented word as a dynamic HOOK
+ * name, and this is a row key, not a hook.
+ */
+const FINAL_SAVE_REFUSED_KEY_PREFIX = 'final:';
 
 /**
  * Fire the runner-reported `chat:end`. The dispatcher calls it with three

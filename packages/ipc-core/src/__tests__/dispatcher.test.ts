@@ -1068,6 +1068,285 @@ describe('dispatcher', () => {
   });
 
   // -------------------------------------------------------------------------
+  // TASK-731 — a refused save is persisted as a `save-refused` display event,
+  // so the notice survives a reload. Per-turn: from event.turn-end, keyed on
+  // the turn's reqId, AFTER the turn row. Final/idle: from event.chat-end,
+  // keyed on a host-minted `final:<uuid>`. Both best-effort.
+  // -------------------------------------------------------------------------
+
+  const outcome731 = { kind: 'complete' as const, messages: [] };
+
+  it('POST /event.turn-end with saveRefused — appends the turn row, THEN a save-refused row keyed on reqId (TASK-731)', async () => {
+    const appendCalls: unknown[] = [];
+    const conv = await setupConvSession('conv-731a', 's-731a', {
+      'conversations:append-event': async (_ctx, input) => {
+        appendCalls.push(input);
+        return undefined;
+      },
+    });
+    try {
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.turn-end',
+        conv.token,
+        JSON.stringify({
+          reqId: 'r-731',
+          reason: 'complete' as const,
+          role: 'assistant' as const,
+          contentBlocks: [{ type: 'text', text: 'hi' }],
+          saveRefused: 'storage-full',
+        }),
+      );
+      expect(res.status).toBe(202);
+      expect(appendCalls).toEqual([
+        {
+          conversationId: 'conv-731a',
+          kind: 'turn',
+          role: 'assistant',
+          payload: { blocks: [{ type: 'text', text: 'hi' }] },
+        },
+        {
+          conversationId: 'conv-731a',
+          kind: 'save-refused',
+          key: 'r-731',
+          payload: { code: 'storage-full' },
+        },
+      ]);
+    } finally {
+      await conv.close();
+    }
+  });
+
+  it('POST /event.turn-end with saveRefused and no reqId / no blocks — still writes the notice, keyed on the empty string (TASK-731)', async () => {
+    const appendCalls: unknown[] = [];
+    const conv = await setupConvSession('conv-731b', 's-731b', {
+      'conversations:append-event': async (_ctx, input) => {
+        appendCalls.push(input);
+        return undefined;
+      },
+    });
+    try {
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.turn-end',
+        conv.token,
+        JSON.stringify({ reason: 'user-message-wait' as const, saveRefused: 'too-large' }),
+      );
+      expect(res.status).toBe(202);
+      expect(appendCalls).toEqual([
+        {
+          conversationId: 'conv-731b',
+          kind: 'save-refused',
+          key: '',
+          payload: { code: 'too-large' },
+        },
+      ]);
+    } finally {
+      await conv.close();
+    }
+  });
+
+  it('POST /event.turn-end without saveRefused — only the turn row (TASK-731)', async () => {
+    const appendCalls: Array<{ kind: string }> = [];
+    const conv = await setupConvSession('conv-731c', 's-731c', {
+      'conversations:append-event': async (_ctx, input) => {
+        appendCalls.push(input as { kind: string });
+        return undefined;
+      },
+    });
+    try {
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.turn-end',
+        conv.token,
+        JSON.stringify({
+          reqId: 'r-731c',
+          reason: 'complete' as const,
+          role: 'assistant' as const,
+          contentBlocks: [{ type: 'text', text: 'hi' }],
+        }),
+      );
+      expect(res.status).toBe(202);
+      expect(appendCalls.map((c) => c.kind)).toEqual(['turn']);
+    } finally {
+      await conv.close();
+    }
+  });
+
+  it('POST /event.turn-end and /event.chat-end with saveRefused but no conversation — writes nothing (TASK-731)', async () => {
+    const appendCalls: unknown[] = [];
+    const s = await setup({
+      services: {
+        'conversations:append-event': async (_ctx, input) => {
+          appendCalls.push(input);
+          return undefined;
+        },
+      },
+    });
+    setups.push(s);
+    const r1 = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.turn-end',
+      s.token,
+      JSON.stringify({ reqId: 'r', reason: 'complete' as const, saveRefused: 'refused' }),
+    );
+    const r2 = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.chat-end',
+      s.token,
+      JSON.stringify({ outcome: outcome731, saveRefused: 'refused' }),
+    );
+    expect(r1.status).toBe(202);
+    expect(r2.status).toBe(202);
+    expect(appendCalls).toEqual([]);
+  });
+
+  it('POST /event.turn-end — a failed notice append is swallowed: the turn row landed, the ack stays 202 (TASK-731)', async () => {
+    // Re-throwing here would 5xx a turn-end whose turn row is already in the
+    // log, and the runner's retry would then write that turn row twice.
+    const kinds: string[] = [];
+    const conv = await setupConvSession('conv-731d', 's-731d', {
+      'conversations:append-event': async (_ctx, input) => {
+        const kind = (input as { kind: string }).kind;
+        kinds.push(kind);
+        if (kind === 'save-refused') throw new Error('db hiccup');
+        return undefined;
+      },
+    });
+    try {
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.turn-end',
+        conv.token,
+        JSON.stringify({
+          reqId: 'r-731d',
+          reason: 'complete' as const,
+          role: 'assistant' as const,
+          contentBlocks: [{ type: 'text', text: 'hi' }],
+          saveRefused: 'refused',
+        }),
+      );
+      expect(res.status).toBe(202);
+      expect(kinds).toEqual(['turn', 'save-refused']);
+    } finally {
+      await conv.close();
+    }
+  });
+
+  it('POST /event.chat-end with saveRefused — persists ONE final:<uuid>-keyed row before chat:end fires (TASK-731)', async () => {
+    const order: string[] = [];
+    const appendCalls: Array<{ key?: string }> = [];
+    const conv = await setupConvSession('conv-731e', 's-731e', {
+      'conversations:append-event': async (_ctx, input) => {
+        order.push('append');
+        appendCalls.push(input as { key?: string });
+        return undefined;
+      },
+    });
+    let ended!: (v: unknown) => void;
+    const endPayload = new Promise<unknown>((r) => {
+      ended = r;
+    });
+    setups[setups.length - 1]!.harness.bus.subscribe('chat:end', 'probe', async (_ctx, payload) => {
+      order.push('chat:end');
+      ended(payload);
+      return undefined;
+    });
+    try {
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.chat-end',
+        conv.token,
+        JSON.stringify({ outcome: outcome731, saveRefused: 'storage-full' }),
+      );
+      expect(res.status).toBe(202);
+      // The chat:end payload is unchanged apart from the extra optional field.
+      expect(await endPayload).toEqual({ outcome: outcome731, saveRefused: 'storage-full' });
+      expect(order).toEqual(['append', 'chat:end']);
+      expect(appendCalls).toEqual([
+        {
+          conversationId: 'conv-731e',
+          kind: 'save-refused',
+          key: expect.stringMatching(/^final:[0-9a-f-]{36}$/),
+          payload: { code: 'storage-full' },
+        },
+      ]);
+    } finally {
+      await conv.close();
+    }
+  });
+
+  it('POST /event.chat-end without saveRefused — writes no row (TASK-731)', async () => {
+    const appendCalls: unknown[] = [];
+    const conv = await setupConvSession('conv-731f', 's-731f', {
+      'conversations:append-event': async (_ctx, input) => {
+        appendCalls.push(input);
+        return undefined;
+      },
+    });
+    let ended!: () => void;
+    const endFired = new Promise<void>((r) => {
+      ended = r;
+    });
+    setups[setups.length - 1]!.harness.bus.subscribe('chat:end', 'probe', async () => {
+      ended();
+      return undefined;
+    });
+    try {
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.chat-end',
+        conv.token,
+        JSON.stringify({ outcome: outcome731 }),
+      );
+      expect(res.status).toBe(202);
+      await endFired;
+      expect(appendCalls).toEqual([]);
+    } finally {
+      await conv.close();
+    }
+  });
+
+  it('POST /event.chat-end — a failed notice append is swallowed: still 202, chat:end still fires (TASK-731)', async () => {
+    // chat:end is what resolves the orchestrator's waiting agent:invoke. A
+    // failed notice row must never cost the person the reply's outcome.
+    const conv = await setupConvSession('conv-731g', 's-731g', {
+      'conversations:append-event': async () => {
+        throw new Error('db hiccup');
+      },
+    });
+    let ended!: () => void;
+    const endFired = new Promise<void>((r) => {
+      ended = r;
+    });
+    setups[setups.length - 1]!.harness.bus.subscribe('chat:end', 'probe', async () => {
+      ended();
+      return undefined;
+    });
+    try {
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.chat-end',
+        conv.token,
+        JSON.stringify({ outcome: outcome731, saveRefused: 'too-large' }),
+      );
+      expect(res.status).toBe(202);
+      await endFired;
+    } finally {
+      await conv.close();
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // /event.stream-chunk
   // -------------------------------------------------------------------------
 
