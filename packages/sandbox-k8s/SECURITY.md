@@ -258,10 +258,12 @@ This fence relies on GKE/Compute Engine's VM identity: the
 from project, zone, and name; an active name identifies one VM in that scope.
 A new [kernel boot ID](https://www.kernel.org/doc/html/v6.12/admin-guide/sysctl/kernel.html#random)
 under that identity means the previous kernel no longer runs. A different
-machine, missing/corrupt metadata, or an API failure retains protection and
-prevents helper readiness. Permanently lost nodes that cannot establish this
-fence require independent cloud fencing before operator cleanup; node deletion
-or unreachability alone is insufficient.
+machine, missing/corrupt metadata, or an API failure for protected Pods discovered
+on this helper's configured node retains protection and prevents its readiness.
+A helper on another node cannot retire the old node's claims; readiness on that
+new node does not establish that the old VM is fenced. Permanently lost nodes
+that cannot establish this fence require independent cloud fencing before operator
+cleanup; node deletion or unreachability alone is insufficient.
 
 The product currently allows one host replica. On boot it retires its configured
 shared claims; conversation routing reopens sessions whose runner handle and

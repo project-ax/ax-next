@@ -9,8 +9,9 @@ destroyed after cleanup.
 This implementation is opt-in. The image and integrated helper passed isolated
 GKE/Filestore lifecycle checks, and both SDKs completed real provider/Bash turns
 through an isolated application release. The Claude Stop fix passed on GKE and
-was deployed for direct Agent Sandbox sessions. **Shared-pool rollout remains
-blocked until the remaining acceptance gates pass.**
+was deployed for direct Agent Sandbox sessions. The required isolated recovery
+and upgrade gates now pass within the documented scope. **Production shared pools
+remain disabled; activation is a separate rollout.**
 See the [consolidated acceptance and resume guide](SHARED-POOL-ACCEPTANCE.md).
 
 The late-attachment volume must be a **memory-backed 16 MiB emptyDir** with the
@@ -56,8 +57,8 @@ the isolated names, storage, Secrets, and new image overrides.
 The host needs namespaced CRUD for pools, templates, and claims, plus helper-Pod
 discovery in the administrator namespace. It still has no Pod patch, exec,
 attach, port-forward, Secret-read, or cluster-scoped permissions. The helper
-alone can patch Pod/claim finalizers and delete runner Pods. It has no API exec
-or Secret-read permission. Helm renders these roles when the feature is enabled.
+alone can patch Pod/claim finalizers and UID-delete runner Pods and claims. It
+has no API exec or Secret-read permission. Helm renders these roles when enabled.
 
 Wait for the helper DaemonSet to be ready and every configured pool to have its
 standby Pods before measuring first-message latency. Startup creates pools;
@@ -87,7 +88,11 @@ the helper or its RBAC. Removing a helper with live finalizers can strand cleanu
   NetworkPolicies, a process lock, and a durable secret-free ledger protect
   assignment and cleanup. Shared runners retain gVisor, UID 1000, dropped
   capabilities, read-only rootfs, no Kubernetes token, and no helper/NFS network
-  access. Filesystem durability and node teardown remain acceptance gates.
+  access. The helper reconstructs secret-free retirement intent from protected Pod
+  annotations after ledger loss. A matching trusted GCE VM UUID with a new native
+  kernel boot can fence the old process; an unconfirmed or permanently different
+  node requires independent cloud fencing. The isolated durability, teardown,
+  restart, and rollout evidence and its limits are in the acceptance guide.
 - Injection: Assignment JSON and Kubernetes responses are external input.
   Strict bounded schemas, ownership rechecks, UID preconditions, and an env
   allowlist keep them out of arbitrary shell commands, paths, loaders, and Git

@@ -5,6 +5,13 @@ index for resuming shared-pool acceptance. **Shared pools remain disabled in
 production.** Passing the Claude Stop regression on GKE cleared that defect;
 it did not accept the shared-pool rollout.
 
+The three previously open recovery/upgrade gates **passed on the final isolated
+GKE run**, after fixes `f18ed011`, `dbd4c740`, and `f998d912`. Host restart and
+image rollout passed the first follow-up request for both SDKs. Node recovery
+passed with deliberately lost ledgers and a confirmed new boot under the same
+GCE VM identity. See [final evidence](gke/shared-pool-final-gates-2026-10-02.json)
+and the scope below. Production shared pools remain disabled.
+
 Use this document to track acceptance status. Deployment prerequisites,
 security boundaries, and rollback instructions remain in
 [SHARED-POOL.md](SHARED-POOL.md). The design is in
@@ -151,14 +158,19 @@ Filestore files through the bind mount despite finalizers. Prototype images
 - [x] Force detach to fail and restart the helper. It stayed unready with the
   mount and ledger retained. Removing the injected fault restored readiness
   and cleared the claim, Pod, ledger, and mounts without losing the marker.
-- [ ] Restart the host with live claims; verify automatic recovery or bounded
-  failure, reaping, and mount/ledger cleanup.
+- [x] Restart the host with live claims. Both SDKs reopen the same durable
+  conversations with fresh managed sessions, preserve prior context, and execute
+  real Bash on the first follow-up request. Old claim/Pod UIDs, records, and
+  mounts disappear automatically. Final evidence uses `f998d912`.
 - [x] Drain a dedicated disposable gVisor node. Cleanup completed in 5.5 seconds;
   the independent Filestore marker survived.
-- [ ] Recover after dedicated-node loss. The fixture returned `chat-run-timeout`
-  in 30.3 seconds and retained its durable file, but node replacement lost the
-  local helper ledger. The recovered helper reported ready while the old Pod
-  and claim remained held by storage finalizers. Automatic cleanup failed.
+- [x] Recover after dedicated-node loss with all local ledger JSON removed.
+  The final foreground turn returned `chat-run-timeout` in 30.7 seconds. A new
+  native boot with the same GCE UUID recovered secret-free Pod annotations and
+  automatically retired both old bindings. Claims, Pods, records, and mounts
+  disappeared without operator finalizer patches; the durable marker and later
+  conversation/Bash turn survived. This supersedes the lost-ledger failure in
+  the historical resumed run within the stated fencing scope.
 
 Do not drain the existing gVisor node hosting production conversations.
 The resumed run provisioned a separately tainted disposable gVisor node.
@@ -168,19 +180,23 @@ Node-loss recovery and teardown are recorded in the resumed evidence.
 
 ### Gate 7 Upgrades and fixture teardown
 
-- [ ] Upgrade to different image bytes through the application release and
-  preserve claimed-conversation continuity. The class initializer separately
-  passed a capacity change from one to two standbys per SDK and an image-reference
-  change using the same digest: four new standbys, obsolete pools/templates gone,
-  claimed Pod UID preserved, and a real follow-up Bash turn completed. That
-  establishes class replacement, not transparent host/image rollout continuity.
+- [x] Upgrade to different image bytes through the application release. Both
+  SDKs preserve the same conversation/context and durable files on the first
+  follow-up request after host rollout. Host and runner image IDs match the new
+  digest; an added filesystem layer is observed. Old claims, Pods, records,
+  mounts, pools, and templates disappear. The helper image rollout preserves
+  live bindings without credential replay. Application code/schema are identical
+  between these two final images; incompatible migrations were not tested.
+  Conversation continuity uses replacement managed sessions, not unchanged Pod UIDs.
 - [x] Previous fixtures were fully removed after claims drained and ledger
   entries and child mounts were verified absent.
 - [x] Repeat complete teardown for this fixture, including namespaces,
   release/database, PVCs/PVs, synthetic Filestore directories, and node ledgers.
-  Lost-ledger finalizers required manual cleanup after deleting the disposable
-  node pool and independently confirming its old VM was gone. UID and resource
-  version checks guarded removal. This passes teardown, not automatic recovery.
+  The earlier resumed fixture needed manual lost-ledger finalizer cleanup after
+  independent VM fencing; that historical result remains in its evidence. The
+  final fixture drained claims, records, and mounts automatically, removed its
+  synthetic Filestore root, release/database, three namespaces, three PVCs/PVs,
+  and disposable node pool/VM. No operator finalizer patches were needed.
 
 ### Additional application coverage
 
@@ -194,6 +210,10 @@ Node-loss recovery and teardown are recorded in the resumed evidence.
   root ESLint-rule tests, and root script tests. Docker-outage failures were
   rerun; container-start queue failures then passed in serial retries. This
   is complete coverage across runs and retries, not a single green invocation.
+  The final `f998d912` run also passed all three suites together: 85 package
+  suites / 15,557 assertions, 22 root ESLint-rule tests, and 1,091 root script
+  tests. Build and targeted lint passed. Sandbox: 367 passed with one Linux-only
+  macOS skip; orchestrator: 280 passed.
 
 ## Evidence and observed results
 
@@ -202,9 +222,10 @@ Node-loss recovery and teardown are recorded in the resumed evidence.
 | [Shared pool GKE evidence](gke/shared-pool-acceptance-2026-10-01.json) | Isolated controller fixture plus isolated full application release; storage, sharing, both SDKs, usage, network fences, deletion/expiry, helper restart, and complete teardown. Also retains the original Claude Stop failure. |
 | [Claude Stop Linux evidence](gke/claude-stop-linux-acceptance-2026-10-01.json) | Native SDK reproduction and corrected process termination behavior on Linux. |
 | [Claude Stop GKE evidence](gke/claude-stop-gke-acceptance-2026-10-02.json) | Four native cases passed in a restricted gVisor Pod and a managed Agent Sandbox with synthetic Filestore; zero independently observed delayed completion markers. Direct backend deployed at revision 30; shared pools disabled. |
-| [Resumed shared-pool acceptance](gke/shared-pool-resumed-acceptance-2026-10-02.json) | Full application timings, Stop, existing quotas, idle cleanup, sidecar cold path, memory extraction, interrupted activation, active-write ordering, forced detach, class replacement, dedicated-node drain/loss, new-image claim-reaping scope, test retries, and teardown. Host/node recovery gates remain open. |
+| [Resumed shared-pool acceptance](gke/shared-pool-resumed-acceptance-2026-10-02.json) | Full application timings, Stop, existing quotas, idle cleanup, sidecar cold path, memory extraction, interrupted activation, active-write ordering, forced detach, class replacement, dedicated-node drain/loss, new-image claim-reaping scope, test retries, and teardown. Host/node recovery remained open at that checkpoint; the final record supersedes those statuses. |
+| [Final recovery and upgrade gates](gke/shared-pool-final-gates-2026-10-02.json) | Final `f998d912` image pair; first-request recovery for both SDKs after host/image rollout, helper image rollout, lost-ledger node recovery with a native boot fence, all three repository suites green, teardown, and production recheck. |
 
-### Resumed acceptance and remaining recovery gaps
+### Resumed acceptance and historical recovery gaps
 
 The isolated release used separate PostgreSQL, workspace/facts PVCs, TLS leaves,
 and synthetic Filestore paths. A dedicated tainted gVisor node kept fault tests
@@ -247,6 +268,48 @@ host-local ledger and reported ready, while the old claim and Pod remained
 finalized. The durable marker survived. Recovery needs a safe node-fencing and
 lost-ledger strategy; an unreachable node or a Kubernetes terminal status alone
 must not authorize detaching storage or dropping finalizers.
+
+### Final recovery acceptance
+
+The final isolated release was `ax-spfinal-20261002`, with a dedicated tainted
+gVisor node, separate database/PVCs and TLS leaves, and synthetic Filestore.
+The immutable image pair came from Cloud Build `be6b365b-6e49-4765-a513-a55c9060724f`
+at source `f998d912`. Exact image digests, old/new UIDs, boot identities, matched
+Bash results, timings, test-log hashes, and teardown are in
+[the final record](gke/shared-pool-final-gates-2026-10-02.json).
+
+Host restart retained prior conversation context and durable files for Claude
+and AI SDK. Their first follow-up requests completed in 8.9 and 6.9 seconds.
+The different-image follow-ups completed in 9.9 and 6.9 seconds. The old sessions
+were retired; fresh process/proxy sessions served the same durable conversations.
+An earlier reconciliation race and an SSE binding loss each gained a regression
+that failed before the fix. Final acceptance requires the first follow-up request;
+earlier retry successes remain historical evidence.
+
+Node testing froze the trusted helper and removed every local ledger JSON while
+a real foreground Bash command was active. Pod/claim protection and secret-free
+recovery annotations remained. After managed same-name VM replacement, the helper
+observed the same GCE UUID with a different native kernel boot. It reconstructed
+retirement intent, cleared both old bindings without operator finalizer patches,
+and preserved the independently read durable marker. The same conversation then
+completed a real Bash turn. A background-command attempt was excluded from the
+timeout check and repeated with verified foreground arguments.
+
+**Recovery scope:** This accepts later-turn conversation recovery and the reproduced
+same-identity GKE node-loss case. It does not promise uninterrupted in-flight commands.
+A permanently absent or differently named node needs independent cloud fencing before
+cleanup; Kubernetes node deletion or unreachability alone is insufficient. A helper's
+readiness on another node does not establish that the old node is fenced. The 30-second
+chat limit was a fixture override; production still defaults to ten minutes.
+
+**Upgrade scope:** A new filesystem layer and distinct digests were exercised across
+host, runners, and helper with identical application code/schema. Incompatible schema
+migrations and browser UI behavior remain outside this run.
+
+All final fixture resources were removed after automatic claim/ledger/mount drain.
+Production was rechecked at revision 31, image `agent:2c15e4b0`, ready with HTTP
+health 200 and no shared-pool configuration/resources. No acceptance operation
+deployed these fixes or enabled shared pools in production.
 
 ### Shared pool observations
 
@@ -296,7 +359,8 @@ They cover delayed writes past the command deadline, reuse of the same query,
 startup Stop, continued startup MCP use, and durable partial streamed text.
 An independent Filestore scan found **zero delayed completion markers**.
 That accepted the defect fix on GKE; production direct sessions run the image.
-The full shared application fixture still needs its corrected-image recheck.
+The corrected-image shared application recheck subsequently passed; Gate 3 and
+the resumed record contain that full application Stop evidence.
 
 Do not infer command termination from an interrupted result or closed stream.
 Wait beyond the command's original deadline and check storage independently.
@@ -337,12 +401,12 @@ the local Docker image build stalled.
    sharing, isolation, durable writes, and full-application Stop on that image.
    Record standby UID/container identity, assignment, activation, and first
    reply separately.
-5. Resolve the remaining required gates: host restart credential/session recovery
-   and surviving-claim cleanup; node replacement with lost helper ledgers; actual
-   different-image rollout with live-conversation continuity. Repeat those
-   cases in a fresh isolated fixture. Provision a disposable node before node
-   fault tests. Run a browser walk if required for release; API/SSE acceptance
-   does not establish browser behavior.
+5. The three required recovery/upgrade gates now have final scoped evidence.
+   Repeat them when changing session/proxy recovery, storage cleanup/fencing,
+   controllers, or rollout behavior. Use a fresh isolated fixture and provision
+   a disposable node before fault tests. Verify foreground Bash arguments before
+   injecting a fault. Evaluate a browser walk separately if required for release;
+   API/SSE acceptance does not establish browser behavior.
 6. Record each result here with date, image digest, fixture scope, assertion,
    outcome, and a relative link to sanitized raw evidence. Leave failures and
    historical evidence intact; explain later results that supersede them.
