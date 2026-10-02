@@ -1,6 +1,6 @@
 # GKE Agent Sandbox shared pool design
 
-**Status:** Opt-in prototype implemented; isolated GKE/Filestore lifecycle and real provider/Bash turns passed for both SDKs. Live rollout is blocked by a Claude Stop/process termination failure and remaining acceptance gates; see [prototype runbook](../../deploy/SHARED-POOL.md) and its recorded evidence. Production remains on the direct Sandbox backend.
+**Status:** Opt-in prototype implemented; isolated GKE/Filestore lifecycle and real provider/Bash turns passed for both SDKs. The Claude Stop fix passed native GKE acceptance and was deployed for direct Agent Sandbox sessions. Shared pools remain disabled pending the [consolidated acceptance checklist](../../deploy/SHARED-POOL-ACCEPTANCE.md). See the [deployment runbook](../../deploy/SHARED-POOL.md) for prerequisites and rollback.
 **Date:** 2026-10-01
 **Supersedes:** [The per-agent warm pool proposal](2026-10-01-agent-sandbox-warm-pools-design.md).
 

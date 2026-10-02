@@ -11,7 +11,7 @@ GKE/Filestore lifecycle checks, and both SDKs completed real provider/Bash turns
 through an isolated application release. The Claude Stop fix passed on GKE and
 was deployed for direct Agent Sandbox sessions. **Shared-pool rollout remains
 blocked until the remaining acceptance gates pass.**
-See the [recorded evidence](gke/shared-pool-acceptance-2026-10-01.json).
+See the [consolidated acceptance and resume guide](SHARED-POOL-ACCEPTANCE.md).
 
 The late-attachment volume must be a **memory-backed 16 MiB emptyDir** with the
 force-shared annotation. A disk-backed emptyDir is unsafe: our deletion test
@@ -63,39 +63,13 @@ Wait for the helper DaemonSet to be ready and every configured pool to have its
 standby Pods before measuring first-message latency. Startup creates pools;
 initial image pulls and controller reconciliation still take time.
 
-## Acceptance gate
+## Acceptance and resume guide
 
-Record claim assignment, activation, and first SDK reply as separate timings.
-Compare the assigned Pod UID with the standby UID recorded before sending a
-message. An unchanged UID and zero container restarts establish warm adoption.
-
-1. Start concurrent conversations for two synthetic agents using the same
-   runner. Both must use the same pool, adopt existing standbys when available,
-   and cause only the configured shared capacity to be replenished. Exercise
-   both Claude SDK and AI SDK and a real SDK Bash tool.
-2. Write markers through `/files`, verify them independently on Filestore, and
-   read them in a second session for the same agent. Verify same-agent
-   concurrent sessions see writes and a sibling agent cannot see those markers
-   or escape through a symlink. `/memory` must be readable and reject writes.
-3. Verify transcript commits, usage attribution, disk quota enforcement,
-   cancellation, idle cleanup, and sessions with service sidecars. Sidecars use
-   the existing cold path. Also test cold NFS mounts against the image aliases.
-4. Attempt helper access from a runner, unauthenticated TLS access, and direct
-   NFS access from a shared runner. All must fail. The existing IPC and proxy
-   paths must remain usable. Never include session.json or tokens in evidence.
-5. Delete a claim externally while writes are active. Verify runner termination
-   precedes flush/detach, data survives, finalizers clear, and no mount remains
-   in the node namespace. **A finalizer alone does not prove kubelet preserves
-   the volume.** This ordering is a required GKE acceptance check.
-6. Restart the helper during activation and during a forced detach failure.
-   Verify its node-private ledger recovers partial assignments, never republishes
-   consumed credentials, and preserves cleanup state until detach succeeds.
-   Restart the host, expire a claim, and drain a node. Node loss must retain data
-   and produce a bounded failure rather than silently reporting successful cleanup.
-7. Upgrade image/capacity: new shared classes should start, obsolete standbys
-   should disappear, and existing claim-owned conversations should continue.
-   Confirm all fixture namespaces, Pods, mounts, and synthetic storage are gone
-   after cleanup. Do not remove a helper while its ledger still has live entries.
+The checklist, completed evidence, remaining gates, validation results, and
+resume procedure live in
+[SHARED-POOL-ACCEPTANCE.md](SHARED-POOL-ACCEPTANCE.md).
+Update that document as acceptance proceeds; keep the sanitized JSON records
+as historical evidence.
 
 Rollback by disabling `sandbox.sharedPool.enabled` for new sessions. Drain all
 existing shared claims and verify their ledgers are empty **before** removing
@@ -130,95 +104,3 @@ the helper or its RBAC. Removing a helper with live finalizers can strand cleanu
   Debian package maintainer scripts run only at image build time; the helper
   installs nothing at runtime. The base image remains digest-pinned. The new
   image built successfully and its packaged helper ran on GKE.
-
-## Local validation
-
-The repository build, sandbox lifecycle/storage tests, protocol tests, both
-runner startup tests, the Claude SDK main suite, production assembly unit
-tests, and chart render tests have run. The chart suite used its cached pinned
-PostgreSQL tarball because the standard global setup's registry fetch was
-blocked. Linux descriptor tests are explicitly skipped on macOS.
-
-Earlier broad local runs failed Docker/listener checks under session
-restrictions. A full repository test gate has not passed. Later continuation
-could use the configured Docker builder and standalone kubectl commands, so
-image build and isolated cluster checks proceeded.
-
-## Integrated GKE checks on 2026-10-01
-
-The corrected prototype image is `sharedpool-20261001-prototype3`, digest
-`sha256:9cd431a45699f3ab783071a8a3cfaa32a9a81b5df34cd41d58e0f234b4fb129f`.
-Earlier prototype images contain the unsafe disk-backed staging design and
-must not be deployed.
-
-Both real runner binaries booted through the unchanged workspace and inbox
-protocols against a synthetic controller. Three claims adopted existing Pod
-and container identities, with zero restarts, in 1068, 1089, and 728 ms. Two
-agents used the same Claude pool. These are activation timings, not first
-model reply timings; no provider request was sent.
-
-Real Filestore checks covered private agent directories, concurrent writes,
-read-only memory with deliberately writable source permissions, consumed
-bootstrap, and cold gVisor NFS compatibility with the image aliases. Helper
-restart retained three live bindings without republishing credentials.
-External claim deletion, direct Pod deletion, and claim expiry preserved
-markers and cleared storage records and child mounts. Runner networking
-allowed IPC and blocked helper, NFS, and rpcbind access; the helper rejected
-TLS requests without a client certificate.
-
-A separate isolated Helm release booted the complete application with its own
-PostgreSQL database, workspace/facts PVCs, dedicated TLS leaves, and synthetic
-Filestore root. Onboarding validated a real Anthropic key. Both SDKs executed
-Bash writes/reads and committed their transcripts; two agents used the same
-Claude pool. Application activation took 1028–1114 ms. First text arrived in
-6.3–7.1 seconds for the three new conversations. These are small acceptance
-samples, not a latency benchmark. Usage recorded the four initial turns under
-the test user. The key stayed on the trusted host/client side.
-
-**Stop failed the filesystem check for Claude.** The API returned
-`interrupted: true`, the stream ended, and the tool result reported exit 137.
-Nevertheless, `printf STARTED > /files/stop-started.txt; sleep 30; printf
-COMPLETED > /files/stop-result.txt` wrote its completion marker after the full
-sleep. AI SDK's completion marker stayed absent. A cold-path early-Stop check
-also executed Bash after Stop was pressed; that timing differs from the warm
-in-flight case, so it does not establish the exact cause. Do not infer process
-termination from an interrupted result or a closed stream. Wait beyond the
-command's original duration and check storage independently. Use `&&` in any
-follow-up assertions so a later successful command cannot mask a failed check.
-
-The follow-up fix reproduces the orphaned command with SDK 0.2.119 in a local
-Linux container. The runner now tracks its SDK child, freezes and kills tool
-descendants before sending the SDK interrupt, and preserves startup MCP
-servers. Stop stays latched through startup and an outstanding policy decision.
-The native tests check a delayed write past its original deadline, reuse of the
-same query, MCP tool reuse, and partial streamed text. The same four checks pass
-in a restricted gVisor Pod and in a managed Agent Sandbox with a synthetic
-Filestore directory. An independent Filestore scan after the command deadline
-found no completion marker. Production release revision 30 runs the accepted
-image for direct Agent Sandbox sessions; shared pools remain disabled. See the
-[Linux evidence](gke/claude-stop-linux-acceptance-2026-10-01.json) and
-[GKE evidence](gke/claude-stop-gke-acceptance-2026-10-02.json).
-
-Transcript reads survived an isolated host restart, but automatic recovery and
-reaping of live claims was not accepted. Quota refusal, sidecar application
-routes, interrupted assignment, forced detach failure, and node drain/loss
-remain pending. Memory extraction lacked an OpenRouter credential in this
-fixture and was not accepted. Existing disk accounting measures workspaces and
-uploaded/published blobs; it does not count arbitrary writes in raw `/files`.
-The 16 MiB staging limit likewise does not limit attached NFS data.
-
-Use a dedicated test node for drain/loss checks so acceptance does not
-interrupt live conversations on the cluster's shared gVisor node. Provisioning
-that node was blocked by Google Cloud OAuth/API DNS access in this session.
-All test namespaces, database/PVCs, synthetic storage, and helper ledger were
-removed after draining claims and verifying no child mounts or live records.
-
-## Claude Stop security review
-
-- Sandbox: Signals target descendants of the SDK child created by this runner in
-  its existing PID namespace. Kernel PID/start-time checks guard reuse. Startup
-  MCP processes and the SDK remain alive. No host PID access or new privilege.
-- Injection: Model commands still cross the existing host policy. Process IDs
-  come from the child handle and kernel metadata, never command text or
-  model-writable PID files. Stop denies a pending policy allow after interruption.
-- Supply chain: N/A — no dependency manifests or lockfile entries changed.
