@@ -8,7 +8,7 @@ import type { ZodType } from 'zod';
 import { resolveConfig, type SandboxK8sConfig } from './config.js';
 import { createDefaultK8sApi, createDefaultSandboxApi, type K8sCoreApi } from './k8s-api.js';
 import { createAgentSandboxSessionApi, SANDBOX_SELECTOR, type SandboxCustomApi } from './agent-sandbox.js';
-import { createSharedPoolSessionApi } from './shared-pool.js';
+import { createSharedPoolSessionApi, retireSharedClaims } from './shared-pool.js';
 import { createStorageClient, type StorageClient } from './storage-client.js';
 import {
   createOpenSession,
@@ -141,8 +141,11 @@ export function createSandboxK8sPlugin(
       let sessionApi = config.backend === 'agent-sandbox'
         ? createAgentSandboxSessionApi(api, custom!, config)
         : api;
-      if (config.sharedPool) sessionApi = await createSharedPoolSessionApi(api, custom!, sessionApi,
-        storageClient ?? createStorageClient(api, config.sharedPool), config);
+      if (config.sharedPool) {
+        await retireSharedClaims(custom!, config);
+        sessionApi = await createSharedPoolSessionApi(api, custom!, sessionApi,
+          storageClient ?? createStorageClient(api, config.sharedPool), config);
+      }
 
       // I5: warn loudly when an operator opts out of gVisor. The
       // userspace kernel is the second isolation layer and the cluster

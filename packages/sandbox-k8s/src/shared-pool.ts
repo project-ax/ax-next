@@ -20,6 +20,22 @@ interface RunnerContainer { name: string; args: string[]; env: { name: string; v
   volumeMounts: { name: string; mountPath: string; subPath?: string; readOnly?: boolean; mountPropagation?: string }[] }
 const extension = (namespace: string, plural: string) => ({ group: 'extensions.agents.x-k8s.io', version: 'v1beta1', namespace, plural });
 
+/** The single-host assembly cannot recover the previous process's proxy maps.
+ * Retire its claims on host boot; helpers keep storage protected until stopped.
+ * Pool class initialization itself preserves claims during capacity changes. */
+export async function retireSharedClaims(custom: SandboxCustomApi, config: ResolvedSandboxK8sConfig): Promise<void> {
+  const prefix = config.sharedPool!.prefix;
+  const result = await custom.listNamespacedCustomObject({ ...extension(config.namespace, 'sandboxclaims'),
+    labelSelector: CLAIM_POOL_LABEL }) as { items?: Resource[] };
+  for (const claim of result.items ?? []) {
+    const cls = claim.metadata?.labels?.[CLAIM_POOL_LABEL];
+    if (!claim.metadata?.name || !claim.metadata.uid || !cls?.startsWith(`${prefix}-`) ||
+        !/^[0-9a-f]{16}$/.test(cls.slice(prefix.length + 1))) continue;
+    await custom.deleteNamespacedCustomObject({ ...extension(config.namespace, 'sandboxclaims'), name: claim.metadata.name,
+      body: { propagationPolicy: 'Foreground', preconditions: { uid: claim.metadata.uid } } }).catch(e => { if (!isNotFound(e)) throw e; });
+  }
+}
+
 /** A class contains execution settings only. Agent ids and credentials never enter its hash or template. */
 export function buildSharedTemplate(config: ResolvedSandboxK8sConfig, runnerBinary: string) {
   const pool = config.sharedPool!;

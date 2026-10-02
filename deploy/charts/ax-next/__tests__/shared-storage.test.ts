@@ -30,7 +30,7 @@ describe('shared storage deployment', () => {
     expect(pod.containers[0].securityContext).toEqual({ privileged: true, runAsUser: 0, readOnlyRootFilesystem: true });
     expect(pod.containers[0].args).toEqual(['flock', '--no-fork', '/ledger/daemon.lock', 'node', '/opt/ax-next/storage-node.mjs']);
     expect(pod.volumes.filter(v => v.hostPath).map(v => v.hostPath!.path)).toEqual([
-      '/var/lib/kubelet/pods', '/var/lib/ax-shared-storage/ax-shared',
+      '/var/lib/kubelet/pods', '/var/lib/ax-shared-storage/ax-shared', '/sys/class/dmi/id/product_uuid',
     ]);
     expect(pod.volumes.find(v => v.name === 'tls')!.secret!.secretName).toBe('storage-tls');
     const host = docs.find(d => d.kind === 'Deployment' && d.metadata.name.endsWith('-host'))!.spec.template.spec;

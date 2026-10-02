@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createLogger, type Plugin } from '@ax/core';
-import { buildSharedTemplate, createSharedPoolSessionApi } from '../shared-pool.js';
+import { buildSharedTemplate, createSharedPoolSessionApi, retireSharedClaims } from '../shared-pool.js';
 import { resolveConfig } from '../config.js';
 import { buildPodSpec } from '../pod-spec.js';
 import { createSandboxK8sPlugin } from '../plugin.js';
@@ -264,4 +264,14 @@ describe('shared Agent Sandbox pool', () => {
       await result.handle.kill(); expect(f.storage.release).toHaveBeenCalledTimes(1);
     } finally { await h.close(); }
   });
+});
+
+
+it('retires only matching-prefix claims on actual host boot, preserving finalizers and UID guards', async () => {
+  const f=fixture();vi.mocked(f.custom.listNamespacedCustomObject).mockResolvedValue({items:[
+    {metadata:{name:'owned-old-class',uid:uid.claim,labels:{'ax.io/shared-pool':'shared-0123456789abcdef'},finalizers:['ax.io/storage-cleanup']}},
+    {metadata:{name:'foreign',uid:randomUUID(),labels:{'ax.io/shared-pool':'different-0123456789abcdef'}}},
+    {metadata:{name:'malformed',uid:randomUUID(),labels:{'ax.io/shared-pool':'shared-not-a-class'}}},
+  ]});await retireSharedClaims(f.custom,config);
+  expect(f.custom.deleteNamespacedCustomObject).toHaveBeenCalledExactlyOnceWith({group:'extensions.agents.x-k8s.io',version:'v1beta1',namespace:'runners',plural:'sandboxclaims',name:'owned-old-class',body:{propagationPolicy:'Foreground',preconditions:{uid:uid.claim}}});
 });

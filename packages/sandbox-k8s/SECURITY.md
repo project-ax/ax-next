@@ -236,3 +236,44 @@ the operational teardown order in deploy/README.md, with parent resources delete
 - Sandbox: Namespaced Sandbox lifecycle permission added. Existing runner filesystem and network reach retained; fixed ownership preparation has only CAP_CHOWN and the agent subtree, with no session credential. Parent deletion uses UID preconditions and cancellation revokes first.
 - Injection: Session inputs still pass the existing schema and pod builder. Ownership paths remain quoted env values in a fixed script; API status and metadata are interpreted as state, never executed. No new runner IPC action or model-driven shell command.
 - Supply chain: N/A — no package.json or lockfile change; uses the existing exactly pinned Kubernetes client. The controller is an operator-managed prerequisite, with release/image pinning required for self-managed installs.
+
+## Shared-pool recovery
+
+The helper writes a secret-free recovery intent to the protected Pod before
+adding finalizers or binding storage. The strict record contains storage UIDs,
+roles, and agent identity. It contains no bootstrap environment or credentials.
+The helper can list Pods and UID-delete claims in its runner namespace; both
+operations check the configured pool prefix and the live owner chain. Cleanup
+retires the claim before freeing its Pod, preventing controller recreation.
+
+An empty local ledger is reconstructed from these records. Recovered assignments
+are retired, never reactivated with old credentials. A terminal Pod phase or
+`ContainerStatusUnknown` does not establish quiescence. The helper requires
+finished container timestamps, or a prior kernel boot under the same trusted
+GKE VM identity. It reads one read-only host file for that identity and the
+native kernel boot ID. No runner can edit these values or the recovery record.
+
+This fence relies on GKE/Compute Engine's VM identity: the
+[VM UUID](https://docs.cloud.google.com/compute/docs/instances/get-uuid) derives
+from project, zone, and name; an active name identifies one VM in that scope.
+A new [kernel boot ID](https://www.kernel.org/doc/html/v6.12/admin-guide/sysctl/kernel.html#random)
+under that identity means the previous kernel no longer runs. A different
+machine, missing/corrupt metadata, or an API failure retains protection and
+prevents helper readiness. Permanently lost nodes that cannot establish this
+fence require independent cloud fencing before operator cleanup; node deletion
+or unreachability alone is insufficient.
+
+The product currently allows one host replica. On boot it retires its configured
+shared claims; conversation routing reopens sessions whose runner handle and
+proxy registration belonged to the previous process. Durable conversation/SDK
+history stays authoritative. This recovers later turns, rather than persisting
+credential-proxy registrations or promising uninterrupted in-flight commands.
+
+- Sandbox: Adds namespaced Pod discovery and UID-guarded claim deletion to the
+  trusted privileged helper, and read-only `/sys/class/dmi/id/product_uuid`.
+  Finalizer removal still follows quiescence, flush, and detach. Runners gain
+  no filesystem, network, process, environment, or Kubernetes capability.
+- Injection: Recovery uses strictly validated Kubernetes owner metadata and
+  locally read VM/boot identities. Model/tool text never selects recovery paths,
+  UIDs, shell argv, or a fence. Recovery records exclude credentials.
+- Supply chain: N/A — no dependency manifest, lockfile, or transitive change.

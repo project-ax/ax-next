@@ -290,3 +290,22 @@ describe('chat-orchestrator keepalive', () => {
     }
   });
 });
+
+
+it('reopens a persisted conversation after host restart instead of routing into an unowned proxy session', async () => {
+  const hdl=makeHandle();const queued:string[]=[];const terminated:string[]=[];let opens=0;
+  const h=await createTestHarness({services:{
+    'agents:resolve':async()=>({agent:{...TEST_AGENT}}),
+    'conversations:get':async()=>({conversation:{conversationId:'restart-conversation',userId:'test-user',agentId:'test-agent',activeSessionId:'previous-host-session',activeReqId:null}}),
+    'conversations:bind-session':async()=>undefined,
+    'session:is-alive':async()=>({alive:true}),
+    'session:terminate':async(_c,input)=>{terminated.push((input as {sessionId:string}).sessionId);return {};},
+    'session:queue-work':async(_c,input)=>{queued.push((input as {sessionId:string}).sessionId);return {cursor:0};},
+    'sandbox:open-session':async()=>{opens++;return {runnerEndpoint:'unix:///tmp/restart.sock',handle:hdl.handle};},
+    'proxy:open-session':async()=>({proxyEndpoint:'tcp://127.0.0.1:1',caCertPem:'CA',envMap:{}}),
+    'proxy:close-session':async()=>({}),
+  },plugins:[createChatOrchestratorPlugin({runnerBinaries:{'claude-sdk':'/runner'},keepAlive:true,chatTimeoutMs:100,idleWindowMs:60000})]});
+  fireTurnEnd(h.bus,'new-host-session','restart-request');
+  const out=await h.bus.call('agent:invoke',ctxWith({sessionId:'new-host-session',conversationId:'restart-conversation',reqId:'restart-request'}),{message:{role:'user',content:'continue'}});
+  expect(out).toEqual({kind:'complete',messages:[]});expect(opens).toBe(1);expect(terminated).toContain('previous-host-session');expect(queued).not.toContain('previous-host-session');hdl.forceExit();
+});

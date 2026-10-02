@@ -23,13 +23,13 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "patch", "delete"]
+    verbs: ["get", "list", "patch", "delete"]
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes"]
     verbs: ["get"]
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["get", "patch"]
+    verbs: ["get", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -145,6 +145,7 @@ spec:
           volumeMounts:
             - {name: kubelet-pods, mountPath: /kubelet-pods, mountPropagation: Bidirectional}
             - {name: ledger, mountPath: /ledger}
+            - {name: machine-id, mountPath: /host-machine-id, readOnly: true}
             - {name: user-files, mountPath: /backing/files}
             - {name: tls, mountPath: /tls, readOnly: true}
             - {name: tmp, mountPath: /tmp}
@@ -156,6 +157,8 @@ spec:
           hostPath: {path: {{ $pool.kubeletPodsPath | quote }}, type: Directory}
         - name: ledger
           hostPath: {path: {{ printf "%s/%s" $pool.ledgerPath $pool.prefix | quote }}, type: DirectoryOrCreate}
+        - name: machine-id
+          hostPath: {path: /sys/class/dmi/id/product_uuid, type: File}
         - name: user-files
           nfs: {server: {{ .Values.sandbox.filestore.server | quote }}, path: {{ .Values.sandbox.filestore.exportPath | quote }}}
         - name: tls

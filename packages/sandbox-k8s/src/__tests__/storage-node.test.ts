@@ -147,10 +147,13 @@ function kubeFixture(data = input()) {
   const sandbox: StorageObject = { metadata: { uid: data.sandboxUid, ownerReferences: [{ kind: 'SandboxClaim',
     apiVersion: 'extensions.agents.x-k8s.io/v1beta1', uid: data.claimUid, name: data.claimName, controller: true }] } };
   const api: StorageKubeApi = { readPod: vi.fn(async () => pod), readClaim: vi.fn(async () => claim),
-    readSandbox: vi.fn(async () => sandbox), deletePod: vi.fn(async () => { pod.status = { phase: 'Succeeded' }; }),
+    readSandbox: vi.fn(async () => sandbox), deletePod: vi.fn(async () => { pod.status = { phase: 'Succeeded', containerStatuses: [{state:{terminated:{finishedAt:new Date().toISOString(), reason:'Completed'}}}] }; }),
+    deleteClaim: vi.fn(async () => {}), listNodePods: vi.fn(async () => [pod]),
     patchFinalizers: vi.fn(async (kind, _name, patch) => {
       const object = kind === 'pod' ? pod : claim;
-      object.metadata!.finalizers = (patch[2] as { value: string[] }).value;
+      const change=patch[2] as {path:string;value:unknown};
+      if(change.path==='/metadata/annotations')object.metadata!.annotations=change.value as Record<string,string>;
+      else object.metadata!.finalizers=change.value as string[];
     }) };
   return { data, pod, claim, sandbox, api, authority: createStorageAuthority(api, 'node', 'pool') };
 }
@@ -203,4 +206,69 @@ describe.skipIf(process.platform !== 'linux')('Linux descriptor confinement', ()
       expect(() => openDirectory(root, ['..'])).toThrow();
     } finally { parent.close(); }
   });
+});
+
+
+describe('shared storage recovery after local ledger loss', () => {
+  const fence = { machineId: '5b723d61-8f6a-4b50-9f81-4eecdb84c172', bootId: 'c358457e-3f7a-41b3-b7e3-44eed001fa32' };
+  const annotation = 'ax.io/storage-recovery';
+  function recoveredFixture() {
+    const f = kubeFixture();
+    f.pod.metadata!.finalizers=[STORAGE_FINALIZER];f.claim.metadata!.finalizers=[STORAGE_FINALIZER];
+    const { bootstrap, ...rest } = f.data;
+    const record = { ...rest, assignmentId: bootstrap.assignmentId, published: false };
+    f.pod.metadata!.annotations![annotation] = JSON.stringify({ version: 1, fence: { ...fence, bootId: randomUUID() }, record });
+    return { ...f, record, authority: createStorageAuthority(f.api, 'node', 'pool', fence) };
+  }
+  it('records recovery intent before finalizers and excludes bootstrap capabilities', async () => {
+    const f=recoveredFixture();f.pod.metadata!.finalizers=[];f.claim.metadata!.finalizers=[];
+    await f.authority.protect(f.data,f.record);
+    const calls=vi.mocked(f.api.patchFinalizers).mock.calls;expect(calls[0]![2][2]).toMatchObject({path:'/metadata/annotations'});
+    const intent=JSON.parse(f.pod.metadata!.annotations![annotation]!);expect(intent.record).not.toHaveProperty('bootstrap');expect(intent.record).not.toHaveProperty('env');expect(intent.fence).toEqual(fence);
+  });
+  it('recovers a secret-free intent and fences a prior boot before finishing a lost ledger', async () => {
+    const f = recoveredFixture();
+    f.api.deletePod = vi.fn(async () => {});
+    f.pod.status = { phase: 'Failed', containerStatuses: [{ state: { terminated: { reason: 'ContainerStatusUnknown' } } }] };
+    expect(await f.authority.recover!()).toEqual([f.record]);
+    await f.authority.stop(f.record);
+    await f.authority.finish(f.record);
+    expect(f.api.deleteClaim).toHaveBeenCalledWith(f.data.claimName, f.data.claimUid);
+    expect(vi.mocked(f.api.deleteClaim).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(f.api.patchFinalizers).mock.invocationCallOrder[0]!);
+    expect(f.pod.metadata!.annotations![annotation]).not.toContain('secret-session-token');
+  });
+  it('requires a matching machine identity, never merely a different boot or terminal phase', async () => {
+    const f = recoveredFixture();const intent=JSON.parse(f.pod.metadata!.annotations![annotation]!);intent.fence.machineId=randomUUID();f.pod.metadata!.annotations![annotation]=JSON.stringify(intent);
+    await expect(f.authority.recover!()).rejects.toThrow('fence');
+    expect(f.api.deletePod).not.toHaveBeenCalled();expect(f.api.patchFinalizers).not.toHaveBeenCalled();
+  });
+  it('refuses corrupted recovery metadata and API outages', async () => {
+    const f=recoveredFixture();f.pod.metadata!.annotations![annotation]='{"token":"not-an-intent"}';
+    await expect(f.authority.recover!()).rejects.toThrow();
+    f.api.listNodePods=vi.fn(async()=>{throw Object.assign(new Error('unavailable'),{code:503});});
+    await expect(f.authority.recover!()).rejects.toThrow('unavailable');
+    expect(f.api.deleteClaim).not.toHaveBeenCalled();
+  });
+  it('never recovers a same-name replacement or a foreign owner chain', async () => {
+    const f=recoveredFixture();f.pod.metadata!.uid=randomUUID();
+    await expect(f.authority.recover!()).rejects.toThrow('ownership');
+    expect(f.api.deleteClaim).not.toHaveBeenCalled();
+  });
+  it('deletes the released claim before removing its protected Pod to prevent controller recreation', async () => {
+    const f=kubeFixture();await f.authority.protect(f.data);await f.authority.stop(f.data);vi.mocked(f.api.patchFinalizers).mockClear();
+    await f.authority.finish(f.data);
+    expect(f.api.deleteClaim).toHaveBeenCalledWith(f.data.claimName,f.data.claimUid);
+    expect(vi.mocked(f.api.deleteClaim).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(f.api.patchFinalizers).mock.invocationCallOrder[0]!);
+  });
+});
+
+
+it('does not equate an uncertain terminal Pod with stopped containers on the current boot', async () => {
+  vi.useFakeTimers();
+  try {
+    const f=kubeFixture();f.pod.status={phase:'Failed',containerStatuses:[{state:{terminated:{reason:'ContainerStatusUnknown'}}}]};f.api.deletePod=vi.fn(async()=>{});
+    const assertion=expect(f.authority.stop(f.data)).rejects.toThrow('quiescence');
+    await vi.advanceTimersByTimeAsync(90001);await assertion;
+    expect(f.api.patchFinalizers).not.toHaveBeenCalled();expect(f.api.deleteClaim).not.toHaveBeenCalled();
+  } finally {vi.useRealTimers();}
 });

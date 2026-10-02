@@ -4,6 +4,7 @@ import { createStorageAuthority, type StorageKubeApi, type StorageObject } from 
 import { StorageNodeEngine } from './engine.js';
 import { createStorageServer } from './server.js';
 import { backingProfile } from './sources.js';
+import { NodeFenceSchema, STANDBY_LABEL } from './protocol.js';
 
 try { unlinkSync('/tmp/storage-ready'); } catch { /* No readiness until this instance listens. */ }
 
@@ -14,6 +15,9 @@ const { KubeConfig, CoreV1Api, CustomObjectsApi } = await import('@kubernetes/cl
 const kc = new KubeConfig(); kc.loadFromCluster();
 const pods = kc.makeApiClient(CoreV1Api), custom = kc.makeApiClient(CustomObjectsApi);
 const namespace = required('AX_RUNNER_NAMESPACE');
+const nodeName = required('AX_NODE_NAME');
+const fence = NodeFenceSchema.parse({ machineId: readFileSync('/host-machine-id', 'utf8').trim().toLowerCase(),
+  bootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() });
 const req = (plural: string, name: string) => ({ group: plural === 'sandboxes' ? 'agents.x-k8s.io' : 'extensions.agents.x-k8s.io',
   version: 'v1beta1', plural, namespace, name });
 const api: StorageKubeApi = {
@@ -27,12 +31,16 @@ const api: StorageKubeApi = {
   },
   async deletePod(name, uid) { await pods.deleteNamespacedPod({ namespace, name,
     body: { preconditions: { uid }, gracePeriodSeconds: 5 } }); },
+  async deleteClaim(name, uid) { await custom.deleteNamespacedCustomObject({ ...req('sandboxclaims', name),
+    body: { preconditions: { uid }, propagationPolicy: 'Foreground' } }); },
+  async listNodePods() { return (await pods.listNamespacedPod({ namespace,
+    fieldSelector: `spec.nodeName=${nodeName}`, labelSelector: `${STANDBY_LABEL}=${required('AX_POOL_PREFIX')}` })).items as unknown as StorageObject[]; },
 };
 const engine = new StorageNodeEngine({ kubeletPodsRoot: '/kubelet-pods', ledgerRoot: '/ledger',
   backingProfile: backingProfile({ userFiles: { server: required('AX_STORAGE_FILES_SERVER'), exportPath: required('AX_STORAGE_FILES_PATH') },
     ...(process.env.AX_STORAGE_MEMORY === '1' ? { memory: { server: required('AX_STORAGE_MEMORY_SERVER'), exportPath: required('AX_STORAGE_MEMORY_PATH') } } : {}) }),
   userFilesRoot: '/backing/files', ...(process.env.AX_STORAGE_MEMORY === '1' ? { memoryRoot: '/backing/memory' } : {}) },
-createStorageAuthority(api, required('AX_NODE_NAME'), required('AX_POOL_PREFIX')));
+createStorageAuthority(api, nodeName, required('AX_POOL_PREFIX'), fence));
 const tlsRoot = '/tls';
 const server = createStorageServer(engine, { ca: readFileSync(join(tlsRoot, 'ca.crt')),
   cert: readFileSync(join(tlsRoot, 'tls.crt')), key: readFileSync(join(tlsRoot, 'tls.key')) });

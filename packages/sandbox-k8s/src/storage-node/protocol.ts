@@ -32,3 +32,10 @@ export const StorageRecordSchema = StorageIdentitySchema.extend({
   published: z.boolean(),
 }).strict();
 export type StorageRecord = z.infer<typeof StorageRecordSchema>;
+
+// An operator-readable recovery intent. Never serialize assignment bootstrap/env.
+export const STORAGE_RECOVERY = 'ax.io/storage-recovery';
+export const NodeFenceSchema = z.object({ machineId: uid, bootId: uid }).strict();
+export type NodeFence = z.infer<typeof NodeFenceSchema>;
+export const StorageRecoverySchema = z.object({ version: z.literal(1), fence: NodeFenceSchema,
+  record: StorageRecordSchema }).strict();

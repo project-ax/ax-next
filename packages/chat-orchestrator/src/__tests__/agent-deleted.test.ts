@@ -101,6 +101,7 @@ interface World {
 async function makeWorld(o: {
   handles: Record<string, FakeHandle>;
   idleWindowMs?: number;
+  keepAlive?: boolean;
   idleGraceMs?: number;
   extraServices?: Record<string, ServiceHandler>;
 }): Promise<World> {
@@ -135,7 +136,7 @@ async function makeWorld(o: {
     services,
     plugins: [createChatOrchestratorPlugin({
       runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
-      keepAlive: true,
+      keepAlive: o.keepAlive ?? true,
       idleWindowMs: o.idleWindowMs ?? 60_000,
       idleGraceMs: o.idleGraceMs ?? 1_000,
     })],
@@ -305,6 +306,8 @@ describe('chat-orchestrator — agents:deleted', () => {
     const fresh = makeHandle();
     const w = await makeWorld({
       handles: { 'ext-1': fresh },
+      // Isolate augment-generation cleanup from the keepalive host-ownership gate.
+      keepAlive: false,
       extraServices: {
         'session:is-alive': async (_c, input: unknown) => ({
           alive: live.has((input as { sessionId: string }).sessionId),
@@ -321,7 +324,7 @@ describe('chat-orchestrator — agents:deleted', () => {
     });
 
     const invokeOnConversation = async (sessionId: string, reqId: string) => {
-      fireTurnEnd(w.bus, sessionId, reqId);
+      setImmediate(() => { void w.bus.fire('chat:end', ctxWith({ sessionId, agentId: 'agent-a', reqId, conversationId: 'conv-1' }), { outcome: { kind: 'complete', messages: [] } }); });
       return w.bus.call<unknown, AgentOutcome>('agent:invoke',
         ctxWith({ sessionId, agentId: 'agent-a', reqId, conversationId: 'conv-1' }),
         { message: { role: 'user', content: 'hi' } });

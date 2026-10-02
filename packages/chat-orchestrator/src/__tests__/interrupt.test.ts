@@ -342,10 +342,14 @@ describe('agent:interrupt — deferred behind the user message (cold spawn / slo
 
   it('routed into a warm session: same deferral, same ordering', async () => {
     const world = makeWorld();
-    world.conv = { activeSessionId: 'sess-warm', activeReqId: 'req-2' };
-    world.live.add('sess-warm');
-    world.holdUserMessage = newDeferred();
+    world.conv = { activeSessionId: null, activeReqId: 'warm-first' };
     const h = await harnessFor(world);
+    fireTurnEnd(h.bus, 'sess-warm', 'warm-first');
+    await h.bus.call('agent:invoke', invokeCtx('warm-first', 'sess-warm'), { message: { role: 'user', content: 'warm up' } });
+    world.conv.activeReqId = 'req-2';
+    world.queued.length = 0;
+    world.attempts = 0;
+    world.holdUserMessage = newDeferred();
 
     const invoke = startInvoke(h, 'req-2');
     await until(() => world.attempts === 1, 'user-message queue-work to start');

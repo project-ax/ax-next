@@ -10,10 +10,11 @@ import { LATE_VOLUME, StorageAssignmentSchema, StorageRecordSchema,
 
 export interface StorageAuthority {
   authorize(input: StorageAssignment): Promise<void>;
-  protect(input: StorageIdentity): Promise<void>;
+  protect(input: StorageIdentity, record?: StorageRecord): Promise<void>;
   stop(input: StorageIdentity): Promise<void>;
   finish(input: StorageIdentity): Promise<void>;
   abandoned(input: StorageRecord): Promise<boolean>;
+  recover?(): Promise<StorageRecord[]>;
 }
 export interface StorageNodeConfig {
   backingProfile: string;
@@ -90,7 +91,7 @@ export class StorageNodeEngine {
       // Durable intent precedes every mount. Restart recovery can unwind a partial bind.
       this.save(record);
       try {
-        await this.authority.protect(input);
+        await this.authority.protect(input, record);
         for (const role of input.roles) {
           const backing = role === 'user-files' ? this.config.userFilesRoot : this.config.memoryRoot;
           if (!backing) throw new Error('storage role is not configured');
@@ -195,6 +196,14 @@ export class StorageNodeEngine {
     unlinkSync(this.ledgerPath(record.podUid));
   }
   async reconcile(): Promise<void> {
+    // Rebuild lost local intent from protected, secret-free Kubernetes metadata.
+    // Conservatively retire recovered assignments; never replay consumed credentials.
+    for (const record of await this.authority.recover?.() ?? []) {
+      if (record.backingProfile !== this.config.backingProfile) throw new Error('storage recovery configuration differs');
+      await this.serial(record.podUid, async () => {
+        if (!this.load(record.podUid)) this.save({ ...record, published: false });
+      });
+    }
     let failed = false;
     for (const file of readdirSync(this.config.ledgerRoot)) {
       if (!/^[0-9a-f-]{36}\.json$/.test(file)) continue;
