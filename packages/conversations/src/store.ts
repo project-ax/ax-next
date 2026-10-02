@@ -447,7 +447,10 @@ export interface ConversationStore {
    * the conversation has no event rows (a legacy conversation whose redisplay
    * still comes from the jsonl).
    */
-  listEvents(conversationId: string): Promise<StoredEvent[]>;
+  listEvents(
+    conversationId: string,
+    opts?: ListEventsOptions,
+  ): Promise<StoredEvent[]>;
 
   // -------------------------------------------------------------------------
   // TASK-67 (out-of-git Part B / B2) — resume transcript store.
@@ -555,6 +558,16 @@ export interface StoreAppendEventArgs {
   /** Fold key (see ConversationDisplayEvent.key). Defaults to ''. */
   foldKey?: string;
   payload: Record<string, unknown>;
+}
+
+/** TASK-731 — options for ConversationStore.listEvents. */
+export interface ListEventsOptions {
+  /**
+   * Called once per row the read SKIPPED because this release does not know
+   * its `event_kind` (a newer release wrote it, or we rolled back past the
+   * release that added it). The store has no logger; the caller logs.
+   */
+  onSkippedRow?: (row: { seq: number; eventKind: string }) => void;
 }
 
 /** TASK-66 — one stored display event, as returned by listEvents. */
@@ -917,6 +930,10 @@ export function createConversationStore(
     },
 
     async appendEvent({ conversationId, kind, role, foldKey, payload }) {
+      // Reject an unknown kind before touching the DB (the CHECK constraint
+      // is the backstop). The read is lenient about kinds (TASK-731); the
+      // write is not.
+      validateEventKind(kind);
       // CONTRACT: appends to ONE conversation are fully serialized, so an
       // append NEVER fails and NEVER drops an event, at ANY concurrency.
       // Callers may fan out as wide as they like.
@@ -1019,14 +1036,25 @@ export function createConversationStore(
       });
     },
 
-    async listEvents(conversationId) {
+    async listEvents(conversationId, opts) {
       const rows = await db
         .selectFrom('conversations_v1_events')
         .selectAll('conversations_v1_events')
         .where('conversation_id', '=', conversationId)
         .orderBy('seq', 'asc')
         .execute();
-      return rows.map((r) => ({
+      // TASK-731: an unknown kind is SKIPPED, not thrown. This read feeds
+      // conversations:get, so a throw here blanks the whole thread over one
+      // row. A kind added by a newer release (or a rollback past the release
+      // that added it) should cost that one row. Writes stay strict: the
+      // CHECK constraint and validateEventKind in appendEvent still refuse
+      // an unknown kind.
+      const known = rows.filter((r) => {
+        if (isEventKind(r.event_kind)) return true;
+        opts?.onSkippedRow?.({ seq: coerceSeq(r.seq), eventKind: r.event_kind });
+        return false;
+      });
+      return known.map((r) => ({
         seq: coerceSeq(r.seq),
         kind: validateEventKind(r.event_kind),
         role: r.role === null ? null : validateRole(r.role),
@@ -1275,7 +1303,12 @@ const VALID_EVENT_KINDS: ReadonlySet<ConversationEventKind> = new Set([
   'turn',
   'permission-card',
   'turn-error',
+  'save-refused',
 ]);
+
+function isEventKind(value: string): value is ConversationEventKind {
+  return VALID_EVENT_KINDS.has(value as ConversationEventKind);
+}
 
 /** BIGINT may surface as a string (pg) or number; coerce to a finite int. */
 function coerceSeq(value: string | number): number {
@@ -1284,9 +1317,9 @@ function coerceSeq(value: string | number): number {
 }
 
 function validateEventKind(value: string): ConversationEventKind {
-  if (!VALID_EVENT_KINDS.has(value as ConversationEventKind)) {
+  if (!isEventKind(value)) {
     throw invalid(
-      "event_kind must be 'turn', 'permission-card', or 'turn-error'",
+      "event_kind must be 'turn', 'permission-card', 'turn-error', or 'save-refused'",
     );
   }
   return value as ConversationEventKind;

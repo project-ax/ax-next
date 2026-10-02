@@ -215,11 +215,24 @@ export interface GetOutput {
 // commit), `payload` is the opaque UI frame body. No backend vocabulary.
 // ---------------------------------------------------------------------------
 
-/** Display-semantic event kinds persisted in the redisplay log. */
-export type ConversationEventKind = 'turn' | 'permission-card' | 'turn-error';
+/**
+ * Display-semantic event kinds persisted in the redisplay log.
+ *
+ * `save-refused` (TASK-731): the host refused to keep a reply's files (a
+ * per-turn save, or the final/idle flush after the last turn). Payload is
+ * `{ code }` with a closed code (`'storage-full' | 'too-large' | 'refused'`)
+ * — never a sentence; the client words it. Key is the turn's reqId, or a
+ * host-minted `final:<uuid>` for the final flush.
+ */
+export type ConversationEventKind =
+  | 'turn'
+  | 'permission-card'
+  | 'turn-error'
+  | 'save-refused';
 
 /**
- * One host-only display event (a `permission-card` or a `turn-error`),
+ * One host-only display event (a `permission-card`, a `turn-error`, or a
+ * `save-refused` notice),
  * projected from the redisplay log for `conversations:get`. `turn` events are
  * projected to `Turn[]` instead (the existing renderer path); this type carries
  * only the events that have no `ContentBlock` representation.
@@ -235,7 +248,9 @@ export interface ConversationDisplayEvent {
    * Stable per-card / per-turn key used to fold a later resolution frame onto
    * an earlier card (the read keeps the LAST event per key). For a
    * `permission-card` this is the card's identity (e.g. its `skillId` or
-   * `host`); for a `turn-error` it's the originating `reqId`. Opaque string.
+   * `host`); for a `turn-error` it's the originating `reqId`; for a
+   * `save-refused` it's the turn's `reqId` (or `''`), or `final:<uuid>` for
+   * the final/idle flush (TASK-731). Opaque string.
    */
   key: string;
   /** The opaque display frame body. Re-emitted to the renderer verbatim. */

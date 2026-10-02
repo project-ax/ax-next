@@ -348,3 +348,135 @@ describe('TASK-66 display event log — persist + read', () => {
     expect(got.displayEvents).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-731 — a refused end-of-turn save is a durable display event, so the
+// notice survives a reload. The writers live in @ax/ipc-core (turn-end and
+// chat-end persist steps) and reach this plugin only through
+// `conversations:append-event`, which is exactly what these tests drive.
+// ---------------------------------------------------------------------------
+describe('TASK-731 save-refused display events', () => {
+  it('persists a save-refused row and conversations:get returns it on displayEvents', async () => {
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+
+    await h.bus.call<AppendEventInput, AppendEventOutput>(
+      'conversations:append-event',
+      h.ctx({ conversationId }),
+      {
+        conversationId,
+        kind: 'turn',
+        role: 'assistant',
+        payload: { blocks: [{ type: 'text', text: 'made you a file' }] },
+      },
+    );
+    await h.bus.call<AppendEventInput, AppendEventOutput>(
+      'conversations:append-event',
+      h.ctx({ conversationId }),
+      {
+        conversationId,
+        kind: 'save-refused',
+        key: 'req-1',
+        payload: { code: 'storage-full' },
+      },
+    );
+
+    const got = await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId }),
+      { conversationId, userId },
+    );
+    expect(got.turns).toHaveLength(1);
+    expect(got.displayEvents).toHaveLength(1);
+    expect(got.displayEvents[0]).toMatchObject({
+      kind: 'save-refused',
+      key: 'req-1',
+      payload: { code: 'storage-full' },
+    });
+    expect(typeof got.displayEvents[0]!.createdAt).toBe('string');
+  });
+
+  it('folds two save-refused rows with the same key to the later one (both turn-ends of one turn carry the code)', async () => {
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+    const append = (input: AppendEventInput) =>
+      h.bus.call<AppendEventInput, AppendEventOutput>(
+        'conversations:append-event',
+        h.ctx({ conversationId }),
+        input,
+      );
+
+    // The tool turn-end, its notice, then the assistant turn-end and ITS notice.
+    await append({ conversationId, kind: 'turn', role: 'tool', payload: { blocks: [] } });
+    await append({ conversationId, kind: 'save-refused', key: 'req-9', payload: { code: 'too-large' } });
+    await append({
+      conversationId,
+      kind: 'turn',
+      role: 'assistant',
+      payload: { blocks: [{ type: 'text', text: 'done' }] },
+    });
+    await append({ conversationId, kind: 'save-refused', key: 'req-9', payload: { code: 'refused' } });
+    // A final/idle refusal has its own unique key and does not fold.
+    await append({
+      conversationId,
+      kind: 'save-refused',
+      key: 'final:00000000-0000-4000-8000-000000000000',
+      payload: { code: 'storage-full' },
+    });
+
+    const got = await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId }),
+      { conversationId, userId },
+    );
+    const refused = got.displayEvents.filter((e) => e.kind === 'save-refused');
+    expect(refused.map((e) => [e.key, e.payload])).toEqual([
+      ['req-9', { code: 'refused' }],
+      ['final:00000000-0000-4000-8000-000000000000', { code: 'storage-full' }],
+    ]);
+  });
+
+  it('skips a row whose event_kind this release does not know instead of failing the whole read', async () => {
+    // A future kind (or a rollback past one) must cost one row, not the
+    // thread: before TASK-731 an unknown kind threw out of conversations:get.
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+    await h.bus.call<AppendEventInput, AppendEventOutput>(
+      'conversations:append-event',
+      h.ctx({ conversationId }),
+      {
+        conversationId,
+        kind: 'turn',
+        role: 'assistant',
+        payload: { blocks: [{ type: 'text', text: 'still here' }] },
+      },
+    );
+    const raw = new (await import('pg')).default.Client({ connectionString });
+    await raw.connect();
+    try {
+      // The CHECK would (rightly) refuse this; drop it to simulate a row a
+      // NEWER release wrote under its own wider constraint.
+      await raw.query(
+        'ALTER TABLE conversations_v1_events DROP CONSTRAINT conversations_v1_events_event_kind_check',
+      );
+      await raw.query(
+        `INSERT INTO conversations_v1_events (conversation_id, seq, event_kind, fold_key, payload)
+         VALUES ($1, 2, 'from-the-future', 'k', '{}'::jsonb)`,
+        [conversationId],
+      );
+    } finally {
+      await raw.end().catch(() => {});
+    }
+
+    const got = await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId }),
+      { conversationId, userId },
+    );
+    expect(got.turns).toHaveLength(1);
+    expect(got.displayEvents).toEqual([]);
+  });
+});

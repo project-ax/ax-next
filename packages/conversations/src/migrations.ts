@@ -172,8 +172,8 @@ export async function runConversationsMigration<DB>(
   // display frames the host already emits over SSE so reload == live by
   // construction: `turn` rows carry the model/tool content (the folded
   // terminal ContentBlock[] the runner sends at the result boundary);
-  // `permission-card` / `turn-error` rows carry the HOST-only UI events the
-  // SDK jsonl never sees.
+  // `permission-card` / `turn-error` / `save-refused` rows carry the
+  // HOST-only UI events the SDK jsonl never sees.
   //
   //   seq:        per-conversation monotonic int (1-based). The PK is the
   //               composite (conversation_id, seq) so ordering + dedup are
@@ -183,8 +183,11 @@ export async function runConversationsMigration<DB>(
   //               colliding. The PK is the last-resort integrity backstop —
   //               a violation means a writer skipped the lock.
   //   event_kind: display-semantic enum — 'turn' | 'permission-card' |
-  //               'turn-error'. CHECK-constrained so a malformed kind can't
-  //               land. Storage-agnostic (I1): no backend vocabulary.
+  //               'turn-error' | 'save-refused' (TASK-731: a refused
+  //               end-of-turn or final save, payload `{ code }`).
+  //               CHECK-constrained so a malformed kind can't land; the
+  //               widening step below brings older tables up to date.
+  //               Storage-agnostic (I1): no backend vocabulary.
   //   role:       turn role for 'turn' rows ('user'|'assistant'|'tool');
   //               NULL for host-only events.
   //   fold_key:   stable per-card / per-turn key. The read keeps the LAST row
@@ -205,13 +208,50 @@ export async function runConversationsMigration<DB>(
       conversation_id TEXT NOT NULL,
       seq BIGINT NOT NULL,
       event_kind TEXT NOT NULL
-        CHECK (event_kind IN ('turn', 'permission-card', 'turn-error')),
+        CHECK (event_kind IN ('turn', 'permission-card', 'turn-error', 'save-refused')),
       role TEXT,
       fold_key TEXT NOT NULL DEFAULT '',
       payload JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (conversation_id, seq)
     )
+  `.execute(db);
+
+  // TASK-731: widen the event_kind CHECK on a table created before
+  // 'save-refused' existed. CREATE TABLE IF NOT EXISTS above does nothing to
+  // an existing table, so a DB migrated by an earlier release still carries
+  // the three-kind constraint and would refuse every save-refused row.
+  //
+  // The constraint was declared inline, so Postgres auto-named it
+  // `conversations_v1_events_event_kind_check` (pinned by a test). We
+  // re-create it under that SAME name, so there is only ever one event_kind
+  // check and a fresh DB (whose inline check is already wide) is a no-op.
+  //
+  // Two host replicas can run this at once. The DO block runs as one
+  // transaction: it first takes a transaction-scoped advisory lock, so the
+  // second replica waits for the first to commit, then re-reads pg_constraint
+  // (READ COMMITTED: each statement sees what has committed) and finds the
+  // widened definition already there. The drop + add is ONE ALTER TABLE, so
+  // there is no instant where the table has no event_kind check at all.
+  //
+  // The ADD re-validates existing rows. Every one of them already passed the
+  // narrower check, so this cannot fail; it is a one-time scan of the table.
+  await sql`
+    DO $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(hashtext('conversations_v1_events_event_kind_check'));
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'conversations_v1_events'::regclass
+           AND conname = 'conversations_v1_events_event_kind_check'
+           AND pg_get_constraintdef(oid) LIKE '%save-refused%'
+      ) THEN
+        ALTER TABLE conversations_v1_events
+          DROP CONSTRAINT IF EXISTS conversations_v1_events_event_kind_check,
+          ADD CONSTRAINT conversations_v1_events_event_kind_check
+            CHECK (event_kind IN ('turn', 'permission-card', 'turn-error', 'save-refused'));
+      END IF;
+    END $$
   `.execute(db);
 
   // Read path orders by seq within a conversation; the PK already covers
