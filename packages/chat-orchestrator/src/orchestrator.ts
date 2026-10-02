@@ -1981,6 +1981,18 @@ export function createOrchestrator(
                 sessionId: candidate,
                 reason: hostSessionMissing ? 'host-session-lost' : skillsDirty ? 'skills-proposed' : 'system-prompt-augment-changed',
               });
+              // The channel has already bound this request to the conversation.
+              // Move that binding before terminating the old session: its
+              // subscriber clears rows still bound to that session, which
+              // would otherwise make the new SSE request 404 during startup.
+              await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
+                'conversations:bind-session', ctx, {
+                  conversationId: ctx.conversationId,
+                  sessionId: ctx.sessionId,
+                  reqId: ctx.reqId,
+                  runnerType: agent.runner,
+                },
+              );
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
               try {
