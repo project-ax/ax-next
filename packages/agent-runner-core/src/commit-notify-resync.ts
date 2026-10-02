@@ -63,7 +63,8 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  *
  * `rejectionCode` is the machine half of the same refusal (TASK-720), for
  * callers that DO branch: the end-of-turn commit maps it to the closed
- * `saveRefused` code on `event.turn-end` (see {@link saveRefusedFrom}). It is
+ * `saveRefused` code on `event.turn-end`, and the final/idle commit to the
+ * same code on `event.chat-end` (TASK-731; see {@link saveRefusedFrom}). It is
  * the host's `code` on a `recoverable: false` answer (the pre-apply veto's
  * slug, e.g. `storage-full`), or `'too-large'` when the save was too big to
  * carry — which the runner decides itself, before sending or on a host 413.
@@ -90,7 +91,9 @@ export const TOO_LARGE_REJECTION_REASON =
   `smaller pieces or outside the workspace.`;
 
 /**
- * The closed `event.turn-end` code for a commit result, or `undefined` when the
+ * The closed `saveRefused` code (carried on `event.turn-end`, or on
+ * `event.chat-end` for the final/idle save, TASK-731) for a commit result, or
+ * `undefined` when the
  * save was not REFUSED. Only a terminal refusal counts: the host objected on
  * the merits (`rejectionReason` present) or the save was too big to carry.
  * `accepted`, `kept` (host unreachable — the files ride the next turn) and a
@@ -368,8 +371,9 @@ export async function commitNotifyWithResync(input: {
     // is how the MODEL learns what it did wrong, on the mid-turn flush before a
     // host tool (the forwarder renders it into the tool error). The PERSON
     // learns of an end-of-turn refusal a different way: the runner maps this
-    // result to `saveRefused` on `event.turn-end` (saveRefusedFrom, TASK-720),
-    // a closed code — never this prose, which is written for the model.
+    // result to `saveRefused` on `event.turn-end` (saveRefusedFrom, TASK-720;
+    // on `event.chat-end` for the final save, TASK-731), a closed code — never
+    // this prose, which is written for the model.
     //
     // Keyed off `recoverable === false`, which is the actual condition: the
     // host objected to the content and said why. Everything else that lands

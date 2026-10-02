@@ -1537,22 +1537,90 @@ describe('runRunner', () => {
       }
     });
 
-    it('a refused FINAL (post-loop) save has no turn-end to ride, but is not silent in the logs', async () => {
+    // TASK-731. The final/idle save runs after the last turn-end. It bundles
+    // everything since the baseline, so it can carry files from an earlier
+    // reply whose own save came back `kept` (host unreachable). Its refusal
+    // has no turn-end to ride, so it rides `event.chat-end`, and the host
+    // persists it for the next read of the thread.
+    async function runWithFinalSave(
+      answer: () => Promise<unknown>,
+    ): Promise<{ chatEnd: Record<string, unknown> | undefined; stderrText: string }> {
       fakeClient.event.mockClear();
       (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('FINAL'));
-      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
-        async () => ({ accepted: false, reason: 'The workspace is full.', recoverable: false, code: 'storage-full' }),
-      );
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(answer);
       const loop: Loop = { run: vi.fn().mockResolvedValue(0) };
       const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let stderrText = '';
       try {
         expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
-        const text = stderr.mock.calls.map((c) => String(c[0])).join('');
-        expect(text).toMatch(/final save refused \(storage-full\)/);
+        stderrText = stderr.mock.calls.map((c) => String(c[0])).join('');
       } finally {
         stderr.mockRestore();
       }
       expect(fakeClient.event.mock.calls.some((c) => c[0] === 'event.turn-end')).toBe(false);
+      const call = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end');
+      return { chatEnd: call?.[1] as Record<string, unknown> | undefined, stderrText };
+    }
+
+    // Against the pre-TASK-731 runner this fails: chat-end carried only
+    // `{ outcome }` and the code went to stderr alone.
+    it('a refused FINAL (post-loop) save rides event.chat-end as saveRefused (TASK-731)', async () => {
+      const { chatEnd, stderrText } = await runWithFinalSave(async () => ({
+        accepted: false,
+        reason: 'The workspace is full.',
+        recoverable: false,
+        code: 'storage-full',
+      }));
+      expect(chatEnd?.saveRefused).toBe('storage-full');
+      expect((chatEnd?.outcome as { kind: string }).kind).toBe('complete');
+      const { EventChatEndSchema } = await import('@ax/ipc-protocol');
+      expect(EventChatEndSchema.safeParse(chatEnd).success).toBe(true);
+      // The stderr line stays, as a log.
+      expect(stderrText).toMatch(/final save refused \(storage-full\)/);
+    });
+
+    // Against the pre-TASK-731 runner this fails: the 413 never reached
+    // chat-end at all.
+    it("a FINAL save over the size cap rides chat-end as 'too-large' (TASK-731)", async () => {
+      const { IpcRequestError } = await import('@ax/ipc-protocol');
+      const { chatEnd } = await runWithFinalSave(async () => {
+        throw new IpcRequestError('PAYLOAD_TOO_LARGE', 413, 'body too large');
+      });
+      expect(chatEnd?.saveRefused).toBe('too-large');
+    });
+
+    // Passes against the unfixed runner too (chat-end never had the key);
+    // it guards the fix from over-reaching: only a TERMINAL final refusal
+    // sets it.
+    it('an accepted, unreachable, or recoverable FINAL save puts NO saveRefused key on chat-end (TASK-731)', async () => {
+      const answers: Array<() => Promise<unknown>> = [
+        async () => ({ accepted: true, version: 'v2', delta: null }),
+        async () => {
+          throw new Error('ECONNRESET');
+        },
+        async () => ({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' }),
+      ];
+      for (const answer of answers) {
+        const { chatEnd } = await runWithFinalSave(answer);
+        expect(chatEnd).toBeDefined();
+        expect('saveRefused' in chatEnd!).toBe(false);
+      }
+    });
+
+    // Passes against the unfixed runner too; it pins that the fix reads the
+    // FINAL commit's result only. A per-turn refusal already rode its
+    // turn-end and the host already persisted it under the turn's reqId, so
+    // repeating it on chat-end would draw the notice twice.
+    it('a per-turn refusal does NOT leak onto chat-end when the final save is empty (TASK-731)', async () => {
+      await turnWithSave(async () => ({
+        accepted: false,
+        reason: 'The workspace is full.',
+        recoverable: false,
+        code: 'storage-full',
+      }));
+      const call = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end');
+      expect(call).toBeDefined();
+      expect('saveRefused' in (call![1] as Record<string, unknown>)).toBe(false);
     });
   });
 });
