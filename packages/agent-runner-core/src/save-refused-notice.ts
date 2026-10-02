@@ -17,8 +17,9 @@
  * looks like it came from somewhere else. Unlike the decision note, though,
  * this reason is NOT host constants: it is a `workspace:pre-apply` plugin's
  * prose, and can embed text the model chose (validator-skill quotes the vetoed
- * path). So it is also quoted, and any copy of the label inside it is
- * replaced — the label appears once, where this module put it.
+ * path). So it is also quoted (with its own double quotes swapped out, so it
+ * cannot close the fence), and the label inside it — after an NFKC fold — is
+ * replaced. Cross-script homoglyphs are NOT caught; see `LABEL_RE`.
  *
  * The wording says SOME OR ALL of the changes were undone, never that every
  * file was removed: a scoped veto (TASK-287) resets `--mixed` and undoes only
@@ -38,7 +39,7 @@ const SYSTEM_PREFIX = 'System message (not from the user):';
  */
 export function saveRefusedNotice(result: CommitNotifyResult): string | undefined {
   if (saveRefusedFrom(result) === undefined) return undefined;
-  const reason = defuseLabel(sanitizeDecisionNote(result.rejectionReason ?? ''));
+  const reason = fenceSafe(sanitizeDecisionNote(result.rejectionReason ?? ''));
   // "Some or all": a scoped veto undoes only the paths it refused, and the
   // rest of the turn's work stays. "An earlier turn": a loop that pulls ahead
   // can carry the notice a turn late (see run-runner's
@@ -58,16 +59,33 @@ export function saveRefusedNotice(result: CommitNotifyResult): string | undefine
 }
 
 /**
- * The label, matched loosely (any case, any whitespace run) — what forwarded
- * text must never contain, or it could open a second "system message" inside
- * this one. `sanitizeDecisionNote` has already flattened the line breaks and
- * invisible characters that would otherwise slip between its words.
+ * The label, matched loosely (any case, any whitespace run). Matched AFTER an
+ * NFKC fold, so fullwidth and other compatibility forms of its parens, colon
+ * and letters count as the label too. `sanitizeDecisionNote` has already
+ * flattened the line breaks and invisible characters that would otherwise slip
+ * between its words.
+ *
+ * What this does NOT catch: cross-script homoglyphs (a Cyrillic `Ѕ` for `S`)
+ * — NFKC does not fold those — and any other phrasing that merely claims
+ * authority. The quote fence is the boundary for those; this is a cheap
+ * extra so the exact label, the one a model has learned to trust here,
+ * appears once.
  */
 const LABEL_RE = /system\s+message\s*\(\s*not\s+from\s+the\s+user\s*\)\s*:?/gi;
 
-/** Replace every copy of the label inside forwarded text with a marker. */
-function defuseLabel(text: string): string {
-  return text.replace(LABEL_RE, '[label removed]');
+/** Every double-quote mark that could close (or fake) the fence after NFKC. */
+const DOUBLE_QUOTES_RE = /["“”„‟″«»]/g;
+
+/**
+ * Make forwarded text safe to sit inside the `"…"` fence: NFKC-fold it, swap
+ * every double-quote mark for `'` so it cannot close the fence, and replace
+ * every copy of the label with a marker.
+ */
+function fenceSafe(text: string): string {
+  return text
+    .normalize('NFKC')
+    .replace(DOUBLE_QUOTES_RE, "'")
+    .replace(LABEL_RE, '[label removed]');
 }
 
 /**
