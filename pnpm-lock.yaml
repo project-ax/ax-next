@@ -1508,6 +1508,15 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
         version: 1.30.0(zod@3.25.76)
+      ipaddr.js:
+        specifier: 2.4.0
+        version: 2.4.0
+      kysely:
+        specifier: 0.28.17
+        version: 0.28.17
+      undici:
+        specifier: 7.29.1
+        version: 7.29.1
       zod:
         specifier: ^3.23.8
         version: 3.25.76

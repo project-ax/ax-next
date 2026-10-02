@@ -42,7 +42,15 @@ import {
   type Plugin,
   type ToolCall,
 } from '@ax/core';
+import type { Kysely } from 'kysely';
 import { registerAdminMcpRoutes } from './admin-routes.js';
+import { createDescribeTools } from './connector-inventory/describe-tools.js';
+import type { ListOutcome, ListServerToolsOptions } from './connector-inventory/list-tools.js';
+import {
+  createInventoryStore,
+  runMcpClientMigration,
+  type McpClientDatabase,
+} from './connector-inventory/store.js';
 import { loadConfigs, type McpServerConfig } from './config.js';
 import { McpConnection } from './connection.js';
 import { namespaceTools } from './tool-names.js';
@@ -93,6 +101,18 @@ export interface CreateMcpClientPluginOptions {
    * Test seam to shorten the /test timeout. Defaults to 30 s in production.
    */
   testTimeoutMs?: number;
+  /**
+   * If true, register `connectors:describe-tools` (connector tool inventory)
+   * and own its cache table. Default: false — like `mountAdminRoutes`, this
+   * plugin also boots in the CLI preset, which has no database, no
+   * `@ax/connectors` and no agents; the multi-tenant (k8s) preset sets it.
+   */
+  connectorToolInventory?: boolean;
+  /**
+   * Test seam: replace the guarded network listing used by
+   * `connectors:describe-tools`. Production leaves this undefined.
+   */
+  connectorInventoryListTools?: (opts: ListServerToolsOptions) => Promise<ListOutcome>;
 }
 
 /**
@@ -114,14 +134,20 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
   if (mountAdminRoutes) {
     calls.push('http:register-route', 'auth:require-user');
   }
+  const connectorToolInventory = opts.connectorToolInventory === true;
+  const registers: string[] = [];
+  if (connectorToolInventory) {
+    registers.push('connectors:describe-tools');
+    calls.push('database:get-instance', 'connectors:resolve', 'agents:resolve');
+  }
   return {
     manifest: {
-      // `registers: []` is deliberate — see file banner. The per-tool
-      // `tool:execute:${name}` service hooks are registered dynamically
-      // inside init based on what the configured MCP servers advertise.
+      // The per-tool `tool:execute:${name}` service hooks are registered
+      // dynamically inside init (see file banner) and so are NOT listed here.
+      // `connectors:describe-tools` is static and listed when enabled.
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [],
+      registers,
       calls,
       subscribes: [],
     },
@@ -135,6 +161,24 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
         agentId: PLUGIN_NAME,
         userId: 'init',
       });
+
+      if (connectorToolInventory) {
+        const { db } = await bus.call<unknown, { db: unknown }>(
+          'database:get-instance',
+          initCtx,
+          {},
+        );
+        const typed = db as Kysely<McpClientDatabase>;
+        await runMcpClientMigration(typed);
+        const describeTools = createDescribeTools({
+          bus,
+          store: createInventoryStore(typed),
+          ...(opts.connectorInventoryListTools !== undefined
+            ? { listTools: opts.connectorInventoryListTools }
+            : {}),
+        });
+        bus.registerService('connectors:describe-tools', PLUGIN_NAME, describeTools);
+      }
 
       const configs = await loadConfigs(bus, initCtx);
 
