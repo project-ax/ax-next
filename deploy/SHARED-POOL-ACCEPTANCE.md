@@ -33,6 +33,18 @@ These are observations from the last accepted run, not a fresh cluster check.
 - All acceptance fixtures were removed. No isolated release, synthetic storage,
   or helper ledger should be assumed to still exist.
 
+## Production preflight retry
+
+On 2026-10-02, after the session was granted full filesystem and network access,
+Git index refresh, Kubernetes queries, Helm status, and the host health check
+succeeded. Production remained on revision 30 with the accepted Claude Stop
+image digest, a ready host, zero restarts, and `200 {"ok":true}` from `/health`.
+No shared-pool environment settings, warm pools, templates, claims, or shared
+storage helper DaemonSets were observed. The guide was already committed as
+`8806fb12`; no duplicate commit was needed. See the
+[preflight record](gke/shared-pool-preflight-2026-10-02.json).
+This retry changed no production configuration and accepted no additional gate.
+
 ## Acceptance checklist
 
 Checked items have recorded evidence within the stated scope. Unchecked items
