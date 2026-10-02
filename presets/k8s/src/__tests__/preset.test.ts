@@ -836,6 +836,14 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
   });
 
+  it('names the OAuth client after the branding: @ax/branding registers branding:get for @ax/mcp-oauth', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const branding = plugins.find((p) => p.manifest.name === '@ax/branding');
+    const mcpOAuth = plugins.find((p) => p.manifest.name === '@ax/mcp-oauth');
+    expect(branding!.manifest.registers).toContain('branding:get');
+    expect(mcpOAuth!.manifest.optionalCalls?.map((c) => c.hook)).toContain('branding:get');
+  });
+
   it('loads @ax/mcp-oauth and registers credentials:resolve:mcp-oauth + mounts its OAuth routes (T11)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const mcpOAuth = plugins.find((p) => p.manifest.name === '@ax/mcp-oauth');

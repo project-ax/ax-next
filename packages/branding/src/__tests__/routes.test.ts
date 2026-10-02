@@ -406,6 +406,16 @@ describe('PUT /admin/branding — auth + validation', () => {
 });
 
 describe('plugin wiring', () => {
+  it('serves the trimmed product name through branding:get, or null when unset', async () => {
+    const h = harness();
+    await createBrandingPlugin().init!({ bus: h.bus } as never);
+    expect(await h.bus.call('branding:get', ctx, {})).toEqual({ name: null });
+    const put = h.routes.find((r) => r.method === 'PUT')!;
+    const { res } = mkRes();
+    await put.handler(mkReq({ body: { name: '  Canopy AI  ' } }), res);
+    expect(await h.bus.call('branding:get', ctx, {})).toEqual({ name: 'Canopy AI' });
+  });
+
   it('registers the three routes with the right methods, paths, and body cap', async () => {
     const h = harness();
     const plugin = createBrandingPlugin();

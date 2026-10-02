@@ -153,6 +153,8 @@ export async function ensureClient(opts: {
   pinned?: { clientId: string; clientSecret?: string };
   registration?: 'auto' | 'cimd' | 'dcr' | 'custom';
   clientMetadataUrl?: string;
+  /** Display name sent with dynamic registration (shown on consent screens). */
+  clientName?: string;
   allowedHosts: Set<string>;
   resolver?: HostResolver;
 }): Promise<ClientRegistration> {
@@ -195,6 +197,7 @@ export async function ensureClient(opts: {
       response_types: ['code'],
       // Public app: no static secret unless the AS forces one back at us.
       token_endpoint_auth_method: 'none',
+      ...(opts.clientName !== undefined ? { client_name: opts.clientName } : {}),
       ...(scope !== undefined ? { scope } : {}),
     },
     // `scope` here overrides clientMetadata.scope (SEP-835); only pass it when set.

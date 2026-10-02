@@ -224,6 +224,37 @@ describe('@ax/mcp-oauth plugin init (mountRoutes:true)', () => {
     expect(response.json).toHaveBeenCalledWith(await preview.mock.results[0]!.value);
   });
 
+  it.each([
+    ['a branding plugin is loaded', { name: '  Canopy\u202e AI ' }, 'Canopy AI'],
+    ['branding has no name set', { name: null }, 'AX'],
+    ['the branding read fails', new Error('storage down'), 'AX'],
+    ['no branding plugin is loaded', undefined, 'AX'],
+  ] as const)('names the published OAuth client when %s', async (_case, branding, expected) => {
+    const services = routeStubServices([]);
+    let metadataHandler!: (req: unknown, res: unknown) => Promise<void>;
+    services['http:register-route'] = (async (_ctx, input) => {
+      const route = input as { path: string; handler: typeof metadataHandler };
+      if (route.path === '/api/connectors/oauth/client-metadata') metadataHandler = route.handler;
+      return { unregister: () => {} };
+    }) as ServiceHandler;
+    if (branding !== undefined) {
+      services['branding:get'] = (async () => {
+        if (branding instanceof Error) throw branding;
+        return branding;
+      }) as ServiceHandler;
+    }
+    const h = await createTestHarness({
+      services,
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createMcpOAuthPlugin({
+        mountRoutes: true, publicOrigin: 'https://example.com',
+      })],
+    });
+    harnesses.push(h);
+    const response = { status: vi.fn().mockReturnThis(), header: vi.fn().mockReturnThis(), json: vi.fn() };
+    await metadataHandler({}, response);
+    expect(response.json).toHaveBeenCalledWith(expect.objectContaining({ client_name: expected }));
+  });
+
   it('throws a clear error when mountRoutes is set without publicOrigin', async () => {
     await expect(
       createTestHarness({

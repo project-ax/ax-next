@@ -99,6 +99,25 @@ describe('ensureClient', () => {
     await expect(ensureClient({ ...common, registration: 'custom' })).rejects.toThrow(/client ID/);
     await expect(ensureClient({ ...common, metadata: { ...meta, client_id_metadata_document_supported: true }, registration: 'cimd', clientMetadataUrl: 'http://app.example.com/client.json' })).rejects.toThrow(/HTTPS/);
   });
+  it('sends the client name with dynamic registration', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ client_id: 'dcr-client', redirect_uris: ['https://app.example.com/callback'] }), {
+        status: 201, headers: { 'content-type': 'application/json' },
+      });
+    }));
+    try {
+      const reg = await ensureClient({
+        metadata: meta, clientKey: 'c|a', redirectUri: 'https://app.example.com/callback',
+        registration: 'dcr', clientName: 'Canopy AI', allowedHosts: allow, resolver,
+      });
+      expect(reg).toMatchObject({ clientId: 'dcr-client', dynamic: true });
+      expect(bodies).toEqual([expect.objectContaining({ client_name: 'Canopy AI', redirect_uris: ['https://app.example.com/callback'] })]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it('returns a pinned registration without any network call', async () => {
     const reg = await ensureClient({
       metadata: meta,

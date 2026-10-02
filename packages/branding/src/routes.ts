@@ -61,6 +61,20 @@ export interface BrandingHandlers {
   putBranding(req: RouteRequest, res: RouteResponse): Promise<void>;
 }
 
+/** The stored branding record — the single read path for routes and the
+ *  `branding:get` service hook. */
+export async function readBrandingRecord(
+  bus: HookBus,
+  ctx: AgentContext,
+): Promise<BrandingRecord> {
+  const out = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+    'storage:get',
+    ctx,
+    { key: STORAGE_KEY },
+  );
+  return parseRecord(out.value);
+}
+
 export function createBrandingHandlers(deps: {
   bus: HookBus;
   now?: Now;
@@ -73,14 +87,7 @@ export function createBrandingHandlers(deps: {
     userId: 'system',
   });
 
-  async function readRecord(): Promise<BrandingRecord> {
-    const out = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
-      'storage:get',
-      ctx,
-      { key: STORAGE_KEY },
-    );
-    return parseRecord(out.value);
-  }
+  const readRecord = () => readBrandingRecord(bus, ctx);
 
   return {
     /** GET /api/branding — public. */
