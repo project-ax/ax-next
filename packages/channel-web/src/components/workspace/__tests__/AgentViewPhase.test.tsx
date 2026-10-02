@@ -11,7 +11,7 @@
  * actually holds, in both directions.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AgentView } from '../AgentView';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { AgentDetail, StreamHandlers, WorkspaceAgent } from '@/lib/workspace-api';
@@ -111,6 +111,15 @@ describe('the phase status line', () => {
     await waitFor(() => {
       expect(screen.getByText('Thinking…')).toBeTruthy();
     });
+    expect(screen.queryByText('Getting set up…')).toBeNull();
+  });
+
+  it('switches to Thinking when provisioning finishes, before any reply arrives', async () => {
+    let handlers!: StreamHandlers;
+    await startTurn((h) => { handlers = h; h.onPhase?.('sandbox-starting'); });
+    await waitFor(() => expect(screen.getByText('Getting set up…')).toBeTruthy());
+    act(() => handlers.onPhase?.('sandbox-ready'));
+    await waitFor(() => expect(screen.getByText('Thinking…')).toBeTruthy());
     expect(screen.queryByText('Getting set up…')).toBeNull();
   });
 

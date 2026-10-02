@@ -67,10 +67,10 @@ export type StreamChunk =
 /**
  * Phase events surfaced to the client out-of-band of message content.
  *
- * Currently the only phase is `'sandbox-starting'`, fired by sandbox
- * providers that have a non-instant startup (today: `@ax/sandbox-k8s`
- * before `createNamespacedPod`). `@ax/sandbox-subprocess` has nothing
- * to announce — it's instant — so it doesn't fire at all.
+ * Sandbox providers with a non-instant startup report `'sandbox-starting'`
+ * while provisioning and `'sandbox-ready'` once the sandbox is available.
+ * Readiness does not imply that SDK initialization or a model reply is done.
+ * `@ax/sandbox-subprocess` starts instantly, so it doesn't fire either phase.
  *
  * The string is intentionally backend-agnostic ("sandbox-starting", not
  * "pod-starting"): subscribers must NOT key off it to do k8s-specific
@@ -79,7 +79,7 @@ export type StreamChunk =
  * The wire frame is a separate `SseFrame` variant so the client can
  * branch without nullable fields.
  */
-export type PhaseKind = 'sandbox-starting';
+export type PhaseKind = 'sandbox-starting' | 'sandbox-ready';
 
 /**
  * Frame the SSE handler emits to the client. Matches the `data:` JSON the

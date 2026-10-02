@@ -1,0 +1,173 @@
+{
+  "recordedAt": "2026-10-02T15:04:16.734775+00:00",
+  "outcome": "production-shared-pools-enabled",
+  "source": {
+    "commit": "c888232a09333a604cec4440c4f5fa4b68ddcd67",
+    "pullRequest": 834,
+    "mainPulledInCleanWorktree": true,
+    "unrelatedMainCheckoutEditsPreserved": true
+  },
+  "cluster": {
+    "context": "gke_canopy-ai-498321_us-central1-a_ax-next-std",
+    "version": "1.36.4-gke.1247000"
+  },
+  "release": {
+    "name": "ax-next",
+    "namespace": "ax-next",
+    "previousRevision": 31,
+    "revision": 32,
+    "status": "deployed",
+    "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-pools-c888232a@sha256:0570cd8f866ce62660cedfe73e08d5c3c8edaf17f2f9bb976bfa73d83e2a78ac",
+    "backend": "agent-sandbox",
+    "sharedPoolEnabled": true,
+    "standbysPerRunnerClass": 1
+  },
+  "build": {
+    "id": "682163da-ccdc-474b-a170-3bd3e9da2118",
+    "region": "us-central1",
+    "status": "SUCCESS",
+    "sourceSnapshot": "git archive of exact merged main commit; no local credentials or dirty files",
+    "canonicalDockerfile": "container/agent/Dockerfile",
+    "platform": "linux/amd64"
+  },
+  "verification": {
+    "serverDryRunPassed": true,
+    "existingApplicationSecretBytesUnchanged": true,
+    "hostReadyReplicas": 1,
+    "storageHelper": {
+      "namespace": "ax-sandbox-system",
+      "name": "ax-next-storage",
+      "ready": 1,
+      "desired": 1,
+      "ledgerRecordsAfterProbes": 0
+    },
+    "publicHealth": {
+      "url": "https://canopyworks.ai/health",
+      "status": 200,
+      "body": {
+        "ok": true
+      }
+    },
+    "mutualTls": {
+      "authenticatedServerVerified": true,
+      "authenticatedUnknownRouteStatus": 404,
+      "missingClientCertificateRejected": true,
+      "tlsError": "ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED"
+    },
+    "warmPools": [
+      {
+        "name": "ax-shared-a7917c3e17a5549a",
+        "desired": 1,
+        "ready": 1
+      },
+      {
+        "name": "ax-shared-faa83243d2d60438",
+        "desired": 1,
+        "ready": 1
+      }
+    ],
+    "finalStandbyPods": [
+      {
+        "name": "ax-shared-a7917c3e17a5549a-cldzn",
+        "uid": "36f6f2f1-e2e3-4751-92ea-4025b0caf695",
+        "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-pools-c888232a@sha256:0570cd8f866ce62660cedfe73e08d5c3c8edaf17f2f9bb976bfa73d83e2a78ac",
+        "containerId": "containerd://a6f7f58f6797f5ab0d85e7f4322e534d0d8895a1c59003cdee97de411284fc9c",
+        "restarts": 0,
+        "runtimeClass": "gvisor",
+        "ready": true
+      },
+      {
+        "name": "ax-shared-faa83243d2d60438-b8nqg",
+        "uid": "789d8706-5ace-46e2-87c7-569636de7f3f",
+        "image": "us-central1-docker.pkg.dev/canopy-ai-498321/ax-next/agent:shared-pools-c888232a@sha256:0570cd8f866ce62660cedfe73e08d5c3c8edaf17f2f9bb976bfa73d83e2a78ac",
+        "containerId": "containerd://459375cff6e109b357b0feef50fe4555a0599c9af570632c13a9dc71bf413263",
+        "restarts": 0,
+        "runtimeClass": "gvisor",
+        "ready": true
+      }
+    ],
+    "adoptionProbes": [
+      {
+        "pool": "ax-shared-a7917c3e17a5549a",
+        "runnerBinary": "/opt/ax-next/host/node_modules/.pnpm/@ax+agent-aisdk-runner@file+packages+agent-aisdk-runner_zod@3.25.76/node_modules/@ax/agent-aisdk-runner/dist/main.js",
+        "claim": "ax-prod-probe-20261002-0",
+        "claimUid": "ebd1b189-930d-4f3a-a644-7a14daea6b4d",
+        "sandbox": "ax-shared-a7917c3e17a5549a-f29wx",
+        "sandboxUid": "625ecb6d-4728-4674-8af7-47b23f8c3c37",
+        "pod": "ax-shared-a7917c3e17a5549a-f29wx",
+        "podUid": "4287b195-2f2d-4867-8569-fda01b9ff42a",
+        "node": "gke-ax-next-std-gvisor-pool-668856a1-5hue",
+        "containerId": "containerd://8c6ba60dd5fffa60b9bbe8ccd90e01f2071036f07eb743795074c02030bb58a4",
+        "restarts": 0,
+        "adoptionMs": 956,
+        "existingPodAdopted": true,
+        "storageAssigned": false,
+        "probePodRemoved": true,
+        "poolReplenished": true
+      },
+      {
+        "pool": "ax-shared-faa83243d2d60438",
+        "runnerBinary": "/opt/ax-next/host/node_modules/.pnpm/@ax+agent-claude-sdk-runner@file+packages+agent-claude-sdk-runner/node_modules/@ax/agent-claude-sdk-runner/dist/main.js",
+        "claim": "ax-prod-probe-20261002-1",
+        "claimUid": "cfcaeb61-98a4-45b6-b274-6a5df68dc5bf",
+        "sandbox": "ax-shared-faa83243d2d60438-q9d5t",
+        "sandboxUid": "0d38860e-4894-4e9d-8fe4-1708c0f4279d",
+        "pod": "ax-shared-faa83243d2d60438-q9d5t",
+        "podUid": "53e7db9b-e750-40a1-ac0a-9e2a5d441e5d",
+        "node": "gke-ax-next-std-gvisor-pool-668856a1-5hue",
+        "containerId": "containerd://2c20492463c95ba5adee7ff35e42ceffd4dab6948486e821d05466887b1b2a09",
+        "restarts": 0,
+        "adoptionMs": 880,
+        "existingPodAdopted": true,
+        "storageAssigned": false,
+        "probePodRemoved": true,
+        "poolReplenished": true
+      }
+    ],
+    "remainingProbeClaims": 0,
+    "probeStorageAssignmentPerformed": false,
+    "newProductionProviderTurnsPerformed": false,
+    "rbac": {
+      "hostCannotReadRunnerSecrets": true,
+      "hostCannotPatchRunnerPods": true,
+      "helperCannotReadHelperNamespaceSecrets": true
+    }
+  },
+  "tls": {
+    "dedicatedDeploymentCa": true,
+    "caPrivateKeyOutsideCluster": true,
+    "clientSecret": {
+      "namespace": "ax-next",
+      "name": "ax-storage-controller-tls"
+    },
+    "serverSecret": {
+      "namespace": "ax-sandbox-system",
+      "name": "ax-storage-node-tls"
+    },
+    "serverName": "ax-sandbox-storage.ax-sandbox-system.svc",
+    "leafCertificatesExpireAt": "2027-10-02T14:51:51Z",
+    "leafPurposes": [
+      "clientAuth",
+      "serverAuth"
+    ],
+    "secretKeys": [
+      "ca.crt",
+      "tls.crt",
+      "tls.key"
+    ]
+  },
+  "limits": [
+    "Production smoke verifies controller adoption/replenishment and authenticated helper transport; full provider/Bash and storage-lifecycle acceptance is the prior isolated GKE evidence.",
+    "Permanently absent or differently named nodes still need independent cloud fencing before storage cleanup.",
+    "Recovery is between turns with replacement sessions, not uninterrupted in-flight Bash.",
+    "Hard quotas for arbitrary Bash writes to /files remain separate."
+  ],
+  "validation": {
+    "evidenceCredentialFieldAudit": "passed",
+    "diffWhitespaceCheck": "passed",
+    "deploymentSpecificsGuard": {
+      "passed": 2
+    },
+    "sourceCodeChangedDuringDeployment": false
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "date": "2026-10-02",
+  "context": "gke_canopy-ai-498321_us-central1-a_ax-next-std",
+  "productionRevision": 32,
+  "productionSource": "c888232a09333a604cec4440c4f5fa4b68ddcd67",
+  "productionChangedDuringDiagnosis": false,
+  "observedNewSessions": 11,
+  "earlierTenSessions": {
+    "from": "2026-10-02T15:26:26Z",
+    "through": "2026-10-02T15:32:37Z",
+    "provisioningMs": [1573, 1213, 1354, 1604, 1110, 1296, 1745, 1444, 1340, 1734],
+    "source": "host creating_pod and pod_ready timestamps; shared-pool session cleanup observed"
+  },
+  "latestClaudeSession": {
+    "runner": "claude-sdk",
+    "sessionId": "req-67d99bf9f265",
+    "requestId": "req-f924e815db91",
+    "sessionCreatedAt": "2026-10-02T16:17:42.868Z",
+    "provisioningStartedAt": "2026-10-02T16:17:42.878688695Z",
+    "sandboxReadyAt": "2026-10-02T16:17:43.905906835Z",
+    "firstInboxEntryAt": "2026-10-02T16:17:43.932Z",
+    "firstProviderConnectionAt": "2026-10-02T16:17:47.819Z",
+    "sdkUserRecordAt": "2026-10-02T16:17:48.913Z",
+    "firstSdkAssistantRecordAt": "2026-10-02T16:17:52.472Z",
+    "assistantTurnStoredAt": "2026-10-02T16:17:53.846Z",
+    "provisioningMs": 1027.21814,
+    "sessionToSdkUserRecordMs": 6045,
+    "sessionToFirstSdkAssistantRecordMs": 9604,
+    "sessionToAssistantTurnStoredMs": 10978,
+    "sources": "read-only PostgreSQL timing fields, SDK transcript type/timestamp fields, sanitized host logs",
+    "limitations": [
+      "SDK records and stored turn times are not browser first-token timestamps.",
+      "Provider connection start is inferred from tunnel audit timestamp minus duration; it may be an auxiliary SDK request.",
+      "The interval after readiness includes workspace, runner, SDK and model work; existing telemetry does not separate every stage."
+    ]
+  },
+  "pythonCopyProbe": {
+    "namespace": "ax-next-runners",
+    "pod": "ax-shared-faa83243d2d60438-r75h8",
+    "podUid": "7b8dc882-39ea-46bd-a940-06fc344888dc",
+    "runtime": "gvisor",
+    "cpuLimit": "1",
+    "candidateHelper": "packages/agent-runner-core/src/python-venv.ts",
+    "method": "execute compiled candidate helper in an isolated ephemeral scratch directory, then remove scratch",
+    "offlinePreparationMs": 1370.670005,
+    "readyVenvReuseMs": 0.19756600000005164,
+    "coldReady": true,
+    "warmReady": true,
+    "pythonImportPipExit": 0,
+    "assignmentOrTenantFilesChanged": false,
+    "limitations": "Component probe only; candidate runner startup and UI are not deployed. This is not an end-to-end latency improvement measurement."
+  },
+  "uiFinding": "sandbox-starting remains until first content because production emits no readiness phase; Getting set up includes SDK/model waiting",
+  "candidateChange": {
+    "standby": "offline-only baked Python template preparation at fixed /ephemeral before accepting assignment",
+    "publication": "atomic rename of complete template copy; no partial readiness marker after copy failure",
+    "phase": "sandbox-ready after successful provisioning; latest phase replayed to late SSE clients",
+    "expectedScope": "Remove measured template-copy work from activation of prepared standbys and distinguish provisioning from response wait. SDK and model latency remain."
+  }
+}

@@ -1,8 +1,8 @@
 # Shared GKE pool acceptance and resume guide
 
 Last reconciled: **2026-10-02**. This is the consolidated checklist and evidence
-index for resuming shared-pool acceptance. **Shared pools remain disabled in
-production.** Passing the Claude Stop regression on GKE cleared that defect;
+index for resuming shared-pool acceptance. **Shared pools are enabled in
+production at revision 32.** Passing the Claude Stop regression on GKE cleared that defect;
 it did not accept the shared-pool rollout.
 
 The three previously open recovery/upgrade gates **passed on the final isolated
@@ -10,12 +10,41 @@ GKE run**, after fixes `f18ed011`, `dbd4c740`, and `f998d912`. Host restart and
 image rollout passed the first follow-up request for both SDKs. Node recovery
 passed with deliberately lost ledgers and a confirmed new boot under the same
 GCE VM identity. See [final evidence](gke/shared-pool-final-gates-2026-10-02.json)
-and the scope below. Production shared pools remain disabled.
+and the scope below. The subsequent production rollout is recorded below.
 
 Implementation review: [PR #834](https://github.com/project-ax/ax-next/pull/834).
-The accepted scope is ready for a controlled opt-in rollout after review and
-merge, using a new image and the deployment prerequisites below. Creating the
-PR does not activate production shared pools.
+The PR merged as `c888232a`, and the user authorized production activation.
+Creating the PR alone did not activate production shared pools.
+
+## Production activation — 2026-10-02
+
+Release `ax-next` is deployed at Helm revision **32**, with the Agent Sandbox
+backend and shared pools enabled. Its immutable image is
+`agent:shared-pools-c888232a@sha256:0570cd8f866ce62660cedfe73e08d5c3c8edaf17f2f9bb976bfa73d83e2a78ac`.
+Cloud Build `682163da-ccdc-474b-a170-3bd3e9da2118` built the canonical Dockerfile
+from an archive of merged `main`. The clean worktree pulled that commit; unrelated
+edits in the primary checkout were preserved.
+
+The host and dedicated storage helper are ready. Both SDK pools have **one ready
+standby each**, independent of agent count. Operator claims adopted their existing
+Pods in **956 and 880 ms** without changing container IDs or restarting them.
+Probe claims and adopted Pods were removed; both pools replenished. These timings
+measure controller adoption, not model response latency. No probe storage was
+assigned and no new production provider turn was submitted. Full application and
+storage-lifecycle acceptance remains the isolated GKE evidence above.
+
+Public HTTPS `/health` returned `200 {"ok":true}`. The helper accepted a
+server-verified authenticated TLS connection and rejected a connection without
+a client certificate. Its ledger was empty after the probes. Existing application
+Secret bytes matched the pre-upgrade snapshot.
+
+The dedicated CA private key is retained outside the cluster in private user
+configuration. Leaf certificates expire **2027-10-02**; rotate them and restart
+the host/helper before expiry. The namespace/Secret names, exact image, and
+sanitized checks are in the
+[production rollout record](gke/shared-pool-production-rollout-2026-10-02.json).
+The recovery/fencing limits below still apply. Rollback must drain claims and
+verify empty ledgers before removing the helper or its permissions.
 
 Use this document to track acceptance status. Deployment prerequisites,
 security boundaries, and rollback instructions remain in
@@ -25,9 +54,35 @@ Keep the sanitized JSON records as historical evidence. Their status fields
 reflect the time of each run; the reconciled status below supersedes those
 fields where later evidence exists.
 
-## Recorded deployment and source state
+## First-message latency — 2026-10-02
 
-These are observations from the last accepted run, not a fresh cluster check.
+Production warm-sandbox provisioning took **1.1–1.7 seconds** across ten new
+sessions. A subsequent Claude chat provisioned in **1.03 seconds**, recorded
+its user message in the SDK at **6.05 seconds**, and stored the finished assistant
+turn at **10.98 seconds**. These server timestamps do not measure browser first
+token latency. Existing logs do not split every workspace, SDK, and model stage.
+
+The production UI keeps “Getting set up…” until content arrives because the
+server emits only `sandbox-starting`. That label includes work after provisioning.
+The candidate change emits `sandbox-ready` after provisioning and preserves the
+latest phase for clients connecting late, allowing the UI to show “Thinking…”.
+
+The candidate also prepares the image's baked Python environment while a standby
+waits for assignment. Preparation uses only fixed image/ephemeral paths, cannot
+run the online installer, and publishes a completed copy atomically. A GKE gVisor
+component probe measured **1.37 seconds** to prepare it and **0.2 milliseconds**
+to reuse it; Python imported pip successfully. This moves template-copy work off
+prepared-standby activation. SDK initialization and model waiting still remain.
+
+These changes are **not deployed** in revision 32. The component probe used a
+separate scratch directory and changed no assignment or tenant files. It is not
+an end-to-end before/after measurement. See the
+[sanitized latency record](gke/shared-pool-startup-latency-2026-10-02.json).
+
+## Recorded pre-activation deployment and source state
+
+These historical observations precede production activation. They are not a
+fresh cluster check.
 
 - Cluster context: `gke_canopy-ai-498321_us-central1-a_ax-next-std`;
   Kubernetes `1.36.4-gke.1247000`.

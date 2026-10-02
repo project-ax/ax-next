@@ -540,7 +540,7 @@ export interface StreamHandlers {
     held?: boolean | undefined;
   }) => void;
   /**
-   * The agent's phase changed — today only `sandbox-starting` (TASK-352).
+   * Sandbox provisioning changed phase (`sandbox-starting` / `sandbox-ready`).
    *
    * OUT-OF-BAND and non-terminal. The caller shows it as a status line BEFORE
    * any content arrives and never after, which is the rule chat gates with
@@ -1416,7 +1416,7 @@ async function streamReply(
       return 'continue';
     }
     /*
-      An out-of-band phase change — today only `sandbox-starting`. Forwarded as
+      An out-of-band phase change for sandbox provisioning. Forwarded as
       the stable kind, never as prose: the label is the caller's to author, and
       a reason code on screen is what this epic is taking away.
     */

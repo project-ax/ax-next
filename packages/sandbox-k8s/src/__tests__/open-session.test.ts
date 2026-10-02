@@ -385,13 +385,13 @@ describe('sandbox:open-session (k8s)', () => {
   // while the pod is being provisioned (which is the slowest step).
   // -----------------------------------------------------------------------
 
-  it('fires chat:phase { reqId, phase: "sandbox-starting" } BEFORE createNamespacedPod', async () => {
+  it('announces provisioning before create and sandbox-ready only after readiness', async () => {
     const api = makeMockK8sApi();
     api.setReadResponses(readyPod());
     const h = await makeHarness(api);
 
     // Subscribe to chat:phase and record the order against pod-create.
-    const events: Array<{ at: 'phase' | 'create'; payload?: unknown }> = [];
+    const events: Array<{ at: 'phase' | 'create' | 'readiness'; payload?: unknown }> = [];
     h.bus.subscribe(
       'chat:phase',
       'test-phase-recorder',
@@ -406,6 +406,11 @@ describe('sandbox:open-session (k8s)', () => {
       events.push({ at: 'create' });
       return origCreate(args);
     };
+    const origRead = api.readNamespacedPod.bind(api);
+    api.readNamespacedPod = async (args) => {
+      events.push({ at: 'readiness' });
+      return origRead(args);
+    };
 
     const ctx = h.ctx();
     await h.bus.call<unknown, OpenSessionResult>(
@@ -418,13 +423,28 @@ describe('sandbox:open-session (k8s)', () => {
       },
     );
 
-    expect(events).toHaveLength(2);
     expect(events[0]!.at).toBe('phase');
     expect(events[0]!.payload).toEqual({
       reqId: ctx.reqId,
       phase: 'sandbox-starting',
     });
     expect(events[1]!.at).toBe('create');
+    const readyIndex = events.findIndex(e => (e.payload as { phase?: string } | undefined)?.phase === 'sandbox-ready');
+    expect(readyIndex).toBeGreaterThan(events.findIndex(e => e.at === 'readiness'));
+    expect(events[readyIndex]!.payload).toEqual({ reqId: ctx.reqId, phase: 'sandbox-ready' });
+  });
+
+  it('does not announce sandbox-ready if provisioning fails', async () => {
+    const api = makeMockK8sApi();
+    api.createNamespacedPod = async () => { throw new Error('create failed'); };
+    const h = await makeHarness(api);
+    const phases: unknown[] = [];
+    h.bus.subscribe('chat:phase', 'test-phase-failure', async (_ctx, payload) => { phases.push(payload); return undefined; });
+    const ctx = h.ctx();
+    await expect(h.bus.call('sandbox:open-session', ctx, {
+      sessionId: 'sess-phase-fail', workspaceRoot: '/tmp/ws', runnerBinary: '/opt/ax/runner.js',
+    })).rejects.toThrow();
+    expect(phases).toEqual([{ reqId: ctx.reqId, phase: 'sandbox-starting' }]);
   });
 
   it('still completes openSession when chat:phase has no subscribers', async () => {
