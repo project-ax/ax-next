@@ -53,11 +53,12 @@ describe('shared storage deployment', () => {
     ['sandbox.backend=pod', 'v1beta1 Agent Sandbox'],
     ['sandbox.sharedPool.clientTlsSecret=', 'TLS Secrets'],
     ['sandbox.sharedPool.storageNamespace=host', 'administrator namespace'],
-    ['sandbox.sharedPool.replicas=0', 'greater than or equal to 1'],
+    // Helm's schema validator changed its wording in newer Helm 3 releases.
+    ['sandbox.sharedPool.replicas=0', /greater than or equal to 1|minimum: got 0, want 1/],
     ['sandbox.filestore.mountPath=/workspace', 'Filestore at /files'],
   ])('rejects %s', (value, message) => {
     const result = spawnSync('helm', [...base, '--set', value], { encoding: 'utf8' });
-    expect(result.status).not.toBe(0); expect(result.stderr).toContain(message);
+    expect(result.status).not.toBe(0); expect(result.stderr).toMatch(message);
   });
   it('rejects clusters missing force-shared emptyDir support', () => {
     const result = spawnSync('helm', [...base, '--kube-version', '1.35.9'], { encoding: 'utf8' });

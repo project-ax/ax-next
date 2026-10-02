@@ -12,6 +12,11 @@ passed with deliberately lost ledgers and a confirmed new boot under the same
 GCE VM identity. See [final evidence](gke/shared-pool-final-gates-2026-10-02.json)
 and the scope below. Production shared pools remain disabled.
 
+Implementation review: [PR #834](https://github.com/project-ax/ax-next/pull/834).
+The accepted scope is ready for a controlled opt-in rollout after review and
+merge, using a new image and the deployment prerequisites below. Creating the
+PR does not activate production shared pools.
+
 Use this document to track acceptance status. Deployment prerequisites,
 security boundaries, and rollback instructions remain in
 [SHARED-POOL.md](SHARED-POOL.md). The design is in
@@ -214,6 +219,15 @@ Node-loss recovery and teardown are recorded in the resumed evidence.
   suites / 15,557 assertions, 22 root ESLint-rule tests, and 1,091 root script
   tests. Build and targeted lint passed. Sandbox: 367 passed with one Linux-only
   macOS skip; orchestrator: 280 passed.
+
+PR #834 also merged `main` at `2c15e4b0` without conflicts and refreshed all three
+repository suites: 85 package suites / 15,622 assertions, 22 root ESLint-rule
+tests, and 1,100 script tests (three skipped). Full typecheck, lint, and capability
+lint passed. The chart's 278 assertions passed with CI-pinned Helm 3.21.0 after
+making schema-error wording portable and API-group assertions exact. CI-pinned
+Gitleaks scanned the PR history with one exact historical test-log checksum
+exception and no remaining findings. These checks supplement the isolated GKE
+evidence; production activation still requires the reviewed rollout image.
 
 ## Evidence and observed results
 

@@ -1,0 +1,4 @@
+# SHA-256 of the serial auth-better test log in sanitized GKE evidence.
+# The generic-api-key rule matched the log filename, not a credential.
+# Scope this exception to the historical commit, file, rule, and line.
+8134581308d417d2f771c6c38be55cfecb4457e7:deploy/gke/shared-pool-resumed-acceptance-2026-10-02.json:generic-api-key:467

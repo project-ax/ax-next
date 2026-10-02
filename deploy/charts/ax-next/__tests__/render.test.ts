@@ -128,7 +128,7 @@ describeIfHelm('ax-next chart: Agent Sandbox backend', () => {
       { name: 'K8S_SANDBOX_BACKEND', value: 'agent-sandbox' },
       { name: 'K8S_AGENT_SANDBOX_API_VERSION', value: 'v1beta1' },
     ]));
-    const role = docs.find((doc) => doc.kind === 'Role' && doc.rules.some((rule: { apiGroups: string[] }) => rule.apiGroups.includes('agents.x-k8s.io')));
+    const role = docs.find((doc) => doc.kind === 'Role' && doc.rules.some((rule: { apiGroups: string[] }) => rule.apiGroups.some(group => group === 'agents.x-k8s.io')));
     expect(role?.rules).toEqual(expect.arrayContaining([{ apiGroups: ['agents.x-k8s.io'], resources: ['sandboxes'], verbs: ['create', 'get', 'list', 'delete'] }]));
     expect(docs.some((doc) => doc.kind === 'ClusterRole')).toBe(false);
     const fence = docs.find((doc) => doc.kind === 'NetworkPolicy' && doc.metadata?.name?.endsWith('sandbox-restrict'));
@@ -138,7 +138,7 @@ describeIfHelm('ax-next chart: Agent Sandbox backend', () => {
   });
   it('adds no Sandbox permissions in ordinary Pod mode', () => {
     const docs = helmTemplate([]);
-    expect(docs.filter((doc) => doc.kind === 'Role').some((doc) => JSON.stringify(doc.rules).includes('agents.x-k8s.io'))).toBe(false);
+    expect(docs.filter((doc) => doc.kind === 'Role').some((doc) => doc.rules.some((rule: { apiGroups: string[] }) => rule.apiGroups.some(group => group === 'agents.x-k8s.io')))).toBe(false);
   });
   it.each([
     ['sandbox.runtimeClassName=', 'runtimeClassName=gvisor'],
