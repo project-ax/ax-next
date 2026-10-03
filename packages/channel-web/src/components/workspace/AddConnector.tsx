@@ -19,8 +19,9 @@
  *
  * A team agent's sign-in is stored ON THE AGENT, so everyone using it acts as
  * the person who signed in. That gets the same consent line the agent editor
- * shows before the sign-in starts. When we can't tell whether the agent is a
- * team agent, we ask anyway.
+ * shows before the sign-in starts. Whether the agent is a team agent comes
+ * from the server, on the same read as its connector list (`shared`, the flag
+ * Reconnect already uses — TASK-741).
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
@@ -43,7 +44,6 @@ import {
   matchesQuery,
   type AddAction,
 } from '@/lib/add-connector';
-import { listChatAgents } from '@/lib/agents';
 import {
   getConnector,
   listConnectors,
@@ -86,6 +86,8 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
   const [problems, setProblems] = useState<Record<string, RowProblem>>({});
   const [attaching, setAttaching] = useState<ReadonlySet<string>>(new Set());
   const [keying, setKeying] = useState<ConnectorSummary | null>(null);
+  // Until the read lands no row is drawn, so this default is never shown;
+  // it errs on asking.
   const [teamAgent, setTeamAgent] = useState(true);
   const [attempt, setAttempt] = useState(0);
   // Only the newest load lands, and nothing lands after unmount.
@@ -136,6 +138,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
           new Set(effective.connectors.map((c) => c.id)),
           isAdmin,
         );
+        setTeamAgent(effective.shared !== false);
         setAvailable(list);
         setActions(Object.fromEntries(list.map((c) => [c.id, 'checking' as const])));
         setLoad('ok');
@@ -161,16 +164,6 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         setLoad('failed');
       }
     })();
-    void listChatAgents()
-      .then((agents) => {
-        if (scope.current !== id) return;
-        const me = agents.find((a) => a.agentId === agentId);
-        // Unknown counts as team: asking once too often beats a silent share.
-        setTeamAgent(me === undefined || me.visibility === 'team');
-      })
-      .catch(() => {
-        if (scope.current === id) setTeamAgent(true);
-      });
     return () => {
       scope.current += 1;
     };

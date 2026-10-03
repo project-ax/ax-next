@@ -18,7 +18,6 @@ import {
 } from '@/lib/connectors';
 import { beginOAuth, getOAuthStatus } from '@/lib/connectors-oauth';
 import { myCredentials, adminCredentials, type CredentialMeta } from '@/lib/credentials';
-import { listChatAgents } from '@/lib/agents';
 import { OAUTH_MESSAGE_TYPE } from '@/lib/oauth-callback-bridge';
 import { UserProvider } from '@/lib/user-context';
 import { AddConnector } from '../AddConnector';
@@ -46,7 +45,6 @@ vi.mock('@/lib/credentials', async () => {
     adminCredentials: { list: vi.fn() },
   };
 });
-vi.mock('@/lib/agents', () => ({ listChatAgents: vi.fn() }));
 // The real key dialog is tested on its own; here it only has to report a save.
 vi.mock('@/components/settings/ConnectorConnectDialog', () => ({
   ConnectorConnectDialog: (p: { connectorName: string; onConnected: () => void }) => (
@@ -101,7 +99,8 @@ beforeEach(() => {
   popup = { closed: false, close: vi.fn() };
   vi.spyOn(window, 'open').mockImplementation(() => popup as unknown as Window);
   vi.mocked(workspaceApi.connectors).mockResolvedValue({
-    connectors: [{ id: 'linear', name: 'Linear', source: 'attached', editable: false }],
+    connectors: [{ id: 'linear', name: 'Linear', source: 'attached', editable: false, health: 'ok' }],
+    shared: false,
   });
   vi.mocked(listConnectors).mockResolvedValue(CATALOG);
   vi.mocked(getConnector).mockImplementation(async (id) => full(id));
@@ -109,9 +108,6 @@ beforeEach(() => {
   vi.mocked(beginOAuth).mockResolvedValue({ authorizationUrl: 'https://provider.example/auth' });
   vi.mocked(myCredentials.list).mockImplementation(async () => userCreds);
   vi.mocked(adminCredentials.list).mockResolvedValue([]);
-  vi.mocked(listChatAgents).mockResolvedValue([
-    { agentId: 'a-quill', displayName: 'Quill', visibility: 'personal' },
-  ]);
   attachMock.mockResolvedValue({ attached: true, changed: true });
 });
 
@@ -350,13 +346,10 @@ describe('sign in, then attach', () => {
     expect(within(row('Notion')).getByRole('button', { name: 'Cancel' })).toBeTruthy();
   });
 
-  it('a team agent asks for consent before the sign-in starts', async () => {
-    vi.mocked(listChatAgents).mockResolvedValue([
-      { agentId: 'a-quill', displayName: 'Quill', visibility: 'team' },
-    ]);
+  it('a team agent (the server says shared) asks for consent before the sign-in starts', async () => {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true });
     renderAdd();
     await ready();
-    await waitFor(() => expect(listChatAgents).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
     expect(
       await screen.findByText(/lets anyone who uses Quill act as you on Notion/),
@@ -366,13 +359,12 @@ describe('sign in, then attach', () => {
     await waitFor(() => expect(beginOAuth).toHaveBeenCalled());
   });
 
-  it('asks for consent when it cannot tell whether the agent is shared', async () => {
-    vi.mocked(listChatAgents).mockRejectedValue(new Error('nope'));
+  it('a personal agent signs in without the consent step', async () => {
     renderAdd();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
-    expect(await screen.findByText(/act as you on Notion/)).toBeTruthy();
-    expect(beginOAuth).not.toHaveBeenCalled();
+    await waitFor(() => expect(beginOAuth).toHaveBeenCalled());
+    expect(screen.queryByText(/act as you on Notion/)).toBeNull();
   });
 
   it('attach failing after a good sign-in shows the error and Retry', async () => {
