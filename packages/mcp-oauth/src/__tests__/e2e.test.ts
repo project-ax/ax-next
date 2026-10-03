@@ -150,6 +150,13 @@ async function seedLegacyClient(
 
 async function bootStack(testOverrides: Parameters<typeof createMcpOAuthPlugin>[0]) {
   const h = await createTestHarness({
+    // TASK-711 — the vault reads an agent-scope `account:` row only when a
+    // provider of `credentials:authorize-agent:account` (@ax/connectors in a
+    // real host) says the reader resolves the one shared connector. This canary
+    // is about the sharee resolving the agent-bound token, so the stand-in says yes.
+    services: {
+      'credentials:authorize-agent:account': (async () => ({ allowed: true })) as ServiceHandler,
+    },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       createStoragePostgresPlugin(),
