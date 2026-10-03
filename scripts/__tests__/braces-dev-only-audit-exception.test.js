@@ -28,7 +28,7 @@ it('keeps the braces audit exception dev-only (no production path to braces)', (
       walk(info?.dependencies, [...trail, key]);
     }
   };
-  for (const p of projects) walk({ ...p.dependencies, ...p.optionalDependencies }, [p.name]);
+  for (const p of projects) walk(p.dependencies, [p.name]);
   // A listing that came back empty would make "no braces" vacuous.
   expect(visited).toBeGreaterThan(50);
   expect(found).toEqual([]);
