@@ -34,10 +34,13 @@ import type { DescribeToolsOutput } from '../connector-inventory/types.js';
 //
 // The ONE seam: the connector URL is `https://mcp.inventory.test/...`, which
 // the SSRF guard requires (https, public address). `baseFetch` — the guard's
-// documented test seam, handed each request AFTER every guard check — forwards
-// it to the loopback server over plain http. Everything above the socket
-// (guard, MCP client, tools/list paging, normalization, toolKey, cache) is the
-// production code path. No external network.
+// documented test seam — forwards each request to the loopback server over
+// plain http. The guard's https / origin / redirect / body-cap checks, the MCP
+// client, tools/list paging, normalization, toolKey and cache all run as
+// production. NOT covered here: the guard's connect-time IP vetting (the
+// seam drops its pinned-lookup dispatcher) — that lives in
+// connector-inventory-safe-fetch.test.ts. This is wiring coverage, not SSRF
+// coverage. No external network.
 // ---------------------------------------------------------------------------
 
 const USER = 'user-747';
@@ -145,8 +148,10 @@ async function loopbackFetch(url: string, init: Record<string, unknown>): Promis
 async function boot(): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
-      // @ax/agents is not under test; describe-tools only calls it when an
-      // agentId is named, which this suite does not do.
+      // Present only so bootstrap's call-graph check finds a provider for
+      // mcp-client's declared `agents:resolve`. describe-tools calls it only
+      // when an agentId is named, which this suite does not do — the
+      // agent-scoped credential path is out of scope here.
       'agents:resolve': async () => ({ agent: {} }),
     },
     plugins: [
