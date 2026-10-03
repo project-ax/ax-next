@@ -55,6 +55,12 @@ describe('@ax/connectors plugin manifest', () => {
           degradation:
             'the connector editor cannot save per-tool permissions (the route answers 503)',
         },
+        // TASK-758 — the gated reset before an endpoint change commits.
+        {
+          hook: 'tool-policy:reset-tool-namespaces',
+          degradation:
+            'an endpoint change saves without a reset; with no per-tool-permission provider there are no stored choices for it to carry over',
+        },
         // TASK-697 — the admin check on a workspace-keyed connector's owner.
         {
           hook: 'auth:get-user',

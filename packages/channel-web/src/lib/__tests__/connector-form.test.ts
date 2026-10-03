@@ -4,6 +4,7 @@ import {
   emptySlotRow,
   formFromConnector,
   capabilitiesFromForm,
+  endpointChangedServers,
   summaryToForm,
   connectorIdFromName,
   splitList,
@@ -11,7 +12,12 @@ import {
   STARTER_SERVICE_EXAMPLES,
   type ConnectorFormState,
 } from '../connector-form';
-import { emptyCapabilities, type Connector } from '../connectors';
+import {
+  emptyCapabilities,
+  isToolPermissionsResetFailure,
+  TOOL_PERMISSIONS_RESET_FAILED,
+  type Connector,
+} from '../connectors';
 import { ServiceDescriptorSchema } from '@ax/skills-parser';
 
 const PINNED = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
@@ -670,5 +676,51 @@ describe('STARTER_SERVICE_EXAMPLES (TASK-159)', () => {
       '/opt/kafka/logs',
       '/mnt/shared/config',
     ]);
+  });
+});
+
+describe('endpointChangedServers (TASK-758)', () => {
+  const stdio = (name: string, command: string, args?: string[]) => ({
+    name,
+    transport: 'stdio' as const,
+    command,
+    ...(args !== undefined && { args }),
+    allowedHosts: [],
+    credentials: [],
+  });
+  const http = (name: string, url: string) => ({
+    name,
+    transport: 'http' as const,
+    url,
+    allowedHosts: [],
+    credentials: [],
+  });
+
+  it('names a kept-name server whose command, args, url or transport changed', () => {
+    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'y', ['1'])])).toEqual(['a']);
+    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'x', ['2'])])).toEqual(['a']);
+    expect(endpointChangedServers([http('a', 'https://one/')], [http('a', 'https://two/')])).toEqual(['a']);
+    expect(endpointChangedServers([stdio('a', 'x')], [http('a', 'https://one/')])).toEqual(['a']);
+  });
+
+  it('ignores unchanged, added, removed and renamed servers, and no-args vs empty args', () => {
+    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'x', ['1'])])).toEqual([]);
+    expect(endpointChangedServers([stdio('a', 'x')], [stdio('a', 'x', [])])).toEqual([]);
+    expect(endpointChangedServers([stdio('a', 'x')], [stdio('b', 'y')])).toEqual([]);
+    expect(endpointChangedServers([], [stdio('a', 'x')])).toEqual([]);
+    expect(endpointChangedServers([stdio('a', 'x')], [])).toEqual([]);
+  });
+});
+
+describe('TOOL_PERMISSIONS_RESET_FAILED (TASK-758)', () => {
+  it('is the exact wire string @ax/connectors answers in the 503 body', () => {
+    // Pinned to the literal on purpose: the server side is pinned to the same
+    // literal in packages/connectors tool-permission-routes.test.ts, so a
+    // drift on either side reddens a test instead of silently falling back to
+    // the generic "couldn't save" message.
+    expect(TOOL_PERMISSIONS_RESET_FAILED).toBe('tool-permissions-reset-failed');
+    expect(isToolPermissionsResetFailure(new Error('tool-permissions-reset-failed'))).toBe(true);
+    expect(isToolPermissionsResetFailure(new Error('connector id taken'))).toBe(false);
+    expect(isToolPermissionsResetFailure('tool-permissions-reset-failed')).toBe(false);
   });
 });

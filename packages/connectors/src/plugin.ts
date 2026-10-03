@@ -40,6 +40,10 @@ import { authorizeGlobalAccountRead } from './credential-authz.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
 import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
 import {
+  TOOL_PERMISSIONS_RESET_FAILED,
+  type ResetToolNamespacesInputLike,
+} from './tool-permissions.js';
+import {
   ActivateAuthoredOutputSchema,
   AuthorizeGlobalOutputSchema,
   ClearAuthoredOutputSchema,
@@ -224,6 +228,14 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
           hook: 'tool-policy:set-connector-defaults',
           degradation:
             'the connector editor cannot save per-tool permissions (the route answers 503)',
+        },
+        // TASK-758 — an edit that points a kept-name server at a new endpoint
+        // resets that server's stored per-tool choices FIRST and is refused if
+        // the reset throws. Absent, there are no stored choices to carry over.
+        {
+          hook: 'tool-policy:reset-tool-namespaces',
+          degradation:
+            'an endpoint change saves without a reset; with no per-tool-permission provider there are no stored choices for it to carry over',
         },
         {
           hook: 'auth:get-user',
@@ -715,6 +727,9 @@ async function upsertConnector(
   // TASK-752 — read the live row's servers BEFORE the write, so a rename can be
   // told apart from an add (the namespace is a hash of the server name).
   const prior = await store.getByIdNotDeleted(userId, connectorId);
+  if (prior !== null) {
+    await resetMovedEndpoints(bus, ctx, userId, connectorId, prior, capabilities, hookName);
+  }
   const { connector, created } = await store.upsert({
     userId,
     connectorId,
@@ -734,6 +749,70 @@ async function upsertConnector(
   return { connector, created };
 }
 
+/** The hook that must succeed before an endpoint change commits (TASK-758). */
+const RESET_TOOL_NAMESPACES_HOOK = 'tool-policy:reset-tool-namespaces';
+
+/**
+ * TASK-758 — a server that keeps its name but now points at a different
+ * endpoint keeps its tool namespace, so whatever Allow / Ask first / Deny
+ * choices are stored under it would apply to a service nobody chose them for.
+ * Reset them BEFORE the edit commits, and refuse the edit if the reset fails:
+ * the old endpoint stays in place (its choices were made for it), the editor
+ * hears why, and Save tries the whole thing again.
+ *
+ * Why not the `connectors:tool-namespaces-changed` event alone: `HookBus.fire`
+ * isolates subscriber failures — a throw is logged and the chain goes on — so
+ * the firer cannot tell a reset that landed from one that did not. A service
+ * call can. The post-commit event still fires (it carries renames and removed
+ * servers, and repeats this reset for anything written in between); this is
+ * the part that has to be all-or-nothing.
+ *
+ * Fail direction: a reset that lands and then an upsert that fails leaves the
+ * OLD endpoint at Ask first — choices lost, nothing granted. With no
+ * per-tool-permission provider loaded there are no stored choices to carry
+ * over, so there is nothing to reset.
+ */
+async function resetMovedEndpoints(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+  connectorId: string,
+  before: Connector,
+  afterCapabilities: Capabilities,
+  hookName: string,
+): Promise<void> {
+  const liveNames = new Set(afterCapabilities.mcpServers.map((s) => s.name));
+  // `removed` holds both vanished servers and kept-name endpoint changes; only
+  // the second kind still has callers, so only it must be gated. A vanished
+  // server's namespace is left to the best-effort post-commit purge.
+  const moved = diffToolNamespaces(
+    userId,
+    connectorId,
+    before.capabilities.mcpServers,
+    afterCapabilities.mcpServers,
+  ).removed.filter((e) => liveNames.has(e.server));
+  if (moved.length === 0 || !bus.hasService(RESET_TOOL_NAMESPACES_HOOK)) return;
+  try {
+    await bus.call<ResetToolNamespacesInputLike, unknown>(RESET_TOOL_NAMESPACES_HOOK, ctx, {
+      toolNamespaces: moved.map((e) => e.toolNamespace),
+    });
+  } catch (err) {
+    ctx.logger.error('connectors_endpoint_tool_permissions_reset_failed', {
+      connectorId,
+      servers: moved.map((e) => e.server),
+      err: err instanceof Error ? err.message : String(err),
+    });
+    throw new PluginError({
+      code: TOOL_PERMISSIONS_RESET_FAILED,
+      plugin: PLUGIN_NAME,
+      hookName,
+      message:
+        'couldn\'t reset the tool permissions of a server whose address changed, so the edit was not saved',
+      cause: err,
+    });
+  }
+}
+
 /**
  * Tell subscribers which tool namespaces an edit moved (TASK-752), so per-tool
  * state keyed on them (admin defaults, agent choices — `@ax/tool-policy`)
@@ -744,10 +823,11 @@ async function upsertConnector(
  * so these are the namespaces `connectors:resolve` handed out. Best-effort like
  * `connectors:deleted`: the edit is committed, and a failed fire must not undo
  * it. For a rename or a removal the cost of a miss is orphaned rows under a
- * namespace nothing calls, which grant nothing. For an ENDPOINT change it is
- * worse: the namespace is still live, so a miss (here, or a failed purge in the
- * subscriber) leaves the old verdicts applying to the new address — logged,
- * not surfaced to the editor, and only corrected by a later endpoint edit.
+ * namespace nothing calls, which grant nothing. For an ENDPOINT change a miss
+ * here would leave the old verdicts applying to the new address, which is why
+ * that reset is not left to this event: `resetMovedEndpoints` runs it BEFORE
+ * the write and refuses the edit if it fails (TASK-758). The repeat here only
+ * catches a choice written between that reset and the commit.
  */
 async function announceNamespaceChange(
   bus: HookBus,

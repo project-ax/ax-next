@@ -120,7 +120,11 @@ function endpointOf(spec: ServerSpec): string {
     spec.transport,
     spec.url ?? null,
     spec.command ?? null,
-    spec.args ?? null,
+    // TASK-758 — no `args` and `args: []` start the same process. Without this
+    // an editor that always writes the list (the stdio dialog does) "changed
+    // the endpoint" of every server saved without one, and wiped its tool
+    // permissions on a save that changed nothing.
+    spec.args ?? [],
   ]);
 }
 

@@ -922,6 +922,100 @@ describe('@ax/connectors hooks — upsert fires connectors:tool-namespaces-chang
     );
     expect(out.connector.capabilities.mcpServers.map((s) => s.name)).toEqual(['drive']);
   });
+
+  describe('an endpoint change is reset BEFORE it commits (TASK-758)', () => {
+    const at = (url: string) => withServers({ name: 'gdrive', url });
+    const OLD = 'https://mcp.example.com/gdrive';
+    const NEW = 'https://elsewhere.example.com/mcp';
+    const NS = deriveToolNamespace('userA', 'gdrive', 'gdrive');
+
+    async function seeded() {
+      const h = await makeHarness();
+      await h.bus.call<UpsertInput, UpsertOutput>(
+        'connectors:upsert',
+        h.ctx({ userId: 'userA' }),
+        upsertInput({ capabilities: at(OLD) }),
+      );
+      return h;
+    }
+
+    const savedUrl = async (h: TestHarness) =>
+      (
+        await h.bus.call<GetInput, GetOutput>('connectors:get', h.ctx({ userId: 'userA' }), {
+          userId: 'userA',
+          connectorId: 'gdrive',
+        })
+      ).connector.capabilities.mcpServers[0]?.url;
+
+    it('resets exactly the moved server’s namespace, and does so before the row changes', async () => {
+      const h = await seeded();
+      const calls: Array<{ toolNamespaces: string[]; urlAtCall: string | undefined }> = [];
+      h.bus.registerService<{ toolNamespaces: string[] }, { toolNamespaces: string[] }>(
+        'tool-policy:reset-tool-namespaces',
+        'test/reset',
+        async (_ctx, input) => {
+          calls.push({ toolNamespaces: input.toolNamespaces, urlAtCall: await savedUrl(h) });
+          return { toolNamespaces: input.toolNamespaces };
+        },
+      );
+      await h.bus.call<UpsertInput, UpsertOutput>(
+        'connectors:upsert',
+        h.ctx({ userId: 'userA' }),
+        upsertInput({ capabilities: at(NEW) }),
+      );
+      expect(calls).toEqual([{ toolNamespaces: [NS], urlAtCall: OLD }]);
+      expect(await savedUrl(h)).toBe(NEW);
+    });
+
+    it('a failed reset refuses the edit with tool-permissions-reset-failed and writes nothing', async () => {
+      const h = await seeded();
+      const events = capture(h);
+      h.bus.registerService('tool-policy:reset-tool-namespaces', 'test/reset', async () => {
+        throw new Error('verdict store is down');
+      });
+      await expect(
+        h.bus.call<UpsertInput, UpsertOutput>(
+          'connectors:upsert',
+          h.ctx({ userId: 'userA' }),
+          upsertInput({ capabilities: at(NEW) }),
+        ),
+      ).rejects.toMatchObject({ code: 'tool-permissions-reset-failed' });
+      expect(await savedUrl(h)).toBe(OLD);
+      expect(events).toEqual([]);
+    });
+
+    it('renames, removed servers and unchanged endpoints never call the reset', async () => {
+      const h = await makeHarness();
+      let calls = 0;
+      h.bus.registerService('tool-policy:reset-tool-namespaces', 'test/reset', async () => {
+        calls += 1;
+        throw new Error('must not be called');
+      });
+      const a = { name: 'a', url: 'https://mcp.example.com/a' };
+      const b = { name: 'b', url: 'https://mcp.example.com/b' };
+      const up = (capabilities: Capabilities, extra: Partial<UpsertInput> = {}) =>
+        h.bus.call<UpsertInput, UpsertOutput>(
+          'connectors:upsert',
+          h.ctx({ userId: 'userA' }),
+          upsertInput({ capabilities, ...extra }),
+        );
+      await up(withServers(a, b)); // create
+      await up(withServers(a, b), { description: 'just a description edit' });
+      await up(withServers({ ...a, name: 'a2' }, b)); // rename
+      await up(withServers({ ...a, name: 'a2' })); // remove b
+      expect(calls).toBe(0);
+    });
+
+    it('with no reset provider loaded the endpoint change saves (there are no stored choices)', async () => {
+      const h = await seeded();
+      await h.bus.call<UpsertInput, UpsertOutput>(
+        'connectors:upsert',
+        h.ctx({ userId: 'userA' }),
+        upsertInput({ capabilities: at(NEW) }),
+      );
+      expect(await savedUrl(h)).toBe(NEW);
+    });
+  });
 });
 
 describe('@ax/connectors hooks — boundary validation', () => {

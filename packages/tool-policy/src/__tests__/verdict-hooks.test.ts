@@ -614,6 +614,58 @@ describe('connectors:tool-namespaces-changed — a renamed server keeps its verd
   });
 });
 
+describe('tool-policy:reset-tool-namespaces — the gated reset (TASK-758)', () => {
+  it('forgets admin defaults and every agent’s overrides under the namespaces, and only those', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    await setDefaults(h, [{ toolKey: OTHER, verdict: 'allow' }], 'linear');
+    await setOverride(h, SEND, 'allow');
+    await setOverride(h, LIST, 'deny', 'agent-2');
+    await setOverride(h, 'Bash', 'deny');
+    // Warm the caches so a stale read would show.
+    expect(await verdictOf(h, SEND)).toBe('allow');
+    expect(await verdictOf(h, SEND, 'agent-3')).toBe('allow');
+
+    const out = await call<{ toolNamespaces: string[] }>(h, 'tool-policy:reset-tool-namespaces', {
+      toolNamespaces: [NS, NS],
+    });
+
+    expect(out).toEqual({ toolNamespaces: [NS] });
+    expect(await verdictOf(h, SEND)).toBe('hold');
+    expect(await verdictOf(h, SEND, 'agent-3')).toBe('hold');
+    expect((await listOverrides(h)).overrides.map((o) => o.toolKey)).toEqual(['Bash']);
+    expect((await listOverrides(h, 'agent-2')).overrides).toEqual([]);
+    expect(await verdictOf(h, OTHER)).toBe('allow');
+  });
+
+  it('THROWS when the store fails, instead of reporting a reset that did not happen', async () => {
+    const store = createMemoryVerdictStore();
+    const h = await boot({
+      verdictStore: {
+        ...store,
+        purgeNamespaces: async () => {
+          throw new Error('verdict store is down');
+        },
+      },
+    });
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    await expect(
+      call(h, 'tool-policy:reset-tool-namespaces', { toolNamespaces: [NS] }),
+    ).rejects.toThrow(/verdict store is down/);
+  });
+
+  it('throws on malformed input rather than resetting a guessed subset', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    for (const bad of [undefined, null, 'x', [NS, '%'], [NS, 7]]) {
+      await expect(
+        call(h, 'tool-policy:reset-tool-namespaces', { toolNamespaces: bad }),
+      ).rejects.toThrow(/needs a list of connector tool namespaces/);
+    }
+    expect(await verdictOf(h, SEND)).toBe('allow');
+  });
+});
+
 describe('verdict store — keyspace guard (TASK-752)', () => {
   it('purgeNamespaces refuses a malformed namespace and removes nothing', async () => {
     const store = createMemoryVerdictStore();
