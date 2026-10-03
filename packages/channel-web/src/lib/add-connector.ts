@@ -20,6 +20,7 @@ import {
   type ConnectorSummary,
 } from './connectors';
 import { getOAuthStatus } from './connectors-oauth';
+import { logRequestFailure } from './http';
 import type { CredentialMeta } from './credentials';
 
 /** The row's action: "Sign in" / "Add key" / "Add". */
@@ -60,7 +61,8 @@ export interface AddActionContext {
  * for the sign-in, then (after it succeeds) for the key, then attaches.
  *
  * A status read that fails answers "Sign in": signing in again is harmless,
- * while answering "Add" would attach a connector that cannot work.
+ * while answering "Add" would attach a connector that cannot work. The failure
+ * is logged (TASK-757) — the fallback is safe, but it must not be silent.
  */
 export async function addActionFor(
   connector: Connector,
@@ -71,7 +73,10 @@ export async function addActionFor(
     const status = await getOAuthStatus({
       connectorId: connector.id,
       agentId: ctx.agentId,
-    }).catch(() => 'not-connected' as const);
+    }).catch((e: unknown) => {
+      logRequestFailure(e, `add-connector oauth-status ${connector.id}`);
+      return 'not-connected' as const;
+    });
     if (status !== 'connected') return 'sign-in';
   }
   const keySlots = new Set(slots.filter((s) => s.kind === 'api-key').map((s) => s.slot));

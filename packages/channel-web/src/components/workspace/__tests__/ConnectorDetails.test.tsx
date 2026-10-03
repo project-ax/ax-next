@@ -299,6 +299,35 @@ describe('segments and the admin ceiling', () => {
     ).toBe('true');
   });
 
+  it('a save the server could not read back shows the saved choice and a soft reload note, never "Nothing changed" (TASK-757)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setMock.mockResolvedValue({
+      tool: { toolKey: `mcp.${NS}.Create issue`, verdict: 'deny' },
+      unconfirmed: true,
+    });
+    renderTab();
+    await openDetails();
+    await screen.findByText('Create issue');
+    fireEvent.click(within(rowGroup('Create issue')).getByRole('radio', { name: 'Deny' }));
+    expect(await screen.findByText(/Saved\. We couldn’t refresh this list just now, so reload to confirm\./)).toBeTruthy();
+    expect(screen.queryByText(/Nothing changed/)).toBeNull();
+    expect(
+      within(rowGroup('Create issue'))
+        .getByRole('radio', { name: 'Deny' })
+        .getAttribute('aria-checked'),
+    ).toBe('true');
+    // No ceiling came back: the row keeps the one it had (Allow still open).
+    expect(
+      within(rowGroup('Create issue'))
+        .getByRole('radio', { name: 'Allow' })
+        .getAttribute('aria-disabled'),
+    ).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[connector-tools]'));
+    // The note is not an error alert.
+    expect(screen.getByTestId('verdict-unconfirmed').className).not.toMatch(/destructive/);
+    warn.mockRestore();
+  });
+
   it('a 409 (the admin tightened it meanwhile) re-reads the list and says it was not saved', async () => {
     setMock.mockRejectedValue(new WorkspaceApiError('/x', 409));
     renderTab();
@@ -434,6 +463,36 @@ describe('access you approved', () => {
     expect(within(section).getByText('uploads.linear.app')).toBeTruthy();
     expect(within(section).queryByText('api.linear.app')).toBeNull();
     expect(within(section).getByRole('button', { name: /Revoke/ })).toBeTruthy();
+  });
+
+  it('says it could not read approved access when the grants read failed, instead of hiding the section (TASK-757)', async () => {
+    vi.mocked(workspaceApi.rail).mockResolvedValue(
+      rail({ grants: { status: 'failed', rows: [], incomplete: false } }),
+    );
+    renderTab();
+    await openDetails();
+    const section = await screen.findByRole('region', { name: 'Access you approved' });
+    expect(
+      within(section).getByText(/couldn.t read the access you approved for Linear just now/),
+    ).toBeTruthy();
+  });
+
+  it('says the same when the whole rail read failed (TASK-757)', async () => {
+    vi.mocked(workspaceApi.rail).mockRejectedValue(new WorkspaceApiError('/x', 500));
+    renderTab();
+    await openDetails();
+    const section = await screen.findByRole('region', { name: 'Access you approved' });
+    expect(within(section).getByText(/couldn.t read the access you approved/)).toBeTruthy();
+  });
+
+  it('a deployment that keeps no grants shows no section at all', async () => {
+    vi.mocked(workspaceApi.rail).mockResolvedValue(
+      rail({ grants: { status: 'unavailable', rows: [], incomplete: false } }),
+    );
+    renderTab();
+    await openDetails();
+    await screen.findByText('Create issue');
+    expect(screen.queryByRole('region', { name: 'Access you approved' })).toBeNull();
   });
 
   it('keeps approved access in "Granted by you" while the list has not confirmed the connector', async () => {

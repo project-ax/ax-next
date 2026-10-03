@@ -124,6 +124,11 @@ interface Props {
   onView?: (connectorId: string | null) => void;
   /** Approved-access rows; the details view shows the ones for its connector. */
   grants?: GrantRow[];
+  /**
+   * TASK-757 — the approved-access read failed, so `grants` is empty for
+   * want of an answer, not because there is none. The details view says so.
+   */
+  grantsFailed?: boolean;
   revoking?: ReadonlySet<string>;
   onRevoke?: (row: GrantRow) => void;
   /** The ids currently listed, or null while unknown — so the tab can tell
@@ -142,6 +147,7 @@ export function AgentConnectors({
   viewing = null,
   onView,
   grants = NO_GRANTS,
+  grantsFailed = false,
   revoking = NOTHING,
   onRevoke,
   onListed,
@@ -276,6 +282,7 @@ export function AgentConnectors({
           grants={grants.filter(
             (g) => g.grantedFor?.kind === 'connection' && g.grantedFor.id === open.id,
           )}
+          grantsFailed={grantsFailed}
           revoking={revoking}
           onRevoke={(g) => onRevoke?.(g)}
           busy={removing.has(open.id)}

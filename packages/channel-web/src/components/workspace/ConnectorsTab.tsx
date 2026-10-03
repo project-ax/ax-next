@@ -162,6 +162,9 @@ export function ConnectorsTab({
       viewing={viewing}
       onView={setViewing}
       grants={allGrants}
+      // TASK-757 — a rail that never arrived, or whose grants read failed,
+      // is "unknown", not "none": the details view must not just go quiet.
+      grantsFailed={!loading && (rail === null || rail.grants.status === 'failed')}
       revoking={revoking}
       onRevoke={onRevoke}
       onListed={onListed}

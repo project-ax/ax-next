@@ -6806,11 +6806,30 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         });
         return;
       }
-      const out = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
-        'tool-policy:list-agent-overrides',
-        ctx,
-        { agentId },
-      );
+      let out: ToolPolicyListAgentOverridesOutput;
+      try {
+        out = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
+          'tool-policy:list-agent-overrides',
+          ctx,
+          { agentId },
+        );
+      } catch (err) {
+        // TASK-757 — the store already said yes (and it refuses anything
+        // looser than the ceiling), so the write landed; only the read-back
+        // failed. Answering 500 here made the screen say "Nothing changed"
+        // about a change that HAD been made. Say what was written and that
+        // we could not confirm it, rather than either lie.
+        initCtx.logger.warn('workspace_tool_verdict_reread_failed', {
+          agentId,
+          connectorId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        res.status(200).json({
+          tool: { toolKey, verdict },
+          unconfirmed: true,
+        } satisfies AgentToolVerdictSaved);
+        return;
+      }
       const stored = (Array.isArray(out?.overrides) ? out.overrides : []).find(
         (o) => o?.toolKey === toolKey,
       );

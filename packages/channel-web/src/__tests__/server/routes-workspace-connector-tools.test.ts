@@ -19,7 +19,7 @@
  *      checks the route's writes against `tool-policy:evaluate`.
  *   4. UNTRUSTED TEXT. A server's titles / descriptions are fenced.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import {
@@ -538,6 +538,38 @@ describe('connector details routes (mock bus)', () => {
         statusCode: 409,
         body: { error: 'verdict-not-saved', reason: 'not-found-on-reread' },
       });
+    });
+
+    it('a yes whose re-read THROWS is reported as written-but-unconfirmed, not as a failure (TASK-757)', async () => {
+      // The store accepted the write; only the read-back broke. A 500 here
+      // made the screen say "Nothing changed" about a change that was made.
+      bus = new HookBus();
+      registerAll(['tool-policy:list-agent-overrides']);
+      bus.registerService('tool-policy:list-agent-overrides', 'mock', async () => {
+        throw new Error('store read blipped');
+      });
+      const warn = vi.spyOn(initCtx.logger, 'warn');
+      try {
+        const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' });
+        expect(r).toEqual({
+          statusCode: 200,
+          body: { tool: { toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' }, unconfirmed: true },
+        });
+        expect(setCalls).toEqual([
+          { agentId: 'a1', toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' },
+        ]);
+        expect(warn).toHaveBeenCalledWith(
+          'workspace_tool_verdict_reread_failed',
+          expect.objectContaining({ agentId: 'a1', connectorId: 'linear', error: expect.stringContaining('store read blipped') }),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a normal save carries no unconfirmed flag', async () => {
+      const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' });
+      expect('unconfirmed' in (r.body as object)).toBe(false);
     });
 
     it("404s another person's agent and never writes", async () => {
