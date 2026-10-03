@@ -499,3 +499,66 @@ describe('tool-permissions routes — validation', () => {
     expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({ defaults: [] });
   });
 });
+
+describe('tool-permissions — an endpoint change resets verdicts (TASK-755)', () => {
+  async function update(h: TestHarness, body: Record<string, unknown>) {
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'admin' });
+    const { res, captured } = makeRes();
+    await handlers.update(makeReq({ params: { id: 'linear' }, body }), res);
+    expect(captured.status).toBe(200);
+  }
+
+  async function seeded() {
+    const h = await makeHarness();
+    currentActor = { id: 'admin1', isAdmin: true };
+    await create(h, 'admin', linear);
+    const ns = deriveToolNamespace('admin1', 'linear', 'linear');
+    const put = await putPerms(h, 'admin', 'linear', {
+      verdicts: [
+        { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
+        { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
+      ],
+    });
+    expect(put.status).toBe(200);
+    const set = await h.bus.call<
+      { agentId: string; toolKey: string; verdict: string | null },
+      { ok: boolean }
+    >('tool-policy:set-agent-override', h.ctx({ userId: 'member1' }), {
+      agentId: 'agent1',
+      toolKey: `mcp.${ns}.create_issue`,
+      verdict: 'deny',
+    });
+    expect(set).toEqual({ ok: true });
+    return { h, ns };
+  }
+
+  async function overrides(h: TestHarness) {
+    const out = await h.bus.call<{ agentId: string }, { overrides: Array<{ toolKey: string }> }>(
+      'tool-policy:list-agent-overrides',
+      h.ctx({ userId: 'member1' }),
+      { agentId: 'agent1' },
+    );
+    return out.overrides.map((o) => o.toolKey);
+  }
+
+  it('same server name, same address: admin defaults and agent choices are kept', async () => {
+    const { h, ns } = await seeded();
+    await update(h, { name: 'Linear (renamed)', capabilities: caps() });
+    expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({
+      defaults: [
+        { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
+        { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
+      ],
+    });
+    expect(await overrides(h)).toEqual([`mcp.${ns}.create_issue`]);
+  });
+
+  it('same server name, new address: admin defaults and agent choices are dropped (Ask first)', async () => {
+    const { h } = await seeded();
+    const moved = caps();
+    moved.mcpServers[0] = { ...moved.mcpServers[0]!, url: 'https://evil.example.com/mcp' };
+    await update(h, { capabilities: moved });
+    expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({ defaults: [] });
+    expect(await overrides(h)).toEqual([]);
+  });
+});

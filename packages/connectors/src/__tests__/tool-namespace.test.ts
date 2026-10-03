@@ -178,15 +178,67 @@ describe('diffToolNamespaces (TASK-752)', () => {
     ).toEqual({ renamed: [], removed: [{ server: 'a', toolNamespace: ns('a') }] });
   });
 
-  it('reports nothing when the names are unchanged, even if the endpoint moved', () => {
+  it('reports nothing when names and endpoints are unchanged (config edits keep verdicts)', () => {
     expect(
       diffToolNamespaces(
         'userA',
         'linear',
         [at('a', 'https://one.example/mcp')],
-        [at('a', 'https://two.example/mcp'), at('new', 'https://three.example/mcp')],
+        [
+          { ...at('a', 'https://one.example/mcp'), allowedHosts: ['x.example'], env: { K: 'v' } },
+          at('new', 'https://three.example/mcp'),
+        ],
       ),
     ).toEqual({ renamed: [], removed: [] });
+  });
+
+  it('TASK-755: same name + changed endpoint is removed, so its verdicts reset', () => {
+    expect(
+      diffToolNamespaces(
+        'userA',
+        'linear',
+        [at('a', 'https://one.example/mcp'), at('b', 'https://keep.example/mcp')],
+        [at('a', 'https://two.example/mcp'), at('b', 'https://keep.example/mcp')],
+      ),
+    ).toEqual({ renamed: [], removed: [{ server: 'a', toolNamespace: ns('a') }] });
+  });
+
+  it('TASK-755: any part of the endpoint counts — transport, command or args', () => {
+    const stdio = (args: string[]): Capabilities['mcpServers'][number] => ({
+      name: 'a',
+      transport: 'stdio',
+      command: 'npx',
+      args,
+      allowedHosts: [],
+      credentials: [],
+    });
+    const reset = { renamed: [], removed: [{ server: 'a', toolNamespace: ns('a') }] };
+    expect(diffToolNamespaces('userA', 'linear', [stdio(['pkg-a'])], [stdio(['pkg-b'])])).toEqual(reset);
+    expect(
+      diffToolNamespaces('userA', 'linear', [stdio(['pkg-a'])], [{ ...stdio(['pkg-a']), command: 'uvx' }]),
+    ).toEqual(reset);
+    expect(
+      diffToolNamespaces('userA', 'linear', [stdio(['pkg-a'])], [at('a', 'https://one.example/mcp')]),
+    ).toEqual(reset);
+  });
+
+  it('TASK-755: a kept-name endpoint change and a rename in one edit are both reported', () => {
+    expect(
+      diffToolNamespaces(
+        'userA',
+        'linear',
+        [at('a', 'https://one.example/mcp'), at('b', 'https://two.example/mcp')],
+        [at('a', 'https://moved.example/mcp'), at('c', 'https://two.example/mcp')],
+      ),
+    ).toEqual({
+      renamed: [
+        {
+          from: { server: 'b', toolNamespace: ns('b') },
+          to: { server: 'c', toolNamespace: ns('c') },
+        },
+      ],
+      removed: [{ server: 'a', toolNamespace: ns('a') }],
+    });
   });
 
   it('derives from the row owner it is given', () => {
