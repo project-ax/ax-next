@@ -185,10 +185,21 @@ function openQuery(withMcp = false) {
   }
   const processes = createInterruptProcesses();
   let stopped = false;
+  // The CLI outlives `q.close()`: the SDK ends its stdin and only SIGTERMs it
+  // 2 s later (SIGKILL 5 s after that), and meanwhile it flushes its session
+  // files under cfg/projects/. Teardown must wait for that exit, or its
+  // recursive rm races the last write into ENOTEMPTY (TASK-746).
+  let exited: Promise<void> = Promise.resolve();
+  let cli: { kill(signal: NodeJS.Signals): boolean } | null = null;
   const q = query({
     prompt: prompt(),
     options: {
-      spawnClaudeCodeProcess: (options) => processes.spawn(options),
+      spawnClaudeCodeProcess: (options) => {
+        const child = processes.spawn(options);
+        cli = child;
+        exited = new Promise<void>((r) => child.on('exit', () => r()));
+        return child;
+      },
       hooks: { UserPromptSubmit: [{ hooks: [async () => {
         processes.preserveStartupProcesses();
         return stopped ? { continue: false, stopReason: 'Request interrupted by user' } : {};
@@ -217,8 +228,8 @@ function openQuery(withMcp = false) {
     q,
     async interrupt(): Promise<void> {
       stopped = true;
-      processes.killTools();
-      await q.interrupt();
+      // The runner's own Stop sequence: freeze tools, interrupt, then kill.
+      await processes.stop(() => q.interrupt());
     },
     send(text: string): void {
       stopped = false;
@@ -234,13 +245,27 @@ function openQuery(withMcp = false) {
         if (until(n.value)) return seen;
       }
     },
-    close(): void {
+    /** Close the query and wait for the CLI process to be gone. */
+    async close(): Promise<void> {
       closed = true;
       wake?.();
       try {
         q.close();
       } catch {
         /* already closed */
+      }
+      // The SDK escalates to SIGKILL ~7 s after close. Should that ever slip,
+      // kill it ourselves rather than throw from a `finally`, which would mask
+      // the assertion that actually failed.
+      let timer: NodeJS.Timeout | undefined;
+      const gone = await Promise.race([
+        exited.then(() => true),
+        new Promise<false>((r) => { timer = setTimeout(() => r(false), 15_000); }),
+      ]);
+      clearTimeout(timer);
+      if (!gone) {
+        cli?.kill('SIGKILL');
+        await exited;
       }
     },
   };
@@ -304,6 +329,10 @@ describe.skipIf(!HAVE_BINARY)('Claude Stop — the real SDK binary (TASK-688 / L
       expect(toolResult).toContain('Request interrupted by user');
       // (4) The words already written are in the stream (they become the turn's text).
       expect(JSON.stringify(messages.filter((m) => m.type === 'assistant'))).toContain('Running it now.');
+      // (4b) Stop did not let the killed command's result reach the model: a
+      //      killed tool is a finished tool, and the SDK would call the model
+      //      again if the kill beat the interrupt (TASK-746).
+      expect(modelCalls).toHaveLength(1);
 
       // (5) The SAME query serves the next message: Stop did not end the session.
       s.send('say hi');
@@ -311,7 +340,7 @@ describe.skipIf(!HAVE_BINARY)('Claude Stop — the real SDK binary (TASK-688 / L
       expect(next.find(isResult)).toMatchObject({ subtype: 'success' });
       expect(modelCalls).toHaveLength(2);
     } finally {
-      s.close();
+      await s.close();
     }
   }, 60_000);
 
@@ -333,7 +362,7 @@ describe.skipIf(!HAVE_BINARY)('Claude Stop — the real SDK binary (TASK-688 / L
       const next = await s.readUntil(isResult);
       expect(next.find(isResult)).toMatchObject({ subtype: 'success' });
       expect(modelCalls).toHaveLength(1);
-    } finally { s.close(); }
+    } finally { await s.close(); }
   }, 60_000);
 
   it('keeps a startup MCP server usable after stopping Bash', async () => {
@@ -369,7 +398,7 @@ describe.skipIf(!HAVE_BINARY)('Claude Stop — the real SDK binary (TASK-688 / L
       const next = await s.readUntil(isResult);
       expect(next.find(isResult)).toMatchObject({ subtype: 'success' });
       expect(JSON.stringify(next.filter(m => m.type === 'user'))).toContain('pong-from-preserved-mcp');
-    } finally { s.close(); }
+    } finally { await s.close(); }
   }, 60_000);
 
   it('keeps the words written so far when a reply is stopped mid-stream', async () => {
@@ -395,7 +424,7 @@ describe.skipIf(!HAVE_BINARY)('Claude Stop — the real SDK binary (TASK-688 / L
       expect(assistant).toContain('word0');
       expect(assistant).not.toContain('word39');
     } finally {
-      s.close();
+      await s.close();
     }
   }, 60_000);
 });

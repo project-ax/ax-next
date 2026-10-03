@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createInterruptProcesses } from '../interrupt-processes.js';
+import { createInterruptProcesses, ToolTerminationError } from '../interrupt-processes.js';
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), read: vi.fn(), list: vi.fn() }));
 vi.mock('node:child_process', () => ({ spawn: mocks.spawn }));
@@ -43,7 +43,7 @@ function arm(owner: ReturnType<typeof createInterruptProcesses>) {
 
 describe('Linux SDK process ownership', () => {
   it('freezes parents before children, kills descendants, and preserves SDK and unrelated processes', () => {
-    const owner = createInterruptProcesses(); owner.spawn(options); arm(owner); owner.killTools();
+    const owner = createInterruptProcesses(); owner.spawn(options); arm(owner); owner.freezeTools()();
     expect(kill.mock.calls).toEqual([[200, 'SIGSTOP'], [300, 'SIGSTOP'], [300, 'SIGKILL'], [200, 'SIGKILL']]);
     expect(mocks.spawn).toHaveBeenCalledWith(options.command, options.args,
       expect.objectContaining({ shell: false, stdio: ['pipe', 'pipe', 'ignore'], env: {}, signal: options.signal }));
@@ -53,25 +53,25 @@ describe('Linux SDK process ownership', () => {
       if (pid === 200 && signal === 'SIGSTOP') table.set(301, { parent: 200, started: '31' });
       return true;
     });
-    const owner = createInterruptProcesses(); owner.spawn(options); arm(owner); owner.killTools();
+    const owner = createInterruptProcesses(); owner.spawn(options); arm(owner); owner.freezeTools()();
     expect(kill).toHaveBeenCalledWith(301, 'SIGSTOP');
     expect(kill).toHaveBeenCalledWith(301, 'SIGKILL');
   });
   it('preserves startup MCP servers and their later workers', () => {
     table.set(500, { parent: 100, started: '50' });
     const owner = createInterruptProcesses(); owner.spawn(options); arm(owner);
-    table.set(501, { parent: 500, started: '51' }); owner.killTools();
+    table.set(501, { parent: 500, started: '51' }); owner.freezeTools()();
     expect(kill).not.toHaveBeenCalledWith(500, 'SIGSTOP');
     expect(kill).not.toHaveBeenCalledWith(501, 'SIGSTOP');
     expect(kill).toHaveBeenCalledWith(200, 'SIGKILL');
   });
   it('does not terminate startup processes before any prompt was submitted', () => {
-    const owner = createInterruptProcesses(); owner.spawn(options); owner.killTools();
+    const owner = createInterruptProcesses(); owner.spawn(options); owner.freezeTools()();
     expect(kill).not.toHaveBeenCalled();
   });
   it('ignores a root PID reused after the SDK exits', () => {
     const owner = createInterruptProcesses(); owner.spawn(options); arm(owner);
-    table.set(100, { parent: 1, started: '999' }); owner.killTools();
+    table.set(100, { parent: 1, started: '999' }); owner.freezeTools()();
     expect(kill).not.toHaveBeenCalled();
   });
   it('does not signal a descendant PID reused after the snapshot', () => {
@@ -80,13 +80,13 @@ describe('Linux SDK process ownership', () => {
       if (pid === 300 && signal === 'SIGSTOP') table.set(300, { parent: 1, started: '999' });
       return true;
     });
-    owner.killTools(); expect(kill).not.toHaveBeenCalledWith(300, 'SIGKILL');
+    owner.freezeTools()(); expect(kill).not.toHaveBeenCalledWith(300, 'SIGKILL');
   });
   it('kills frozen tools even if a later process-table read fails', () => {
     const owner = createInterruptProcesses(); owner.spawn(options); arm(owner);
     mocks.list.mockReturnValueOnce([...table.keys()].map(String))
       .mockImplementationOnce(() => { throw new Error('proc read failed'); });
-    expect(() => owner.killTools()).toThrow('proc read failed');
+    expect(() => owner.freezeTools()()).toThrow('proc read failed');
     expect(kill).toHaveBeenCalledWith(200, 'SIGSTOP');
     expect(kill).toHaveBeenCalledWith(200, 'SIGKILL');
   });
@@ -96,14 +96,71 @@ describe('Linux SDK process ownership', () => {
       table.set(100, { parent: 1, started: '999' });
       return [...table.keys()].map(String);
     });
-    owner.killTools(); expect(kill).not.toHaveBeenCalled();
+    owner.freezeTools()(); expect(kill).not.toHaveBeenCalled();
   });
   it('clears ownership on exit and does no process scanning outside Linux', () => {
-    const owner = createInterruptProcesses(); owner.spawn(options); child.emit('exit'); owner.killTools();
+    const owner = createInterruptProcesses(); owner.spawn(options); child.emit('exit'); owner.freezeTools()();
     expect(kill).not.toHaveBeenCalled();
     Object.defineProperty(process, 'platform', { value: 'darwin' });
     mocks.read.mockClear(); mocks.list.mockClear();
-    const other = createInterruptProcesses(); other.spawn(options); other.killTools();
+    const other = createInterruptProcesses(); other.spawn(options); other.freezeTools()();
     expect(mocks.read).not.toHaveBeenCalled(); expect(mocks.list).not.toHaveBeenCalled();
+  });
+});
+
+// TASK-746 — the ORDER of Stop. Killing a tool finishes it, and the SDK answers
+// a finished tool by calling the model again; if that beats the interrupt the
+// turn ends `aborted_streaming` with one extra model call. So tools are frozen,
+// the interrupt is sent, and only then are they killed.
+describe('Stop order: freeze, interrupt, then kill', () => {
+  it('freezes before the interrupt and kills only after the SDK acknowledges it', async () => {
+    const owner = createInterruptProcesses(); owner.spawn(options); arm(owner);
+    let ack!: () => void;
+    const interrupt = vi.fn(() => new Promise<void>((r) => { ack = r; }));
+    const stopped = owner.stop(interrupt, 60_000);
+    // Frozen synchronously, interrupt sent, nothing killed yet.
+    expect(kill.mock.calls).toEqual([[200, 'SIGSTOP'], [300, 'SIGSTOP']]);
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    expect(kill).not.toHaveBeenCalledWith(200, 'SIGKILL');
+    ack(); await stopped;
+    expect(kill.mock.calls).toEqual([[200, 'SIGSTOP'], [300, 'SIGSTOP'], [300, 'SIGKILL'], [200, 'SIGKILL']]);
+  });
+  it('kills the frozen tools at the deadline even if the SDK never acknowledges', async () => {
+    vi.useFakeTimers();
+    try {
+      const owner = createInterruptProcesses(); owner.spawn(options); arm(owner);
+      let ack!: () => void;
+      const stopped = owner.stop(() => new Promise<void>((r) => { ack = r; }), 2000);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(kill).not.toHaveBeenCalledWith(200, 'SIGKILL');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(kill).toHaveBeenCalledWith(300, 'SIGKILL');
+      expect(kill).toHaveBeenCalledWith(200, 'SIGKILL');
+      ack(); await stopped;
+    } finally { vi.useRealTimers(); }
+  });
+  it('kills the tools, then reports a failed interrupt', async () => {
+    const owner = createInterruptProcesses(); owner.spawn(options); arm(owner);
+    await expect(owner.stop(async () => { throw new Error('control channel closed'); }, 60_000))
+      .rejects.toThrow('control channel closed');
+    expect(kill).toHaveBeenCalledWith(200, 'SIGKILL');
+  });
+  it('does not send the interrupt when tool ownership cannot be established', async () => {
+    const owner = createInterruptProcesses(); owner.spawn(options); arm(owner);
+    mocks.list.mockReturnValueOnce([...table.keys()].map(String))
+      .mockImplementationOnce(() => { throw new Error('proc read failed'); });
+    const interrupt = vi.fn(async () => undefined);
+    const err = await owner.stop(interrupt, 60_000).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ToolTerminationError);
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(kill).toHaveBeenCalledWith(200, 'SIGKILL');
+  });
+  it('still interrupts when there are no tools to freeze', async () => {
+    const owner = createInterruptProcesses(); owner.spawn(options);
+    const interrupt = vi.fn(async () => undefined);
+    await owner.stop(interrupt, 60_000);
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(kill).not.toHaveBeenCalled();
   });
 });
