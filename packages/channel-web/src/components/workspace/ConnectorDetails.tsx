@@ -1,0 +1,447 @@
+/**
+ * One connector, in the rail (TASK-742, connectors-rail slice 9; Figma frame 3).
+ *
+ * "‹ Connectors" back + `⋯`, the connector's name and whether it answered,
+ * then "What <agent> may do · N tools": every tool with an Allow / Ask first /
+ * Deny segmented control, grouped "Looks things up" / "Makes changes".
+ * "Edit connector" + "Remove" stay pinned at the bottom while the list scrolls.
+ *
+ * WHAT THE CONTROL CAN DO. It writes this agent's own choice through
+ * `PUT …/tool-verdicts`, and the store refuses anything looser than the
+ * admin's default for that tool (the ceiling). Those segments are drawn
+ * disabled with the reason in a tooltip — focusable rather than `disabled`, so
+ * the reason reaches a keyboard and a screen reader too. Never optimistic: the
+ * selected segment is what the server re-read.
+ *
+ * SECURITY — a tool's title comes from the connector's server, not from us.
+ * It is fenced server-side and rendered as React text only. Its self-described
+ * hints only pick the group a row sits in, never what it may do. Its free-text
+ * description is deliberately not drawn here (the editor in Settings shows it,
+ * fenced); the rail is too narrow to set it apart as "their words".
+ */
+import { Fragment, useState } from 'react';
+import {
+  ChevronLeft,
+  CircleAlert,
+  CircleCheck,
+  Loader2,
+  Pencil,
+  Trash2,
+} from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import { TOOL_VERDICT_OPTIONS } from '@/components/settings/ConnectorToolPermissions';
+import {
+  ceilingReason,
+  groupTools,
+  useConnectorTools,
+  type ConnectorToolsState,
+} from '@/lib/agent-connector-tools';
+import { cn } from '@/lib/utils';
+import type { GrantRow } from '@/lib/workspace-api';
+import type {
+  AgentConnectorHealth,
+  AgentConnectorRow,
+  AgentConnectorTool,
+  AgentConnectorToolsRead,
+  AgentToolVerdict,
+} from '@/lib/workspace-types';
+import { GrantLine } from './bits';
+
+/** Decision 3: an unattended run cannot stop to ask, so it waits. */
+export const ROUTINES_WAIT_NOTE = 'With Ask first, routines pause and wait for you.';
+
+interface Props {
+  agentId: string;
+  /** The agent's display name — "What <agent> may do". */
+  agentName: string;
+  row: AgentConnectorRow;
+  /** Approved access whose subject is THIS connector, with Revoke. */
+  grants: GrantRow[];
+  revoking: ReadonlySet<string>;
+  onRevoke: (row: GrantRow) => void;
+  busy: boolean;
+  /** The row's `⋯` menu, shared with the list so the two never disagree. */
+  menu: React.ReactNode;
+  onBack: () => void;
+  onEdit: () => void;
+  onRemove: () => void;
+}
+
+export function ConnectorDetails({
+  agentId,
+  agentName,
+  row,
+  grants,
+  revoking,
+  onRevoke,
+  busy,
+  menu,
+  onBack,
+  onEdit,
+  onRemove,
+}: Props) {
+  const state = useConnectorTools(agentId, row.id);
+  const { data, status } = state;
+  return (
+    <div className="flex min-h-full flex-col">
+      <div className="-ml-2 mb-3 flex items-center justify-between gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1 px-2 text-[13px] text-muted-foreground"
+          onClick={onBack}
+        >
+          <ChevronLeft data-icon="inline-start" aria-hidden="true" />
+          Connectors
+        </Button>
+        {menu}
+      </div>
+      <h3 className="truncate text-base font-semibold">{row.name}</h3>
+      <ConnectionLine data={data} health={row.health} />
+
+      <div className="mt-5 flex-1">
+        {status === 'loading' && (
+          <div className="flex flex-col gap-3" aria-busy="true">
+            <Skeleton className="h-4 w-3/5" />
+            <Skeleton className="h-4 w-4/5" />
+            <Skeleton className="h-4 w-2/3" />
+          </div>
+        )}
+        {(status === 'failed' || status === 'unavailable') && (
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-[13px] leading-relaxed text-muted-foreground">
+              {status === 'unavailable'
+                ? 'This workspace can’t set what each tool may do yet.'
+                : `We couldn’t read what ${agentName} may do with ${row.name} just now.`}
+            </p>
+            {status === 'failed' && (
+              <Button type="button" variant="outline" size="sm" onClick={() => state.reload()}>
+                Try again
+              </Button>
+            )}
+          </div>
+        )}
+        {status === 'ok' && data !== null && (
+          <ToolList agentName={agentName} data={data} state={state} />
+        )}
+        {grants.length > 0 && (
+          <section aria-label="Access you approved" className="mt-6">
+            <h4 className="mb-1.5 text-[12px] font-medium text-muted-foreground">
+              Access you approved
+            </h4>
+            {grants.map((g, i) => (
+              <GrantLine
+                key={`${g.source}#${String(i)}`}
+                row={g}
+                busy={revoking.has(g.source)}
+                onRevoke={onRevoke}
+              />
+            ))}
+          </section>
+        )}
+      </div>
+
+      {/*
+        Pinned: the tool list can be long, and these two should not scroll
+        away with it. Sticky inside the rail's own scroll area, on the page
+        background so rows passing under it don't show through.
+      */}
+      <div className="sticky bottom-0 -mx-1 mt-4 flex items-center justify-between gap-2 border-t border-border bg-background px-1 py-3">
+        {row.editable ? (
+          <Button type="button" variant="outline" size="sm" onClick={onEdit} disabled={busy}>
+            <Pencil data-icon="inline-start" aria-hidden="true" />
+            Edit connector
+          </Button>
+        ) : (
+          <span />
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-destructive hover:bg-destructive-soft hover:text-destructive"
+          onClick={onRemove}
+          disabled={busy}
+        >
+          <Trash2 data-icon="inline-start" aria-hidden="true" />
+          Remove
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "Connected · signed in as you". Only what we know: the row's stored health
+ * (the same word the list's error icon uses), else the last time we asked the
+ * connector for its tools; "as you" is said only for a connector that acts
+ * with the person's own access.
+ */
+function ConnectionLine({
+  data,
+  health,
+}: {
+  data: AgentConnectorToolsRead | null;
+  health: AgentConnectorHealth;
+}) {
+  if (data === null) return null;
+  // The list's health word wins (TASK-741): only the sign-in marker can say a
+  // sign-in EXPIRED — a tool list answering needs-auth may just mean nobody
+  // has signed in yet.
+  const ok = data.status === 'ok' && health === 'ok';
+  const word =
+    health === 'needs-reconnect'
+      ? 'Sign-in expired'
+      : health === 'unreachable'
+        ? 'Can’t reach it'
+        : data.status === 'ok'
+      ? 'Connected'
+      : data.status === 'needs-auth'
+        ? 'Sign-in needed'
+        : data.status === 'unreachable'
+          ? 'Can’t reach it'
+          : 'We can’t check this one from here';
+  const who = data.connector.access === 'workspace' ? 'uses your workspace’s account' : 'signed in as you';
+  const Icon = ok ? CircleCheck : CircleAlert;
+  return (
+    <p
+      className={cn(
+        'mt-0.5 flex items-center gap-1 text-[12px]',
+        ok || (health === 'ok' && data.status === 'unknown')
+          ? 'text-muted-foreground'
+          : 'text-destructive',
+      )}
+    >
+      <Icon aria-hidden="true" className="size-3.5 shrink-0" />
+      <span>
+        {word}
+        {ok && ` · ${who}`}
+      </span>
+    </p>
+  );
+}
+
+function unavailableText(data: AgentConnectorToolsRead): string | null {
+  switch (data.status) {
+    case 'needs-auth':
+      return 'Sign in to this connector again to see all of its tools.';
+    case 'unreachable':
+      return 'We couldn’t reach this connector to list its tools.';
+    case 'unknown':
+      return 'We can’t list this connector’s tools from here.';
+    case 'ok':
+      return data.tools.length === 0 ? 'This connector didn’t list any tools.' : null;
+  }
+}
+
+function ToolList({
+  agentName,
+  data,
+  state,
+}: {
+  agentName: string;
+  data: AgentConnectorToolsRead;
+  state: ConnectorToolsState;
+}) {
+  const [notice, setNotice] = useState<string | null>(null);
+  const groups = groupTools(data.tools);
+  const missing = unavailableText(data);
+
+  async function change(tool: AgentConnectorTool, verdict: AgentToolVerdict) {
+    setNotice(null);
+    const outcome = await state.setVerdict(tool.toolKey, verdict);
+    if (outcome === 'failed') setNotice('We couldn’t change that just now. Nothing changed.');
+    if (outcome === 'refused')
+      setNotice(
+        `That choice isn’t available for ${tool.title} any more, so it wasn’t saved. What’s shown is what’s set now.`,
+      );
+  }
+
+  return (
+    <>
+      <h4 className="flex items-baseline gap-1.5 text-[13px] font-medium">
+        What {agentName} may do
+        <span className="text-[12px] font-normal text-muted-foreground tabular-nums">
+          {data.tools.length === 1 ? '1 tool' : `${String(data.tools.length)} tools`}
+        </span>
+      </h4>
+      <ul
+        aria-label="What each choice means"
+        className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted-foreground"
+      >
+        {TOOL_VERDICT_OPTIONS.map(({ value, label, Icon }) => (
+          <li key={value} className="flex items-center gap-1">
+            <Icon aria-hidden="true" className="size-3.5" />
+            {label}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1 text-[11.5px] text-muted-foreground">{ROUTINES_WAIT_NOTE}</p>
+
+      {missing !== null && (
+        <Alert className="mt-3">
+          <AlertDescription className="flex flex-col items-start gap-2 text-[12.5px]">
+            <p>{missing}</p>
+            {data.status === 'unreachable' && (
+              <Button type="button" variant="outline" size="sm" onClick={() => state.reload(true)}>
+                Check again
+              </Button>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+      {data.status === 'ok' && data.possiblyIncomplete && (
+        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+          Part of this connector can’t be listed from here, so some of its tools may be
+          missing. Any it uses that aren’t listed ask you first unless your admin chose
+          otherwise.
+        </p>
+      )}
+      {notice !== null && (
+        <Alert variant="destructive" className="mt-3">
+          <AlertDescription>{notice}</AlertDescription>
+        </Alert>
+      )}
+
+      <TooltipProvider delayDuration={200}>
+        <ToolGroup
+          label="Looks things up"
+          tools={groups.looksUp}
+          pending={state.pending}
+          onChange={change}
+        />
+        <ToolGroup
+          label="Makes changes"
+          caption={
+            groups.makesChanges.some((t) => t.outward === true)
+              ? 'Others may see these'
+              : undefined
+          }
+          tools={groups.makesChanges}
+          pending={state.pending}
+          onChange={change}
+        />
+      </TooltipProvider>
+    </>
+  );
+}
+
+function ToolGroup({
+  label,
+  caption,
+  tools,
+  pending,
+  onChange,
+}: {
+  label: string;
+  caption?: string | undefined;
+  tools: AgentConnectorTool[];
+  pending: ReadonlySet<string>;
+  onChange: (tool: AgentConnectorTool, verdict: AgentToolVerdict) => void;
+}) {
+  if (tools.length === 0) return null;
+  return (
+    <section aria-label={label} className="mt-4">
+      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+        <h5 className="text-[12px] font-medium text-muted-foreground">{label}</h5>
+        {caption !== undefined && (
+          <span className="text-[11.5px] text-muted-foreground">{caption}</span>
+        )}
+      </div>
+      <Card className="shadow-none">
+        <ul>
+          {tools.map((tool, i) => (
+            <Fragment key={tool.toolKey}>
+              {i > 0 && <Separator />}
+              <ToolRow
+                tool={tool}
+                busy={pending.has(tool.toolKey)}
+                onChange={(v) => onChange(tool, v)}
+              />
+            </Fragment>
+          ))}
+        </ul>
+      </Card>
+    </section>
+  );
+}
+
+function ToolRow({
+  tool,
+  busy,
+  onChange,
+}: {
+  tool: AgentConnectorTool;
+  busy: boolean;
+  onChange: (verdict: AgentToolVerdict) => void;
+}) {
+  return (
+    <li className="flex min-h-10 items-center gap-2 py-1 pl-3 pr-1.5">
+      <span className="min-w-0 flex-1 truncate text-[13px]" title={tool.title}>
+        {tool.title}
+      </span>
+      {busy && (
+        <Loader2
+          aria-hidden="true"
+          className="size-3.5 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
+        />
+      )}
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        size="sm"
+        className="shrink-0 gap-0.5"
+        aria-label={`What it may do with ${tool.title}`}
+        aria-busy={busy || undefined}
+        value={tool.verdict}
+        onValueChange={(value) => {
+          // A single toggle group lets you press the selected item off; a tool
+          // always has exactly one choice, so an empty value is ignored. So is
+          // a segment the admin's ceiling rules out, and a press mid-write.
+          if (!value || busy || value === tool.verdict) return;
+          const verdict = value as AgentToolVerdict;
+          if (ceilingReason(verdict, tool.ceiling) !== null) return;
+          onChange(verdict);
+        }}
+      >
+        {TOOL_VERDICT_OPTIONS.map(({ value, label, Icon, on }) => {
+          const reason = ceilingReason(value, tool.ceiling);
+          const item = (
+            <ToggleGroupItem
+              key={value}
+              value={value}
+              aria-label={label}
+              aria-disabled={reason !== null || undefined}
+              className={cn(
+                'size-7 min-w-7 px-0',
+                on,
+                reason !== null && 'cursor-not-allowed opacity-40 hover:bg-transparent',
+              )}
+            >
+              <Icon aria-hidden="true" />
+            </ToggleGroupItem>
+          );
+          if (reason === null) return item;
+          return (
+            <Tooltip key={value}>
+              <TooltipTrigger asChild>{item}</TooltipTrigger>
+              <TooltipContent side="top">{reason}</TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </ToggleGroup>
+    </li>
+  );
+}

@@ -156,7 +156,7 @@ moved into the hook so every route enforces it. Remove: `attached` → detach; `
 Workspace routes (`channel-web/src/server/routes-workspace.ts`, all gated by `agents:resolve`):
 `GET /api/workspace/agents/:id/connectors` → `{connectors: [{id, name, source, health, removable}], abilities: {webSearch, readPages, runCode}, available: [...]}`;
 `POST …/connectors {connectorId}`; `DELETE …/connectors/:cid`; `GET …/connectors/:cid/tools`;
-`PUT …/tool-verdicts {toolKey, verdict}`; `PUT …/abilities`.
+`PUT …/connectors/:cid/tool-verdicts {toolKey, verdict}` (as built, TASK-742: nested so the key is bound to that connector's namespaces); `PUT …/abilities`.
 
 ### 5. Health without N probes
 

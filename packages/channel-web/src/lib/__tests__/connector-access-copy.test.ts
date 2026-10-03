@@ -3,7 +3,7 @@
  *
  * The words are the deliverable, so the test pins what they must say and what
  * they must not. It is deliberately not a snapshot: a snapshot passes on any
- * rewording, including one that quietly drops "without asking you each time".
+ * rewording, including one that quietly drops "without asking".
  * Each assertion names one of the four ideas the card requires, so deleting an
  * idea reddens exactly that assertion.
  */
@@ -44,10 +44,15 @@ describe('connector access notice copy', () => {
     expect(connectorAccessCopy(kind).headline).toMatch(/access/i);
   });
 
-  it.each(CONNECTOR_ACCESS_KINDS)('%s: says it can read or change things, unasked', (kind) => {
+  it.each(CONNECTOR_ACCESS_KINDS)('%s: says what runs unasked: the tools set to Allow', (kind) => {
+    // TASK-742 — deliberately changed. The old pin was "without asking you each
+    // time" about every tool. Since TASK-736 a tool can be Ask first or Deny,
+    // so the unasked reach is the tools at Allow, and the sentence must say so
+    // rather than claim it of all of them.
     const h = connectorAccessCopy(kind).headline;
     expect(h).toMatch(/read or change things/i);
-    expect(h).toMatch(/without asking (you|anyone)? ?each time/i);
+    expect(h).toMatch(/any tool set to Allow can read or change things[^.]*without asking/i);
+    expect(h).not.toMatch(/each time/i);
   });
 
   it.each(CONNECTOR_ACCESS_KINDS)('%s: names the way something it reads can steer it', (kind) => {
@@ -82,9 +87,12 @@ describe('connector access notice copy', () => {
   });
 
   it.each(CONNECTOR_ACCESS_KINDS)('%s: makes no promise of a protection that does not exist', (kind) => {
-    // TASK-328 (a per-call approval) is not built. Nothing here may imply that
-    // the assistant checks, confirms, logs, or can be undone. "asking" appears
-    // exactly once and only as "without asking".
+    // Nothing here may imply that the assistant checks, confirms, logs, or can
+    // be undone. "asking" appears exactly once and only as "without asking" —
+    // re-pinned deliberately by TASK-742: the one "without asking" is now
+    // scoped to tools set to Allow (asserted above), and the notice still does
+    // not promise that any OTHER tool asks, because an admin default can be
+    // Allow too.
     const t = textOf(kind);
     expect(t).not.toMatch(/\b(safe|safely|secure|secured|protected|protects|guarantee[ds]?)\b/i);
     expect(t).not.toMatch(/\b(undo|revoke|reversible)\b/i);

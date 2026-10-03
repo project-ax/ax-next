@@ -24,17 +24,17 @@
  * "+ Add" and the empty state's "Add connector" (TASK-740) open the Add
  * subview (`AddConnector`); the Connectors tab swaps it in for this list.
  *
- * Deliberately NOT drawn yet, because nothing behind them is wired
- * (invariant 3 — no half-wired UI):
- *
- *   - "View details" — slice 9 (TASK-742).
- *
- * The seams those slices build on: `RowMenu` takes more items above
- * "Edit connector".
+ * **View details** (TASK-742) opens the in-rail details subview with per-tool
+ * Allow / Ask first / Deny (`ConnectorDetails`). Which connector is open is
+ * the tab's state (`viewing`), because the subview replaces the whole tab,
+ * "Other abilities" included. The subview's `⋯` is this same menu (minus View
+ * details), so Reconnect / Retry are there too — and the dialogs stay mounted
+ * across the switch, so a sign-in started from either view is never cut off.
  */
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   CircleAlert,
+  Info,
   LogIn,
   MoreHorizontal,
   Pencil,
@@ -84,7 +84,9 @@ import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConne
 import { useAgentConnectors } from '@/lib/agent-connectors';
 import { getConnector, type Connector } from '@/lib/connectors';
 import { useUser } from '@/lib/user-context';
+import type { GrantRow } from '@/lib/workspace-api';
 import type { AgentConnectorHealth, AgentConnectorRow } from '@/lib/workspace-types';
+import { ConnectorDetails } from './ConnectorDetails';
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
 const HEALTH_REASON: Record<Exclude<AgentConnectorHealth, 'ok'>, string> = {
@@ -100,9 +102,33 @@ interface Props {
   onChanged?: () => void;
   /** "+ Add" / "Add connector" — open the Add subview (TASK-740). */
   onAdd?: () => void;
+  /** The connector whose details are open, or null for the list (TASK-742). */
+  viewing?: string | null;
+  onView?: (connectorId: string | null) => void;
+  /** Approved-access rows; the details view shows the ones for its connector. */
+  grants?: GrantRow[];
+  revoking?: ReadonlySet<string>;
+  onRevoke?: (row: GrantRow) => void;
+  /** The ids currently listed, or null while unknown — so the tab can tell
+   *  which approved access has a details view to live in. */
+  onListed?: (ids: ReadonlySet<string> | null) => void;
 }
 
-export function AgentConnectors({ agentId, name, onChanged, onAdd }: Props) {
+const NO_GRANTS: GrantRow[] = [];
+const NOTHING: ReadonlySet<string> = new Set();
+
+export function AgentConnectors({
+  agentId,
+  name,
+  onChanged,
+  onAdd,
+  viewing = null,
+  onView,
+  grants = NO_GRANTS,
+  revoking = NOTHING,
+  onRevoke,
+  onListed,
+}: Props) {
   const { connectors, status, removing, remove, shared, retrying, retry, refresh } =
     useAgentConnectors(agentId);
   const isAdmin = useUser()?.role === 'admin';
@@ -174,8 +200,63 @@ export function AgentConnectors({ agentId, name, onChanged, onAdd }: Props) {
 
   const count = status === 'ok' && connectors !== null ? connectors.length : null;
 
+  useEffect(() => {
+    onListed?.(
+      status === 'ok' && connectors !== null ? new Set(connectors.map((c) => c.id)) : null,
+    );
+  }, [status, connectors, onListed]);
+
+  // The open connector, once the list has it. A connector that left the list
+  // (removed here, or elsewhere) closes its details rather than showing a
+  // view of something the agent no longer has.
+  const open =
+    viewing === null || connectors === null
+      ? null
+      : (connectors.find((c) => c.id === viewing) ?? null);
+  const gone = viewing !== null && status === 'ok' && connectors !== null && open === null;
+  useEffect(() => {
+    if (gone) onView?.(null);
+  }, [gone, onView]);
+
+  /** One row's `⋯` menu — the list's and the details view's are the same. */
+  const menuFor = (row: AgentConnectorRow, withView: boolean) => (
+    <RowMenu
+      row={row}
+      agentName={name}
+      busy={removing.has(row.id) || retrying.has(row.id)}
+      onReconnect={() => {
+        setNotice(null);
+        setReconnecting(row);
+      }}
+      onRetry={() => void onRetry(row)}
+      {...(withView && onView !== undefined ? { onView: () => onView(row.id) } : {})}
+      onEdit={() => void onEdit(row)}
+      onRemove={() => setConfirming(row)}
+    />
+  );
+
   return (
     <>
+      {open !== null ? (
+        <ConnectorDetails
+          // A different connector is a different view: start it fresh.
+          key={open.id}
+          agentId={agentId}
+          agentName={name}
+          row={open}
+          grants={grants.filter(
+            (g) => g.grantedFor?.kind === 'connection' && g.grantedFor.id === open.id,
+          )}
+          revoking={revoking}
+          onRevoke={(g) => onRevoke?.(g)}
+          busy={removing.has(open.id)}
+          menu={menuFor(open, false)}
+          onBack={() => onView?.(null)}
+          onEdit={() => void onEdit(open)}
+          onRemove={() => setConfirming(open)}
+        />
+      ) : (
+      <>
       <ConnectorsHeader count={count} onAdd={onAdd} />
       {status === 'loading' && (
         <div className="flex flex-col gap-3" aria-busy="true">
@@ -203,22 +284,13 @@ export function AgentConnectors({ agentId, name, onChanged, onAdd }: Props) {
                   <span className="min-w-0 truncate text-[13px]">{row.name}</span>
                   {row.health !== 'ok' && <HealthIcon health={row.health} />}
                 </div>
-                <RowMenu
-                  row={row}
-                  agentName={name}
-                  busy={removing.has(row.id) || retrying.has(row.id)}
-                  onReconnect={() => {
-                    setNotice(null);
-                    setReconnecting(row);
-                  }}
-                  onRetry={() => void onRetry(row)}
-                  onEdit={() => void onEdit(row)}
-                  onRemove={() => setConfirming(row)}
-                />
+                {menuFor(row, true)}
               </div>
             </Fragment>
           ))}
         </Card>
+      )}
+      </>
       )}
       {notice !== null && (
         notice.tone === 'error' ? (
@@ -407,6 +479,7 @@ function RowMenu({
   busy,
   onReconnect,
   onRetry,
+  onView,
   onEdit,
   onRemove,
 }: {
@@ -415,6 +488,8 @@ function RowMenu({
   busy: boolean;
   onReconnect: () => void;
   onRetry: () => void;
+  /** Absent inside the details view itself. */
+  onView?: () => void;
   onEdit: () => void;
   onRemove: () => void;
 }) {
@@ -448,6 +523,17 @@ function RowMenu({
               )}
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
+          </>
+        )}
+        {onView !== undefined && (
+          <>
+            <DropdownMenuGroup>
+              <DropdownMenuItem onSelect={onView}>
+                <Info aria-hidden="true" />
+                View details
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
+            {!row.editable && <DropdownMenuSeparator />}
           </>
         )}
         {row.editable && (

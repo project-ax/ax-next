@@ -2,11 +2,12 @@
  * What a person is told at the moment they give an assistant access to a service
  * (TASK-700 — the launch disclosure for TASK-328).
  *
- * WHY THIS EXISTS. A connector's tools run without a per-call approval: the
- * policy table has no rule for them and "no rule matching is `allow`"
- * (`tool-policy/src/evaluate.ts`, the TASK-263 note). Vinay chose "accept and
- * disclose" for launch, so at every place a key, a sign-in or an attachment
- * hands an agent that reach, we say so plainly. This file is that sentence,
+ * WHY THIS EXISTS. When TASK-700 wrote it, a connector's tools ran without a
+ * per-call approval ("no rule matching is `allow`"). Since TASK-736 each tool
+ * is Allow, Ask first or Deny, but a tool at Allow still runs unasked with the
+ * whole of the key's reach. Vinay chose "accept and disclose", so at every
+ * place a key, a sign-in or an attachment hands an agent that reach, we say so
+ * plainly. This file is that sentence,
  * owned in one place — the same shape as `lib/grant-copy.ts`, for the same
  * reason: five surfaces show it, and five hand-typed copies of security text
  * are five chances to drift into saying different things.
@@ -15,13 +16,13 @@
  *   - "the same access the key has" — the credential proxy substitutes the
  *     stored key on requests to the connector's bound hosts, and the agent acts
  *     with it. Whatever the key can do, the agent can do.
- *   - "without asking you each time" — NO LONGER UNIVERSALLY TRUE since
- *     TASK-736: a connector tool with no admin default is held ("Ask first"),
- *     and admins/agents can set Ask first or Deny per tool. The copy update is
- *     owned by connectors-rail slice 9 (design
- *     `docs/plans/2026-10-02-connectors-rail-design.md` §6), which also updates
- *     the pinned `asking` count test. Until then the sentence OVERSTATES how
- *     freely the agent acts — the conservative direction for a disclosure.
+ *   - "any tool set to Allow can … without asking you" — since TASK-736 each
+ *     connector tool is Allow, Ask first or Deny (no admin default = Ask
+ *     first), and since TASK-742 a person sets it per agent in the connector's
+ *     details. So the unasked reach is exactly the tools at Allow — the copy
+ *     used to say "without asking you each time" about EVERY tool, which
+ *     stopped being true. It still does not promise that any given tool asks:
+ *     an admin may default a tool to Allow.
  *   - "could trick it" — anything the agent reads (a page, a file) is untrusted
  *     text that reaches the same model that holds the access.
  *   - NOT claimed: that the agent can or cannot see the key (`KEY_SAFETY` says
@@ -62,13 +63,13 @@ const RISK =
   'Something it reads, like a web page or a file, could trick it into using that access in a way you didn’t intend.';
 
 const HEADLINE: Record<ConnectorAccessNoticeKind, string> = {
-  key: 'Your assistant gets the same access the key has, and can read or change things in this service without asking you each time.',
+  key: 'Your assistant gets the same access the key has, and any tool set to Allow can read or change things in this service without asking you.',
   'sign-in':
-    'Your assistant gets the access this sign-in allows, and can read or change things in this service without asking you each time.',
+    'Your assistant gets the access this sign-in allows, and any tool set to Allow can read or change things in this service without asking you.',
   attach:
-    'Once this connector has a key or sign-in, this agent gets that same access and can read or change things in the service without asking you each time.',
+    'Once this connector has a key or sign-in, this agent gets that same access, and any tool set to Allow can read or change things without asking you.',
   author:
-    'Any key added for this connector gives the assistant the same access the key has, and it can read or change things in this service without asking each time.',
+    'Any key added for this connector gives the assistant the same access the key has, and any tool set to Allow can read or change things without asking.',
 };
 
 const ADVICE: Record<ConnectorAccessNoticeKind, string> = {

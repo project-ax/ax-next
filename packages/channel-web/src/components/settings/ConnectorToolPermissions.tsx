@@ -30,7 +30,8 @@ import { FieldDescription, FieldSet, FieldLegend } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 
-const OPTIONS: { value: ToolVerdict; label: string; Icon: LucideIcon; on: string }[] = [
+/** Shared with the rail's connector details view (TASK-742): one look for the three choices. */
+export const TOOL_VERDICT_OPTIONS: { value: ToolVerdict; label: string; Icon: LucideIcon; on: string }[] = [
   {
     value: 'allow',
     label: 'Allow',
@@ -132,7 +133,7 @@ function ToolRow({
           if (value) onChange(value as ToolVerdict);
         }}
       >
-        {OPTIONS.map(({ value, label, Icon, on }) => (
+        {TOOL_VERDICT_OPTIONS.map(({ value, label, Icon, on }) => (
           <ToggleGroupItem key={value} value={value} aria-label={label} className={cn(on)}>
             <Icon />
           </ToggleGroupItem>
@@ -315,7 +316,7 @@ export function ConnectorToolPermissions({
         aria-label="What each choice means"
         className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground"
       >
-        {OPTIONS.map(({ value, label, Icon }) => (
+        {TOOL_VERDICT_OPTIONS.map(({ value, label, Icon }) => (
           <li key={value} className="flex items-center gap-1">
             <Icon aria-hidden="true" className="size-3.5" />
             {label}

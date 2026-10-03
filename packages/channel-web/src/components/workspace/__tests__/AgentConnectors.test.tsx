@@ -4,8 +4,8 @@
  * Pinned: rows are the connector NAME only; the ⋯ menu holds exactly what is
  * wired (Edit connector for an editable one, then Remove from <agent>);
  * removing asks first and never drops a row the server still has; the empty
- * state; "+ Add" / "Add connector" open the Add subview (TASK-740); and no
- * View details before its slice lands.
+ * state; "+ Add" / "Add connector" open the Add subview (TASK-740). View
+ * details arrived with TASK-742 (see ConnectorDetails.test.tsx).
  *
  * TASK-741 (slice 8): an errored row wears ONE red icon after its name — no
  * inline error text — whose reason is its accessible name and a tooltip that
@@ -131,16 +131,16 @@ describe('row menu', () => {
     renderTab();
     const menu = await openMenu('Linear');
     const items = within(menu).getAllByRole('menuitem').map((i) => i.textContent);
-    expect(items).toEqual(['Edit connector', 'Remove from Quill']);
+    expect(items).toEqual(['View details', 'Edit connector', 'Remove from Quill']);
     // Not wired yet — its slice adds it. A healthy row offers no fix.
-    expect(within(menu).queryByText(/View details|Reconnect|Retry/)).toBeNull();
+    expect(within(menu).queryByText(/Reconnect|Retry/)).toBeNull();
   });
 
   it('hides Edit connector for one this person cannot edit', async () => {
     renderTab();
     const menu = await openMenu('Gmail');
     const items = within(menu).getAllByRole('menuitem').map((i) => i.textContent);
-    expect(items).toEqual(['Remove from Quill']);
+    expect(items).toEqual(['View details', 'Remove from Quill']);
   });
 
   it('opens the Settings connector editor for Edit connector', async () => {
@@ -265,6 +265,7 @@ describe('connector health (TASK-741)', () => {
     let menu = await openMenu('Gmail');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Reconnect',
+      'View details',
       'Remove from Quill',
     ]);
     fireEvent.keyDown(menu, { key: 'Escape' });
@@ -272,6 +273,7 @@ describe('connector health (TASK-741)', () => {
     menu = await openMenu('Slack');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Retry',
+      'View details',
       'Edit connector',
       'Remove from Quill',
     ]);
