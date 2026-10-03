@@ -205,6 +205,64 @@ describe('connectors:describe-tools', () => {
     expect(t.list).not.toHaveBeenCalled();
   });
 
+  it('returns needs-auth when the OAuth sign-in was rejected (reconnect error wrapped by the bus)', async () => {
+    const t = setup({
+      credential: () => {
+        const rejected = new Error('refresh token rejected; reconnect required');
+        rejected.name = 'NeedsReconnectError';
+        throw new PluginError({ code: 'unknown', plugin: '@ax/mcp-oauth', message: 'wrapped', cause: rejected });
+      },
+    });
+    expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('needs-auth');
+    expect(t.list).not.toHaveBeenCalled();
+  });
+
+  // TASK-756 — a vault / credential-proxy blip is not "needs sign-in".
+  it.each<[string, () => never]>([
+    ['a storage fault', () => {
+      throw new PluginError({ code: 'unknown', plugin: 'credentials-store-db', message: 'db down' });
+    }],
+    ['a refresh the provider could not answer now', () => {
+      throw new PluginError({
+        code: 'unknown',
+        plugin: '@ax/mcp-oauth',
+        message: 'wrapped',
+        cause: new Error('temporarily_unavailable'),
+      });
+    }],
+    ['a decrypt failure', () => {
+      throw new PluginError({ code: 'decrypt-failed', plugin: 'credentials', message: 'x' });
+    }],
+    ['a bare throw', () => {
+      throw new Error('socket hang up');
+    }],
+  ])('a transient credential failure (%s) throws credential-unavailable, never needs-auth, and stores nothing', async (_l, credential) => {
+    const t = setup({ credential });
+    await expect(t.run({ userId: 'u1', connectorId: 'linear', force: true })).rejects.toMatchObject({
+      code: 'credential-unavailable',
+    });
+    expect(t.list).not.toHaveBeenCalled();
+    expect(t.store.rows.size).toBe(0);
+  });
+
+  it('a transient credential failure leaves the last real answer in place', async () => {
+    let blip = false;
+    const t = setup({
+      credential: () => {
+        if (blip) throw new PluginError({ code: 'unknown', plugin: 'credentials-store-db', message: 'db down' });
+        return 'tok-123';
+      },
+    });
+    expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('ok');
+    const before = [...t.store.rows.values()][0];
+    blip = true;
+    await expect(t.run({ userId: 'u1', connectorId: 'linear', force: true })).rejects.toMatchObject({
+      code: 'credential-unavailable',
+    });
+    expect([...t.store.rows.values()][0]).toBe(before);
+    expect(t.fired.filter((f) => f.hook === 'connectors:tools-discovered')).toHaveLength(1);
+  });
+
   it.each<[ListOutcome, string]>([
     [{ kind: 'needs-auth' }, 'needs-auth'],
     [{ kind: 'unreachable', reason: 'timeout' }, 'unreachable'],

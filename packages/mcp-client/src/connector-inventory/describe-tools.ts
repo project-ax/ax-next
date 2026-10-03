@@ -9,7 +9,10 @@
 //      unless `force`.
 //   4. For each http server: build auth headers from the connector's
 //      credential plan via `credentials:get` (the same refs the session's
-//      credential-proxy spends), then one guarded `tools/list`.
+//      credential-proxy spends), then one guarded `tools/list`. No usable
+//      sign-in → `needs-auth`; a credential that could not be READ (a vault
+//      blip) → the call throws `credential-unavailable` and stores nothing
+//      (TASK-756), so a blip is never reported as a sign-in problem.
 //      stdio servers can't be listed host-side → `unknown`.
 //   5. Store, and fire `connectors:tools-discovered` when an `ok` inventory
 //      differs from the last `ok` one.
@@ -86,6 +89,22 @@ function fingerprint(tools: InventoryTool[]): string {
 
 const SEVERITY: Record<InventoryStatus, number> = { ok: 0, unknown: 0, unreachable: 1, 'needs-auth': 2 };
 
+/**
+ * TASK-756 — a credential failure that means "there is no usable sign-in":
+ * nothing stored for the ref, or an OAuth sign-in the authorization server
+ * rejected. The reconnect error crosses the bus twice (resolver →
+ * credentials:get → here) and is wrapped on the way, so it is recognised by
+ * name on the error or its cause, never by importing @ax/mcp-oauth (I2) —
+ * the same rule channel-web's `credentialMissing` applies. Anything else (a
+ * vault/storage blip, a refresh the provider could not answer right now) says
+ * nothing about the sign-in, so it must not be reported as one.
+ */
+function noUsableCredential(err: unknown): boolean {
+  if (err instanceof PluginError && err.code === 'credential-not-found') return true;
+  const named = (e: unknown): boolean => e instanceof Error && e.name === 'NeedsReconnectError';
+  return named(err) || named((err as { cause?: unknown } | null)?.cause);
+}
+
 export function createDescribeTools(deps: DescribeToolsDeps) {
   const now = deps.now ?? (() => new Date());
   const list = deps.listTools ?? listServerTools;
@@ -96,7 +115,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     server: ResolvedServer,
     ctx: AgentContext,
     userId: string,
-  ): Promise<Record<string, string> | 'needs-auth'> {
+  ): Promise<Record<string, string> | 'needs-auth' | 'unavailable'> {
     const headers: Record<string, string> = {};
     for (const slot of connector.capabilities.credentials) {
       if (slot.server !== server.name) continue;
@@ -111,11 +130,13 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
           userId,
         });
       } catch (err) {
+        const missing = noUsableCredential(err);
         ctx.logger.info('connector_inventory_credential_unavailable', {
           connectorId: connector.id,
           code: err instanceof PluginError ? err.code : 'error',
+          transient: !missing,
         });
-        return 'needs-auth';
+        return missing ? 'needs-auth' : 'unavailable';
       }
       if (typeof value !== 'string' || value.length === 0) return 'needs-auth';
       headers[header] = slot.kind === 'oauth' ? `Bearer ${value}` : value;
@@ -150,6 +171,18 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
         outcome = { kind: 'unreachable', reason: 'no-url' };
       } else {
         const headers = await headersFor(connector, server, ctx, input.userId);
+        if (headers === 'unavailable') {
+          // TASK-756 — the credential could not be READ right now. That is not
+          // "needs sign-in": answering needs-auth would misreport a blip, and
+          // storing anything would overwrite the last real answer. So the check
+          // did not happen — say so, store nothing, and let the caller retry.
+          throw new PluginError({
+            code: 'credential-unavailable',
+            plugin: PLUGIN_NAME,
+            hookName: 'connectors:describe-tools',
+            message: 'credential temporarily unavailable; try again',
+          });
+        }
         outcome =
           headers === 'needs-auth'
             ? { kind: 'needs-auth' }
