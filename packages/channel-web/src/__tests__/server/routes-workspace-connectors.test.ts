@@ -95,6 +95,7 @@ describe('agent connector routes', () => {
   let approved: Map<string, Array<{ kind: string; value: string }>>;
   let revokeCalls: Array<Record<string, unknown>>;
   let approvedListThrows: boolean;
+  let revokeClears: boolean;
 
   function handlers() {
     return makeWorkspaceHandlers({ bus, initCtx });
@@ -143,6 +144,7 @@ describe('agent connector routes', () => {
     ]);
     revokeCalls = [];
     approvedListThrows = false;
+    revokeClears = true;
 
     bus.registerService('auth:require-user', 'auth', async () => ({ user: caller }));
     bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
@@ -189,7 +191,7 @@ describe('agent connector routes', () => {
     });
     bus.registerService('skills:approved-caps-revoke', 'skills', async (_c, i: unknown) => {
       revokeCalls.push(i as Record<string, unknown>);
-      return { cleared: true };
+      return { cleared: revokeClears };
     });
   });
 
@@ -349,6 +351,14 @@ describe('agent connector routes', () => {
       expect(r.body).toEqual({ removed: true, cleanup: 'partial' });
       // The per-tool clear still ran.
       expect(overrideClears).toHaveLength(2);
+    });
+
+    it('reports a revoke that cleared nothing as partial, not complete', async () => {
+      revokeClears = false;
+      const r = await remove('linear');
+      expect(r.statusCode).toBe(200);
+      expect(r.body).toEqual({ removed: true, cleanup: 'partial' });
+      expect(revokeCalls).toHaveLength(1);
     });
 
     it('reports a refused per-tool clear as partial', async () => {

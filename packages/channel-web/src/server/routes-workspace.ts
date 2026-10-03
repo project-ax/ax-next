@@ -3276,11 +3276,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             complete = false;
             continue;
           }
-          await bus.call<ApprovedCapsRevokeInput, ApprovedCapsRevokeOutput>(
+          const revoked = await bus.call<ApprovedCapsRevokeInput, ApprovedCapsRevokeOutput>(
             'skills:approved-caps-revoke',
             ctx,
             { ownerUserId, agentId, kind: cap.kind, value: cap.value, connectorId },
           );
+          // A grant listed a moment ago that did not clear is a miss, not
+          // success — the same rule the override step above follows.
+          if (revoked?.cleared !== true) complete = false;
         }
       } catch (err) {
         complete = false;
