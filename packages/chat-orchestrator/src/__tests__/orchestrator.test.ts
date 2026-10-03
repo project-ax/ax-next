@@ -6511,6 +6511,48 @@ describe('agentConfig.disallowedTools from tool-policy overrides', () => {
     expect('disallowedTools' in agentConfig).toBe(false);
   });
 
+  // TASK-754 — a workspace-default connector never gets an attach, so the
+  // session open is where it copies its per-tool defaults (first sight only).
+  it('copies a default-on connector\u2019s defaults before the sandbox opens; a failure still opens it', async () => {
+    const order: string[] = [];
+    const copies: unknown[] = [];
+    const { outcome, mocks } = await run({
+      'connectors:list-effective': async () => {
+        order.push('list-effective');
+        return {
+          connectors: [
+            {
+              summary: { id: 'linear' },
+              capabilities: {
+                allowedHosts: [],
+                credentials: [],
+                mcpServers: [],
+                packages: { npm: [], pypi: [] },
+              },
+              toolNamespaces: [{ server: 'linear', toolNamespace: 'c0123456789' }],
+            },
+          ],
+        };
+      },
+      'tool-policy:snapshot-connector-for-agent': async (_ctx, input) => {
+        order.push('copy');
+        copies.push(input);
+        throw new Error('store down');
+      },
+    });
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.sandboxOpen).toBe(1);
+    expect(order).toEqual(['list-effective', 'copy']);
+    expect(copies).toEqual([
+      {
+        agentId: 'test-agent',
+        connectorId: 'linear',
+        toolNamespaces: ['c0123456789'],
+        onlyIfNotCopied: true,
+      },
+    ]);
+  });
+
   it('deniedToolKeys tolerates malformed responses', () => {
     expect(deniedToolKeys(undefined)).toEqual([]);
     expect(deniedToolKeys(null)).toEqual([]);

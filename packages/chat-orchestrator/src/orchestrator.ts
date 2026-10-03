@@ -29,6 +29,7 @@ import {
 import {
   resolveEffectiveConnectors,
   resolveSkillReferencedConnectors,
+  copyConnectorDefaultsForSession,
   foldConnectorCaps,
   stampConnectorHeaders,
   connectorCredentialEnvName,
@@ -2722,6 +2723,12 @@ export function createOrchestrator(
       alreadyResolvedConnectorIds,
     );
     const allConnectors = [...effectiveConnectors, ...skillReferencedConnectors];
+
+    // TASK-754 — a connector that reached this agent without an attach (a
+    // workspace default) copies its per-tool defaults now, on first sight;
+    // attached ones were copied at attach and are a cached no-op here.
+    // NON-FATAL (see the helper).
+    await copyConnectorDefaultsForSession(bus, ctx, allConnectors);
 
     // TASK-153 — fold the connectors' Capabilities, including their dev SERVICES.
     // The fold THROWS `ConnectorServiceCollisionError` if two connectors declare

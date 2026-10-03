@@ -81,6 +81,13 @@ export function createChatOrchestratorPlugin(
           degradation:
             'denied tools stay in the model\'s catalog (no disallowedTools); calls to them are still refused host-side on tool:pre-call',
         },
+        {
+          // TASK-754 — a default-on connector copies its per-tool defaults on
+          // the agent's first session (the attach it never had).
+          hook: 'tool-policy:snapshot-connector-for-agent',
+          degradation:
+            "a connector that reaches the agent without an attach (a workspace default) is not copied, so the agent follows the connector's live per-tool defaults — a later loosening by its editor applies to it too",
+        },
       ],
       // ----- conditionally-called peers (NOT in `calls`) -----
       //
