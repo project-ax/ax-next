@@ -151,6 +151,17 @@ export async function runConversationsMigration<DB>(
       ADD COLUMN IF NOT EXISTS external_key TEXT
   `.execute(db);
 
+  // TASK-749 (2026-10-02). How far the MODEL has been told about this
+  // conversation's refused saves: the highest `save-refused` display-event seq
+  // a runner has drained (conversation.drain-save-refusals). The rows
+  // themselves stay the one source of truth (TASK-731); this only marks them
+  // told, so each is delivered to the model once. NULL reads as 0 (nothing
+  // told yet). Additive, nullable, no backfill; idempotent (I11).
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      ADD COLUMN IF NOT EXISTS save_refused_drained_seq BIGINT
+  `.execute(db);
+
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS conversations_v1_external_key_unique
       ON conversations_v1_conversations (user_id, agent_id, external_key)
@@ -326,6 +337,10 @@ export interface ConversationsRow {
   // lookup handle. See migration block above for semantics. NULL for
   // non-routine conversations.
   external_key: string | null;
+  // TASK-749. Highest `save-refused` event seq the model has been told about
+  // (drainSaveRefusals). NULL = none yet. BIGINT, so it may surface as a
+  // string.
+  save_refused_drained_seq: string | number | null;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;

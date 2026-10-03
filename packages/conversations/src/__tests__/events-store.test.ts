@@ -464,3 +464,84 @@ describe('ConversationStore.appendEvent / listEvents', () => {
     expect(ev!.payload).toEqual(adversarial);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-749 — drainSaveRefusals: the refused saves the MODEL has not been told
+// about, taken once. The rows stay (they are the person's thread, TASK-731);
+// only the per-conversation watermark moves.
+// ---------------------------------------------------------------------------
+describe('ConversationStore.drainSaveRefusals (TASK-749)', () => {
+  async function setup() {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+    const conv = await store.create({ userId: 'u1', agentId: 'a1', title: null });
+    const refuse = (key: string, code: string) =>
+      store.appendEvent({
+        conversationId: conv.conversationId,
+        kind: 'save-refused',
+        foldKey: key,
+        payload: { code },
+      });
+    return { store, id: conv.conversationId, refuse };
+  }
+
+  it('returns each untold refusal once, folded per key, and leaves the rows for the thread', async () => {
+    const { store, id, refuse } = await setup();
+    await store.appendEvent({ conversationId: id, kind: 'turn', role: 'assistant', payload: { blocks: [] } });
+    // Both turn-ends of one tool-using turn write a row under its reqId.
+    await refuse('req-1', 'refused');
+    await refuse('req-1', 'refused');
+    await refuse('final:abc', 'storage-full');
+
+    expect(await store.drainSaveRefusals({ conversationId: id, userId: 'u1' })).toEqual([
+      { key: 'req-1', code: 'refused' },
+      { key: 'final:abc', code: 'storage-full' },
+    ]);
+    // Told once: a second drain has nothing.
+    expect(await store.drainSaveRefusals({ conversationId: id, userId: 'u1' })).toEqual([]);
+    // The display rows are untouched.
+    const kinds = (await store.listEvents(id)).map((e) => e.kind);
+    expect(kinds.filter((k) => k === 'save-refused')).toHaveLength(3);
+
+    // A refusal written AFTER the drain is the next drain's.
+    await refuse('req-2', 'too-large');
+    expect(await store.drainSaveRefusals({ conversationId: id, userId: 'u1' })).toEqual([
+      { key: 'req-2', code: 'too-large' },
+    ]);
+  });
+
+  it('drains nothing for another user, an unknown or a deleted conversation, and does not mark them', async () => {
+    const { store, id, refuse } = await setup();
+    await refuse('req-1', 'refused');
+    expect(await store.drainSaveRefusals({ conversationId: id, userId: 'someone-else' })).toEqual([]);
+    expect(await store.drainSaveRefusals({ conversationId: 'nope', userId: 'u1' })).toEqual([]);
+    // The foreign attempt did not consume it.
+    expect(await store.drainSaveRefusals({ conversationId: id, userId: 'u1' })).toEqual([
+      { key: 'req-1', code: 'refused' },
+    ]);
+    await refuse('req-2', 'refused');
+    await store.softDelete(id);
+    expect(await store.drainSaveRefusals({ conversationId: id, userId: 'u1' })).toEqual([]);
+  });
+
+  it('a row with no known code is consumed and dropped', async () => {
+    const { store, id, refuse } = await setup();
+    await refuse('req-1', 'made-up');
+    await refuse('req-2', 'refused');
+    expect(await store.drainSaveRefusals({ conversationId: id, userId: 'u1' })).toEqual([
+      { key: 'req-2', code: 'refused' },
+    ]);
+    expect(await store.drainSaveRefusals({ conversationId: id, userId: 'u1' })).toEqual([]);
+  });
+
+  it('parallel drains never hand the same refusal out twice', async () => {
+    const { store, id, refuse } = await setup();
+    for (let i = 0; i < 5; i += 1) await refuse(`req-${i}`, 'refused');
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () => store.drainSaveRefusals({ conversationId: id, userId: 'u1' })),
+    );
+    const keys = results.flat().map((r) => r.key).sort();
+    expect(keys).toEqual(['req-0', 'req-1', 'req-2', 'req-3', 'req-4']);
+  });
+});

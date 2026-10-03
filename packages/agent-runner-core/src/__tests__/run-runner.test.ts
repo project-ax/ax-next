@@ -1797,6 +1797,216 @@ describe('runRunner', () => {
   });
 });
 
+// TASK-749. TASK-732 tells the model about refusals THIS process saw. A refused
+// final/idle save, or a per-turn refusal on a runner that exited before its
+// next message, has no later turn in its own process; the host keeps those and
+// the runner that serves the next turn drains them
+// (`conversation.drain-save-refusals`) as it builds each turn.
+describe('runRunner — refused saves the host kept for the model (TASK-749)', () => {
+  const NOTICE_HEAD = 'System message (not from the user): Some or all of the file changes you made in an earlier turn were not saved.';
+
+  /**
+   * A conversation-bound runner (so it drains). `drains` answers each
+   * `conversation.drain-save-refusals` call in order (then `{ refusals: [] }`);
+   * a function answer may throw. `answers` are the end-of-turn save answers,
+   * one per turn that has a bundle (`bundles` of them, from turn 1).
+   */
+  async function run(opts: {
+    inbox: unknown[];
+    drains: Array<unknown | (() => unknown)>;
+    answers?: Array<() => Promise<unknown>>;
+    bundles?: number;
+  }): Promise<{ seen: unknown[]; drainCalls: unknown[][] }> {
+    const original = fakeClient.call.getMockImplementation()!;
+    const drainCalls: unknown[][] = [];
+    const drains = [...opts.drains];
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...(await original(action, ...args)), conversationId: 'c1' };
+      if (action === 'attachments.list') return { files: [] };
+      if (action === 'conversation.drain-save-refusals') {
+        drainCalls.push(args);
+        const next = drains.shift();
+        if (next === undefined) return { refusals: [] };
+        return typeof next === 'function' ? (next as () => unknown)() : next;
+      }
+      return original(action, ...args);
+    });
+    for (let i = 0; i < (opts.bundles ?? 0); i += 1) {
+      (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from(`BUNDLE-${i}`));
+    }
+    const answers = [...(opts.answers ?? [])];
+    (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
+      async (action: string) => {
+        if (action === 'workspace.commit-bundle') return answers.shift()!();
+        throw new Error(`unexpected upload: ${action}`);
+      },
+    );
+    scriptInbox(opts.inbox);
+    const seen: unknown[] = [];
+    const loop: Loop = {
+      run: vi.fn(async (ctx: LoopContext) => {
+        for (;;) {
+          const msg = await ctx.nextMessage();
+          if (msg === null) return 0;
+          seen.push(msg);
+          await ctx.endTurn({
+            contentBlocks: [{ type: 'text', text: 'done' }],
+            toolResultBlocks: [],
+            readTurnId: async () => undefined,
+            usage: null,
+          });
+        }
+      }),
+    };
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+    return { seen, drainCalls };
+  }
+
+  const msg = (content: string, reqId: string, cursor: number) => ({
+    type: 'user-message',
+    payload: { role: 'user', content },
+    reqId,
+    cursor,
+  });
+
+  it('a fresh runner tells the model, on its first turn, about a final/idle refusal the host kept — once', async () => {
+    const { seen, drainCalls } = await run({
+      inbox: [msg('hello again', 'req-9', 1), msg('and now?', 'req-10', 2)],
+      drains: [{ refusals: [{ code: 'storage-full', turnReqId: null }] }],
+    });
+    const first = (seen[0] as { content: string }).content;
+    expect(first.startsWith(NOTICE_HEAD)).toBe(true);
+    expect(first).toContain('The storage limit for this workspace was reached.');
+    expect(first.endsWith('\n\nhello again')).toBe(true);
+    // Told once: the host marked it told, and the next turn is bare.
+    expect(seen[1]).toEqual({ content: 'and now?' });
+    // The drain names nothing: the host takes the conversation from ctx.
+    expect(drainCalls).toEqual([[{}], [{}]]);
+  });
+
+  it('a per-turn refusal from a runner that is gone is told too (its key is not one of ours)', async () => {
+    const { seen } = await run({
+      inbox: [msg('hi', 'req-5', 1)],
+      drains: [{ refusals: [{ code: 'too-large', turnReqId: 'req-4' }] }],
+    });
+    const first = (seen[0] as { content: string }).content;
+    expect(first.startsWith(NOTICE_HEAD)).toBe(true);
+    expect(first).toContain('too large to save at once');
+  });
+
+  it('a refusal this process already told the model about is not told again when the host hands it back', async () => {
+    const { seen } = await run({
+      inbox: [msg('write it', 'req-1', 1), msg('and now?', 'req-2', 2), msg('thanks', 'req-3', 3)],
+      bundles: 1,
+      answers: [async () => ({ accepted: false, reason: 'no', recoverable: false })],
+      drains: [
+        { refusals: [] }, // turn 1: nothing kept yet
+        { refusals: [{ code: 'refused', turnReqId: 'req-1' }] }, // turn 2: our own turn-1 refusal
+        { refusals: [{ code: 'refused', turnReqId: 'req-1' }] }, // turn 3: handed back again (late row)
+      ],
+    });
+    const second = (seen[1] as { content: string }).content;
+    // ONE notice, the in-process one (it carries the host's reason).
+    expect(second.split('System message (not from the user)')).toHaveLength(2);
+    expect(second).toContain('"no"');
+    expect(second.endsWith('\n\nand now?')).toBe(true);
+    expect(seen[2]).toEqual({ content: 'thanks' });
+  });
+
+  it('pull-ahead: a message built before the refused turn closes, then the host handing that refusal back, still tells it ONCE', async () => {
+    // The Claude Agent SDK pulls its next prompt while a turn streams, so turn
+    // 2's message (and its drain) runs before turn 1's close. The drain for
+    // turn 3 then sees turn 1's row; the in-process notice must be the only one.
+    const original = fakeClient.call.getMockImplementation()!;
+    const drains: unknown[] = [
+      { refusals: [] }, // turn 1
+      { refusals: [] }, // turn 2, pulled ahead: the row does not exist yet
+      { refusals: [{ code: 'refused', turnReqId: 'req-1' }] }, // turn 3
+    ];
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...(await original(action, ...args)), conversationId: 'c1' };
+      if (action === 'attachments.list') return { files: [] };
+      if (action === 'conversation.drain-save-refusals') return drains.shift() ?? { refusals: [] };
+      return original(action, ...args);
+    });
+    (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('BUNDLE-1'));
+    (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
+      async () => ({ accepted: false, reason: 'no', recoverable: false }),
+    );
+    scriptInbox([msg('write it', 'req-1', 1), msg('pulled early', 'req-2', 2), msg('thanks', 'req-3', 3)]);
+    const seen: unknown[] = [];
+    const end = (ctx: LoopContext) =>
+      ctx.endTurn({
+        contentBlocks: [{ type: 'text', text: 'done' }],
+        toolResultBlocks: [],
+        readTurnId: async () => undefined,
+        usage: null,
+      });
+    const loop: Loop = {
+      run: vi.fn(async (ctx: LoopContext) => {
+        await ctx.nextMessage();
+        seen.push(await ctx.nextMessage()); // pulled ahead of turn 1's close
+        await end(ctx); // turn 1 closes: refused
+        await end(ctx); // turn 2 closes: nothing to save
+        seen.push(await ctx.nextMessage());
+        await end(ctx);
+        return 0;
+      }),
+    };
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(drains).toHaveLength(0);
+    expect(seen[0]).toEqual({ content: 'pulled early' });
+    const third = (seen[1] as { content: string }).content;
+    expect(third.split('System message (not from the user)')).toHaveLength(2);
+    expect(third).toContain('"no"');
+    expect(third.endsWith('\n\nthanks')).toBe(true);
+  });
+
+  it('reaches a host-started decision turn too', async () => {
+    const { seen } = await run({
+      inbox: [{ type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: 'They said yes.' }],
+      drains: [{ refusals: [{ code: 'refused', turnReqId: null }] }],
+    });
+    const first = (seen[0] as { content: string }).content;
+    expect(first.startsWith(NOTICE_HEAD)).toBe(true);
+    expect(first.endsWith('\n\nSystem message (not from the user): They said yes.')).toBe(true);
+  });
+
+  it('a failed drain never fails the turn: the message goes out bare', async () => {
+    const { seen } = await run({
+      inbox: [msg('hello', 'req-1', 1)],
+      drains: [
+        () => {
+          throw new Error('host returned 503');
+        },
+      ],
+    });
+    expect(seen[0]).toEqual({ content: 'hello' });
+  });
+
+  it('a run bound to no conversation never drains', async () => {
+    scriptInbox([msg('hello', 'req-1', 1)]);
+    const loop: Loop = {
+      run: vi.fn(async (ctx: LoopContext) => {
+        await ctx.nextMessage();
+        return 0;
+      }),
+    };
+    expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    expect(fakeClient.call.mock.calls.map((c) => c[0])).not.toContain('conversation.drain-save-refusals');
+  });
+});
+
 describe('runRunner — disallowedTools catalog filter', () => {
   it('drops a tool named in agentConfig.disallowedTools from the catalog the loop sees', async () => {
     const original = fakeClient.call.getMockImplementation()!;

@@ -1,5 +1,5 @@
-import type { ContentBlock } from '@ax/ipc-protocol';
-import { ContentBlockSchema } from '@ax/ipc-protocol';
+import type { ContentBlock, SaveRefusedCode } from '@ax/ipc-protocol';
+import { ContentBlockSchema, SaveRefusedCodeSchema } from '@ax/ipc-protocol';
 import { z, type ZodType } from 'zod';
 
 /**
@@ -284,6 +284,50 @@ export interface AppendEventInput {
   payload: Record<string, unknown>;
 }
 export type AppendEventOutput = void;
+
+/**
+ * TASK-749 — input to `conversations:drain-save-refusals`. Takes the refused
+ * saves (TASK-731 `save-refused` rows) the MODEL has not been told about yet
+ * and marks them told, so a refusal whose runner process is gone (the
+ * final/idle save, or a runner that exited before its next turn) reaches the
+ * model on the next turn of whichever runner serves it. ctx-scoped and
+ * userId-scoped (the row must belong to `ctx.userId`); reached from the
+ * runner only through `conversation.drain-save-refusals`, which takes the
+ * conversationId from ctx, never from the runner.
+ */
+export interface DrainSaveRefusalsInput {
+  conversationId: string;
+}
+
+/**
+ * One refused save the model has not been told about. `code` is the closed
+ * code (never prose). `turnReqId` is the request id of the turn whose save was
+ * refused (`''` for a turn that ran without one), or `null` for the final/idle
+ * save after the last turn — so a runner can drop a refusal it already told
+ * the model about itself (TASK-732's in-process notice).
+ */
+export interface DrainedSaveRefusalOutput {
+  code: SaveRefusedCode;
+  turnReqId: string | null;
+}
+
+export interface DrainSaveRefusalsOutput {
+  refusals: DrainedSaveRefusalOutput[];
+}
+
+/** Runtime `returns` contract for `conversations:drain-save-refusals`. */
+export const DrainSaveRefusalsOutputSchema: ZodType<DrainSaveRefusalsOutput> = z
+  .object({
+    refusals: z.array(
+      z
+        .object({
+          code: SaveRefusedCodeSchema,
+          turnReqId: z.string().nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // TASK-67 (out-of-git Part B / B2) — resume transcript hooks.

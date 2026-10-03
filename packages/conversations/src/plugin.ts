@@ -30,6 +30,7 @@ import {
 import {
   AppendTranscriptOutputSchema,
   CONVERSATIONS_PURGED_CHUNK_SIZE,
+  DrainSaveRefusalsOutputSchema,
   GetMetadataOutputSchema,
   GetTranscriptOutputSchema,
   ReplaceTranscriptOutputSchema,
@@ -42,6 +43,8 @@ import type {
   AppendTranscriptOutput,
   BindSessionInput,
   BindSessionOutput,
+  DrainSaveRefusalsInput,
+  DrainSaveRefusalsOutput,
   GetTranscriptInput,
   GetTranscriptOutput,
   ReplaceTranscriptInput,
@@ -154,6 +157,12 @@ export function createConversationsPlugin(): Plugin {
         // CLOSED: the caller (the subscribers) AND the consumer
         // (conversations:get reading the log) ship in this same PR.
         'conversations:append-event',
+        // TASK-749 (2026-10-02): take the refused saves the MODEL has not
+        // been told about (the TASK-731 `save-refused` rows above a
+        // per-conversation watermark) and mark them told. Caller: ipc-core's
+        // `conversation.drain-save-refusals`, which the runner calls as it
+        // builds each turn — closed in the same PR.
+        'conversations:drain-save-refusals',
         // TASK-67 (out-of-git Part B / B2, 2026-05-30): the resume transcript
         // store (the resume SoT). Host-internal, ctx-scoped — the untrusted
         // runner reaches them ONLY via the host's session.* IPC handlers
@@ -341,6 +350,17 @@ export function createConversationsPlugin(): Plugin {
         'conversations:append-event',
         PLUGIN_NAME,
         async (ctx, input) => appendEvent(localStore, ctx, input),
+      );
+
+      // TASK-749: refused saves the model has not been told about yet.
+      // userId-scoped like store-runner-session (no agents:resolve — the
+      // orchestrator gated the user at agent:invoke; the runner reaches it
+      // only through an IPC action that takes the conversationId from ctx).
+      bus.registerService<DrainSaveRefusalsInput, DrainSaveRefusalsOutput>(
+        'conversations:drain-save-refusals',
+        PLUGIN_NAME,
+        async (ctx, input) => drainSaveRefusals(localStore, ctx, input),
+        { returns: DrainSaveRefusalsOutputSchema },
       );
 
       // TASK-67 (out-of-git Part B / B2): the resume transcript store. All
@@ -672,6 +692,46 @@ async function appendEvent(
     ...(input.key !== undefined ? { foldKey: input.key } : {}),
     payload: input.payload,
   });
+}
+
+/**
+ * Prefix of the fold key ipc-core mints for a final/idle `save-refused` row
+ * (TASK-731, `final:<uuid>`). Duplicated rather than imported (no
+ * cross-plugin imports); built by concatenation for the same
+ * dependency-sync reason as ipc-core's copy.
+ */
+const FINAL_SAVE_REFUSED_KEY_PREFIX = 'final' + ':';
+
+/** TASK-749 — at most this many refusals are handed back per drain. */
+const MAX_DRAINED_SAVE_REFUSALS = 64;
+
+/**
+ * conversations:drain-save-refusals handler (TASK-749). The refused saves the
+ * model has not been told about, oldest first, marked told. A final/idle row
+ * comes back with `turnReqId: null`; a per-turn row with the turn's reqId (or
+ * `''`). Only the newest {@link MAX_DRAINED_SAVE_REFUSALS} are returned — the
+ * rest are still marked told; the model is told about refusals, not given an
+ * audit log, and the notice says the same thing for one or for fifty.
+ */
+async function drainSaveRefusals(
+  store: ConversationStore,
+  ctx: AgentContext,
+  input: DrainSaveRefusalsInput,
+): Promise<DrainSaveRefusalsOutput> {
+  const hookName = 'conversations:drain-save-refusals';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  const userId = requireBoundedString(ctx.userId, 'ctx.userId', hookName);
+  const drained = await store.drainSaveRefusals({ conversationId, userId });
+  return {
+    refusals: drained.slice(-MAX_DRAINED_SAVE_REFUSALS).map(({ key, code }) => ({
+      code,
+      turnReqId: key.startsWith(FINAL_SAVE_REFUSED_KEY_PREFIX) ? null : key,
+    })),
+  };
 }
 
 // ---------------------------------------------------------------------------

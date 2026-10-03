@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { asWorkspaceVersion, type WorkspaceVersion } from '@ax/core';
 import { ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
+import { SaveRefusedCodeSchema } from './save-refused.js';
 
 // Re-export so existing consumers importing from `@ax/ipc-protocol` keep
 // working transparently — canonical declaration lives in `@ax/core` so
@@ -536,6 +537,53 @@ export const ProxyDrainEgressBlocksResponseSchema = z.object({
 });
 export type ProxyDrainEgressBlocksResponse = z.infer<
   typeof ProxyDrainEgressBlocksResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
+// conversation.drain-save-refusals — TASK-749.
+//
+// The refused workspace saves (TASK-731 `save-refused` display rows) that the
+// MODEL has not been told about yet, taken once. The runner calls it as it
+// builds each turn's opening message, so a refusal whose runner process is
+// gone — the final/idle save after the last turn, or a runner that exited
+// before its next message — still reaches the model, on the next turn of
+// whichever runner serves the conversation (TASK-732 covers only refusals the
+// same process saw).
+//
+// Auth: EMPTY body by design (same posture as proxy.drain-egress-blocks). The
+// host takes the conversation from `ctx.conversationId` and the owner from
+// `ctx.userId` (both bound to the bearer token), never from the body, so a
+// runner can only drain its own conversation — and draining is only ever
+// self-harm (its own model is not told). `.strict({})` keeps that visible.
+//
+// The response carries closed codes only — never the refusal's prose, which
+// can quote model-chosen text — plus the refused turn's request id, so the
+// runner can drop a refusal it already told the model about itself. `null`
+// marks the final/idle save, which no turn owns. Field names are
+// storage-neutral (I1).
+// ---------------------------------------------------------------------------
+
+export const ConversationDrainSaveRefusalsRequestSchema = z.object({}).strict();
+export type ConversationDrainSaveRefusalsRequest = z.infer<
+  typeof ConversationDrainSaveRefusalsRequestSchema
+>;
+
+export const ConversationDrainSaveRefusalsResponseSchema = z
+  .object({
+    refusals: z
+      .array(
+        z
+          .object({
+            code: SaveRefusedCodeSchema,
+            turnReqId: z.string().max(256).nullable(),
+          })
+          .strict(),
+      )
+      .max(64),
+  })
+  .strict();
+export type ConversationDrainSaveRefusalsResponse = z.infer<
+  typeof ConversationDrainSaveRefusalsResponseSchema
 >;
 
 // ---------------------------------------------------------------------------

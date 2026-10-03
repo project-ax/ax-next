@@ -5,6 +5,7 @@ import {
   IpcRequestError,
   type AgentMessage,
   type ContentBlock,
+  type ConversationDrainSaveRefusalsResponse,
   type IpcClient,
   type SaveRefusedCode,
   type SessionGetConfigResponse,
@@ -27,7 +28,11 @@ import {
   saveRefusedFrom,
   type HostToolFlush,
 } from './commit-notify-resync.js';
-import { prependNotice, saveRefusedNotice } from './save-refused-notice.js';
+import {
+  prependNotice,
+  saveRefusedNotice,
+  saveRefusedNoticeFromCodes,
+} from './save-refused-notice.js';
 import { commitTrace } from './commit-trace.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
 import {
@@ -885,15 +890,61 @@ async function runRunnerInner(
   // lands is replaced by the newer one; an accepted save never clears it,
   // because the files it reports are still gone.
   //
-  // In-process only. The FINAL/idle commit after the loop drains, and a runner
-  // that exits before its next message, leave no later turn here to tell.
+  // That covers refusals THIS process saw. The FINAL/idle commit after the loop
+  // drains, and a per-turn refusal on a runner that exits before its next
+  // message, leave no later turn in their process; the host keeps those
+  // (TASK-731's `save-refused` rows) and this process drains them as it builds
+  // each turn (TASK-749, `withSaveRefusedNotice`).
   let pendingSaveRefusedNotice: string | undefined;
 
-  /** Prepend the pending refused-save notice, if any, and clear it. */
-  function withPendingSaveRefusedNotice(content: unknown): unknown {
-    const notice = pendingSaveRefusedNotice;
-    if (notice === undefined) return content;
+  // TASK-749: the fold key the host stores each per-turn refusal of THIS
+  // process under — the turn's reqId, or '' for a turn that had none (the
+  // same derivation as ipc-core's turn-end persist). A drained refusal with
+  // one of these keys is one this process already told (or will tell) the
+  // model about in-process, so it is dropped rather than told twice.
+  //
+  // Imprecise for dark turns: every reqId-less turn shares the `''` key (the
+  // host folds them that way, TASK-731), so once this process has refused a
+  // dark turn, another process's orphaned dark-turn refusal is dropped too.
+  // Dark turns are decision-resolved turns with no continuation id, so this
+  // costs an advisory notice in a narrow case; the person still sees the row.
+  const refusedTurnKeys = new Set<string>();
+
+  /**
+   * TASK-749: take the refused saves the host kept for the model
+   * (`conversation.drain-save-refusals`), minus the ones this process saw
+   * itself. Best-effort: a failed drain leaves the rows untold on the host for
+   * a later turn, and never fails this one. Conversation-bound runs only.
+   */
+  async function drainHostSaveRefusals(): Promise<SaveRefusedCode[]> {
+    if (conversationId === null) return [];
+    try {
+      const resp = (await client.call(
+        'conversation.drain-save-refusals',
+        {},
+      )) as ConversationDrainSaveRefusalsResponse;
+      return resp.refusals
+        .filter((r) => r.turnReqId === null || !refusedTurnKeys.has(r.turnReqId))
+        .map((r) => r.code);
+    } catch (err) {
+      process.stderr.write(
+        `runner: drain-save-refusals failed (continuing): ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Prepend the refused-save notice for this turn, if any, and clear it. The
+   * in-process notice wins when there is one (it carries the host's reason);
+   * otherwise refusals the host kept for the model are told by code. Either
+   * way the model reads ONE notice.
+   */
+  async function withSaveRefusedNotice(content: unknown): Promise<unknown> {
+    const drained = await drainHostSaveRefusals();
+    const notice = pendingSaveRefusedNotice ?? saveRefusedNoticeFromCodes(drained);
     pendingSaveRefusedNotice = undefined;
+    if (notice === undefined) return content;
     return prependNotice(content, notice);
   }
 
@@ -1144,7 +1195,7 @@ async function runRunnerInner(
             typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined,
         });
         chatEndHistory.push({ role: 'user', content });
-        return { content: withPendingSaveRefusedNotice(content) };
+        return { content: await withSaveRefusedNotice(content) };
       }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk
@@ -1216,7 +1267,7 @@ async function runRunnerInner(
 
       // chatEndHistory above stays the person's words; the refused-save
       // notice (TASK-732) is for the model only.
-      return { content: withPendingSaveRefusedNotice(messageContent) };
+      return { content: await withSaveRefusedNotice(messageContent) };
     }
   }
 
@@ -1598,6 +1649,9 @@ async function runRunnerInner(
         // `pendingSaveRefusedNotice`).
         saveRefused = saveRefusedFrom(result);
         pendingSaveRefusedNotice = saveRefusedNotice(result) ?? pendingSaveRefusedNotice;
+        // TASK-749: the host keeps this refusal for the model too; remember
+        // its key so a later drain does not tell the model twice.
+        if (saveRefused !== undefined) refusedTurnKeys.add(currentReqId ?? '');
         commitTrace(
           `[commit-trace] per-turn DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
         );
@@ -1850,8 +1904,9 @@ async function runRunnerInner(
         // carry files from an EARLIER reply whose own save came back `kept`
         // (host unreachable, retried here), plus late/background writes.
         // Those can be files the person watched being made. The stderr line
-        // stays as an operator log. The MODEL is not told: no later turn runs
-        // in this process (TASK-732 covers only the per-turn commit).
+        // stays as an operator log. No later turn runs in this process, so
+        // the MODEL is told by the next runner that serves this conversation:
+        // the host keeps the row, and that runner drains it (TASK-749).
         finalSaveRefused = saveRefusedFrom(result);
         if (finalSaveRefused !== undefined) {
           process.stderr.write(

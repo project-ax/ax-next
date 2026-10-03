@@ -455,6 +455,13 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     whose save came back `kept`) reports its refusal on `event.chat-end`
     `saveRefused`; no stream is open then, so it is persisted only and seen on
     the next read.
+    The MODEL is told at the start of its next turn: in-process when the same
+    runner serves it (TASK-732, the host's reason fenced and NFKC-folded), and
+    otherwise from the host (TASK-749): the runner drains the `save-refused`
+    rows it has not been told about (`conversation.drain-save-refusals` →
+    `conversations:drain-save-refusals`, a per-conversation watermark, closed
+    codes only) as it builds each turn, dropping the ones keyed to its own
+    turns, so a final/idle refusal or one whose runner exited is told once.
   - `chat:start` veto reason **`storage-full`** (owned by `@ax/disk-quota`,
     surfaces as `chat:start:storage-full`, channel-web maps it to a sentence):
     the front door for a person whose storage is full, so they do not start

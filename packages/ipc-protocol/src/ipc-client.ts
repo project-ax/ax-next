@@ -8,6 +8,7 @@ import {
   ArtifactPublishResponseSchema,
   AttachmentsListResponseSchema,
   BlobPutResponseSchema,
+  ConversationDrainSaveRefusalsResponseSchema,
   ConversationStoreRunnerSessionResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
@@ -129,6 +130,8 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'skill.propose': SkillProposeResponseSchema,
   // Agent-visible egress-block note: small JSON response `{ hosts: string[] }`.
   'proxy.drain-egress-blocks': ProxyDrainEgressBlocksResponseSchema,
+  // TASK-749: refused saves the model has not been told about (closed codes).
+  'conversation.drain-save-refusals': ConversationDrainSaveRefusalsResponseSchema,
   // Cross-runner history reconstruction: bounded, text-only prior turns, used
   // to seed a runner that was handed another runner's transcript.
   'session.get-display-history': SessionGetDisplayHistoryResponseSchema,
