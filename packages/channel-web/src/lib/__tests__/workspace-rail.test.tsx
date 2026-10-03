@@ -82,6 +82,71 @@ describe('useAgentRail', () => {
     await waitFor(() => expect(result.current.rail.rail?.activity.activity).toBeNull());
   });
 
+  /*
+    TASK-707 — the brand-new-agent flow. The roster read that follows create
+    lands BEFORE the server marks the agent working, so the roster word goes
+    resting -> resting and never transitions. The word the SPA did see change
+    is the agent detail's (AgentView re-reads it on the done frame), so that
+    word drives a re-read too.
+  */
+  it("re-reads the rail when the agent detail's word changes but the roster's never does", async () => {
+    boardMock.mockResolvedValue({ agents: [agent('resting')] });
+    railMock.mockResolvedValue(
+      rail({
+        activity: {
+          status: 'ok',
+          activity: railActivity({ phrase: 'Working on your request', source: 'trigger' }),
+        },
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ word }: { word: WorkspaceAgent['state'] }) => ({
+        rail: useAgentRail('a1', word),
+        ws: useWorkspace(),
+      }),
+      { wrapper, initialProps: { word: 'working' as WorkspaceAgent['state'] } },
+    );
+    await waitFor(() => expect(result.current.ws.board?.agents[0]?.state).toBe('resting'));
+    await waitFor(() =>
+      expect(result.current.rail.rail?.activity.activity?.phrase).toBe(
+        'Working on your request',
+      ),
+    );
+
+    // The reply finished: the detail re-read says resting, and the roster's
+    // refresh says resting again — no roster transition at all.
+    railMock.mockResolvedValue(rail());
+    await act(async () => {
+      await result.current.ws.refresh();
+    });
+    rerender({ word: 'resting' });
+
+    await waitFor(() => expect(result.current.rail.rail?.activity.activity).toBeNull());
+  });
+
+  it("does not re-read when the agent detail's word is re-supplied unchanged", async () => {
+    boardMock.mockResolvedValue({ agents: [agent('resting')] });
+    railMock.mockResolvedValue(rail());
+
+    const { result, rerender } = renderHook(
+      ({ word }: { word: WorkspaceAgent['state'] }) => ({
+        rail: useAgentRail('a1', word),
+        ws: useWorkspace(),
+      }),
+      { wrapper, initialProps: { word: 'resting' as WorkspaceAgent['state'] } },
+    );
+    await waitFor(() => expect(result.current.ws.board?.agents[0]?.state).toBe('resting'));
+    await waitFor(() => expect(result.current.rail.loading).toBe(false));
+    const reads = railMock.mock.calls.length;
+
+    rerender({ word: 'resting' });
+    await act(async () => {
+      await result.current.ws.refresh();
+    });
+    expect(railMock.mock.calls.length).toBe(reads);
+  });
+
   it('does not re-read when a roster refresh leaves its agent word unchanged', async () => {
     boardMock.mockResolvedValue({ agents: [agent('resting')] });
     railMock.mockResolvedValue(rail());
