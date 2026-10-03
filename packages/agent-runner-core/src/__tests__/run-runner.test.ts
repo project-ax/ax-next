@@ -379,6 +379,7 @@ describe('runRunner', () => {
         content:
           'System message (not from the user): ' +
           'They said yes. Make the call again exactly as you made it.',
+        id: expect.any(String),
       });
     });
 
@@ -1803,7 +1804,7 @@ describe('runRunner', () => {
         reason: 'no',
         recoverable: false,
       }));
-      expect(third).toEqual({ content: 'thanks' });
+      expect(third).toEqual({ content: 'thanks', id: expect.any(String) });
     });
 
     it('a save too big to carry (host 413) is told too', async () => {
@@ -1834,7 +1835,7 @@ describe('runRunner', () => {
       ];
       for (const answer of answers) {
         const { second } = await threeTurns(answer);
-        expect(second).toEqual({ content: 'and now?' });
+        expect(second).toEqual({ content: 'and now?', id: expect.any(String) });
       }
     });
 
@@ -1885,7 +1886,7 @@ describe('runRunner', () => {
         stderr.mockRestore();
       }
       expect(answers).toHaveLength(0);
-      expect(seen[0]).toEqual({ content: 'pulled early' });
+      expect(seen[0]).toEqual({ content: 'pulled early', id: expect.any(String) });
       const third = (seen[1] as { content: string }).content;
       expect(third.startsWith(NOTICE_HEAD)).toBe(true);
       expect(third.endsWith('\n\nthanks')).toBe(true);
@@ -1988,7 +1989,7 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
     expect(first).toContain('The storage limit for this workspace was reached.');
     expect(first.endsWith('\n\nhello again')).toBe(true);
     // Told once: the host marked it told, and the next turn is bare.
-    expect(seen[1]).toEqual({ content: 'and now?' });
+    expect(seen[1]).toEqual({ content: 'and now?', id: expect.any(String) });
     // The drain names nothing: the host takes the conversation from ctx.
     expect(drainCalls).toEqual([[{}], [{}]]);
   });
@@ -2019,7 +2020,7 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
     expect(second.split('System message (not from the user)')).toHaveLength(2);
     expect(second).toContain('"no"');
     expect(second.endsWith('\n\nand now?')).toBe(true);
-    expect(seen[2]).toEqual({ content: 'thanks' });
+    expect(seen[2]).toEqual({ content: 'thanks', id: expect.any(String) });
   });
 
   it('pull-ahead: a message built before the refused turn closes, then the host handing that refusal back, still tells it ONCE', async () => {
@@ -2069,7 +2070,7 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
       stderr.mockRestore();
     }
     expect(drains).toHaveLength(0);
-    expect(seen[0]).toEqual({ content: 'pulled early' });
+    expect(seen[0]).toEqual({ content: 'pulled early', id: expect.any(String) });
     const third = (seen[1] as { content: string }).content;
     expect(third.split('System message (not from the user)')).toHaveLength(2);
     expect(third).toContain('"no"');
@@ -2095,7 +2096,7 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
         },
       ],
     });
-    expect(seen[0]).toEqual({ content: 'hello' });
+    expect(seen[0]).toEqual({ content: 'hello', id: expect.any(String) });
   });
 
   it('a run bound to no conversation never drains', async () => {
