@@ -330,7 +330,12 @@ function skillsMockPlugin(): Plugin {
     manifest: {
       name: 'mock-skills',
       version: '0.0.0',
-      registers: ['skills:list', 'skills:list-user-attachments', 'skills:detach-for-user'],
+      registers: [
+        'skills:list',
+        'skills:list-user-attachments',
+        'skills:detach-for-user',
+        'skills:attach-for-user',
+      ],
       calls: [],
       subscribes: [],
     },
@@ -341,6 +346,9 @@ function skillsMockPlugin(): Plugin {
       }));
       bus.registerService('skills:detach-for-user', 'mock-skills', async () => ({
         removed: false,
+      }));
+      bus.registerService('skills:attach-for-user', 'mock-skills', async () => ({
+        created: false,
       }));
     },
   };
@@ -677,6 +685,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'skills:list',
         'skills:list-user-attachments',
         'skills:detach-for-user',
+        'skills:attach-for-user',
       ],
       optionalCalls: [
         {
@@ -843,6 +852,115 @@ describe('@ax/channel-web server plugin (integration)', () => {
           hook: 'agent:interrupt',
           degradation:
             'the Stop button cannot stop a running turn; POST /api/chat/conversations/:id/interrupt answers 503 and the turn runs to completion',
+        },
+        {
+          hook: 'agent:apply-authored-capability-grant',
+          degradation:
+            'an approval card is only ever applied as a catalog grant (authored skill drafts cannot be approved from chat); the My Skills early-approval route answers 501 not-supported',
+        },
+        {
+          hook: 'agent:apply-authored-connector-grant',
+          degradation:
+            'approving an authored connector card answers 409 connector-grant-unavailable and the card stays',
+        },
+        {
+          hook: 'agents:attach-connector',
+          degradation:
+            'POST …/connectors (Add a connector) answers 503 connectors-unavailable',
+        },
+        {
+          hook: 'agents:detach-connector',
+          degradation:
+            'Remove on a connector answers 503 connectors-unavailable',
+        },
+        {
+          hook: 'agents:can-exclude-connector',
+          degradation:
+            'connectors this agent gets by default are shown as not removable',
+        },
+        {
+          hook: 'connectors:get',
+          degradation:
+            'Add a connector answers 503 connectors-unavailable (the credential check cannot run)',
+        },
+        {
+          hook: 'credentials:get',
+          degradation:
+            'Add a connector that needs a sign-in or key is refused as vault-missing; connectors with no credential slots still attach',
+        },
+        {
+          hook: 'decisions:get',
+          degradation:
+            'every /api/workspace/decisions/:decisionId route answers 404 decision-not-found (there are no decisions to resolve)',
+        },
+        {
+          hook: 'decisions:approve',
+          degradation:
+            'never reached without decisions:get (the route 404s first); same producer',
+        },
+        {
+          hook: 'decisions:dismiss',
+          degradation:
+            'never reached without decisions:get (the route 404s first); same producer',
+        },
+        {
+          hook: 'decisions:undo',
+          degradation:
+            'never reached without decisions:get (the route 404s first); same producer',
+        },
+        {
+          hook: 'decisions:recent-receipts-for-agent',
+          degradation:
+            'the workspace Activity feed carries no decision receipts (routine history still shows)',
+        },
+        {
+          hook: 'memory:recall',
+          degradation:
+            'the Memory tab shows facts as unavailable and POST …/memory/recall answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:recall-receipts',
+          degradation:
+            'thread messages carry no "used memory" receipts',
+        },
+        {
+          hook: 'memory:status',
+          degradation:
+            'the Memory tab never says extraction is paused; the memory activity stream answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:remember',
+          degradation: 'POST …/memory/remember answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:forget',
+          degradation: 'POST …/memory/forget answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:unforget',
+          degradation: 'POST …/memory/unforget answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:correct',
+          degradation: 'POST …/memory/correct answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:uncorrect',
+          degradation: 'POST …/memory/uncorrect answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:rules:read',
+          degradation: 'the Memory tab shows the rules document as unavailable',
+        },
+        {
+          hook: 'memory:rules:write',
+          degradation:
+            'PUT …/memory/rules answers 503 memory-unavailable (never a false "saved")',
+        },
+        {
+          hook: 'sandbox:read-user-files',
+          degradation:
+            'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',
         },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'memory:conversation-activity'],
