@@ -451,9 +451,13 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
       sock.write(rawConnect('192.0.2.1:9', tokenFor('s1')));
     });
     sock.on('error', () => {});
-    // Give the proxy time to authenticate and start dialing, then hang up.
+    // Give the proxy time to authenticate and start dialing, then hang up
+    // with a FIN (`end`, not `destroy`, which can RST). This guards the
+    // pre-connect 'end' teardown only where 192.0.2.1 black-holes (the usual
+    // case, CI included); where it fails fast, the upstream error path
+    // produces the same single 502 audit instead.
     await new Promise((r) => setTimeout(r, 100));
-    sock.destroy();
+    sock.end();
 
     await new Promise((r) => setTimeout(r, 100));
     expect(audits).toHaveLength(1);
