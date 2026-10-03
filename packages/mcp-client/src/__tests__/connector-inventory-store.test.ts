@@ -188,6 +188,9 @@ describe('plugin wiring', () => {
 
     await expect(batch({ userId: 'u1', connectorIds: 'linear' })).rejects.toThrow();
     await expect(batch({ userId: 'u1', connectorIds: [], extra: 1 })).rejects.toThrow();
+    // Same id cap as mcp-oauth:status-batch (128), so one list fits both.
+    await expect(batch({ userId: 'u1', connectorIds: ['x'.repeat(129)] })).rejects.toThrow();
+    expect(await batch({ userId: 'u1', connectorIds: ['x'.repeat(128)] })).toEqual({ statuses: [] });
   });
 
   it('is off by default: no hook, no database call in the manifest', () => {

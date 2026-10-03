@@ -1391,10 +1391,8 @@ function isConnectorId(v: unknown): v is string {
  * other label on this surface; a row whose name fences to nothing is shown
  * by its id rather than dropped — dropping it would hide reach.
  */
-function toConnectorRows(
-  out: ConnectorsListEffectiveOutput,
-  health: ReadonlyMap<string, AgentConnectorHealth> = new Map(),
-): AgentConnectorRow[] {
+/** Rows start `ok`; the GET overlays stored health afterwards (TASK-741). */
+function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[] {
   const rows: AgentConnectorRow[] = [];
   for (const entry of Array.isArray(out?.connectors) ? out.connectors : []) {
     const id = entry?.summary?.id;
@@ -1405,7 +1403,7 @@ function toConnectorRows(
       name: fenceLine(entry.summary.name, RAIL_LABEL_MAX_CHARS) ?? id,
       source,
       editable: entry.summary.canEdit === true,
-      health: health.get(id) ?? 'ok',
+      health: 'ok',
     });
   }
   return rows;
@@ -5925,10 +5923,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
       const out = await listEffectiveConnectors(agent, userId);
-      const ids = toConnectorRows(out).map((r) => r.id);
-      const health = await connectorHealth(agentId, userId, ids);
+      const rows = toConnectorRows(out);
+      const health = await connectorHealth(
+        agentId,
+        userId,
+        rows.map((r) => r.id),
+      );
       res.status(200).json({
-        connectors: toConnectorRows(out, health),
+        connectors: rows.map((r) => ({ ...r, health: health.get(r.id) ?? 'ok' })),
         shared: agent.visibility === 'team',
       } satisfies AgentConnectorsRead);
     },

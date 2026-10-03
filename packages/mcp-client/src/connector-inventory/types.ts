@@ -89,6 +89,9 @@ export const InventoryStatusBatchInputSchema = z
   .object({
     userId: z.string().min(1).max(256),
     agentId: z.string().min(1).max(256).optional(),
-    connectorIds: z.array(z.string().min(1).max(256)).max(500),
+    // Same cap as `mcp-oauth:status-batch` and the connector slug rule: the rail
+    // sends ONE id list to both, and an all-or-nothing batch must not refuse
+    // on one side only.
+    connectorIds: z.array(z.string().min(1).max(128)).max(500),
   })
   .strict();
