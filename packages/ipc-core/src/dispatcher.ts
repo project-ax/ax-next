@@ -59,6 +59,7 @@ import {
 import {
   validateEventChatEnd,
   fireEventChatEnd,
+  persistEventChatEnd,
 } from './handlers/event-chat-end.js';
 import {
   validateEventStreamChunk,
@@ -187,9 +188,11 @@ type EventSpec = {
    * clear-reqId / titles / evictor) stays OFF the ack path so a slow observer
    * can't delay the runner's ack or its downstream done-frame. A `persist`
    * THROW propagates → the dispatcher returns a non-2xx (no false ack of an
-   * unpersisted turn — B3 no-omission) + logs loudly. Absent for every other
-   * event (those keep the prompt-202 fire-and-forget shape; stream chunks /
-   * tool-post-call are high-frequency and NOT gated by no-omission).
+   * unpersisted turn — B3 no-omission) + logs loudly. `event.chat-end` also
+   * uses it (TASK-731) for the refused-final-save notice, a persist that
+   * never throws. Absent for every other event (those keep the prompt-202
+   * fire-and-forget shape; stream chunks / tool-post-call are high-frequency
+   * and NOT gated by no-omission).
    */
   persist?: (ctx: AgentContext, bus: HookBus, payload: unknown) => Promise<void>;
 };
@@ -213,6 +216,12 @@ EVENTS.set('/event.chat-end', {
   method: 'POST',
   validate: validateEventChatEnd,
   fire: fireEventChatEnd,
+  // TASK-731: a refused final/idle save becomes a durable `save-refused`
+  // display event before chat:end fires. Unlike turn-end's persist this one
+  // NEVER throws (best-effort, logged), so it cannot turn chat-end into a
+  // 500; without `saveRefused` it returns at once, so the ack is as prompt
+  // as before. `fire` still runs detached after the 202, as it always has.
+  persist: persistEventChatEnd,
 });
 EVENTS.set('/event.stream-chunk', {
   method: 'POST',
@@ -438,8 +447,9 @@ export async function dispatch(
       if (evt.persist !== undefined) {
         // Persist-before-ack (TASK-66 / B3): AWAIT only the ISOLATED persist
         // before the 202 so the turn's frames are durable in the display event
-        // log before the runner sees the turn acked. Only `event.turn-end`
-        // opts in; it's once-per-turn, so the one DB write of added latency is
+        // log before the runner sees the turn acked. `event.turn-end` and
+        // `event.chat-end` (TASK-731, refused-final-save notice) opt in; each
+        // is once per turn / per run, so one DB write of added latency is
         // fine. The broadcast `fire` runs fire-and-forget AFTER, so a slow
         // observer (e.g. the title-LLM subscriber) never delays the ack.
         //

@@ -254,8 +254,10 @@ export type SseFrame =
   // LIVE ONLY. The done frame is never buffered: turn-end evicts the reqId's
   // buffer (`createTurnEndEvictor` and the per-connection subscriber), so a
   // browser that connects after the turn ended gets no replayed `done` and no
-  // code. That matches the notice's scope — it is not persisted and is gone on
-  // reload (see the TASK-720 decision shard).
+  // code from it. That is fine since TASK-731: the host persists the refusal as
+  // a `save-refused` display event before it acks the turn-end, so the thread
+  // read (`buildThread`) draws it after a reload or for a late browser. This
+  // frame only bridges the live view until its post-done re-read lands.
   | { reqId: string; done: true; saveRefused?: SaveRefusedCode }
   // `error` is the stable backend-agnostic reason code; `detail` (TASK-160) is
   // an OPTIONAL author-facing free-text line (e.g. a dev-service-sidecar

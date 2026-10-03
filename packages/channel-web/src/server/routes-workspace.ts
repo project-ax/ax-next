@@ -158,6 +158,10 @@ import { isStorageFullRefusal } from './storage-full-refusal.js';
 // sentence ends (invariant 4) — the module is pure constants and one pure
 // function, with no DOM or React in it.
 import { MAX_DETAIL_CHARS } from '../lib/turn-error-labels.js';
+// The closed-code check and the one builder of a save-refused row's id
+// (TASK-731), shared with the browser, which matches its live copy against
+// that same id.
+import { asSaveRefusedCode, saveRefusedRowId } from '../lib/save-refused.js';
 import {
   settleHolds,
   shapeSteps,
@@ -550,8 +554,8 @@ interface ConversationsGetInput {
  * One host-only display event off `conversations:get` (TASK-66's redisplay
  * log, folded to its terminal state per key by the projection).
  *
- * Narrowed to what this surface draws: today that is `turn-error` and only
- * `turn-error`. `permission-card` rides the same array and is deliberately
+ * Narrowed to what this surface draws: `turn-error` (TASK-498) and
+ * `save-refused` (TASK-731). `permission-card` rides the same array and is deliberately
  * NOT read here — the in-thread approval card is already built from the
  * decisions queue (`approvalMessages` below), and a second producer for one
  * row is exactly the drift invariant 4 forbids.
@@ -561,7 +565,7 @@ interface ConversationsGetInput {
  * before it leaves here, never spread.
  */
 interface DisplayEventRow {
-  kind: 'permission-card' | 'turn-error';
+  kind: 'permission-card' | 'turn-error' | 'save-refused';
   key: string;
   payload: Record<string, unknown>;
   createdAt: string;
@@ -2377,12 +2381,54 @@ function errorMessages(
 }
 
 /**
- * Interleave the turns with the host-only failure rows, by instant.
+ * The refused saves this conversation recorded, as thread rows (TASK-731).
+ *
+ * The host refused a reply's end-of-turn save (or the runner's last flush,
+ * which has no turn) and the runner undid those files. TASK-720 told the
+ * person on the live `done` frame only; the host now persists the refusal as
+ * a `save-refused` display event so a reload still shows it.
+ *
+ * WHAT TRAVELS: the closed `code`, and nothing else from the payload. The
+ * sentence is the renderer's job (`save-refused-copy.ts`), so no stored string
+ * can ever reach a reader. Same posture as `errorMessages`: every field
+ * checked, never spread; a row with no instant to sort on, a key that cannot
+ * make a stable id, or a code that is not exactly one of the three is dropped
+ * rather than half-drawn. An EMPTY key is kept, for the turn-error reason: the
+ * persist side writes `''` for a turn with no reqId and folds on it.
+ *
+ * The id is `saveRefusedRowId(key)` — the per-turn key is the reqId, which
+ * `AgentView` uses to stop drawing its live copy once this row lands. Like the
+ * turn-error id it is opaque to the client beyond that one equality check.
+ */
+function saveRefusedMessages(
+  events: readonly DisplayEventRow[],
+): Array<{ at: string; msg: ThreadMessage }> {
+  const out: Array<{ at: string; msg: ThreadMessage }> = [];
+  for (const ev of events) {
+    if (ev.kind !== 'save-refused') continue;
+    if (typeof ev.key !== 'string') continue;
+    if (typeof ev.createdAt !== 'string' || ev.createdAt.length === 0) continue;
+    const payload: unknown = ev.payload;
+    if (payload === null || typeof payload !== 'object') continue;
+    const code = asSaveRefusedCode((payload as Record<string, unknown>).code);
+    if (code === undefined) continue;
+    out.push({
+      at: ev.createdAt,
+      msg: { kind: 'save-refused', id: saveRefusedRowId(ev.key), code },
+    });
+  }
+  return out;
+}
+
+/**
+ * Interleave the turns with the host-only rows (turn failures, refused
+ * saves), by instant.
  *
  * TURNS WIN A TIE. A turn-error is the thing that ENDED a turn, so when its
  * timestamp collides with a turn's it belongs after it, never before — an
  * error drawn above the message it answers reads as a failure that happened
- * first.
+ * first. A refused save is written after the reply it is about, so the same
+ * rule puts it under that reply.
  */
 function buildThread(
   turns: TurnRow[],
@@ -2496,8 +2542,13 @@ function buildThread(
     the event log and is authoritative — several turns legitimately share one
     instant, and a comparator over the whole list could reorder them. So the
     turns keep their order and the failures are slotted in around them.
+    (Refused saves ride the same merge. The sort is stable, so at one instant
+    a turn-error comes before a refused save.)
   */
-  const failures = errorMessages(displayEvents).sort((a, b) =>
+  const failures = [
+    ...errorMessages(displayEvents),
+    ...saveRefusedMessages(displayEvents),
+  ].sort((a, b) =>
     a.at < b.at ? -1 : a.at > b.at ? 1 : 0,
   );
   let f = 0;

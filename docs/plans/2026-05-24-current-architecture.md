@@ -446,8 +446,15 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
     `rejected`. The veto's machine `code` rides the commit answer too, and a
     refused END-OF-TURN save reaches the person as `event.turn-end`
     `saveRefused` (`storage-full` | `too-large` | `refused`) → the SSE `done`
-    frame → a fixed sentence under the reply (TASK-720). Live only: it is not
-    persisted, and the final/idle commit after the last turn-end only logs.
+    frame → a fixed sentence under the reply (TASK-720). It is also persisted
+    (TASK-731): `@ax/ipc-core` appends a `save-refused` display event
+    (`payload: { code }`, folded on the turn's reqId) before acking the
+    turn-end, and channel-web's thread read interleaves it like a `turn-error`,
+    so it survives a reload. The final/idle commit after the last turn-end
+    (which bundles `baseline..main`, so it can carry earlier replies' files
+    whose save came back `kept`) reports its refusal on `event.chat-end`
+    `saveRefused`; no stream is open then, so it is persisted only and seen on
+    the next read.
   - `chat:start` veto reason **`storage-full`** (owned by `@ax/disk-quota`,
     surfaces as `chat:start:storage-full`, channel-web maps it to a sentence):
     the front door for a person whose storage is full, so they do not start

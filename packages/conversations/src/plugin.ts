@@ -1274,7 +1274,17 @@ async function getConversation(
   // by construction). Host-only display events the SDK jsonl never sees
   // (approval cards, surfaced provider/sandbox errors) come back on
   // `displayEvents`, folded to their terminal state per key.
-  const events = await store.listEvents(conv.conversationId);
+  // TASK-731: a row of a kind this release does not know is skipped by the
+  // store (one lost row beats a blank thread); say so in the log.
+  const events = await store.listEvents(conv.conversationId, {
+    onSkippedRow: ({ seq, eventKind }) => {
+      ctx.logger.warn('conversations_event_unknown_kind_skipped', {
+        conversationId: conv.conversationId,
+        seq,
+        eventKind: eventKind.slice(0, 64),
+      });
+    },
+  });
   if (events.length > 0) {
     const turns = projectEventTurns(events);
     return {
@@ -1302,8 +1312,10 @@ async function getConversation(
 // TASK-66 — read-side projection from the display event log.
 //
 // `turn` events project to the existing `Turn[]` wire shape (unchanged
-// renderer path); host-only events (`permission-card` / `turn-error`) project
-// to `displayEvents`, folded to their terminal state per (kind, foldKey).
+// renderer path); host-only events (`permission-card` / `turn-error` /
+// `save-refused`) project to `displayEvents`, folded to their terminal state
+// per (kind, foldKey). A `save-refused` row passes through as is (TASK-731):
+// its two per-turn rows share the turn's reqId and fold to the later one.
 // ---------------------------------------------------------------------------
 
 /**

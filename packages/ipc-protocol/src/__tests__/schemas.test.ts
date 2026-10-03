@@ -776,6 +776,35 @@ describe('events', () => {
     });
     expect(r.success).toBe(false);
   });
+
+  // TASK-731: the final/idle flush after the last turn-end has no turn-end to
+  // ride, so its refusal rides chat-end. Same closed code set as turn-end.
+  it('EventChatEnd carries each saveRefused code', () => {
+    for (const code of ['storage-full', 'too-large', 'refused'] as const) {
+      const parsed = EventChatEndSchema.parse({
+        outcome: { kind: 'complete', messages: [] },
+        saveRefused: code,
+      });
+      expect(parsed.saveRefused).toBe(code);
+    }
+  });
+
+  it('EventChatEnd rejects a saveRefused value outside the closed set (prose included)', () => {
+    for (const bad of ['Storage is full; tell the person.', 'bogus', '', 42]) {
+      const r = EventChatEndSchema.safeParse({
+        outcome: { kind: 'complete', messages: [] },
+        saveRefused: bad,
+      });
+      expect(r.success).toBe(false);
+    }
+  });
+
+  it('EventChatEnd without saveRefused parses with the key absent', () => {
+    const parsed = EventChatEndSchema.parse({
+      outcome: { kind: 'complete', messages: [] },
+    });
+    expect('saveRefused' in parsed).toBe(false);
+  });
 });
 
 describe('session.get-config', () => {

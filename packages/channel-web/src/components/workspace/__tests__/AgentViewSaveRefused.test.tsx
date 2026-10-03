@@ -171,4 +171,80 @@ describe('a reply whose files could not be saved', () => {
     await waitFor(() => expect(agentMock).toHaveBeenCalledTimes(2));
     expect(noticeShown()).toBe(false);
   });
+
+  /*
+    TASK-731 — the refusal is now also PERSISTED, and the post-done re-read
+    already carries it (the host writes it before it acks the turn-end). The
+    live notice bridges done → re-read; once the durable row for THIS turn is
+    in the thread, drawing the live one too would say it twice.
+  */
+  it('draws ONE notice once the re-read carries the persisted row for the turn', async () => {
+    renderView();
+    await sendAndStream();
+    agentMock.mockResolvedValue(
+      detail({
+        thread: [
+          { kind: 'user', id: 't1', text: 'hello' },
+          { kind: 'agent', id: 't2', text: 'Saved it.', at: '2026-08-01T10:00:05.000Z' },
+          // `r1` is the reqId `sendMessage` answered with in `beforeEach`.
+          { kind: 'save-refused', id: 'save-refused:r1', code: 'storage-full' },
+        ],
+      } as never),
+    );
+    const readsBefore = agentMock.mock.calls.length;
+    await act(async () => live!.onDone({ saveRefused: 'storage-full' }));
+    await waitFor(() => expect(agentMock.mock.calls.length).toBeGreaterThan(readsBefore));
+    await screen.findByText('Saved it.');
+    await screen.findByText(SAVE_REFUSED_COPY['storage-full']);
+    expect(screen.getAllByText(SAVE_REFUSED_COPY['storage-full'])).toHaveLength(1);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+  });
+
+  it('draws the persisted notice on a fresh load, with no live stream (a reload)', async () => {
+    agentMock.mockResolvedValue(
+      detail({
+        thread: [
+          { kind: 'user', id: 't1', text: 'hello' },
+          { kind: 'agent', id: 't2', text: 'Made them.', at: '2026-08-01T10:00:05.000Z' },
+          { kind: 'save-refused', id: 'save-refused:final:abc', code: 'too-large' },
+        ],
+      } as never),
+    );
+    renderView();
+    const line = await screen.findByText(SAVE_REFUSED_COPY['too-large']);
+    expect(line.closest('[role="alert"]')).not.toBeNull();
+    expect(streamMock).not.toHaveBeenCalled();
+  });
+
+  it('words a persisted row with a code it does not know as the catch-all', async () => {
+    // The thread is JSON off the wire; an unknown code must not draw a blank alert.
+    agentMock.mockResolvedValue(
+      detail({
+        thread: [{ kind: 'save-refused', id: 'save-refused:x', code: 'disk-on-fire' }],
+      } as never),
+    );
+    renderView();
+    await screen.findByText(SAVE_REFUSED_COPY.refused);
+  });
+
+  it('keeps the live notice when the re-read lacks this turn’s row (the persist failed)', async () => {
+    renderView();
+    await sendAndStream();
+    agentMock.mockResolvedValue(
+      detail({
+        thread: [
+          { kind: 'user', id: 't1', text: 'hello' },
+          { kind: 'agent', id: 't2', text: 'Saved it.', at: '2026-08-01T10:00:05.000Z' },
+          // A row for some OTHER turn is not this turn's record.
+          { kind: 'save-refused', id: 'save-refused:r0', code: 'refused' },
+        ],
+      } as never),
+    );
+    const readsBefore = agentMock.mock.calls.length;
+    await act(async () => live!.onDone({ saveRefused: 'too-large' }));
+    await waitFor(() => expect(agentMock.mock.calls.length).toBeGreaterThan(readsBefore));
+    await screen.findByText('Saved it.');
+    expect(screen.getAllByText(SAVE_REFUSED_COPY['too-large'])).toHaveLength(1);
+    expect(screen.getAllByText(SAVE_REFUSED_COPY.refused)).toHaveLength(1);
+  });
 });

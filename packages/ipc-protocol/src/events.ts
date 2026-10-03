@@ -100,6 +100,20 @@ const TokenCountSchema = z.number().int().nonnegative().max(1_000_000_000);
  * optional in the schema until the producer ships — Task 4 only LOCKS the
  * shape so the producer/consumer can land without further protocol churn.
  */
+/**
+ * Why the host refused a workspace save (TASK-720, TASK-731). A closed set of
+ * machine codes, never prose: the client words them. Runner-reported and
+ * therefore UNTRUSTED, which is fine: the worst a lying runner can do is pick
+ * which of three fixed sentences the person sees.
+ *   - `storage-full`: the person's storage limit refused the save.
+ *   - `too-large`: one save was over the per-save size cap.
+ *   - `refused`: any other refusal (a validator veto, an author check).
+ * Shared by `event.turn-end` (a per-turn save) and `event.chat-end` (the
+ * final/idle flush), so the two can never drift apart.
+ */
+export const SaveRefusedCodeSchema = z.enum(['storage-full', 'too-large', 'refused']);
+export type SaveRefusedCode = z.infer<typeof SaveRefusedCodeSchema>;
+
 export const EventTurnEndSchema = z.object({
   reqId: z.string().optional(),
   reason: z.enum(['user-message-wait', 'error', 'complete']),
@@ -149,19 +163,15 @@ export const EventTurnEndSchema = z.object({
    * was silent to the person: the refusal's own reason is prose written for
    * the model, and the model's turn is already over when the save runs.
    *
-   * A closed set of machine codes, never prose. Runner-reported and therefore
-   * UNTRUSTED, which is fine: the worst a lying runner can do is pick which of
-   * three fixed sentences the person sees.
-   *   - `storage-full`: the person's storage limit refused the save.
-   *   - `too-large`: one save was over the per-save size cap.
-   *   - `refused`: any other refusal (a validator veto, an author check).
+   * A closed code (see SaveRefusedCodeSchema), never prose. The host also
+   * persists it as a `save-refused` display event, so the notice survives a
+   * reload (TASK-731).
    * Absent means the save went through, had nothing to save, or failed in a
    * way the runner keeps and retries next turn.
    */
-  saveRefused: z.enum(['storage-full', 'too-large', 'refused']).optional(),
+  saveRefused: SaveRefusedCodeSchema.optional(),
 });
 export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
-export type SaveRefusedCode = NonNullable<EventTurnEnd['saveRefused']>;
 
 /**
  * Terminal outcome of a chat, mirroring `@ax/core/src/types.ts` `AgentOutcome`
@@ -182,5 +192,17 @@ export type AgentOutcome = z.infer<typeof AgentOutcomeSchema>;
 
 export const EventChatEndSchema = z.object({
   outcome: AgentOutcomeSchema,
+  /**
+   * The host refused the runner's FINAL/idle save, the flush after the last
+   * turn-end (TASK-731). That flush bundles everything since the baseline, so
+   * it can carry files from earlier replies whose own save came back `kept`
+   * (host unreachable), plus late/background writes: files the person may
+   * have watched being made. There is no turn-end left to carry the code and
+   * no stream is open, so it rides here and the host persists it as a
+   * `save-refused` display event for the next read of the thread.
+   * Same closed code set as `EventTurnEnd.saveRefused`. Absent means the
+   * final save went through, had nothing to save, or never ran.
+   */
+  saveRefused: SaveRefusedCodeSchema.optional(),
 });
 export type EventChatEnd = z.infer<typeof EventChatEndSchema>;

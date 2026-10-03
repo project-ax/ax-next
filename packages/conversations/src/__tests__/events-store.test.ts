@@ -3,7 +3,7 @@ import {
   stopPostgresContainer,
   startTestContainer,
 } from '@ax/test-harness';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -79,6 +79,168 @@ describe('conversation_events migration', () => {
       payload: { type: 'text', text: 'ok' },
     });
     expect(seq).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-731 — the event_kind CHECK is widened to admit 'save-refused'. The
+  // original constraint was declared inline, so Postgres auto-named it
+  // `<table>_<column>_check`; the widening step re-creates it under that
+  // same name so there is only ever ONE event_kind check on the table.
+  // -------------------------------------------------------------------------
+  async function eventKindChecks(
+    db: Kysely<ConversationDatabase>,
+  ): Promise<{ conname: string; def: string }[]> {
+    const res = await sql<{ conname: string; def: string }>`
+      SELECT conname, pg_get_constraintdef(oid) AS def
+        FROM pg_constraint
+       WHERE conrelid = 'conversations_v1_events'::regclass
+         AND contype = 'c'
+       ORDER BY conname
+    `.execute(db);
+    return res.rows;
+  }
+
+  async function insertKind(
+    db: Kysely<ConversationDatabase>,
+    kind: string,
+  ): Promise<void> {
+    await sql`
+      INSERT INTO conversations_v1_events (conversation_id, seq, event_kind, payload)
+      VALUES ('c-check', (SELECT COALESCE(MAX(seq), 0) + 1 FROM conversations_v1_events), ${kind}, '{}'::jsonb)
+    `.execute(db);
+  }
+
+  it('fresh DB, migrated twice: one event_kind CHECK, admitting save-refused and still rejecting bogus (TASK-731)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    await runConversationsMigration(db);
+
+    const checks = await eventKindChecks(db);
+    expect(checks.map((c) => c.conname)).toEqual([
+      'conversations_v1_events_event_kind_check',
+    ]);
+    expect(checks[0]!.def).toContain('save-refused');
+
+    await insertKind(db, 'save-refused');
+    await expect(insertKind(db, 'bogus')).rejects.toThrow(/check constraint/i);
+  });
+
+  it('widens the CHECK on a DB created by the pre-TASK-731 migration', async () => {
+    const db = makeKysely();
+    // The table exactly as the old migration created it.
+    await sql`
+      CREATE TABLE conversations_v1_events (
+        conversation_id TEXT NOT NULL,
+        seq BIGINT NOT NULL,
+        event_kind TEXT NOT NULL
+          CHECK (event_kind IN ('turn', 'permission-card', 'turn-error')),
+        role TEXT,
+        fold_key TEXT NOT NULL DEFAULT '',
+        payload JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (conversation_id, seq)
+      )
+    `.execute(db);
+    // Pin the auto-generated name the widening step depends on.
+    const before = await eventKindChecks(db);
+    expect(before.map((c) => c.conname)).toEqual([
+      'conversations_v1_events_event_kind_check',
+    ]);
+    await insertKind(db, 'turn-error');
+    await expect(insertKind(db, 'save-refused')).rejects.toThrow(/check constraint/i);
+
+    await runConversationsMigration(db);
+
+    const after = await eventKindChecks(db);
+    expect(after.map((c) => c.conname)).toEqual([
+      'conversations_v1_events_event_kind_check',
+    ]);
+    await insertKind(db, 'save-refused');
+    await expect(insertKind(db, 'bogus')).rejects.toThrow(/check constraint/i);
+  });
+
+  it('two replicas migrating a pre-TASK-731 DB at once both succeed (TASK-731)', async () => {
+    const setup = makeKysely();
+    await sql`
+      CREATE TABLE conversations_v1_events (
+        conversation_id TEXT NOT NULL,
+        seq BIGINT NOT NULL,
+        event_kind TEXT NOT NULL
+          CHECK (event_kind IN ('turn', 'permission-card', 'turn-error')),
+        role TEXT,
+        fold_key TEXT NOT NULL DEFAULT '',
+        payload JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (conversation_id, seq)
+      )
+    `.execute(setup);
+    // Also create the other tables first so the race is on the widening step
+    // and not on unrelated CREATE TABLE IF NOT EXISTS statements.
+    await runConversationsMigration(makeKysely()).catch(() => {});
+    await sql`ALTER TABLE conversations_v1_events DROP CONSTRAINT conversations_v1_events_event_kind_check`.execute(setup);
+    await sql`ALTER TABLE conversations_v1_events ADD CONSTRAINT conversations_v1_events_event_kind_check CHECK (event_kind IN ('turn', 'permission-card', 'turn-error'))`.execute(setup);
+
+    const a = makeKysely();
+    const b = makeKysely();
+    await Promise.all([runConversationsMigration(a), runConversationsMigration(b)]);
+
+    const checks = await eventKindChecks(setup);
+    expect(checks.map((c) => c.conname)).toEqual([
+      'conversations_v1_events_event_kind_check',
+    ]);
+    expect(checks[0]!.def).toContain('save-refused');
+  });
+});
+
+describe('ConversationStore.listEvents — unknown kinds (TASK-731)', () => {
+  it('skips a row with an unknown event_kind and reports it, instead of throwing', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+    await store.appendEvent({
+      conversationId: 'c-unk',
+      kind: 'turn',
+      role: 'assistant',
+      payload: { blocks: [] },
+    });
+    // Simulate a row a NEWER release wrote under its own wider constraint.
+    await sql`ALTER TABLE conversations_v1_events DROP CONSTRAINT conversations_v1_events_event_kind_check`.execute(db);
+    await sql`
+      INSERT INTO conversations_v1_events (conversation_id, seq, event_kind, payload)
+      VALUES ('c-unk', 2, 'from-the-future', '{}'::jsonb)
+    `.execute(db);
+    await store.appendEvent({
+      conversationId: 'c-unk',
+      kind: 'save-refused',
+      foldKey: 'r1',
+      payload: { code: 'refused' },
+    });
+
+    const skipped: unknown[] = [];
+    const events = await store.listEvents('c-unk', {
+      onSkippedRow: (row) => skipped.push(row),
+    });
+    expect(events.map((e) => [e.seq, e.kind])).toEqual([
+      [1, 'turn'],
+      [3, 'save-refused'],
+    ]);
+    expect(skipped).toEqual([{ seq: 2, eventKind: 'from-the-future' }]);
+
+    // The callback is optional.
+    expect((await store.listEvents('c-unk')).map((e) => e.seq)).toEqual([1, 3]);
+  });
+
+  it('still refuses to WRITE an unknown kind (writes stay strict)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+    await expect(
+      store.appendEvent({
+        conversationId: 'c-w',
+        kind: 'bogus' as never,
+        payload: {},
+      }),
+    ).rejects.toThrow();
   });
 });
 

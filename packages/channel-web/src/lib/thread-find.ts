@@ -314,8 +314,9 @@ export function threadFindFields(
         break;
       /*
         "The files from this reply weren't saved" (TASK-720). OUT for the
-        `stopped` reason: a client-made note about the thread, not something
-        anyone said.
+        `stopped` reason: a note about the thread, not something anyone said
+        (and since TASK-731 it carries a code, not text, so there is nothing
+        of its own to match).
       */
       case 'save-refused':
         break;

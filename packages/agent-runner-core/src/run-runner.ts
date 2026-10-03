@@ -1181,6 +1181,9 @@ async function runRunnerInner(
 
   let exitCode = 0;
   let terminatedReason: string | undefined;
+  // TASK-731: set iff the host refused the FINAL/idle save (the flush after
+  // the last turn-end); read by the single `event.chat-end` at the bottom.
+  let finalSaveRefused: SaveRefusedCode | undefined;
   let terminatedError:
     | { name: string; message: string; stack?: string }
     | undefined;
@@ -1548,7 +1551,8 @@ async function runRunnerInner(
         // TASK-720: a TERMINAL refusal (the host objected, or the save was too
         // big to carry) just took this turn's files back. The turn is over, so
         // the model cannot be told; the person can — the code rides this
-        // turn's assistant `event.turn-end` below as `saveRefused`.
+        // turn's `event.turn-end`s below as `saveRefused`, and the host
+        // persists it as a display event so it survives a reload (TASK-731).
         saveRefused = saveRefusedFrom(result);
         commitTrace(
           `[commit-trace] per-turn DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
@@ -1626,8 +1630,9 @@ async function runRunnerInner(
           // stream on the first `chat:turn-end` carrying this reqId (the reply
           // itself already streamed as chunks). A code that rode only the
           // assistant turn-end reached an unsubscribed subscriber, so the
-          // person was never told. This field is not persisted, so carrying it
-          // twice costs nothing.
+          // person was never told. The host persists it from each turn-end
+          // (TASK-731), keyed on this turn's reqId, so the two rows fold to
+          // one on read: carrying it twice costs nothing.
           ...(saveRefused !== undefined ? { saveRefused } : {}),
         })
         .catch(() => {
@@ -1794,13 +1799,18 @@ async function runRunnerInner(
         commitTrace(
           `[commit-trace] final DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
         );
-        // No turn-end follows the final/idle commit, so a refusal here has no
-        // channel to the person (a follow-up, TASK-720). At least keep it out
-        // of the silent column: the files are gone either way.
-        const finalRefused = saveRefusedFrom(result);
-        if (finalRefused !== undefined) {
+        // TASK-731: no turn-end follows the final/idle commit, so its refusal
+        // rides `event.chat-end` below instead, and the host persists it for
+        // the next read of the thread (no stream is open by then). This is
+        // not a corner case: the final flush bundles baseline..main, so it can
+        // carry files from an EARLIER reply whose own save came back `kept`
+        // (host unreachable, retried here), plus late/background writes.
+        // Those can be files the person watched being made. The stderr line
+        // stays as an operator log.
+        finalSaveRefused = saveRefusedFrom(result);
+        if (finalSaveRefused !== undefined) {
           process.stderr.write(
-            `runner: final save refused (${finalRefused}); this turn's files were rolled back and no turn-end carries the notice\n`,
+            `runner: final save refused (${finalSaveRefused}); the unsaved files were rolled back and the notice rides event.chat-end\n`,
           );
         }
       }
@@ -1845,9 +1855,18 @@ async function runRunnerInner(
           reason: terminatedReason ?? 'unknown',
           ...(terminatedError !== undefined ? { error: terminatedError } : {}),
         };
-  await client.event('event.chat-end', { outcome }).catch(() => {
-    /* swallow */
-  });
+  // TASK-731: a refused final/idle save rides here (see the final commit
+  // above). Absent when that save went through, had nothing to save, never
+  // ran, or failed in a way that is not a refusal. A per-turn refusal never
+  // lands here: it already rode its own turn-end.
+  await client
+    .event('event.chat-end', {
+      outcome,
+      ...(finalSaveRefused !== undefined ? { saveRefused: finalSaveRefused } : {}),
+    })
+    .catch(() => {
+      /* swallow */
+    });
   await client.close().catch(() => {
     /* close is best-effort; a clean chat shouldn't exit non-zero on teardown */
   });
