@@ -11,8 +11,9 @@
  * Each test says what it does against the OLD component, because a test that
  * passes either way is not a guard.
  */
+import { useEffect, useState } from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NewAgentCard } from '../onboard/NewAgentCard';
 
 const nameField = () => screen.getByLabelText(/agent name/i);
@@ -88,6 +89,41 @@ describe('NewAgentCard — adding another agent', () => {
     const onCancel = vi.fn();
     render(<NewAgentCard mode="add" onCreate={vi.fn()} onCancel={onCancel} />);
     fireEvent.keyDown(nameField(), { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels on Escape the instant it is on screen, however it got mounted (TASK-478)', async () => {
+    /*
+      OLD (passive useEffect): the document keydown listener attached in a
+      task AFTER the commit that showed the card. Today's only way in is a
+      click on "+ New agent...", and a discrete render flushes its passive
+      effects at the end of that same commit, so the live path did not drop
+      Escape (measured: a real `click()` with the act environment off). Mounted
+      from anything else (a promise continuation, below) an Escape pressed
+      the moment Cancel appeared was silently lost: red every run on the old
+      code. Same shape and same probe as TASK-772's FirstRunAutoCreate fix.
+    */
+    function MountsLater({ onCancel }: { onCancel: () => void }) {
+      const [open, setOpen] = useState(false);
+      useEffect(() => {
+        void Promise.resolve().then(() => setOpen(true));
+      }, []);
+      return open ? <NewAgentCard mode="add" onCreate={vi.fn()} onCancel={onCancel} /> : null;
+    }
+    const onCancel = vi.fn();
+    let pressed = false;
+    const observer = new MutationObserver(() => {
+      if (pressed || !screen.queryByRole('button', { name: /^cancel$/i })) return;
+      pressed = true;
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      render(<MountsLater onCancel={onCancel} />);
+      await waitFor(() => expect(pressed).toBe(true));
+    } finally {
+      observer.disconnect();
+    }
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 

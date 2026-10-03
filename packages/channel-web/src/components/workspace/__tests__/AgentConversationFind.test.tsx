@@ -19,11 +19,11 @@
  * an unscoped `getByRole('status')` matches two elements and the suite fails for
  * a reason that has nothing to do with find.
  */
-import type { ComponentProps } from 'react';
+import { useEffect, useState, type ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
-import { ANNOUNCE_DELAY_MS } from '../ThreadFind';
+import { ANNOUNCE_DELAY_MS, ThreadFindBar } from '../ThreadFind';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import { decisionFixture } from './decision-fixture';
@@ -239,6 +239,55 @@ describe('finding something in an agent thread', () => {
       screen.queryByRole('textbox', { name: 'Find in this conversation' }),
     ).toBeNull();
     expect(document.activeElement).toBe(findButton());
+  });
+
+  it('is focused the instant it is on screen, however it got mounted (TASK-478)', async () => {
+    /*
+      OLD (passive useEffect): the bar focused itself in a task AFTER the
+      commit that put it on screen. Opened by a click, that gap is empty:
+      React flushes a discrete render's passive effects at the end of the same
+      commit, which is why the toggle path never misbehaved (measured: a
+      MutationObserver probe on a real `click()` with the act environment off
+      read the box as focused on the old code). Mounted from anything that is
+      NOT a discrete event (a promise continuation, below) the bar sat
+      visible with focus on <body>: red every run on the old code.
+
+      The observer runs at the microtask checkpoint of the task that inserted
+      the bar, i.e. the earliest moment anyone could see it. A layout effect
+      has run by then; a passive one has not.
+    */
+    function MountsLater() {
+      const [open, setOpen] = useState(false);
+      useEffect(() => {
+        void Promise.resolve().then(() => setOpen(true));
+      }, []);
+      return open ? (
+        <ThreadFindBar
+          query=""
+          onQuery={vi.fn()}
+          active={-1}
+          total={0}
+          onNext={vi.fn()}
+          onPrev={vi.fn()}
+          onClose={vi.fn()}
+        />
+      ) : null;
+    }
+    const box = () =>
+      document.querySelector('input[aria-label="Find in this conversation"]');
+    const focusWhenSeen: (Element | null)[] = [];
+    const observer = new MutationObserver(() => {
+      if (focusWhenSeen.length > 0 || box() === null) return;
+      focusWhenSeen.push(document.activeElement);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      render(<MountsLater />);
+      await waitFor(() => expect(focusWhenSeen).toHaveLength(1));
+    } finally {
+      observer.disconnect();
+    }
+    expect(focusWhenSeen[0]).toBe(box());
   });
 
   it('takes its highlights away when it closes', () => {
