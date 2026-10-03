@@ -230,6 +230,7 @@ const COMPLETE_ENV = {
   AX_AUTH_TOKEN: 'tok-123',
   AX_WORKSPACE_ROOT: '/tmp/workspace',
   AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
+  AX_PROXY_TOKEN: 'feedfacefeedfacefeedfacefeedface',
   ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
 } as const;
 
@@ -1125,6 +1126,44 @@ describe('main()', () => {
       stderrSpy.mockRestore();
     }
   });
+
+  // TASK-704: the proxy 407s every request without this session's token, so a
+  // runner that booted without a usable one would fail every model/tool call
+  // like a network outage. It must exit at boot instead — naming the variable
+  // on stderr and never printing the value (a bearer credential).
+  for (const [label, token] of [
+    ['missing', undefined],
+    ['malformed (upper-case)', 'FEEDFACEFEEDFACEFEEDFACEFEEDFACE'],
+    ['malformed (truncated)', 'feedfacefeedfacefeedfacefeedfac'],
+  ] as const) {
+    it(`bootstrap failure: ${label} AX_PROXY_TOKEN → exit 2, no IPC client, value never printed`, async () => {
+      setEnv({ ...COMPLETE_ENV, AX_PROXY_TOKEN: token });
+      fakeClient = buildFakeClient();
+      fakeInbox = buildFakeInbox([]);
+
+      const stderrSpy = vi
+        .spyOn(process.stderr, 'write')
+        .mockImplementation(() => true);
+
+      try {
+        const { main } = await import('../main.js');
+        const rc = await main();
+        expect(rc).toBe(2);
+
+        const stderrMessages = stderrSpy.mock.calls
+          .map((c) => String(c[0]))
+          .join('');
+        expect(stderrMessages).toContain('AX_PROXY_TOKEN');
+        expect(stderrMessages.toLowerCase()).not.toContain('feedfacefeedface');
+
+        expect(queryMock).not.toHaveBeenCalled();
+        expect(fakeClient.event).not.toHaveBeenCalled();
+        expect(createIpcClientMock).not.toHaveBeenCalled();
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+  }
 
   it('Phase 3 turn end: bundle ships → commit-notify → host accepts → advance baseline', async () => {
     // The new shape: at SDK `result`, runner calls commitTurnAndBundle.

@@ -221,6 +221,7 @@ beforeEach(async () => {
     AX_AUTH_TOKEN: 'tok-123',
     AX_WORKSPACE_ROOT: workspaceRoot,
     AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
+    AX_PROXY_TOKEN: 'feedfacefeedfacefeedfacefeedface',
     ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
     CLAUDE_CONFIG_DIR: configDir,
     AX_VENV_READY_WAIT_MS: '0',

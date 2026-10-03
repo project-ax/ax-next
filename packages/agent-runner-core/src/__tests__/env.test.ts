@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { MissingEnvError, readRunnerEnv } from '../env.js';
+import { InvalidEnvError, MissingEnvError, readRunnerEnv } from '../env.js';
+
+// A well-formed per-session proxy token (what credential-proxy mints:
+// 16 random bytes, lowercase hex).
+const TOKEN = '0123456789abcdef0123456789abcdef';
 
 // Canonical Phase 2 direct-mode fixture (AX_PROXY_ENDPOINT only).
 const PROXY_TCP = {
@@ -8,6 +12,7 @@ const PROXY_TCP = {
   AX_AUTH_TOKEN: 'tok-123',
   AX_WORKSPACE_ROOT: '/tmp/workspace',
   AX_PROXY_ENDPOINT: 'http://127.0.0.1:54321',
+  AX_PROXY_TOKEN: TOKEN,
 };
 
 // Canonical Phase 2 bridge-mode fixture (AX_PROXY_UNIX_SOCKET only).
@@ -17,6 +22,7 @@ const PROXY_UNIX = {
   AX_AUTH_TOKEN: 'tok-123',
   AX_WORKSPACE_ROOT: '/tmp/workspace',
   AX_PROXY_UNIX_SOCKET: '/var/run/ax/proxy.sock',
+  AX_PROXY_TOKEN: TOKEN,
 };
 
 describe('readRunnerEnv', () => {
@@ -27,6 +33,7 @@ describe('readRunnerEnv', () => {
       authToken: 'tok-123',
       workspaceRoot: '/tmp/workspace',
       proxyEndpoint: 'http://127.0.0.1:54321',
+      proxyToken: TOKEN,
     });
   });
 
@@ -76,6 +83,7 @@ describe('readRunnerEnv', () => {
       authToken: 'tok-123',
       workspaceRoot: '/tmp/workspace',
       proxyUnixSocket: '/var/run/ax/proxy.sock',
+      proxyToken: TOKEN,
     });
   });
 
@@ -102,6 +110,7 @@ describe('readRunnerEnv', () => {
       AX_SESSION_ID: 's',
       AX_WORKSPACE_ROOT: '/tmp/ws',
       AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
+      AX_PROXY_TOKEN: TOKEN,
       AX_LLM_PROXY_URL: 'http://legacy.local',
     });
     expect((env as Record<string, unknown>).llmProxyUrl).toBeUndefined();
@@ -190,4 +199,85 @@ describe('readRunnerEnv', () => {
       expect((err as MissingEnvError).message).toContain('AX_PROXY_UNIX_SOCKET');
     }
   });
+});
+
+// TASK-704: since TASK-158 the proxy refuses (407) every request that does not
+// carry this session's token, and a proxy is always configured (see the
+// AX_PROXY_ENDPOINT / AX_PROXY_UNIX_SOCKET check above). A runner that boots
+// without a usable token can therefore reach nothing, and every failure would
+// look like a network outage. readRunnerEnv must refuse to boot instead --
+// and must never echo the token (it is a bearer credential) in the error.
+describe('readRunnerEnv -- AX_PROXY_TOKEN (TASK-704)', () => {
+  for (const [label, base] of [
+    ['direct mode (AX_PROXY_ENDPOINT)', PROXY_TCP],
+    ['bridge mode (AX_PROXY_UNIX_SOCKET)', PROXY_UNIX],
+  ] as const) {
+    it(`${label}: carries a well-formed token through`, () => {
+      expect(readRunnerEnv(base).proxyToken).toBe(TOKEN);
+    });
+
+    it(`${label}: throws MissingEnvError naming AX_PROXY_TOKEN when unset`, () => {
+      const env: Record<string, string | undefined> = { ...base };
+      delete env.AX_PROXY_TOKEN;
+      let caught: unknown;
+      try {
+        readRunnerEnv(env);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(MissingEnvError);
+      expect((caught as MissingEnvError).varName).toBe('AX_PROXY_TOKEN');
+      expect((caught as Error).message).toContain('AX_PROXY_TOKEN');
+    });
+
+    it(`${label}: throws MissingEnvError naming AX_PROXY_TOKEN when empty`, () => {
+      let caught: unknown;
+      try {
+        readRunnerEnv({ ...base, AX_PROXY_TOKEN: '' });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(MissingEnvError);
+      expect((caught as MissingEnvError).varName).toBe('AX_PROXY_TOKEN');
+    });
+
+    it(`${label}: rejects a malformed token`, () => {
+      expect(() =>
+        readRunnerEnv({ ...base, AX_PROXY_TOKEN: TOKEN.toUpperCase() }),
+      ).toThrow(InvalidEnvError);
+    });
+  }
+
+  // Each of these is one plausible way a token gets garbled in transit
+  // (truncation, padding, a trailing newline from a secret file, an
+  // upper-cased copy, a quoted value, a userinfo string pasted in).
+  const MALFORMED: ReadonlyArray<readonly [string, string]> = [
+    ['31 chars (truncated)', TOKEN.slice(0, 31)],
+    ['33 chars (padded)', `${TOKEN}0`],
+    ['upper-case hex', TOKEN.toUpperCase()],
+    ['non-hex character', `${TOKEN.slice(0, 31)}g`],
+    ['trailing newline', `${TOKEN}\n`],
+    ['leading space', ` ${TOKEN.slice(1)}`],
+    ['quoted', `"${TOKEN.slice(2)}"`],
+    ['embedded in userinfo', `ax:${TOKEN}`],
+  ];
+  for (const [label, bad] of MALFORMED) {
+    it(`throws InvalidEnvError for a malformed token (${label}) without echoing it`, () => {
+      let caught: unknown;
+      try {
+        readRunnerEnv({ ...PROXY_TCP, AX_PROXY_TOKEN: bad });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(InvalidEnvError);
+      expect((caught as InvalidEnvError).varName).toBe('AX_PROXY_TOKEN');
+      const message = (caught as Error).message;
+      expect(message).toContain('AX_PROXY_TOKEN');
+      // Never leak the value or a recognizable chunk of it. Every malformed
+      // variant above shares the 16-char run TOKEN[2..18] (case aside).
+      expect(message).not.toContain(bad.trim());
+      expect(message.toLowerCase()).not.toContain(TOKEN.slice(2, 18));
+      expect(JSON.stringify(caught).toLowerCase()).not.toContain(TOKEN.slice(2, 18));
+    });
+  }
 });
