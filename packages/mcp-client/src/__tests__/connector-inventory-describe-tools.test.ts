@@ -54,6 +54,8 @@ interface Setup {
   credential?: (input: { ref: string; userId: string }, ctx: AgentContext) => string;
   agentsResolve?: (input: { agentId: string; userId: string }) => unknown;
   list?: (opts: ListServerToolsOptions) => Promise<ListOutcome>;
+  /** TASK-773 — make `store.put` reject while this returns true. */
+  putFails?: () => boolean;
 }
 
 function setup(s: Setup = {}) {
@@ -88,12 +90,18 @@ function setup(s: Setup = {}) {
       })),
   );
   const store = memoryStore();
+  const realPut = store.put.bind(store);
+  store.put = async (key, row) => {
+    if (s.putFails?.() === true) throw new Error('connection terminated: insert failed for tok-secret');
+    return realPut(key, row);
+  };
+  const logLines: string[] = [];
   const describeTools = createDescribeTools({ bus, store, listTools: list, now: () => clock });
   const ctx = makeAgentContext({
     sessionId: 's',
     agentId: 'a',
     userId: 'caller',
-    logger: createLogger({ reqId: 't', writer: () => {} }),
+    logger: createLogger({ reqId: 't', writer: (line) => logLines.push(line) }),
   });
   return {
     run: (input: unknown) => describeTools(ctx, input),
@@ -101,6 +109,7 @@ function setup(s: Setup = {}) {
     calls,
     fired,
     store,
+    logLines,
     advance(ms: number) {
       clock = new Date(clock.getTime() + ms);
     },
@@ -517,6 +526,70 @@ describe('connectors:describe-tools', () => {
         code: 'credential-unavailable',
       });
       expect(t.list).not.toHaveBeenCalled();
+    });
+  });
+
+  // TASK-773 — the cooldown reads the stored row; a write that fails must
+  // not leave a "never checked" connector that every call may probe.
+  describe('when the store write fails (TASK-773)', () => {
+    it('two forced checks inside the window cause one probe, not two', async () => {
+      const t = setup({ putFails: () => true });
+      const first = await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(first.status).toBe('ok'); // the server WAS asked — a real answer
+      t.advance(CHECK_COOLDOWN_MS - 1);
+      const second = await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(1);
+      expect(second).toEqual(first);
+      expect(t.store.rows.size).toBe(0);
+      // The bound is a window, not a lockout.
+      t.advance(1);
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(2);
+    });
+
+    it('unforced calls are answered from the held answer for its TTL', async () => {
+      const t = setup({ putFails: () => true });
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      t.advance(OK_TTL_MS - 1);
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(t.list).toHaveBeenCalledTimes(1);
+      t.advance(1);
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(t.list).toHaveBeenCalledTimes(2);
+    });
+
+    it('logs the failed write by code, without the driver message', async () => {
+      const t = setup({ putFails: () => true });
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      const failed = t.logLines.filter((l) => l.includes('connector_inventory_store_failed'));
+      expect(failed).toHaveLength(1);
+      expect(JSON.parse(failed[0]!)).toMatchObject({ level: 'error', connectorId: 'linear' });
+      expect(failed[0]).toContain('"code":"Error"');
+      expect(failed[0]).not.toContain('tok-secret');
+    });
+
+    it('the held answer is the previous answer: the same tools after the window are not "new"', async () => {
+      const t = setup({ putFails: () => true });
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      t.advance(CHECK_COOLDOWN_MS);
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(2);
+      expect(t.fired).toHaveLength(1);
+    });
+
+    it('once the store keeps a newer answer, that is what is served', async () => {
+      let fail = true;
+      let outcome: ListOutcome = { kind: 'unreachable', reason: 'timeout' };
+      const t = setup({ putFails: () => fail, list: async () => outcome });
+      expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('unreachable');
+      fail = false;
+      outcome = { kind: 'ok', dropped: 0, tools: [] };
+      t.advance(CHECK_COOLDOWN_MS);
+      expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('ok');
+      expect(t.store.rows.size).toBe(1);
+      t.advance(1);
+      expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('ok');
+      expect(t.list).toHaveBeenCalledTimes(2);
     });
   });
 
