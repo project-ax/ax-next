@@ -823,7 +823,7 @@ describe('ConnectorEditDialog', () => {
         destination: {
           kind: 'account',
           service: 'my-oauth-svc',
-          slot: 'oauth-client-secret',
+          slot: 'OAUTH_CLIENT_SECRET', // TASK-762 — the route's SCREAMING_SNAKE slot grammar
         },
         scope: { scope: 'user', ownerId: null }, // personal keyMode → user scope
         payload: 'super-secret-value',
@@ -838,7 +838,7 @@ describe('ConnectorEditDialog', () => {
     ) as ConnectorOAuthSlot | undefined;
     expect(oauthSlot).toBeDefined();
     expect(oauthSlot!.clientSecretRef).toBe(
-      'account:my-oauth-svc:oauth-client-secret',
+      'account:my-oauth-svc:OAUTH_CLIENT_SECRET',
     );
     // The raw secret must NOT appear anywhere in the connector body.
     expect(JSON.stringify(body)).not.toContain('super-secret-value');

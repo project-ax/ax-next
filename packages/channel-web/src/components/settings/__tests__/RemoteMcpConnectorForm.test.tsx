@@ -236,8 +236,15 @@ describe('remote connector editor', () => {
     await waitFor(() => expect(writes).toHaveLength(2));
     expect(writes[0]!.url).toBe('/settings/destinations/account/credential');
     expect(writes[0]!.body.payloadB64).toBe(btoa('new-confidential-value'));
+    // TASK-762 — the slot must fit the route's SCREAMING_SNAKE slot grammar;
+    // `oauth-client-secret` was refused with `400 invalid account slot`.
+    expect(writes[0]!.body.destination).toEqual({
+      kind: 'account',
+      service: 'linear',
+      slot: 'OAUTH_CLIENT_SECRET',
+    });
     expect(writes[1]!.body.capabilities).toMatchObject({
-      credentials: [{ clientSecretRef: 'account:linear:oauth-client-secret' }],
+      credentials: [{ clientSecretRef: 'account:linear:OAUTH_CLIENT_SECRET' }],
     });
     expect(JSON.stringify(writes[1]!.body)).not.toContain(
       'new-confidential-value',
@@ -272,7 +279,8 @@ describe('remote connector editor', () => {
     expect(writes[0]!.body.destination).toMatchObject({
       kind: 'account',
       service: 'linear',
-      slot: expect.stringMatching(/^header-/),
+      // TASK-762 — SCREAMING_SNAKE, or the route answers `invalid account slot`.
+      slot: expect.stringMatching(/^HEADER_[0-9A-F]{32}$/),
     });
     expect(writes[1]!.body.capabilities).toMatchObject({
       credentials: [
@@ -563,11 +571,19 @@ describe('remote connector editor', () => {
       await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
       expect(screen.queryByText(/OAuth supplies Authorization/)).toBeNull();
       expect(writes).toHaveLength(2);
+      // TASK-762 — the key is stored under a slot the route accepts, and the
+      // connector's api-key slot names that same slot.
+      const destination = writes[0]!.body.destination as { slot: string };
+      expect(destination.slot).toMatch(/^HEADER_[0-9A-F]{32}$/);
       const credentials = (
         writes[1]!.body.capabilities as { credentials: { kind: string }[] }
       ).credentials;
       expect(credentials).toEqual([
-        expect.objectContaining({ kind: 'api-key', headerName: 'Authorization' }),
+        expect.objectContaining({
+          kind: 'api-key',
+          headerName: 'Authorization',
+          slot: destination.slot,
+        }),
       ]);
       expect(JSON.stringify(writes[1]!.body)).not.toContain('secret-key');
     });

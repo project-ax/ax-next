@@ -14,7 +14,8 @@ import {
 
 describe('isOwnClientSecretRef', () => {
   it.each([
-    ['account:linear:oauth-client-secret'], // what the connector edit dialog writes
+    ['account:linear:OAUTH_CLIENT_SECRET'], // what the connector editors write (TASK-762)
+    ['account:linear:oauth-client-secret'], // the editors' pre-TASK-762 name
     ['account:linear:OAUTH_SECRET'],
     ['account:linear:s'],
     [`account:linear:${'x'.repeat(64)}`],

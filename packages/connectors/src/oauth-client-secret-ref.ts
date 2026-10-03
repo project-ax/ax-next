@@ -16,7 +16,8 @@ import { PluginError } from '@ax/core';
 // step or the env fallback is reached. An accident, not a control.
 //
 // THE RULE. A client secret is stored by the connector's own edit dialog at
-// `account:<connectorId>:<tag>` (the dialog writes `oauth-client-secret`). That
+// `account:<connectorId>:<tag>` (the editors write `OAUTH_CLIENT_SECRET`; before TASK-762
+// they named `oauth-client-secret`, which the credential route refused). That
 // is the only namespace an OAuth slot may name:
 //
 //   - `account:` only. `provider:` / `mcp:` / `skill:` / `routine:` refs are minted

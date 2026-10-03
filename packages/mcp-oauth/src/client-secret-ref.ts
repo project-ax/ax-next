@@ -11,7 +11,8 @@
 // real or empty agentId would have removed it. This makes it a control.
 //
 // A client secret is stored by the connector's own edit dialog at
-// `account:<connectorId>:<tag>` (the dialog writes `oauth-client-secret`), so that
+// `account:<connectorId>:<tag>` (the editors write `OAUTH_CLIENT_SECRET`; before
+// TASK-762 they named `oauth-client-secret`, which the credential route refused), so that
 // is the only shape allowed:
 //   - `account:` only (`provider:` / `mcp:` / env-fallback refs are the operator's);
 //   - THIS connector's id, so TASK-697's `credentials:authorize-global:account` guard
