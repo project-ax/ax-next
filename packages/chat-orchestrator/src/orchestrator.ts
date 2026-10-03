@@ -349,6 +349,35 @@ interface SessionTerminateInput {
   sessionId: string;
 }
 
+// `tool-policy:list-agent-overrides` — the agent's stored per-tool verdicts.
+// Shape duplicated here (no cross-plugin import); the response is validated
+// defensively by `deniedToolKeys` because it is read as `unknown`.
+interface ToolPolicyListAgentOverridesInput {
+  agentId: string;
+}
+
+/**
+ * Canonical tool keys the agent's policy DENIES — a row whose `verdict` OR
+ * `ceiling` is `'deny'` (a ceiling of deny means the tool can never be
+ * allowed, so offering it is pointless). Deduped + sorted for a stable
+ * snapshot. Anything malformed (non-object response, non-array `overrides`,
+ * a row without a string `toolKey`) contributes nothing — this feeds catalog
+ * hygiene, never enforcement, so the safe failure is "no extra denies".
+ */
+export function deniedToolKeys(out: unknown): string[] {
+  if (typeof out !== 'object' || out === null) return [];
+  const overrides = (out as { overrides?: unknown }).overrides;
+  if (!Array.isArray(overrides)) return [];
+  const keys = new Set<string>();
+  for (const row of overrides) {
+    if (typeof row !== 'object' || row === null) continue;
+    const r = row as { toolKey?: unknown; verdict?: unknown; ceiling?: unknown };
+    if (typeof r.toolKey !== 'string' || r.toolKey.length === 0) continue;
+    if (r.verdict === 'deny' || r.ceiling === 'deny') keys.add(r.toolKey);
+  }
+  return [...keys].sort();
+}
+
 // agents:resolve — registered by @ax/agents. The orchestrator hard-depends
 // on this hook now; with the multi-tenant slice every chat goes through an
 // agent, including dev/test paths (the test harness mocks the hook). I2:
@@ -2221,6 +2250,31 @@ export function createOrchestrator(
         }
       } catch (err) {
         ctx.logger.warn('system_prompt_augment_failed', {
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
+    }
+
+    // Per-tool DENY verdicts → `agentConfig.disallowedTools`. CATALOG HYGIENE
+    // only: the runner hides these so the model isn't offered tools it will
+    // be refused. Enforcement stays host-side on `tool:pre-call`, so every
+    // failure here DEGRADES (log + no extra denies) — it must never abort the
+    // session open. Same optional-peer posture as `system-prompt:augment`
+    // above: hasService-gated, declared in the manifest's `optionalCalls`.
+    // Only set when non-empty so the frozen snapshot of an agent with no
+    // denies is byte-identical to before.
+    if (bus.hasService('tool-policy:list-agent-overrides')) {
+      try {
+        const out = await bus.call<
+          ToolPolicyListAgentOverridesInput,
+          unknown
+        >('tool-policy:list-agent-overrides', ctx, { agentId: ctx.agentId });
+        const denied = deniedToolKeys(out);
+        if (denied.length > 0) {
+          agentConfig.disallowedTools = denied;
+        }
+      } catch (err) {
+        ctx.logger.warn('tool_policy_overrides_read_failed', {
           err: err instanceof Error ? err : new Error(String(err)),
         });
       }

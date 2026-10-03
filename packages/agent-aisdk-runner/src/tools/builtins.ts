@@ -144,10 +144,17 @@ export interface BuiltinToolsOptions {
   onHold: (toolCallId: string) => void;
   /** Fired with the call id when a tool ran and failed — see WrapWithPolicyOptions. */
   onToolFailure: (toolCallId: string) => void;
+  /**
+   * Canonical tool names the agent's policy DENIES (`agentConfig.
+   * disallowedTools`). A built-in named here is left out of the returned set
+   * so the model is never offered it. Catalog hygiene only — enforcement
+   * stays host-side on tool.pre-call. Absent/empty = all six built-ins.
+   */
+  disallowed?: readonly string[] | undefined;
 }
 
 /**
- * Build the six built-ins. The returned object is a `ToolSet` for `ai@7`; the
+ * Build the six built-ins (minus any in `opts.disallowed`). The returned object is a `ToolSet` for `ai@7`; the
  * loop merges it with the host/sandbox catalog tools and `Skill`, then runs
  * `assertAllToolsWrapped` over the union.
  */
@@ -162,7 +169,7 @@ export function buildBuiltinTools(
       run(input, { abortSignal: ctx.abortSignal }),
     );
 
-  return {
+  const all: Record<string, Tool> = {
     Bash: tool({
       description:
         'Run a shell command inside the agent sandbox with `bash -lc`, from the ' +
@@ -346,6 +353,10 @@ export function buildBuiltinTools(
       execute: wrap('Grep', (input) => runGrepTool(input, opts)),
     }),
   };
+  const disallowed = opts.disallowed ?? [];
+  if (disallowed.length === 0) return all;
+  const deny = new Set(disallowed);
+  return Object.fromEntries(Object.entries(all).filter(([name]) => !deny.has(name)));
 }
 
 // --- Bash ------------------------------------------------------------------

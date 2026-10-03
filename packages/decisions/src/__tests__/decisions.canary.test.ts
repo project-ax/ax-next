@@ -2598,3 +2598,50 @@ describe('decisions canary — counting a window', () => {
     await expect(countFor(h, { since: '' })).rejects.toThrow(/since/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-736 (connectors rail slice 3). A connector tool nobody set a default for
+// is "Ask first" — and in a ROUTINE, which nobody is watching, that means the
+// call is queued as an unattended decision and does not run this turn (design
+// decision 3: "Unattended runs wait"). Proved through the real gate and the
+// real `@ax/tool-policy` verdict store, not a stubbed evaluate.
+// ---------------------------------------------------------------------------
+describe('decisions canary — per-tool verdicts (TASK-736)', () => {
+  const CONNECTOR_CALL = {
+    id: 'c-connector',
+    name: 'mcp.c5e0235982f.send_message',
+    input: { to: 'team@example.com' },
+  };
+
+  it('a routine’s call to an unconfigured connector tool queues an unattended decision', async () => {
+    const h = await boot();
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+    const stored = await readDecision(h, userCtx(h), id);
+    expect(stored).toMatchObject({
+      status: 'pending',
+      attendance: 'unattended',
+      agentId: 'a1',
+      call: { name: CONNECTOR_CALL.name },
+    });
+  });
+
+  it('an admin Allow lets it run; the agent’s own Deny refuses it outright', async () => {
+    const h = await boot();
+    await h.bus.call('tool-policy:set-connector-defaults', userCtx(h), {
+      connectorId: 'gmail',
+      verdicts: [{ toolKey: CONNECTOR_CALL.name, verdict: 'allow' }],
+    });
+    const allowed = await h.bus.fire('tool:pre-call', routineCtx(h), CONNECTOR_CALL);
+    expect(isHold(allowed)).toBe(false);
+    expect(isRejection(allowed)).toBe(false);
+
+    await h.bus.call('tool-policy:set-agent-override', userCtx(h), {
+      agentId: 'a1',
+      toolKey: CONNECTOR_CALL.name,
+      verdict: 'deny',
+    });
+    const denied = await h.bus.fire('tool:pre-call', routineCtx(h), CONNECTOR_CALL);
+    expect(isRejection(denied)).toBe(true);
+    expect(isHold(denied)).toBe(false);
+  });
+});

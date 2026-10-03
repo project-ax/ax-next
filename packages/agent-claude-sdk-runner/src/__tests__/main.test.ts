@@ -741,6 +741,54 @@ describe('main()', () => {
   // still bound to the claude-sdk runner) must fail the turn loudly rather
   // than silently running some other model — or silently running the
   // Anthropic default — under a config that named a different provider.
+  it('agentConfig.disallowedTools reaches the SDK disallowedTools option (mapped), host-catalog denies stay out', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            disallowedTools: ['Bash', 'web_search', 'mcp.c0123456789.x'],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+        (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('ok');
+          yield resultSuccess();
+          await it.next();
+        })(),
+    );
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+    const opts = (queryMock.mock.calls[0]?.[0] as { options: { disallowedTools: string[] } })
+      .options;
+    expect(opts.disallowedTools).toEqual(
+      expect.arrayContaining(['WebFetch', 'WebSearch', 'Task', 'AskUserQuestion', 'Bash', 'mcp__c0123456789__x']),
+    );
+    expect(opts.disallowedTools).not.toContain('web_search');
+    expect(opts.disallowedTools).not.toContain('Skill');
+  });
+
   it('non-Anthropic model provider: fails the turn with a clear error, never calls query()', async () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();

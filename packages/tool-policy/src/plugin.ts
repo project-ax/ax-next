@@ -11,11 +11,33 @@ import { evaluate } from './evaluate.js';
 import { runToolPolicyMigration, type ToolPolicyDatabase } from './migrations.js';
 import { BUILTIN_RULES } from './rules.js';
 import {
+  createDbVerdictStore,
+  createMemoryVerdictStore,
+  type StoredOverride,
+  type VerdictStore,
+} from './verdict-store.js';
+import {
+  ceilingFor,
+  consultsVerdictStore,
+  isLooserThan,
+  isOverridableKey,
+  isPolicyVerdict,
+  layeredVerdict,
+  parseConnectorToolKey,
+  strictest,
+  CONNECTOR_TOOL_NAMESPACE_RE,
+} from './verdicts.js';
+import {
   EgressListOutputSchema,
   EgressRememberOutputSchema,
   EgressRevokeOutputSchema,
   EvaluateResultSchema,
+  GetConnectorDefaultsOutputSchema,
+  ListAgentOverridesOutputSchema,
   ListCapabilitiesOutputSchema,
+  SetAgentOverrideOutputSchema,
+  SetConnectorDefaultsOutputSchema,
+  SnapshotConnectorForAgentOutputSchema,
   type CapabilityRow,
   type EgressListInput,
   type EgressListOutput,
@@ -25,10 +47,20 @@ import {
   type EgressRevokeOutput,
   type EvaluateInput,
   type EvaluateResult,
+  type GetConnectorDefaultsInput,
+  type GetConnectorDefaultsOutput,
+  type ListAgentOverridesInput,
+  type ListAgentOverridesOutput,
   type ListCapabilitiesInput,
   type ListCapabilitiesOutput,
   type PolicyRule,
   type PolicyVerdict,
+  type SetAgentOverrideInput,
+  type SetAgentOverrideOutput,
+  type SetConnectorDefaultsInput,
+  type SetConnectorDefaultsOutput,
+  type SnapshotConnectorForAgentInput,
+  type SnapshotConnectorForAgentOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/tool-policy';
@@ -197,6 +229,43 @@ export interface ToolPolicyPluginOptions {
   globalEgressHosts?: readonly string[];
   /** Override the allowlist store. Tests only. */
   egressStore?: EgressAllowlistStore;
+  /** Override the per-tool verdict store. Tests only. */
+  verdictStore?: VerdictStore;
+  /**
+   * How long a cached read of an agent's overrides / a connector's defaults is
+   * trusted. Writes through THIS process invalidate immediately; the TTL bounds
+   * how stale another host replica's write can look here. Tests only.
+   */
+  verdictCacheTtlMs?: number;
+  /** Clock for the cache. Tests only. */
+  now?: () => number;
+}
+
+/** See `ToolPolicyPluginOptions.verdictCacheTtlMs`. */
+const DEFAULT_VERDICT_CACHE_TTL_MS = 30_000;
+/** One write hook call may name at most this many tools. */
+const MAX_VERDICTS_PER_WRITE = 500;
+const MAX_NAMESPACES_PER_CALL = 32;
+const MAX_ID_CHARS = 256;
+
+function isId(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0 && v.length <= MAX_ID_CHARS;
+}
+
+/** A list of host-minted connector namespaces, or `null` when any entry is not one. */
+function namespaceList(v: unknown): string[] | null {
+  if (!Array.isArray(v) || v.length > MAX_NAMESPACES_PER_CALL) return null;
+  const out: string[] = [];
+  for (const ns of v) {
+    if (typeof ns !== 'string' || !CONNECTOR_TOOL_NAMESPACE_RE.test(ns)) return null;
+    if (!out.includes(ns)) out.push(ns);
+  }
+  return out;
+}
+
+interface Cached<T> {
+  at: number;
+  value: T;
 }
 
 export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
@@ -223,6 +292,9 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
   Object.freeze(indexed);
 
   let egressStore: EgressAllowlistStore = opts?.egressStore ?? createMemoryEgressAllowlistStore();
+  let verdictStore: VerdictStore = opts?.verdictStore ?? createMemoryVerdictStore();
+  const cacheTtlMs = opts?.verdictCacheTtlMs ?? DEFAULT_VERDICT_CACHE_TTL_MS;
+  const clock = opts?.now ?? Date.now;
 
   return {
     manifest: {
@@ -234,6 +306,11 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         'egress-allowlist:remember',
         'egress-allowlist:list',
         'egress-allowlist:revoke',
+        'tool-policy:set-connector-defaults',
+        'tool-policy:get-connector-defaults',
+        'tool-policy:set-agent-override',
+        'tool-policy:list-agent-overrides',
+        'tool-policy:snapshot-connector-for-agent',
       ],
       // The rule TABLE is still in-repo and still consulted with no I/O. What
       // needs storage is the egress ALLOWLIST (TASK-330) — per-person data a
@@ -250,10 +327,16 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
             'The egress allowlist lives only in this process. Operator-seeded ' +
             'global hosts still apply, but a host a person allowed is forgotten ' +
             'on restart and the next page read from it is held again — one extra ' +
-            'approval, never a silent grant.',
+            'approval, never a silent grant. Per-tool verdicts (connector ' +
+            'defaults, agent overrides) are likewise in-process only: after a ' +
+            'restart connector tools fall back to Ask first and abilities to ' +
+            'their static rule.',
         },
       ],
-      subscribes: [],
+      // Purges (TASK-736): an agent's overrides go with the agent; a
+      // connector's defaults — and every agent's overrides for its tools — go
+      // with the connector.
+      subscribes: ['agents:deleted', 'connectors:deleted'],
     },
 
     async init({ bus }) {
@@ -267,7 +350,10 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       // not a try/catch around the call: a MISSING database is a supported
       // configuration with a stated degradation, while a database that is
       // present and broken is a boot failure we want to hear about.
-      if (opts?.egressStore === undefined && bus.hasService('database:get-instance')) {
+      if (
+        (opts?.egressStore === undefined || opts?.verdictStore === undefined) &&
+        bus.hasService('database:get-instance')
+      ) {
         const { db } = await bus.call<unknown, { db: Kysely<unknown> }>(
           'database:get-instance',
           initCtx,
@@ -275,7 +361,8 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         );
         const typed = db as Kysely<ToolPolicyDatabase>;
         await runToolPolicyMigration(typed);
-        egressStore = createDbEgressAllowlistStore(typed);
+        if (opts?.egressStore === undefined) egressStore = createDbEgressAllowlistStore(typed);
+        if (opts?.verdictStore === undefined) verdictStore = createDbVerdictStore(typed);
       }
 
       for (const raw of opts?.globalEgressHosts ?? []) {
@@ -327,6 +414,102 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         }
       };
 
+      // -------------------------------------------------------------------
+      // Per-tool verdicts (TASK-736): cached reads.
+      //
+      // Per-agent overrides and per-namespace connector defaults, each cached
+      // for `cacheTtlMs` and DROPPED on every write or purge that goes through
+      // this process. The `tool:pre-call` path runs under a 10 s ceiling the
+      // runner turns into a deny, and a connector-heavy turn makes many calls;
+      // one indexed read per agent per TTL is what keeps that cheap.
+      //
+      // The TTL is the honest bound on cross-replica staleness: a write landed
+      // through ANOTHER host process is invisible here until the entry ages
+      // out. A tightened ceiling can therefore lag by up to the TTL on a
+      // multi-replica host — stated, not hidden.
+      // -------------------------------------------------------------------
+      const overrideCache = new Map<string, Cached<Map<string, StoredOverride>>>();
+      const defaultsCache = new Map<string, Cached<Map<string, PolicyVerdict>>>();
+      const fresh = <T,>(c: Cached<T> | undefined): c is Cached<T> =>
+        c !== undefined && clock() - c.at < cacheTtlMs;
+
+      const overridesFor = async (agentId: string): Promise<Map<string, StoredOverride>> => {
+        const hit = overrideCache.get(agentId);
+        if (fresh(hit)) return hit.value;
+        const rows = await verdictStore.overridesFor(agentId);
+        const value = new Map(rows.map((r) => [r.toolKey, r] as const));
+        overrideCache.set(agentId, { at: clock(), value });
+        return value;
+      };
+
+      const defaultsFor = async (
+        toolNamespaces: readonly string[],
+      ): Promise<Map<string, PolicyVerdict>> => {
+        const out = new Map<string, PolicyVerdict>();
+        const missing: string[] = [];
+        for (const ns of toolNamespaces) {
+          const hit = defaultsCache.get(ns);
+          if (fresh(hit)) for (const [k, v] of hit.value) out.set(k, v);
+          else missing.push(ns);
+        }
+        if (missing.length > 0) {
+          const read = await verdictStore.connectorDefaultsFor(missing);
+          const at = clock();
+          for (const ns of missing) {
+            const prefix = `mcp.${ns}.`;
+            const value = new Map([...read].filter(([k]) => k.startsWith(prefix)));
+            defaultsCache.set(ns, { at, value });
+            for (const [k, v] of value) out.set(k, v);
+          }
+        }
+        return out;
+      };
+
+      /** Namespaces of the connector tool keys in `keys`, deduped. */
+      const namespacesOf = (keys: Iterable<string>): string[] => {
+        const out = new Set<string>();
+        for (const k of keys) {
+          const parsed = parseConnectorToolKey(k);
+          if (parsed !== null) out.add(parsed.toolNamespace);
+        }
+        return [...out];
+      };
+
+      /**
+       * The layered verdict for a call the static table has already answered.
+       *
+       * FAILS CLOSED TO `hold` — never to the static answer, which for an
+       * `mcp.*` tool is `allow`. A store we cannot read means "we do not know
+       * whether this person turned it off or an admin set it to Ask", and the
+       * only reading of that which cannot grant something somebody withheld is
+       * to ask. `strictest` keeps a static `deny` a deny.
+       *
+       * An unusable `agentId` is the same failure: without it we cannot read
+       * the agent's own denies, and reading none would be the loosening one.
+       */
+      const layered = async (
+        ctx: AgentContext,
+        agentId: unknown,
+        toolName: string,
+        staticVerdict: PolicyVerdict,
+      ): Promise<PolicyVerdict> => {
+        try {
+          if (!isId(agentId)) throw new Error('evaluate payload has no usable agentId');
+          const override = (await overridesFor(agentId)).get(toolName)?.verdict;
+          const conn = parseConnectorToolKey(toolName);
+          const connectorDefault =
+            conn === null ? undefined : (await defaultsFor([conn.toolNamespace])).get(toolName);
+          return layeredVerdict({ toolName, staticVerdict, connectorDefault, override });
+        } catch (err) {
+          ctx.logger.error('tool_policy_verdict_store_read_failed', {
+            plugin: PLUGIN_NAME,
+            tool: toolName,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+          return strictest(staticVerdict, 'hold');
+        }
+      };
+
       bus.registerService<EvaluateInput, EvaluateResult>(
         'tool-policy:evaluate',
         PLUGIN_NAME,
@@ -374,7 +557,15 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           const opts2 = egressTools.has(call.name)
             ? { allowedHosts: await allowedHosts(ctx) }
             : {};
-          return evaluate(rules, call, opts2);
+          const base = evaluate(rules, call, opts2);
+          // Only an overridable tool (an ability or `mcp.*`) pays for the
+          // verdict-store read; every other tool's answer is the table's.
+          if (!consultsVerdictStore(call.name)) return base;
+          const verdict = await layered(ctx, input?.agentId, call.name, base.verdict);
+          // `ruleId` / `capability` / `effect` stay the table's: a stored
+          // verdict changes whether we ask, not what the call does or which
+          // rule describes it.
+          return verdict === base.verdict ? base : { ...base, verdict };
         },
         { returns: EvaluateResultSchema },
       );
@@ -507,6 +698,194 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         },
         { returns: EgressRevokeOutputSchema },
       );
+
+      // -------------------------------------------------------------------
+      // Per-tool verdict hooks (TASK-736). Host-internal service hooks; authz
+      // is the calling route's (see `types.ts`). Malformed input is ANSWERED
+      // (`ok: false`) rather than thrown, so a route can tell "you may not"
+      // from "we broke"; a store failure on a WRITE throws, because silently
+      // dropping a person's deny would be the loosening outcome.
+      // -------------------------------------------------------------------
+
+      bus.registerService<SetConnectorDefaultsInput, SetConnectorDefaultsOutput>(
+        'tool-policy:set-connector-defaults',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          if (!isId(input?.connectorId) || !Array.isArray(input?.verdicts)) {
+            return { ok: false, reason: 'invalid-input' };
+          }
+          if (input.verdicts.length > MAX_VERDICTS_PER_WRITE) {
+            return { ok: false, reason: 'invalid-input' };
+          }
+          // Validate EVERY row before writing ANY: a half-applied batch would
+          // leave an admin looking at a form that says one thing while the
+          // gate enforces another.
+          const rows: Array<{ toolNamespace: string; tool: string; verdict: PolicyVerdict | null }> =
+            [];
+          for (const v of input.verdicts) {
+            const parsed = parseConnectorToolKey(v?.toolKey);
+            if (parsed === null) {
+              return {
+                ok: false,
+                reason: 'invalid-key',
+                ...(typeof v?.toolKey === 'string' && { toolKey: v.toolKey.slice(0, 200) }),
+              };
+            }
+            if (v.verdict !== null && !isPolicyVerdict(v.verdict)) {
+              return { ok: false, reason: 'invalid-verdict', toolKey: v.toolKey };
+            }
+            rows.push({ ...parsed, verdict: v.verdict });
+          }
+          await verdictStore.setConnectorDefaults(input.connectorId, rows, ctx.userId);
+          for (const r of rows) defaultsCache.delete(r.toolNamespace);
+          return { ok: true };
+        },
+        { returns: SetConnectorDefaultsOutputSchema },
+      );
+
+      bus.registerService<GetConnectorDefaultsInput, GetConnectorDefaultsOutput>(
+        'tool-policy:get-connector-defaults',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const namespaces = namespaceList(input?.toolNamespaces);
+          if (!isId(input?.connectorId) || namespaces === null) {
+            throw new Error(
+              'tool-policy:get-connector-defaults needs a connectorId and its toolNamespaces',
+            );
+          }
+          return {
+            defaults: await verdictStore.listConnectorDefaults(input.connectorId, namespaces),
+          };
+        },
+        { returns: GetConnectorDefaultsOutputSchema },
+      );
+
+      bus.registerService<SetAgentOverrideInput, SetAgentOverrideOutput>(
+        'tool-policy:set-agent-override',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          if (!isId(input?.agentId)) return { ok: false, reason: 'invalid-input' };
+          // A closed list: abilities and `mcp.*`. `WebFetch`, `Task`,
+          // `request_capability`, the `*_propose` tools — anything a static
+          // rule governs that a person must not be able to touch — has no key
+          // here at all.
+          if (!isOverridableKey(input.toolKey)) return { ok: false, reason: 'invalid-key' };
+          const verdict = input.verdict;
+          if (verdict !== null && !isPolicyVerdict(verdict)) {
+            return { ok: false, reason: 'invalid-verdict' };
+          }
+          if (verdict !== null) {
+            // Read the ceiling FRESH, not from the cache: this is the one
+            // place a stale ceiling would let a person store something looser
+            // than the admin now allows. (Enforcement would still clamp it —
+            // `strictest` — but the person would be shown a choice that does
+            // not take effect.)
+            const conn = parseConnectorToolKey(input.toolKey);
+            const connectorDefault =
+              conn === null
+                ? undefined
+                : (await verdictStore.connectorDefaultsFor([conn.toolNamespace])).get(input.toolKey);
+            const ceiling = ceilingFor(rules, input.toolKey, connectorDefault);
+            if (isLooserThan(verdict, ceiling)) {
+              return { ok: false, reason: 'ceiling-violation', ceiling };
+            }
+          }
+          await verdictStore.setOverride(input.agentId, input.toolKey, verdict, ctx.userId);
+          overrideCache.delete(input.agentId);
+          return { ok: true };
+        },
+        { returns: SetAgentOverrideOutputSchema },
+      );
+
+      bus.registerService<ListAgentOverridesInput, ListAgentOverridesOutput>(
+        'tool-policy:list-agent-overrides',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          if (!isId(input?.agentId)) {
+            throw new Error('tool-policy:list-agent-overrides needs an agentId');
+          }
+          // Uncached on purpose: this is a settings/session-open read, and the
+          // person who just changed something should see it.
+          const rows = await verdictStore.overridesFor(input.agentId);
+          const defaults = await verdictStore.connectorDefaultsFor(
+            namespacesOf(rows.map((r) => r.toolKey)),
+          );
+          return {
+            overrides: rows.map((r) => ({
+              toolKey: r.toolKey,
+              verdict: r.verdict,
+              ceiling: ceilingFor(rules, r.toolKey, defaults.get(r.toolKey)),
+              origin: r.origin,
+            })),
+          };
+        },
+        { returns: ListAgentOverridesOutputSchema },
+      );
+
+      bus.registerService<SnapshotConnectorForAgentInput, SnapshotConnectorForAgentOutput>(
+        'tool-policy:snapshot-connector-for-agent',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const namespaces = namespaceList(input?.toolNamespaces);
+          if (!isId(input?.agentId) || !isId(input?.connectorId) || namespaces === null) {
+            throw new Error(
+              'tool-policy:snapshot-connector-for-agent needs agentId, connectorId and toolNamespaces',
+            );
+          }
+          // "Copy on attach" (design decision 2): the agent keeps what the
+          // admin said at attach time, so a later admin LOOSENING does not
+          // silently loosen it — while a later TIGHTENING still applies,
+          // because the default stays a live ceiling in `layeredVerdict`.
+          const defaults = await verdictStore.listConnectorDefaults(input.connectorId, namespaces);
+          const copied = await verdictStore.snapshot(input.agentId, defaults, ctx.userId);
+          overrideCache.delete(input.agentId);
+          return { copied };
+        },
+        { returns: SnapshotConnectorForAgentOutputSchema },
+      );
+
+      // A subscriber must never throw (HookBus would log and continue anyway);
+      // a failed purge is logged loudly. What it leaves behind is a row keyed
+      // to an agent / namespace nothing can call any more — inert, not a grant.
+      bus.subscribe<unknown>('agents:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const agentId = (payload as { agentId?: unknown } | null | undefined)?.agentId;
+        if (!isId(agentId)) {
+          ctx.logger.warn('tool_policy_purge_for_deleted_agent_skipped', { plugin: PLUGIN_NAME });
+          return undefined;
+        }
+        try {
+          const deleted = await verdictStore.purgeAgent(agentId);
+          ctx.logger.info('tool_policy_purged_for_deleted_agent', { agentId, deleted });
+        } catch (err) {
+          ctx.logger.error('tool_policy_purge_for_deleted_agent_failed', { agentId, err });
+        } finally {
+          overrideCache.delete(agentId);
+        }
+        return undefined;
+      });
+
+      bus.subscribe<unknown>('connectors:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const raw = (payload as { toolNamespaces?: unknown } | null | undefined)?.toolNamespaces;
+        const namespaces = Array.isArray(raw)
+          ? raw
+              .map((e) => (e as { toolNamespace?: unknown } | null | undefined)?.toolNamespace)
+              .filter((ns): ns is string => typeof ns === 'string' && CONNECTOR_TOOL_NAMESPACE_RE.test(ns))
+          : [];
+        if (namespaces.length === 0) return undefined;
+        try {
+          await verdictStore.purgeNamespaces(namespaces);
+          ctx.logger.info('tool_policy_purged_for_deleted_connector', {
+            toolNamespaces: namespaces,
+          });
+        } catch (err) {
+          ctx.logger.error('tool_policy_purge_for_deleted_connector_failed', { err });
+        } finally {
+          for (const ns of namespaces) defaultsCache.delete(ns);
+          // Every agent may hold overrides under these namespaces.
+          overrideCache.clear();
+        }
+        return undefined;
+      });
 
       bus.registerService<ListCapabilitiesInput, ListCapabilitiesOutput>(
         'tool-policy:list-capabilities',

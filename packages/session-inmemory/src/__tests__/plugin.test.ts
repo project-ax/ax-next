@@ -371,6 +371,66 @@ describe('@ax/session-inmemory plugin', () => {
     expect(result.agentConfig.runner).toBe('aisdk');
   });
 
+  it('session:create -> session:get-config round-trips owner.agentConfig.disallowedTools', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const owner = {
+      ...OWNER,
+      agentConfig: { ...OWNER.agentConfig, disallowedTools: ['Bash', 'web_search'] },
+    };
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-deny', workspaceRoot: '/tmp/ws', owner },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-deny' }),
+      {},
+    );
+    expect(result.agentConfig.disallowedTools).toEqual(['Bash', 'web_search']);
+  });
+
+  it('session:get-config leaves disallowedTools absent when the owner omitted it', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-no-deny', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-no-deny' }),
+      {},
+    );
+    expect('disallowedTools' in result.agentConfig).toBe(false);
+  });
+
+  it('session:create rejects a non-string[] owner.agentConfig.disallowedTools', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-bad-deny',
+          workspaceRoot: '/tmp/ws',
+          owner: {
+            ...OWNER,
+            agentConfig: {
+              ...OWNER.agentConfig,
+              disallowedTools: [7] as unknown as string[],
+            },
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
   it('session:create -> session:get-config round-trips owner.agentConfig.systemPromptBootstrapAugment when present', async () => {
     const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
     const owner = {

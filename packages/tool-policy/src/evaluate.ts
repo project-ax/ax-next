@@ -114,12 +114,15 @@ function declaredEffectsFor(rules: readonly PolicyRule[], tool: string): ToolEff
  * exception list over a system whose baseline reach is already bounded by the
  * tool catalog, the egress allowlist and the connector scoping (see AW-1).
  *
- * THE KNOWN HOLE IN THAT DEFAULT (TASK-263). A connector-backed tool matches no
- * rule and is therefore allowed. Wire up a Gmail-style connector at runtime and
- * `send_message` is unguarded — an outward call, allowed, with no human having
- * reviewed that specific claim. The rail does show it (as
- * `provenance: 'mcp'|'unmapped'`, `described: false`), so it is visible rather
- * than hidden; it is simply not gated.
+ * THIS FUNCTION IS THE STATIC LAYER ONLY. A connector-backed tool matches no
+ * rule, so the answer HERE is still `allow` — but since TASK-736 that is not
+ * the verdict the call gets. `tool-policy:evaluate` (plugin.ts) layers the
+ * stored per-tool verdicts on top (`verdicts.ts` `layeredVerdict`): a connector
+ * tool nobody set a default for is held ("Ask first"), an admin default is a
+ * ceiling, and an agent override can only tighten. That closes the TASK-263
+ * hole for connector tools. An admin-configured host MCP tool
+ * (`mcp.<serverId>.<tool>`, not a `c<10 hex>` connector namespace) keeps this
+ * function's `allow` unless an agent override tightens it.
  *
  * WHAT SUCH A TOOL IS ACTUALLY CALLED HERE, because a guard written against the
  * wrong spelling would catch none of them. There are two routes, and both now
@@ -148,28 +151,13 @@ function declaredEffectsFor(rules: readonly PolicyRule[], tool: string): ToolEff
  *
  * Either way the canonical form is dotted: gate on `mcp.`, not `mcp__`. (The
  * double-underscore form is the SDK's wire spelling; it is stripped or lifted
- * before a call reaches here.) TASK-734 changed the NAME these calls carry, not
- * the verdict — no rule matches them yet, so they are still `allow`.
+ * before a call reaches here.)
  *
- * WHY IT IS STILL `allow`. Two separate obstacles, worth not conflating:
- *
- *   1. `evaluate()` is given only `{ name, input }` — no `ToolDescriptor`, no
- *      connector metadata, no MCP annotations. It cannot tell an outward tool
- *      from a read by name, so "hold the outward ones" is not expressible here
- *      at all. This is the blocker for a targeted fix.
- *   2. Holding ALL unmatched tools instead is expressible, and its cost is
- *      friction rather than impossibility: approval is per call (`takeApproval`
- *      consumes one authorisation, keyed on a fingerprint of `{name,input}`),
- *      so a human CAN say yes — just never once-and-for-all. On a
- *      high-frequency READ connector that is a prompt per call, which ends with
- *      the operator turning the gate off. A durable per-tool grant (TASK-328)
- *      is what would make it bearable.
- *
- * Note (2) is a friction argument about read connectors and does NOT justify
- * leaving outward connectors ungated — for those, a prompt per call is the
- * correct UX and needs no new mechanism. It is (1) that blocks doing it
- * properly. Meanwhile `effect: 'outward'` + `lintRuleEffect` stop a *known*
- * outward tool being added to the table as a quiet `allow`.
+ * WHY THE CONNECTOR GATE IS NOT A RULE HERE: `evaluate()` is given only
+ * `{ name, input }` — no connector metadata, no MCP annotations — so it cannot
+ * tell an outward tool from a read by name. The per-tool verdict store is
+ * where that knowledge lives (an admin chooses per tool, pre-filled from the
+ * server's hints), and the plugin consults it.
  *
  * Pure and total: no clock, no I/O, no throw. `@ax/decisions` (AW-4) calls this
  * from inside a `tool:pre-call` subscriber, where a throw is swallowed by

@@ -1624,3 +1624,40 @@ describe('runRunner', () => {
     });
   });
 });
+
+describe('runRunner — disallowedTools catalog filter', () => {
+  it('drops a tool named in agentConfig.disallowedTools from the catalog the loop sees', async () => {
+    const original = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') {
+        const cfg = (await original(action, ...args)) as { agentConfig: Record<string, unknown> };
+        return { ...cfg, agentConfig: { ...cfg.agentConfig, disallowedTools: ['web_search'] } };
+      }
+      if (action === 'tool.list') {
+        return {
+          tools: [
+            { name: 'web_search', executesIn: 'host', inputSchema: {} },
+            { name: 'web_extract', executesIn: 'host', inputSchema: {} },
+          ],
+        };
+      }
+      return original(action, ...args);
+    });
+    const makeLoop = vi.fn((_deps: RunnerDeps) => ({ run: async () => 0 }));
+    expect(await runRunner(makeLoop, seams(fakeEnv))).toBe(0);
+    expect(makeLoop.mock.calls[0]?.[0].tools.map((t) => t.name)).toEqual(['web_extract']);
+  });
+
+  it('absent disallowedTools keeps the whole catalog', async () => {
+    const original = fakeClient.call.getMockImplementation()!;
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'tool.list') {
+        return { tools: [{ name: 'web_search', executesIn: 'host', inputSchema: {} }] };
+      }
+      return original(action, ...args);
+    });
+    const makeLoop = vi.fn((_deps: RunnerDeps) => ({ run: async () => 0 }));
+    expect(await runRunner(makeLoop, seams(fakeEnv))).toBe(0);
+    expect(makeLoop.mock.calls[0]?.[0].tools.map((t) => t.name)).toEqual(['web_search']);
+  });
+});

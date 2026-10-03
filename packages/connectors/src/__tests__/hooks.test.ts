@@ -13,9 +13,14 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConnectorsPlugin } from '../plugin.js';
 import { ListDefaultsOutputSchema, ResolveOutputSchema } from '../types.js';
-import { deriveToolNamespace, TOOL_NAMESPACE_RE } from '../tool-namespace.js';
+import {
+  deriveToolNamespace,
+  deriveToolNamespaces,
+  TOOL_NAMESPACE_RE,
+} from '../tool-namespace.js';
 import type {
   Capabilities,
+  ConnectorDeletedEvent,
   DeleteInput,
   DeleteOutput,
   GetInput,
@@ -653,6 +658,135 @@ describe('@ax/connectors hooks — delete degrades without credentials:delete', 
         { userId: 'userA', connectorId: 'gdrive' },
       ),
     ).rejects.toMatchObject({ code: 'not-found' });
+  });
+});
+
+describe('@ax/connectors hooks — delete fires connectors:deleted', () => {
+  it('fires once with the connectorId + the owner-derived toolNamespaces after a live delete', async () => {
+    const h = await makeHarness();
+    const events: ConnectorDeletedEvent[] = [];
+    h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
+      events.push(payload);
+      return undefined;
+    });
+    const up = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput(),
+    );
+    const del = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(del.deleted).toBe(true);
+    const expected = deriveToolNamespaces('userA', up.connector);
+    expect(expected).toHaveLength(1);
+    expect(events).toEqual([{ connectorId: 'gdrive', toolNamespaces: expected }]);
+    // Storage-agnostic: no owner field rides the payload.
+    expect(Object.keys(events[0]!).sort()).toEqual(['connectorId', 'toolNamespaces']);
+  });
+
+  it('fires nothing when the connector is absent or already deleted', async () => {
+    const h = await makeHarness();
+    const events: ConnectorDeletedEvent[] = [];
+    h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
+      events.push(payload);
+      return undefined;
+    });
+    const absent = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(absent.deleted).toBe(false);
+
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput(),
+    );
+    await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(events).toHaveLength(1);
+    // A second delete of the tombstoned row announces nothing more.
+    const again = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(again.deleted).toBe(false);
+    expect(events).toHaveLength(1);
+  });
+
+  it('does not announce another owner\'s same-id connector (delete is owner-scoped)', async () => {
+    const h = await makeHarness();
+    const events: ConnectorDeletedEvent[] = [];
+    h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
+      events.push(payload);
+      return undefined;
+    });
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput(),
+    );
+    const del = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userB' }),
+      { userId: 'userB', connectorId: 'gdrive' },
+    );
+    expect(del.deleted).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  it('a throwing subscriber never fails the delete', async () => {
+    const h = await makeHarness();
+    h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/boom', async () => {
+      throw new Error('subscriber exploded');
+    });
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput(),
+    );
+    const del = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(del.deleted).toBe(true);
+    // The row really is gone.
+    await expect(
+      h.bus.call<GetInput, GetOutput>(
+        'connectors:get',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', connectorId: 'gdrive' },
+      ),
+    ).rejects.toMatchObject({ code: 'not-found' });
+  });
+
+  it('fires with an empty toolNamespaces for a connector with no MCP servers', async () => {
+    const h = await makeHarness();
+    const events: ConnectorDeletedEvent[] = [];
+    h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
+      events.push(payload);
+      return undefined;
+    });
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ connectorId: 'sf', capabilities: cliCaps() }),
+    );
+    await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'sf' },
+    );
+    expect(events).toEqual([{ connectorId: 'sf', toolNamespaces: [] }]);
   });
 });
 

@@ -897,6 +897,39 @@ describe('session.get-config', () => {
     expect(r.success).toBe(false);
   });
 
+  it('preserves agentConfig.disallowedTools (a z.object would silently strip it)', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: { ...baseConfig, disallowedTools: ['Bash', 'web_search'] },
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(parsed.agentConfig.disallowedTools).toEqual(['Bash', 'web_search']);
+  });
+
+  it('leaves agentConfig.disallowedTools absent when omitted (older session rows)', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect('disallowedTools' in parsed.agentConfig).toBe(false);
+  });
+
+  it('rejects a non-string[] agentConfig.disallowedTools', () => {
+    const r = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: { ...baseConfig, disallowedTools: [1] },
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(r.success).toBe(false);
+  });
+
   it('preserves agentConfig.systemPromptBootstrapAugment when present', () => {
     const parsed = SessionGetConfigResponseSchema.parse({
       userId: 'u-1',

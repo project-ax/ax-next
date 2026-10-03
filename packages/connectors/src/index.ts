@@ -26,6 +26,7 @@ export type {
   ClearAuthoredInput,
   ClearAuthoredOutput,
   Connector,
+  ConnectorDeletedEvent,
   ConnectorSummary,
   DeleteInput,
   DeleteOutput,

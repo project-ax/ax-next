@@ -384,10 +384,10 @@ export interface CapabilityRow {
 export interface EvaluateInput {
   call: { name: string; input: unknown };
   /**
-   * Carried but not yet consulted: today the rule table is global. It is in the
-   * payload because the DB-backed alternate impl named in the boundary review
-   * is per-tenant, and adding the field later would be a breaking change for
-   * every caller.
+   * The agent whose stored per-tool verdicts apply (TASK-736). Consulted for an
+   * overridable tool (an ability or `mcp.*`); a missing or unusable one makes
+   * such a call HOLD, because without it the agent's own denies cannot be read.
+   * The rule table itself is still global.
    */
   agentId: string;
 }
@@ -777,4 +777,140 @@ export const ListCapabilitiesOutputSchema = z.object({
   // of TASK-416. Failing the parse makes the caller say it could not read the
   // rules instead of quietly claiming reach the deployment does not have.
   hostProvidedTools: z.array(z.string()),
+});
+
+// ---------------------------------------------------------------------------
+// Per-tool verdicts (TASK-736, connectors rail slice 3)
+//
+// Host-internal service hooks, never IPC actions. Authz is the CALLER's job
+// (the workspace / settings routes: `agents:resolve` + write access for an
+// agent's overrides, `canEdit` on the connector for its defaults) — these hooks
+// trust their in-process caller the same way every other service hook does.
+//
+// A `toolKey` is opaque: `web_search` | `web_extract` | `Bash`, or
+// `mcp.<toolNamespace>.<tool>`. A connector tool's namespace is the
+// host-minted `c` + 10 hex from `connectors:resolve`'s `toolNamespaces`.
+// ---------------------------------------------------------------------------
+
+export type OverrideOrigin = 'snapshot' | 'user';
+
+export interface SetConnectorDefaultsInput {
+  connectorId: string;
+  /**
+   * Connector tool keys only (`mcp.c<10 hex>.<tool>`). `verdict: null` clears
+   * that tool's default, which puts it back under the implicit `hold`.
+   */
+  verdicts: Array<{ toolKey: string; verdict: PolicyVerdict | null }>;
+}
+
+export type VerdictWriteRejection =
+  | 'invalid-key'
+  | 'invalid-verdict'
+  | 'invalid-input'
+  | 'ceiling-violation';
+
+export type SetConnectorDefaultsOutput =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: Exclude<VerdictWriteRejection, 'ceiling-violation'>;
+      /** The first offending key, when one was to blame. Nothing is written. */
+      toolKey?: string | undefined;
+    };
+
+export interface GetConnectorDefaultsInput {
+  connectorId: string;
+  /**
+   * The connector's namespaces, from `connectors:resolve`. REQUIRED, because
+   * `connectorId` alone does not identify a connector record (ids are unique
+   * per owner, not globally).
+   */
+  toolNamespaces: string[];
+}
+
+export interface GetConnectorDefaultsOutput {
+  defaults: Array<{ toolKey: string; verdict: PolicyVerdict }>;
+}
+
+export interface SetAgentOverrideInput {
+  agentId: string;
+  toolKey: string;
+  /** `null` clears the override. */
+  verdict: PolicyVerdict | null;
+}
+
+export type SetAgentOverrideOutput =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: VerdictWriteRejection;
+      /** Present on `ceiling-violation`: the loosest verdict this key accepts. */
+      ceiling?: PolicyVerdict | undefined;
+    };
+
+export interface ListAgentOverridesInput {
+  agentId: string;
+}
+
+export interface AgentOverrideView {
+  toolKey: string;
+  verdict: PolicyVerdict;
+  /** The loosest verdict the agent may pick for this key today. */
+  ceiling: PolicyVerdict;
+  origin: OverrideOrigin;
+}
+
+export interface ListAgentOverridesOutput {
+  overrides: AgentOverrideView[];
+}
+
+export interface SnapshotConnectorForAgentInput {
+  agentId: string;
+  connectorId: string;
+  /** From `connectors:resolve` — one namespace per MCP server the connector declares. */
+  toolNamespaces: string[];
+}
+
+export interface SnapshotConnectorForAgentOutput {
+  /** Rows written. A row a person already chose (`origin: 'user'`) is never overwritten. */
+  copied: number;
+}
+
+export const OverrideOriginSchema = z.enum(['snapshot', 'user']);
+
+export const SetConnectorDefaultsOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({
+    ok: z.literal(false),
+    reason: z.enum(['invalid-key', 'invalid-verdict', 'invalid-input']),
+    toolKey: z.string().optional(),
+  }),
+]);
+
+export const GetConnectorDefaultsOutputSchema = z.object({
+  defaults: z.array(z.object({ toolKey: z.string(), verdict: PolicyVerdictSchema })),
+});
+
+export const SetAgentOverrideOutputSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({
+    ok: z.literal(false),
+    reason: z.enum(['invalid-key', 'invalid-verdict', 'invalid-input', 'ceiling-violation']),
+    ceiling: PolicyVerdictSchema.optional(),
+  }),
+]);
+
+export const ListAgentOverridesOutputSchema = z.object({
+  overrides: z.array(
+    z.object({
+      toolKey: z.string(),
+      verdict: PolicyVerdictSchema,
+      ceiling: PolicyVerdictSchema,
+      origin: OverrideOriginSchema,
+    }),
+  ),
+});
+
+export const SnapshotConnectorForAgentOutputSchema = z.object({
+  copied: z.number().int().min(0),
 });

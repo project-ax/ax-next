@@ -587,6 +587,13 @@ export const AgentConfigSchema = z.object({
    * commands, file paths, or HTML. */
   systemPromptBootstrapAugment: z.string().optional(),
   allowedTools: z.array(z.string()),
+  /** Canonical AX tool names (e.g. `Bash`, `web_search`, `mcp.<id>.<tool>`)
+   * the agent's tool policy DENIES (verdict or ceiling). Catalog hygiene only:
+   * the runner hides these so the model is not offered tools it will be
+   * refused — enforcement stays host-side on `tool:pre-call`. Optional: absent
+   * means no extra denies (session rows persisted before this field existed
+   * don't carry it). Independent of `allowedTools` (empty = unrestricted). */
+  disallowedTools: z.array(z.string()).optional(),
   mcpConfigIds: z.array(z.string()),
   model: z.string(),
   /** Runner id (e.g. `'claude-sdk'`) the host resolves to a binary path via

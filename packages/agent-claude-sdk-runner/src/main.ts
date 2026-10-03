@@ -37,7 +37,13 @@ import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
-import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME, activityPhraseForSdkName } from './tool-names.js';
+import {
+  DISABLED_BUILTINS,
+  MCP_HOST_SERVER_NAME,
+  MCP_SANDBOX_SERVER_NAME,
+  activityPhraseForSdkName,
+  sdkDisallowedToolNames,
+} from './tool-names.js';
 import {
   hasResumableTranscript,
   readLastTurnUuid,
@@ -515,7 +521,17 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // defaults for everything other than the explicit deny list in
           // `disallowedTools`.
           allowedTools: ['Skill', ...agentConfig.allowedTools],
-          disallowedTools: [...DISABLED_BUILTINS],
+          // Plus the agent's per-tool DENY verdicts (frozen by the
+          // orchestrator from @ax/tool-policy — catalog hygiene), mapped from canonical AX names to SDK
+          // names. Host-catalog denies were already dropped from `tools` by
+          // runner-core; this covers SDK built-ins (`Bash`) and connector MCP
+          // tools. Enforcement stays host-side on tool.pre-call.
+          disallowedTools: [
+            ...new Set<string>([
+              ...DISABLED_BUILTINS,
+              ...sdkDisallowedToolNames(agentConfig.disallowedTools ?? []),
+            ]),
+          ],
           // canUseTool stays as a belt-and-suspenders allow-path. The real
           // pre-call hook-bus forwarding happens in the PreToolUse hook below,
           // which ALWAYS fires (canUseTool only fires when the CLI decides a
