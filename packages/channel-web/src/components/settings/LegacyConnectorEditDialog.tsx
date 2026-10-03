@@ -92,6 +92,7 @@ import {
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { discoverOAuthHosts } from '@/lib/connectors-oauth';
+import { OAUTH_CLIENT_SECRET_SLOT } from '@/lib/connector-credential-slots';
 import {
   Select,
   SelectContent,
@@ -601,7 +602,7 @@ export function LegacyConnectorEditDialog({
         const destination = {
           kind: 'account' as const,
           service: connectorId,
-          slot: 'oauth-client-secret',
+          slot: OAUTH_CLIENT_SECRET_SLOT,
         };
         const scope =
           form.keyMode === 'workspace'

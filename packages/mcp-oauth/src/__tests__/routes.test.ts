@@ -720,6 +720,7 @@ describe('mcp-oauth begin route', () => {
     });
 
     it.each([
+      ['account:conn-1:OAUTH_CLIENT_SECRET'], // what the connector editors write (TASK-762)
       ['account:conn-1:oauth-client-secret'],
       ['account:conn-1:OAUTH_SECRET'],
       ['account:conn-1:s'],

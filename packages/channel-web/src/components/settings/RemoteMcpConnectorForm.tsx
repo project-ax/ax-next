@@ -18,6 +18,10 @@ import {
 } from '@/lib/connectors-oauth';
 import { setDestinationCredential, refForDestination } from '@/lib/credentials';
 import {
+  OAUTH_CLIENT_SECRET_SLOT,
+  newHeaderSlot,
+} from '@/lib/connector-credential-slots';
+import {
   remoteDraft,
   remoteCapabilities,
   remoteErrors,
@@ -206,7 +210,7 @@ export function RemoteMcpConnectorForm({
     useKey,
   };
   const newHeader = (name = '') => ({
-    slot: `header-${crypto.randomUUID()}`,
+    slot: newHeaderSlot(),
     name,
     value: '',
     saved: false,
@@ -340,7 +344,7 @@ export function RemoteMcpConnectorForm({
         const destination = {
           kind: 'account' as const,
           service: connectorId,
-          slot: 'oauth-client-secret',
+          slot: OAUTH_CLIENT_SECRET_SLOT,
         };
         await setDestinationCredential({
           destination,

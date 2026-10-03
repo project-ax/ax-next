@@ -533,6 +533,80 @@ describe('destination credential handlers', () => {
     expect(statusOf()).toBe(400);
   });
 
+  // TASK-762 — the slots the channel-web connector editors mint
+  // (`lib/connector-credential-slots.ts`) must round-trip through this route.
+  // They used to mint `header-<uuid>` / `oauth-client-secret`, which this
+  // grammar refuses, so no header key or OAuth client secret saved from the UI.
+  it.each([
+    ['a request-header slot', 'HEADER_0F3C2A9B7D1E4F6A8B0C2D4E6F8A0B1C'],
+    ['the OAuth client secret slot', 'OAUTH_CLIENT_SECRET'],
+  ])('POST /settings/destinations/account: accepts %s the connector editor mints', async (_label, slot) => {
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.createSettings(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'remote-mcp', slot },
+          scope: 'user',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('Bearer k').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(bodyOf()).toBeUndefined();
+    expect(statusOf()).toBe(204);
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(out.credentials.map((c) => c.ref)).toContain(`account:remote-mcp:${slot}`);
+  });
+
+  // The validator stays strict: slots are a credential boundary. The editors'
+  // old shapes, and near-misses, are still refused.
+  it.each([
+    'header-0f3c2a9b-7d1e-4f6a-8b0c-2d4e6f8a0b1c',
+    'oauth-client-secret',
+    'HEADER-1',
+    '_HEADER',
+    '1HEADER',
+    'HEADER:X',
+    `H${'A'.repeat(64)}`,
+  ])('POST /settings/destinations/account: still refuses slot %s (400 invalid account slot)', async (slot) => {
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.createSettings(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'remote-mcp', slot },
+          scope: 'user',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: 'eA==',
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+    expect(String((bodyOf() as { error?: unknown }).error)).toMatch(
+      /invalid account slot|at most 64/i,
+    );
+  });
+
   it('POST /settings/destinations/account: rejects when destination.kind mismatches route param (400)', async () => {
     const bus = await makeBus({ id: 'alice', isAdmin: false });
     const handlers = createDestinationHandlers({ bus });
