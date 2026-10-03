@@ -1449,9 +1449,21 @@ type AttachGate =
 async function attachCredentialGate(
   bus: HookBus,
   ctx: AgentContext,
+  logger: AgentContext['logger'],
   actor: { id: string; isAdmin: boolean },
   connectorId: string,
 ): Promise<AttachGate> {
+  // A refusal for a reason that is not "nobody signed in" leaves an operator
+  // a trace of why (the error's NAME only — never its message, which could
+  // carry vault detail).
+  const failed = (step: string, err: unknown): AttachGate => {
+    logger.warn('workspace_connector_attach_check_failed', {
+      connectorId,
+      step,
+      name: err instanceof Error ? err.name : 'unknown',
+    });
+    return { ok: false, status: 503, error: 'connector-check-failed' };
+  };
   const userId = actor.id;
   if (!bus.hasService('connectors:get')) {
     return { ok: false, status: 503, error: 'connectors-unavailable' };
@@ -1468,7 +1480,7 @@ async function attachCredentialGate(
     if (err instanceof PluginError && err.code === 'not-found') {
       return { ok: false, status: 404, error: 'connector-not-found' };
     }
-    return { ok: false, status: 503, error: 'connector-check-failed' };
+    return failed('connector', err);
   }
   // A connector that spends the company key is admin-only to attach, and
   // `agents:attach-connector` refuses it for anyone else. Refuse it HERE
@@ -1482,7 +1494,7 @@ async function attachCredentialGate(
     : [];
   if (slots.length === 0) return { ok: true };
   if (!bus.hasService('credentials:get')) {
-    return { ok: false, status: 503, error: 'connector-check-failed' };
+    return failed('vault-missing', undefined);
   }
   const plan = deriveCredentialPlan(connector);
   for (const entry of plan) {
@@ -1509,7 +1521,7 @@ async function attachCredentialGate(
               message: 'Add the key this connector needs first, then add it.',
             };
       }
-      return { ok: false, status: 503, error: 'connector-check-failed' };
+      return failed('credential', err);
     }
   }
   return { ok: true };
@@ -6355,6 +6367,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const gate = await attachCredentialGate(
         bus,
         agentWorkspaceCtx(agentId, actor.id),
+        initCtx.logger,
         { id: actor.id, isAdmin: actor.isAdmin },
         connectorId,
       );
