@@ -33,6 +33,7 @@ import {
   EgressRevokeOutputSchema,
   EvaluateResultSchema,
   GetConnectorDefaultsOutputSchema,
+  ResetToolNamespacesOutputSchema,
   ListAgentOverridesOutputSchema,
   ListCapabilitiesOutputSchema,
   SetAgentOverrideOutputSchema,
@@ -48,6 +49,8 @@ import {
   type EvaluateInput,
   type EvaluateResult,
   type GetConnectorDefaultsInput,
+  type ResetToolNamespacesInput,
+  type ResetToolNamespacesOutput,
   type GetConnectorDefaultsOutput,
   type ListAgentOverridesInput,
   type ListAgentOverridesOutput,
@@ -311,6 +314,10 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         'tool-policy:set-agent-override',
         'tool-policy:list-agent-overrides',
         'tool-policy:snapshot-connector-for-agent',
+        // TASK-758 — the reset a connector endpoint change needs to SUCCEED
+        // before the edit commits (a subscriber failure is invisible to the
+        // firer, so the event alone cannot gate it).
+        'tool-policy:reset-tool-namespaces',
       ],
       // The rule TABLE is still in-repo and still consulted with no I/O. What
       // needs storage is the egress ALLOWLIST (TASK-330) — per-person data a
@@ -760,6 +767,38 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           };
         },
         { returns: GetConnectorDefaultsOutputSchema },
+      );
+
+      // TASK-758 — forget every stored choice under these namespaces (admin
+      // defaults + every agent's overrides). A store failure THROWS: the
+      // caller (`@ax/connectors`, about to point a kept-name server at a new
+      // endpoint) refuses the edit on a throw, which is the whole point —
+      // swallowing it here would let Allow verdicts chosen for one service
+      // apply to another. Malformed input throws too, rather than resetting a
+      // guessed subset and reporting success.
+      bus.registerService<ResetToolNamespacesInput, ResetToolNamespacesOutput>(
+        'tool-policy:reset-tool-namespaces',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const namespaces = namespaceList(input?.toolNamespaces);
+          if (namespaces === null) {
+            throw new Error(
+              'tool-policy:reset-tool-namespaces needs a list of connector tool namespaces',
+            );
+          }
+          if (namespaces.length === 0) return { toolNamespaces: [] };
+          try {
+            await verdictStore.purgeNamespaces(namespaces);
+          } finally {
+            // Clear even on a failure: a half-applied purge must not be masked
+            // by a cache that still answers with the pre-reset rows.
+            for (const ns of namespaces) defaultsCache.delete(ns);
+            overrideCache.clear();
+          }
+          ctx.logger.info('tool_policy_reset_tool_namespaces', { toolNamespaces: namespaces });
+          return { toolNamespaces: namespaces };
+        },
+        { returns: ResetToolNamespacesOutputSchema },
       );
 
       bus.registerService<SetAgentOverrideInput, SetAgentOverrideOutput>(

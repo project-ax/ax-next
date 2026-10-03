@@ -4,6 +4,7 @@ import {
   emptySlotRow,
   formFromConnector,
   capabilitiesFromForm,
+  endpointChangedServers,
   summaryToForm,
   connectorIdFromName,
   splitList,
@@ -670,5 +671,38 @@ describe('STARTER_SERVICE_EXAMPLES (TASK-159)', () => {
       '/opt/kafka/logs',
       '/mnt/shared/config',
     ]);
+  });
+});
+
+describe('endpointChangedServers (TASK-758)', () => {
+  const stdio = (name: string, command: string, args?: string[]) => ({
+    name,
+    transport: 'stdio' as const,
+    command,
+    ...(args !== undefined && { args }),
+    allowedHosts: [],
+    credentials: [],
+  });
+  const http = (name: string, url: string) => ({
+    name,
+    transport: 'http' as const,
+    url,
+    allowedHosts: [],
+    credentials: [],
+  });
+
+  it('names a kept-name server whose command, args, url or transport changed', () => {
+    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'y', ['1'])])).toEqual(['a']);
+    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'x', ['2'])])).toEqual(['a']);
+    expect(endpointChangedServers([http('a', 'https://one/')], [http('a', 'https://two/')])).toEqual(['a']);
+    expect(endpointChangedServers([stdio('a', 'x')], [http('a', 'https://one/')])).toEqual(['a']);
+  });
+
+  it('ignores unchanged, added, removed and renamed servers, and no-args vs empty args', () => {
+    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'x', ['1'])])).toEqual([]);
+    expect(endpointChangedServers([stdio('a', 'x')], [stdio('a', 'x', [])])).toEqual([]);
+    expect(endpointChangedServers([stdio('a', 'x')], [stdio('b', 'y')])).toEqual([]);
+    expect(endpointChangedServers([], [stdio('a', 'x')])).toEqual([]);
+    expect(endpointChangedServers([stdio('a', 'x')], [])).toEqual([]);
   });
 });

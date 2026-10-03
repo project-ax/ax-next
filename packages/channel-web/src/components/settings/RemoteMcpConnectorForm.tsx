@@ -3,6 +3,8 @@ import { ChevronDown, Loader2 } from 'lucide-react';
 import {
   createConnector,
   patchConnector,
+  isToolPermissionsResetFailure,
+  TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
 import { connectorIdFromName } from '@/lib/connector-form';
@@ -405,9 +407,11 @@ export function RemoteMcpConnectorForm({
       }
       onSaved();
       onOpenChange(false);
-    } catch {
+    } catch (err) {
       setSaveError(
-        'We couldn’t save this connector. Check the settings and try again.',
+        isToolPermissionsResetFailure(err)
+          ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
+          : 'We couldn’t save this connector. Check the settings and try again.',
       );
     } finally {
       setSaving(false);

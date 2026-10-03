@@ -26,6 +26,7 @@ import { deriveToolNamespaces } from './tool-namespace.js';
 import {
   parseToolPermissionsBody,
   shapeInventory,
+  TOOL_PERMISSIONS_RESET_FAILED,
   type DescribeToolsInputLike,
   type DescribeToolsOutputLike,
   type GetConnectorDefaultsInputLike,
@@ -171,7 +172,8 @@ function parseAndValidateBody(body: Buffer): ParsedBody<unknown> | ParseError {
 
 /**
  * Map a thrown PluginError from a `connectors:*` hook to an HTTP status. The
- * hooks throw structured codes (`invalid-payload`, `not-found`); everything
+ * hooks throw structured codes (`invalid-payload`, `not-found`,
+ * `tool-permissions-reset-failed`); everything
  * else bubbles as a 500 (re-thrown). We collapse the message — never echo
  * internal stack/field detail beyond the hook's own message string.
  */
@@ -183,6 +185,13 @@ function handleHookError(err: unknown, res: RouteResponse): void {
     }
     if (err.code === 'invalid-payload') {
       res.status(400).json({ error: err.message });
+      return;
+    }
+    // TASK-758 — an endpoint change whose tool-permission reset failed was
+    // refused before anything was written. Retryable, so a 503, and a fixed
+    // string the editors key their message on (never the cause's text).
+    if (err.code === TOOL_PERMISSIONS_RESET_FAILED) {
+      res.status(503).json({ error: TOOL_PERMISSIONS_RESET_FAILED });
       return;
     }
   }

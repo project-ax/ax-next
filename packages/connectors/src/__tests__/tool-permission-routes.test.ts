@@ -15,6 +15,7 @@ import {
   createMemoryEgressAllowlistStore,
   createMemoryVerdictStore,
   createToolPolicyPlugin,
+  type VerdictStore,
 } from '@ax/tool-policy';
 import { createConnectorsPlugin } from '../plugin.js';
 import {
@@ -98,7 +99,13 @@ function inventoryStubPlugin(): Plugin {
   };
 }
 
-async function makeHarness(opts: { toolPolicy?: boolean; inventory?: boolean } = {}) {
+async function makeHarness(
+  opts: {
+    toolPolicy?: boolean;
+    inventory?: boolean;
+    verdictStore?: VerdictStore;
+  } = {},
+) {
   const plugins: Plugin[] = [
     createDatabasePostgresPlugin({ connectionString }),
     authStubPlugin(),
@@ -108,7 +115,7 @@ async function makeHarness(opts: { toolPolicy?: boolean; inventory?: boolean } =
     plugins.push(
       createToolPolicyPlugin({
         egressStore: createMemoryEgressAllowlistStore(),
-        verdictStore: createMemoryVerdictStore(),
+        verdictStore: opts.verdictStore ?? createMemoryVerdictStore(),
       }),
     );
   }
@@ -537,8 +544,8 @@ describe('tool-permissions — an endpoint change resets verdicts (TASK-755)', (
     expect(captured.status).toBe(200);
   }
 
-  async function seeded() {
-    const h = await makeHarness();
+  async function seeded(opts: Parameters<typeof makeHarness>[0] = {}) {
+    const h = await makeHarness(opts);
     currentActor = { id: 'admin1', isAdmin: true };
     await create(h, 'admin', linear);
     const ns = deriveToolNamespace('admin1', 'linear', 'linear');
@@ -589,5 +596,72 @@ describe('tool-permissions — an endpoint change resets verdicts (TASK-755)', (
     await update(h, { capabilities: moved });
     expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({ defaults: [] });
     expect(await overrides(h)).toEqual([]);
+  });
+
+  // TASK-758 — the reset used to ride only the post-commit event, whose
+  // failures nobody hears about: the edit answered 200 and the old Allow kept
+  // applying to the new address.
+  describe('when the reset fails (TASK-758)', () => {
+    /** A verdict store that works until `purgeNamespaces` is told to fail. */
+    function flakyStore() {
+      const store = createMemoryVerdictStore();
+      const state = { failPurge: false };
+      const flaky: VerdictStore = {
+        ...store,
+        purgeNamespaces: async (namespaces) => {
+          if (state.failPurge) throw new Error('verdict store is down');
+          await store.purgeNamespaces(namespaces);
+        },
+      };
+      return { flaky, state };
+    }
+
+    async function patch(h: TestHarness, body: Record<string, unknown>) {
+      const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'admin' });
+      const { res, captured } = makeRes();
+      await handlers.update(makeReq({ params: { id: 'linear' }, body }), res);
+      return captured;
+    }
+
+    const movedCaps = () => {
+      const moved = caps();
+      moved.mcpServers[0] = { ...moved.mcpServers[0]!, url: 'https://evil.example.com/mcp' };
+      return moved;
+    };
+
+    it('refuses the edit with a clear, retryable error and keeps the old address', async () => {
+      const { flaky, state } = flakyStore();
+      const { h, ns } = await seeded({ verdictStore: flaky });
+      state.failPurge = true;
+
+      const out = await patch(h, { capabilities: movedCaps() });
+
+      expect(out).toEqual({ status: 503, body: { error: 'tool-permissions-reset-failed' } });
+      // Nothing was written: the server still points where its choices were made.
+      const got = await h.bus.call<
+        { userId: string; connectorId: string },
+        { connector: { capabilities: Capabilities } }
+      >('connectors:get', h.ctx({ userId: 'admin1' }), { userId: 'admin1', connectorId: 'linear' });
+      expect(got.connector.capabilities.mcpServers[0]!.url).toBe('https://mcp.linear.app/mcp');
+      expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({
+        defaults: [
+          { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
+          { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
+        ],
+      });
+
+      // Save again once the store is back: the reset lands and so does the edit.
+      state.failPurge = false;
+      expect((await patch(h, { capabilities: movedCaps() })).status).toBe(200);
+      expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({ defaults: [] });
+      expect(await overrides(h)).toEqual([]);
+    });
+
+    it('an edit that keeps the address never calls the reset, so a down store does not block it', async () => {
+      const { flaky, state } = flakyStore();
+      const { h } = await seeded({ verdictStore: flaky });
+      state.failPurge = true;
+      expect((await patch(h, { name: 'Linear (renamed)', capabilities: caps() })).status).toBe(200);
+    });
   });
 });

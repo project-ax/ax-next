@@ -832,6 +832,32 @@ export interface GetConnectorDefaultsOutput {
   defaults: Array<{ toolKey: string; verdict: PolicyVerdict }>;
 }
 
+/**
+ * `tool-policy:reset-tool-namespaces` (TASK-758). Forget every stored per-tool
+ * choice under these connector tool namespaces — admin defaults AND every
+ * agent's overrides — so each of their tools is back to Ask first.
+ *
+ * Called by `@ax/connectors` BEFORE it commits an edit that points a server at
+ * a different endpoint while keeping its name (so its namespace stays live). A
+ * service, not just the `connectors:tool-namespaces-changed` event, because a
+ * subscriber failure is invisible to the firer (`HookBus.fire` isolates
+ * throws): a failed reset here THROWS, the caller refuses the edit, and no
+ * Allow chosen for the old service ever applies to the new one.
+ *
+ * Host-internal: authz is the caller's (the namespaces must be ones the caller
+ * owns — connectors derives them from the row it is editing). Malformed input
+ * throws rather than resetting a guessed subset.
+ */
+export interface ResetToolNamespacesInput {
+  /** Connector tool namespaces (`c` + 10 hex), from `connectors:resolve`. */
+  toolNamespaces: string[];
+}
+
+export interface ResetToolNamespacesOutput {
+  /** The namespaces that were reset (deduplicated, input order). */
+  toolNamespaces: string[];
+}
+
 export interface SetAgentOverrideInput {
   agentId: string;
   toolKey: string;
@@ -889,6 +915,10 @@ export const SetConnectorDefaultsOutputSchema = z.discriminatedUnion('ok', [
 
 export const GetConnectorDefaultsOutputSchema = z.object({
   defaults: z.array(z.object({ toolKey: z.string(), verdict: PolicyVerdictSchema })),
+});
+
+export const ResetToolNamespacesOutputSchema = z.object({
+  toolNamespaces: z.array(z.string()),
 });
 
 export const SetAgentOverrideOutputSchema = z.discriminatedUnion('ok', [
