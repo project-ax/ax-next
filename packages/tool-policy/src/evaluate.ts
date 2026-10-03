@@ -120,9 +120,12 @@ function declaredEffectsFor(rules: readonly PolicyRule[], tool: string): ToolEff
  * stored per-tool verdicts on top (`verdicts.ts` `layeredVerdict`): a connector
  * tool nobody set a default for is held ("Ask first"), an admin default is a
  * ceiling, and an agent override can only tighten. That closes the TASK-263
- * hole for connector tools. An admin-configured host MCP tool
- * (`mcp.<serverId>.<tool>`, not a `c<10 hex>` connector namespace) keeps this
- * function's `allow` unless an agent override tightens it.
+ * hole for connector tools. Since TASK-699 every OTHER MCP-spelled name is
+ * held the same way — an admin-configured host MCP tool
+ * (`mcp.<serverId>.<tool>`, not a `c<10 hex>` connector namespace), an
+ * unlifted `mcp__<server>__<tool>`, a malformed or over-long `mcp.` key — with
+ * a fixed `hold` floor no stored row can loosen (`implicitMcpCeiling`). So for
+ * an MCP tool the `allow` returned HERE is never the answer a call gets.
  *
  * WHAT SUCH A TOOL IS ACTUALLY CALLED HERE, because a guard written against the
  * wrong spelling would catch none of them. There are two routes, and both now
@@ -147,7 +150,7 @@ function declaredEffectsFor(rules: readonly PolicyRule[], tool: string): ToolEff
  *     `toolNamespace` (`c` + 10 hex, stable per connector record) and the
  *     claude-sdk runner's `classifySdkToolName` lifts exactly that shape to
  *     `mcp.<toolNamespace>.<tool>`. A foreign `mcp__linear__x` is NOT lifted; it
- *     still arrives verbatim.
+ *     still arrives verbatim — and is held by the plugin's MCP floor.
  *
  * Either way the canonical form is dotted: gate on `mcp.`, not `mcp__`. (The
  * double-underscore form is the SDK's wire spelling; it is stripped or lifted

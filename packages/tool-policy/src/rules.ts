@@ -19,7 +19,9 @@ import type { PolicyRule } from './types.js';
 // wrappers off OUR two in-process servers, and (TASK-734) lifts a connector's
 // sandbox-side MCP tool `mcp__<toolNamespace>__<tool>` to
 // `mcp.<toolNamespace>.<tool>`. A foreign `mcp__<server>__<tool>` is NOT
-// rewritten and reaches here verbatim — no rule below matches one.
+// rewritten and reaches here verbatim — no rule below matches one, and the
+// plugin holds it anyway (`implicitMcpCeiling`, TASK-699), as it does every
+// MCP-spelled name that no connector default covers.
 //
 // A rule matching a tool that is not registered in a given deployment is INERT
 // in the EVALUATOR, not an error: nothing ever calls that tool, so the rule

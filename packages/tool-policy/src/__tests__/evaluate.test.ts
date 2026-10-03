@@ -61,9 +61,10 @@ describe('evaluate', () => {
     // The claude-sdk runner lifts a connector's sandbox-side MCP tool
     // `mcp__c0123456789__send_message` to `mcp.c0123456789.send_message` before
     // `tool.pre-call`. This documents that the canonical key reaches evaluate()
-    // as an ordinary name and, with no rule addressing it yet, is unguarded —
-    // the known hole in evaluate()'s doc comment. A future card that gates
-    // connector tools will change this fixture on purpose.
+    // as an ordinary name and, with no rule addressing it, the STATIC layer
+    // answers allow. That is not the verdict the call gets: the plugin's
+    // layered verdict holds every MCP-spelled name nobody set a default for
+    // (TASK-736 connectors, TASK-699 the rest) — see verdict-hooks.test.ts.
     expect(
       evaluate(RULES, { name: 'mcp.c0123456789.send_message', input: {} }),
     ).toEqual({
