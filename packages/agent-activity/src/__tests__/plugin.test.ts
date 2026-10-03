@@ -31,12 +31,13 @@ function ctx(
  */
 async function turnEnd(
   bus: HookBus,
-  over: { agentId?: string; reqId?: string; role?: 'assistant' | 'tool' } = {},
+  over: { agentId?: string; reqId?: string; role?: 'assistant' | 'tool'; foldedReqIds?: unknown } = {},
 ): Promise<void> {
   await bus.fire('chat:turn-end', ctx({ agentId: over.agentId, reqId: 'ipc-restamped' }), {
     reason: 'user-message-wait',
     role: over.role ?? 'assistant',
     ...(over.reqId !== undefined ? { reqId: over.reqId } : {}),
+    ...(over.foldedReqIds !== undefined ? { foldedReqIds: over.foldedReqIds } : {}),
   });
 }
 
@@ -415,6 +416,54 @@ describe('a turn ends on chat:turn-end, even while the runner stays warm', () =>
 
     await turnEnd(bus, { reqId: 'r2' });
     expect((await get(bus)).activity).toBeNull();
+  });
+
+  // TASK-708. A message that reaches a busy claude-sdk runner is folded into
+  // the running turn: two chat:starts, ONE turn. The folded message never gets
+  // a turn-end of its own, so before the runner named it on the turn that
+  // answered it, the agent read Working after the reply until the reaper —
+  // and the stranded id rode every later turn on that warm runner.
+  it('clears when one turn answers two chat:starts in one session (a fold)', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'r2' }), {});
+
+    await turnEnd(bus, { reqId: 'r1', role: 'tool', foldedReqIds: ['r2'] });
+    await turnEnd(bus, { reqId: 'r1', role: 'assistant', foldedReqIds: ['r2'] });
+    expect((await get(bus)).activity).toBeNull();
+
+    // Not sticky: the next turn on the warm runner clears on its own turn-end.
+    await bus.fire('chat:start', ctx({ reqId: 'r3' }), {});
+    await turnEnd(bus, { reqId: 'r3' });
+    expect((await get(bus)).activity).toBeNull();
+  });
+
+  it('a folded id ends only that turn — a genuinely concurrent turn keeps it working', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'r2' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'r3' }), {});
+
+    await turnEnd(bus, { reqId: 'r1', foldedReqIds: ['r2', 'never-started'] });
+    expect((await get(bus)).activity).not.toBeNull();
+
+    await turnEnd(bus, { reqId: 'r3' });
+    expect((await get(bus)).activity).toBeNull();
+  });
+
+  it('ignores a malformed foldedReqIds rather than reading it as a turn', async () => {
+    const bus = new HookBus();
+    await boot(bus);
+    // A one-character id, so a reader that iterated a bare string (strings
+    // are iterable) would find it and wrongly end the turn.
+    await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'x' }), {});
+
+    await turnEnd(bus, { reqId: 'r1', foldedReqIds: 'x' });
+    await turnEnd(bus, { reqId: 'r1', foldedReqIds: [42, null, { id: 'x' }] });
+    expect((await get(bus)).activity).not.toBeNull();
   });
 
   it('falls to resting when a turn-end names no turn at all — never pinned on working', async () => {

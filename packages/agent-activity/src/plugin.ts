@@ -91,6 +91,13 @@ interface ActivityRecord {
    * stays warm and `chat:end` trails the reply by the whole idle window —
    * never later.
    *
+   * "Cannot outlive `chat:end`" is NOT "cannot strand": under keepAlive a
+   * stranded id reads Working for the whole idle window, and it rides every
+   * later `chat:start` on that agent until `chat:end`. The known producer was
+   * a message folded into a running turn — two starts, one turn (TASK-708);
+   * that turn's turn-end now names the folded id in `foldedReqIds`. A runner
+   * that folds without saying so would strand an id again.
+   *
    * Empty for a record a `tool:pre-call` started with no `chat:start` behind
    * it; such a record closes on the next turn-end for its agent.
    */
@@ -189,11 +196,19 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
       //
       // One user message emits two turn-ends (tool, then assistant) under one
       // reqId; the second finds nothing left to remove, which is a no-op.
+      //
+      // TASK-708: a turn can also answer messages that are NOT its own — a
+      // message that reached the runner mid-turn and was folded into it. Those
+      // never get a turn-end of their own, so the runner lists them on this
+      // one (`foldedReqIds`), and they end here too. Only ever a removal, and
+      // only of ids this record is already waiting on, so a runner-supplied
+      // list can make the line read resting early, never keep it Working.
       bus.subscribe<unknown>('chat:turn-end', PLUGIN_NAME, async (ctx, payload) => {
         observe(ctx, () => {
           const record = byAgent.get(ctx.agentId);
           if (record === undefined) return;
-          const reqId = (payload as { reqId?: unknown } | null | undefined)?.reqId;
+          const p = payload as { reqId?: unknown; foldedReqIds?: unknown } | null | undefined;
+          const reqId = p?.reqId;
           // A turn-end that names no turn cannot be matched to one, so it
           // ends them all — the coarse answer `chat:end` gives, in the
           // under-report direction ("we don't know" reads resting).
@@ -202,6 +217,11 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
             return;
           }
           record.turns.delete(reqId);
+          if (Array.isArray(p?.foldedReqIds)) {
+            for (const folded of p.foldedReqIds) {
+              if (typeof folded === 'string') record.turns.delete(folded);
+            }
+          }
           if (record.turns.size === 0) byAgent.delete(ctx.agentId);
         });
         return undefined;

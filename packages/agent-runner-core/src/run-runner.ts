@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -146,6 +147,13 @@ export interface LoopUserMessage {
    * turn carried attachments). Opaque to the shell.
    */
   content: unknown;
+  /**
+   * A shell-minted UUID naming this message (TASK-708). A loop whose model can
+   * fold a message into a turn already running hands this to its SDK and,
+   * when the SDK says the message was consumed, reports it back through
+   * `LoopContext.markMessageConsumed`. Loops that cannot fold ignore it.
+   */
+  id: string;
 }
 
 /** An assistant-side delta the host fans out to live clients. */
@@ -328,6 +336,18 @@ export interface LoopContext {
   getTranscriptSessionId(): string | null;
   /** Report the transcript session id the loop minted. */
   setTranscriptSessionId(sessionId: string): void;
+  /**
+   * Report that the model consumed the message `nextMessage()` handed out
+   * under `id` (TASK-708). Call it when the SDK acknowledges the message, not
+   * when the loop forwards it: the point is to learn WHICH turn answered it.
+   *
+   * A message consumed into a turn that runs under a different reqId was
+   * folded into that turn, and will never get a turn-end of its own. The shell
+   * lists it on that turn's turn-ends (`foldedReqIds`) so the host can stop
+   * waiting on it. Unknown or repeated ids are ignored. A loop whose model
+   * never folds (one message, one turn) need not call it.
+   */
+  markMessageConsumed(id: string): void;
 }
 
 /**
@@ -974,7 +994,9 @@ async function runRunnerInner(
   // the moment it claims `currentReqId` (a pull that adopts at once, or its
   // first chunk) until its `endTurn`. After a hand-over nothing is active until
   // the next turn actually streams, so a message folded into the turn that
-  // just ended costs nothing, and the next pull adopts at once.
+  // just ended costs nothing, and the next pull adopts at once. (Nothing here,
+  // that is: the folded message's own reqId still gets no turn-end, which is
+  // what `foldedReqIds` below answers — TASK-708.)
   //
   // One slot, latest wins: when several messages are pulled during one turn,
   // the CLI most likely folds them together, and the reply to the fold answers
@@ -1003,6 +1025,55 @@ async function runRunnerInner(
     parkedAdoption = undefined;
     turnActive = false;
     interruptDelivered = false;
+    foldedReqIds.clear();
+  }
+
+  // TASK-708: which turn ANSWERED a message, as opposed to which turn's id it
+  // was stamped with. The hand-over above cannot tell a fold from a message
+  // that will get its own turn next — both look like "a message was pulled
+  // while a turn ran". The model's SDK can tell, so the loop reports each
+  // message as it is consumed (`markMessageConsumed`), and a consumed message
+  // whose reqId is not the current turn's was folded into this turn: it is
+  // named on this turn's turn-ends, because it will never get one of its own.
+  //
+  // Observed, never inferred — the same rule as `turnActive`. A message that
+  // gets its own turn is consumed AFTER the hand-over made its id current, so
+  // it is never listed; one the SDK never reports is never listed either,
+  // which is exactly today's behaviour.
+  //
+  // `messageReqIds` maps the id `nextMessage` minted to the message's reqId,
+  // and only for messages that carry one. Bounded: a loop that never reports
+  // consumption (one that cannot fold) would otherwise grow it for the life of
+  // a warm runner. The oldest entry goes first; a message that old was
+  // answered long ago.
+  const MAX_TRACKED_MESSAGES = 64;
+  const messageReqIds = new Map<string, string>();
+  const foldedReqIds = new Set<string>();
+  function trackMessage(reqId: string | undefined): string {
+    const id = randomUUID();
+    if (reqId === undefined) return id;
+    messageReqIds.set(id, reqId);
+    if (messageReqIds.size > MAX_TRACKED_MESSAGES) {
+      const oldest = messageReqIds.keys().next().value;
+      if (oldest !== undefined) messageReqIds.delete(oldest);
+    }
+    return id;
+  }
+  function markMessageConsumed(id: string): void {
+    const reqId = messageReqIds.get(id);
+    if (reqId === undefined) return;
+    messageReqIds.delete(id);
+    // Recorded even when it IS the current id, and filtered at emission: the
+    // current id can still move before this turn closes (a message pulled
+    // after the hand-over but before the next turn's first chunk adopts at
+    // once), and then the consumed message is one this turn answered under
+    // another name.
+    foldedReqIds.add(reqId);
+  }
+  /** This turn's folded ids, for its turn-ends — never the turn's own id. */
+  function foldedReqIdsForTurnEnd(): { foldedReqIds: string[] } | Record<string, never> {
+    const ids = [...foldedReqIds].filter((id) => id !== currentReqId).slice(0, 64);
+    return ids.length > 0 ? { foldedReqIds: ids } : {};
   }
 
   // ---- The single inbox reader, and `interrupt` (TASK-688) ------------------
@@ -1190,23 +1261,23 @@ async function runRunnerInner(
         // TASK-573: adopted at the turn boundary, not at this pull — see
         // `adoptReqIdForTurn`. A person who approves mid-reply is answered while
         // the held turn is still streaming, and those chunks are the held turn's.
-        adoptReqIdForTurn({
-          reqId:
-            typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined,
-        });
+        const continuationReqId =
+          typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined;
+        adoptReqIdForTurn({ reqId: continuationReqId });
         chatEndHistory.push({ role: 'user', content });
-        return { content: await withSaveRefusedNotice(content) };
+        return {
+          content: await withSaveRefusedNotice(content),
+          id: trackMessage(continuationReqId),
+        };
       }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk
       // emissions correlate back to the originating request. Both fields
       // are set on `user-message` entries by the InboxLoop layer. Adopted at
       // the turn boundary when a turn is still in flight (TASK-573).
-      adoptReqIdForTurn(
-        typeof entry.reqId === 'string' && entry.reqId.length > 0
-          ? { reqId: entry.reqId }
-          : 'keep',
-      );
+      const messageReqId =
+        typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined;
+      adoptReqIdForTurn(messageReqId !== undefined ? { reqId: messageReqId } : 'keep');
       const hasBlocks =
         entry.payload.contentBlocks !== undefined &&
         entry.payload.contentBlocks.length > 0;
@@ -1267,7 +1338,10 @@ async function runRunnerInner(
 
       // chatEndHistory above stays the person's words; the refused-save
       // notice (TASK-732) is for the model only.
-      return { content: await withSaveRefusedNotice(messageContent) };
+      return {
+        content: await withSaveRefusedNotice(messageContent),
+        id: trackMessage(messageReqId),
+      };
     }
   }
 
@@ -1732,6 +1806,10 @@ async function runRunnerInner(
           // (TASK-731), keyed on this turn's reqId, so the two rows fold to
           // one on read: carrying it twice costs nothing.
           ...(saveRefused !== undefined ? { saveRefused } : {}),
+          // TASK-708: messages this turn answered that have no turn-end of
+          // their own. On both turn-ends, like the reqId, so a subscriber
+          // that acts on the first one sees them.
+          ...foldedReqIdsForTurnEnd(),
         })
         .catch(() => {
           /* host may be tearing down; non-fatal */
@@ -1770,6 +1848,7 @@ async function runRunnerInner(
         // See reqId rationale on the tool turn-end above.
         ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
         ...(assistantTurnId !== undefined ? { turnId: assistantTurnId } : {}),
+        ...foldedReqIdsForTurnEnd(),
       })
       .catch(() => {
         /* host may be tearing down; non-fatal */
@@ -1807,6 +1886,7 @@ async function runRunnerInner(
     setTranscriptSessionId: (sessionId: string): void => {
       transcriptSessionId = sessionId;
     },
+    markMessageConsumed,
   };
 
   // Constructed OUTSIDE the try below on purpose. Building the loop (its MCP

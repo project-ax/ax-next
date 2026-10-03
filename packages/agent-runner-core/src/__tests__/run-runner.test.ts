@@ -379,6 +379,7 @@ describe('runRunner', () => {
         content:
           'System message (not from the user): ' +
           'They said yes. Make the call again exactly as you made it.',
+        id: expect.any(String),
       });
     });
 
@@ -679,6 +680,137 @@ describe('runRunner', () => {
         'chunk:d-1@req-d',
         'turn-end@req-d',
       ]);
+    });
+
+    // TASK-708. The fold above answered req-b inside req-a's turn, so req-b
+    // never gets a turn-end of its own — and a host subscriber that waits for
+    // one (agent-activity's "working" record) waited until chat:end. The loop
+    // reports what the SDK consumed; the shell names the folded id on the
+    // turn-ends of the turn that answered it, and only there.
+    describe('folded messages (TASK-708)', () => {
+      const endTurnInput = {
+        contentBlocks: [],
+        toolResultBlocks: [{ type: 'tool_result', tool_use_id: 't1', content: 'slow' }],
+        readTurnId: async () => undefined,
+        usage: null,
+      } as unknown as Parameters<LoopContext['endTurn']>[0];
+      const turnEnds = (): Array<{ reqId?: string; role?: string; foldedReqIds?: string[] }> =>
+        fakeClient.event.mock.calls
+          .filter((c) => c[0] === 'event.turn-end')
+          .map((c) => c[1] as { reqId?: string; role?: string; foldedReqIds?: string[] });
+      const inbox = (...ids: string[]): void =>
+        scriptInbox(
+          ids.map((reqId, i) => ({
+            type: 'user-message',
+            payload: { role: 'user', content: reqId },
+            reqId,
+            cursor: i + 1,
+          })),
+        );
+
+      it('names a message consumed into a running turn on that turn\'s turn-ends', async () => {
+        inbox('req-a', 'req-b', 'req-c');
+        const loop: Loop = {
+          run: vi.fn(async (ctx: LoopContext) => {
+            const a = await ctx.nextMessage();
+            ctx.markMessageConsumed(a!.id); // the turn's own message: not a fold
+            await ctx.emitChunk({ kind: 'text', text: 'a-1' });
+            const b = await ctx.nextMessage(); // arrives mid-turn
+            ctx.markMessageConsumed(b!.id); // ...and the SDK folds it in
+            await ctx.endTurn(endTurnInput);
+            const c = await ctx.nextMessage();
+            ctx.markMessageConsumed(c!.id);
+            await ctx.emitChunk({ kind: 'text', text: 'c-1' });
+            await ctx.endTurn(endTurnInput);
+            return 0;
+          }),
+        };
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+        expect(turnEnds()).toEqual([
+          expect.objectContaining({ role: 'tool', reqId: 'req-a', foldedReqIds: ['req-b'] }),
+          expect.objectContaining({ role: 'assistant', reqId: 'req-a', foldedReqIds: ['req-b'] }),
+          expect.objectContaining({ role: 'tool', reqId: 'req-c' }),
+          expect.objectContaining({ role: 'assistant', reqId: 'req-c' }),
+        ]);
+        // Scoped to the turn that answered it: a later turn does not repeat it.
+        expect(turnEnds()[2]).not.toHaveProperty('foldedReqIds');
+        expect(turnEnds()[3]).not.toHaveProperty('foldedReqIds');
+      });
+
+      it('does not list a pulled-ahead message that gets its own turn', async () => {
+        inbox('req-a', 'req-b');
+        const loop: Loop = {
+          run: vi.fn(async (ctx: LoopContext) => {
+            const a = await ctx.nextMessage();
+            ctx.markMessageConsumed(a!.id);
+            await ctx.emitChunk({ kind: 'text', text: 'a-1' });
+            const b = await ctx.nextMessage(); // parked: a's turn is streaming
+            await ctx.endTurn(endTurnInput);
+            ctx.markMessageConsumed(b!.id); // consumed only once a's turn ended
+            await ctx.emitChunk({ kind: 'text', text: 'b-1' });
+            await ctx.endTurn(endTurnInput);
+            return 0;
+          }),
+        };
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+        const ends = turnEnds();
+        expect(ends.map((e) => e.reqId)).toEqual(['req-a', 'req-a', 'req-b', 'req-b']);
+        for (const e of ends) expect(e).not.toHaveProperty('foldedReqIds');
+      });
+
+      it('lists a consumed message whose turn ends up named after a later one', async () => {
+        // b gets its own turn, but c is pulled after the hand-over and before
+        // b's first chunk, so c adopts at once and b's turn closes under c.
+        inbox('req-a', 'req-b', 'req-c');
+        const loop: Loop = {
+          run: vi.fn(async (ctx: LoopContext) => {
+            const a = await ctx.nextMessage();
+            ctx.markMessageConsumed(a!.id);
+            await ctx.emitChunk({ kind: 'text', text: 'a-1' });
+            const b = await ctx.nextMessage();
+            await ctx.endTurn(endTurnInput);
+            ctx.markMessageConsumed(b!.id);
+            const c = await ctx.nextMessage();
+            await ctx.emitChunk({ kind: 'text', text: 'b-1' });
+            await ctx.endTurn(endTurnInput);
+            void c;
+            return 0;
+          }),
+        };
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+        const ends = turnEnds();
+        expect(ends.map((e) => e.reqId)).toEqual(['req-a', 'req-a', 'req-c', 'req-c']);
+        expect(ends[0]).not.toHaveProperty('foldedReqIds');
+        expect(ends[2]?.foldedReqIds).toEqual(['req-b']);
+        expect(ends[3]?.foldedReqIds).toEqual(['req-b']);
+      });
+
+      it('ignores unknown and repeated ids, and messages without a reqId', async () => {
+        scriptInbox([
+          { type: 'user-message', payload: { role: 'user', content: 'a' }, reqId: 'req-a', cursor: 1 },
+          { type: 'user-message', payload: { role: 'user', content: 'no id' }, cursor: 2 },
+          { type: 'user-message', payload: { role: 'user', content: 'b' }, reqId: 'req-b', cursor: 3 },
+        ]);
+        const loop: Loop = {
+          run: vi.fn(async (ctx: LoopContext) => {
+            const a = await ctx.nextMessage();
+            await ctx.emitChunk({ kind: 'text', text: 'a-1' });
+            const anon = await ctx.nextMessage();
+            const b = await ctx.nextMessage();
+            ctx.markMessageConsumed('not-a-message-id');
+            ctx.markMessageConsumed(anon!.id);
+            ctx.markMessageConsumed(a!.id);
+            ctx.markMessageConsumed(b!.id);
+            ctx.markMessageConsumed(b!.id);
+            await ctx.endTurn(endTurnInput);
+            return 0;
+          }),
+        };
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+        const ends = turnEnds();
+        expect(ends).toHaveLength(2);
+        for (const e of ends) expect(e.foldedReqIds).toEqual(['req-b']);
+      });
     });
 
     it('parks a message pulled while the continuation streams, then hands it over at its end (TASK-573)', async () => {
@@ -1699,7 +1831,7 @@ describe('runRunner', () => {
         reason: 'no',
         recoverable: false,
       }));
-      expect(third).toEqual({ content: 'thanks' });
+      expect(third).toEqual({ content: 'thanks', id: expect.any(String) });
     });
 
     it('a save too big to carry (host 413) is told too', async () => {
@@ -1730,7 +1862,7 @@ describe('runRunner', () => {
       ];
       for (const answer of answers) {
         const { second } = await threeTurns(answer);
-        expect(second).toEqual({ content: 'and now?' });
+        expect(second).toEqual({ content: 'and now?', id: expect.any(String) });
       }
     });
 
@@ -1781,7 +1913,7 @@ describe('runRunner', () => {
         stderr.mockRestore();
       }
       expect(answers).toHaveLength(0);
-      expect(seen[0]).toEqual({ content: 'pulled early' });
+      expect(seen[0]).toEqual({ content: 'pulled early', id: expect.any(String) });
       const third = (seen[1] as { content: string }).content;
       expect(third.startsWith(NOTICE_HEAD)).toBe(true);
       expect(third.endsWith('\n\nthanks')).toBe(true);
@@ -1884,7 +2016,7 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
     expect(first).toContain('The storage limit for this workspace was reached.');
     expect(first.endsWith('\n\nhello again')).toBe(true);
     // Told once: the host marked it told, and the next turn is bare.
-    expect(seen[1]).toEqual({ content: 'and now?' });
+    expect(seen[1]).toEqual({ content: 'and now?', id: expect.any(String) });
     // The drain names nothing: the host takes the conversation from ctx.
     expect(drainCalls).toEqual([[{}], [{}]]);
   });
@@ -1915,7 +2047,7 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
     expect(second.split('System message (not from the user)')).toHaveLength(2);
     expect(second).toContain('"no"');
     expect(second.endsWith('\n\nand now?')).toBe(true);
-    expect(seen[2]).toEqual({ content: 'thanks' });
+    expect(seen[2]).toEqual({ content: 'thanks', id: expect.any(String) });
   });
 
   it('pull-ahead: a message built before the refused turn closes, then the host handing that refusal back, still tells it ONCE', async () => {
@@ -1965,7 +2097,7 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
       stderr.mockRestore();
     }
     expect(drains).toHaveLength(0);
-    expect(seen[0]).toEqual({ content: 'pulled early' });
+    expect(seen[0]).toEqual({ content: 'pulled early', id: expect.any(String) });
     const third = (seen[1] as { content: string }).content;
     expect(third.split('System message (not from the user)')).toHaveLength(2);
     expect(third).toContain('"no"');
@@ -1991,7 +2123,7 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
         },
       ],
     });
-    expect(seen[0]).toEqual({ content: 'hello' });
+    expect(seen[0]).toEqual({ content: 'hello', id: expect.any(String) });
   });
 
   it('a run bound to no conversation never drains', async () => {
