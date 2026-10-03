@@ -1071,3 +1071,56 @@ export interface AgentConnectorRemoved {
   removed: true;
   cleanup: 'complete' | 'partial';
 }
+
+/**
+ * Allow = runs on its own; hold = asks first; deny = never runs. The same
+ * three words `@ax/tool-policy` stores (TASK-742, connectors-rail slice 9).
+ */
+export type AgentToolVerdict = 'allow' | 'hold' | 'deny';
+
+/** Whose access the connector acts with: the caller's own, or the workspace's. */
+export type AgentConnectorAccess = 'personal' | 'workspace';
+
+/**
+ * One tool in a connector's details view.
+ *
+ * `title` / `description` are the connector SERVER's own words — untrusted,
+ * fenced and clamped server-side, and rendered as plain text only. `readOnly`
+ * / `outward` are its self-described hints: they choose the group a row sits
+ * in, never what it may do.
+ *
+ * `verdict` is what the agent gets for this tool right now (the strictest of
+ * its own choice and the admin's ceiling). `ceiling` is the loosest choice the
+ * person may pick: anything looser is refused by the store.
+ */
+export interface AgentConnectorTool {
+  toolKey: string;
+  title: string;
+  description: string;
+  readOnly: boolean | null;
+  outward: boolean | null;
+  verdict: AgentToolVerdict;
+  ceiling: AgentToolVerdict;
+}
+
+/** `GET /api/workspace/agents/:agentId/connectors/:connectorId/tools`. */
+export interface AgentConnectorToolsRead {
+  connector: { id: string; name: string; access: AgentConnectorAccess };
+  /** Whether the connector answered when we asked for its tool list. */
+  status: 'ok' | 'unreachable' | 'needs-auth' | 'unknown';
+  checkedAt: string | null;
+  /** Part of this connector cannot be listed from here, so tools may be missing. */
+  possiblyIncomplete: boolean;
+  tools: AgentConnectorTool[];
+}
+
+/** `PUT /api/workspace/agents/:agentId/connectors/:connectorId/tool-verdicts` body. */
+export interface AgentToolVerdictWrite {
+  toolKey: string;
+  verdict: AgentToolVerdict;
+}
+
+/** …and its answer: the store's re-read state for that one tool. */
+export interface AgentToolVerdictSaved {
+  tool: { toolKey: string; verdict: AgentToolVerdict; ceiling: AgentToolVerdict };
+}
