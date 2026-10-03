@@ -477,6 +477,23 @@ describe('connectors:tool-namespaces-changed — a renamed server keeps its verd
     expect(await verdictOf(h, NEW_SEND)).toBe('allow');
     expect(await verdictOf(h, OTHER)).toBe('allow');
   });
+
+  it('a removed entry naming either side of a rename never purges the migrated rows', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    await setOverride(h, SEND, 'deny');
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [renamed(NS, NEW)],
+      removed: [entry(NEW), entry(NS)],
+    });
+    // The agent's own deny made it across and is still in force.
+    expect((await listOverrides(h)).overrides.map((o) => [o.toolKey, o.verdict])).toEqual([
+      [NEW_SEND, 'deny'],
+    ]);
+    expect(await verdictOf(h, NEW_SEND)).toBe('deny');
+    expect(await verdictOf(h, NEW_SEND, 'agent-3')).toBe('allow');
+  });
 });
 
 describe('verdict store — keyspace guard (TASK-752)', () => {

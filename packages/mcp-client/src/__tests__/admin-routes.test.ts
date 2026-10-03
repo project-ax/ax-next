@@ -628,6 +628,30 @@ describe('@ax/mcp-client admin routes', () => {
     expect(cfg.ownerId).not.toBeNull();
   });
 
+  it('PATCH of a legacy row whose id is now reserved → 400, not 500 (TASK-752)', async () => {
+    const cookie = await signIn(stack);
+    // Learn the caller's user id from a normal create.
+    const probe = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: makeBody({ id: 'owner-probe' }),
+    });
+    const ownerId = (probe.body as { config: SerializedConfig }).config.ownerId;
+    // A row written before the reservation existed goes straight to storage.
+    const reserved = 'c0123456789';
+    const enc = new TextEncoder();
+    const ctx = stack.harness.ctx();
+    await stack.harness.bus.call('storage:set', ctx, {
+      key: `mcp-server:${reserved}`,
+      value: enc.encode(JSON.stringify({ ...makeBody({ id: reserved }), ownerId })),
+    });
+    const r = await http(stack.port, 'PATCH', `/admin/mcp-servers/${reserved}`, {
+      cookie,
+      body: { enabled: false },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/reserved/);
+  });
+
   it('PATCH other user’s config → 404', async () => {
     const cookieA = await signIn(stack);
     await http(stack.port, 'POST', '/admin/mcp-servers', {
