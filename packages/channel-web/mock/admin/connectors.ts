@@ -31,7 +31,9 @@ import { requireSession } from '../auth';
  * Note the path has NO `/api/` prefix (unlike the mock `/api/admin/mcp-servers`)
  * — it matches the real `@ax/connectors` routes, which the UI hits directly.
  *
- * SECURITY parity: identity comes from the session. Private foreign rows are
+ * SECURITY parity: identity comes from the session. The `/admin/connectors*`
+ * bundle is admin-only (403 `forbidden` for a signed-in non-admin, TASK-698);
+ * `/settings/connectors*` is open to any signed-in user. Private foreign rows are
  * invisible; shared foreign rows are read-only. Credential values never appear.
  *
  * These type shapes are DUPLICATED from `@ax/connectors` (not imported):
@@ -312,10 +314,20 @@ function connectorsMiddleware(
     const path = parsed.pathname;
     const method = req.method ?? 'GET';
 
-    // auth:require-user — any authenticated user (NOT admin-only).
+    // auth:require-user — 401 with no session. The `/admin/connectors*` bundle
+    // (mode 'admin') is additionally ADMIN-ONLY, mirroring the real
+    // `@ax/connectors` admin-routes gate (TASK-698): a signed-in non-admin gets
+    // 403 `{ error: 'forbidden' }` on every route under it, before any read or
+    // write. The `/settings/connectors*` bundle (mode 'user') stays open to any
+    // signed-in user. Keeping dev and prod in step means a caller that wrongly
+    // points a non-admin at the admin base breaks under `pnpm dev` too (TASK-714).
     const actor = requireSession(req, store);
     if (!actor) {
       send(res, 401, { error: 'unauthenticated' });
+      return true;
+    }
+    if (mode === 'admin' && actor.role !== 'admin') {
+      send(res, 403, { error: 'forbidden' });
       return true;
     }
 
@@ -516,7 +528,8 @@ function connectorsMiddleware(
   };
 }
 
-/** The admin Connector registry mock (`/admin/connectors[/:id]`). */
+/** The admin Connector registry mock (`/admin/connectors[/:id]`). Admin-only:
+ *  a signed-in non-admin gets 403, like the real route (TASK-698). */
 export function adminConnectorsMiddleware(
   store: Store,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {

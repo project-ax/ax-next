@@ -14,12 +14,13 @@
  *   PATCH  <base>/:id    body: Partial<ConnectorUpsertInput> → { connector, created }
  *   DELETE <base>/:id    → 204
  *
- * `base` defaults to `/admin/connectors` for back-compat; the user surface
- * passes `/settings/connectors`. `/admin/connectors*` is ADMIN-ONLY server-side
- * (403 for a signed-in non-admin, TASK-698) — so a caller a non-admin can reach
- * MUST pass `/settings/connectors` (the default is a trap for them). (The Test
- * probe is admin-only — it lives only under `/admin/connectors/:id/test`, never
- * the user base.)
+ * `base` is REQUIRED on every call — there is no default (TASK-714).
+ * `/admin/connectors*` is ADMIN-ONLY server-side (403 for a signed-in non-admin,
+ * TASK-698), so a default of `/admin/connectors` was a trap: a new caller a
+ * non-admin can reach would silently 403. Each caller now names its bundle —
+ * `/settings/connectors` for anything a non-admin can reach, `/admin/connectors`
+ * only from admin-only surfaces. (The Test probe is admin-only — it lives only
+ * under `/admin/connectors/:id/test`, never the user base.)
  *
  * SECURITY — actor identity comes from the session, never the request body.
  * Shared definitions contain credential references, never secret values.
@@ -43,9 +44,6 @@ export type { ServiceDescriptor };
 /** Which owner-scoped route bundle a call targets (TASK-129). */
 export type ConnectorRouteBase = '/admin/connectors' | '/settings/connectors';
 
-/** Default route bundle — the admin registry (back-compat). Admin-only server-side:
- *  a non-admin caller must pass `'/settings/connectors'` explicitly. */
-const DEFAULT_BASE: ConnectorRouteBase = '/admin/connectors';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -158,7 +156,7 @@ export interface ConnectorUpsertInput {
 }
 
 export async function listConnectors(
-  base: ConnectorRouteBase = DEFAULT_BASE,
+  base: ConnectorRouteBase,
 ): Promise<ConnectorSummary[]> {
   const res = await fetch(base, { credentials: 'include' });
   if (!res.ok) throw new Error(`list connectors: ${res.status}`);
@@ -168,7 +166,7 @@ export async function listConnectors(
 
 export async function getConnector(
   id: string,
-  base: ConnectorRouteBase = DEFAULT_BASE,
+  base: ConnectorRouteBase,
 ): Promise<Connector> {
   const res = await fetch(`${base}/${encodeURIComponent(id)}`, {
     credentials: 'include',
@@ -180,7 +178,7 @@ export async function getConnector(
 
 export async function createConnector(
   input: ConnectorUpsertInput,
-  base: ConnectorRouteBase = DEFAULT_BASE,
+  base: ConnectorRouteBase,
 ): Promise<Connector> {
   const res = await fetch(base, {
     method: 'POST',
@@ -199,7 +197,7 @@ export async function createConnector(
 export async function patchConnector(
   id: string,
   patch: Partial<ConnectorUpsertInput>,
-  base: ConnectorRouteBase = DEFAULT_BASE,
+  base: ConnectorRouteBase,
 ): Promise<Connector> {
   const res = await fetch(`${base}/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -250,7 +248,7 @@ export function isToolPermissionsResetFailure(err: unknown): boolean {
 
 export async function deleteConnector(
   id: string,
-  base: ConnectorRouteBase = DEFAULT_BASE,
+  base: ConnectorRouteBase,
 ): Promise<void> {
   const res = await fetch(`${base}/${encodeURIComponent(id)}`, {
     method: 'DELETE',
