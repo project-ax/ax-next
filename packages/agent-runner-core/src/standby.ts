@@ -32,6 +32,8 @@ export async function waitForAssignment(options: {
       continue;
     }
     try {
+      // Partial files are refused, not retried: the publisher (sandbox-k8s
+      // storage-node engine.ts) renames a complete file into place atomically.
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size > BOOTSTRAP_MAX_BYTES || stat.size === 0 ||
           (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) {
