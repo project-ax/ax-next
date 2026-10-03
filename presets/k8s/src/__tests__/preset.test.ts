@@ -881,6 +881,8 @@ describe('@ax/preset-k8s wiring', () => {
       // TASK-697 — the read-authorization seam @ax/credentials consults before
       // an `account:` ref may fall through to the global (company) scope.
       'credentials:authorize-global:account',
+      // TASK-711 — its agent-scope twin.
+      'credentials:authorize-agent:account',
     ]);
     // database:get-instance is the hard dependency — satisfied by
     // @ax/database-postgres in the real preset (the "every calls entry is
