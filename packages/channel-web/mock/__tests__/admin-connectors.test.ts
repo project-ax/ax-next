@@ -497,3 +497,154 @@ describe('mock user connectors (/settings/connectors)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tool permissions — <base>/:id/tool-permissions (TASK-737).
+// ---------------------------------------------------------------------------
+
+describe('mock connector tool permissions', () => {
+  let dir: string;
+  let store: Store;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'mock-tool-perms-'));
+    store = new Store(dir);
+    store.seed();
+  });
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const remoteBody = () =>
+    upsertBody({
+      connectorId: 'linear',
+      name: 'Linear',
+      visibility: 'shared',
+      capabilities: {
+        allowedHosts: ['mcp.linear.app'],
+        credentials: [],
+        mcpServers: [
+          {
+            name: 'linear',
+            transport: 'http',
+            url: 'https://mcp.linear.app/mcp',
+            allowedHosts: [],
+            credentials: [],
+          },
+        ],
+        packages: { npm: [], pypi: [] },
+      },
+    });
+
+  async function create(url: string, base: string, cookie: string): Promise<void> {
+    const res = await fetch(`${url}${base}`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify(remoteBody()),
+    });
+    await expectStatus(res, 201);
+  }
+
+  it('lists a Linear-like inventory, saves defaults, and clears one with null', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      await create(url, '/settings/connectors', ALICE);
+      const first = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+        headers: { cookie: ALICE },
+      });
+      await expectStatus(first, 200);
+      const inventory = (await first.json()) as {
+        status: string;
+        tools: { toolKey: string; readOnly: boolean; outward: boolean }[];
+        defaults: unknown[];
+      };
+      expect(inventory.status).toBe('ok');
+      expect(inventory.defaults).toEqual([]);
+      expect(inventory.tools.filter((t) => t.readOnly).map((t) => t.toolKey)).toEqual([
+        'mcp.linear.search_issues',
+        'mcp.linear.get_issue',
+        'mcp.linear.list_projects',
+      ]);
+      expect(inventory.tools.filter((t) => t.outward).map((t) => t.toolKey)).toEqual([
+        'mcp.linear.create_issue',
+        'mcp.linear.delete_issue',
+      ]);
+
+      const put = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+        method: 'PUT',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          verdicts: [
+            { toolKey: 'mcp.linear.delete_issue', verdict: 'deny' },
+            { toolKey: 'mcp.linear.search_issues', verdict: 'allow' },
+          ],
+        }),
+      });
+      await expectStatus(put, 200);
+      expect(await put.json()).toEqual({ ok: true });
+
+      // The admin bundle sees and edits the same defaults.
+      const clear = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
+        method: 'PUT',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          verdicts: [{ toolKey: 'mcp.linear.search_issues', verdict: null }],
+        }),
+      });
+      await expectStatus(clear, 200);
+
+      const after = await fetch(
+        `${url}/settings/connectors/linear/tool-permissions?refresh=1`,
+        { headers: { cookie: ALICE } },
+      );
+      expect(((await after.json()) as { defaults: unknown[] }).defaults).toEqual([
+        { toolKey: 'mcp.linear.delete_issue', verdict: 'deny' },
+      ]);
+    } finally {
+      await close();
+    }
+  });
+
+  it('rejects a bad verdict with the offending toolKey and keeps prior defaults', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      await create(url, '/settings/connectors', ALICE);
+      const res = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+        method: 'PUT',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          verdicts: [
+            { toolKey: 'mcp.linear.get_issue', verdict: 'allow' },
+            { toolKey: 'mcp.linear.create_issue', verdict: 'maybe' },
+          ],
+        }),
+      });
+      await expectStatus(res, 400);
+      expect(((await res.json()) as { toolKey: string }).toolKey).toBe(
+        'mcp.linear.create_issue',
+      );
+      const after = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+        headers: { cookie: ALICE },
+      });
+      expect(((await after.json()) as { defaults: unknown[] }).defaults).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
+  it('403s someone who can read the connector but not edit it, and 404s an unknown one', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      await create(url, '/admin/connectors', ADMIN);
+      const foreign = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+        headers: { cookie: ALICE },
+      });
+      await expectStatus(foreign, 403);
+      const missing = await fetch(`${url}/settings/connectors/nope/tool-permissions`, {
+        headers: { cookie: ALICE },
+      });
+      await expectStatus(missing, 404);
+    } finally {
+      await close();
+    }
+  });
+});
