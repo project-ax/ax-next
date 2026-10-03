@@ -72,6 +72,10 @@ import type {
   AgentConnectorAttached,
   AgentConnectorRemoved,
   AgentConnectorRetried,
+  AgentConnectorToolsRead,
+  AgentToolVerdict,
+  AgentToolVerdictSaved,
+  AgentToolVerdictWrite,
   AgentConnectorsRead,
   AgentMemoryRead,
   AgentRailData,
@@ -944,6 +948,28 @@ export const workspaceApi = {
     req<AgentConnectorRetried>(
       `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/retry`,
       { method: 'POST' },
+    ),
+
+  /**
+   * The connector details view (TASK-742): this agent's choice for each of
+   * the connector's tools, and the loosest choice the admin allows.
+   * `refresh` asks the server to check the connector again.
+   */
+  connectorTools: (agentId: string, connectorId: string, refresh = false) =>
+    req<AgentConnectorToolsRead>(
+      `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/tools${refresh ? '?refresh=1' : ''}`,
+    ),
+
+  /** One tool at a time; the answer is the store's re-read state for it. */
+  setToolVerdict: (
+    agentId: string,
+    connectorId: string,
+    toolKey: string,
+    verdict: AgentToolVerdict,
+  ) =>
+    req<AgentToolVerdictSaved>(
+      `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/tool-verdicts`,
+      { method: 'PUT', body: { toolKey, verdict } satisfies AgentToolVerdictWrite },
     ),
 
   /**

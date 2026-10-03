@@ -11,17 +11,20 @@
  *   - **"See everything it can do"** — the old permissions list, moved into a
  *     Dialog rather than dropped. It is still the honest answer to "what can
  *     this agent reach", including the unrestricted-tools warning.
- *   - **Granted by you** — the grants a person made, with Revoke. Moved, not
- *     dropped: until connectors-rail slice 9 gives connection grants a home in
- *     the connector details view, this is the ONLY place any of them can be
- *     taken back, so every row stays here for now.
+ *   - **Granted by you** — the grants a person made, with Revoke. Access
+ *     approved FOR a connector moved into that connector's details view
+ *     ("Access you approved", TASK-742) — but only once the list confirms the
+ *     connector is there to open. Until then, or for a connector no longer on
+ *     this agent, the row stays here: this must never become the place a
+ *     grant can no longer be taken back from.
  *
  * The connector list (slice 6, TASK-739) sits above "Other abilities" — see
  * `AgentConnectors`. Its "+ Add" swaps the whole tab for the Add subview
  * (`AddConnector`, slice 7) until the person goes back or a connector is
- * attached.
+ * attached. Its "View details" (slice 9, TASK-742) likewise swaps the whole
+ * tab for that connector's details; which one is open is state held here.
  */
-import { Fragment, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
   ChevronRight,
@@ -110,6 +113,11 @@ export function ConnectorsTab({
   const [everything, setEverything] = useState(false);
   // Keyed by agent, so switching agents never lands on another one's Add view.
   const [addingFor, setAddingFor] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null);
+  const [listed, setListed] = useState<ReadonlySet<string> | null>(null);
+  const onListed = useCallback((ids: ReadonlySet<string> | null) => setListed(ids), []);
+  // Another agent's rail never opens on this one's connector.
+  useEffect(() => setViewing(null), [agentId]);
   if (addingFor === agentId) {
     return (
       <AddConnector
@@ -123,16 +131,29 @@ export function ConnectorsTab({
       />
     );
   }
+  const allGrants = rail?.grants.status === 'ok' ? rail.grants.rows : [];
+  const ownGrants = (rows: GrantRow[]) =>
+    rows.filter((g) => !hasDetailsHome(g, listed));
   const grantCount =
-    rail?.grants.status === 'ok' ? rail.grants.rows.length : null;
+    rail?.grants.status === 'ok' ? ownGrants(rail.grants.rows).length : null;
+  const connectors = (
+    <AgentConnectors
+      agentId={agentId}
+      name={name}
+      {...(onConnectorsChanged !== undefined ? { onChanged: onConnectorsChanged } : {})}
+      onAdd={() => setAddingFor(agentId)}
+      viewing={viewing}
+      onView={setViewing}
+      grants={allGrants}
+      revoking={revoking}
+      onRevoke={onRevoke}
+      onListed={onListed}
+    />
+  );
+  if (viewing !== null) return connectors;
   return (
     <>
-      <AgentConnectors
-        agentId={agentId}
-        name={name}
-        {...(onConnectorsChanged !== undefined ? { onChanged: onConnectorsChanged } : {})}
-        onAdd={() => setAddingFor(agentId)}
-      />
+      {connectors}
       <SectionLabel>Other abilities</SectionLabel>
       <OtherAbilities agentId={agentId} name={name} />
       <p className="mt-3 text-[12px] text-muted-foreground">
@@ -181,6 +202,7 @@ export function ConnectorsTab({
         <CollapsibleContent className="pt-2">
           <Grants
             rail={rail}
+            filter={ownGrants}
             loading={loading}
             revoking={revoking}
             notice={notice}
@@ -423,12 +445,15 @@ function Permissions({
 */
 function Grants({
   rail,
+  filter,
   loading,
   revoking,
   notice,
   onRevoke,
 }: {
   rail: AgentRailData | null;
+  /** Drops the rows that live in a connector's details view instead. */
+  filter: (rows: GrantRow[]) => GrantRow[];
   loading: boolean;
   revoking: ReadonlySet<string>;
   notice: string | null;
@@ -448,15 +473,17 @@ function Grants({
       </Note>
     );
   }
-  const { status, rows, incomplete } = rail.grants;
+  const { status, incomplete } = rail.grants;
   if (status !== 'ok') {
     return (
       <ReadFailure status={status} what="a record of what you've granted" />
     );
   }
+  const rows = filter(rail.grants.rows);
+  const moved = rail.grants.rows.length - rows.length;
   return (
     <div className="flex flex-col">
-      {rows.length === 0 && (
+      {rows.length === 0 && moved === 0 && (
         <Note>
           Nothing yet — you haven&apos;t granted anything beyond the rules
           above.
@@ -470,6 +497,12 @@ function Grants({
           onRevoke={onRevoke}
         />
       ))}
+      {moved > 0 && (
+        <p className="text-[12px] leading-relaxed text-muted-foreground">
+          Access you approved for a connector is in that connector&apos;s
+          details.
+        </p>
+      )}
       {incomplete && (
         <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
           One of the places we look didn&apos;t answer, so there may be more
@@ -481,4 +514,10 @@ function Grants({
       )}
     </div>
   );
+}
+
+/** A grant made for a connector this agent's list currently shows: its
+ *  Revoke lives in that connector's details view. */
+function hasDetailsHome(g: GrantRow, listed: ReadonlySet<string> | null): boolean {
+  return listed !== null && g.grantedFor?.kind === 'connection' && listed.has(g.grantedFor.id);
 }
