@@ -76,6 +76,24 @@ interface Props {
   onBack: () => void;
   onEdit: () => void;
   onRemove: () => void;
+  /** TASK-761 — this agent's model gets no connector tools (aisdk). */
+  unsupported?: boolean;
+}
+
+/**
+ * TASK-761 — this agent's model gets no connector tools (the aisdk runner
+ * doesn't load them, by design). Said plainly, once, above whatever is
+ * listed, so nobody sets permissions that can't apply.
+ */
+export function ConnectorsUnsupported({ name }: { name: string }) {
+  return (
+    <Alert className="mb-3" data-testid="connectors-unsupported">
+      <AlertDescription className="text-[12.5px]">
+        {name}’s model can’t use connectors yet, so nothing here applies to {name} for
+        now.
+      </AlertDescription>
+    </Alert>
+  );
 }
 
 export function ConnectorDetails({
@@ -90,6 +108,7 @@ export function ConnectorDetails({
   onBack,
   onEdit,
   onRemove,
+  unsupported = false,
 }: Props) {
   const state = useConnectorTools(agentId, row.id);
   const { data, status } = state;
@@ -110,6 +129,11 @@ export function ConnectorDetails({
       </div>
       <h3 className="truncate text-base font-semibold">{row.name}</h3>
       <ConnectionLine data={data} health={row.health} />
+      {unsupported && (
+        <div className="mt-4">
+          <ConnectorsUnsupported name={agentName} />
+        </div>
+      )}
 
       <div className="mt-5 flex-1">
         {status === 'loading' && (
@@ -157,8 +181,19 @@ export function ConnectorDetails({
         Pinned: the tool list can be long, and these two should not scroll
         away with it. Sticky inside the rail's own scroll area, on the page
         background so rows passing under it don't show through.
+
+        TASK-761 — that scroll area has `pb-5`, and a sticky box stops at the
+        scroller's padding edge, so `bottom-0` pinned this 20px ABOVE the
+        rail's bottom and rows scrolled past underneath it (measured on the
+        TASK-743 walk). `-bottom-5` + `-mb-5` put its edge on the rail's edge
+        in both the scrolling and the short case; `pb-8` (py-3 + those 20px)
+        paints the strip; `z-10` keeps the segmented controls' focus layer
+        under it. Keep the 5s in step with the rail scroller's padding.
       */}
-      <div className="sticky bottom-0 -mx-1 mt-4 flex items-center justify-between gap-2 border-t border-border bg-background px-1 py-3">
+      <div
+        data-testid="connector-details-footer"
+        className="sticky -bottom-5 z-10 -mx-1 -mb-5 mt-4 flex items-center justify-between gap-2 border-t border-border bg-background px-1 pb-8 pt-3"
+      >
         {row.editable ? (
           <Button type="button" variant="outline" size="sm" onClick={onEdit} disabled={busy}>
             <Pencil data-icon="inline-start" aria-hidden="true" />

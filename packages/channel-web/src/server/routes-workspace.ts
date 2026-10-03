@@ -256,6 +256,8 @@ interface ResolvedAgent {
   /** TASK-739 — connectors removed from THIS agent (defaults / legacy-owned). */
   connectorExclusions?: string[];
   visibility?: 'personal' | 'team';
+  /** Which runner the host spawns for this agent (an id, e.g. `claude-sdk`). */
+  runner?: string;
 }
 interface AgentsResolveOutput {
   agent: ResolvedAgent;
@@ -1409,6 +1411,18 @@ const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = [
 const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 function isConnectorId(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0 && v.length <= 128 && CONNECTOR_ID_RE.test(v);
+}
+
+/**
+ * TASK-761 — does this agent's runner give the model connector tools at all?
+ * An allow-list on purpose: only the claude-sdk runner loads the connectors'
+ * `.mcp.json` (the aisdk runner does not, by design), so a runner nobody has
+ * wired for connectors yet says "can't use connectors" rather than offering
+ * setup that silently does nothing. An agent row with no runner predates the
+ * field and runs on claude-sdk.
+ */
+function runnerLoadsConnectors(runner: string | undefined): boolean {
+  return runner === undefined || runner === 'claude-sdk';
 }
 
 /**
@@ -6225,6 +6239,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(200).json({
         connectors: rows.map((r) => ({ ...r, health: health.get(r.id) ?? 'ok' })),
         shared: agent.visibility === 'team',
+        connectorsSupported: runnerLoadsConnectors(agent.runner),
       } satisfies AgentConnectorsRead);
     },
 

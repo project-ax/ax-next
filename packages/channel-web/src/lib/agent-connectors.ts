@@ -26,6 +26,11 @@ export interface AgentConnectorsState {
   remove: (connectorId: string) => Promise<RemoveOutcome>;
   /** The agent is a team agent (Reconnect asks before signing in for everyone). */
   shared: boolean;
+  /**
+   * TASK-761 — false when this agent's runner gets no connector tools at all
+   * (aisdk), so the tab says so instead of offering setup that can't apply.
+   */
+  connectorsSupported: boolean;
   /** Connector ids with a Retry in flight (TASK-741). */
   retrying: ReadonlySet<string>;
   /** One fresh check of one connector; the row takes the health it answers. */
@@ -39,6 +44,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
   const [removing, setRemoving] = useState<ReadonlySet<string>>(new Set());
   const [retrying, setRetrying] = useState<ReadonlySet<string>>(new Set());
   const [shared, setShared] = useState(false);
+  const [connectorsSupported, setConnectorsSupported] = useState(true);
   // Only the newest read for the newest agent lands — switching agents fast
   // must never paint one agent's connectors under another's name.
   const scope = useRef(0);
@@ -54,6 +60,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
         setRemoving(new Set());
         setRetrying(new Set());
         setShared(false);
+        setConnectorsSupported(true);
       }
       void (async () => {
         try {
@@ -61,6 +68,9 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
           if (scope.current !== id) return;
           setConnectors(out.connectors);
           setShared(out.shared === true);
+          // Only an explicit false hides setup: an older server that never
+          // sent the flag keeps today's behaviour.
+          setConnectorsSupported(out.connectorsSupported !== false);
           setStatus('ok');
         } catch (e) {
           if (scope.current !== id) return;
@@ -133,5 +143,15 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
 
   const refresh = useCallback(() => load(false), [load]);
 
-  return { connectors, status, removing, remove, shared, retrying, retry, refresh };
+  return {
+    connectors,
+    status,
+    removing,
+    remove,
+    shared,
+    connectorsSupported,
+    retrying,
+    retry,
+    refresh,
+  };
 }

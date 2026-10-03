@@ -91,7 +91,7 @@ import { getConnector, type Connector } from '@/lib/connectors';
 import { useUser } from '@/lib/user-context';
 import type { GrantRow } from '@/lib/workspace-api';
 import type { AgentConnectorHealth, AgentConnectorRow } from '@/lib/workspace-types';
-import { ConnectorDetails } from './ConnectorDetails';
+import { ConnectorDetails, ConnectorsUnsupported } from './ConnectorDetails';
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
 const HEALTH_REASON: Record<Exclude<AgentConnectorHealth, 'ok' | 'not-loaded'>, string> = {
@@ -143,8 +143,20 @@ export function AgentConnectors({
   onRevoke,
   onListed,
 }: Props) {
-  const { connectors, status, removing, remove, shared, retrying, retry, refresh } =
-    useAgentConnectors(agentId);
+  const {
+    connectors,
+    status,
+    removing,
+    remove,
+    shared,
+    connectorsSupported,
+    retrying,
+    retry,
+    refresh,
+  } = useAgentConnectors(agentId);
+  // TASK-761 — an agent whose model gets no connector tools (aisdk) is not
+  // offered Add: setting up access it can't use would only mislead.
+  const addable = connectorsSupported ? onAdd : undefined;
   const isAdmin = useUser()?.role === 'admin';
   const [confirming, setConfirming] = useState<AgentConnectorRow | null>(null);
   const [notice, setNotice] = useState<
@@ -265,13 +277,15 @@ export function AgentConnectors({
           onRevoke={(g) => onRevoke?.(g)}
           busy={removing.has(open.id)}
           menu={menuFor(open, false)}
+          {...(connectorsSupported ? {} : { unsupported: true })}
           onBack={() => onView?.(null)}
           onEdit={() => void onEdit(open)}
           onRemove={() => setConfirming(open)}
         />
       ) : (
       <>
-      <ConnectorsHeader count={count} onAdd={onAdd} />
+      <ConnectorsHeader count={count} onAdd={addable} />
+      {status === 'ok' && !connectorsSupported && <ConnectorsUnsupported name={name} />}
       {status === 'loading' && (
         <div className="flex flex-col gap-3" aria-busy="true">
           <Skeleton className="h-4 w-3/5" />
@@ -285,8 +299,8 @@ export function AgentConnectors({
             : `We couldn’t read ${name}’s connectors just now. Treat them as unknown rather than none.`}
         </p>
       )}
-      {status === 'ok' && connectors !== null && connectors.length === 0 && (
-        <NoConnectors name={name} onAdd={onAdd} />
+      {status === 'ok' && connectorsSupported && connectors !== null && connectors.length === 0 && (
+        <NoConnectors name={name} onAdd={addable} />
       )}
       {status === 'ok' && connectors !== null && connectors.length > 0 && (
         <Card className="shadow-none">

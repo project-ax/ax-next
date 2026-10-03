@@ -101,6 +101,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.connectors).mockResolvedValue({
     connectors: [{ id: 'linear', name: 'Linear', source: 'attached', editable: false, health: 'ok' }],
     shared: false,
+      connectorsSupported: true,
   });
   vi.mocked(listConnectors).mockResolvedValue(CATALOG);
   vi.mocked(getConnector).mockImplementation(async (id) => full(id));
@@ -347,7 +348,7 @@ describe('sign in, then attach', () => {
   });
 
   it('a team agent (the server says shared) asks for consent before the sign-in starts', async () => {
-    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true });
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true, connectorsSupported: true });
     renderAdd();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));

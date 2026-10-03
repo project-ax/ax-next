@@ -86,6 +86,7 @@ describe('agent connector routes', () => {
     connectorAttachments: string[];
     connectorExclusions: string[];
     visibility?: 'personal' | 'team';
+    runner?: string;
   };
   let effective: Effective[];
   let listEffectiveCalls: unknown[];
@@ -492,6 +493,7 @@ describe('agent connector routes', () => {
           { id: 'notes', name: 'My notes', source: 'legacy-owned', editable: true, health: 'ok' },
         ],
         shared: false,
+        connectorsSupported: true,
       });
       // The SAME inputs a session opens with: this agent's attachments AND
       // exclusions, under the person asking.
@@ -528,6 +530,18 @@ describe('agent connector routes', () => {
       ];
       const r = await list();
       expect((r.body as { connectors: unknown[] }).connectors).toHaveLength(3);
+    });
+
+    it("says whether the agent's runner can use connectors at all (TASK-761)", async () => {
+      // No runner on the row: it predates the field and runs on claude-sdk.
+      expect((await list()).body).toMatchObject({ connectorsSupported: true });
+      agentRow.runner = 'claude-sdk';
+      expect((await list()).body).toMatchObject({ connectorsSupported: true });
+      agentRow.runner = 'aisdk';
+      expect((await list()).body).toMatchObject({ connectorsSupported: false });
+      // A runner nobody wired for connectors is not assumed to load them.
+      agentRow.runner = 'something-new';
+      expect((await list()).body).toMatchObject({ connectorsSupported: false });
     });
 
     it('503s when there is no effective-list hook rather than claiming none', async () => {
