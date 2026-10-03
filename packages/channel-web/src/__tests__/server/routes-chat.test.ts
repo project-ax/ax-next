@@ -515,7 +515,12 @@ function skillsStubPlugin(): Plugin {
     manifest: {
       name: 'mock-skills-stub',
       version: '0.0.0',
-      registers: ['skills:list', 'skills:list-user-attachments', 'skills:detach-for-user'],
+      registers: [
+        'skills:list',
+        'skills:list-user-attachments',
+        'skills:detach-for-user',
+        'skills:attach-for-user',
+      ],
       calls: [],
       subscribes: [],
     },
@@ -526,6 +531,9 @@ function skillsStubPlugin(): Plugin {
       }));
       bus.registerService('skills:detach-for-user', 'mock-skills-stub', async () => ({
         removed: false,
+      }));
+      bus.registerService('skills:attach-for-user', 'mock-skills-stub', async () => ({
+        created: false,
       }));
     },
   };

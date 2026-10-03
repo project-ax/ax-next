@@ -63,10 +63,11 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     memory:rules:read / memory:rules:write are @ax/memory's, registered only
 //     when its `rules` option is on, and @ax/memory itself is optional.
 //     (memory:learned:read went with @ax/memory-strata, deleted in TASK-608.)
-//     Declaring them would make the kernel's verifyCalls refuse to boot a
-//     deployment that simply chose not to run memory. So the routes gate on
-//     bus.hasService and the write answers 503 when nothing is there to keep
-//     the promise.
+//     Declaring them in `calls` would make the kernel's verifyCalls refuse to
+//     boot a deployment that simply chose not to run memory. So the routes
+//     gate on bus.hasService and the write answers 503 when nothing is there
+//     to keep the promise — and they are declared in `optionalCalls` (TASK-770;
+//     the manifest-declarations guard test keeps every gated hook listed).
 //     TASK-235 (AW-14) adds no hard call either: the rail's four blocks read
 //     tool-policy:*, agent-activity:get, tool:list, the two grant records and
 //     decisions:count, every one of them optional and every one of them with a
@@ -84,9 +85,9 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     itself lives in createSseHandler's cleanup() lifecycle).
 //     memory:conversation-activity (TASK-626 — per-connection only, in
 //     memory-events.ts; filtered by conversationId + userId, ids only).
-//     Its memory:status read is NOT declared as a call, same reasoning as the
-//     memory:rules:* hooks above: the route gates on bus.hasService and
-//     answers 503 without it.
+//     Its memory:status read is an optionalCall, not a call, same reasoning
+//     as the memory:rules:* hooks above: the route gates on bus.hasService
+//     and answers 503 without it.
 // ---------------------------------------------------------------------------
 
 export interface ChannelWebServerConfig {
@@ -176,6 +177,11 @@ export function createChannelWebServerPlugin(
         'skills:list',
         'skills:list-user-attachments',
         'skills:detach-for-user',
+        // TASK-126 — the same surface's self-install (POST
+        // /api/chat/connections/:agentId/skills). Called ungated, like
+        // its detach sibling, and host-internal for the same reason. Was
+        // undeclared until TASK-770's guard found it.
+        'skills:attach-for-user',
       ],
       optionalCalls: [
         {
@@ -453,6 +459,140 @@ export function createChannelWebServerPlugin(
           hook: 'agent:interrupt',
           degradation:
             'the Stop button cannot stop a running turn; POST /api/chat/conversations/:id/interrupt answers 503 and the turn runs to completion',
+        },
+        // ── TASK-770 ────────────────────────────────────────────────────────
+        // Everything below was already reached behind a bus.hasService gate
+        // (or, for decisions:approve/dismiss/undo and memory:forget/unforget,
+        // behind a route-level gate on the same plugin's other hooks) but was
+        // missing from this list. The manifest-declarations guard test now
+        // keeps the list and the code in step.
+        {
+          // The permission-decision route: an approved card for an agent's
+          // OWN authored skill draft is granted server-side through here.
+          // Also the My Skills early approval (no conversation).
+          hook: 'agent:apply-authored-capability-grant',
+          degradation:
+            'an approval card is only ever applied as a catalog grant (authored skill drafts cannot be approved from chat); the My Skills early-approval route answers 501 not-supported',
+        },
+        {
+          // Same route, for an authored connector draft. No catalog fallback.
+          hook: 'agent:apply-authored-connector-grant',
+          degradation:
+            'approving an authored connector card answers 409 connector-grant-unavailable and the card stays',
+        },
+        {
+          // Connectors tab Add (TASK-739/761).
+          hook: 'agents:attach-connector',
+          degradation:
+            'POST …/connectors (Add a connector) answers 503 connectors-unavailable',
+        },
+        {
+          // Connectors tab Remove of an attached connector.
+          hook: 'agents:detach-connector',
+          degradation:
+            'Remove on a connector answers 503 connectors-unavailable',
+        },
+        {
+          // TASK-765 — whether a default-on connector may be turned off for
+          // this agent by this person.
+          hook: 'agents:can-exclude-connector',
+          degradation:
+            'connectors this agent gets by default are shown as not removable',
+        },
+        {
+          // TASK-761 — the attach gate reads the connector's credential slots
+          // before attaching it.
+          hook: 'connectors:get',
+          degradation:
+            'Add a connector answers 503 connectors-unavailable (the credential check cannot run)',
+        },
+        {
+          // Same gate: is each required credential slot filled?
+          hook: 'credentials:get',
+          degradation:
+            'Add a connector that needs a sign-in or key answers 503 connector-check-failed; connectors with no credential slots still attach',
+        },
+        {
+          // The decision routes resolve the row (and check it is yours) here
+          // first; approve/dismiss/undo are only reached after it.
+          hook: 'decisions:get',
+          degradation:
+            'every /api/workspace/decisions/:decisionId route answers 404 decision-not-found (there are no decisions to resolve)',
+        },
+        {
+          hook: 'decisions:approve',
+          degradation:
+            'never reached without decisions:get (the route 404s first); same producer',
+        },
+        {
+          hook: 'decisions:dismiss',
+          degradation:
+            'never reached without decisions:get (the route 404s first); same producer',
+        },
+        {
+          hook: 'decisions:undo',
+          degradation:
+            'never reached without decisions:get (the route 404s first); same producer',
+        },
+        {
+          // The Activity feed's decision receipts.
+          hook: 'decisions:recent-receipts-for-agent',
+          degradation:
+            'the workspace Activity feed carries no decision receipts (routine history still shows)',
+        },
+        {
+          // The Memory tab's facts read and the thread's "used memory" receipts.
+          hook: 'memory:recall',
+          degradation:
+            'the Memory tab shows facts as unavailable and POST …/memory/recall answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:recall-receipts',
+          degradation:
+            'thread messages carry no "used memory" receipts',
+        },
+        {
+          // The Memory tab's "paused" flag and the memory activity stream.
+          hook: 'memory:status',
+          degradation:
+            'the Memory tab never says extraction is paused; the memory activity stream answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:remember',
+          degradation: 'POST …/memory/remember answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:forget',
+          degradation: 'POST …/memory/forget answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:unforget',
+          degradation: 'POST …/memory/unforget answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:correct',
+          degradation: 'POST …/memory/correct answers 503 memory-unavailable',
+        },
+        {
+          hook: 'memory:uncorrect',
+          degradation: 'POST …/memory/uncorrect answers 503 memory-unavailable',
+        },
+        {
+          // TASK-234 (AW-13) — registered by @ax/memory only with its `rules`
+          // option on.
+          hook: 'memory:rules:read',
+          degradation: 'the Memory tab shows the rules document as unavailable',
+        },
+        {
+          hook: 'memory:rules:write',
+          degradation:
+            'PUT …/memory/rules answers 503 memory-unavailable (never a false "saved")',
+        },
+        {
+          // The Files tab's user-files tier and its downloads.
+          hook: 'sandbox:read-user-files',
+          degradation:
+            'the user-files listing and its downloads answer 503 user-files-unavailable (never an empty listing)',
         },
       ],
       subscribes: [
