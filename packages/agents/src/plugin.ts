@@ -441,7 +441,19 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             [connectorId],
             'agents:attach-connector',
           );
-          return localStore.attachConnector(input.agentId, connectorId);
+          const out = await localStore.attachConnector(input.agentId, connectorId);
+          // TASK-737's snapshot-on-attach, on THIS path too: a newly attached
+          // connector copies its per-tool defaults. Only when the id is new to
+          // the attachment list — re-copying an existing attachment would
+          // overwrite the attach-time copy with today's (maybe looser) default.
+          await snapshotNewlyAttachedConnectors(bus, ctx, {
+            agentId: input.agentId,
+            before: existing.connectorAttachments,
+            after: out.agent.connectorAttachments,
+            resolveAs: existing.ownerType === 'user' ? existing.ownerId : input.actor.userId,
+            actorId: input.actor.userId,
+          });
+          return out;
         },
       );
 

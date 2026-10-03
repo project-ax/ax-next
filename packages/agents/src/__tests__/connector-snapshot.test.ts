@@ -165,8 +165,13 @@ describe('snapshot-on-attach (agents:set-connector-attachments)', () => {
     );
     expect(await verdictOf(h, agentId, SEARCH)).toBe('allow');
     expect(await verdictOf(h, agentId, CREATE)).toBe('hold');
-    // Resolved as the agent's owner (who its sessions resolve as).
-    expect(resolveCalls).toEqual([{ userId: OWNER.userId, connectorId: 'linear' }]);
+    // Resolved as the agent's owner (who its sessions resolve as). TASK-739:
+    // the non-admin workspace-connector guard now runs inside the hook and
+    // resolves once more (as the actor — here also the owner) before the write.
+    expect(resolveCalls).toEqual([
+      { userId: OWNER.userId, connectorId: 'linear' },
+      { userId: OWNER.userId, connectorId: 'linear' },
+    ]);
   });
 
   it('a later TIGHTENING by the editor applies to an agent that already has the connector', async () => {
@@ -237,6 +242,37 @@ describe('snapshot-on-attach (agents:set-connector-attachments)', () => {
     const agentId = await newAgent(h);
     const out = await attach(h, agentId, ['linear']);
     expect(out.agent.connectorAttachments).toEqual(['linear']);
-    expect(resolveCalls).toEqual([]);
+    // Only the workspace-connector guard's lookup (TASK-739) — no snapshot one.
+    expect(resolveCalls).toEqual([{ userId: OWNER.userId, connectorId: 'linear' }]);
+  });
+});
+
+describe('snapshot-on-attach (agents:attach-connector, TASK-739)', () => {
+  async function attachOne(h: TestHarness, agentId: string, connectorId: string, actor: Actor = OWNER) {
+    return h.bus.call<
+      { actor: Actor; agentId: string; connectorId: string },
+      { changed: boolean }
+    >('agents:attach-connector', h.ctx({ userId: actor.userId }), { actor, agentId, connectorId });
+  }
+
+  it('the single-id attach copies the connector defaults too', async () => {
+    const h = await makeHarness();
+    await setDefaults(h, [{ toolKey: CREATE, verdict: 'hold' }]);
+    const agentId = await newAgent(h);
+    await attachOne(h, agentId, 'linear');
+    expect(await overrides(h, agentId)).toEqual([
+      { toolKey: CREATE, verdict: 'hold', origin: 'snapshot' },
+    ]);
+    expect(resolveCalls).toContainEqual({ userId: OWNER.userId, connectorId: 'linear' });
+  });
+
+  it('re-attaching an already-attached connector does not re-copy a since-loosened default', async () => {
+    const h = await makeHarness();
+    await setDefaults(h, [{ toolKey: CREATE, verdict: 'hold' }]);
+    const agentId = await newAgent(h);
+    await attachOne(h, agentId, 'linear');
+    await setDefaults(h, [{ toolKey: CREATE, verdict: 'allow' }]);
+    await attachOne(h, agentId, 'linear');
+    expect(await verdictOf(h, agentId, CREATE)).toBe('hold');
   });
 });
