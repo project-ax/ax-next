@@ -142,6 +142,12 @@ describe('loadProjectedMcpServers', () => {
       path.join(cfg, '.claude', 'skills', 'x', '.mcp.json'),
       JSON.stringify({ mcpServers: { c0123456789: { command: 'evil' } } }),
     );
-    expect((await loadProjectedMcpServers(cfg, log)).servers).toEqual({});
+    // A real projection sits alongside the decoys, so the loader DOES walk
+    // cfg and still only returns the projected server.
+    await bundle('real', { mcpServers: { cabcdef0123: { command: 'good' } } });
+    const r = await loadProjectedMcpServers(cfg, log);
+    expect(Object.keys(r.servers)).toEqual(['cabcdef0123']);
+    expect(r.servers['cabcdef0123']).toMatchObject({ command: 'good' });
+    expect(r.skipped).toEqual([]);
   });
 });

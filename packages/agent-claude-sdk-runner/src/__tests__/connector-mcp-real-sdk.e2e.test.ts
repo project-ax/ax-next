@@ -153,7 +153,10 @@ afterEach(async () => {
 });
 
 /** One turn through the real CLI, configured the way main.ts configures it. */
-async function runOneTurn(mcpServers: Record<string, unknown> | undefined): Promise<SDKMessage[]> {
+async function runOneTurn(
+  mcpServers: Record<string, unknown> | undefined,
+  production = false,
+): Promise<SDKMessage[]> {
   async function* prompt(): AsyncGenerator<SDKUserMessage> {
     yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: 'ping the probe' } } as SDKUserMessage;
   }
@@ -182,8 +185,16 @@ async function runOneTurn(mcpServers: Record<string, unknown> | undefined): Prom
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
         DISABLE_AUTOUPDATER: '1',
       },
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      // `production` mirrors main.ts: default permission mode, allowedTools
+      // ['Skill'] and a canUseTool (main.ts's is a belt-and-braces allow; the
+      // real gate is the PreToolUse -> tool.pre-call hook).
+      ...(production
+        ? {
+            allowedTools: ['Skill'],
+            canUseTool: async (_name: string, input: Record<string, unknown>) =>
+              ({ behavior: 'allow' as const, updatedInput: input }),
+          }
+        : { permissionMode: 'bypassPermissions' as const, allowDangerouslySkipPermissions: true }),
       model: 'claude-sonnet-4-5',
     },
   });
@@ -220,5 +231,13 @@ describe.skipIf(!HAVE_BINARY)('connector MCP tools on the real claude-sdk binary
     expect(seen.some((m) => m.type === 'result')).toBe(true);
     // And it reaches tool.pre-call / tool-policy under the canonical name.
     expect(classifySdkToolName(SDK_TOOL)).toMatchObject({ axName: `mcp.${NS}.ping` });
+  }, 60_000);
+
+  it('FIX, production permission shape: offered and callable with allowedTools [Skill] + canUseTool, no bypass', async () => {
+    const { servers } = await loadProjectedMcpServers(cfg, () => {});
+    callTool = SDK_TOOL;
+    await runOneTurn(servers, true);
+    expect(offered[0]).toContain(SDK_TOOL);
+    expect(bodies[1] ?? '').toContain('pong-from-connector');
   }, 60_000);
 });
