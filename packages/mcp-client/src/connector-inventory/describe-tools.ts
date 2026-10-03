@@ -298,8 +298,9 @@ export function createInventoryToolTitles(store: Pick<InventoryStore, 'okInvento
     }
     const { userId, connectorIds } = parsed.data;
     const rows = await store.okInventories(userId, connectorIds);
-    // Rows arrive newest check first, so the first title seen for a toolKey
-    // wins — the same tool under two agents' rows is one entry.
+    // Rows arrive newest check first, so the newest REAL title for a toolKey
+    // wins (a row whose server sent no title is skipped, so an older real
+    // title beats none) — the same tool under two agents' rows is one entry.
     const seen = new Set<string>();
     const titles: InventoryToolTitlesOutput['titles'] = [];
     for (const row of rows) {
