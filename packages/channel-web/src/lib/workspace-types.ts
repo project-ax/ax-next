@@ -119,11 +119,13 @@ export interface FreshnessPredicate {
  * applies to a filesystem path (invariant 5). What the plugin stores and what a
  * renderer needs are not the same set, so the route hands over the second one:
  *
- *   - `call` is DROPPED, `input` and all. It is MODEL-AUTHORED, it is the one
- *     field on the row nothing here renders, and shipping it would put raw
- *     model output on a trust surface for no reader's benefit (design H6). The
- *     WYSIWYG promise is kept by `preview`, which is host-authored. The SSE
- *     frame drops it for the same reason, and a test asserts both.
+ *   - `call` is DROPPED as a structure. Its input is MODEL-AUTHORED, and the
+ *     raw object never crosses (design H6). What crosses instead is `request`
+ *     (TASK-699): the tool name and a FENCED, CAPPED text rendering of the
+ *     input, on open rows only — because an approval that does not show what
+ *     it approves is a rubber stamp, and the owner chose showing the call over
+ *     hiding it. The SSE frame still carries none of it, and a test asserts
+ *     both halves.
  *   - `ownerUserId` is DROPPED: it is always the caller, so it says nothing,
  *     and a user id on a page is one more identifier to leak.
  *   - `callFingerprint` / `ruleId` / `consumedAt` / `replayClaimedAt` /
@@ -136,6 +138,16 @@ export interface FreshnessPredicate {
  * Everything kept is either something a renderer puts on screen or something it
  * has to branch on.
  */
+/** See `Decision.request`. Every string here is server-fenced, agent-authored data. */
+export interface DecisionRequest {
+  /** The tool the call names, one fenced line (e.g. `mcp.github.create_issue`). */
+  tool: string;
+  /** The call's input as indented JSON, fenced and capped; null when there is none. */
+  input: string | null;
+  /** True when the cap cut `input` short — render it as the beginning, not the whole. */
+  truncated: boolean;
+}
+
 export interface Decision {
   id: string;
   agentId: string;
@@ -158,6 +170,23 @@ export interface Decision {
   detail: string;
   /** The quoted artifact — the actual email body, the actual invite. */
   preview: { meta: string; body: string } | null;
+  /**
+   * WHAT THE HELD CALL WILL DO, as data (TASK-699): the tool it names and the
+   * input the agent wrote for it. Non-null only while the decision is still a
+   * question (`OPEN_DECISION_STATUSES`) — a receipt has no use for it.
+   *
+   * Unlike every other string on this row it is NOT host-authored, and the
+   * renderer must treat it that way: draw it as text in a code block (React
+   * escapes it; never `dangerouslySetInnerHTML`, never markdown), and never
+   * feed it back anywhere as if a person wrote it. "Edit first" stays keyed to
+   * `preview` for exactly that reason. The server has already fenced it —
+   * surface-rewriting characters spelled out as `\uXXXX`, a size and line cap
+   * — and `truncated` says whether the cap cut it.
+   *
+   * `input` is null when the call had no input worth showing (absent, `{}`,
+   * or not serialisable); `tool` is always present when the block is.
+   */
+  request: DecisionRequest | null;
   primaryLabel: string;
   secondaryLabel: string;
   ghostLabel: string;

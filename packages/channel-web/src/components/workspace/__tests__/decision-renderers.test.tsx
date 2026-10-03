@@ -30,6 +30,11 @@ import {
   DECISION_STALE_LEAD,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
+import {
+  DECISION_REQUEST_HEADING,
+  DECISION_REQUEST_NO_INPUT,
+  DECISION_REQUEST_TRUNCATED,
+} from '../DecisionRequestBlock';
 import { toWireDecision } from '@/server/routes-workspace';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 
@@ -326,5 +331,77 @@ describe('the undo affordance', () => {
       />,
     );
     expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+  });
+});
+
+describe('TASK-699 — both renderers show which tool and what it will send', () => {
+  const HOSTILE = '{\n  "title": "<img src=x onerror=alert(1)>"\n}';
+  const held = decisionFixture({
+    summary: 'Wants to use mcp.github.create_issue',
+    request: { tool: 'mcp.github.create_issue', input: HOSTILE, truncated: false },
+  });
+
+  it('the queue row and the in-thread card both name the tool and quote the input', () => {
+    for (const text of [queueText(held), cardText(held)]) {
+      expect(text).toContain(DECISION_REQUEST_HEADING);
+      expect(text).toContain('mcp.github.create_issue');
+      expect(text).toContain('<img src=x onerror=alert(1)>');
+    }
+  });
+
+  it('draws the input as TEXT — markup in it never becomes an element', () => {
+    for (const ui of [
+      <DecisionRow
+        key="q"
+        decision={held}
+        agent={agent}
+        expanded
+        onToggle={vi.fn()}
+        onOpenAgent={vi.fn()}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+      />,
+      <ApprovalCard key="c" decision={held} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+    ]) {
+      const { container, unmount } = render(ui);
+      expect(container.querySelector('img')).toBeNull();
+      const pre = screen.getByTestId('decision-request-input');
+      expect(pre.tagName).toBe('PRE');
+      expect(pre.textContent).toBe(HOSTILE);
+      unmount();
+    }
+  });
+
+  it('"Edit first" is never offered off the agent-authored request — only off a host preview', () => {
+    render(
+      <ApprovalCard
+        decision={held}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+        onEdit={vi.fn(async () => {})}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Edit first' })).toBeNull();
+  });
+
+  it('says when the input was cut, and when there was none', () => {
+    const cut = decisionFixture({
+      request: { tool: 'mcp.github.create_issue', input: '{', truncated: true },
+    });
+    const none = decisionFixture({
+      request: { tool: 'mcp.github.list_issues', input: null, truncated: false },
+    });
+    expect(cardText(cut)).toContain(DECISION_REQUEST_TRUNCATED);
+    expect(queueText(cut)).toContain(DECISION_REQUEST_TRUNCATED);
+    expect(cardText(none)).toContain(DECISION_REQUEST_NO_INPUT);
+    expect(queueText(none)).toContain(DECISION_REQUEST_NO_INPUT);
+  });
+
+  it('a row with no request draws no block', () => {
+    const plain = decisionFixture();
+    expect(cardText(plain)).not.toContain(DECISION_REQUEST_HEADING);
+    expect(queueText(plain)).not.toContain(DECISION_REQUEST_HEADING);
   });
 });

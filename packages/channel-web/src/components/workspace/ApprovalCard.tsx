@@ -53,6 +53,7 @@ import {
   undoSecondsLeft,
 } from './decision-copy';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
+import { DecisionRequestBlock } from './DecisionRequestBlock';
 import { useDecisionClock } from './use-decision-clock';
 import { FindHighlight, type FindView } from './ThreadFind';
 
@@ -305,6 +306,8 @@ export function ApprovalCard({
               <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
             </div>
           )}
+          {/* The held call itself — agent-authored, server-fenced (TASK-699). */}
+          {d.request && <DecisionRequestBlock request={d.request} className="mt-3" />}
           {/*
             The row stayed open because the resolve did not land. Focus comes
             here for the same reason it goes to the receipt: the person pressed
