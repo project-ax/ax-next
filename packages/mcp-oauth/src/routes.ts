@@ -170,15 +170,28 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   // are structurally compatible with the narrowed deps shape.
   const logger = deps.logger ?? initCtx.logger;
 
-  // The ONLY error fields safe to log on a fault. A `PluginError`'s message is
-  // author-facing and carries no secret, so we include it; everything else is
-  // reduced to name (and a `code` if the caught value happens to carry one).
-  function errFields(err: unknown): { name: string; code?: string; message?: string } {
+  // The ONLY error fields safe to log on a fault: names and stable codes, never
+  // a message (TASK-713). A `PluginError`'s message is NOT safe by type: when a
+  // hook handler throws a foreign error, HookBus.call wraps it as
+  // `PluginError{ code:'unknown', message:"service hook '…' threw: <inner message>" }`,
+  // and an MCP SDK OAuth error's inner message is the authorization server's
+  // free-text `error_description` — provider-authored, and it can echo user data.
+  // The wrapped error rides on `.cause`; its name and RFC 6749 wire code
+  // (`errorCode`, e.g. `server_error`) are what an operator needs to tell a
+  // provider outage from a vault fault, so we lift those instead.
+  type ErrFields = { name: string; code?: string; causeName?: string; causeCode?: string };
+  function errFields(err: unknown): ErrFields {
     const name = err instanceof Error ? err.name : 'unknown';
-    const code = (err as { code?: unknown })?.code;
-    const out: { name: string; code?: string; message?: string } = { name };
+    const code = (err as { code?: unknown } | null)?.code;
+    const out: ErrFields = { name };
     if (typeof code === 'string') out.code = code;
-    if (err instanceof PluginError) out.message = err.message;
+    const cause = (err as { cause?: unknown } | null)?.cause;
+    if (cause instanceof Error) {
+      out.causeName = cause.name;
+      const c = cause as { code?: unknown; errorCode?: unknown };
+      const causeCode = typeof c.errorCode === 'string' ? c.errorCode : c.code;
+      if (typeof causeCode === 'string') out.causeCode = causeCode;
+    }
     return out;
   }
 
