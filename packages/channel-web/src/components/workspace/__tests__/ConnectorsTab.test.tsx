@@ -178,17 +178,43 @@ describe('Other abilities', () => {
     expectNoDescription(await sw('Run code'));
   });
 
-  it('keeps the ask-first description while Read web pages is off', async () => {
+  it('drops "asks first" while Read web pages is off — on screen and to a screen reader', async () => {
+    // TASK-769, owner decision 2026-10-03: an off switch never reads a page,
+    // so it claims nothing about asking. Sighted and screen-reader users get
+    // the same answer: no hint, no description, no dangling describedby.
     abilitiesMock.mockResolvedValue({
       abilities: { webSearch: true, readPages: false, runCode: true },
     });
     renderTab();
 
+    const read = await sw('Read web pages');
+    expect(read).toHaveAttribute('aria-checked', 'false');
+    expectNoDescription(read);
+    expect(read).toHaveAccessibleName('Read web pages');
+    expect(screen.queryByText(/asks first/)).toBeNull();
+    expect(document.getElementById('ability-readPages-description')).toBeNull();
+  });
+
+  it('brings "asks first" back when Read web pages is switched on', async () => {
+    abilitiesMock.mockResolvedValue({
+      abilities: { webSearch: true, readPages: false, runCode: true },
+    });
+    setAbilityMock.mockResolvedValue({ abilities: ALL_ON });
+    renderTab();
+
+    expect(screen.queryByText(/asks first/)).toBeNull();
+    fireEvent.click(await sw('Read web pages'));
+    await waitFor(() =>
+      expect(setAbilityMock).toHaveBeenCalledWith('a-quill', 'readPages', true),
+    );
+    await waitFor(async () =>
+      expect(await sw('Read web pages')).toHaveAttribute('aria-checked', 'true'),
+    );
+    expect(screen.getByText('· asks first')).toBeInTheDocument();
     expectDescribedBy(
       await sw('Read web pages'),
       'On: asks you before opening a new site',
     );
-    expect(screen.getByText('· asks first')).toBeInTheDocument();
   });
 
   it('writes one switch and draws what the server answered', async () => {

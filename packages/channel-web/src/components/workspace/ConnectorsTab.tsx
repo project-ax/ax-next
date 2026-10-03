@@ -72,7 +72,8 @@ const ABILITY_ROWS: ReadonlyArray<{
   ability: AgentAbility;
   label: string;
   Icon: typeof Globe;
-  /** A few muted words on the label's own row — never a subtitle line. */
+  /** A few muted words on the label's own row — never a subtitle line.
+   *  Shown only while the switch is on (TASK-769). */
   hint?: string;
 }> = [
   { ability: 'webSearch', label: 'Web search', Icon: Globe },
@@ -90,7 +91,9 @@ const ABILITY_ROWS: ReadonlyArray<{
  * Its built-in rule is Ask first (`web_extract` holds for a site nobody has
  * cleared yet), and this switch can only turn that OFF. ON never means
  * "reads without asking", so the row says so: "· asks first" on screen, and
- * this as the switch's description for a screen reader, on or off.
+ * this as the switch's description for a screen reader. Both only while the
+ * switch is ON (TASK-769, owner decision 2026-10-03): an off switch reads no
+ * pages, so it claims nothing about asking — on screen or to a screen reader.
  */
 export const READ_PAGES_ASKS_FIRST = 'On: asks you before opening a new site';
 
@@ -288,9 +291,12 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
           const description =
             ability === 'runCode' && !on
               ? RUN_CODE_OFF_WARNING
-              : ability === 'readPages'
+              : ability === 'readPages' && on
                 ? READ_PAGES_ASKS_FIRST
                 : undefined;
+          // The visible hint follows the same rule as the description, so a
+          // sighted user and a screen-reader user hear the same claim.
+          const shownHint = on ? hint : undefined;
           const descriptionId = description ? `${id}-description` : undefined;
           return (
             <Fragment key={ability}>
@@ -305,12 +311,12 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                   className="flex-1 text-[13px] font-normal"
                 >
                   {label}
-                  {hint && (
+                  {shownHint && (
                     // Hidden from the accessible NAME on purpose: the switch
                     // stays "Read web pages", and a screen reader hears the
                     // fuller sentence as its description instead (below).
                     <span aria-hidden="true" className="ml-1 text-muted-foreground">
-                      {hint}
+                      {shownHint}
                     </span>
                   )}
                 </Label>
