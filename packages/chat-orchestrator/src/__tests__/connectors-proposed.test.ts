@@ -107,6 +107,8 @@ describe('chat-orchestrator — connectors:proposed fires the card mid-turn', ()
       name: 'Linear',
       hosts: ['api.linear.app'],
       packages: { npm: ['@schpet/linear-cli'], pypi: [] },
+      // TASK-711 — the draft's keyMode rides the card so the approver sees it.
+      keyMode: 'personal',
     });
   });
 

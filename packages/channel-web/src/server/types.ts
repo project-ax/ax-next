@@ -211,6 +211,12 @@ export type PermissionRequest =
       authored?: boolean;
       /** npm/pypi packages the connector declares; informational. No secret; forwarded verbatim. */
       packages?: { npm: string[]; pypi: string[] };
+      /**
+       * TASK-711 — who supplies the key: each person their own (`personal`) or
+       * one shared company key (`workspace`). Optional (older cards carry none);
+       * the card renders a fixed sentence per known value and nothing otherwise.
+       */
+      keyMode?: 'personal' | 'workspace';
     };
 
 /**

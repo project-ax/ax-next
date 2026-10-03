@@ -1,7 +1,12 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import { deriveCredentialPlan } from './credential-plan.js';
 import type { ConnectorStore } from './store.js';
-import type { AuthorizeGlobalInput, AuthorizeGlobalOutput } from './types.js';
+import type {
+  AuthorizeAgentInput,
+  AuthorizeAgentOutput,
+  AuthorizeGlobalInput,
+  AuthorizeGlobalOutput,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // TASK-697 — who may read a COMPANY-WIDE (global-scope) connector credential.
@@ -108,6 +113,81 @@ export async function authorizeGlobalAccountRead(
     return { allowed: true };
   } catch (err) {
     ctx.logger.warn('connectors_global_credential_check_failed', {
+      plugin: PLUGIN_NAME,
+      ref,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { allowed: false };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TASK-711 — who may read a credential stored ON AN AGENT for a connector.
+//
+// THE BUG THIS CLOSES. Same shape as TASK-697, one scope over. A team agent's
+// shared OAuth sign-in is stored at vault scope `agent` (ownerId = the agent)
+// under `account:<connectorId>`. Connector ids are unique per OWNER, not
+// globally, and a user's own definition shadows a shared one with the same id
+// (`getAvailableById`). So a member of a team agent could author a private
+// connector named after the team's shared one, point it at a server they
+// control, and `credentials:get` (user -> agent -> global) handed them the
+// team's token, which the credential proxy then sent to THEIR server.
+//
+// THE RULE. @ax/credentials asks this hook before it takes the agent step for
+// an `account:` ref. We allow it iff the ref parses as `account:<id>` /
+// `account:<id>:<SLOT>` and the connector the REQUESTING user resolves for
+// `<id>` is the ONE live shared definition with that id (`getSoleSharedById`).
+// That is the connector every member of the agent sees under the id, so it is
+// the only connector a credential stored on the agent can belong to. A private
+// definition (the user's own or anyone's), two shared definitions with one id,
+// or no definition at all is a deny.
+//
+// THE SAME RULE PICKS THE WRITE SCOPE. @ax/mcp-oauth calls this hook when a
+// team-agent sign-in starts: allowed => store the token on the agent, denied =>
+// store it on the signer (user scope). One predicate for both halves, so the
+// writer never stores a token on an agent that no reader may then read.
+//
+// Deliberately NOT checked: that the connector is attached to `agentId`. The
+// shared definition is the same one for every member, so reading its agent
+// credential through it can only send it where the team's connector points.
+// `agentId` is carried for a future (attachment-aware) provider.
+//
+// FAIL CLOSED, exactly like the global rule above. Nothing here reads,
+// returns or logs a secret value.
+// ---------------------------------------------------------------------------
+
+export async function authorizeAgentAccountRead(
+  store: ConnectorStore,
+  ctx: AgentContext,
+  input: AuthorizeAgentInput,
+): Promise<AuthorizeAgentOutput> {
+  const deny = (reason: string): AuthorizeAgentOutput => {
+    ctx.logger.info('connectors_agent_credential_denied', {
+      reason,
+      ref: typeof input.ref === 'string' ? input.ref.slice(0, MAX_FIELD_LEN) : '',
+    });
+    return { allowed: false };
+  };
+
+  const { userId, agentId, ref } = input;
+  if (typeof userId !== 'string' || userId.length === 0 || userId.length > MAX_FIELD_LEN) {
+    return deny('bad-user');
+  }
+  if (typeof agentId !== 'string' || agentId.length === 0 || agentId.length > MAX_FIELD_LEN) {
+    return deny('bad-agent');
+  }
+  if (typeof ref !== 'string' || ref.length === 0 || ref.length > MAX_FIELD_LEN) {
+    return deny('bad-ref');
+  }
+  const connectorId = connectorIdOfAccountRef(ref);
+  if (connectorId === null) return deny('not-a-connector-ref');
+
+  try {
+    const shared = await store.getSoleSharedById(userId, connectorId);
+    if (shared === null) return deny('not-the-shared-connector');
+    return { allowed: true };
+  } catch (err) {
+    ctx.logger.warn('connectors_agent_credential_check_failed', {
       plugin: PLUGIN_NAME,
       ref,
       error: err instanceof Error ? err.message : String(err),

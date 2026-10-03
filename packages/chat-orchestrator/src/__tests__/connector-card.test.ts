@@ -27,6 +27,33 @@ describe('buildAuthoredConnectorCard', () => {
     });
   });
 
+  // TASK-711 — the approval card says who supplies the key. FAILS UNFIXED (the
+  // card carried no keyMode).
+  it.each(['personal', 'workspace'] as const)('carries keyMode %s onto the card', (keyMode) => {
+    const card = buildAuthoredConnectorCard(
+      {
+        connectorId: 'zendesk',
+        name: 'Zendesk',
+        proposal: { ...EMPTY, credentials: [{ slot: 'ZENDESK_API_TOKEN', kind: 'api-key' }] },
+        keyMode,
+      },
+      new Set(),
+    );
+    expect(card?.keyMode).toBe(keyMode);
+  });
+
+  it('drops an unknown or missing keyMode instead of forwarding it', () => {
+    const base = {
+      connectorId: 'zendesk',
+      name: 'Zendesk',
+      proposal: { ...EMPTY, credentials: [{ slot: 'ZENDESK_API_TOKEN', kind: 'api-key' }] },
+    };
+    const odd = buildAuthoredConnectorCard({ ...base, keyMode: 'everyone' }, new Set());
+    const none = buildAuthoredConnectorCard(base, new Set());
+    expect(odd !== null && 'keyMode' in odd).toBe(false);
+    expect(none !== null && 'keyMode' in none).toBe(false);
+  });
+
   it('marks an account-tagged slot haveExisting when its vault ref is present', () => {
     const card = buildAuthoredConnectorCard(
       { connectorId: 'gdrive', name: 'Drive', proposal: { ...EMPTY, credentials: [{ slot: 'KEY', kind: 'api-key', account: 'google' }] } },

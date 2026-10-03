@@ -68,6 +68,11 @@ export interface RouteResponse {
 
 /** 64 KiB request-body cap — mirrors @ax/connectors `ADMIN_BODY_MAX_BYTES`. */
 const OAUTH_BODY_MAX_BYTES = 64 * 1024;
+/**
+ * TASK-711 — @ax/credentials' agent-scope read gate for `account:` refs,
+ * provided by @ax/connectors. Named here, not imported (I2).
+ */
+const AUTHORIZE_AGENT_ACCOUNT_HOOK = 'credentials:authorize-agent:account';
 
 export interface McpOAuthRouteConfig {
   /** Public origin we serve under; the OAuth redirect_uri is derived from it. */
@@ -77,7 +82,11 @@ export interface McpOAuthRouteConfig {
 }
 
 export interface McpOAuthRouteDeps {
-  bus: { call<I, O>(hook: string, ctx: AgentContext, input: I): Promise<O> };
+  bus: {
+    call<I, O>(hook: string, ctx: AgentContext, input: I): Promise<O>;
+    /** Optional so narrow test buses keep compiling; absent = no optional hooks. */
+    hasService?(hook: string): boolean;
+  };
   store: McpOAuthStore;
   flow: {
     discoverHosts?: typeof discoverOAuthHosts;
@@ -158,11 +167,32 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   //
   // NOT a real agent: `'@ax/mcp-oauth'` fails the vault's `ownerId` grammar (the
   // `/`), so a `credentials:get` from `begin` that misses the user scope THROWS at
-  // the agent-scope step instead of walking on to global scope or the env fallback.
+  // the agent-scope step instead of walking on to global scope or the env fallback
+  // (for an `account:` ref the vault now asks `credentials:authorize-agent:account`
+  // first, TASK-711, and a denial skips the step instead of throwing).
   // That is an accident of the name, not a control, and nothing may rely on it:
   // `begin` bounds what it may ask the vault for with `isOwnClientSecretRef`.
   function ctxFor(userId: string): AgentContext {
     return makeAgentContext({ sessionId: 'mcp-oauth', agentId: '@ax/mcp-oauth', userId });
+  }
+
+  /** TASK-711 — see the call in `begin`. Fails closed to "store on the signer". */
+  async function mayStoreOnAgent(userId: string, agentId: string, connectorId: string): Promise<boolean> {
+    if (bus.hasService?.(AUTHORIZE_AGENT_ACCOUNT_HOOK) !== true) return false;
+    try {
+      const out = await bus.call<
+        { userId: string; agentId: string; ref: string },
+        { allowed: boolean }
+      >(AUTHORIZE_AGENT_ACCOUNT_HOOK, ctxFor(userId), {
+        userId,
+        agentId,
+        ref: `account:${connectorId}`,
+      });
+      return out.allowed === true;
+    } catch (err) {
+      logger.warn('mcp_oauth_agent_scope_check_failed', { connectorId, ...errFields(err) });
+      return false;
+    }
   }
   const initCtx = ctxFor('init');
   // Default to the initCtx logger so a real callback fault always leaves an
@@ -316,6 +346,17 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         return;
       }
       throw err;
+    }
+
+    // TASK-711 — a team agent's sign-in is stored ON the agent only for the one
+    // shared connector every member sees under this id. The vault asks the same
+    // `credentials:authorize-agent:account` question before it lets anyone READ
+    // an agent row for an `account:` ref, so asking it here keeps the two halves
+    // in step: a sign-in for anything else (this person's own private connector
+    // that happens to share the id) lands on the signer instead, where only they
+    // can use it. No provider, a denial or a throw all mean "the signer".
+    if (credScope === 'agent' && !(await mayStoreOnAgent(user.id, pendingAgentId, connectorId))) {
+      credScope = 'user';
     }
 
     const caps = connector.capabilities;

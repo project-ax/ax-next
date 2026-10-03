@@ -181,3 +181,32 @@ describe('ProposedConnectorApproveDialog — tool-permissions reset failure (TAS
     expect(alert).not.toHaveTextContent(TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE);
   });
 });
+
+// TASK-711 — the Settings twin says who supplies the key, in the same words as
+// the in-chat row (GrantRow.test.tsx pins the other half). FAILS UNFIXED: the
+// dialog rendered nothing about `draft.keyMode`.
+describe('ProposedConnectorApproveDialog — key mode (TASK-711)', () => {
+  const openWith = (keyMode: unknown) =>
+    render(
+      <ProposedConnectorApproveDialog
+        draft={{ ...draft, keyMode } as unknown as PendingAuthoredConnector}
+        open
+        onOpenChange={vi.fn()}
+        onApproved={vi.fn()}
+      />,
+    );
+
+  it('calls out a shared company key', async () => {
+    openWith('workspace');
+    const notice = await screen.findByTestId('connector-key-mode');
+    expect(notice).toHaveAttribute('data-key-mode', 'workspace');
+    expect(notice).toHaveTextContent(/shared company key, not a key of your own/i);
+  });
+
+  it('says a personal key is each person’s own', async () => {
+    openWith('personal');
+    const notice = await screen.findByTestId('connector-key-mode');
+    expect(notice).toHaveAttribute('data-key-mode', 'personal');
+    expect(notice).toHaveTextContent(/each person who uses it adds their own/i);
+  });
+});

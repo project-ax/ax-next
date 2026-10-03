@@ -63,14 +63,30 @@ export interface AuthoredConnectorCard {
   }>;
   authored: true;
   packages: { npm: string[]; pypi: string[] };
+  /**
+   * TASK-711 — who supplies the key: `personal` (each person their own) or
+   * `workspace` (one shared company key). Shown on the card so an approver can
+   * see a proposal that will use the shared key. Omitted when the draft did not
+   * say (older drafts); the card then says nothing either way.
+   */
+  keyMode?: 'personal' | 'workspace';
 }
 
 /** Build the card, or null if the shown surface is empty (incl. mcp-only). */
 export function buildAuthoredConnectorCard(
-  args: { connectorId: string; name: string; proposal: ConnectorProposalLike },
+  args: {
+    connectorId: string;
+    name: string;
+    proposal: ConnectorProposalLike;
+    keyMode?: string | undefined;
+  },
   vaultedRefs: Set<string>,
 ): AuthoredConnectorCard | null {
   const { connectorId, name, proposal } = args;
+  // Only the two known values ride the card; anything else is dropped rather
+  // than forwarded (the browser renders a fixed sentence per value).
+  const keyMode =
+    args.keyMode === 'personal' || args.keyMode === 'workspace' ? args.keyMode : undefined;
   if (!hasConnectorShownSurface(proposal)) {
     return null; // nothing the card can show/approve (mcp-only or empty)
   }
@@ -107,6 +123,7 @@ export function buildAuthoredConnectorCard(
     slots,
     authored: true,
     packages: normPackages(proposal),
+    ...(keyMode !== undefined ? { keyMode } : {}),
   };
 }
 

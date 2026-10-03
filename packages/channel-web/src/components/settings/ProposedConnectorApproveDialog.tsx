@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
+import { ConnectorKeyModeNotice } from '@/components/credentials/ConnectorKeyModeNotice';
 import {
   approveAuthoredConnector,
   isToolPermissionsResetFailure,
@@ -164,6 +165,9 @@ export function ProposedConnectorApproveDialog({
             the product saying two different things about the same decision,
             so the copy is now identical.
           */}
+          {/* (TASK-711) Who supplies the key — same words, same place (before the
+              reach) as the in-chat grant row this dialog is the twin of. */}
+          <ConnectorKeyModeNotice keyMode={draft.keyMode} />
           {hosts.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <p className="text-xs text-muted-foreground">

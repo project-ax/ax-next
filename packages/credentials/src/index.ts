@@ -9,6 +9,7 @@ export {
   validateOwnerIdForScope,
   SCOPE_VALUES,
   CREDENTIALS_AUTHORIZE_GLOBAL_ACCOUNT_HOOK,
+  CREDENTIALS_AUTHORIZE_AGENT_ACCOUNT_HOOK,
 } from './plugin.js';
 export type {
   CredentialScope,
@@ -22,6 +23,8 @@ export type {
   CredentialsResolveOutput,
   CredentialsAuthorizeGlobalInput,
   CredentialsAuthorizeGlobalOutput,
+  CredentialsAuthorizeAgentInput,
+  CredentialsAuthorizeAgentOutput,
   CredentialsListInput,
   CredentialsListOutput,
   CredentialsListKindsOutput,

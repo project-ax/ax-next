@@ -10,8 +10,9 @@
  * The fix: for `account:` refs the GLOBAL step is taken only if a provider of
  * `credentials:authorize-global:account` says `{ allowed: true }` for this
  * (userId, ref). No provider, a denial, a throw, or a garbage answer all skip
- * the global step (fail closed). User and agent scopes are not gated, and every
- * other ref namespace never calls the hook.
+ * the global step (fail closed). The user scope is not gated, the agent scope
+ * has its own hook (TASK-711, account-agent-guard.test.ts), and every other ref
+ * namespace never calls the hook.
  *
  * Each case below says whether it FAILS against the unfixed code (the bug
  * regression) or is a deliberate unchanged-behaviour pin.
@@ -99,17 +100,18 @@ function authzStub(respond: (input: unknown) => unknown): AuthzStub {
   return { calls: [], respond };
 }
 
-function authzProviderPlugin(stub: AuthzStub) {
+function authzProviderPlugin(stub: AuthzStub, hook: string = HOOK) {
+  const name = hook === HOOK ? 'authz-stub' : 'authz-agent-stub';
   return {
     manifest: {
-      name: 'authz-stub',
+      name,
       version: '0.0.0',
-      registers: [HOOK],
+      registers: [hook],
       calls: [],
       subscribes: [],
     },
     async init({ bus }: { bus: HookBus }) {
-      bus.registerService(HOOK, 'authz-stub', async (_ctx, input: unknown) => {
+      bus.registerService(hook, name, async (_ctx, input: unknown) => {
         stub.calls.push(input);
         return stub.respond(input);
       });
@@ -162,7 +164,7 @@ describe('credentials:get — account: refs gate the GLOBAL step (TASK-697)', ()
   });
 
   async function makeBus(
-    opts: { stub?: AuthzStub; envFallback?: Record<string, string> } = {},
+    opts: { stub?: AuthzStub; agentStub?: AuthzStub; envFallback?: Record<string, string> } = {},
   ): Promise<HookBus> {
     const bus = new HookBus();
     await bootstrap({
@@ -171,6 +173,9 @@ describe('credentials:get — account: refs gate the GLOBAL step (TASK-697)', ()
         memStoragePlugin(),
         createCredentialsStoreDbPlugin(),
         ...(opts.stub !== undefined ? [authzProviderPlugin(opts.stub)] : []),
+        ...(opts.agentStub !== undefined
+          ? [authzProviderPlugin(opts.agentStub, 'credentials:authorize-agent:account')]
+          : []),
         createCredentialsPlugin(
           opts.envFallback !== undefined ? { envFallback: opts.envFallback } : {},
         ),
@@ -269,9 +274,13 @@ describe('credentials:get — account: refs gate the GLOBAL step (TASK-697)', ()
     expect(stub.calls).toEqual([]);
   });
 
-  it('(e) PIN: an agent-scope row resolves and the provider is NEVER called (agent scope is not gated)', async () => {
+  it('(e) PIN: an agent-scope row the AGENT gate opens resolves, and the GLOBAL provider is NEVER called', async () => {
+    // TASK-711 gates the agent step behind its own hook (see
+    // account-agent-guard.test.ts); this pins that the GLOBAL hook stays out
+    // of it — an agent row that resolves never reaches the global step.
     const stub = authzStub(() => ({ allowed: false }));
-    const bus = await makeBus({ stub });
+    const agentStub = authzStub(() => ({ allowed: true }));
+    const bus = await makeBus({ stub, agentStub });
     await seed(bus, 'global', null, 'account:zendesk', 'COMPANY-ZENDESK-KEY');
     await seed(bus, 'agent', 'agent-7', 'account:zendesk', 'AGENT-KEY');
     const { ctx } = recordingCtx({ agentId: 'agent-7', userId: 'alice' });

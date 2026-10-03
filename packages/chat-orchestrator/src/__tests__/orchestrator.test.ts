@@ -5700,6 +5700,8 @@ describe('chat-orchestrator', () => {
       // connectorId fallback (the untagged slot), no slotTag.
       slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', service: 'linear', haveExisting: false }],
       packages: { npm: [], pypi: [] },
+      // TASK-711 — the draft's keyMode rides the card.
+      keyMode: 'personal',
     });
   });
 

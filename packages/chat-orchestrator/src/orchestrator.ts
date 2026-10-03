@@ -1340,7 +1340,7 @@ export function createOrchestrator(
       const key = authoredConnectorCardDedupKey(d.connectorId, d.proposal);
       if (fired.has(key)) continue;
       const card = buildAuthoredConnectorCard(
-        { connectorId: d.connectorId, name: d.name, proposal: d.proposal },
+        { connectorId: d.connectorId, name: d.name, proposal: d.proposal, keyMode: d.keyMode },
         vaultedRefs,
       );
       if (card === null) continue;

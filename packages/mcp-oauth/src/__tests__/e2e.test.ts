@@ -150,6 +150,13 @@ async function seedLegacyClient(
 
 async function bootStack(testOverrides: Parameters<typeof createMcpOAuthPlugin>[0]) {
   const h = await createTestHarness({
+    // TASK-711 — the vault reads an agent-scope `account:` row only when a
+    // provider of `credentials:authorize-agent:account` (@ax/connectors in a
+    // real host) says the reader resolves the one shared connector. This canary
+    // is about the sharee resolving the agent-bound token, so the stand-in says yes.
+    services: {
+      'credentials:authorize-agent:account': (async () => ({ allowed: true })) as ServiceHandler,
+    },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       createStoragePostgresPlugin(),
@@ -354,6 +361,10 @@ function captureRouteServices(routes: CapturedRoute[]): Record<string, ServiceHa
     // so the credential is stored agent-bound (scope:'agent', ownerId:'agent-A'),
     // matching the sharee-resolves design this canary exercises.
     'agents:resolve': (async () => ({ agent: { id: 'agent-A', visibility: 'team', ownerId: 'team-1' } })) as ServiceHandler,
+    // TASK-711 — @ax/connectors' answer to "is conn-1 the one shared connector
+    // every member of agent-A sees?". Yes here, so the sign-in is stored on the
+    // agent AND the vault lets the sharee read it back there.
+    'credentials:authorize-agent:account': (async () => ({ allowed: true })) as ServiceHandler,
     // One oauth slot + a matching mcpServer.
     'connectors:get': (async () => ({
       connector: {

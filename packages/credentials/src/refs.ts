@@ -16,8 +16,9 @@ export type Destination =
   //
   // The service is a connector id CHOSEN BY THE USER who authors the connector,
   // so a GLOBAL-scope row at an `account:` ref is readable only through the
-  // `credentials:authorize-global:account` hook (TASK-697), never by the plain
-  // user -> agent -> global walk. User- and agent-scope rows are unaffected.
+  // `credentials:authorize-global:account` hook (TASK-697), and an AGENT-scope
+  // one only through `credentials:authorize-agent:account` (TASK-711), never by
+  // the plain user -> agent -> global walk. User-scope rows are unaffected.
   | { kind: 'account'; service: string; slot?: string };
 
 function assertNoColon(field: string, value: string): void {

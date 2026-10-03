@@ -670,6 +670,22 @@ export interface AuthorizeGlobalOutput {
   allowed: boolean;
 }
 
+/**
+ * `credentials:authorize-agent:account` — the AGENT-scope twin (TASK-711):
+ * may `userId` read the credential stored on agent `agentId` for this
+ * `account:` ref? Consulted by @ax/credentials before the agent step, and by
+ * @ax/mcp-oauth to pick where a team-agent sign-in is stored. Ids and an
+ * opaque ref in, a boolean out.
+ */
+export interface AuthorizeAgentInput {
+  userId: string;
+  agentId: string;
+  ref: string;
+}
+export interface AuthorizeAgentOutput {
+  allowed: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Return schemas — registered with the hooks so the bus validates the response
 // shape (a mismatch becomes PluginError('invalid-return')).
@@ -834,3 +850,7 @@ export const ClearAuthoredOutputSchema = z.object({
 export const AuthorizeGlobalOutputSchema = z.object({
   allowed: z.boolean(),
 }) as unknown as ZodType<AuthorizeGlobalOutput>;
+
+export const AuthorizeAgentOutputSchema = z.object({
+  allowed: z.boolean(),
+}) as unknown as ZodType<AuthorizeAgentOutput>;
