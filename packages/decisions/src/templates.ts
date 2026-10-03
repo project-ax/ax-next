@@ -361,13 +361,18 @@ export function decisionDismissedNote(): string {
  * The decision id is deliberately NOT in this sentence. It has no consumer:
  * the model cannot act on it, and the correlation the system actually
  * enforces is the call fingerprint (`callFingerprint`), not this note. The
- * note itself reaches a user-visible transcript on the aisdk runner, whose
- * hold text is a single artifact serving both audiences — so the id stays
+ * note itself is stored in the transcript as tool-result text on the aisdk
+ * runner, whose hold text is a single artifact serving both audiences — so the id stays
  * structural (`hold({decisionId})`, the Decision row, the runner's stderr
  * line) and out of the prose. The `hold()` helper in `@ax/core` clamps the
  * result at `HOLD_NOTE_MAX`; nothing here comes close, but the clamp is the
  * backstop that keeps an over-long note from failing the wire schema and
  * degrading into the deny this verdict exists to avoid.
+ *
+ * The tool is named RAW here — a connector tool as `mcp.<toolNamespace>.<tool>`,
+ * hash and all (TASK-744) — because the model must know which exact call not to
+ * retry. No workspace surface renders tool-result text today; one that starts
+ * to must re-name connector tools itself rather than show this sentence.
  */
 export function holdNote(input: {
   capability: string | null;
