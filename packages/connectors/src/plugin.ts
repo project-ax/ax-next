@@ -184,6 +184,26 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
           degradation:
             'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
         },
+        // TASK-737 — the connector editor's per-tool permissions routes. The
+        // values live in @ax/tool-policy; the tool list comes from
+        // @ax/mcp-client. Both soft: without tool-policy the routes answer 503
+        // (the editor says it can't load them); without the inventory they
+        // answer `status: 'unknown'` and the saved defaults alone.
+        {
+          hook: 'tool-policy:get-connector-defaults',
+          degradation:
+            'the connector editor cannot show per-tool permissions (the route answers 503)',
+        },
+        {
+          hook: 'tool-policy:set-connector-defaults',
+          degradation:
+            'the connector editor cannot save per-tool permissions (the route answers 503)',
+        },
+        {
+          hook: 'connectors:describe-tools',
+          degradation:
+            "the connector editor cannot list a connector's tools; saved per-tool permissions still show",
+        },
         {
           hook: 'auth:get-user',
           degradation:

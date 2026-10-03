@@ -303,6 +303,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/tool-policy':
+        specifier: workspace:*
+        version: link:../tool-policy
       '@testcontainers/postgresql':
         specifier: 11.14.0
         version: 11.14.0
@@ -886,6 +889,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/tool-policy':
+        specifier: workspace:*
+        version: link:../tool-policy
       '@testcontainers/postgresql':
         specifier: 11.14.0
         version: 11.14.0
