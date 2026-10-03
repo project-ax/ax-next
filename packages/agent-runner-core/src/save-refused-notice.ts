@@ -28,6 +28,7 @@
 
 import { saveRefusedFrom, type CommitNotifyResult } from './commit-notify-resync.js';
 import { sanitizeDecisionNote } from './decision-turn.js';
+import type { SaveRefusedCode } from '@ax/ipc-protocol';
 
 /** The fixed label — the same one `decisionResolvedTurn` uses. */
 const SYSTEM_PREFIX = 'System message (not from the user):';
@@ -44,18 +45,49 @@ export function saveRefusedNotice(result: CommitNotifyResult): string | undefine
   // rest of the turn's work stays. "An earlier turn": a loop that pulls ahead
   // can carry the notice a turn late (see run-runner's
   // `pendingSaveRefusedNotice`).
-  const head =
-    `${SYSTEM_PREFIX} Some or all of the file changes you made in an earlier ` +
-    `turn were not saved. The workspace refused them after that turn ended, ` +
-    `and the refused changes were undone, so they are no longer in the workspace.`;
+  const head = NOTICE_HEAD;
   // Fenced as a quotation: the reason is a plugin's prose and can embed text
   // the model itself chose (a vetoed file path, say), so it is presented as
   // something quoted, never as more of this message.
   const why = reason.length > 0 ? ` The workspace gave this reason (quoted): "${reason}"` : '';
-  const advice =
-    ` Check what is actually there before relying on those files, and do not ` +
-    `write the same content again unchanged.`;
-  return `${head}${why}${advice}`;
+  return `${head}${why}${NOTICE_ADVICE}`;
+}
+
+const NOTICE_HEAD =
+  `${SYSTEM_PREFIX} Some or all of the file changes you made in an earlier ` +
+  `turn were not saved. The workspace refused them after that turn ended, ` +
+  `and the refused changes were undone, so they are no longer in the workspace.`;
+
+const NOTICE_ADVICE =
+  ` Check what is actually there before relying on those files, and do not ` +
+  `write the same content again unchanged.`;
+
+/**
+ * One fixed sentence per closed code. Host-authored constants: the
+ * host-persisted path below never carries a refusal's prose, so nothing a
+ * model chose reaches the notice from there.
+ */
+const CODE_REASONS: Readonly<Record<SaveRefusedCode, string>> = {
+  'storage-full': 'The storage limit for this workspace was reached.',
+  'too-large': 'The changes were too large to save at once.',
+  refused: 'A workspace check did not accept them.',
+};
+
+/**
+ * TASK-749 — the notice for refusals the HOST kept for the model: a final/idle
+ * save after the last turn, or a per-turn save whose runner process exited
+ * before its next turn. Those reach this process only as closed codes
+ * (`conversation.drain-save-refusals`), so the reason is a fixed sentence per
+ * distinct code rather than the host's prose — there is no forwarded text to
+ * fence. Same label, head and advice as {@link saveRefusedNotice}, so the model
+ * reads one kind of notice whichever path told it. `undefined` for no codes.
+ */
+export function saveRefusedNoticeFromCodes(
+  codes: readonly SaveRefusedCode[],
+): string | undefined {
+  if (codes.length === 0) return undefined;
+  const reasons = [...new Set(codes)].map((code) => CODE_REASONS[code]).join(' ');
+  return `${NOTICE_HEAD} ${reasons}${NOTICE_ADVICE}`;
 }
 
 /**

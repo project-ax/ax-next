@@ -4,7 +4,11 @@ import {
   saveRefusedFrom,
   type CommitNotifyResult,
 } from '../commit-notify-resync.js';
-import { prependNotice, saveRefusedNotice } from '../save-refused-notice.js';
+import {
+  prependNotice,
+  saveRefusedNotice,
+  saveRefusedNoticeFromCodes,
+} from '../save-refused-notice.js';
 
 // TASK-732. An end-of-turn save the host refuses takes the turn's files back
 // AFTER the model has stopped talking. The person hears about it on
@@ -144,5 +148,30 @@ describe('prependNotice', () => {
 
   it('degrades an unexpected shape to text rather than dropping the notice', () => {
     expect(prependNotice(undefined, 'NOTICE')).toBe('NOTICE');
+  });
+});
+
+// TASK-749. Refusals the HOST kept for the model (a final/idle save, or a
+// runner that exited before its next turn) arrive as closed codes only.
+describe('saveRefusedNoticeFromCodes (TASK-749)', () => {
+  it('nothing to tell → undefined', () => {
+    expect(saveRefusedNoticeFromCodes([])).toBeUndefined();
+  });
+
+  it('reads like the in-process notice: same label, head and advice, a fixed sentence per distinct code', () => {
+    const notice = saveRefusedNoticeFromCodes(['refused', 'too-large', 'refused'])!;
+    const inProcess = saveRefusedNotice({
+      outcome: 'rolled-back',
+      parentVersion: 'v1',
+      rejectionReason: 'no',
+    })!;
+    const head = inProcess.slice(0, inProcess.indexOf(' The workspace gave this reason'));
+    expect(notice.startsWith(head)).toBe(true);
+    expect(notice.endsWith('do not write the same content again unchanged.')).toBe(true);
+    expect(notice.split('A workspace check did not accept them.')).toHaveLength(2);
+    expect(notice).toContain('The changes were too large to save at once.');
+    // One label, and nothing quoted: no forwarded text rides this path.
+    expect(notice.split('System message (not from the user)')).toHaveLength(2);
+    expect(notice).not.toContain('"');
   });
 });
