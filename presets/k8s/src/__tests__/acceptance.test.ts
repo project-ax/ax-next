@@ -2125,6 +2125,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             'skills:list',
             'skills:list-user-attachments',
             'skills:detach-for-user',
+            'skills:attach-for-user',
           ],
           calls: [],
           subscribes: [],
@@ -2179,6 +2180,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           );
           bus.registerService('skills:detach-for-user', AGENTS_STUB_NAME, async () => ({
             removed: false,
+          }));
+          bus.registerService('skills:attach-for-user', AGENTS_STUB_NAME, async () => ({
+            created: false,
           }));
         },
       };
@@ -2555,6 +2559,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             'skills:list',
             'skills:list-user-attachments',
             'skills:detach-for-user',
+            'skills:attach-for-user',
           ],
           calls: [],
           subscribes: [],
@@ -2611,6 +2616,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           );
           bus.registerService('skills:detach-for-user', AGENTS_STUB_NAME, async () => ({
             removed: false,
+          }));
+          bus.registerService('skills:attach-for-user', AGENTS_STUB_NAME, async () => ({
+            created: false,
           }));
         },
       };
@@ -3274,6 +3282,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             'skills:list',
             'skills:list-user-attachments',
             'skills:detach-for-user',
+            'skills:attach-for-user',
           ],
           calls: [],
           subscribes: [],
@@ -3334,6 +3343,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           );
           bus.registerService('skills:detach-for-user', AGENTS_STUB, async () => ({
             removed: false,
+          }));
+          bus.registerService('skills:attach-for-user', AGENTS_STUB, async () => ({
+            created: false,
           }));
         },
       };
