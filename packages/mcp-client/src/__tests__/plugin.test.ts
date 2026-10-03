@@ -373,6 +373,52 @@ describe('@ax/mcp-client plugin', () => {
     await serverA.dispose();
   });
 
+  it('never connects a stored server whose id is in the reserved connector-namespace form (TASK-752)', async () => {
+    const bus = new HookBus();
+    const serverA = await makeFakeMcpServer({
+      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
+    });
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await saveConfig(bus, ctx(), { id: 'a', enabled: true, transport: 'stdio', command: 'x', args: [] });
+    // A row written before the reservation existed — saveConfig would now
+    // refuse it, so it goes straight to storage.
+    const reserved = 'c5e0235982f';
+    const enc = new TextEncoder();
+    await bus.call('storage:set', ctx(), {
+      key: `mcp-server:${reserved}`,
+      value: enc.encode(
+        JSON.stringify({ id: reserved, enabled: true, transport: 'stdio', command: 'x', args: [] }),
+      ),
+    });
+    await bus.call('storage:set', ctx(), {
+      key: 'mcp-server-index',
+      value: enc.encode(JSON.stringify(['a', reserved])),
+    });
+
+    await createToolDispatcherPlugin().init({ bus, config: undefined });
+    await createMcpClientPlugin({
+      transportFactory: async ({ config }) => {
+        if (config.id !== 'a') {
+          throw new Error(`transportFactory should not be called for '${config.id}'`);
+        }
+        return serverA.clientTransport;
+      },
+    }).init({ bus, config: undefined });
+
+    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
+      'tool:list',
+      ctx(),
+      {},
+    );
+    expect(listed.tools.map((t) => t.name)).toEqual(['mcp.a.echo']);
+
+    await serverA.dispose();
+  });
+
   it('tool:execute returns a MCP_SERVER_UNAVAILABLE tool-error result when the server dies', async () => {
     const bus = new HookBus();
     const serverA = await makeFakeMcpServer({

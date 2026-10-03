@@ -432,6 +432,20 @@ describe('@ax/mcp-client admin routes', () => {
     expect((r.body as { error: string }).error).toMatch(/inline secret/i);
   });
 
+  it('POST refuses an id in the reserved connector-namespace form with 400 (TASK-752)', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: makeBody({ id: 'c5e0235982f' }),
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/reserved/);
+    const list = await http(stack.port, 'GET', '/admin/mcp-servers', { cookie });
+    expect(
+      (list.body as { configs: SerializedConfig[] }).configs.map((c) => c.id),
+    ).not.toContain('c5e0235982f');
+  });
+
   it('POST refuses a duplicate id with 409', async () => {
     const cookie = await signIn(stack);
     const first = await http(stack.port, 'POST', '/admin/mcp-servers', {

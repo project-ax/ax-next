@@ -512,7 +512,17 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
         res.status(400).json({ error: message });
         return;
       }
-      const saved = await saveConfig(deps.bus, ctx, cfg);
+      let saved: McpServerConfig;
+      try {
+        saved = await saveConfig(deps.bus, ctx, cfg);
+      } catch (err) {
+        // e.g. a row whose id predates the reserved form (TASK-752).
+        if (err instanceof PluginError) {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
 
       // Purge credentials for env/header names that were in the old config
       // but are absent from the new one. Graceful: a credential hiccup must

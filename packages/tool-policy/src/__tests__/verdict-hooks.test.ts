@@ -395,3 +395,114 @@ describe('purges', () => {
     expect(await verdictOf(h, SEND)).toBe('allow');
   });
 });
+
+describe('connectors:tool-namespaces-changed — a renamed server keeps its verdicts (TASK-752)', () => {
+  const NEW = 'cabcdef0123';
+  const NEW_SEND = `mcp.${NEW}.send_message`;
+  const NEW_LIST = `mcp.${NEW}.list_messages`;
+  const entry = (toolNamespace: string) => ({ server: 's', toolNamespace });
+  const renamed = (from: string, to: string) => ({ from: entry(from), to: entry(to) });
+
+  it('moves the admin defaults and every agent’s overrides to the new namespace', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }, { toolKey: LIST, verdict: 'hold' }]);
+    await setDefaults(h, [{ toolKey: OTHER, verdict: 'allow' }], 'linear');
+    await setOverride(h, SEND, 'deny');
+    await setOverride(h, 'Bash', 'deny');
+    await setOverride(h, LIST, 'deny', 'agent-2');
+    // Warm the caches, so a stale read would show.
+    expect(await verdictOf(h, NEW_SEND)).toBe('hold');
+    expect(await verdictOf(h, SEND)).toBe('deny');
+
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [renamed(NS, NEW)],
+      removed: [],
+    });
+
+    expect((await listOverrides(h)).overrides.map((o) => [o.toolKey, o.verdict])).toEqual([
+      ['Bash', 'deny'],
+      [NEW_SEND, 'deny'],
+    ]);
+    expect((await listOverrides(h, 'agent-2')).overrides.map((o) => o.toolKey)).toEqual([NEW_LIST]);
+    expect(await verdictOf(h, NEW_SEND)).toBe('deny');
+    expect(await verdictOf(h, NEW_SEND, 'agent-3')).toBe('allow');
+    expect(await verdictOf(h, NEW_LIST, 'agent-3')).toBe('hold');
+    // Nothing is left under the old namespace, and the other connector is untouched.
+    expect(await verdictOf(h, SEND, 'agent-3')).toBe('hold');
+    expect(await verdictOf(h, OTHER)).toBe('allow');
+    expect(
+      (await call<GetConnectorDefaultsOutput>(h, 'tool-policy:get-connector-defaults', {
+        connectorId: 'gmail',
+        toolNamespaces: [NS, NEW],
+      })).defaults,
+    ).toEqual([
+      { toolKey: NEW_LIST, verdict: 'hold' },
+      { toolKey: NEW_SEND, verdict: 'allow' },
+    ]);
+  });
+
+  it('purges a removed server’s namespace like a deleted connector', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    await setDefaults(h, [{ toolKey: OTHER, verdict: 'allow' }], 'linear');
+    await setOverride(h, SEND, 'deny');
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [],
+      removed: [entry(NS)],
+    });
+    expect((await listOverrides(h)).overrides).toEqual([]);
+    expect(await verdictOf(h, SEND)).toBe('hold');
+    expect(await verdictOf(h, OTHER)).toBe('allow');
+  });
+
+  it('ignores malformed and overlapping entries instead of guessing', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    await setDefaults(h, [{ toolKey: OTHER, verdict: 'allow' }], 'linear');
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [renamed('%', NEW), renamed(NS, '%'), renamed(NS, NS), null, 'x'],
+      removed: [entry('%'), entry(''), null],
+    });
+    expect(await verdictOf(h, SEND)).toBe('allow');
+    expect(await verdictOf(h, OTHER)).toBe('allow');
+    // A chain (NS -> NEW, then NEW -> NS2) keeps only the first, unambiguous pair.
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [renamed(NS, NEW), renamed(NEW, NS2)],
+      removed: [],
+    });
+    expect(await verdictOf(h, NEW_SEND)).toBe('allow');
+    expect(await verdictOf(h, OTHER)).toBe('allow');
+  });
+});
+
+describe('verdict store — keyspace guard (TASK-752)', () => {
+  it('purgeNamespaces refuses a malformed namespace and removes nothing', async () => {
+    const store = createMemoryVerdictStore();
+    await store.setConnectorDefaults('gmail', [{ toolNamespace: NS, tool: 'send_message', verdict: 'allow' }], 'a');
+    await store.setOverride(AGENT, SEND, 'deny', 'a');
+    for (const bad of ['%', '', 'c%', `${NS}.x`, 'C5E0235982F']) {
+      await expect(store.purgeNamespaces([NS, bad])).rejects.toThrow(/malformed tool namespace/);
+    }
+    expect(await store.overridesFor(AGENT)).toEqual([{ toolKey: SEND, verdict: 'deny', origin: 'user' }]);
+    expect((await store.connectorDefaultsFor([NS])).get(SEND)).toBe('allow');
+  });
+
+  it('renameNamespaces refuses malformed or overlapping pairs and moves nothing', async () => {
+    const store = createMemoryVerdictStore();
+    await store.setOverride(AGENT, SEND, 'deny', 'a');
+    const bad: Array<Array<{ from: string; to: string }>> = [
+      [{ from: '%', to: NS2 }],
+      [{ from: NS, to: '' }],
+      [{ from: NS, to: NS }],
+      [{ from: NS, to: NS2 }, { from: NS2, to: 'cabcdef0123' }],
+    ];
+    for (const pairs of bad) {
+      await expect(store.renameNamespaces(pairs)).rejects.toThrow(/refused/);
+    }
+    expect(await store.overridesFor(AGENT)).toEqual([{ toolKey: SEND, verdict: 'deny', origin: 'user' }]);
+  });
+});

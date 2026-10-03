@@ -107,6 +107,36 @@ export function storageKeyForId(id: string): string {
 export const MCP_ID_REGEX = ID_RE;
 
 /**
+ * TASK-752 — ids of the form `c` + 10 lowercase hex are RESERVED.
+ *
+ * An admin server's tools are keyed `mcp.<id>.<tool>`, and so are a
+ * connector's: `mcp.<toolNamespace>.<tool>`, where `@ax/connectors` mints the
+ * namespace as exactly `c` + 10 hex. Both share one keyspace in the tool
+ * catalog AND in `@ax/tool-policy`, which reads any `mcp.c<10 hex>.` key as a
+ * connector tool — with that connector's admin defaults as its ceiling and
+ * per-agent choices attached. An admin server named `c5e0235982f` would
+ * inherit (or clobber) a connector's permissions. So the form is refused at
+ * registration and an existing row in that form is never connected.
+ *
+ * Mirrored, not imported (invariant 2): the drift pin is the literal
+ * `c5e0235982f` that the connectors and tool-policy tests also pin.
+ */
+const RESERVED_CONNECTOR_NAMESPACE_RE = /^c[0-9a-f]{10}$/;
+
+/** True for an id in the connector tool-namespace form (see above). */
+export function isReservedServerId(id: string): boolean {
+  return RESERVED_CONNECTOR_NAMESPACE_RE.test(id);
+}
+
+function reservedIdError(id: string): PluginError {
+  return new PluginError({
+    code: 'reserved-id',
+    plugin: PLUGIN_NAME,
+    message: `id '${id}' is reserved: 'c' followed by 10 hex characters is how connector tools are named — pick a different id`,
+  });
+}
+
+/**
  * Parse an unknown value into a validated McpServerConfig.
  *
  * Runs the inline-secret scan BEFORE the Zod parse, so a `password` field
@@ -180,6 +210,9 @@ export async function saveConfig(
   raw: unknown,
 ): Promise<McpServerConfig> {
   const cfg = parseConfig(raw);
+  // Every write path (admin create/patch, CLI) comes through here, so this is
+  // the registration chokepoint for the reserved form (TASK-752).
+  if (isReservedServerId(cfg.id)) throw reservedIdError(cfg.id);
   // Write the row first, then update the index. Mid-failure therefore leaves
   // an unindexed row (garbage but harmless) rather than an index entry pointing
   // at a non-existent row. loadConfigs tolerates the latter case too (it skips

@@ -335,8 +335,10 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       ],
       // Purges (TASK-736): an agent's overrides go with the agent; a
       // connector's defaults — and every agent's overrides for its tools — go
-      // with the connector.
-      subscribes: ['agents:deleted', 'connectors:deleted'],
+      // with the connector. TASK-752: when a connector's MCP server is renamed
+      // its namespace changes, so the rows move with it (or, for a removed
+      // server, go) instead of being orphaned under the old one.
+      subscribes: ['agents:deleted', 'connectors:deleted', 'connectors:tool-namespaces-changed'],
     },
 
     async init({ bus }) {
@@ -886,6 +888,59 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         }
         return undefined;
       });
+
+      // TASK-752 — a connector edit changed which namespaces its MCP servers
+      // live under. `renamed` pairs carry verdicts across (admin defaults AND
+      // every agent's overrides, one write); `removed` namespaces are purged
+      // like a deleted connector's. Either way nothing is left keyed to a
+      // namespace no tool can reach any more.
+      //
+      // A malformed entry is dropped, never guessed at: dropping a rename
+      // leaves the new namespace with no rows (Ask first — the safe side), and
+      // the store re-checks the shape before it runs any `LIKE`.
+      bus.subscribe<unknown>(
+        'connectors:tool-namespaces-changed',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          const p = payload as { renamed?: unknown; removed?: unknown } | null | undefined;
+          const nsOf = (e: unknown): string | null => {
+            const ns = (e as { toolNamespace?: unknown } | null | undefined)?.toolNamespace;
+            return typeof ns === 'string' && CONNECTOR_TOOL_NAMESPACE_RE.test(ns) ? ns : null;
+          };
+          const pairs: Array<{ from: string; to: string }> = [];
+          const used = new Set<string>();
+          for (const r of Array.isArray(p?.renamed) ? p.renamed : []) {
+            const from = nsOf((r as { from?: unknown } | null | undefined)?.from);
+            const to = nsOf((r as { to?: unknown } | null | undefined)?.to);
+            if (from === null || to === null || from === to || used.has(from) || used.has(to)) continue;
+            used.add(from);
+            used.add(to);
+            pairs.push({ from, to });
+          }
+          const removed = (Array.isArray(p?.removed) ? p.removed : [])
+            .map(nsOf)
+            .filter((ns): ns is string => ns !== null && !used.has(ns));
+          if (pairs.length === 0 && removed.length === 0) return undefined;
+          try {
+            if (pairs.length > 0) await verdictStore.renameNamespaces(pairs);
+            if (removed.length > 0) await verdictStore.purgeNamespaces(removed);
+            ctx.logger.info('tool_policy_moved_for_renamed_connector_server', {
+              renamed: pairs,
+              removed,
+            });
+          } catch (err) {
+            ctx.logger.error('tool_policy_move_for_renamed_connector_server_failed', { err });
+          } finally {
+            for (const { from, to } of pairs) {
+              defaultsCache.delete(from);
+              defaultsCache.delete(to);
+            }
+            for (const ns of removed) defaultsCache.delete(ns);
+            overrideCache.clear();
+          }
+          return undefined;
+        },
+      );
 
       bus.registerService<ListCapabilitiesInput, ListCapabilitiesOutput>(
         'tool-policy:list-capabilities',

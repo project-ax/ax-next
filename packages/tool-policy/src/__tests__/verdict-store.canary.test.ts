@@ -15,7 +15,10 @@ import {
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import type { Kysely } from 'kysely';
+import type { ToolPolicyDatabase } from '../migrations.js';
 import { createToolPolicyPlugin } from '../plugin.js';
+import { createDbVerdictStore } from '../verdict-store.js';
 import type {
   EvaluateResult,
   GetConnectorDefaultsOutput,
@@ -202,4 +205,90 @@ describe('verdict store canary (Postgres)', () => {
       { agent_id: 'agent-2', tool_key: OTHER },
     ]);
   });
+
+  // TASK-752 — the store's own keyspace guard, against the real `LIKE`.
+  it('purgeNamespaces refuses a malformed namespace and deletes nothing', async () => {
+    const h = await boot();
+    await h.bus.call('tool-policy:set-connector-defaults', ctx(h), {
+      connectorId: 'gmail',
+      verdicts: [{ toolKey: SEND, verdict: 'allow' }],
+    });
+    await h.bus.call('tool-policy:set-agent-override', ctx(h), { agentId: 'agent-1', toolKey: SEND, verdict: 'deny' });
+    await h.bus.call('tool-policy:set-agent-override', ctx(h), { agentId: 'agent-1', toolKey: 'Bash', verdict: 'deny' });
+    const store = await dbStore(h);
+    // `%` would match `mcp.%.%` — every agent's connector rows. `c%` and an
+    // empty string are the near misses.
+    for (const bad of ['%', 'c%', '', `${NS}%`, 'C5E0235982F']) {
+      await expect(store.purgeNamespaces([NS2, bad])).rejects.toThrow(/malformed tool namespace/);
+    }
+    expect(
+      await rawRows('SELECT agent_id, tool_key FROM tool_policy_v1_agent_overrides ORDER BY tool_key'),
+    ).toEqual([
+      { agent_id: 'agent-1', tool_key: 'Bash' },
+      { agent_id: 'agent-1', tool_key: SEND },
+    ]);
+    expect(await rawRows('SELECT tool_namespace FROM tool_policy_v1_connector_defaults')).toEqual([
+      { tool_namespace: NS },
+    ]);
+  });
+
+  it('a renamed connector server carries its defaults and every agent’s overrides across', async () => {
+    const h = await boot();
+    const NEW = 'cabcdef0123';
+    await h.bus.call('tool-policy:set-connector-defaults', ctx(h), {
+      connectorId: 'gmail',
+      verdicts: [
+        { toolKey: SEND, verdict: 'hold' },
+        { toolKey: LIST, verdict: 'allow' },
+      ],
+    });
+    // A stale row already under the new namespace is replaced, not merged.
+    await h.bus.call('tool-policy:set-connector-defaults', ctx(h), {
+      connectorId: 'gmail',
+      verdicts: [{ toolKey: `mcp.${NEW}.send_message`, verdict: 'allow' }],
+    });
+    await h.bus.call('tool-policy:set-agent-override', ctx(h), { agentId: 'agent-1', toolKey: SEND, verdict: 'deny' });
+    await h.bus.call('tool-policy:set-agent-override', ctx(h), { agentId: 'agent-2', toolKey: LIST, verdict: 'hold' });
+    await h.bus.call('tool-policy:set-agent-override', ctx(h), { agentId: 'agent-2', toolKey: OTHER, verdict: 'deny' });
+    await h.bus.call('tool-policy:set-agent-override', ctx(h), {
+      agentId: 'agent-3',
+      toolKey: `mcp.${NEW}.list_messages`,
+      verdict: 'deny',
+    });
+
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [{ from: { server: 'gmail', toolNamespace: NS }, to: { server: 'mail', toolNamespace: NEW } }],
+      removed: [],
+    });
+
+    expect(
+      await rawRows(
+        'SELECT connector_id, tool_namespace, tool_name, verdict FROM tool_policy_v1_connector_defaults ORDER BY tool_namespace, tool_name',
+      ),
+    ).toEqual([
+      { connector_id: 'gmail', tool_namespace: NEW, tool_name: 'list_messages', verdict: 'allow' },
+      { connector_id: 'gmail', tool_namespace: NEW, tool_name: 'send_message', verdict: 'hold' },
+    ]);
+    expect(
+      await rawRows(
+        'SELECT agent_id, tool_key, verdict, origin FROM tool_policy_v1_agent_overrides ORDER BY agent_id, tool_key',
+      ),
+    ).toEqual([
+      { agent_id: 'agent-1', tool_key: `mcp.${NEW}.send_message`, verdict: 'deny', origin: 'user' },
+      { agent_id: 'agent-2', tool_key: OTHER, verdict: 'deny', origin: 'user' },
+      { agent_id: 'agent-2', tool_key: `mcp.${NEW}.list_messages`, verdict: 'hold', origin: 'user' },
+    ]);
+    expect(await verdictOf(h, `mcp.${NEW}.send_message`)).toBe('deny');
+    expect(await verdictOf(h, `mcp.${NEW}.list_messages`, 'agent-3')).toBe('allow');
+  });
 });
+
+async function dbStore(h: TestHarness) {
+  const { db } = await h.bus.call<unknown, { db: Kysely<ToolPolicyDatabase> }>(
+    'database:get-instance',
+    h.ctx(),
+    {},
+  );
+  return createDbVerdictStore(db);
+}

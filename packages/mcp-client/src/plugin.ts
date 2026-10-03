@@ -51,7 +51,7 @@ import {
   runMcpClientMigration,
   type McpClientDatabase,
 } from './connector-inventory/store.js';
-import { loadConfigs, type McpServerConfig } from './config.js';
+import { isReservedServerId, loadConfigs, type McpServerConfig } from './config.js';
 import { McpConnection } from './connection.js';
 import { namespaceTools } from './tool-names.js';
 import {
@@ -202,7 +202,18 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
         bus.registerService('connectors:describe-tools', PLUGIN_NAME, describeTools);
       }
 
-      const configs = await loadConfigs(bus, initCtx);
+      // A row whose id is in the reserved connector-namespace form (TASK-752)
+      // predates the reservation. Never connect it — its tools would land in a
+      // connector's permission keyspace. It stays listed in the admin API so
+      // an admin can see it and delete it.
+      const configs = (await loadConfigs(bus, initCtx)).filter((c) => {
+        if (!isReservedServerId(c.id)) return true;
+        initCtx.logger.warn('mcp_server_reserved_id_skipped', {
+          serverId: c.id,
+          hint: "ids of the form 'c' + 10 hex are reserved for connector tools; recreate it under another id",
+        });
+        return false;
+      });
 
       // Open connections in parallel — 5 MCP servers shouldn't serialize 5
       // round-trip connects during startup. Tool registration happens
