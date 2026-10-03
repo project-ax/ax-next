@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { PluginError, makeAgentContext, createLogger, type AgentContext } from '@ax/core';
 import {
   FAILURE_TTL_MS,
+  FORCE_COOLDOWN_MS,
   OK_TTL_MS,
   createDescribeTools,
   type BusLike,
@@ -387,6 +388,7 @@ describe('connectors:describe-tools', () => {
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       expect(t.fired).toHaveLength(1);
       tools = [...tools, { name: 'b', title: 'b', description: '', readOnly: null, outward: null }];
+      t.advance(FORCE_COOLDOWN_MS); // TASK-756: one honoured force per window
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       expect(t.fired).toHaveLength(2);
     });
@@ -398,8 +400,91 @@ describe('connectors:describe-tools', () => {
       outcome = { kind: 'unreachable', reason: 'timeout' };
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       outcome = { kind: 'ok', dropped: 0, tools: [] };
+      t.advance(FORCE_COOLDOWN_MS);
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(3);
       expect(t.fired).toHaveLength(1);
+    });
+  });
+
+  // TASK-756 — every forced check (Retry, Reconnect, ?refresh=1, from any
+  // route) passes through here, so this is where the probe rate is bounded.
+  describe('force cooldown (TASK-756)', () => {
+    it('a second force inside the window is served from the cache — no new listing', async () => {
+      const t = setup();
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      t.advance(FORCE_COOLDOWN_MS - 1);
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(1);
+      t.advance(1);
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(2);
+    });
+
+    it('is keyed on user + connector: switching agent does not buy another forced probe', async () => {
+      const t = setup();
+      await t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true });
+      await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true });
+      // agent-2 had no row, so it is checked — but as an UNFORCED check, and a
+      // third call inside the window for either agent reads its fresh row.
+      await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true });
+      await t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(2);
+      // Another person is not held back by u1.
+      await t.run({ userId: 'u2', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(3);
+    });
+
+    it('a credential blip does not use up the window (no server was asked)', async () => {
+      let blip = true;
+      const t = setup({
+        credential: () => {
+          if (blip) throw new PluginError({ code: 'unknown', plugin: 'credentials-store-db', message: 'db down' });
+          return 'tok-123';
+        },
+      });
+      await expect(t.run({ userId: 'u1', connectorId: 'linear', force: true })).rejects.toMatchObject({
+        code: 'credential-unavailable',
+      });
+      blip = false;
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(1);
+    });
+
+    it('a blip on one server of a multi-server connector happens before ANY server is listed', async () => {
+      const t = setup({
+        resolve: () =>
+          connector({
+            capabilities: {
+              credentials: [
+                { slot: 'a', kind: 'oauth', server: 'main' },
+                { slot: 'b', kind: 'oauth', server: 'second' },
+              ],
+              mcpServers: [
+                { name: 'main', transport: 'http', url: 'https://a.example/mcp' },
+                { name: 'second', transport: 'http', url: 'https://b.example/mcp' },
+              ],
+            },
+            credentialPlan: [
+              { slot: 'a', ref: 'account:linear', scope: 'user', service: 'linear' },
+              { slot: 'b', ref: 'account:other', scope: 'user', service: 'other' },
+            ],
+            toolNamespaces: [
+              { server: 'main', toolNamespace: NS },
+              { server: 'second', toolNamespace: NS2 },
+            ],
+          }),
+        credential: (i) => {
+          if (i.ref === 'account:other') {
+            throw new PluginError({ code: 'unknown', plugin: 'credentials-store-db', message: 'db down' });
+          }
+          return 'tok-123';
+        },
+      });
+      await expect(t.run({ userId: 'u1', connectorId: 'linear', force: true })).rejects.toMatchObject({
+        code: 'credential-unavailable',
+      });
+      expect(t.list).not.toHaveBeenCalled();
     });
   });
 

@@ -533,8 +533,10 @@ describe('agent connector routes', () => {
       });
       it('drops an entry stamped in the future (a clock step cannot pin it)', () => {
         const m = new Map<string, { at: number }>();
-        rememberBounded(m, 'future', { at: 99_999 }, W, 2);
+        // 'future' is NOT the oldest, so only the future-stamp rule drops it
+        // (oldest-first eviction alone would drop 'a').
         rememberBounded(m, 'a', { at: 100 }, W, 2);
+        rememberBounded(m, 'future', { at: 99_999 }, W, 2);
         rememberBounded(m, 'b', { at: 200 }, W, 2);
         expect([...m.keys()]).toEqual(['a', 'b']);
       });
