@@ -132,7 +132,11 @@ import type {
   AgentConnectorRetried,
   AgentConnectorRow,
   AgentConnectorSource,
+  AgentConnectorTool,
+  AgentConnectorToolsRead,
   AgentConnectorsRead,
+  AgentToolVerdict,
+  AgentToolVerdictSaved,
   AgentMemoryRead,
   FactMemoryPage,
   AgentRailData,
@@ -1306,7 +1310,9 @@ type ToolPolicySetAgentOverrideOutput =
   | { ok: true }
   | { ok: false; reason: string; ceiling?: AbilityVerdict | undefined };
 interface ToolPolicyListAgentOverridesOutput {
-  overrides: Array<{ toolKey: string; verdict: AbilityVerdict }>;
+  /** `ceiling` is the loosest verdict the store would accept for that key
+   *  right now (TASK-742 reads it; the abilities switches do not need it). */
+  overrides: Array<{ toolKey: string; verdict: AbilityVerdict; ceiling?: AbilityVerdict }>;
 }
 
 /**
@@ -1356,7 +1362,13 @@ interface ConnectorsListEffectiveInput {
 }
 interface ConnectorsListEffectiveOutput {
   connectors: Array<{
-    summary: { id: string; name: string; canEdit?: boolean };
+    summary: {
+      id: string;
+      name: string;
+      canEdit?: boolean;
+      /** Whose key the connector spends (TASK-742 shows it as "access"). */
+      keyMode?: 'personal' | 'workspace';
+    };
     source: AgentConnectorSource;
     toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
   }>;
@@ -1444,6 +1456,127 @@ function healthOf(
   if (needsReconnect.has(connectorId)) return 'needs-reconnect';
   if (inventory.get(connectorId) === 'unreachable') return 'unreachable';
   return 'ok';
+}
+
+// ---------------------------------------------------------------------------
+// One connector's tools, per agent (TASK-742, connectors-rail slice 9).
+// Structural mirrors of @ax/mcp-client's `connectors:describe-tools` and
+// @ax/tool-policy's `get-connector-defaults` — no import (invariant 2). The
+// key parse and inventory filter are twins of @ax/connectors'
+// `tool-permissions.ts`, for the same reason.
+// ---------------------------------------------------------------------------
+
+interface DescribeToolsInput {
+  userId: string;
+  agentId: string;
+  connectorId: string;
+  force?: boolean;
+}
+interface DescribeToolsInventoryOutput {
+  status: AgentConnectorToolsRead['status'];
+  tools: Array<{
+    name: string;
+    title: string;
+    description: string;
+    readOnly: boolean | null;
+    outward: boolean | null;
+    toolKey: string;
+  }>;
+  checkedAt: string;
+}
+interface GetConnectorDefaultsInput {
+  connectorId: string;
+  toolNamespaces: string[];
+}
+interface GetConnectorDefaultsOutput {
+  defaults: Array<{ toolKey: string; verdict: AbilityVerdict }>;
+}
+
+/** Rows one details view carries — tool-policy's own per-write cap. */
+export const CONNECTOR_TOOLS_MAX_ROWS = 500;
+/** A tool key longer than this is not one anything here wrote. */
+const CONNECTOR_TOOL_KEY_MAX_CHARS = 300;
+/** A vendor's tool description: a few paragraphs, and no more. */
+export const CONNECTOR_TOOL_DESCRIPTION_MAX_CHARS = 1000;
+
+const INVENTORY_STATUSES: ReadonlySet<string> = new Set([
+  'ok',
+  'unreachable',
+  'needs-auth',
+  'unknown',
+]);
+
+function isToolVerdict(v: unknown): v is AgentToolVerdict {
+  return v === 'allow' || v === 'hold' || v === 'deny';
+}
+
+const VERDICT_STRICTNESS: Readonly<Record<AgentToolVerdict, number>> = {
+  allow: 0,
+  hold: 1,
+  deny: 2,
+};
+
+/**
+ * What a call gets is the strictest of the agent's own choice and the admin's
+ * ceiling — the rule @ax/tool-policy enforces (`strictest`). Showing anything
+ * looser would be a control that says one thing while the gate does another.
+ */
+function strictestVerdict(
+  a: AgentToolVerdict | undefined,
+  b: AgentToolVerdict,
+): AgentToolVerdict {
+  if (a === undefined) return b;
+  return VERDICT_STRICTNESS[a] >= VERDICT_STRICTNESS[b] ? a : b;
+}
+
+/** `mcp.<ns>.<tool>` → `<ns>`, else null. The tool part must be non-empty. */
+function connectorToolNamespace(toolKey: string): string | null {
+  if (!toolKey.startsWith(MCP_TOOL_PREFIX)) return null;
+  const rest = toolKey.slice(MCP_TOOL_PREFIX.length);
+  const dot = rest.indexOf('.');
+  if (dot <= 0 || dot === rest.length - 1) return null;
+  return rest.slice(0, dot);
+}
+
+/** The namespaces this connector's tools live under, from the effective list. */
+function ownToolNamespaces(
+  entry: ConnectorsListEffectiveOutput['connectors'][number],
+): string[] {
+  return (Array.isArray(entry.toolNamespaces) ? entry.toolNamespaces : [])
+    .map((n) => n?.toolNamespace)
+    .filter((ns): ns is string => typeof ns === 'string' && CONNECTOR_TOOL_NAMESPACE_RE.test(ns));
+}
+
+/**
+ * A vendor's tool description is a document, not a label: its newlines
+ * survive (`fenceBody`) while the characters that rewrite a surface do not.
+ * It is clamped because nobody else bounds it — in code points, like
+ * `fenceLine`, so a cut never strands half a surrogate pair.
+ */
+function fenceToolDescription(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const body = fenceBody(value).trim();
+  const points = [...body];
+  if (points.length <= CONNECTOR_TOOL_DESCRIPTION_MAX_CHARS) return body;
+  return `${points.slice(0, CONNECTOR_TOOL_DESCRIPTION_MAX_CHARS - 1).join('').trimEnd()}…`;
+}
+
+/** A row's label: the server's title, else its name, else the key's own tool part. */
+function connectorToolTitle(
+  toolKey: string,
+  ns: string,
+  title?: unknown,
+  name?: unknown,
+): string {
+  const part = toolKey.slice(`${MCP_TOOL_PREFIX}${ns}.`.length);
+  return (
+    fenceLine(typeof title === 'string' ? title : null, RAIL_LABEL_MAX_CHARS) ??
+    fenceLine(typeof name === 'string' ? name : null, RAIL_LABEL_MAX_CHARS) ??
+    fenceLine(part, RAIL_LABEL_MAX_CHARS) ??
+    // A key always starts `mcp.`, so this never fences to nothing.
+    fenceLine(toolKey, RAIL_LABEL_MAX_CHARS) ??
+    toolKey
+  );
 }
 
 /**
@@ -6133,6 +6266,311 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/agents/:agentId/connectors/:connectorId/tools
+     * [?refresh=1] — one connector's tools, with what THIS agent gets for
+     * each (TASK-742, connectors-rail slice 9).
+     *
+     * The connector must be in the agent's effective list — the set a session
+     * actually opens with — or it is a 404: a details view for a connector the
+     * agent does not have would offer choices that govern nothing.
+     *
+     * The tool list is best-effort (an unreachable server, or a preset without
+     * `connectors:describe-tools`, answers `status` and no inventory rows), but
+     * a choice the agent already HOLDS is always shown, as a row of its own,
+     * even when the server cannot be asked right now — a deny that vanished
+     * from the screen whenever the vendor was down would be a control that
+     * hides its own state.
+     *
+     * Each row's `ceiling` is the admin's limit and `verdict` is the strictest
+     * of that and the agent's own choice: what the gate does, not what was
+     * asked for. A ceiling the store does not report reads as `hold`, the
+     * gate's own default for a connector tool nobody has decided on.
+     *
+     * Titles and descriptions are the connector server's words — untrusted,
+     * fenced and clamped here, at the boundary, so no renderer has to remember.
+     */
+    async connectorTools(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const connectorId = req.params.connectorId ?? '';
+      if (!isConnectorId(connectorId)) {
+        res.status(400).json({ error: 'invalid-connector' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+      if (!bus.hasService('connectors:list-effective')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      if (
+        !bus.hasService('tool-policy:list-agent-overrides') ||
+        !bus.hasService('tool-policy:get-connector-defaults')
+      ) {
+        // No verdict store: every choice on this screen would be a control
+        // that changes nothing.
+        res.status(503).json({ error: 'tool-permissions-unavailable' });
+        return;
+      }
+      const effective = await listEffectiveConnectors(agent, userId);
+      const entry = (Array.isArray(effective?.connectors) ? effective.connectors : []).find(
+        (c) => c?.summary?.id === connectorId,
+      );
+      if (entry === undefined) {
+        res.status(404).json({ error: 'connector-not-found' });
+        return;
+      }
+      const namespaces = ownToolNamespaces(entry);
+      const own = new Set(namespaces);
+      const ctx = agentWorkspaceCtx(agentId, userId);
+
+      let status: AgentConnectorToolsRead['status'] = 'unknown';
+      let checkedAt: string | null = null;
+      let inventory: DescribeToolsInventoryOutput['tools'] = [];
+      if (namespaces.length > 0 && bus.hasService('connectors:describe-tools')) {
+        try {
+          const out = await bus.call<DescribeToolsInput, DescribeToolsInventoryOutput>(
+            'connectors:describe-tools',
+            ctx,
+            {
+              userId,
+              agentId,
+              connectorId,
+              ...(req.query.refresh === '1' && { force: true }),
+            },
+          );
+          status = INVENTORY_STATUSES.has(out?.status) ? out.status : 'unknown';
+          checkedAt = typeof out?.checkedAt === 'string' ? out.checkedAt : null;
+          inventory = Array.isArray(out?.tools) ? out.tools : [];
+        } catch (err) {
+          // The list is a convenience, never a gate: a failed lookup reads as
+          // "we can't list them right now", and held choices still show.
+          initCtx.logger.warn('workspace_connector_tools_inventory_failed', {
+            agentId,
+            connectorId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      const defaults = new Map<string, AgentToolVerdict>();
+      if (namespaces.length > 0) {
+        const out = await bus.call<GetConnectorDefaultsInput, GetConnectorDefaultsOutput>(
+          'tool-policy:get-connector-defaults',
+          ctx,
+          { connectorId, toolNamespaces: namespaces },
+        );
+        for (const d of Array.isArray(out?.defaults) ? out.defaults : []) {
+          if (typeof d?.toolKey !== 'string') continue;
+          // An unreadable verdict fails closed: Ask first, never Allow.
+          defaults.set(d.toolKey, isToolVerdict(d.verdict) ? d.verdict : 'hold');
+        }
+      }
+      const overrides = new Map<string, { verdict: AgentToolVerdict; ceiling?: AgentToolVerdict }>();
+      const listed = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
+        'tool-policy:list-agent-overrides',
+        ctx,
+        { agentId },
+      );
+      for (const o of Array.isArray(listed?.overrides) ? listed.overrides : []) {
+        const key = o?.toolKey;
+        if (typeof key !== 'string') continue;
+        const ns = connectorToolNamespace(key);
+        if (ns === null || !own.has(ns)) continue;
+        overrides.set(key, {
+          verdict: isToolVerdict(o.verdict) ? o.verdict : 'hold',
+          ...(o.ceiling !== undefined && { ceiling: isToolVerdict(o.ceiling) ? o.ceiling : 'hold' }),
+        });
+      }
+
+      const row = (
+        toolKey: string,
+        ns: string,
+        fields: Partial<DescribeToolsInventoryOutput['tools'][number]>,
+      ): AgentConnectorTool => {
+        const override = overrides.get(toolKey);
+        const ceiling = override?.ceiling ?? defaults.get(toolKey) ?? 'hold';
+        return {
+          toolKey,
+          title: connectorToolTitle(toolKey, ns, fields.title, fields.name),
+          description: fenceToolDescription(fields.description),
+          readOnly: typeof fields.readOnly === 'boolean' ? fields.readOnly : null,
+          outward: typeof fields.outward === 'boolean' ? fields.outward : null,
+          verdict: strictestVerdict(override?.verdict, ceiling),
+          ceiling,
+        };
+      };
+
+      const tools: AgentConnectorTool[] = [];
+      const seen = new Set<string>();
+      const listedNamespaces = new Set<string>();
+      for (const t of inventory) {
+        if (tools.length >= CONNECTOR_TOOLS_MAX_ROWS) break;
+        const key = t?.toolKey;
+        if (typeof key !== 'string' || key.length > CONNECTOR_TOOL_KEY_MAX_CHARS) continue;
+        if (seen.has(key)) continue;
+        const ns = connectorToolNamespace(key);
+        // Only this connector's own tools: a server that answers with
+        // another namespace's keys must not get a row it could be set from.
+        if (ns === null || !own.has(ns)) continue;
+        seen.add(key);
+        listedNamespaces.add(ns);
+        tools.push(row(key, ns, t));
+      }
+      for (const key of overrides.keys()) {
+        if (tools.length >= CONNECTOR_TOOLS_MAX_ROWS) break;
+        if (seen.has(key) || key.length > CONNECTOR_TOOL_KEY_MAX_CHARS) continue;
+        const ns = connectorToolNamespace(key);
+        if (ns === null) continue;
+        seen.add(key);
+        tools.push(row(key, ns, {}));
+      }
+
+      res.status(200).json({
+        connector: {
+          id: connectorId,
+          name: fenceLine(entry.summary.name, RAIL_LABEL_MAX_CHARS) ?? connectorId,
+          access: entry.summary.keyMode === 'workspace' ? 'workspace' : 'personal',
+        },
+        status,
+        checkedAt,
+        // A server that cannot be listed from the host (stdio) answers with
+        // none of its tools; saying "this is all of them" would be a lie.
+        possiblyIncomplete: status === 'ok' && namespaces.some((ns) => !listedNamespaces.has(ns)),
+        tools,
+      } satisfies AgentConnectorToolsRead);
+    },
+
+    /**
+     * PUT /api/workspace/agents/:agentId/connectors/:connectorId/tool-verdicts
+     * — set ONE tool's Allow / Ask first / Deny for this agent (TASK-742).
+     *
+     * The key must be a tool of THIS connector, in THIS agent's effective
+     * list. That binding is the security-relevant check: `set-agent-override`
+     * trusts its caller about which keys a person may touch, so without it a
+     * person could write a verdict for a connector the agent does not have,
+     * or for a non-connector key like `Bash` — and loosening `Bash` is
+     * exactly what "Other abilities" never offers.
+     *
+     * `null` (clear) is not accepted: every choice on this screen is a real
+     * verdict, and a clear would silently fall back to whatever the admin
+     * says. The store refuses anything looser than the admin's ceiling, and
+     * that refusal is a 409 carrying the ceiling — never "saved". The answer
+     * is the store's re-read state, not an echo of the request.
+     */
+    async setConnectorToolVerdict(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const connectorId = req.params.connectorId ?? '';
+      if (!isConnectorId(connectorId)) {
+        res.status(400).json({ error: 'invalid-connector' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+      if (!bus.hasService('connectors:list-effective')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      if (
+        !bus.hasService('tool-policy:set-agent-override') ||
+        !bus.hasService('tool-policy:list-agent-overrides')
+      ) {
+        res.status(503).json({ error: 'tool-permissions-unavailable' });
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = parsed as { toolKey?: unknown; verdict?: unknown } | null;
+      if (!isToolVerdict(body?.verdict)) {
+        res.status(400).json({ error: 'invalid-verdict' });
+        return;
+      }
+      const verdict = body.verdict;
+      const toolKey = body.toolKey;
+      const keyNamespace =
+        typeof toolKey === 'string' && toolKey.length <= CONNECTOR_TOOL_KEY_MAX_CHARS
+          ? connectorToolNamespace(toolKey)
+          : null;
+      if (typeof toolKey !== 'string' || keyNamespace === null) {
+        res.status(400).json({ error: 'not-this-connectors-tool' });
+        return;
+      }
+
+      const effective = await listEffectiveConnectors(agent, userId);
+      const entry = (Array.isArray(effective?.connectors) ? effective.connectors : []).find(
+        (c) => c?.summary?.id === connectorId,
+      );
+      if (entry === undefined) {
+        res.status(404).json({ error: 'connector-not-found' });
+        return;
+      }
+      if (!ownToolNamespaces(entry).includes(keyNamespace)) {
+        res.status(400).json({ error: 'not-this-connectors-tool' });
+        return;
+      }
+
+      const ctx = agentWorkspaceCtx(agentId, userId);
+      const wrote = await bus.call<
+        ToolPolicySetAgentOverrideInput,
+        ToolPolicySetAgentOverrideOutput
+      >('tool-policy:set-agent-override', ctx, { agentId, toolKey, verdict });
+      if (wrote?.ok !== true) {
+        const refusal = wrote as { reason?: unknown; ceiling?: unknown } | undefined;
+        if (refusal?.reason === 'ceiling-violation') {
+          res.status(409).json({
+            error: 'ceiling-violation',
+            ceiling: isToolVerdict(refusal.ceiling) ? refusal.ceiling : 'hold',
+          });
+          return;
+        }
+        res.status(409).json({
+          error: 'verdict-not-saved',
+          reason: typeof refusal?.reason === 'string' ? refusal.reason : 'unknown',
+        });
+        return;
+      }
+      const out = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
+        'tool-policy:list-agent-overrides',
+        ctx,
+        { agentId },
+      );
+      const stored = (Array.isArray(out?.overrides) ? out.overrides : []).find(
+        (o) => o?.toolKey === toolKey,
+      );
+      if (stored === undefined) {
+        // The write said yes and the read says nothing is there. Say so
+        // rather than report a choice the gate is not holding.
+        res.status(409).json({ error: 'verdict-not-saved', reason: 'not-found-on-reread' });
+        return;
+      }
+      const ceiling = isToolVerdict(stored.ceiling) ? stored.ceiling : 'hold';
+      res.status(200).json({
+        tool: {
+          toolKey,
+          verdict: strictestVerdict(isToolVerdict(stored.verdict) ? stored.verdict : 'hold', ceiling),
+          ceiling,
+        },
+      } satisfies AgentToolVerdictSaved);
+    },
+
+    /**
      * PUT /api/workspace/agents/:agentId/memory/rules — save the human tier.
      *
      * This route does not write a file. It calls `memory:rules:write`, which
@@ -6823,6 +7261,18 @@ export async function registerWorkspaceRoutes(
       method: 'POST',
       path: '/api/workspace/agents/:agentId/connectors/:connectorId/retry',
       handler: handlers.retryConnector as unknown as RouteHandler,
+    },
+    {
+      // TASK-742 — one connector's details: its tools and this agent's
+      // Allow / Ask first / Deny for each.
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/tools',
+      handler: handlers.connectorTools as unknown as RouteHandler,
+    },
+    {
+      method: 'PUT',
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/tool-verdicts',
+      handler: handlers.setConnectorToolVerdict as unknown as RouteHandler,
     },
     {
       method: 'PUT',

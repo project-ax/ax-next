@@ -302,7 +302,7 @@ export function createChannelWebServerPlugin(
           // TASK-741 — the row menu's Retry: one forced check of one connector.
           hook: 'connectors:describe-tools',
           degradation:
-            'POST …/connectors/:connectorId/retry answers 503 (the list never offers Retry without an unreachable row, which needs the inventory)',
+            'POST …/connectors/:connectorId/retry answers 503 (the list never offers Retry without an unreachable row, which needs the inventory), and a connector\'s details view (TASK-742) cannot list the server\'s tools: it shows only the choices this agent already holds and says the list is unknown',
         },
         {
           // TASK-744 — names the connector behind a connector tool's opaque
@@ -372,6 +372,14 @@ export function createChannelWebServerPlugin(
           hook: 'tool-policy:set-agent-override',
           degradation:
             'the "Other abilities" switches are not drawn (there is no writer to honour them)',
+        },
+        {
+          // TASK-742 — a connector's details view shows each tool's
+          // Allow / Ask first / Deny under the admin's per-tool ceiling. The
+          // ceiling for a tool the agent has made no choice on lives here.
+          hook: 'tool-policy:get-connector-defaults',
+          degradation:
+            'a connector\'s details view says per-tool permissions are not available here instead of drawing choices that change nothing',
         },
         {
           // TASK-235 — the open decisions behind the queue and the approval
