@@ -301,27 +301,29 @@ describe('segments and the admin ceiling', () => {
 
   it('a save the server could not read back shows the saved choice and a soft reload note, never "Nothing changed" (TASK-757)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Delete issue: the admin capped it at Ask first, so Allow is out of reach.
     setMock.mockResolvedValue({
-      tool: { toolKey: `mcp.${NS}.Create issue`, verdict: 'deny' },
+      tool: { toolKey: `mcp.${NS}.Delete issue`, verdict: 'deny' },
       unconfirmed: true,
     });
     renderTab();
     await openDetails();
-    await screen.findByText('Create issue');
-    fireEvent.click(within(rowGroup('Create issue')).getByRole('radio', { name: 'Deny' }));
+    await screen.findByText('Delete issue');
+    fireEvent.click(within(rowGroup('Delete issue')).getByRole('radio', { name: 'Deny' }));
     expect(await screen.findByText(/Saved\. We couldn’t refresh this list just now, so reload to confirm\./)).toBeTruthy();
     expect(screen.queryByText(/Nothing changed/)).toBeNull();
     expect(
-      within(rowGroup('Create issue'))
+      within(rowGroup('Delete issue'))
         .getByRole('radio', { name: 'Deny' })
         .getAttribute('aria-checked'),
     ).toBe('true');
-    // No ceiling came back: the row keeps the one it had (Allow still open).
+    // No ceiling came back: the row keeps the one it had, so Allow stays out
+    // of reach rather than silently opening up.
     expect(
-      within(rowGroup('Create issue'))
+      within(rowGroup('Delete issue'))
         .getByRole('radio', { name: 'Allow' })
         .getAttribute('aria-disabled'),
-    ).toBeNull();
+    ).toBe('true');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[connector-tools]'));
     // The note is not an error alert.
     expect(screen.getByTestId('verdict-unconfirmed').className).not.toMatch(/destructive/);
