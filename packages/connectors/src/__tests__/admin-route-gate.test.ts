@@ -11,6 +11,11 @@ import {
   type TestHarness,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import {
+  createMemoryEgressAllowlistStore,
+  createMemoryVerdictStore,
+  createToolPolicyPlugin,
+} from '@ax/tool-policy';
 import { createConnectorsPlugin } from '../plugin.js';
 import {
   createConnectorRouteHandlers,
@@ -146,6 +151,11 @@ async function makeHarness(): Promise<TestHarness> {
       httpCaptureStub(),
       credentialsStub(),
       createConnectorsPlugin({ mountAdminRoutes: true }),
+      // TASK-737 — the tool-permissions routes need a permission store.
+      createToolPolicyPlugin({
+        egressStore: createMemoryEgressAllowlistStore(),
+        verdictStore: createMemoryVerdictStore(),
+      }),
     ],
   });
   harnesses.push(h);
@@ -285,10 +295,25 @@ const ADMIN_ROUTES: RouteCase[] = [
   },
   { label: 'POST /admin/connectors/:id/test', method: 'POST', path: '/admin/connectors/:id/test', opts: (id) => ({ params: { id } }), adminStatus: 200 },
   { label: 'DELETE /admin/connectors/:id', method: 'DELETE', path: '/admin/connectors/:id', opts: (id) => ({ params: { id } }), adminStatus: 204 },
+  // TASK-737 — per-tool default permissions.
+  {
+    label: 'GET /admin/connectors/:id/tool-permissions',
+    method: 'GET',
+    path: '/admin/connectors/:id/tool-permissions',
+    opts: (id) => ({ params: { id } }),
+    adminStatus: 200,
+  },
+  {
+    label: 'PUT /admin/connectors/:id/tool-permissions',
+    method: 'PUT',
+    path: '/admin/connectors/:id/tool-permissions',
+    opts: (id) => ({ params: { id }, body: { verdicts: [] } }),
+    adminStatus: 200,
+  },
 ];
 
 describe('/admin/connectors* is admin-only (TASK-698)', () => {
-  it('registers exactly the six admin routes this matrix covers (a new admin route must join the matrix)', async () => {
+  it('registers exactly the admin routes this matrix covers (a new admin route must join the matrix)', async () => {
     await makeHarness();
     const registered = [...routes.keys()].filter((k) => k.split(' ')[1]?.startsWith('/admin/connectors')).sort();
     expect(registered).toEqual(ADMIN_ROUTES.map((r) => `${r.method} ${r.path}`).sort());

@@ -41,6 +41,21 @@ describe('@ax/connectors plugin manifest', () => {
           degradation:
             'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
         },
+        {
+          hook: 'tool-policy:get-connector-defaults',
+          degradation:
+            'the connector editor cannot show per-tool permissions (the route answers 503)',
+        },
+        {
+          hook: 'tool-policy:set-connector-defaults',
+          degradation:
+            'the connector editor cannot save per-tool permissions (the route answers 503)',
+        },
+        {
+          hook: 'connectors:describe-tools',
+          degradation:
+            "the connector editor cannot list a connector's tools; saved per-tool permissions still show",
+        },
         // TASK-697 — the admin check on a workspace-keyed connector's owner.
         {
           hook: 'auth:get-user',
