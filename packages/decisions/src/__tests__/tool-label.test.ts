@@ -1,4 +1,5 @@
 import { makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import { connectorToolLabel as coreConnectorToolLabel } from '@ax/core/humanize';
 import { describe, expect, it } from 'vitest';
 import { createPreCallSubscriber, type PolicyAnswer } from '../pre-call.js';
 import { decisionText } from '../templates.js';
@@ -41,6 +42,23 @@ describe('tool-name humanizing (shared with channel-web via @ax/core/humanize â€
   it('flattens control characters and clamps a hostile name', () => {
     expect(connectorToolLabel(`mcp.${NS}.a\nb\u0000c`, null)).toBe('A b c');
     expect([...connectorToolLabel(`mcp.${NS}.${'x'.repeat(500)}`, null)!].length).toBeLessThanOrEqual(48);
+  });
+});
+
+describe('one label on every surface (TASK-753)', () => {
+  // channel-web's activity rail and transcript compose with the SAME core
+  // function (its own test pins that half against `@ax/core/humanize`), so
+  // equality with the core composer here is equality with the rail.
+  it.each(['create_pdf', 'create_issue', 'getFileContents', 'list-projects', 'export_csv'])(
+    '%s reads the same on the card as on the rail',
+    (tool) => {
+      const card = decisionText({ capability: null, toolName: `mcp.${NS}.${tool}`, connectorName: 'Linear' });
+      expect(card.summary).toBe(`Wants to use ${coreConnectorToolLabel('Linear', tool)}`);
+    },
+  );
+  it('with a cached title, too', () => {
+    const card = decisionText({ capability: null, toolName: KEY, connectorName: 'Linear', toolTitle: 'Open a ticket' });
+    expect(card.summary).toBe(`Wants to use ${coreConnectorToolLabel('Linear', 'create_issue', 'Open a ticket')}`);
   });
 });
 
