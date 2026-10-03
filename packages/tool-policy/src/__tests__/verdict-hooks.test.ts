@@ -293,6 +293,7 @@ describe('list-agent-overrides + snapshot-connector-for-agent', () => {
         { toolKey: SEND, verdict: 'deny', ceiling: 'hold', origin: 'user' },
         { toolKey: 'web_extract', verdict: 'hold', ceiling: 'hold', origin: 'user' },
       ],
+      copiedNamespaces: [],
     });
   });
 
@@ -328,6 +329,123 @@ describe('list-agent-overrides + snapshot-connector-for-agent', () => {
     expect(await verdictOf(h, SEND, 'agent-never-attached')).toBe('allow');
     await setDefaults(h, [{ toolKey: SEND, verdict: 'deny' }]);
     expect(await verdictOf(h, SEND)).toBe('deny');
+  });
+});
+
+// TASK-754 — the copy covers tools with NO default at copy time, too.
+describe('snapshot freezes unset tools (TASK-754)', () => {
+  const snapshot = (h: TestHarness, extra: Record<string, unknown> = {}, agentId = AGENT) =>
+    call<SnapshotConnectorForAgentOutput>(h, 'tool-policy:snapshot-connector-for-agent', {
+      agentId,
+      connectorId: 'gmail',
+      toolNamespaces: [NS],
+      ...extra,
+    });
+
+  it('a tool with no default at attach stays Ask first when the admin later allows it; a tightening still applies', async () => {
+    const h = await boot();
+    await snapshot(h);
+    // Warm the cache so a stale read would show.
+    expect(await verdictOf(h, SEND)).toBe('hold');
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    expect(await verdictOf(h, SEND)).toBe('hold');
+    // An agent that never copied follows the live default.
+    expect(await verdictOf(h, SEND, 'agent-never-attached')).toBe('allow');
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'deny' }]);
+    expect(await verdictOf(h, SEND)).toBe('deny');
+    // The namespace is reported, so a view can show the held tool honestly.
+    expect((await listOverrides(h)).copiedNamespaces).toEqual([NS]);
+    expect((await listOverrides(h, 'agent-never-attached')).copiedNamespaces).toEqual([]);
+  });
+
+  it('only the copied namespace is frozen; another connector’s tools still follow their defaults', async () => {
+    const h = await boot();
+    await snapshot(h);
+    await setDefaults(h, [{ toolKey: OTHER, verdict: 'allow' }], 'linear');
+    expect(await verdictOf(h, OTHER)).toBe('allow');
+  });
+
+  it('a person may still pick Allow for a frozen tool once the admin allows it', async () => {
+    const h = await boot();
+    await snapshot(h);
+    expect(await setOverride(h, SEND, 'allow')).toEqual({ ok: false, reason: 'ceiling-violation', ceiling: 'hold' });
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    expect(await setOverride(h, SEND, 'allow')).toEqual({ ok: true });
+    expect(await verdictOf(h, SEND)).toBe('allow');
+  });
+
+  it('default-on (onlyIfNotCopied): the first copy freezes, a later one copies nothing — so a loosening never lands', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: LIST, verdict: 'hold' }]);
+    expect(await snapshot(h, { onlyIfNotCopied: true })).toEqual({ copied: 1 });
+    await setDefaults(h, [
+      { toolKey: LIST, verdict: 'allow' },
+      { toolKey: SEND, verdict: 'allow' },
+    ]);
+    // Every later session open asks again; nothing is re-copied.
+    expect(await snapshot(h, { onlyIfNotCopied: true })).toEqual({ copied: 0 });
+    expect(await verdictOf(h, LIST)).toBe('hold');
+    expect(await verdictOf(h, SEND)).toBe('hold');
+    await setDefaults(h, [{ toolKey: LIST, verdict: 'deny' }]);
+    expect(await verdictOf(h, LIST)).toBe('deny');
+  });
+
+  it('default-on copy also skips the store when another process copied it (store claim, not only the cache)', async () => {
+    const store = createMemoryVerdictStore();
+    const h = await boot({ verdictStore: store });
+    await store.copyConnectorDefaults(AGENT, 'gmail', [NS], { onlyIfNotCopied: true }, 'elsewhere');
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    expect(await snapshot(h, { onlyIfNotCopied: true })).toEqual({ copied: 0 });
+    expect(await verdictOf(h, SEND)).toBe('hold');
+  });
+
+  it('an attach re-copies (overwriting copied rows, never a person’s own choice)', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'hold' }, { toolKey: LIST, verdict: 'hold' }]);
+    await snapshot(h, { onlyIfNotCopied: true });
+    await setOverride(h, LIST, 'deny');
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }, { toolKey: LIST, verdict: 'allow' }]);
+    expect(await snapshot(h)).toEqual({ copied: 1 });
+    expect(await verdictOf(h, SEND)).toBe('allow');
+    expect(await verdictOf(h, LIST)).toBe('deny');
+  });
+
+  it('refuses a non-boolean onlyIfNotCopied', async () => {
+    const h = await boot();
+    await expect(snapshot(h, { onlyIfNotCopied: 'yes' })).rejects.toThrow(/onlyIfNotCopied/);
+    expect((await listOverrides(h)).copiedNamespaces).toEqual([]);
+  });
+
+  it('agents:deleted, connectors:deleted and a removed server drop the record; a rename moves it', async () => {
+    const NEW = 'cabcdef0123';
+    const h = await boot();
+    await snapshot(h);
+    await snapshot(h, {}, 'agent-2');
+    await h.bus.fire('agents:deleted', h.ctx(), { agentId: 'agent-2', ownerId: 'u', ownerType: 'user' });
+    expect((await listOverrides(h, 'agent-2')).copiedNamespaces).toEqual([]);
+
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [{ from: { server: 's', toolNamespace: NS }, to: { server: 's', toolNamespace: NEW } }],
+      removed: [],
+    });
+    expect((await listOverrides(h)).copiedNamespaces).toEqual([NEW]);
+    await setDefaults(h, [{ toolKey: `mcp.${NEW}.send_message`, verdict: 'allow' }]);
+    expect(await verdictOf(h, `mcp.${NEW}.send_message`)).toBe('hold');
+
+    await h.bus.fire('connectors:deleted', h.ctx(), {
+      connectorId: 'gmail',
+      toolNamespaces: [{ server: 's', toolNamespace: NEW }],
+    });
+    expect((await listOverrides(h)).copiedNamespaces).toEqual([]);
+
+    await snapshot(h);
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [],
+      removed: [{ server: 's', toolNamespace: NS }],
+    });
+    expect((await listOverrides(h)).copiedNamespaces).toEqual([]);
   });
 });
 

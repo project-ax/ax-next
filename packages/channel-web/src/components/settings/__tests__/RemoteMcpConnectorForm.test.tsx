@@ -847,6 +847,8 @@ describe('tool permissions (TASK-737)', () => {
   it.each([
     [503, 'We saved the connector, but tool permissions can’t be saved right now. Try again in a little while.'],
     [400, 'We saved the connector, but these tool permissions didn’t look right to us. Reopen the connector and try again.'],
+    // TASK-754 — a 403 is not fixed by saving again, so it must not say to.
+    [403, 'We saved the connector, but your account can’t change its tool permissions. Ask a workspace admin to set them.'],
   ])('says why a tool-permissions save failed (%i)', async (status, message) => {
     serve(inventory({ defaults: [] }));
     toolPermsPut = () => new Response(JSON.stringify({ error: 'x' }), { status });

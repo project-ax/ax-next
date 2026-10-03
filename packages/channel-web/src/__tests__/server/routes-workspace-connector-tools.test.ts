@@ -20,7 +20,13 @@
  *   4. UNTRUSTED TEXT. A server's titles / descriptions are fenced.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
+import {
+  HookBus,
+  PluginError,
+  makeAgentContext,
+  type AgentContext,
+  type ServiceHandler,
+} from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import {
   createMemoryEgressAllowlistStore,
@@ -608,9 +614,10 @@ describe('connector details routes against the real tool-policy', () => {
     while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
   });
 
-  async function boot(): Promise<TestHarness> {
+  async function boot(extra: Record<string, ServiceHandler> = {}): Promise<TestHarness> {
     const h = await createTestHarness({
       services: {
+        ...extra,
         'auth:require-user': async () => ({ user: { id: 'u1', isAdmin: false } }),
         'agents:resolve': async (_c, i) => {
           const { agentId, userId } = i as { agentId: string; userId: string };
@@ -697,6 +704,46 @@ describe('connector details routes against the real tool-policy', () => {
       body: { error: 'ceiling-violation', ceiling: 'hold' },
     });
     expect(await evaluate(h)).toBe('hold');
+  });
+
+  // TASK-754 — a tool with no default when the agent copied the connector is
+  // Ask first for it after the admin first allows it; the details view says
+  // so too, instead of showing the live (looser) default.
+  it('a tool unset at copy time reads Ask first after a loosening, at the gate and in the view', async () => {
+    const h = await boot({
+      'connectors:describe-tools': async () => ({
+        status: 'ok',
+        checkedAt: '2026-10-03T10:00:00.000Z',
+        tools: [
+          {
+            name: 'send_message',
+            title: 'send_message',
+            description: '',
+            readOnly: false,
+            outward: true,
+            toolKey: SEND,
+          },
+        ],
+      }),
+    });
+    await h.bus.call('tool-policy:snapshot-connector-for-agent', h.ctx({ userId: 'u1' }), {
+      agentId: AGENT,
+      connectorId: 'gmail',
+      toolNamespaces: [NS],
+    });
+    expect(await adminDefault(h, 'allow')).toEqual({ ok: true });
+    expect(await evaluate(h)).toBe('hold');
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus: h.bus, initCtx }).connectorTools(
+      mkReq({ agentId: AGENT, connectorId: 'gmail' }),
+      res,
+    );
+    expect(toolsOfAny(captured)).toEqual([
+      expect.objectContaining({ toolKey: SEND, verdict: 'hold', ceiling: 'allow' }),
+    ]);
+    // The person may still choose Allow now that the admin allows it.
+    expect((await putVerdict(h, 'allow')).statusCode).toBe(200);
+    expect(await evaluate(h)).toBe('allow');
   });
 });
 

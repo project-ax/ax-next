@@ -210,6 +210,54 @@ export async function resolveEffectiveConnectors(
 }
 
 /**
+ * TASK-754 — "copy on attach" for connectors that reach the agent WITHOUT an
+ * attach (a workspace default, a skill-referenced connector). Design decision
+ * 2 says an agent copies the connector's per-tool defaults when it gets the
+ * connector, so an editor LOOSENING one later does not loosen agents already
+ * using it. An attach copies through `@ax/agents`; a default-on connector has
+ * no attach, so its first session is the moment it reaches the agent.
+ *
+ * `onlyIfNotCopied: true`: tool-policy copies a namespace only the first time
+ * it sees it for this agent and never overwrites a row, so calling this every
+ * session is idempotent (and served from tool-policy's cache once copied).
+ *
+ * hasService-gated and NON-FATAL, per connector: a failed copy leaves the
+ * agent on the connector's LIVE defaults — what the editor set, never wider —
+ * and the session opens. Runs BEFORE the sandbox exists, so before any tool
+ * call can be evaluated against a not-yet-copied namespace.
+ */
+export async function copyConnectorDefaultsForSession(
+  bus: HookBus,
+  ctx: AgentContext,
+  connectors: readonly ResolvedConnectorForOrch[],
+): Promise<void> {
+  if (!bus.hasService('tool-policy:snapshot-connector-for-agent')) return;
+  for (const c of connectors) {
+    const toolNamespaces = [
+      ...new Set(
+        (c.toolNamespaces ?? [])
+          .map((e) => e?.toolNamespace)
+          .filter((ns): ns is string => typeof ns === 'string' && CONNECTOR_TOOL_NAMESPACE_RE.test(ns)),
+      ),
+    ];
+    if (toolNamespaces.length === 0) continue;
+    try {
+      await bus.call('tool-policy:snapshot-connector-for-agent', ctx, {
+        agentId: ctx.agentId,
+        connectorId: c.id,
+        toolNamespaces,
+        onlyIfNotCopied: true,
+      });
+    } catch (err) {
+      ctx.logger.warn('connector_defaults_copy_failed', {
+        connectorId: c.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+/**
  * Resolve the connectors a SKILL declares via its top-level `connectors[]`
  * reference list (TASK-92) into the SAME `ResolvedConnectorForOrch` shape the
  * agent effective set uses, so the caller can fold them through the EXISTING

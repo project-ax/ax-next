@@ -8,6 +8,10 @@ import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
 // connector-for-agent`). The copy is what makes a later admin LOOSENING not
 // silently loosen agents already using the connector; a later TIGHTENING still
 // applies, because the default stays a live ceiling inside tool-policy.
+// tool-policy also records the namespace as copied (TASK-754), so a tool that
+// had NO default at attach stays Ask first instead of following the live one.
+// (A workspace-default connector never attaches; the orchestrator copies it on
+// the agent's first session instead.)
 //
 // Only NEWLY added ids snapshot. Re-snapshotting an id that was already
 // attached would re-copy today's (possibly looser) default over the copy taken

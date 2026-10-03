@@ -205,10 +205,10 @@ describe('snapshot-on-attach (agents:set-connector-attachments)', () => {
     expect(await verdictOf(h, fresh, CREATE)).toBe('allow');
   });
 
-  it('KNOWN LIMIT: a tool with no default at attach has nothing to copy, so it follows the live default — a later first-time Allow applies', async () => {
-    // Pins today's behaviour so a change to it is deliberate (design doc,
-    // "As built (TASK-737)"). Before the editor sets anything, the tool asks
-    // first; the copy cannot freeze a value that did not exist.
+  it('a tool with no default at attach stays Ask first after the editor first allows it; a tightening still applies (TASK-754)', async () => {
+    // Was a KNOWN LIMIT under TASK-737: with nothing to copy, the tool
+    // followed the live default, looser included. The copy now records the
+    // namespace, and "no default when I attached" is kept as Ask first.
     const h = await makeHarness();
     const agentId = await newAgent(h);
     await attach(h, agentId, ['linear']);
@@ -216,7 +216,13 @@ describe('snapshot-on-attach (agents:set-connector-attachments)', () => {
     expect(await verdictOf(h, agentId, CREATE)).toBe('hold');
 
     await setDefaults(h, [{ toolKey: CREATE, verdict: 'allow' }]);
-    expect(await verdictOf(h, agentId, CREATE)).toBe('allow');
+    expect(await verdictOf(h, agentId, CREATE)).toBe('hold');
+    // An agent that never attached it follows the live default.
+    const other = await newAgent(h, 'Other');
+    expect(await verdictOf(h, other, CREATE)).toBe('allow');
+
+    await setDefaults(h, [{ toolKey: CREATE, verdict: 'deny' }]);
+    expect(await verdictOf(h, agentId, CREATE)).toBe('deny');
   });
 
   it('an admin attaching to someone else’s agent still resolves the connector as the agent owner', async () => {
