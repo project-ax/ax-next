@@ -1012,3 +1012,34 @@ export interface AgentAbilityWrite {
   ability: AgentAbility;
   enabled: boolean;
 }
+
+/**
+ * Where a connector in an agent's list comes from (TASK-739, connectors-rail
+ * slice 6). Removing one does different things per source — an `attached` one
+ * is detached, a `default` or `legacy-owned` one is excluded from THIS agent
+ * only — so the server keeps the word and the browser never decides it.
+ */
+export type AgentConnectorSource = 'default' | 'attached' | 'legacy-owned';
+
+export interface AgentConnectorRow {
+  id: string;
+  name: string;
+  source: AgentConnectorSource;
+  /** The caller may open this connector's editor. */
+  editable: boolean;
+}
+
+/** `GET /api/workspace/agents/:agentId/connectors` answers this. */
+export interface AgentConnectorsRead {
+  connectors: AgentConnectorRow[];
+}
+
+/**
+ * `DELETE /api/workspace/agents/:agentId/connectors/:connectorId`.
+ * `cleanup: 'partial'` = the connector is gone from the agent, but a per-tool
+ * choice or an approved access it held could not be cleared just now.
+ */
+export interface AgentConnectorRemoved {
+  removed: true;
+  cleanup: 'complete' | 'partial';
+}

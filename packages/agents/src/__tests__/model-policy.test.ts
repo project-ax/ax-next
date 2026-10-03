@@ -91,6 +91,7 @@ const baseAgent: Agent = {
   workspaceRef: null,
   skillAttachments: [],
   connectorAttachments: [],
+  connectorExclusions: [],
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };

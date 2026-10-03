@@ -14,20 +14,20 @@ import { createHash } from 'node:crypto';
 // shape, lifted out of the skill"), so it folds through the SAME path.
 //
 // EFFECTIVE SET. The design's effective set = catalog defaults + manager-added
-// per-agent attachments + the owner's private items. ALL THREE are wired here
-// (TASK-107 added the third): workspace DEFAULTS (`connectors:list-defaults`),
-// the manager-added per-agent ATTACHMENTS (the connector ids the agent row's
-// `connector_attachments` store carries, resolved via `connectors:resolve`), and
-// legacy owned items (`connectors:list` + `connectors:resolve`). New definitions
-// require an explicit attachment; foreign shared items never attach implicitly.
-// `resolveEffectiveConnectors` dedupes all three by id. (TASK-97 wired defaults +
-// private with the attachment slot left for TASK-107 to fill — which it now does;
-// the per-agent attachment store replaced TASK-98's `mcpConfigIds` stopgap.)
+// per-agent attachments + the owner's legacy items, minus the agent's
+// exclusions. ONE implementation owns that union: `connectors:list-effective`
+// (@ax/connectors, TASK-739), which the agent connector list UI reads too, so
+// what the person sees on the agent and what the sandbox gets cannot drift.
+// The orchestrator only forwards the agent row's `connector_attachments` +
+// `connector_exclusions` and folds the result. New definitions require an
+// explicit attachment; foreign shared items never attach implicitly — both
+// enforced store-side by the hook.
 //
 // NON-FATAL. Connectors are ADDITIVE reach. Every resolve here fails OPEN (log +
-// skip): a throwing/absent `connectors:list-defaults` or a per-connector resolve
-// failure yields FEWER connectors, never wider reach, and NEVER terminates the
-// session (same posture as `skills:list-defaults` / `host-grants:list`).
+// skip): a throwing/absent `connectors:list-effective` or a per-connector
+// resolve failure yields FEWER connectors, never wider reach, and NEVER
+// terminates the session (same posture as `skills:list-defaults` /
+// `host-grants:list`).
 //
 // APPROVAL. Catalog/default/private connectors are admin/owner-CURATED, so their
 // caps flow into the sandbox directly — the SAME trust posture as catalog/default
@@ -121,7 +121,7 @@ export interface ConnectorToolNamespace {
 /** The only namespace shape the fold will materialize as a `.mcp.json` key. */
 export const CONNECTOR_TOOL_NAMESPACE_RE = /^c[0-9a-f]{10}$/;
 
-// Structural mirror of @ax/connectors' ResolveOutput / list-defaults connector
+// Structural mirror of @ax/connectors' ResolveOutput / list-effective connector
 // (I2 — no @ax/connectors import). Only the fields the union folds.
 export interface ResolvedConnectorForOrch {
   id: string;
@@ -136,20 +136,15 @@ export interface ResolvedConnectorForOrch {
   toolNamespaces?: ConnectorToolNamespace[];
 }
 
-// connectors:list-defaults — registered by @ax/connectors (TASK-97). Returns
-// FULL connectors (capabilities included). Structural mirror per I2.
-interface ConnectorsListDefaultsOutput {
+// connectors:list-effective — registered by @ax/connectors (TASK-739). The
+// agent's effective set, FULL (capabilities included). Structural mirror per I2;
+// only the fields the fold reads.
+interface ConnectorsListEffectiveOutput {
   connectors: Array<{
-    id: string;
+    summary: { id: string; usageNote?: string };
     capabilities: ConnectorCapabilities;
-    usageNote?: string;
     toolNamespaces?: ConnectorToolNamespace[];
   }>;
-}
-// connectors:list — owned and shared summaries (no capabilities). Structural
-// mirror per I2.
-interface ConnectorsListOutput {
-  connectors: Array<{ id: string; canEdit?: boolean; requiresAttachment?: boolean }>;
 }
 // connectors:resolve — the mechanism-agnostic spec descriptor. Structural mirror.
 interface ConnectorsResolveOutput {
@@ -159,9 +154,8 @@ interface ConnectorsResolveOutput {
   toolNamespaces?: ConnectorToolNamespace[];
 }
 
-/** Project a hook result onto the orchestrator's connector shape, carrying the
- *  optional fields only when present. Shared by every resolve source so a new
- *  field cannot be carried by one path and silently dropped by another. */
+/** Project a resolve result onto the orchestrator's connector shape, carrying
+ *  the optional fields only when present. */
 function toResolvedConnector(c: ConnectorsResolveOutput): ResolvedConnectorForOrch {
   return {
     id: c.id,
@@ -172,109 +166,47 @@ function toResolvedConnector(c: ConnectorsResolveOutput): ResolvedConnectorForOr
 }
 
 /**
- * Resolve the agent's effective connector set (workspace defaults ∪ the agent's
- * per-agent ATTACHMENTS ∪ the owner's own connectors), deduped by id. All reads
- * are hasService-gated and NON-FATAL — a failure logs + yields fewer connectors,
- * never terminates.
+ * Resolve the agent's effective connector set via `connectors:list-effective`
+ * (workspace defaults ∪ the agent's per-agent ATTACHMENTS ∪ the owner's legacy
+ * connectors, deduped by id, minus `exclusions`). The union lives store-side;
+ * this only forwards the agent row's lists and projects the result.
  *
- * Defaults come first so they win the dedupe on an id collision; the attachments
- * and the owner's own connectors of the same id carry the same capabilities (the
- * store keys by (owner, id)), so precedence here only affects which copy is
- * folded, not the resulting reach.
+ * hasService-gated and NON-FATAL — an absent hook or a throw logs + yields [],
+ * never terminates the session.
  *
- * `attachmentIds` is the agent row's `connector_attachments` store (TASK-107):
- * the connector ids a manager attached to THIS agent. Resolved via
- * `connectors:resolve` under the chat user, deduped against the defaults. This
- * replaced TASK-98's stopgap that overloaded `mcpConfigIds`; an empty/absent
- * list contributes nothing.
+ * `attachmentIds` is the agent row's `connector_attachments` (TASK-107);
+ * `exclusions` is its `connector_exclusions` (TASK-739) — ids the person removed
+ * from this agent that would otherwise arrive as a default or legacy item.
  */
 export async function resolveEffectiveConnectors(
   bus: HookBus,
   ctx: AgentContext,
   attachmentIds: readonly string[] = [],
+  exclusions: readonly string[] = [],
 ): Promise<ResolvedConnectorForOrch[]> {
-  const byId = new Map<string, ResolvedConnectorForOrch>();
-
-  // 1. Workspace DEFAULTS — admin-curated default-on connectors.
-  if (bus.hasService('connectors:list-defaults')) {
-    try {
-      const r = await bus.call<{ userId?: string }, ConnectorsListDefaultsOutput>(
-        'connectors:list-defaults',
-        ctx,
-        { userId: ctx.userId },
-      );
-      for (const c of r.connectors) {
-        if (!byId.has(c.id)) {
-          byId.set(c.id, toResolvedConnector(c));
-        }
-      }
-    } catch (err) {
-      // Same convention as skills_list_defaults_failed — non-fatal, additive reach.
-      ctx.logger.warn('connectors_list_defaults_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+  if (!bus.hasService('connectors:list-effective')) return [];
+  try {
+    const r = await bus.call<
+      { userId: string; attachmentIds: string[]; exclusions: string[] },
+      ConnectorsListEffectiveOutput
+    >('connectors:list-effective', ctx, {
+      userId: ctx.userId,
+      attachmentIds: [...attachmentIds],
+      exclusions: [...exclusions],
+    });
+    return r.connectors.map((c) => ({
+      id: c.summary.id,
+      capabilities: c.capabilities,
+      ...(c.summary.usageNote !== undefined ? { usageNote: c.summary.usageNote } : {}),
+      ...(c.toolNamespaces !== undefined ? { toolNamespaces: c.toolNamespaces } : {}),
+    }));
+  } catch (err) {
+    // Same convention as skills_list_defaults_failed — non-fatal, additive reach.
+    ctx.logger.warn('connectors_list_effective_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
   }
-
-  // 2. The manager-added per-agent ATTACHMENTS (TASK-107) — the connector ids
-  //    this agent's `connector_attachments` store carries. Resolve each id (skip
-  //    ones already folded as a default). A per-connector resolve failure skips
-  //    that one connector (non-fatal): a dangling/unapproved attachment id grants
-  //    NO reach (connectors:resolve reads only the LIVE owner-scoped table).
-  if (attachmentIds.length > 0 && bus.hasService('connectors:resolve')) {
-    for (const connectorId of attachmentIds) {
-      if (byId.has(connectorId)) continue; // already folded as a default
-      try {
-        const resolved = await bus.call<
-          { userId: string; connectorId: string },
-          ConnectorsResolveOutput
-        >('connectors:resolve', ctx, { userId: ctx.userId, connectorId });
-        byId.set(resolved.id, toResolvedConnector(resolved));
-      } catch (err) {
-        ctx.logger.warn('connector_attachment_resolve_failed', {
-          connectorId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
-
-  // 3. Legacy owned items retain their existing implicit attachment. Listing
-  //    is metadata-only, so resolve eligible ids for capabilities. A per-connector
-  //    resolve failure skips that one connector (non-fatal), never the session.
-  if (bus.hasService('connectors:list') && bus.hasService('connectors:resolve')) {
-    try {
-      const listed = await bus.call<{ userId: string }, ConnectorsListOutput>(
-        'connectors:list',
-        ctx,
-        { userId: ctx.userId },
-      );
-      for (const summary of listed.connectors) {
-        // Listing grants discovery, never automatic execution of shared or new
-        // definitions. Preserve implicit attachment only for legacy owned rows.
-        if (summary.canEdit === false || summary.requiresAttachment === true) continue;
-        if (byId.has(summary.id)) continue; // already folded as a default
-        try {
-          const resolved = await bus.call<
-            { userId: string; connectorId: string },
-            ConnectorsResolveOutput
-          >('connectors:resolve', ctx, { userId: ctx.userId, connectorId: summary.id });
-          byId.set(resolved.id, toResolvedConnector(resolved));
-        } catch (err) {
-          ctx.logger.warn('connector_resolve_failed', {
-            connectorId: summary.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-    } catch (err) {
-      ctx.logger.warn('connectors_list_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  return [...byId.values()];
 }
 
 /**
@@ -283,7 +215,7 @@ export async function resolveEffectiveConnectors(
  * agent effective set uses, so the caller can fold them through the EXISTING
  * `foldConnectorCaps` path (TASK-111 — the skill→connector cap-resolution
  * bridge). This is the skill-driven twin of `resolveEffectiveConnectors`: the
- * agent path resolves the agent's effective set (defaults ∪ owner's private),
+ * agent path resolves the agent's effective set (connectors:list-effective),
  * THIS path resolves the connectors a skill in the spawn union references.
  *
  * `connectorIds` is the union of every materialized skill's `connectors[]`;

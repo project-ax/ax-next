@@ -850,6 +850,8 @@ describe('@ax/preset-k8s wiring', () => {
     expect(connectors!.manifest.registers).toEqual([
       'connectors:list',
       'connectors:list-defaults',
+      // TASK-739 — an agent's effective connector set.
+      'connectors:list-effective',
       'connectors:get',
       'connectors:upsert',
       'connectors:delete',

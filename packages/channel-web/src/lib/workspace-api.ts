@@ -69,9 +69,11 @@ import type {
   AgentAbilitiesRead,
   AgentAbility,
   AgentAbilityWrite,
+  AgentConnectorRemoved,
+  AgentConnectorsRead,
   AgentMemoryRead,
   AgentRailData,
-  CounterRow,
+CounterRow,
   Decision,
   FactMemoryPage,
   FactMemoryStatement,
@@ -902,6 +904,23 @@ export const workspaceApi = {
       method: 'PUT',
       body: { ability, enabled } satisfies AgentAbilityWrite,
     }),
+
+  /**
+   * The Connectors tab's list (TASK-739): every connector this agent can use,
+   * whatever brought it there.
+   */
+  connectors: (agentId: string) =>
+    req<AgentConnectorsRead>(`/agents/${encodeURIComponent(agentId)}/connectors`),
+
+  /**
+   * "Remove from <agent>". The server decides what removing means for this
+   * connector's source; the browser only names the connector.
+   */
+  removeConnector: (agentId: string, connectorId: string) =>
+    req<AgentConnectorRemoved>(
+      `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}`,
+      { method: 'DELETE' },
+    ),
 
   /**
    * Turn a pending grant down, durably (TASK-444).

@@ -256,6 +256,26 @@ function validateMcpConfigIds(value: unknown): string[] {
 const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const CONNECTOR_ID_MAX = 128;
 const CONNECTOR_ATTACHMENTS_MAX = 50;
+// TASK-739 — exclusions hide defaults / legacy-owned connectors; bounded so a
+// caller can't grow the row without limit.
+const CONNECTOR_EXCLUSIONS_MAX = 100;
+
+/**
+ * TASK-739 — validate ONE connector id (the attach / detach hooks). Same
+ * grammar as validateConnectorAttachmentIds; returns the id unchanged.
+ */
+export function validateConnectorId(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw invalid('connectorId must be a string');
+  }
+  if (value.length === 0 || value.length > CONNECTOR_ID_MAX) {
+    throw invalid(`connectorId must be 1-${CONNECTOR_ID_MAX} chars`);
+  }
+  if (!CONNECTOR_ID_RE.test(value)) {
+    throw invalid(`connectorId '${value}' must match ${CONNECTOR_ID_RE.source}`);
+  }
+  return value;
+}
 
 /**
  * Validate a per-agent connector-attachment id list: bounded count, each a
@@ -562,6 +582,19 @@ function rowToAgent(row: AgentsRow): Agent {
     });
   }
   const connectorAttachments = connectorAttachmentsRaw as string[];
+  // TASK-739 — same posture for connector_exclusions.
+  const connectorExclusionsRaw = row.connector_exclusions;
+  if (
+    !Array.isArray(connectorExclusionsRaw) ||
+    !connectorExclusionsRaw.every((s) => typeof s === 'string')
+  ) {
+    throw new PluginError({
+      code: 'corrupt-row',
+      plugin: PLUGIN_NAME,
+      message: `agents_v1_agents.${row.agent_id} has invalid connector_exclusions JSONB`,
+    });
+  }
+  const connectorExclusions = connectorExclusionsRaw as string[];
   return {
     id: row.agent_id,
     ownerId: row.owner_id,
@@ -576,6 +609,7 @@ function rowToAgent(row: AgentsRow): Agent {
     workspaceRef: row.workspace_ref,
     skillAttachments,
     connectorAttachments,
+    connectorExclusions,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -586,6 +620,11 @@ export interface AgentStoreCreateArgs {
   ownerType: 'user' | 'team';
   validated: ValidatedAgentInput;
   tx?: Transaction<unknown>;
+}
+
+export interface ConnectorEditResult {
+  agent: Agent;
+  changed: boolean;
 }
 
 export interface AgentStore {
@@ -647,6 +686,26 @@ export interface AgentStore {
    */
   setConnectorAttachments(agentId: string, connectorIds: string[]): Promise<Agent>;
   /**
+   * TASK-739 — attach ONE connector: append to connector_attachments if absent
+   * (max 50 → invalid-payload) and drop it from connector_exclusions. ONE
+   * transaction holding the row lock (`SELECT … FOR UPDATE`), so concurrent
+   * attach / detach calls on the same agent serialize instead of losing a
+   * write. `changed` is whether either array changed. Throws not-found.
+   * The caller pre-validates the id (validateConnectorId) and the ACL.
+   */
+  attachConnector(agentId: string, connectorId: string): Promise<ConnectorEditResult>;
+  /**
+   * TASK-739 — detach ONE connector: drop it from connector_attachments; when
+   * `exclude`, also add it to connector_exclusions if absent (max 100 →
+   * invalid-payload). Same row-locked transaction + `changed` semantics as
+   * attachConnector.
+   */
+  detachConnector(
+    agentId: string,
+    connectorId: string,
+    exclude: boolean,
+  ): Promise<ConnectorEditResult>;
+  /**
    * Read-only enumeration of every agent id. Used by callers that need to
    * iterate the agent set without paying for full row hydration — e.g.,
    * the @ax/routines tick loop's lazy materialization of default rows. No
@@ -707,6 +766,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           workspace_ref: validated.workspaceRef,
           skill_attachments: JSON.stringify([]) as unknown,
           connector_attachments: JSON.stringify([]) as unknown,
+          connector_exclusions: JSON.stringify([]) as unknown,
           created_at: now,
           updated_at: now,
         } as never)
@@ -724,6 +784,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'webhook_token',
           'skill_attachments',
           'connector_attachments',
+          'connector_exclusions',
           'created_at',
           'updated_at',
         ])
@@ -763,6 +824,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'webhook_token',
           'skill_attachments',
           'connector_attachments',
+          'connector_exclusions',
           'created_at',
           'updated_at',
         ])
@@ -895,6 +957,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'webhook_token',
           'skill_attachments',
           'connector_attachments',
+          'connector_exclusions',
           'created_at',
           'updated_at',
         ])
@@ -931,6 +994,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'webhook_token',
           'skill_attachments',
           'connector_attachments',
+          'connector_exclusions',
           'created_at',
           'updated_at',
         ])
@@ -944,5 +1008,93 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       }
       return rowToAgent(row as AgentsRow);
     },
+
+    async attachConnector(agentId, connectorId) {
+      return editConnectorLists(db, agentId, (attachments, exclusions) => {
+        const nextAttachments = attachments.includes(connectorId)
+          ? attachments
+          : [...attachments, connectorId];
+        if (nextAttachments.length > CONNECTOR_ATTACHMENTS_MAX) {
+          throw invalid(
+            `connectorAttachments must have at most ${CONNECTOR_ATTACHMENTS_MAX} entries`,
+          );
+        }
+        return {
+          attachments: nextAttachments,
+          exclusions: exclusions.filter((id) => id !== connectorId),
+        };
+      });
+    },
+
+    async detachConnector(agentId, connectorId, exclude) {
+      return editConnectorLists(db, agentId, (attachments, exclusions) => {
+        const nextExclusions =
+          exclude && !exclusions.includes(connectorId)
+            ? [...exclusions, connectorId]
+            : exclusions;
+        if (nextExclusions.length > CONNECTOR_EXCLUSIONS_MAX) {
+          throw invalid(
+            `connectorExclusions must have at most ${CONNECTOR_EXCLUSIONS_MAX} entries`,
+          );
+        }
+        return {
+          attachments: attachments.filter((id) => id !== connectorId),
+          exclusions: nextExclusions,
+        };
+      });
+    },
   };
+}
+
+/**
+ * TASK-739 — the one read-modify-write path for the two connector id lists.
+ * `SELECT … FOR UPDATE` inside a transaction holds the row lock until commit,
+ * so a concurrent edit blocks on the select and then reads THIS edit's result
+ * (no lost update). The next arrays are computed in JS by `compute`; the row is
+ * only written when something changed.
+ */
+async function editConnectorLists(
+  db: Kysely<AgentsDatabase>,
+  agentId: string,
+  compute: (
+    attachments: string[],
+    exclusions: string[],
+  ) => { attachments: string[]; exclusions: string[] },
+): Promise<ConnectorEditResult> {
+  return db.transaction().execute(async (trx) => {
+    const row = await trx
+      .selectFrom('agents_v1_agents')
+      .selectAll('agents_v1_agents')
+      .where('agent_id', '=', agentId)
+      .forUpdate()
+      .executeTakeFirst();
+    if (row === undefined) {
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        message: `agent '${agentId}' not found`,
+      });
+    }
+    const current = rowToAgent(row);
+    const next = compute(current.connectorAttachments, current.connectorExclusions);
+    const changed =
+      !sameList(next.attachments, current.connectorAttachments) ||
+      !sameList(next.exclusions, current.connectorExclusions);
+    if (!changed) return { agent: current, changed: false };
+    const updated = await trx
+      .updateTable('agents_v1_agents')
+      .set({
+        connector_attachments: JSON.stringify(next.attachments) as unknown,
+        connector_exclusions: JSON.stringify(next.exclusions) as unknown,
+        updated_at: new Date(),
+      } as never)
+      .where('agent_id', '=', agentId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return { agent: rowToAgent(updated as AgentsRow), changed: true };
+  });
+}
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }

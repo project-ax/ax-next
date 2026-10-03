@@ -94,6 +94,17 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ADD COLUMN IF NOT EXISTS connector_attachments JSONB NOT NULL DEFAULT '[]'
   `.execute(db);
 
+  // TASK-739: per-agent connector EXCLUSIONS — connector ids the owner removed
+  // from this agent although they reach it by another source (a default or a
+  // legacy owned connector). A plain array of connector-id slugs. Additive +
+  // idempotent; NOT NULL DEFAULT '[]' means every existing row excludes
+  // nothing (today's behaviour). Written only by agents:attach-connector /
+  // agents:detach-connector (one row-locked transaction each).
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS connector_exclusions JSONB NOT NULL DEFAULT '[]'
+  `.execute(db);
+
   // TASK-142 (conversational-agent-identity Phase 4): DROP the legacy
   // `system_prompt` column. Identity now lives exclusively in the agent's
   // `.ax/` files (IDENTITY.md / SOUL.md / AGENTS.md) — the single source of
@@ -159,6 +170,7 @@ export interface AgentsRow {
   webhook_token: string | null;
   skill_attachments: unknown; // JSONB; validated by store
   connector_attachments: unknown; // JSONB; validated by store (TASK-107)
+  connector_exclusions: unknown; // JSONB; validated by store (TASK-739)
   created_at: Date;
   updated_at: Date;
 }

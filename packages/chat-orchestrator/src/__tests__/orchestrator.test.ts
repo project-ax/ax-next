@@ -3034,7 +3034,11 @@ describe('chat-orchestrator', () => {
   // ---------------------------------------------------------------------
 
   /** A connectors:resolve stub: resolves each id from the supplied map; an id
-   *  not in the map throws (exercises the NON-FATAL skip). Records resolve calls. */
+   *  not in the map throws (exercises the NON-FATAL skip). Records resolve calls.
+   *
+   *  TASK-739 — also stubs `connectors:list-effective` (the agent effective set):
+   *  the agent's `attachmentIds` that exist in the map, then `legacyOwned` ids,
+   *  minus `exclusions`, deduped. Records each list-effective input. */
   function buildConnectorResolveHook(
     connectors: Record<
       string,
@@ -3047,11 +3051,42 @@ describe('chat-orchestrator', () => {
         services?: unknown[];
       }
     >,
-  ): { resolveCalls: string[]; services: Record<string, ServiceHandler> } {
+    opts: { legacyOwned?: string[] } = {},
+  ): {
+    resolveCalls: string[];
+    effectiveInputs: Array<{ userId: string; attachmentIds: string[]; exclusions: string[] }>;
+    services: Record<string, ServiceHandler>;
+  } {
     const resolveCalls: string[] = [];
+    const effectiveInputs: Array<{ userId: string; attachmentIds: string[]; exclusions: string[] }> = [];
+    const capsOf = (c: (typeof connectors)[string]) => ({
+      allowedHosts: c.allowedHosts,
+      credentials: c.credentials,
+      mcpServers: c.mcpServers ?? [],
+      packages: c.packages ?? { npm: [], pypi: [] },
+      // TASK-153 — pass declared services through; the store round-trips
+      // `services: []` for a connector that declares none.
+      services: c.services ?? [],
+    });
     return {
       resolveCalls,
+      effectiveInputs,
       services: {
+        'connectors:list-effective': async (_ctx, input) => {
+          const i = input as { userId: string; attachmentIds: string[]; exclusions: string[] };
+          effectiveInputs.push(i);
+          const out: Array<Record<string, unknown>> = [];
+          const seen = new Set<string>(i.exclusions);
+          const push = (id: string, source: string) => {
+            const c = connectors[id];
+            if (c === undefined || seen.has(id)) return;
+            seen.add(id);
+            out.push({ summary: { id }, source, capabilities: capsOf(c) });
+          };
+          for (const id of i.attachmentIds) push(id, 'attached');
+          for (const id of opts.legacyOwned ?? []) push(id, 'legacy-owned');
+          return { connectors: out };
+        },
         'connectors:resolve': async (_ctx, input) => {
           const id = (input as { connectorId: string }).connectorId;
           resolveCalls.push(id);
@@ -3060,15 +3095,7 @@ describe('chat-orchestrator', () => {
           return {
             id,
             keyMode: 'personal',
-            capabilities: {
-              allowedHosts: c.allowedHosts,
-              credentials: c.credentials,
-              mcpServers: c.mcpServers ?? [],
-              packages: c.packages ?? { npm: [], pypi: [] },
-              // TASK-153 — pass declared services through; the store round-trips
-              // `services: []` for a connector that declares none.
-              services: c.services ?? [],
-            },
+            capabilities: capsOf(c),
             credentialPlan: [],
             requiresSharedKeyConsent: false,
           };
@@ -3178,18 +3205,18 @@ describe('chat-orchestrator', () => {
         },
       },
     });
-    const connHook = buildConnectorResolveHook({
-      shared: {
-        allowedHosts: ['api.shared.example'],
-        credentials: [],
+    const connHook = buildConnectorResolveHook(
+      {
+        shared: {
+          allowedHosts: ['api.shared.example'],
+          credentials: [],
+        },
       },
-    });
-    // The agent effective set ALSO carries `shared` (owner's own connector),
-    // so the skill reference must dedup against it — resolved by the effective
-    // path, NOT re-resolved by the skill path.
-    const effectiveServices: Record<string, ServiceHandler> = {
-      'connectors:list': async () => ({ connectors: [{ id: 'shared' }] }),
-    };
+      // The agent effective set ALSO carries `shared` (owner's legacy
+      // connector), so the skill reference must dedup against it — folded by
+      // the effective path, NOT re-resolved by the skill path.
+      { legacyOwned: ['shared'] },
+    );
     const busRef: { current: HookBus | null } = { current: null };
     const mocks = buildMocks({
       agentsResolve: async () => ({
@@ -3209,7 +3236,6 @@ describe('chat-orchestrator', () => {
       proxy.services,
       skillsHooks.services,
       connHook.services,
-      effectiveServices,
     );
     const h = await createTestHarness({
       services: mocks.services,
@@ -3223,9 +3249,10 @@ describe('chat-orchestrator', () => {
       silentCtx('skill-connector-dedup'),
       { message: { role: 'user', content: 'hi' } },
     );
-    // `shared` resolved exactly once (via the effective `connectors:list` →
-    // `connectors:resolve`); the skill path saw it in alreadyResolved and skipped.
-    expect(connHook.resolveCalls.filter((id) => id === 'shared')).toHaveLength(1);
+    // `shared` arrived via the effective set (connectors:list-effective); the
+    // skill path saw it in alreadyResolved and never resolved it again.
+    expect(connHook.effectiveInputs).toHaveLength(1);
+    expect(connHook.resolveCalls.filter((id) => id === 'shared')).toHaveLength(0);
     // Folded once → exactly one installed entry for it.
     const sandboxIn = mocks.calls.lastSandboxInput as {
       installedSkills?: Array<{ id: string }>;
@@ -3314,7 +3341,12 @@ describe('chat-orchestrator', () => {
     extraServices?: Record<string, ServiceHandler>;
   }) {
     const proxy = buildProxyHooks();
-    const connHook = buildConnectorResolveHook(opts.connectors);
+    // The owner's legacy connectors arrive through connectors:list-effective.
+    // This is the approved-connector wall — a pending connector would have no
+    // row, so it never reaches the effective set.
+    const connHook = buildConnectorResolveHook(opts.connectors, {
+      legacyOwned: Object.keys(opts.connectors),
+    });
     const busRef: { current: HookBus | null } = { current: null };
     const mocks = buildMocks({
       agentsResolve: async () => ({
@@ -3328,19 +3360,10 @@ describe('chat-orchestrator', () => {
       }),
       openSession: makeChatEndOpenSession(busRef),
     });
-    // The owner's PRIVATE connectors path: connectors:list returns ids, each
-    // resolved via connectors:resolve. This is the approved-connector wall — a
-    // pending connector would have no row, so it never resolves.
-    const listHook: Record<string, ServiceHandler> = {
-      'connectors:list': async () => ({
-        connectors: Object.keys(opts.connectors).map((id) => ({ id })),
-      }),
-    };
     Object.assign(
       mocks.services,
       proxy.services,
       connHook.services,
-      listHook,
       opts.extraServices ?? {},
     );
     return { proxy, connHook, busRef, mocks };
@@ -4139,31 +4162,38 @@ describe('chat-orchestrator', () => {
     usageNote?: string;
     toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
   }
-  /** Stubs the connector hooks the orchestrator soft-couples to. `defaults` are
-   *  returned full from connectors:list-defaults; `owned` are listed (id-only)
-   *  + resolved on demand. `listDefaultsThrows` exercises the non-fatal path. */
+  /** Stubs the connector hooks the orchestrator soft-couples to.
+   *  `connectors:list-effective` (TASK-739) returns `defaults` then `owned`
+   *  (legacy-owned), minus the forwarded exclusions; `connectors:resolve` serves
+   *  `owned` for skill-referenced ids. `listEffectiveThrows` exercises the
+   *  non-fatal path. */
   function buildConnectorHooks(opts: {
     defaults?: Record<string, ConnectorFixture>;
     owned?: Record<string, ConnectorFixture>;
-    listDefaultsThrows?: Error;
+    listEffectiveThrows?: Error;
   }): Record<string, ServiceHandler> {
     const defaults = opts.defaults ?? {};
     const owned = opts.owned ?? {};
     return {
-      'connectors:list-defaults': async () => {
-        if (opts.listDefaultsThrows !== undefined) throw opts.listDefaultsThrows;
-        return {
-          connectors: Object.entries(defaults).map(([id, c]) => ({
-            id,
-            capabilities: c.capabilities,
-            ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}),
-            ...(c.toolNamespaces !== undefined ? { toolNamespaces: c.toolNamespaces } : {}),
-          })),
-        };
+      'connectors:list-effective': async (_c, input) => {
+        if (opts.listEffectiveThrows !== undefined) throw opts.listEffectiveThrows;
+        const excluded = new Set((input as { exclusions?: string[] }).exclusions ?? []);
+        const seen = new Set<string>();
+        const entries: Array<Record<string, unknown>> = [];
+        for (const [source, set] of [['default', defaults], ['legacy-owned', owned]] as const) {
+          for (const [id, c] of Object.entries(set)) {
+            if (excluded.has(id) || seen.has(id)) continue;
+            seen.add(id);
+            entries.push({
+              summary: { id, ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}) },
+              source,
+              capabilities: c.capabilities,
+              ...(c.toolNamespaces !== undefined ? { toolNamespaces: c.toolNamespaces } : {}),
+            });
+          }
+        }
+        return { connectors: entries };
       },
-      'connectors:list': async () => ({
-        connectors: Object.keys(owned).map((id) => ({ id })),
-      }),
       'connectors:resolve': async (_c, input) => {
         const id = (input as { connectorId: string }).connectorId;
         const c = owned[id];
@@ -4337,8 +4367,8 @@ describe('chat-orchestrator', () => {
 
   it('TASK-107: a per-agent connectorAttachments id folds its host + slot into proxy:open-session', async () => {
     const proxy = buildProxyHooks();
-    // Only `connectors:resolve` is registered (NO list-defaults, NO connectors:list)
-    // so the ONLY way this connector folds is via the per-agent attachment path.
+    // No defaults and no legacy-owned rows, so the ONLY way this connector
+    // folds is via the per-agent attachment forwarded to connectors:list-effective.
     const connHook = buildConnectorResolveHook({
       salesforce: {
         allowedHosts: ['login.salesforce.com'],
@@ -4375,8 +4405,12 @@ describe('chat-orchestrator', () => {
       { message: { role: 'user', content: 'hi' } },
     );
     expect(outcome.kind).toBe('complete');
-    // The attached connector was resolved via connectors:resolve.
-    expect(connHook.resolveCalls).toEqual(['salesforce']);
+    // The attachment was forwarded to connectors:list-effective (TASK-739) —
+    // the orchestrator no longer resolves it itself.
+    expect(connHook.effectiveInputs).toEqual([
+      { userId: expect.any(String), attachmentIds: ['salesforce'], exclusions: [] },
+    ]);
+    expect(connHook.resolveCalls).toEqual([]);
 
     const openIn = proxy.state.lastOpenInput as {
       allowlist: string[];
@@ -4435,8 +4469,52 @@ describe('chat-orchestrator', () => {
     );
     // The mcpConfigIds value was NOT resolved as a connector.
     expect(connHook.resolveCalls).toEqual([]);
+    expect(connHook.effectiveInputs.map((i) => i.attachmentIds)).toEqual([[]]);
     const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
     expect(openIn.allowlist).not.toContain('login.salesforce.com');
+  });
+
+  it('TASK-739: the agent\'s connectorExclusions are forwarded and an excluded legacy connector adds no reach', async () => {
+    const proxy = buildProxyHooks();
+    const connHook = buildConnectorResolveHook(
+      {
+        kept: { allowedHosts: ['api.kept.example'], credentials: [] },
+        removed: { allowedHosts: ['api.removed.example'], credentials: [] },
+      },
+      { legacyOwned: ['kept', 'removed'] },
+    );
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          connectorAttachments: [],
+          connectorExclusions: ['removed'],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, connHook.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('connector-exclusions-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(connHook.effectiveInputs.map((i) => i.exclusions)).toEqual([['removed']]);
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).toContain('api.kept.example');
+    expect(openIn.allowlist).not.toContain('api.removed.example');
   });
 
   it('TASK-97/TASK-100: a connector folds its host + slot; the cap-free skill that references it contributes none', async () => {
@@ -4505,7 +4583,7 @@ describe('chat-orchestrator', () => {
     expect(openIn.credentials['skill:gh:SHARED_KEY']).toBeUndefined();
   });
 
-  it('TASK-97: a throwing connectors:list-defaults is NON-FATAL — session opens', async () => {
+  it('TASK-97/739: a throwing connectors:list-effective is NON-FATAL — session opens', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
@@ -4513,7 +4591,7 @@ describe('chat-orchestrator', () => {
       },
     });
     const connectorHooks = buildConnectorHooks({
-      listDefaultsThrows: new Error('connectors db down'),
+      listEffectiveThrows: new Error('connectors db down'),
     });
     const busRef: { current: HookBus | null } = { current: null };
     const mocks = buildMocks({

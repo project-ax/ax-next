@@ -144,11 +144,12 @@ export function createChatOrchestratorPlugin(
       // In-memory + single-replica. REPLACES the old workspace:applied
       // .ax/draft-skills trigger (skill authoring left git).
       //
-      // TASK-97 (connectors-first-class) adds `connectors:list-defaults`,
-      // `connectors:list`, and `connectors:resolve` to the conditionally-called
-      // category — the connector union resolves the agent's effective connector
-      // set and folds each connector's Capabilities into the sandbox the same
-      // way skills do. All three are `bus.hasService(...)`-gated and NON-FATAL
+      // TASK-97 (connectors-first-class) adds the connector reads to the
+      // conditionally-called category — `connectors:list-effective` (TASK-739,
+      // the agent's effective set; replaced list-defaults + list) and
+      // `connectors:resolve` (skill-referenced connectors). The orchestrator
+      // folds each connector's Capabilities into the sandbox the same way
+      // skills do. Both are `bus.hasService(...)`-gated and NON-FATAL
       // (a throw/absent yields fewer connectors, never terminates the session),
       // so they stay OUT of `calls`: a preset without @ax/connectors (the CLI
       // canary, single-tenant) drives the orchestrator with zero connectors.

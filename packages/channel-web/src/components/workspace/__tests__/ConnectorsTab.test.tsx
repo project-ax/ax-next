@@ -20,6 +20,8 @@ vi.mock('@/lib/workspace-api', async () => {
       revokeGrant: vi.fn(),
       abilities: vi.fn(),
       setAbility: vi.fn(),
+      connectors: vi.fn(),
+      removeConnector: vi.fn(),
     },
   };
 });
@@ -61,6 +63,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   railMock.mockResolvedValue(rail());
   abilitiesMock.mockResolvedValue({ abilities: ALL_ON });
+  vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [] });
 });
 
 describe('Connectors tab shell', () => {
@@ -77,11 +80,16 @@ describe('Connectors tab shell', () => {
     await sw('Web search');
   });
 
-  it('draws no connector list or Add button before they are wired (TASK-739/740)', async () => {
+  it('draws the connector list above Other abilities, but no Add button until TASK-740', async () => {
     renderTab();
     await sw('Web search');
-    expect(screen.queryByRole('button', { name: /^\+? ?Add/ })).toBeNull();
-    expect(screen.queryByText(/No connectors yet/)).toBeNull();
+    expect(await screen.findByText(/No connectors yet/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Add/ })).toBeNull();
+    const connectors = screen.getByRole('heading', { level: 3, name: /^Connectors/ });
+    const abilities = screen.getByRole('heading', { level: 3, name: 'Other abilities' });
+    expect(
+      connectors.compareDocumentPosition(abilities) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('says the changes are scoped to this agent', async () => {

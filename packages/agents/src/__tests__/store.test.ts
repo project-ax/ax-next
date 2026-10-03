@@ -606,6 +606,96 @@ describe('store connector attachments', () => {
   });
 });
 
+describe('store attach / detach connector (TASK-739)', () => {
+  async function seed() {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), { allowedModels: ALLOWED }),
+    });
+    return { db, store, id: created.id, created };
+  }
+
+  it('a fresh agent has connectorExclusions = []', async () => {
+    const { store, id, created } = await seed();
+    expect(created.connectorExclusions).toEqual([]);
+    expect((await store.getById(id))!.connectorExclusions).toEqual([]);
+  });
+
+  it('attachConnector appends, is idempotent, and clears a matching exclusion', async () => {
+    const { store, id } = await seed();
+    await store.detachConnector(id, 'gh', true);
+    expect((await store.getById(id))!.connectorExclusions).toEqual(['gh']);
+    const first = await store.attachConnector(id, 'gh');
+    expect(first.changed).toBe(true);
+    expect(first.agent.connectorAttachments).toEqual(['gh']);
+    expect(first.agent.connectorExclusions).toEqual([]);
+    const second = await store.attachConnector(id, 'gh');
+    expect(second.changed).toBe(false);
+    expect(second.agent.connectorAttachments).toEqual(['gh']);
+  });
+
+  it('attachConnector refuses the 51st attachment (invalid-payload)', async () => {
+    const { store, id } = await seed();
+    await store.setConnectorAttachments(
+      id,
+      Array.from({ length: 50 }, (_, i) => `c${i}`),
+    );
+    await expect(store.attachConnector(id, 'one-more')).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
+  });
+
+  it('detachConnector removes; exclude=true also records an exclusion once', async () => {
+    const { store, id } = await seed();
+    await store.setConnectorAttachments(id, ['gh', 'sf']);
+    const a = await store.detachConnector(id, 'gh', false);
+    expect(a.changed).toBe(true);
+    expect(a.agent.connectorAttachments).toEqual(['sf']);
+    expect(a.agent.connectorExclusions).toEqual([]);
+    const b = await store.detachConnector(id, 'sf', true);
+    expect(b.agent.connectorAttachments).toEqual([]);
+    expect(b.agent.connectorExclusions).toEqual(['sf']);
+    const c = await store.detachConnector(id, 'sf', true);
+    expect(c.changed).toBe(false);
+    expect(c.agent.connectorExclusions).toEqual(['sf']);
+    // Excluding a never-attached (e.g. default) connector still records it.
+    const d = await store.detachConnector(id, 'default-one', true);
+    expect(d.changed).toBe(true);
+    expect(d.agent.connectorExclusions).toEqual(['sf', 'default-one']);
+  });
+
+  it('attach / detach throw not-found for a missing agent', async () => {
+    const { store } = await seed();
+    await expect(store.attachConnector('agt_missing', 'gh')).rejects.toMatchObject({
+      code: 'not-found',
+    });
+    await expect(store.detachConnector('agt_missing', 'gh', true)).rejects.toMatchObject({
+      code: 'not-found',
+    });
+  });
+
+  it('CONCURRENCY: 10 parallel attaches of distinct ids all land', async () => {
+    const { store, id } = await seed();
+    const ids = Array.from({ length: 10 }, (_, i) => `conn-${i}`);
+    await Promise.all(ids.map((c) => store.attachConnector(id, c)));
+    const after = await store.getById(id);
+    expect([...after!.connectorAttachments].sort()).toEqual([...ids].sort());
+  });
+
+  it('CONCURRENCY: attach(A) racing detach(B, exclude) keeps both effects', async () => {
+    const { store, id } = await seed();
+    await store.setConnectorAttachments(id, ['b']);
+    await Promise.all([store.attachConnector(id, 'a'), store.detachConnector(id, 'b', true)]);
+    const after = await store.getById(id);
+    expect(after!.connectorAttachments).toEqual(['a']);
+    expect(after!.connectorExclusions).toEqual(['b']);
+  });
+});
+
 describe('store.countByModel', () => {
   const KIMI = 'openrouter/moonshotai/kimi-k3';
   const SONNET = 'anthropic/claude-sonnet-4-6';

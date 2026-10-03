@@ -16,9 +16,9 @@
  *     the connector details view, this is the ONLY place any of them can be
  *     taken back, so every row stays here for now.
  *
- * The connector list itself (and "+ Add") arrives in slices 6 and 7. Nothing
- * here draws it before it is wired (invariant 3) — `ConnectorsTab` is the
- * seam: the list goes above "Other abilities".
+ * The connector list (slice 6, TASK-739) sits above "Other abilities" — see
+ * `AgentConnectors`. "+ Add" arrives with slice 7; nothing here draws it
+ * before it is wired (invariant 3).
  */
 import { Fragment, useState } from 'react';
 import {
@@ -51,6 +51,7 @@ import { Switch } from '@/components/ui/switch';
 import { useAgentAbilities } from '@/lib/agent-abilities';
 import type { AgentRailData, GrantRow } from '@/lib/workspace-api';
 import type { AgentAbility } from '@/lib/workspace-types';
+import { AgentConnectors } from './AgentConnectors';
 import { GrantLine, PermissionLine, ReadFailure, SectionLabel } from './bits';
 
 function Note({ children }: { children: React.ReactNode }) {
@@ -89,6 +90,8 @@ interface Props {
   revoking: ReadonlySet<string>;
   notice: string | null;
   onRevoke: (row: GrantRow) => void;
+  /** Re-read the rail after a connector is removed (its grants went too). */
+  onConnectorsChanged?: () => void;
 }
 
 export function ConnectorsTab({
@@ -100,12 +103,18 @@ export function ConnectorsTab({
   revoking,
   notice,
   onRevoke,
+  onConnectorsChanged,
 }: Props) {
   const [everything, setEverything] = useState(false);
   const grantCount =
     rail?.grants.status === 'ok' ? rail.grants.rows.length : null;
   return (
     <>
+      <AgentConnectors
+        agentId={agentId}
+        name={name}
+        {...(onConnectorsChanged !== undefined ? { onChanged: onConnectorsChanged } : {})}
+      />
       <SectionLabel>Other abilities</SectionLabel>
       <OtherAbilities agentId={agentId} name={name} />
       <p className="mt-3 text-[12px] text-muted-foreground">
