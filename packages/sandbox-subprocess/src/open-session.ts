@@ -118,15 +118,10 @@ async function lockDirsReadOnly(dir: string): Promise<void> {
 
 // Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape.
 // stdio: { command, args, env }. http: { url, type: 'http' }. The SDK accepts
-// either at top level under the `mcpServers` map; the per-skill dir's
-// `.mcp.json` is discovered alongside its skill via the `'user'` setting
-// source (skills are materialized under $CLAUDE_CONFIG_DIR/skills/<id>/,
-// the SDK's user root — NOT via `'project'`, which walks from cwd and can
-// never reach the user root; Phase 3 also dropped `'project'` from
-// settingSources).
-// NOTE: end-to-end SDK loading of a per-skill `.mcp.json` is not yet covered
-// by an automated test; confirm in the Phase-6 kind walk with a real
-// MCP-bundling skill.
+// either at top level under the `mcpServers` map. The SDK does NOT discover
+// a skill dir's `.mcp.json` by itself (no setting source reads it); the
+// claude-sdk runner loads it from $CLAUDE_CONFIG_DIR/skills/*/ and passes it
+// as `query()`'s `mcpServers` (TASK-760, `projected-mcp-servers.ts`).
 function toMcpJsonShape(s: {
   transport: 'stdio' | 'http';
   command?: string | undefined;
@@ -376,14 +371,10 @@ export async function openSessionImpl(
           throw new Error(`installed skill '${skill.id}' is missing SKILL.md`);
         }
         // Phase B — write `.mcp.json` alongside SKILL.md when the skill
-        // bundles MCP servers. The SDK discovers it alongside the skill via
-        // the `'user'` setting source (skills live under
-        // $CLAUDE_CONFIG_DIR/skills/<id>/, the SDK's user root — NOT via
-        // `'project'`, which walks from cwd; Phase 3 also dropped `'project'`
-        // from settingSources). The file lives in the per-skill dir so each
-        // skill's MCP scope stays isolated.
-        // NOTE: end-to-end SDK loading of a per-skill `.mcp.json` is not yet
-        // covered by an automated test; confirm in the Phase-6 kind walk.
+        // bundles MCP servers. The SDK does not read it by itself; the
+        // claude-sdk runner loads it into `query()`'s `mcpServers` (TASK-760).
+        // The file lives in the per-skill dir so each skill's MCP scope stays
+        // isolated.
         // Defaulted-empty arrays from the schema mean we always have a real
         // array here.
         if (skill.mcpServers.length > 0) {

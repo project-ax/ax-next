@@ -4554,6 +4554,97 @@ describe('main()', () => {
     });
   });
 
+  // TASK-760: a connector attached to the agent arrives as an installed-skill
+  // entry whose mcpServers the runner materializes as
+  // `$CLAUDE_CONFIG_DIR/skills/<id>/.mcp.json`, keyed by toolNamespace. The SDK
+  // never reads that file, so the runner must hand the servers to query()
+  // itself. This drives the REAL materializer (AX_INSTALLED_SKILLS_JSON → disk)
+  // and the REAL options builder: on main before TASK-760 `mcpServers` held only
+  // our two in-process servers and the connector tool never reached the model.
+  it('connector MCP servers materialized into the skills projection reach query() mcpServers (TASK-760)', async () => {
+    const cfg = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-t760-cfg-'));
+    try {
+      setEnv({
+        ...COMPLETE_ENV,
+        CLAUDE_CONFIG_DIR: cfg,
+        AX_INSTALLED_SKILLS_JSON: JSON.stringify([
+          {
+            id: 'connector-linear',
+            files: [{ path: 'SKILL.md', contents: '---\nname: connector-linear\ndescription: Linear\n---\nbody' }],
+            mcpServers: [
+              { name: 'c0123456789', transport: 'stdio', command: 'linear-mcp', args: ['--stdio'], env: { TOKEN: 'ax-cred:' + 'a'.repeat(32) } },
+              { name: 'cabcdef0123', transport: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer ax-cred:' + 'b'.repeat(32) } },
+            ],
+          },
+        ]),
+      });
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+          (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })(),
+      );
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const opts = (queryMock.mock.calls[0]?.[0] as {
+        options: { mcpServers: Record<string, unknown>; settingSources: string[] };
+      }).options;
+      expect(opts.mcpServers['c0123456789']).toEqual({
+        type: 'stdio',
+        command: 'linear-mcp',
+        args: ['--stdio'],
+        env: { TOKEN: 'ax-cred:' + 'a'.repeat(32) },
+      });
+      expect(opts.mcpServers['cabcdef0123']).toEqual({
+        type: 'http',
+        url: 'https://mcp.example.com/mcp',
+        headers: { Authorization: 'Bearer ax-cred:' + 'b'.repeat(32) },
+      });
+      // Our own two servers are still there, and 'project' is still NOT a
+      // setting source — loading connectors must not reopen that door.
+      expect(opts.mcpServers).toHaveProperty('ax-host-tools');
+      expect(opts.mcpServers).toHaveProperty('ax-sandbox-tools');
+      expect(Object.keys(opts.mcpServers).sort()).toEqual(
+        ['ax-host-tools', 'ax-sandbox-tools', 'c0123456789', 'cabcdef0123'],
+      );
+      expect(opts.settingSources).toEqual(['user']);
+    } finally {
+      // The materializer locks the tree 0555; unlock so rm can clean it.
+      await fs.chmod(nodePath.join(cfg, 'skills'), 0o755).catch(() => {});
+      await fs.chmod(nodePath.join(cfg, 'skills', 'connector-linear'), 0o755).catch(() => {});
+      await fs.rm(cfg, { recursive: true, force: true });
+    }
+  });
+
   it('Phase 3 turn end: concurrent-writer advance → resync + retry → host accepts second attempt', async () => {
     // Regression for the stuck-loop bug: when workspace.commit-notify returns
     // accepted:false with actualParent (the concurrent-writer advance case, NO

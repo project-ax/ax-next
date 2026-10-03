@@ -58,7 +58,9 @@
 //
 //   4. Connector MCP tools (TASK-734). Connector MCP servers run INSIDE the
 //      sandbox via the per-directory `.mcp.json` the runner materializes
-//      (`@ax/agent-runner-core` installed-skills). The host keys each server
+//      (`@ax/agent-runner-core` installed-skills) and then loads into
+//      `query()`'s `mcpServers` itself (`projected-mcp-servers.ts`, TASK-760 —
+//      the SDK never reads a skill dir's `.mcp.json`). The host keys each server
 //      by an opaque, host-minted `toolNamespace` (`c` + 10 lowercase hex) —
 //      never the connector author's free-text `spec.name` — so the SDK names
 //      their tools `mcp__<toolNamespace>__<tool>`. We lift exactly that shape
