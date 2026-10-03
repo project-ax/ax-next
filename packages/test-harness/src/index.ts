@@ -8,6 +8,7 @@ export { createMockWorkspacePlugin } from './mock-workspace.js';
 export { createTestHostToolPlugin } from './test-host-tool.js';
 export { createTestProxyPlugin } from './test-proxy-plugin.js';
 export { runWorkspaceContract } from './workspace-contract.js';
+export { bootPluginGraph } from './boot-plugin-graph.js';
 export {
   stopPostgresContainer,
   type StoppableContainer,
