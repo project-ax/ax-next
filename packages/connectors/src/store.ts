@@ -202,6 +202,31 @@ function selectAvailableRow(rows: StoredConnectorRow[], userId: string): StoredC
     (rows.length === 1 ? rows[0]! : null);
 }
 
+/**
+ * Every row `userId` can resolve (own first, otherwise an unambiguous shared
+ * one — the same pick `getAvailableById` makes), newest-updated first. Shared
+ * by `listForUser` and `listAvailable` so the two can never disagree about
+ * which record a connector id means for this person.
+ */
+async function selectAvailableRows(
+  db: Kysely<ConnectorDatabase>,
+  userId: string,
+): Promise<StoredConnectorRow[]> {
+  const rows = await availableConnectors(db, { userId })
+    .orderBy('updated_at', 'desc')
+    .execute();
+  const grouped = new Map<string, StoredConnectorRow[]>();
+  for (const row of rows) {
+    const group = grouped.get(row.connector_id) ?? [];
+    group.push(row);
+    grouped.set(row.connector_id, group);
+  }
+  return [...grouped.values()]
+    .map((group) => selectAvailableRow(group, userId))
+    .filter((row): row is StoredConnectorRow => row !== null)
+    .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
+}
+
 export interface AvailableConnector {
   connector: Connector;
   /**
@@ -251,6 +276,11 @@ export interface ConnectorStore {
     userId: string,
     connectorId: string,
   ): Promise<Connector | null>;
+  /**
+   * TASK-744 — the same set `listForUser` returns, FULL and with each row's
+   * owner, so a caller can derive owner-keyed values (tool namespaces).
+   */
+  listAvailable(userId: string): Promise<AvailableConnector[]>;
   /** Read-only lookup: own definition first, otherwise an unambiguous shared one. */
   getAvailableById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
   /** Idempotent create-or-update keyed (owner, connectorId). */
@@ -264,20 +294,15 @@ export function createConnectorStore(
 ): ConnectorStore {
   return {
     async listForUser(userId) {
-      const rows = await availableConnectors(db, { userId })
-        .orderBy('updated_at', 'desc')
-        .execute();
-      const grouped = new Map<string, StoredConnectorRow[]>();
-      for (const row of rows) {
-        const group = grouped.get(row.connector_id) ?? [];
-        group.push(row);
-        grouped.set(row.connector_id, group);
-      }
-      return [...grouped.values()]
-        .map((group) => selectAvailableRow(group, userId))
-        .filter((row): row is StoredConnectorRow => row !== null)
-        .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime())
+      return (await selectAvailableRows(db, userId))
         .map((row) => ({ ...rowToSummary(row), canEdit: row.owner_user_id === userId }));
+    },
+
+    async listAvailable(userId) {
+      return (await selectAvailableRows(db, userId)).map((row) => ({
+        connector: { ...rowToConnector(row), canEdit: row.owner_user_id === userId },
+        ownerUserId: row.owner_user_id,
+      }));
     },
 
     async getAvailableById(userId, connectorId) {

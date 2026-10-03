@@ -40,8 +40,10 @@ import {
   decisionText,
   denialSentence,
   holdNote,
+  sanitizeCapability,
   GATE_FAILURE_SENTENCE,
 } from './templates.js';
+import { parseConnectorToolKey } from './tool-label.js';
 import type { Attendance, Decision, DecisionRaisedPayload } from './types.js';
 
 export const PLUGIN_NAME = '@ax/decisions';
@@ -89,7 +91,30 @@ export interface PreCallDeps {
   attendanceFor: (ctx: AgentContext) => Attendance | Promise<Attendance>;
   /** Fires `decisions:raised`. Optional so the unit tests need no bus. */
   bus?: HookBus | undefined;
+  /**
+   * TASK-744 — the display name of the connector that owns a connector tool
+   * namespace, for this person, or null when it cannot be named. Consulted
+   * only when a hold has no capability clause and the call is a connector
+   * toolKey, so the row says "Linear · Create issue" rather than the hash.
+   * Optional (no connectors plugin → the tool name alone). MUST NOT throw; the
+   * caller still guards, because a naming failure must never cost the hold.
+   */
+  connectorNameFor?: ((ctx: AgentContext, toolNamespace: string) => Promise<string | null>) | undefined;
+  /**
+   * How long the hold waits for `connectorNameFor` before writing the row
+   * without the connector name. Default {@link CONNECTOR_NAME_TIMEOUT_MS};
+   * injectable for tests.
+   */
+  connectorNameTimeoutMs?: number | undefined;
 }
+
+/**
+ * The connector-name lookup rides INSIDE the 10 s `tool.pre-call` ceiling the
+ * runner turns into a deny, and a bus call's own backstop is 120 s. A slow or
+ * hung connectors store must cost the name, never the hold — so it is bounded
+ * here, well under the ceiling, and a late answer is simply dropped.
+ */
+export const CONNECTOR_NAME_TIMEOUT_MS = 1_500;
 
 export type PreCallSubscriber = (
   ctx: AgentContext,
@@ -97,6 +122,43 @@ export type PreCallSubscriber = (
 ) => Promise<undefined | Rejection>;
 
 export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
+
+  /**
+   * The connector name the hold's prose needs, or null. Only looked up when
+   * the prose will actually name the tool (no capability clause) and the tool
+   * is a connector toolKey; any failure degrades to the bare tool name.
+   */
+  async function connectorNameForHold(
+    ctx: AgentContext,
+    call: ToolCall,
+    capability: string | null,
+  ): Promise<string | null> {
+    if (deps.connectorNameFor === undefined) return null;
+    if (sanitizeCapability(capability) !== null) return null;
+    const parsed = parseConnectorToolKey(call.name);
+    if (parsed === null) return null;
+    const timeoutMs = deps.connectorNameTimeoutMs ?? CONNECTOR_NAME_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        deps.connectorNameFor(ctx, parsed.toolNamespace),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => {
+            ctx.logger.warn('decision_connector_name_timeout', { plugin: PLUGIN_NAME, timeoutMs });
+            resolve(null);
+          }, timeoutMs);
+        }),
+      ]);
+    } catch (err) {
+      ctx.logger.warn('decision_connector_name_failed', {
+        plugin: PLUGIN_NAME,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return null;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
 
   async function decide(ctx: AgentContext, call: ToolCall): Promise<undefined | Rejection> {
     const fingerprint = callFingerprint(call);
@@ -145,7 +207,11 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     // 3. Hold: record the call, then stop.
     const now = deps.now();
     const decisionId = deps.idGen();
-    const text = decisionText({ capability: answer.capability, toolName: call.name });
+    const text = decisionText({
+      capability: answer.capability,
+      toolName: call.name,
+      connectorName: await connectorNameForHold(ctx, call, answer.capability),
+    });
     const decision: Decision = {
       id: decisionId,
       agentId: ctx.agentId,

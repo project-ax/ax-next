@@ -734,6 +734,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'Activity rows are labelled with the routine path instead of its authored name',
         },
         {
+          hook: 'connectors:tool-labels',
+          degradation:
+            'Connector tool steps are named by the tool name alone, without the connector they belong to',
+        },
+        {
           hook: 'tool-policy:list-capabilities',
           degradation:
             'the rail says it cannot show what the agent may do alone, rather than showing an empty list',

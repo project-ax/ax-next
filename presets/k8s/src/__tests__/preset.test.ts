@@ -462,6 +462,8 @@ describe('@ax/preset-k8s wiring', () => {
     // `call` would make @ax/decisions unloadable in a preset perfectly capable
     // of running it.
     expect(d!.manifest.optionalCalls?.map((oc) => oc.hook)).toEqual([
+      // TASK-744 — names a held connector tool's connector.
+      'connectors:tool-labels',
       'conversations:get-metadata',
       'session:queue-work',
     ]);
@@ -852,6 +854,8 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:upsert',
       'connectors:delete',
       'connectors:resolve',
+      // TASK-744 — toolNamespace → connector display name.
+      'connectors:tool-labels',
       // TASK-94 — agent-authored connector drafts + the approval gate.
       'connectors:install-authored',
       'connectors:list-authored',

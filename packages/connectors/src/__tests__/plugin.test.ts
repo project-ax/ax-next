@@ -19,6 +19,8 @@ describe('@ax/connectors plugin manifest', () => {
         'connectors:upsert',
         'connectors:delete',
         'connectors:resolve',
+        // TASK-744 — toolNamespace → connector display name.
+        'connectors:tool-labels',
         // TASK-94 — agent-authored connector drafts + the approval gate.
         'connectors:install-authored',
         'connectors:list-authored',

@@ -285,6 +285,13 @@ export function createChannelWebServerPlugin(
             'Activity rows are labelled with the routine path instead of its authored name',
         },
         {
+          // TASK-744 — names the connector behind a connector tool's opaque
+          // namespace in the agent's step panels ("Linear · Create issue").
+          hook: 'connectors:tool-labels',
+          degradation:
+            'Connector tool steps are named by the tool name alone, without the connector they belong to',
+        },
+        {
           // TASK-235 (AW-14) — "What it may do alone" is generated from the
           // enforced policy table. Without @ax/tool-policy the block says it
           // cannot show the rules rather than showing none: an empty

@@ -50,7 +50,10 @@ import {
   ListDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
+  ToolLabelsOutputSchema,
   UpsertOutputSchema,
+  type ToolLabelsInput,
+  type ToolLabelsOutput,
   type ActivateAuthoredInput,
   type ActivateAuthoredOutput,
   type AuthorizeGlobalInput,
@@ -153,6 +156,9 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         'connectors:upsert',
         'connectors:delete',
         'connectors:resolve',
+        // TASK-744 — toolNamespace → connector display name, for the surfaces
+        // that would otherwise print `mcp.c<hex>.<tool>` at a person.
+        'connectors:tool-labels',
         // TASK-94 — agent-authored connector drafts + the approval gate's
         // activate/clear. install-authored persists a PENDING draft (zero
         // reach); the orchestrator fires ONE approval card; activate-authored
@@ -254,6 +260,13 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => resolveConnector(localStore, input),
         { returns: ResolveOutputSchema },
+      );
+
+      bus.registerService<ToolLabelsInput, ToolLabelsOutput>(
+        'connectors:tool-labels',
+        PLUGIN_NAME,
+        async (_ctx, input) => toolLabels(localStore, input),
+        { returns: ToolLabelsOutputSchema },
       );
 
       bus.registerService<InstallAuthoredInput, InstallAuthoredOutput>(
@@ -419,6 +432,27 @@ async function listDefaultConnectors(
       toolNamespaces: deriveToolNamespaces(ownerUserId, connector),
     })),
   };
+}
+
+async function toolLabels(
+  store: ConnectorStore,
+  input: ToolLabelsInput,
+): Promise<ToolLabelsOutput> {
+  const userId = requireUserId(input.userId, 'connectors:tool-labels');
+  const available = await store.listAvailable(userId);
+  const connectors: ToolLabelsOutput['connectors'] = [];
+  for (const { connector, ownerUserId } of available) {
+    // Same derivation as `connectors:resolve` (ROW owner, not the caller), so
+    // a namespace seen in a transcript or on a held call maps back here.
+    for (const entry of deriveToolNamespaces(ownerUserId, connector)) {
+      connectors.push({
+        toolNamespace: entry.toolNamespace,
+        connectorId: connector.id,
+        name: connector.name,
+      });
+    }
+  }
+  return { connectors };
 }
 
 async function getConnector(

@@ -37,6 +37,7 @@ import {
   type DecisionStore,
 } from './store.js';
 import { CLAIM_REFUSED_DETAIL } from './templates.js';
+import { CONNECTOR_TOOL_LABELS_HOOK } from './tool-label.js';
 import {
   DecisionsApproveOutputSchema,
   DecisionsCountOutputSchema,
@@ -254,6 +255,15 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       // unloadable in a preset that is perfectly capable of running it.
       optionalCalls: [
         {
+          // TASK-744 — names the connector behind a held connector tool
+          // (`mcp.<toolNamespace>.<tool>`) so the approval card reads
+          // "Linear · Create issue" instead of an opaque hash.
+          hook: CONNECTOR_TOOL_LABELS_HOOK,
+          degradation:
+            'A held connector tool with no capability clause is named by its tool name ' +
+            'alone ("Create issue"), without the connector it belongs to.',
+        },
+        {
           hook: CONVERSATION_METADATA_HOOK,
           degradation:
             'Attendance cannot be derived from the conversation channel; every held ' +
@@ -322,6 +332,14 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         // channels.
         attendanceFor: opts?.attendanceFor ?? createAttendanceResolver(bus),
         bus,
+        connectorNameFor: async (ctx, toolNamespace) => {
+          if (!bus.hasService(CONNECTOR_TOOL_LABELS_HOOK)) return null;
+          const out = await bus.call<
+            { userId: string },
+            { connectors: Array<{ toolNamespace: string; name: string }> }
+          >(CONNECTOR_TOOL_LABELS_HOOK, ctx, { userId: ctx.userId });
+          return out.connectors.find((c) => c.toolNamespace === toolNamespace)?.name ?? null;
+        },
       });
       bus.subscribe<ToolCall>('tool:pre-call', PLUGIN_NAME, subscriber);
 

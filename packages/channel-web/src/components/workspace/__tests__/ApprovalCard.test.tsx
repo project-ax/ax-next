@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ApprovalCard } from '../ApprovalCard';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
+import { toWireDecision } from '@/server/routes-workspace';
 
 describe('ApprovalCard — what each control does', () => {
   it('offers exactly two controls on an open decision: approve and dismiss', () => {
@@ -141,5 +142,27 @@ describe('ApprovalCard — what each control does', () => {
     }
     expect(onApprove).toHaveBeenCalledTimes(0);
     expect(onDismiss).toHaveBeenCalledTimes(0);
+  });
+});
+
+/*
+  TASK-744. The card draws `summary`/`detail` verbatim; the friendly connector
+  name is WRITTEN by @ax/decisions at hold time (its canary pins that through
+  the bus with a stubbed `connectors:tool-labels`). This pins the other half:
+  the wire fence and the card carry "<connector> · <tool>" through intact —
+  the middle dot is not eaten, and no step re-introduces the namespace.
+*/
+describe('ApprovalCard — a held connector tool (TASK-744)', () => {
+  it('shows "<connector> · <tool>" as written, through the route fence', () => {
+    const d = toWireDecision({
+      ...decisionFixture(),
+      summary: 'Wants to use Linear · Create issue',
+      detail: 'It stopped before using Linear · Create issue and is waiting for your answer.',
+    } as unknown as Parameters<typeof toWireDecision>[0]);
+    const { container } = render(
+      <ApprovalCard decision={d} onApprove={vi.fn()} onDismiss={vi.fn()} onUndo={vi.fn()} />,
+    );
+    expect(screen.getByText('Wants to use Linear · Create issue')).toBeTruthy();
+    expect(container.textContent).not.toMatch(/mcp[._]+c[0-9a-f]{10}/);
   });
 });

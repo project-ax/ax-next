@@ -1393,8 +1393,17 @@ export function AgentView({
     path calls does the settling; `liveStreamHolds` only says which holds are
     still being asked about, from what the browser can see.
   */
+  /*
+    TASK-744 — the same namespace → connector-name map the server used to
+    shape the reloaded thread, so a live connector step reads "Linear · Create
+    issue" now rather than only after a reload.
+  */
+  const connectorNames = new Map(
+    (detail.connectorTools ?? []).map((c) => [c.toolNamespace, c.name] as const),
+  );
   const livePanel = shapeSteps(
     settleHolds(liveCalls, liveStreamHolds(liveCalls, openInConversation, witnessed)),
+    connectorNames,
   );
   const hasLiveContent = streamed.length > 0 || livePanel !== null;
   if (streaming || hasLiveContent) {
