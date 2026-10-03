@@ -299,8 +299,11 @@ function connectorsMiddleware(
   opts: { base: string; mode: RouteMode },
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
   const { base, mode } = opts;
-  const idRe = new RegExp(`^${base.replace(/[/]/g, '\\/')}\\/([^/]+)$`);
-  const toolPermsRe = new RegExp(`^${base.replace(/[/]/g, '\\/')}\\/([^/]+)\\/tool-permissions$`);
+  // Escape EVERY regex metacharacter in the base (not just `/`), so the
+  // pattern matches the literal prefix whatever it contains.
+  const escapedBase = base.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  const idRe = new RegExp(`^${escapedBase}\\/([^/]+)$`);
+  const toolPermsRe = new RegExp(`^${escapedBase}\\/([^/]+)\\/tool-permissions$`);
   return async (req, res) => {
     const url = req.url ?? '';
     if (!url.startsWith(base)) return false;
