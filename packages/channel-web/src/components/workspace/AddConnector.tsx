@@ -98,9 +98,18 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
     global: CredentialMeta[];
   }> => {
     // Presence only. A failed read reads as "absent", which can only ask for
-    // a key that is already there — never attach one that isn't.
-    const user = await myCredentials.list().catch(() => []);
-    const global = isAdmin ? await adminCredentials.list().catch(() => []) : [];
+    // a key that is already there — never attach one that isn't. Logged
+    // (TASK-757): a safe fallback is still not a silent one.
+    const user = await myCredentials.list().catch((e: unknown) => {
+      logRequestFailure(e, 'add-connector my-credentials');
+      return [];
+    });
+    const global = isAdmin
+      ? await adminCredentials.list().catch((e: unknown) => {
+          logRequestFailure(e, 'add-connector workspace-credentials');
+          return [];
+        })
+      : [];
     return { user, global };
   }, [isAdmin]);
 

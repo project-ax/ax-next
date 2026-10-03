@@ -206,6 +206,54 @@ describe('what it shows', () => {
   });
 });
 
+describe('a swallowed failure is never silent (TASK-757)', () => {
+  function warnSpy() {
+    return vi.spyOn(console, 'warn').mockImplementation(() => {});
+  }
+  const logged = (warn: ReturnType<typeof warnSpy>, tag: string) =>
+    warn.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes(`[${tag}]`));
+
+  it('a failed sign-in status read is logged and falls back to "Sign in"', async () => {
+    const warn = warnSpy();
+    vi.mocked(getOAuthStatus).mockRejectedValue(new Error('status down'));
+    renderAdd();
+    expect(await screen.findByRole('button', { name: 'Sign in — Notion' })).toBeTruthy();
+    expect(logged(warn, 'add-connector oauth-status notion')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('a failed personal key read is logged and falls back to asking for the key', async () => {
+    const warn = warnSpy();
+    vi.mocked(myCredentials.list).mockRejectedValue(new Error('creds down'));
+    renderAdd();
+    expect(await screen.findByRole('button', { name: 'Add key — Zendesk' })).toBeTruthy();
+    expect(logged(warn, 'add-connector my-credentials')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("an admin's failed workspace key read is logged", async () => {
+    const warn = warnSpy();
+    vi.mocked(adminCredentials.list).mockRejectedValue(new Error('creds down'));
+    renderAdd('admin');
+    await screen.findByRole('button', { name: 'Add key — Zendesk' });
+    await waitFor(() => expect(logged(warn, 'add-connector workspace-credentials')).toBe(true));
+    warn.mockRestore();
+  });
+
+  it('a sign-in that cannot start is logged, says so with a next step, and attaches nothing', async () => {
+    const warn = warnSpy();
+    vi.mocked(beginOAuth).mockRejectedValue(new Error('begin down'));
+    renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    expect(await screen.findByText(/We couldn't start the sign-in\. Please try again/)).toBeTruthy();
+    expect(logged(warn, 'oauth-sign-in notion')).toBe(true);
+    expect(window.open).not.toHaveBeenCalled();
+    expect(attachMock).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
 describe('sign in, then attach', () => {
   it('attaches only after the provider says the sign-in succeeded', async () => {
     const { onAttached } = renderAdd();

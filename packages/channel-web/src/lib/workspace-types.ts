@@ -1137,6 +1137,18 @@ export interface AgentToolVerdictWrite {
 }
 
 /** …and its answer: the store's re-read state for that one tool. */
-export interface AgentToolVerdictSaved {
-  tool: { toolKey: string; verdict: AgentToolVerdict; ceiling: AgentToolVerdict };
-}
+/**
+ * The answer to a tool-verdict PUT. Normally the store's re-read state for
+ * that one tool. `unconfirmed` (TASK-757): the store accepted the write but the
+ * read-back failed, so `verdict` is what was written and there is no ceiling
+ * to report — the screen keeps the one it already has and says to reload.
+ */
+export type AgentToolVerdictSaved =
+  | {
+      tool: { toolKey: string; verdict: AgentToolVerdict; ceiling: AgentToolVerdict };
+      unconfirmed?: never;
+    }
+  | {
+      tool: { toolKey: string; verdict: AgentToolVerdict };
+      unconfirmed: true;
+    };

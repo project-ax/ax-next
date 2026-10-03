@@ -25,6 +25,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginOAuth } from '@/lib/connectors-oauth';
+import { logRequestFailure } from '@/lib/http';
 import { OAUTH_MESSAGE_TYPE } from '@/lib/oauth-callback-bridge';
 
 export interface UseOAuthPopupArgs {
@@ -123,7 +124,10 @@ export function useOAuthPopup({
         agentId !== undefined ? { connectorId, agentId } : { connectorId },
       );
       authorizationUrl = result.authorizationUrl;
-    } catch {
+    } catch (e) {
+      // Never silent (TASK-757): the person sees the sentence below, the
+      // console gets the reason.
+      logRequestFailure(e, `oauth-sign-in ${connectorId}`);
       if (attemptRef.current !== attempt) return;
       setError("We couldn't start the sign-in. Please try again — if it keeps happening, let us know.");
       setBusyBoth(false);

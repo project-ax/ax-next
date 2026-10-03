@@ -285,6 +285,17 @@ export function createChannelWebServerPlugin(
             'Activity rows are labelled with the routine path instead of its authored name',
         },
         {
+          // TASK-739 — the Connectors tab lists this agent's effective
+          // connector set (the same union a session opens with), and every
+          // per-connector route (details, tool verdicts, remove, retry) checks
+          // the connector is in it first. Every one of those routes is
+          // hasService-gated; TASK-757 declares it here so the manifest names
+          // the dependency the routes already degrade without.
+          hook: 'connectors:list-effective',
+          degradation:
+            'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and Retry all answer 503 (there is no list of what this agent may use to check against)',
+        },
+        {
           // TASK-741 — the Connectors tab's "Sign-in expired" icon. A stored
           // marker read, never a token refresh.
           hook: 'mcp-oauth:status-batch',
