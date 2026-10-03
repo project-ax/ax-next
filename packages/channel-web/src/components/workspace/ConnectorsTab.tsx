@@ -17,8 +17,9 @@
  *     taken back, so every row stays here for now.
  *
  * The connector list (slice 6, TASK-739) sits above "Other abilities" — see
- * `AgentConnectors`. "+ Add" arrives with slice 7; nothing here draws it
- * before it is wired (invariant 3).
+ * `AgentConnectors`. Its "+ Add" swaps the whole tab for the Add subview
+ * (`AddConnector`, slice 7) until the person goes back or a connector is
+ * attached.
  */
 import { Fragment, useState } from 'react';
 import {
@@ -51,6 +52,7 @@ import { Switch } from '@/components/ui/switch';
 import { useAgentAbilities } from '@/lib/agent-abilities';
 import type { AgentRailData, GrantRow } from '@/lib/workspace-api';
 import type { AgentAbility } from '@/lib/workspace-types';
+import { AddConnector } from './AddConnector';
 import { AgentConnectors } from './AgentConnectors';
 import { GrantLine, PermissionLine, ReadFailure, SectionLabel } from './bits';
 
@@ -106,6 +108,21 @@ export function ConnectorsTab({
   onConnectorsChanged,
 }: Props) {
   const [everything, setEverything] = useState(false);
+  // Keyed by agent, so switching agents never lands on another one's Add view.
+  const [addingFor, setAddingFor] = useState<string | null>(null);
+  if (addingFor === agentId) {
+    return (
+      <AddConnector
+        agentId={agentId}
+        name={name}
+        onBack={() => setAddingFor(null)}
+        onAttached={() => {
+          setAddingFor(null);
+          onConnectorsChanged?.();
+        }}
+      />
+    );
+  }
   const grantCount =
     rail?.grants.status === 'ok' ? rail.grants.rows.length : null;
   return (
@@ -114,6 +131,7 @@ export function ConnectorsTab({
         agentId={agentId}
         name={name}
         {...(onConnectorsChanged !== undefined ? { onChanged: onConnectorsChanged } : {})}
+        onAdd={() => setAddingFor(agentId)}
       />
       <SectionLabel>Other abilities</SectionLabel>
       <OtherAbilities agentId={agentId} name={name} />

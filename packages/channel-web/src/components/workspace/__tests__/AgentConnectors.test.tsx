@@ -4,7 +4,8 @@
  * Pinned: rows are the connector NAME only; the ⋯ menu holds exactly what is
  * wired (Edit connector for an editable one, then Remove from <agent>);
  * removing asks first and never drops a row the server still has; the empty
- * state; and no Add / View details before their slices land.
+ * state; "+ Add" / "Add connector" open the Add subview (TASK-740); and no
+ * View details before its slice lands.
  *
  * TASK-741 (slice 8): an errored row wears ONE red icon after its name — no
  * inline error text — whose reason is its accessible name and a tooltip that
@@ -110,10 +111,11 @@ describe('connector list', () => {
     expect(connectorsMock).toHaveBeenCalledWith('a-quill');
   });
 
-  it('draws no Add button before TASK-740 wires it', async () => {
+  it('draws "+ Add" beside the heading, and it opens the Add subview (TASK-740)', async () => {
     renderTab();
     await screen.findByText('Linear');
-    expect(screen.queryByRole('button', { name: /Add/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(await screen.findByRole('heading', { name: 'Add a connector' })).toBeTruthy();
   });
 
   it('says it could not read the list rather than showing an empty one', async () => {
@@ -203,7 +205,7 @@ describe('remove', () => {
 });
 
 describe('empty state', () => {
-  it('is a dashed card with the plug, the title and the copy — and no Add yet', async () => {
+  it('is a dashed card with the plug, the title, the copy and "Add connector"', async () => {
     connectorsMock.mockResolvedValue({ connectors: [], shared: false });
     const { container } = renderTab();
     expect(await screen.findByText('No connectors yet')).toBeTruthy();
@@ -213,7 +215,9 @@ describe('empty state', () => {
     const empty = container.querySelector('[data-slot="empty"]');
     expect(empty?.className).toContain('border-dashed');
     expect(empty?.querySelector('svg.lucide-plug')).not.toBeNull();
-    expect(screen.queryByRole('button', { name: /Add connector/ })).toBeNull();
+    // The empty state's own button, not a second "+ Add" in the header.
+    expect(screen.getByRole('button', { name: 'Add connector' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
     // No count when there is nothing to count.
     expect(screen.getByRole('heading', { level: 3, name: /^Connectors/ }).textContent).toBe(
       'Connectors',

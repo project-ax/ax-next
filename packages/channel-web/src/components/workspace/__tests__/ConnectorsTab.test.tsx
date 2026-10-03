@@ -80,11 +80,11 @@ describe('Connectors tab shell', () => {
     await sw('Web search');
   });
 
-  it('draws the connector list above Other abilities, but no Add button until TASK-740', async () => {
+  it('draws the connector list (with its Add) above Other abilities', async () => {
     renderTab();
     await sw('Web search');
     expect(await screen.findByText(/No connectors yet/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Add/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add connector' })).toBeTruthy();
     const connectors = screen.getByRole('heading', { level: 3, name: /^Connectors/ });
     const abilities = screen.getByRole('heading', { level: 3, name: 'Other abilities' });
     expect(

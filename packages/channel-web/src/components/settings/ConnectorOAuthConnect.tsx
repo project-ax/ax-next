@@ -5,27 +5,24 @@
  *   - Status polling (on mount + after a successful OAuth round-trip).
  *   - Optional consent gate (for agent-scope connects where the authorization
  *     acts as the current user on behalf of a shared agent).
- *   - Popup-based OAuth flow: opens a provider authorization URL in a small
- *     window, listens for the `ax:oauth-callback` postMessage from the bridge
- *     page, and handles the popup-closed-without-message (user dismissed) case.
+ *   - Popup-based OAuth flow (via `useOAuthPopup`, TASK-740): opens a provider
+ *     authorization URL in a small window, listens for the `ax:oauth-callback`
+ *     postMessage from the bridge page, and handles the popup-closed-without-
+ *     message (user dismissed) case.
  *
  * SECURITY (invariant #5): The `message` listener origin filter is the primary
  * security control — any message not from `window.location.origin` is silently
- * dropped. This is tested explicitly (ConnectorOAuthConnect.test.tsx test (f)).
+ * dropped (in `useOAuthPopup`). This is tested explicitly (ConnectorOAuthConnect.test.tsx test (f)).
  *
  * shadcn primitives + semantic tokens only (invariant #6). No raw colors.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
-import {
-  beginOAuth,
-  getOAuthStatus,
-  type OAuthStatus,
-} from '@/lib/connectors-oauth';
-import { OAUTH_MESSAGE_TYPE } from '@/lib/oauth-callback-bridge';
+import { getOAuthStatus, type OAuthStatus } from '@/lib/connectors-oauth';
+import { useOAuthPopup } from '@/lib/use-oauth-popup';
 
 export interface ConnectorOAuthConnectProps {
   connectorId: string;
@@ -59,15 +56,6 @@ export function ConnectorOAuthConnect({
   // 'checking' while the status request is in flight; 'error' if the fetch threw.
   const [status, setStatus] = useState<OAuthStatus | 'checking' | 'error'>('checking');
   const [consented, setConsented] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Refs so cleanup functions in useEffect see current values without adding
-  // them to effect deps (avoids re-registering the popup listener on every
-  // render).
-  const popupRef = useRef<Window | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const msgHandlerRef = useRef<((e: MessageEvent) => void) | null>(null);
 
   const fetchStatus = useCallback(async () => {
     setStatus('checking');
@@ -88,109 +76,19 @@ export function ConnectorOAuthConnect({
     void fetchStatus();
   }, [fetchStatus]);
 
-  // Cleanup helper — clears the popup poll + message listener.
-  const cleanupPopupFlow = useCallback(() => {
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    if (msgHandlerRef.current !== null) {
-      window.removeEventListener('message', msgHandlerRef.current);
-      msgHandlerRef.current = null;
-    }
-    popupRef.current = null;
-  }, []);
-
-  // Clean up on unmount.
-  useEffect(() => {
-    return () => {
-      cleanupPopupFlow();
-    };
-  }, [cleanupPopupFlow]);
-
-  const handleConnect = useCallback(async () => {
-    // M5 — double-click guard: a fast second click before the disabled-state
-    // re-render would otherwise register a second listener + interval.
-    if (busy) return;
-    setError(null);
-    setBusy(true);
-
-    let authorizationUrl: string;
-    try {
-      const result = await beginOAuth(
-        agentId !== undefined ? { connectorId, agentId } : { connectorId },
-      );
-      authorizationUrl = result.authorizationUrl;
-    } catch {
-      setError("We couldn't start the sign-in. Please try again — if it keeps happening, let us know.");
-      setBusy(false);
-      return;
-    }
-
-    // Open the provider's auth URL in a small popup window.
-    const popup = window.open(
-      authorizationUrl,
-      'ax-oauth-connect',
-      'width=600,height=720',
-    );
-
-    // C1 — popup-blocked guard: window.open() returns null when a popup blocker
-    // intervenes. Without this guard, the listener + poll are registered against
-    // null, busy stays true forever, and no error is shown.
-    if (!popup) {
-      setError("We couldn't open the sign-in window — check your popup blocker and try again.");
-      setBusy(false);
-      return;
-    }
-
-    popupRef.current = popup;
-
-    // ── Message listener (origin-locked — load-bearing security control) ──
-    // MUST check: event.origin === window.location.origin AND type ===
-    // OAUTH_MESSAGE_TYPE. Any other message is silently ignored.
-    const handler = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; connector?: string; oauth?: string } | null;
-      if (!data || data.type !== OAUTH_MESSAGE_TYPE) return;
-      // M2 — strict connector match: a message that can't prove it's for this
-      // connector is silently ignored. This prevents a connector-less error (e.g.
-      // the 2a provider-denial redirect with no `connector` param) from tearing
-      // down another mounted instance's flow.
-      if (data.connector !== connectorId) return;
-
-      // I1 — branch on the OAuth outcome. A provider error/denial must surface
-      // a friendly message and must NOT call onConnected.
-      if (data.oauth === 'error') {
-        cleanupPopupFlow();
-        setBusy(false);
-        setError(`Sign-in didn't finish, so ${serviceName} isn't connected. You can try again whenever you're ready.`);
-        void fetchStatus();      // keep the badge truthful
-        return;                  // do NOT call onConnected on failure
-      }
-
-      // success path:
-      cleanupPopupFlow();
-      setBusy(false);
-      void fetchStatus();
-      onConnected?.();
-    };
-
-    msgHandlerRef.current = handler;
-    window.addEventListener('message', handler);
-
-    // ── Popup-closed poll ──────────────────────────────────────────────────
-    // If the user closes the popup without completing OAuth (no message arrives),
-    // clean up and do a best-effort status refresh (full-page fallback may have
-    // succeeded).
-    const poll = setInterval(() => {
-      if (popupRef.current?.closed) {
-        cleanupPopupFlow();
-        setBusy(false);
-        void fetchStatus();
-      }
-    }, 500);
-    pollRef.current = poll;
-  }, [connectorId, agentId, fetchStatus, cleanupPopupFlow, onConnected]);
+  // The popup flow itself (origin-locked listener, popup-blocked guard,
+  // closed-popup poll) lives in `useOAuthPopup` (TASK-740), shared with the
+  // connectors rail's Add subview. Every way the flow ends re-reads the badge.
+  const popup = useOAuthPopup({
+    connectorId,
+    ...(agentId !== undefined ? { agentId } : {}),
+    serviceName,
+    onSettled: () => void fetchStatus(),
+    ...(onConnected !== undefined ? { onConnected } : {}),
+  });
+  const busy = popup.busy;
+  const error = popup.error;
+  const handleConnect = popup.start;
 
   // ── Status badge ──────────────────────────────────────────────────────────
 
