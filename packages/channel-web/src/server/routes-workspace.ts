@@ -163,6 +163,10 @@ import { MAX_DETAIL_CHARS } from '../lib/turn-error-labels.js';
 // that same id.
 import { asSaveRefusedCode, saveRefusedRowId } from '../lib/save-refused.js';
 import {
+  CONNECTOR_TOOL_NAMESPACE_RE,
+  type ConnectorNames,
+} from '../lib/connector-tool-label.js';
+import {
   settleHolds,
   shapeSteps,
   stepDetail,
@@ -625,6 +629,17 @@ interface RoutinesListInput {
 }
 interface RoutinesListOutput {
   routines: RoutineRow[];
+}
+
+/**
+ * `connectors:tool-labels` (TASK-744), duck-typed (I2): which connector each
+ * opaque tool namespace belongs to, for one user.
+ */
+interface ConnectorToolLabelsInput {
+  userId: string;
+}
+interface ConnectorToolLabelsOutput {
+  connectors: Array<{ toolNamespace: string; name: string }>;
 }
 
 /**
@@ -1092,6 +1107,14 @@ export interface AgentDetail {
    * `status` says which, because the two need different sentences (TASK-417).
    */
   memory: AgentMemoryRead;
+  /**
+   * TASK-744 — which connector each tool namespace belongs to, for THIS
+   * reader, so the LIVE step panel can name a connector tool the way the
+   * reloaded `thread` already does ("Linear · Create issue"). `toolNamespace`
+   * is a lookup key, never rendered; `name` is fenced. Connectors the reader
+   * cannot resolve are absent, and their tools read as the tool name alone.
+   */
+  connectorTools: Array<{ toolNamespace: string; name: string }>;
 }
 
 /**
@@ -1462,6 +1485,8 @@ export const DECISION_UNRESOLVED_TAG = 'Decision';
  * renderer cannot forget to do it.
  */
 export const RAIL_LABEL_MAX_CHARS = 60;
+/** A connector's display name inside a step row: "<name> · <tool>" (TASK-744). */
+export const CONNECTOR_NAME_MAX_CHARS = 40;
 export const RAIL_DESCRIPTION_MAX_CHARS = 400;
 
 /** How far back "This week" looks. */
@@ -2436,6 +2461,9 @@ function buildThread(
   // The holds still being asked about in this conversation, or `null` when
   // that is not known — which leaves every held step reading as waiting.
   live: LiveHolds | null = null,
+  // TASK-744 — namespace → connector name for the reader, so a connector
+  // tool's step names its connector instead of an opaque hash.
+  connectors: ConnectorNames = new Map(),
 ): ThreadMessage[] {
   const dated: Array<{ at: string; msg: ThreadMessage }> = [];
   const out: ThreadMessage[] = [];
@@ -2520,7 +2548,7 @@ function buildThread(
       });
       continue;
     }
-    const panel = shapeSteps(turnToolCalls(blocks, outcomes, live));
+    const panel = shapeSteps(turnToolCalls(blocks, outcomes, live), connectors);
     if (text.length === 0 && panel === null) continue;
     dated.push({
       at: turn.createdAt,
@@ -2890,6 +2918,42 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       });
       return [];
     }
+  }
+
+  /**
+   * TASK-744 — toolNamespace → connector display name, for ONE reader.
+   *
+   * Scoped to `userId` by `connectors:tool-labels` itself: it answers only for
+   * connectors that person can resolve, so another owner's private connector
+   * is never named here. The name is author-written, so it is fenced HERE —
+   * it rides the wire (`AgentDetail.connectorTools`) as well as the shaped
+   * rows. A namespace that is not the documented shape is dropped: it is a
+   * lookup key the client matches against tool names, and a key that cannot
+   * match anything is noise.
+   *
+   * A failed or missing read degrades to an empty map: connector tools are
+   * then named by their tool name alone — a worse label, not a wrong one.
+   */
+  async function connectorNames(userId: string): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    if (!bus.hasService('connectors:tool-labels')) return names;
+    try {
+      const out = await bus.call<ConnectorToolLabelsInput, ConnectorToolLabelsOutput>(
+        'connectors:tool-labels',
+        initCtx,
+        { userId },
+      );
+      for (const c of out.connectors ?? []) {
+        if (!CONNECTOR_TOOL_NAMESPACE_RE.test(c.toolNamespace)) continue;
+        const name = fenceLine(c.name, CONNECTOR_NAME_MAX_CHARS);
+        if (name !== null) names.set(c.toolNamespace, name);
+      }
+    } catch (err) {
+      initCtx.logger.warn('workspace_connector_tool_labels_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return names;
   }
 
   /**
@@ -4791,6 +4855,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       let thread: ThreadMessage[] = [];
       let threadConversationId: string | null = null;
       let decisionsRead: WorkspaceReadStatus = 'ok';
+      // Read whether or not there is a thread yet: the live panel needs it for
+      // the first turn too (TASK-744).
+      const connectors = await connectorNames(userId);
       if (targetId !== null) {
         let got: ConversationsGetOutput | null = null;
         try {
@@ -4862,7 +4929,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           const approvals = await approvalMessages(userId, agentId, threadConversationId);
           decisionsRead = approvals.status;
           thread = [
-            ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live),
+            ...buildThread(got.turns ?? [], got.displayEvents ?? [], approvals.live, connectors),
             ...approvals.messages,
           ];
           thread = await withMemoryUsed(
@@ -4894,6 +4961,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         decisions: { status: decisionsRead },
         past,
         memory: await readMemory(agent, userId),
+        connectorTools: [...connectors].map(([toolNamespace, name]) => ({ toolNamespace, name })),
       } satisfies AgentDetail);
     },
 

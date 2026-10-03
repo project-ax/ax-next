@@ -48,6 +48,11 @@
  */
 import { fenceLine } from './fence-line.js';
 import { stripMcpToolPrefix } from './tool-name.js';
+import {
+  connectorToolLabel,
+  toolMatchName,
+  type ConnectorNames,
+} from './connector-tool-label.js';
 
 /**
  * Where one tool call got to.
@@ -419,10 +424,15 @@ const STATUS_SUFFIX: Record<Exclude<WorkspaceStepStatus, 'done'>, string> = {
   failed: "didn't finish",
 };
 
-/** The display name for one call: phrase first, then the stripped tool name. */
-function stepName(call: WorkspaceToolCall): string {
+/**
+ * The display name for one call: phrase first, then — for a connector tool —
+ * "<connector> · <tool>" (TASK-744; never the namespace hash), then the
+ * stripped tool name.
+ */
+function stepName(call: WorkspaceToolCall, connectors: ConnectorNames | undefined): string {
   return (
     fenceLine(call.phrase, STEP_NAME_MAX_CHARS) ??
+    fenceLine(connectorToolLabel(call.name, connectors), STEP_NAME_MAX_CHARS) ??
     fenceLine(stripMcpToolPrefix(call.name), STEP_NAME_MAX_CHARS) ??
     UNNAMED_STEP
   );
@@ -436,8 +446,8 @@ function stepName(call: WorkspaceToolCall): string {
  * which half is the machine's and which is ours. `Bash: ls -la — in progress`
  * reads in one pass.
  */
-function stepRow(call: WorkspaceToolCall): string {
-  const name = stepName(call);
+function stepRow(call: WorkspaceToolCall, connectors: ConnectorNames | undefined): string {
+  const name = stepName(call, connectors);
   return call.detail === undefined || call.detail.length === 0
     ? name
     : `${name}: ${call.detail}`;
@@ -482,12 +492,18 @@ function stepsLabel(
  */
 export function shapeSteps(
   calls: readonly WorkspaceToolCall[],
+  /**
+   * TASK-744 — namespace → connector name for THIS user, so a connector
+   * tool's row names its connector. Absent → connector tools are named by
+   * their tool name alone, which is also the answer for an unknown namespace.
+   */
+  connectors?: ConnectorNames,
 ): WorkspaceStepPanel | null {
   if (calls.length === 0) return null;
   const steps: WorkspaceStep[] = [];
   const counts = { failed: 0, waiting: 0, running: 0 };
   for (const call of calls) {
-    const row = stepRow(call);
+    const row = stepRow(call, connectors);
     if (call.status === 'done') {
       steps.push({ text: row, status: 'done' });
       continue;
@@ -586,7 +602,11 @@ export function applyToolResult(
 export interface LiveHolds {
   /** `call.id` of every open decision — the tool_use id it was held under. */
   callIds: ReadonlySet<string>;
-  /** `call.name` of every open decision; the `mcp__…__` prefix is ignored. */
+  /**
+   * `call.name` of every open decision. Compared through `toolMatchName`, so
+   * the `mcp__…__` prefix is ignored and a connector tool's two spellings
+   * (`mcp__<ns>__x` on the transcript, `mcp.<ns>.x` on the decision) match.
+   */
   toolNames: ReadonlySet<string>;
 }
 
@@ -618,11 +638,11 @@ export function settleHolds(
   live: LiveHolds | null,
 ): WorkspaceToolCall[] {
   if (live === null) return [...calls];
-  const liveNames = new Set([...live.toolNames].map(stripMcpToolPrefix));
+  const liveNames = new Set([...live.toolNames].map(toolMatchName));
   return calls.map((call) =>
     call.status === 'waiting' &&
     !live.callIds.has(call.id) &&
-    !liveNames.has(stripMcpToolPrefix(call.name))
+    !liveNames.has(toolMatchName(call.name))
       ? { ...call, status: 'settled' }
       : call,
   );

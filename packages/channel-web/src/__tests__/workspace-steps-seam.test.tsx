@@ -242,8 +242,19 @@ function storedTurns(): unknown[] {
   ];
 }
 
-async function reloadThread(turns: unknown[] = storedTurns()): Promise<ThreadMessage[]> {
+async function reloadThread(
+  turns: unknown[] = storedTurns(),
+  /** `connectors:tool-labels`' answer (TASK-744); absent → hook not registered. */
+  connectorLabels?: Array<{ toolNamespace: string; connectorId: string; name: string }>,
+): Promise<ThreadMessage[]> {
   const bus = new HookBus();
+  if (connectorLabels !== undefined) {
+    bus.registerService('connectors:tool-labels', 'connectors', async (_c, i: unknown) => {
+      // Scoped to the reader — the route must ask as the authenticated user.
+      expect((i as { userId: string }).userId).toBe('u1');
+      return { connectors: connectorLabels };
+    });
+  }
   const notFound = (): PluginError =>
     new PluginError({ code: 'not-found', plugin: 'test', message: 'nope' });
   bus.registerService('auth:require-user', 'auth', async () => ({
@@ -751,5 +762,98 @@ describe('a held step, answered while the turn is still live (TASK-532)', () => 
       ]);
     });
     live.unmount();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-744 — connector tools are named by connector + tool, never by hash.
+// ---------------------------------------------------------------------------
+
+describe('a turn that ran CONNECTOR tools (TASK-744)', () => {
+  beforeEach(() => {
+    vi.mocked(workspaceApi.agent).mockReset();
+    vi.mocked(workspaceApi.sendMessage).mockReset();
+    vi.mocked(workspaceApi.streamReply).mockReset();
+  });
+
+  // `c5e0235982f` is the literal @ax/connectors' tests pin as a real derived
+  // namespace; the second is one this reader cannot name.
+  const KNOWN = 'c5e0235982f';
+  const UNKNOWN = 'c0123456789';
+  const CONNECTOR_CALLS = [
+    { id: 'tu1', name: `mcp__${KNOWN}__create_issue`, phrase: undefined },
+    { id: 'tu2', name: `mcp__${UNKNOWN}__list_files`, phrase: undefined },
+  ] as const;
+  const LABELS = [{ toolNamespace: KNOWN, connectorId: 'linear', name: 'Linear' }];
+
+  function connectorTurns(): unknown[] {
+    const [user, assistant, tool] = storedTurns() as Array<Record<string, unknown>>;
+    return [
+      user,
+      {
+        ...assistant,
+        contentBlocks: [...CONNECTOR_CALLS.map(toolUseBlock), { type: 'text', text: REPLY }],
+      },
+      {
+        ...tool,
+        contentBlocks: CONNECTOR_CALLS.map((c) => ({
+          type: 'tool_result',
+          tool_use_id: c.id,
+          content: [{ type: 'text', text: 'ok' }],
+        })),
+      },
+    ];
+  }
+
+  it('reads "<connector> · <tool>" live and on reload, and the hash reaches neither', async () => {
+    // ---- reload -----------------------------------------------------------
+    const thread = await reloadThread(connectorTurns(), LABELS);
+    const reloaded = render(<AgentConversation {...conversationProps(thread)} />);
+    const onReload = readPanel(reloaded.container);
+    reloaded.unmount();
+
+    // ---- live -------------------------------------------------------------
+    vi.mocked(workspaceApi.agent).mockResolvedValue({
+      ...liveDetail(),
+      connectorTools: [{ toolNamespace: KNOWN, name: 'Linear' }],
+    } as AgentDetail);
+    vi.mocked(workspaceApi.sendMessage).mockResolvedValue({
+      conversationId: 'c1',
+      reqId: 'r1',
+    } as never);
+    vi.mocked(workspaceApi.streamReply).mockImplementation(
+      async (_reqId: string, h): Promise<void> => {
+        for (const c of CONNECTOR_CALLS) {
+          h.onToolUse?.({ toolCallId: c.id, toolName: c.name, activityPhrase: c.phrase });
+        }
+        for (const c of CONNECTOR_CALLS) h.onToolResult?.({ toolCallId: c.id });
+        h.onText(REPLY);
+        await new Promise<void>(() => {});
+      },
+    );
+    const live = renderLiveView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'file that issue' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => {
+      expect(live.container.querySelector('[data-testid="workspace-steps"]')).not.toBeNull();
+    });
+    const onLive = readPanel(live.container);
+
+    // ---- the seam, and the words ------------------------------------------
+    expect(onLive.steps).toEqual(onReload.steps);
+    expect(onReload.steps).toEqual(['Linear · Create issue', 'List files']);
+    for (const ns of [KNOWN, UNKNOWN]) {
+      expect(JSON.stringify(onReload)).not.toContain(ns);
+      expect(live.container.textContent).not.toContain(ns);
+    }
+    live.unmount();
+  });
+
+  it('with no connectors plugin, a connector tool is named by its tool alone', async () => {
+    const thread = await reloadThread(connectorTurns());
+    const reloaded = render(<AgentConversation {...conversationProps(thread)} />);
+    expect(readPanel(reloaded.container).steps).toEqual(['Create issue', 'List files']);
+    reloaded.unmount();
   });
 });

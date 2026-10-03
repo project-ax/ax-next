@@ -278,6 +278,13 @@ export interface AgentDetail {
    * genuinely nothing", and the tab wrote a confident sentence over all three.
    */
   memory: AgentMemoryRead;
+  /**
+   * TASK-744 — toolNamespace → connector name for this reader, so the LIVE
+   * step panel names a connector tool ("Linear · Create issue") the way the
+   * reloaded thread does. Optional on read: an older host omits it, and the
+   * tools then read as the tool name alone.
+   */
+  connectorTools?: Array<{ toolNamespace: string; name: string }>;
 }
 
 /** CSRF: the host's guard accepts the literal `ax-admin` (see @ax/http-server). */

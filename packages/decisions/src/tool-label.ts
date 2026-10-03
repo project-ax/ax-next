@@ -21,6 +21,8 @@
  * durable row; `templates.ts` re-fences the whole label on its way into prose.
  */
 
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
+
 /** @ax/connectors' namespace → display-name read (TASK-744). */
 export const CONNECTOR_TOOL_LABELS_HOOK = 'connectors:tool-labels';
 
@@ -33,7 +35,7 @@ const CONNECTOR_NAME_MAX = 40;
 const TOOL_PART_MAX = 48;
 
 function oneLine(value: string, max: number): string {
-  const flat = value.replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
+  const flat = replaceSurfaceRewriters(value).replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
   const points = [...flat];
   return points.length > max ? `${points.slice(0, max - 1).join('').trimEnd()}…` : flat;
 }

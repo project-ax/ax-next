@@ -482,6 +482,24 @@ describe('settleHolds — a hold the person has since answered (TASK-517)', () =
     expect(calls[0]?.status).toBe('waiting');
   });
 
+  it('a held CONNECTOR tool matches its open decision across the two spellings (TASK-744)', () => {
+    // The transcript stores the SDK wire name; the decision stores the
+    // canonical toolKey. Stripping only `mcp__…__` compared `create_issue`
+    // with `mcp.c5e0235982f.create_issue` — never equal — so a re-held
+    // connector call read "no longer waiting" while its question was open.
+    const calls = settleHolds(
+      [held({ id: 'tu2', name: 'mcp__c5e0235982f__create_issue' })],
+      { callIds: new Set(['tu1']), toolNames: new Set(['mcp.c5e0235982f.create_issue']) },
+    );
+    expect(calls[0]?.status).toBe('waiting');
+    // ...and a DIFFERENT connector's same-named tool is a different tool.
+    const other = settleHolds(
+      [held({ id: 'tu3', name: 'mcp__c0123456789__create_issue' })],
+      { callIds: new Set(['tu1']), toolNames: new Set(['mcp.c5e0235982f.create_issue']) },
+    );
+    expect(other[0]?.status).toBe('settled');
+  });
+
   it('an UNKNOWN set of open decisions settles nothing', () => {
     // A failed read is not "nothing is open"; the old reading stands.
     expect(settleHolds([held()], null)[0]?.status).toBe('waiting');
