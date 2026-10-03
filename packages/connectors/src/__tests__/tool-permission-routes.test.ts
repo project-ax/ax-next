@@ -296,6 +296,35 @@ describe('tool-permissions routes — read', () => {
     expect(inventoryCalls).toEqual([{ userId: 'admin1', connectorId: 'linear' }]);
   });
 
+  it('TASK-764: an untouched editor Save writes every suggestion, and they read back as saved', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'admin1', isAdmin: true };
+    await create(h, 'admin', linear);
+    inventory = { status: 'ok', tools: linearTools };
+    const before = (await getPerms(h, 'admin', 'linear')).body as {
+      tools: Array<{ toolKey: string; readOnly: boolean | null }>;
+      defaults: unknown[];
+    };
+    expect(before.defaults).toEqual([]);
+    // What the editor sends when nobody touched a row: the prefill for every
+    // listed tool (read-only → allow, anything else → hold).
+    const verdicts = before.tools.map((t) => ({
+      toolKey: t.toolKey,
+      verdict: t.readOnly === true ? 'allow' : 'hold',
+    }));
+    expect(verdicts).toHaveLength(2);
+    expect(await putPerms(h, 'admin', 'linear', { verdicts })).toEqual({
+      status: 200,
+      body: { ok: true },
+    });
+    const after = (await getPerms(h, 'admin', 'linear')).body as { defaults: unknown[] };
+    const ns = deriveToolNamespace('admin1', 'linear', 'linear');
+    expect(after.defaults).toEqual([
+      { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
+      { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
+    ]);
+  });
+
   it('refresh=1 asks the inventory to check the server again', async () => {
     const h = await makeHarness();
     currentActor = { id: 'admin1', isAdmin: true };
