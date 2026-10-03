@@ -113,6 +113,13 @@ export class StorageNodeEngine {
         const directory = this.io.directory(volume, ['bootstrap'], true);
         try {
           this.io.chown(directory.fd); fchmodSync(directory.fd, 0o700);
+          // Atomic-publish invariant: write the complete bootstrap to a temp file in
+          // this SAME directory, then rename it onto BOOTSTRAP_FILE. Never write the
+          // target in place. The standby reader (`waitForAssignment` in
+          // agent-runner-core standby.ts) polls for it (default every 50ms) and consumes and
+          // fails closed on an empty or partial file, which would burn this
+          // single-use instance; same-directory rename is what makes it appear whole.
+          // Pinned by storage-node.test.ts "publishes session.json by same-directory rename".
           const temp = `${directory.path}/session.tmp`;
           const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
           try { writeFileSync(fd, JSON.stringify(bootstrap)); this.io.chown(fd); fsyncSync(fd); }

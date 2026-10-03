@@ -84,6 +84,46 @@ describe('storage-node ledger and lifecycle', () => {
     writeFileSync(join(f.volume, 'bootstrap/accepted.json'), JSON.stringify({ assignmentId: f.data.bootstrap.assignmentId, instanceId: f.data.podUid }));
     expect(await engine.status(identity(f.data))).toEqual({ accepted: true });
   });
+  // The standby reader (agent-runner-core `waitForAssignment`) polls for
+  // session.json (default every 50ms) and consumes + fails closed on anything it cannot
+  // parse, so the publisher must never let a partially written target be seen.
+  // An in-place `writeFile` of session.json creates it empty, then fills it.
+  it('publishes session.json by same-directory rename: target absent until the complete file lands', async () => {
+    const f = engineFixture(); const bootstrapDir = join(f.volume, 'bootstrap');
+    const seen: Array<{ entries: string[]; temp?: string; tempMode?: number; tempIno?: bigint }> = [];
+    vi.mocked(f.authority.authorize).mockImplementation(async () => {
+      let entries: string[] = [];
+      try { entries = readdirSync(bootstrapDir).sort(); } catch { /* not created yet */ }
+      const snapshot: (typeof seen)[number] = { entries };
+      if (entries.includes('session.tmp')) {
+        const fd = openSync(join(bootstrapDir, 'session.tmp'), 'r');
+        try {
+          const st = fstatSync(fd, { bigint: true }); snapshot.tempMode = Number(st.mode & 0o777n); snapshot.tempIno = st.ino;
+          snapshot.temp = readFileSync(fd, 'utf8');
+        } finally { closeSync(fd); }
+      }
+      seen.push(snapshot);
+    });
+    await f.make().assign(f.data);
+    // Observation point: the final authorization recheck, which runs after the
+    // bootstrap is fully written and immediately before it is published. If this
+    // count changes, the recheck moved — re-pick the observation point; it does
+    // not by itself mean the atomic publish broke.
+    expect(seen).toHaveLength(2);
+    const prePublish = seen.at(-1)!;
+    expect(prePublish.entries).toEqual(['session.tmp']);
+    expect(prePublish.tempMode).toBe(0o600);
+    expect(JSON.parse(prePublish.temp!)).toEqual(f.data.bootstrap);
+    expect(seen.every(s => !s.entries.includes('session.json'))).toBe(true);
+    expect(readdirSync(bootstrapDir)).toEqual(['session.json']);
+    const fd = openSync(join(bootstrapDir, 'session.json'), 'r');
+    try {
+      // Same inode = the complete temp file was renamed into place. A copy into a
+      // freshly created target (empty, then filled) gets a new inode.
+      expect(fstatSync(fd, { bigint: true }).ino).toBe(prePublish.tempIno);
+      expect(JSON.parse(readFileSync(fd, 'utf8'))).toEqual(f.data.bootstrap);
+    } finally { closeSync(fd); }
+  });
   it('does not remount or recreate the secret on retries or helper restart', async () => {
     const f = engineFixture(); await f.make().assign(f.data);
     rmSync(join(f.volume, 'bootstrap/session.json'));
