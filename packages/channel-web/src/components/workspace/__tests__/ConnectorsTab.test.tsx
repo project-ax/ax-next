@@ -153,10 +153,14 @@ describe('Other abilities', () => {
 
   it('says nothing changed when the write fails, and leaves the switch where it was', async () => {
     setAbilityMock.mockRejectedValue(new WorkspaceApiError('/agents/a-quill/abilities', 500));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     renderTab();
 
     fireEvent.click(await sw('Web search'));
     expect(await screen.findByText(/couldn’t change that just now\. Nothing changed\./)).toBeTruthy();
+    // The operator's half: the cause is logged, not swallowed.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[agent-abilities]'));
+    warn.mockRestore();
     expect(await sw('Web search')).toHaveAttribute('aria-checked', 'true');
   });
 
