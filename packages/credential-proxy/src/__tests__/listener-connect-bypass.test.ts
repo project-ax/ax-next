@@ -365,6 +365,117 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     expect(response.toLowerCase()).toMatch(/content-length:\s*\d+/);
   });
 
+  it('audits a FAILED upstream connect on the raw tunnel as 502, not 200 (TASK-705)', async () => {
+    // Grab a port that is guaranteed closed: bind, read the port, release it.
+    // A connect to it is refused, so the raw tunnel never opens.
+    const probe = net.createServer();
+    const deadPort = await new Promise<number>((r) =>
+      probe.listen(0, '127.0.0.1', () => r((probe.address() as { port: number }).port)),
+    );
+    await new Promise<void>((r) => probe.close(() => r()));
+
+    const audits: ProxyAuditEntry[] = [];
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry: new SharedCredentialRegistry(),
+      ca: { key: 'unused-key', cert: 'unused-cert' }, // bypass path doesn't touch CA
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            bypassMITM: new Set(['127.0.0.1']),
+            sessionId: 's1',
+            userId: 'u1',
+            proxyToken: tokenFor('s1'),
+          },
+        ],
+      ]),
+      onAudit: (e) => audits.push(e),
+    });
+
+    // The client is told the truth too: a 502, never "200 Connection
+    // Established" followed by a silent hang-up.
+    const response = await connectCaptureBlockedResponse(
+      '127.0.0.1',
+      listener.port,
+      `127.0.0.1:${deadPort}`,
+      tokenFor('s1'),
+    );
+    expect(response).toMatch(/^HTTP\/1\.1 502\b/);
+    expect(response).not.toContain('200 Connection Established');
+
+    // Let every close/error event settle so a late second audit would show up.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(audits).toHaveLength(1);
+    const [entry] = audits;
+    expect(entry!.status).toBe(502);
+    expect(entry!.method).toBe('CONNECT');
+    expect(entry!.url).toBe(`127.0.0.1:${deadPort}`);
+    expect(entry!.requestBytes).toBe(0);
+    expect(entry!.responseBytes).toBe(0);
+    expect(entry!.sessionId).toBe('s1');
+    expect(entry!.userId).toBe('u1');
+    // A network failure is not a policy block: same shape as the DNS-failure
+    // 502 in the catch path, so `blockedReason` stays unset on the bus event.
+    expect(entry!.blocked).toBeUndefined();
+  });
+
+  it('still audits a successful raw tunnel as 200 once it closes (TASK-705)', async () => {
+    const { key, cert } = mintTestCert('localhost');
+    upstream = tlsCreate({ key, cert }, (socket) => {
+      socket.end('bye');
+    });
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const audits: ProxyAuditEntry[] = [];
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry: new SharedCredentialRegistry(),
+      ca: { key: 'unused-key', cert: 'unused-cert' },
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            bypassMITM: new Set(['127.0.0.1']),
+            sessionId: 's1',
+            proxyToken: tokenFor('s1'),
+          },
+        ],
+      ]),
+      onAudit: (e) => audits.push(e),
+    });
+
+    const tunnel = await connectThroughProxy(
+      '127.0.0.1',
+      listener.port,
+      `127.0.0.1:${upPort}`,
+      tokenFor('s1'),
+    );
+    const tlsSock = tlsConnect({ // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
+      socket: tunnel,
+      rejectUnauthorized: false,
+      servername: 'localhost',
+    });
+    await new Promise<void>((resolve) => {
+      tlsSock.on('data', () => {});
+      tlsSock.on('close', () => resolve());
+      tlsSock.on('error', () => resolve());
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.status).toBe(200);
+    expect(audits[0]!.requestBytes).toBeGreaterThan(0);
+    expect(audits[0]!.responseBytes).toBeGreaterThan(0);
+    expect(audits[0]!.sessionId).toBe('s1');
+  });
+
   it('returns 403 for CONNECT to a private IP without allowedIPs override', async () => {
     const registry = new SharedCredentialRegistry();
     listener = await startProxyListener({

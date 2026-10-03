@@ -1186,8 +1186,14 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         return;
       }
 
+      // Set once the upstream connect succeeds and we have told the client
+      // "200 Connection Established". Until then there is no tunnel, so the
+      // cleanup audit must not claim one (TASK-705).
+      let established = false;
+
       // Open the raw TCP tunnel against the resolved IP.
       const targetSocket = net.connect(port, resolvedIP, () => {
+        established = true;
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         activeSockets.add(targetSocket);
 
@@ -1220,8 +1226,32 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         cleaned = true;
         activeSockets.delete(targetSocket);
         targetSocket.destroy();
-        clientSocket.destroy();
 
+        if (!established) {
+          // The upstream connect failed (refused, unreachable, reset) — or the
+          // client gave up first — before any tunnel existed. Answer the client
+          // the way the catch path answers a DNS failure (a 502, then close),
+          // rather than hanging up with no status line, and audit what really
+          // happened: a 502 with no bytes moved. Not a policy block, so no
+          // `blocked` reason — same shape as the catch path's network 502.
+          if (clientSocket.writable) {
+            clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+          } else {
+            clientSocket.destroy();
+          }
+          audit(stampSession({
+            action: 'proxy_request',
+            method: 'CONNECT',
+            url: target,
+            status: 502,
+            requestBytes: 0,
+            responseBytes: 0,
+            durationMs: Date.now() - startTime,
+          }, callerSession));
+          return;
+        }
+
+        clientSocket.destroy();
         audit(stampSession({
           action: 'proxy_request',
           method: 'CONNECT',
