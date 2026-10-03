@@ -9,7 +9,10 @@ import type { PolicyRule, PolicyVerdict } from './types.js';
  *      call, egress relaxation included;
  *   2. the CONNECTOR CEILING — the per-tool default whoever can edit the
  *      connector set (an admin for a shared one). A connector tool nobody set
- *      a default for has an implicit `hold` ceiling: "Ask first";
+ *      a default for has an implicit `hold` ceiling: "Ask first". Every other
+ *      MCP tool — an admin host MCP server's, an unlifted `mcp__x__y` — has a
+ *      fixed `hold` ceiling, because no default slot exists for it
+ *      (`implicitMcpCeiling`, TASK-699);
  *   3. the AGENT OVERRIDE — the agent's own choice, copied from the ceiling on
  *      attach (`origin: 'snapshot'`) or picked by a person (`origin: 'user'`).
  *
@@ -91,7 +94,7 @@ export interface ConnectorToolKey {
  * connector tool key. ONLY the host-minted `c<10 hex>` namespace qualifies:
  * an admin-configured host MCP server (`@ax/mcp-client`, `mcp.<serverId>.x`)
  * shares the `mcp.` keyspace but is not a connector and has no connector
- * ceiling. That split relies on mcp-client refusing a `c<10 hex>` server id
+ * ceiling (it gets `implicitMcpCeiling`'s fixed `hold` instead). That split relies on mcp-client refusing a `c<10 hex>` server id
  * (TASK-752); otherwise an admin server could pass for a connector here.
  */
 export function parseConnectorToolKey(key: unknown): ConnectorToolKey | null {
@@ -151,19 +154,61 @@ export function staticCeiling(rules: readonly PolicyRule[], tool: string): Polic
 }
 
 /**
+ * True for anything SPELLED like an MCP tool: the canonical dotted `mcp.` form
+ * or the SDK's `mcp__` wire form, well-formed or not.
+ *
+ * Deliberately a bare prefix test and NOT `isMcpToolKey`. A name that is
+ * MCP-spelled but fails the key grammar — a tool name past
+ * `MAX_TOOL_KEY_CHARS` (the MCP SERVER picks it, so it can make it as long as
+ * it likes), a `mcp.x` with no tool half, a foreign `mcp__linear__x` the
+ * claude-sdk runner did not lift — used to fall out of every MCP check at once
+ * and land on the static table's no-match `allow`. The prefix is what decides
+ * "this came from an MCP server"; the grammar only decides which store row
+ * could speak for it.
+ */
+export function isMcpSpelled(toolName: unknown): toolName is string {
+  return (
+    typeof toolName === 'string' &&
+    (toolName.startsWith('mcp.') || toolName.startsWith('mcp__'))
+  );
+}
+
+/**
+ * The verdict an MCP tool gets when nobody has said anything about it — the
+ * "Ask first" floor (TASK-736 for connectors, TASK-699 for the rest) — or
+ * `undefined` for a tool that is not MCP-spelled at all.
+ *
+ *   - a CONNECTOR tool (`mcp.c<10 hex>.<tool>`): its connector default, or
+ *     `hold` when there is none. The default can loosen this floor because
+ *     whoever can edit the connector chose it per tool.
+ *   - every OTHER MCP-spelled name — an admin-configured host MCP server's
+ *     `mcp.<serverId>.<tool>`, an unlifted `mcp__<server>__<tool>`, a
+ *     malformed or over-long key: `hold`, always. None of these has a
+ *     per-tool default anybody could have set, so there is nothing that could
+ *     have reviewed what the tool does, and a person is asked each time.
+ *     (The static table can still say MORE — `strictest` keeps a rule's
+ *     `deny` a deny.)
+ */
+export function implicitMcpCeiling(
+  toolName: string,
+  connectorDefault: PolicyVerdict | undefined,
+): PolicyVerdict | undefined {
+  if (parseConnectorToolKey(toolName) !== null) return connectorDefault ?? 'hold';
+  return isMcpSpelled(toolName) ? 'hold' : undefined;
+}
+
+/**
  * The most an agent may choose for `toolKey`: the static ceiling, tightened by
- * the connector default when the key is a connector tool — and a connector tool
- * with NO default is capped at `hold` (design: "no admin default and never
- * inventoried → Ask first").
+ * the implicit MCP floor — a connector tool is capped at its connector default
+ * (`hold` with NO default: design "no admin default and never inventoried →
+ * Ask first"), and any other MCP tool is capped at `hold` (TASK-699).
  */
 export function ceilingFor(
   rules: readonly PolicyRule[],
   toolKey: string,
   connectorDefault: PolicyVerdict | undefined,
 ): PolicyVerdict {
-  const base = staticCeiling(rules, toolKey);
-  if (parseConnectorToolKey(toolKey) === null) return base;
-  return strictest(base, connectorDefault ?? 'hold');
+  return strictest(staticCeiling(rules, toolKey), implicitMcpCeiling(toolKey, connectorDefault));
 }
 
 /**
@@ -177,7 +222,9 @@ export function layeredVerdict(args: {
   connectorDefault: PolicyVerdict | undefined;
   override: PolicyVerdict | undefined;
 }): PolicyVerdict {
-  const connectorCeiling =
-    parseConnectorToolKey(args.toolName) === null ? undefined : (args.connectorDefault ?? 'hold');
-  return strictest(args.staticVerdict, connectorCeiling, args.override);
+  return strictest(
+    args.staticVerdict,
+    implicitMcpCeiling(args.toolName, args.connectorDefault),
+    args.override,
+  );
 }

@@ -8,9 +8,9 @@
  * `decision-renderers.test.tsx` draws two components from this exact object and
  * compares what they say.
  *
- * It is the WIRE shape: no `call`, no `callFingerprint`, no `ownerUserId`. If a
- * test wants to prove the tool input never reaches a renderer, the honest way to
- * do that is that there is nowhere to put it.
+ * It is the WIRE shape: no `call`, no `callFingerprint`, no `ownerUserId`. The
+ * tool input reaches a renderer only as `request` (TASK-699) — already fenced
+ * text, open rows only — and it is `null` here unless a test sets it.
  */
 import type { Decision } from '@/lib/workspace-api';
 
@@ -31,6 +31,7 @@ export function decisionFixture(over: Partial<Decision> = {}): Decision {
     summary: 'Move your 1:1 with Marcus to Thursday 9:30?',
     detail: 'It clashes with the board prep.',
     preview: null,
+    request: null,
     primaryLabel: 'Move it',
     secondaryLabel: 'Pick another time',
     ghostLabel: 'Leave it',

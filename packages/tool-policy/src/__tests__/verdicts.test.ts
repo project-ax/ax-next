@@ -4,7 +4,9 @@ import { BUILTIN_RULES } from '../rules.js';
 import type { PolicyVerdict } from '../types.js';
 import {
   ceilingFor,
+  implicitMcpCeiling,
   isLooserThan,
+  isMcpSpelled,
   isMcpToolKey,
   isOverridableKey,
   layeredVerdict,
@@ -81,7 +83,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
     ).toBe('hold');
   });
 
-  it('the implicit hold is for CONNECTOR keys only — an admin host MCP tool keeps its static answer', () => {
+  it('TASK-699: an admin host MCP tool is held by default too — it used to keep the static allow', () => {
     expect(
       layeredVerdict({
         toolName: 'mcp.github.list_issues',
@@ -89,7 +91,22 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
         connectorDefault: undefined,
         override: undefined,
       }),
-    ).toBe('allow');
+    ).toBe('hold');
+  });
+
+  it('TASK-699: no stored row can loosen a non-connector MCP tool past hold', () => {
+    for (const toolName of ['mcp.github.create_issue', 'mcp__linear__create_issue']) {
+      for (const override of [undefined, 'allow', 'hold'] as const) {
+        // A connector default is meaningless for these keys and must not be
+        // honoured even if a caller passes one.
+        expect(
+          layeredVerdict({ toolName, staticVerdict: 'allow', connectorDefault: 'allow', override }),
+        ).toBe('hold');
+      }
+      expect(
+        layeredVerdict({ toolName, staticVerdict: 'allow', connectorDefault: undefined, override: 'deny' }),
+      ).toBe('deny');
+    }
   });
 
   it('an admin Allow is honoured; an admin tightening after a snapshot still applies', () => {
@@ -216,5 +233,44 @@ describe('parseConnectorToolKey', () => {
     expect(parseConnectorToolKey('mcp.c5e0235982.x')).toBeNull();
     expect(parseConnectorToolKey(`mcp__${NS}__x`)).toBeNull();
     expect(parseConnectorToolKey(`mcp.${NS}.`)).toBeNull();
+  });
+});
+
+describe('implicitMcpCeiling — the MCP "Ask first" floor (TASK-699)', () => {
+  it('holds every MCP spelling nobody set a default for', () => {
+    for (const k of [
+      CONNECTOR_KEY, // connector, no default
+      'mcp.github.list_issues', // admin host MCP server
+      'mcp__linear__create_issue', // unlifted SDK wire name
+      `mcp__${NS}__send_message`, // a connector shape that arrived unlifted
+      `mcp.github.${'a'.repeat(300)}`, // over MAX_TOOL_KEY_CHARS — server-chosen length
+      `mcp.${NS}.${'a'.repeat(300)}`, // over-long CONNECTOR key no longer parses as one
+      'mcp.x', // no tool half
+      'mcp.x.has space',
+    ]) {
+      expect(isMcpSpelled(k)).toBe(true);
+      expect(implicitMcpCeiling(k, undefined)).toBe('hold');
+    }
+  });
+
+  it('only a well-formed connector key can be loosened, and only by its connector default', () => {
+    expect(implicitMcpCeiling(CONNECTOR_KEY, 'allow')).toBe('allow');
+    expect(implicitMcpCeiling(CONNECTOR_KEY, 'deny')).toBe('deny');
+    expect(implicitMcpCeiling('mcp.github.list_issues', 'allow')).toBe('hold');
+    expect(implicitMcpCeiling(`mcp.${NS}.${'a'.repeat(300)}`, 'allow')).toBe('hold');
+  });
+
+  it('a non-MCP tool is not newly held — the floor says nothing about it', () => {
+    for (const k of ['Read', 'Bash', 'web_search', 'gmail_send', 'MCP.github.x', 'xmcp.github.x', 'mcp_github_x', '']) {
+      expect(isMcpSpelled(k)).toBe(false);
+      expect(implicitMcpCeiling(k, undefined)).toBeUndefined();
+    }
+    expect(isMcpSpelled(42)).toBe(false);
+    expect(isMcpSpelled(null)).toBe(false);
+  });
+
+  it('ceilingFor caps a host MCP tool at hold, so an agent cannot pick Allow for it', () => {
+    expect(ceilingFor(BUILTIN_RULES, 'mcp.github.list_issues', undefined)).toBe('hold');
+    expect(ceilingFor(BUILTIN_RULES, 'Bash', undefined)).toBe(staticCeiling(BUILTIN_RULES, 'Bash'));
   });
 });

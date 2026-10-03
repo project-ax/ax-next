@@ -130,6 +130,65 @@ describe('evaluate — layered verdicts through the bus', () => {
   });
 });
 
+describe('evaluate — host MCP and unlifted MCP names are held by default (TASK-699)', () => {
+  it('holds an admin host MCP tool, an unlifted mcp__ name and an over-long key; leaves a non-MCP tool alone', async () => {
+    const h = await boot();
+    expect(await verdictOf(h, 'mcp.github.list_issues')).toBe('hold');
+    expect(await verdictOf(h, 'mcp__linear__create_issue')).toBe('hold');
+    expect(await verdictOf(h, `mcp.github.${'a'.repeat(300)}`)).toBe('hold');
+    expect(await verdictOf(h, 'Read')).toBe('allow');
+    expect(await verdictOf(h, 'Bash')).toBe('allow');
+  });
+
+  it('an agent may tighten a host MCP tool to Deny, but Allow is a ceiling-violation', async () => {
+    const h = await boot();
+    expect(await setOverride(h, 'mcp.github.list_issues', 'allow')).toMatchObject({
+      ok: false,
+      reason: 'ceiling-violation',
+      ceiling: 'hold',
+    });
+    expect(await verdictOf(h, 'mcp.github.list_issues')).toBe('hold');
+    expect(await setOverride(h, 'mcp.github.list_issues', 'deny')).toEqual({ ok: true });
+    expect(await verdictOf(h, 'mcp.github.list_issues')).toBe('deny');
+  });
+
+  it('an unlifted mcp__ name is held WITHOUT a store read, and with no agentId', async () => {
+    let reads = 0;
+    const inner = createMemoryVerdictStore();
+    const store: VerdictStore = {
+      ...inner,
+      overridesFor: async (a) => {
+        reads += 1;
+        return inner.overridesFor(a);
+      },
+      connectorDefaultsFor: async (n) => {
+        reads += 1;
+        return inner.connectorDefaultsFor(n);
+      },
+    };
+    const h = await boot({ verdictStore: store });
+    expect(await verdictOf(h, 'mcp__linear__create_issue')).toBe('hold');
+    expect(await verdictOf(h, 'mcp__linear__create_issue', null)).toBe('hold');
+    expect(reads).toBe(0);
+  });
+
+  it('a static deny on an MCP-spelled name stays a deny', async () => {
+    const h = await createTestHarness({
+      plugins: [
+        createToolPolicyPlugin({
+          egressStore: createMemoryEgressAllowlistStore(),
+          verdictStore: createMemoryVerdictStore(),
+          rules: [
+            { id: 't.deny', match: { tool: 'mcp__linear__delete_all' }, verdict: 'deny', capability: 'delete everything', subject: 'agent' },
+          ],
+        }),
+      ],
+    });
+    harnesses.push(h);
+    expect(await verdictOf(h, 'mcp__linear__delete_all')).toBe('deny');
+  });
+});
+
 describe('evaluate — store-read failure fails CLOSED', () => {
   const broken = (): VerdictStore => {
     const inner = createMemoryVerdictStore();

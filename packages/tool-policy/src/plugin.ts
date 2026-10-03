@@ -19,6 +19,7 @@ import {
 import {
   ceilingFor,
   consultsVerdictStore,
+  implicitMcpCeiling,
   isLooserThan,
   isOverridableKey,
   isPolicyVerdict,
@@ -588,8 +589,15 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
             : {};
           const base = evaluate(rules, call, opts2);
           // Only an overridable tool (an ability or `mcp.*`) pays for the
-          // verdict-store read; every other tool's answer is the table's.
-          if (!consultsVerdictStore(call.name)) return base;
+          // verdict-store read. Every other tool's answer is the table's —
+          // EXCEPT an MCP-spelled name no store row can address (an unlifted
+          // `mcp__x__y`, an over-long or malformed `mcp.` key): it still gets
+          // the implicit `hold` floor, with no I/O (TASK-699). Without this it
+          // would ride the table's no-match `allow`.
+          if (!consultsVerdictStore(call.name)) {
+            const floored = strictest(base.verdict, implicitMcpCeiling(call.name, undefined));
+            return floored === base.verdict ? base : { ...base, verdict: floored };
+          }
           const verdict = await layered(ctx, input?.agentId, call.name, base.verdict);
           // `ruleId` / `capability` / `effect` stay the table's: a stored
           // verdict changes whether we ask, not what the call does or which

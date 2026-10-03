@@ -41,6 +41,7 @@ import {
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { StateDot, StateDotSlot, stateWord } from './bits';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
+import { DecisionRequestBlock } from './DecisionRequestBlock';
 import {
   DECISION_NOTHING_YET,
   DECISION_STALE_ADVICE,
@@ -344,6 +345,11 @@ export function DecisionRow({
                 </div>
                 <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
               </div>
+            )}
+
+            {/* The held call itself — agent-authored, server-fenced (TASK-699). */}
+            {d.request && (
+              <DecisionRequestBlock request={d.request} className="mt-3 max-w-[660px]" />
             )}
 
             {/*

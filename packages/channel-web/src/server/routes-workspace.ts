@@ -145,6 +145,7 @@ import type {
   CapabilityProvenance,
   CapabilityVerdict,
   Decision,
+  DecisionRequest,
   DecisionStatus,
   ExecutionPath,
   GrantRef,
@@ -159,7 +160,7 @@ import type {
 } from '../lib/workspace-types.js';
 import { AGENT_ABILITIES, isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
-import { fenceLine } from '../lib/fence-line.js';
+import { fenceBlock, fenceLine } from '../lib/fence-line.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 // The sentence a full storage limit answers a Rules Save with (TASK-719), and
 // the one test for "this refusal is the storage limit". The sentence is shared
@@ -708,9 +709,10 @@ type MemoryStatusInput = Record<string, never>;
  * plugins talk through the hook bus and never through each other's modules
  * (invariant 2).
  *
- * `call.input` is MODEL-AUTHORED. It is read by exactly nothing in this file,
- * and it is on this interface only so that dropping it is a visible decision
- * rather than an omission nobody notices.
+ * `call.input` is MODEL-AUTHORED. It is read in exactly one place —
+ * `wireRequest`, which fences and caps it into the approval card's "what it
+ * will send" block on an open row (TASK-699) — and the structure itself never
+ * crosses the wire.
  */
 interface StoredDecision {
   id: string;
@@ -2022,6 +2024,15 @@ export const DECISION_LABEL_MAX_CHARS = 40;
 export const DECISION_RECEIPT_MAX_CHARS = 200;
 export const DECISION_PREVIEW_META_MAX_CHARS = 120;
 export const DECISION_PREVIEW_BODY_MAX_CHARS = 2000;
+/**
+ * The held call itself, shown on an OPEN decision (TASK-699). The tool name is
+ * a label; the input is agent-authored JSON, so it gets the preview body's room
+ * but a LINE cap too — a 2000-line input must not push the buttons a screen
+ * away from the question they answer.
+ */
+export const DECISION_REQUEST_TOOL_MAX_CHARS = 120;
+export const DECISION_REQUEST_INPUT_MAX_CHARS = 2000;
+export const DECISION_REQUEST_INPUT_MAX_LINES = 40;
 
 /**
  * What a control says when its authored label fences down to nothing.
@@ -2195,9 +2206,9 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
  * The stored row → the row a browser sees.
  *
  * Two jobs, and nothing else. It DROPS the fields a renderer has no use for —
- * `call` above all, which is model-authored and would put untrusted text on a
- * trust surface for no reader's benefit — and it FENCES every string that
- * survives. See `Decision` in `../lib/workspace-types.ts` for the full account
+ * `call` above all, whose raw structure is model-authored; what survives of it
+ * is `request`, a fenced text rendering on open rows only (TASK-699) — and it
+ * FENCES every string that survives. See `Decision` in `../lib/workspace-types.ts` for the full account
  * of what goes and why.
  *
  * The one derived field is `undoable`, and it is derived HERE so there is only
@@ -2206,6 +2217,36 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
  * machine built by accident, and those three fields would have to cross the
  * wire to make it possible.
  */
+/**
+ * The held call, as the approval card shows it (TASK-699) — or `null`.
+ *
+ * TOTAL: a call whose input will not serialise (a cycle, a BigInt — neither
+ * reachable through the JSON-backed store, guarded anyway) still shows its
+ * tool with no input rather than throwing the whole list route.
+ *
+ * Open rows only. A receipt does not ask anything, so it has no reader for the
+ * input, and minimising what crosses the wire is the default (invariant 5).
+ */
+function wireRequest(stored: StoredDecision): DecisionRequest | null {
+  if (!isOpenDecision(stored)) return null;
+  const tool = fenceLine(stored.call?.name, DECISION_REQUEST_TOOL_MAX_CHARS);
+  if (tool === null) return null;
+  const input = stored.call?.input;
+  let json: string | undefined;
+  try {
+    json =
+      input === undefined ||
+      input === null ||
+      (typeof input === 'object' && !Array.isArray(input) && Object.keys(input).length === 0)
+        ? undefined
+        : JSON.stringify(input, null, 2);
+  } catch {
+    json = undefined;
+  }
+  const block = fenceBlock(json, DECISION_REQUEST_INPUT_MAX_CHARS, DECISION_REQUEST_INPUT_MAX_LINES);
+  return { tool, input: block?.text ?? null, truncated: block?.truncated ?? false };
+}
+
 export function toWireDecision(stored: StoredDecision): Decision {
   const freshnessLabel = fenceLine(stored.freshness?.label, DECISION_LABEL_MAX_CHARS);
   const previewBody = fenceLine(stored.preview?.body, DECISION_PREVIEW_BODY_MAX_CHARS);
@@ -2255,6 +2296,8 @@ export function toWireDecision(stored: StoredDecision): Decision {
             body: previewBody,
           }
         : null,
+    // Agent-authored, fenced, open rows only — see `wireRequest`.
+    request: wireRequest(stored),
     primaryLabel:
       fenceLine(stored.primaryLabel, DECISION_LABEL_MAX_CHARS) ??
       DECISION_FALLBACK_PRIMARY,

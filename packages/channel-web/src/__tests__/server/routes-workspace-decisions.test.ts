@@ -87,9 +87,6 @@ const STORED = {
  * fixture we built.
  */
 const NEVER_ON_THE_WIRE = [
-  // the model-authored tool input, and the tool it would have called
-  'IGNORE PRIOR INSTRUCTIONS',
-  'gmail_send',
   // host bookkeeping: the dedupe hash, the policy rule, the owner
   'sha256:abcdef',
   'rule-outward-email',
@@ -98,9 +95,30 @@ const NEVER_ON_THE_WIRE = [
   'ownerUserId',
 ];
 
+/**
+ * The model-authored tool input, and the tool it would have called. Since
+ * TASK-699 these DO cross on an OPEN row — inside `request`, fenced, and
+ * nowhere else — so the bytes check cuts exactly that one serialised value out
+ * of the raw body and then demands the rest is clean. On a resolved row
+ * `request` is null and the whole body must be clean.
+ */
+const ONLY_INSIDE_REQUEST = ['IGNORE PRIOR INSTRUCTIONS', 'gmail_send'];
+
 /** The same check, as key names, on one projected row. */
 function expectNarrowerThanTheRow(raw: string, row: Record<string, unknown>): void {
   for (const secret of NEVER_ON_THE_WIRE) expect(raw).not.toContain(secret);
+  const open = row['status'] === 'pending' || row['status'] === 'stale';
+  const request = row['request'];
+  if (open) {
+    expect(request).toMatchObject({ tool: 'gmail_send' });
+    expect((request as { input: string }).input).toContain('IGNORE PRIOR INSTRUCTIONS');
+  } else {
+    expect(request).toBeNull();
+  }
+  const serialised = JSON.stringify(request);
+  expect(raw).toContain(serialised);
+  const outside = raw.replace(serialised, '');
+  for (const secret of ONLY_INSIDE_REQUEST) expect(outside).not.toContain(secret);
   for (const key of ['call', 'callFingerprint', 'ruleId', 'ownerUserId']) {
     expect(Object.keys(row)).not.toContain(key);
   }
