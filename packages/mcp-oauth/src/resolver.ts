@@ -39,6 +39,27 @@ export interface ResolverDeps {
     refreshToken: string; client: OAuthClientCredentials; allowedHosts: Set<string>;
   }): Promise<RefreshedTokens>;
   now(): number;
+  /**
+   * TASK-741 — the stored "sign-in expired" marker the connectors rail reads.
+   * `mark` runs when this resolve ends in NeedsReconnectError; `clear` when a
+   * refresh succeeds. Both are best-effort: the implementation must not throw
+   * (the plugin's logs and swallows), and a throw here is swallowed anyway —
+   * a marker write can never change what the resolve itself answers.
+   * Optional so the resolver unit stays usable without a store.
+   */
+  marker?: {
+    mark(userId: string, connectorId: string): Promise<void>;
+    clear(userId: string, connectorId: string): Promise<void>;
+  };
+}
+
+/** The vault ref the OAuth callback stores a connector's token under. */
+const ACCOUNT_REF_RE = /^account:([a-z0-9][a-z0-9_-]*)$/;
+
+/** The connector a token ref belongs to, or null for a ref not shaped `account:<id>`. */
+export function connectorIdOfRef(ref: string): string | null {
+  const m = ACCOUNT_REF_RE.exec(ref);
+  return m ? m[1]! : null;
 }
 
 /** Refresh when fewer than this many ms remain on the access token. */
@@ -74,6 +95,31 @@ function isDeadCredentialError(err: unknown): boolean {
 }
 
 export function createMcpOAuthResolver(deps: ResolverDeps) {
+  const resolveToken = createTokenResolver(deps);
+  const marker = deps.marker;
+  if (marker === undefined) return resolveToken;
+  return async function resolve(input: McpOAuthResolveInput): Promise<McpOAuthResolveOutput> {
+    const connectorId = connectorIdOfRef(input.ref);
+    let out: McpOAuthResolveOutput;
+    try {
+      out = await resolveToken(input);
+    } catch (err) {
+      if (err instanceof NeedsReconnectError && connectorId !== null) {
+        await marker.mark(input.userId, connectorId).catch(() => undefined);
+      }
+      throw err;
+    }
+    // Only a REFRESH proves the authorization server still accepts this sign-in;
+    // an unexpired token answered from the blob proves nothing new, and clearing
+    // on every resolve would put a write on the hot path.
+    if (out.refreshed !== undefined && connectorId !== null) {
+      await marker.clear(input.userId, connectorId).catch(() => undefined);
+    }
+    return out;
+  };
+}
+
+function createTokenResolver(deps: ResolverDeps) {
   return async function resolve(input: McpOAuthResolveInput): Promise<McpOAuthResolveOutput> {
     const blob = decodeTokenBlob(input.payload);
 

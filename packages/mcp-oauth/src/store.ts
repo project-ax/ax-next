@@ -56,6 +56,19 @@ export interface McpOAuthStore {
    * caller meant, so it is refused rather than run.
    */
   deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
+  /**
+   * TASK-741 — record that `userId`'s sign-in to `connectorId` was rejected by
+   * the authorization server (re-authorization required). Idempotent: marking
+   * twice keeps one row and moves `marked_at`.
+   */
+  markNeedsReconnect(userId: string, connectorId: string): Promise<void>;
+  /** TASK-741 — the sign-in works again (refreshed, or signed in anew). */
+  clearNeedsReconnect(userId: string, connectorId: string): Promise<void>;
+  /**
+   * TASK-741 — which of `connectorIds` carry a needs-reconnect marker for
+   * `userId`. A pure read: it never touches a token, so it can never refresh one.
+   */
+  listNeedsReconnect(userId: string, connectorIds: readonly string[]): Promise<string[]>;
 }
 
 /** Map a DB row to the domain {@link PendingAuthorization}. Shared by
@@ -183,6 +196,36 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
         .where('agent_id', '=', agentId)
         .executeTakeFirst();
       return { deleted: Number(res.numDeletedRows ?? 0n) };
+    },
+
+    async markNeedsReconnect(userId, connectorId) {
+      const markedAt = new Date();
+      await db
+        .insertInto('mcp_oauth_v1_needs_reconnect')
+        .values({ user_id: userId, connector_id: connectorId, marked_at: markedAt })
+        .onConflict((oc) =>
+          oc.columns(['user_id', 'connector_id']).doUpdateSet({ marked_at: markedAt }),
+        )
+        .execute();
+    },
+
+    async clearNeedsReconnect(userId, connectorId) {
+      await db
+        .deleteFrom('mcp_oauth_v1_needs_reconnect')
+        .where('user_id', '=', userId)
+        .where('connector_id', '=', connectorId)
+        .execute();
+    },
+
+    async listNeedsReconnect(userId, connectorIds) {
+      if (connectorIds.length === 0) return [];
+      const rows = await db
+        .selectFrom('mcp_oauth_v1_needs_reconnect')
+        .select('connector_id')
+        .where('user_id', '=', userId)
+        .where('connector_id', 'in', [...connectorIds])
+        .execute();
+      return rows.map((r) => r.connector_id);
     },
   };
 }

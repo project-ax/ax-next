@@ -150,12 +150,55 @@ describe('plugin wiring', () => {
     expect(await store.get({ userId: 'u', agentId: 'kept', connectorId: 'c' })).not.toBeNull();
   });
 
+  it('TASK-741: inventory-status-batch reads the last stored status per connector and never lists', async () => {
+    let listed = 0;
+    const h = await boot(async () => {
+      listed++;
+      return { kind: 'unreachable', reason: 'timeout' };
+    });
+    expect(h.bus.hasService('connectors:inventory-status-batch')).toBe(true);
+    const batch = (input: unknown) =>
+      h.bus.call<unknown, { statuses: Array<{ connectorId: string; status: string; checkedAt: string }> }>(
+        'connectors:inventory-status-batch',
+        h.ctx(),
+        input,
+      );
+    // Nothing checked yet: no entries, and no listing happened to find out.
+    expect(await batch({ userId: 'u1', agentId: 'a1', connectorIds: ['linear'] })).toEqual({ statuses: [] });
+    expect(listed).toBe(0);
+
+    await h.bus.call('connectors:describe-tools', h.ctx(), { userId: 'u1', agentId: 'a1', connectorId: 'linear' });
+    expect(listed).toBe(1);
+
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    const store = createInventoryStore(db);
+    // A row older than any TTL is still the last known state.
+    const old = new Date('2020-01-01T00:00:00Z');
+    await store.put({ userId: 'u1', agentId: 'a1', connectorId: 'gmail' }, { status: 'ok', tools: [], fingerprint: '', checkedAt: old });
+
+    const out = await batch({ userId: 'u1', agentId: 'a1', connectorIds: ['linear', 'gmail', 'never'] });
+    const byId = new Map(out.statuses.map((s) => [s.connectorId, s]));
+    expect(byId.get('linear')?.status).toBe('unreachable');
+    expect(byId.get('gmail')).toEqual({ connectorId: 'gmail', status: 'ok', checkedAt: old.toISOString() });
+    expect(byId.has('never')).toBe(false);
+    // Scoped to the exact (user, agent): another user or agent sees nothing.
+    expect(await batch({ userId: 'u2', agentId: 'a1', connectorIds: ['linear'] })).toEqual({ statuses: [] });
+    expect(await batch({ userId: 'u1', connectorIds: ['linear'] })).toEqual({ statuses: [] });
+    expect(listed).toBe(1);
+
+    await expect(batch({ userId: 'u1', connectorIds: 'linear' })).rejects.toThrow();
+    await expect(batch({ userId: 'u1', connectorIds: [], extra: 1 })).rejects.toThrow();
+  });
+
   it('is off by default: no hook, no database call in the manifest', () => {
     const p = createMcpClientPlugin();
     expect(p.manifest.registers).toEqual([]);
     expect(p.manifest.calls).not.toContain('database:get-instance');
     const on = createMcpClientPlugin({ connectorToolInventory: true });
-    expect(on.manifest.registers).toEqual(['connectors:describe-tools']);
+    expect(on.manifest.registers).toEqual([
+      'connectors:describe-tools',
+      'connectors:inventory-status-batch',
+    ]);
     expect(on.manifest.subscribes).toEqual(['agents:deleted']);
     expect(p.manifest.subscribes).toEqual([]);
     expect(on.manifest.calls).toEqual(
