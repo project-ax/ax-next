@@ -66,8 +66,11 @@ describe('manifest', () => {
     expect(m.optionalCalls?.map((c) => c.hook)).toEqual([
       'auth:get-user',
       'conversations:list',
-      'agent:interrupt',
     ]);
+    // TASK-759: a runtime-only peer (bus.hasService-gated in routes.ts). As a
+    // declared edge it closed a boot call cycle through the LLM providers'
+    // `usage:check`; see the manifest comment.
+    expect(m.optionalCalls?.map((c) => c.hook)).not.toContain('agent:interrupt');
     for (const c of m.optionalCalls ?? []) expect(c.degradation.length).toBeGreaterThan(0);
   });
 });

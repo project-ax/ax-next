@@ -136,7 +136,10 @@ blocks another's. Limits live in storage key `settings:usage-limits` (the
 - HTTP (admin only): `GET /admin/usage`, `PUT /admin/usage/limits`,
   `PUT|DELETE /admin/usage/users/:userId/suspension`. Suspending also
   interrupts that user's in-flight turns (`conversations:list` +
-  `agent:interrupt`, both optional). An admin cannot suspend themselves.
+  `agent:interrupt`, both optional; `agent:interrupt` is looked up at call
+  time and kept OUT of the manifest, because as a declared edge it closed a
+  boot call cycle through the providers' `usage:check` — TASK-759). An admin
+  cannot suspend themselves.
 - UI: a "Usage and limits" admin tab in `@ax/channel-web`; the friendly limit
   sentences in `lib/turn-error-labels.ts`.
 

@@ -119,11 +119,19 @@ export function createUsageLimitsPlugin(config: UsageLimitsPluginConfig = {}): P
           degradation:
             'Suspending a user cannot stop their in-flight turns; their new turns are still refused.',
         },
-        {
-          hook: 'agent:interrupt',
-          degradation:
-            'Suspending a user cannot stop their in-flight turns; their new turns are still refused.',
-        },
+        // `agent:interrupt` is deliberately NOT declared here, although the
+        // suspend route calls it. Every `optionalCalls` entry with a present
+        // producer is a kernel call-graph edge (init order + cycle check), and
+        // this one points at @ax/chat-orchestrator, which transitively reaches
+        // the LLM providers — and they call back into OUR `usage:check` (the
+        // spend gate). Declared, it closed the cycle
+        //   usage-limits → chat-orchestrator → sandbox-k8s → memory → llm-openrouter → usage-limits
+        // and the host crash-looped on boot (TASK-759). Nothing here needs the
+        // orchestrator at init: the kill switch looks it up per call with
+        // `bus.hasService('agent:interrupt')` (routes.ts) — the same
+        // runtime-only peer convention chat-orchestrator uses. Absent, the
+        // degradation is unchanged: suspending a user cannot stop their
+        // in-flight turns; their new turns are still refused.
       ],
       subscribes: [...SUBSCRIBED],
     },
