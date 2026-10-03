@@ -95,3 +95,41 @@ export const InventoryStatusBatchInputSchema = z
     connectorIds: z.array(z.string().min(1).max(128)).max(500),
   })
   .strict();
+
+/**
+ * `connectors:inventory-tool-titles` (TASK-753). The MCP server's own display
+ * title for each tool of `connectorIds`, as last cached by
+ * `connectors:describe-tools` for `userId` — under ANY of that user's agents,
+ * newest check first. A pure cache read: nothing here lists tools, resolves a
+ * credential, or reaches a server, so the label path (an approval card being
+ * written inside the pre-call ceiling, a transcript being shaped) never waits
+ * on the network.
+ *
+ * Only real titles come back: a tool whose server sent none carries its own
+ * name as `title` in the cache, and that is left out. `title` is UNTRUSTED
+ * third-party text — clamped here to bound the payload, fenced by whoever
+ * renders it.
+ *
+ * Boundary review: ids, the canonical toolKey and untrusted text — no url /
+ * transport / table vocabulary. Alternate impl: titles reported by the
+ * sandbox's own MCP client as sessions list each connector's tools.
+ *
+ * The answer only ever covers rows cached under `userId`; the caller decides
+ * which connectors that user may name (`connectors:tool-labels` asks for
+ * exactly the ones `connectors:list` resolves for them).
+ */
+export interface InventoryToolTitlesInput {
+  userId: string;
+  connectorIds: string[];
+}
+
+export interface InventoryToolTitlesOutput {
+  titles: Array<{ connectorId: string; toolKey: string; title: string }>;
+}
+
+export const InventoryToolTitlesInputSchema = z
+  .object({
+    userId: z.string().min(1).max(256),
+    connectorIds: z.array(z.string().min(1).max(128)).max(500),
+  })
+  .strict();

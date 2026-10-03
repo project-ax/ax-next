@@ -70,8 +70,26 @@ export interface InventoryStore {
     agentId: string,
     connectorIds: readonly string[],
   ): Promise<Array<{ connectorId: string; status: InventoryStatus; checkedAt: Date }>>;
+  /**
+   * TASK-753 — every `ok` row cached under `userId` for `connectorIds`,
+   * across all of that user's agents, newest check first. A pure read.
+   */
+  okInventories(
+    userId: string,
+    connectorIds: readonly string[],
+  ): Promise<Array<{ connectorId: string; tools: InventoryTool[] }>>;
   /** Drop every row cached under an agent (on `agents:deleted`). */
   deleteForAgent(agentId: string): Promise<{ deleted: number }>;
+}
+
+/** A corrupt cache row is a miss, not an error. */
+function parseTools(raw: string): InventoryTool[] | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as InventoryTool[]) : null;
+  } catch {
+    return null;
+  }
 }
 
 const STATUSES: ReadonlySet<string> = new Set(['ok', 'unreachable', 'needs-auth', 'unknown']);
@@ -87,14 +105,8 @@ export function createInventoryStore(db: Kysely<McpClientDatabase>): InventorySt
         .where('connector_id', '=', key.connectorId)
         .executeTakeFirst();
       if (row === undefined || !STATUSES.has(row.status)) return null;
-      let tools: InventoryTool[];
-      try {
-        const parsed: unknown = JSON.parse(row.tools);
-        if (!Array.isArray(parsed)) return null;
-        tools = parsed as InventoryTool[];
-      } catch {
-        return null; // a corrupt cache row is a miss, not an error
-      }
+      const tools = parseTools(row.tools);
+      if (tools === null) return null;
       return {
         status: row.status as InventoryStatus,
         tools,
@@ -141,6 +153,23 @@ export function createInventoryStore(db: Kysely<McpClientDatabase>): InventorySt
           status: r.status as InventoryStatus,
           checkedAt: new Date(r.checked_at),
         }));
+    },
+    async okInventories(userId, connectorIds) {
+      if (connectorIds.length === 0) return [];
+      const rows = await db
+        .selectFrom('mcp_client_v1_tool_inventory')
+        .select(['connector_id', 'tools'])
+        .where('user_id', '=', userId)
+        .where('connector_id', 'in', [...connectorIds])
+        .where('status', '=', 'ok')
+        .orderBy('checked_at', 'desc')
+        .execute();
+      const out: Array<{ connectorId: string; tools: InventoryTool[] }> = [];
+      for (const r of rows) {
+        const tools = parseTools(r.tools);
+        if (tools !== null) out.push({ connectorId: r.connector_id, tools });
+      }
+      return out;
     },
     async deleteForAgent(agentId) {
       const res = await db
