@@ -19,7 +19,7 @@
  *   4. THE HOOK OWNS THE ADMIN RULE. The route passes the caller's real admin
  *      bit and turns the hook's refusal into a 403.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import { makeWorkspaceHandlers } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
@@ -760,6 +760,16 @@ describe('agent connector routes', () => {
         }));
         expect((await attach({ connectorId: 'figma' })).statusCode).toBe(503);
         expect(attachCalls).toHaveLength(0);
+      });
+
+      it('logs a fail-closed check by step and error NAME only — never the message', async () => {
+        const warn = vi.spyOn(initCtx.logger, 'warn');
+        credentialError = new Error('vault row 42 for account:figma is corrupt');
+        expect((await attach({ connectorId: 'figma' })).statusCode).toBe(503);
+        const call = warn.mock.calls.find((c) => c[0] === 'workspace_connector_attach_check_failed');
+        warn.mockRestore();
+        expect(call?.[1]).toEqual({ connectorId: 'figma', step: 'credential', name: expect.any(String) });
+        expect(JSON.stringify(call?.[1])).not.toContain('corrupt');
       });
 
       it('404s a connector the caller cannot see, and attaches nothing', async () => {
