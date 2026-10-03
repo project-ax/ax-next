@@ -2711,6 +2711,20 @@ describe('decisions canary — connector tools are named, never hashed (TASK-744
     expect(`${row.summary} ${row.detail} ${row.approvedText}`).not.toContain(NS);
   });
 
+  it('a REAL tool-policy hold (TASK-736: unconfigured connector tool) is worded with the connector name', async () => {
+    // Real rule table + verdict store, not the stub above: TASK-736 holds a
+    // connector tool nobody set a default for, with no capability clause —
+    // exactly the path this card names.
+    const h = await boot();
+    h.bus.registerService('connectors:tool-labels', 'stub-connectors', async () => ({
+      connectors: [{ toolNamespace: NS, connectorId: 'linear', name: 'Linear' }],
+    }));
+    const id = await holdAndId(h, routineCtx(h), CONNECTOR_CALL);
+    const row = await readDecision(h, userCtx(h), id);
+    expect(row.summary).toBe('Wants to use Linear · Create issue');
+    expect(`${row.summary} ${row.detail} ${row.approvedText}`).not.toContain(NS);
+  });
+
   it('with no connectors plugin loaded, the tool name still stands alone', async () => {
     const { h } = await bootWithConnectors('absent');
     const row = await heldRow(h);
