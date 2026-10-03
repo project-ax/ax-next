@@ -202,8 +202,10 @@ describe('Other abilities', () => {
     setAbilityMock.mockResolvedValue({ abilities: ALL_ON });
     renderTab();
 
+    // Wait for the switches first — before they render, "no hint" is vacuous.
+    const read = await sw('Read web pages');
     expect(screen.queryByText(/asks first/)).toBeNull();
-    fireEvent.click(await sw('Read web pages'));
+    fireEvent.click(read);
     await waitFor(() =>
       expect(setAbilityMock).toHaveBeenCalledWith('a-quill', 'readPages', true),
     );
