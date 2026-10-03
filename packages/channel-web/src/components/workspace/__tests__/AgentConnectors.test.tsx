@@ -364,6 +364,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
     renderTab();
     let menu = await openMenu('Linear');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'View details',
       'Edit connector',
       'Remove from Quill',
     ]);
@@ -371,6 +372,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     menu = await openMenu('Gmail');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'View details',
       'Remove from Quill',
     ]);
   });
