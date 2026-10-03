@@ -38,7 +38,7 @@ import {
 } from './admin-routes.js';
 import { authorizeGlobalAccountRead } from './credential-authz.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
-import { deriveToolNamespaces } from './tool-namespace.js';
+import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
 import {
   ActivateAuthoredOutputSchema,
   AuthorizeGlobalOutputSchema,
@@ -64,7 +64,9 @@ import {
   type Capabilities,
   type ClearAuthoredInput,
   type ClearAuthoredOutput,
+  type Connector,
   type ConnectorDeletedEvent,
+  type ConnectorToolNamespacesChangedEvent,
   type DeleteInput,
   type DeleteOutput,
   type GetInput,
@@ -284,7 +286,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       bus.registerService<UpsertInput, UpsertOutput>(
         'connectors:upsert',
         PLUGIN_NAME,
-        async (_ctx, input) => upsertConnector(localStore, input),
+        async (ctx, input) => upsertConnector(localStore, bus, ctx, input),
         { returns: UpsertOutputSchema },
       );
 
@@ -601,6 +603,8 @@ async function getConnector(
 
 async function upsertConnector(
   store: ConnectorStore,
+  bus: HookBus,
+  ctx: AgentContext,
   input: UpsertInput,
 ): Promise<UpsertOutput> {
   const hookName = 'connectors:upsert';
@@ -642,6 +646,9 @@ async function upsertConnector(
       message: 'defaultAttached must be a boolean if provided',
     });
   }
+  // TASK-752 — read the live row's servers BEFORE the write, so a rename can be
+  // told apart from an add (the namespace is a hash of the server name).
+  const prior = await store.getByIdNotDeleted(userId, connectorId);
   const { connector, created } = await store.upsert({
     userId,
     connectorId,
@@ -655,7 +662,46 @@ async function upsertConnector(
       ? { defaultAttached: input.defaultAttached }
       : {}),
   });
+  if (prior !== null) {
+    await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);
+  }
   return { connector, created };
+}
+
+/**
+ * Tell subscribers which tool namespaces an edit moved (TASK-752), so per-tool
+ * state keyed on them (admin defaults, agent choices — `@ax/tool-policy`)
+ * follows a renamed server and goes with a removed one instead of being
+ * orphaned. `userId` is the row owner (the upsert is keyed on it), so these are
+ * the namespaces `connectors:resolve` handed out. Best-effort like
+ * `connectors:deleted`: the edit is committed, and a failed fire must not undo
+ * it — the cost of a miss is orphaned rows under a namespace nothing calls,
+ * which grant nothing.
+ */
+async function announceNamespaceChange(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+  connectorId: string,
+  before: Connector,
+  after: Connector,
+): Promise<void> {
+  const change = diffToolNamespaces(
+    userId,
+    connectorId,
+    before.capabilities.mcpServers,
+    after.capabilities.mcpServers,
+  );
+  if (change.renamed.length === 0 && change.removed.length === 0) return;
+  const event: ConnectorToolNamespacesChangedEvent = { connectorId, ...change };
+  try {
+    await bus.fire('connectors:tool-namespaces-changed', ctx, event);
+  } catch (err) {
+    ctx.logger.warn('connectors_tool_namespaces_changed_event_failed', {
+      connectorId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 async function deleteConnector(

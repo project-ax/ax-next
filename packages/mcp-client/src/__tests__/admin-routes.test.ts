@@ -432,6 +432,20 @@ describe('@ax/mcp-client admin routes', () => {
     expect((r.body as { error: string }).error).toMatch(/inline secret/i);
   });
 
+  it('POST refuses an id in the reserved connector-namespace form with 400 (TASK-752)', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: makeBody({ id: 'c5e0235982f' }),
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/reserved/);
+    const list = await http(stack.port, 'GET', '/admin/mcp-servers', { cookie });
+    expect(
+      (list.body as { configs: SerializedConfig[] }).configs.map((c) => c.id),
+    ).not.toContain('c5e0235982f');
+  });
+
   it('POST refuses a duplicate id with 409', async () => {
     const cookie = await signIn(stack);
     const first = await http(stack.port, 'POST', '/admin/mcp-servers', {
@@ -612,6 +626,30 @@ describe('@ax/mcp-client admin routes', () => {
     expect(cfg.enabled).toBe(false);
     // Patch must NOT change ownerId (defense against owner-hijack).
     expect(cfg.ownerId).not.toBeNull();
+  });
+
+  it('PATCH of a legacy row whose id is now reserved → 400, not 500 (TASK-752)', async () => {
+    const cookie = await signIn(stack);
+    // Learn the caller's user id from a normal create.
+    const probe = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: makeBody({ id: 'owner-probe' }),
+    });
+    const ownerId = (probe.body as { config: SerializedConfig }).config.ownerId;
+    // A row written before the reservation existed goes straight to storage.
+    const reserved = 'c0123456789';
+    const enc = new TextEncoder();
+    const ctx = stack.harness.ctx();
+    await stack.harness.bus.call('storage:set', ctx, {
+      key: `mcp-server:${reserved}`,
+      value: enc.encode(JSON.stringify({ ...makeBody({ id: reserved }), ownerId })),
+    });
+    const r = await http(stack.port, 'PATCH', `/admin/mcp-servers/${reserved}`, {
+      cookie,
+      body: { enabled: false },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/reserved/);
   });
 
   it('PATCH other user’s config → 404', async () => {

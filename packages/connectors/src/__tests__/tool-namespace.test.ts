@@ -4,6 +4,7 @@ import {
   TOOL_NAMESPACE_RE,
   deriveToolNamespace,
   deriveToolNamespaces,
+  diffToolNamespaces,
 } from '../tool-namespace.js';
 import type { Capabilities } from '../types.js';
 
@@ -117,5 +118,85 @@ describe('deriveToolNamespaces', () => {
 
   it('returns [] when the connector declares no MCP servers', () => {
     expect(deriveToolNamespaces('userA', { id: 'sf', capabilities: caps() })).toEqual([]);
+  });
+});
+
+describe('diffToolNamespaces (TASK-752)', () => {
+  const ns = (name: string) => deriveToolNamespace('userA', 'linear', name);
+  const at = (name: string, url: string): Capabilities['mcpServers'][number] => ({
+    ...server(name),
+    url,
+  });
+
+  it('reports a server whose name changed but endpoint did not as renamed', () => {
+    const change = diffToolNamespaces(
+      'userA',
+      'linear',
+      [at('linear', 'https://mcp.linear.app/mcp')],
+      [{ ...at('linear-v2', 'https://mcp.linear.app/mcp'), allowedHosts: ['other.example'] }],
+    );
+    expect(change).toEqual({
+      renamed: [
+        {
+          from: { server: 'linear', toolNamespace: ns('linear') },
+          to: { server: 'linear-v2', toolNamespace: ns('linear-v2') },
+        },
+      ],
+      removed: [],
+    });
+  });
+
+  it('reports a server that went away (or changed endpoint as well as name) as removed', () => {
+    const change = diffToolNamespaces(
+      'userA',
+      'linear',
+      [at('a', 'https://one.example/mcp'), at('b', 'https://two.example/mcp')],
+      [at('c', 'https://three.example/mcp')],
+    );
+    expect(change.renamed).toEqual([]);
+    expect(change.removed).toEqual([
+      { server: 'a', toolNamespace: ns('a') },
+      { server: 'b', toolNamespace: ns('b') },
+    ]);
+  });
+
+  it('treats an ambiguous endpoint match as removed, never a guess', () => {
+    const url = 'https://same.example/mcp';
+    // Two vanished servers share the endpoint of the one new server.
+    expect(
+      diffToolNamespaces('userA', 'linear', [at('a', url), at('b', url)], [at('c', url)]),
+    ).toEqual({
+      renamed: [],
+      removed: [
+        { server: 'a', toolNamespace: ns('a') },
+        { server: 'b', toolNamespace: ns('b') },
+      ],
+    });
+    // One vanished server, two new candidates.
+    expect(
+      diffToolNamespaces('userA', 'linear', [at('a', url)], [at('b', url), at('c', url)]),
+    ).toEqual({ renamed: [], removed: [{ server: 'a', toolNamespace: ns('a') }] });
+  });
+
+  it('reports nothing when the names are unchanged, even if the endpoint moved', () => {
+    expect(
+      diffToolNamespaces(
+        'userA',
+        'linear',
+        [at('a', 'https://one.example/mcp')],
+        [at('a', 'https://two.example/mcp'), at('new', 'https://three.example/mcp')],
+      ),
+    ).toEqual({ renamed: [], removed: [] });
+  });
+
+  it('derives from the row owner it is given', () => {
+    const change = diffToolNamespaces(
+      'userB',
+      'linear',
+      [at('a', 'https://one.example/mcp')],
+      [at('b', 'https://one.example/mcp')],
+    );
+    expect(change.renamed[0]!.from.toolNamespace).toBe(deriveToolNamespace('userB', 'linear', 'a'));
+    expect(change.renamed[0]!.to.toolNamespace).toBe(deriveToolNamespace('userB', 'linear', 'b'));
   });
 });

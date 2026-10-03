@@ -83,3 +83,83 @@ export function deriveToolNamespaces(
     toolNamespace: deriveToolNamespace(ownerUserId, connector.id, spec.name),
   }));
 }
+
+/**
+ * How an edit moved a connector's tool namespaces (TASK-752). A namespace is
+ * a hash of the server NAME, so renaming a server gives its tools a new
+ * namespace — and everything keyed to the old one (admin per-tool defaults,
+ * every agent's per-tool choices) would be orphaned. This works out which
+ * old namespaces became which new ones, and which simply went away.
+ */
+export interface ToolNamespaceChange {
+  /** Same server, new name: carry its per-tool state across. */
+  renamed: Array<{ from: ToolNamespaceEntry; to: ToolNamespaceEntry }>;
+  /** A server that is no longer there: drop its per-tool state. */
+  removed: ToolNamespaceEntry[];
+}
+
+type ServerSpec = Capabilities['mcpServers'][number];
+
+/**
+ * The fields that say WHICH server this is. A server whose name changed but
+ * whose endpoint did not is the same server, renamed. Credentials, env and
+ * allowed hosts are configuration of that server, not its identity, so an edit
+ * that changes them alongside the name is still a rename.
+ */
+function endpointOf(spec: ServerSpec): string {
+  return JSON.stringify([
+    spec.transport,
+    spec.url ?? null,
+    spec.command ?? null,
+    spec.args ?? null,
+  ]);
+}
+
+/** First spec per name — a duplicated name derives one namespace anyway. */
+function byName(specs: readonly ServerSpec[]): Map<string, ServerSpec> {
+  const out = new Map<string, ServerSpec>();
+  for (const s of specs) if (!out.has(s.name)) out.set(s.name, s);
+  return out;
+}
+
+/**
+ * Diff a connector's MCP servers before and after an edit.
+ *
+ * A server counts as RENAMED only when it is unambiguous: its old name is gone,
+ * a new name appeared, and exactly one vanished server and exactly one new
+ * server share the endpoint. Anything less certain is REMOVED, which drops the
+ * old per-tool state rather than handing it to a server nobody chose it for —
+ * the new namespace then starts with no rows, i.e. Ask first. A name that is
+ * present on both sides keeps its namespace and is neither (so a swap of two
+ * names is not detected: the state follows the name, as it always has).
+ */
+export function diffToolNamespaces(
+  ownerUserId: string,
+  connectorId: string,
+  before: readonly ServerSpec[],
+  after: readonly ServerSpec[],
+): ToolNamespaceChange {
+  const oldByName = byName(before);
+  const newByName = byName(after);
+  const gone = [...oldByName.values()].filter((s) => !newByName.has(s.name));
+  const added = [...newByName.values()].filter((s) => !oldByName.has(s.name));
+  const entry = (spec: ServerSpec): ToolNamespaceEntry => ({
+    server: spec.name,
+    toolNamespace: deriveToolNamespace(ownerUserId, connectorId, spec.name),
+  });
+
+  const renamed: ToolNamespaceChange['renamed'] = [];
+  const removed: ToolNamespaceEntry[] = [];
+  for (const old of gone) {
+    const ep = endpointOf(old);
+    const candidates = added.filter((s) => endpointOf(s) === ep);
+    const rivals = gone.filter((s) => endpointOf(s) === ep);
+    const only = candidates.length === 1 && rivals.length === 1 ? candidates[0] : undefined;
+    if (only !== undefined) {
+      renamed.push({ from: entry(old), to: entry(only) });
+    } else {
+      removed.push(entry(old));
+    }
+  }
+  return { renamed, removed };
+}

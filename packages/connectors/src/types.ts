@@ -357,6 +357,26 @@ export interface ConnectorDeletedEvent {
 }
 
 /**
+ * Payload of the `connectors:tool-namespaces-changed` SUBSCRIBER event
+ * (TASK-752), fired by `connectors:upsert` when an edit changed which
+ * namespaces a LIVE connector's MCP servers live under — a server was renamed
+ * (its namespace is a hash of its name) or removed. Lets plugins that key
+ * per-tool state on a namespace (`@ax/tool-policy` verdict rows) move it to
+ * the new namespace or drop it, instead of leaving it orphaned.
+ *
+ * `renamed` pairs the old entry with the new one for a server that is the same
+ * server under a new name; `removed` lists entries whose server is gone. Same
+ * entry shape as `connectors:deleted`; no owner field (the namespace encodes
+ * it). Not fired for a create, or when nothing moved. Best-effort: subscriber
+ * failures never fail the upsert.
+ */
+export interface ConnectorToolNamespacesChangedEvent {
+  connectorId: string;
+  renamed: Array<{ from: ToolNamespaceEntry; to: ToolNamespaceEntry }>;
+  removed: ToolNamespaceEntry[];
+}
+
+/**
  * Resolve a connector id to its mechanism-agnostic spec descriptor — the
  * future routing entry point (a credential-proxy / sandbox-spawn caller will
  * resolve a connector to its declared credentials + allowedHosts + backing

@@ -29,6 +29,7 @@ export type {
   ClearAuthoredOutput,
   Connector,
   ConnectorDeletedEvent,
+  ConnectorToolNamespacesChangedEvent,
   ConnectorSummary,
   DeleteInput,
   DeleteOutput,
@@ -69,8 +70,9 @@ export {
   TOOL_NAMESPACE_RE,
   deriveToolNamespace,
   deriveToolNamespaces,
+  diffToolNamespaces,
 } from './tool-namespace.js';
-export type { ToolNamespaceEntry } from './tool-namespace.js';
+export type { ToolNamespaceChange, ToolNamespaceEntry } from './tool-namespace.js';
 export { createConnectorStore } from './store.js';
 export type { ConnectorStore, UpsertArgs } from './store.js';
 export { createAuthoredConnectorsStore } from './authored-store.js';

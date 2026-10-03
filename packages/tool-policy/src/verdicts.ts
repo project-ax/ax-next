@@ -91,7 +91,8 @@ export interface ConnectorToolKey {
  * connector tool key. ONLY the host-minted `c<10 hex>` namespace qualifies:
  * an admin-configured host MCP server (`@ax/mcp-client`, `mcp.<serverId>.x`)
  * shares the `mcp.` keyspace but is not a connector and has no connector
- * ceiling.
+ * ceiling. That split relies on mcp-client refusing a `c<10 hex>` server id
+ * (TASK-752); otherwise an admin server could pass for a connector here.
  */
 export function parseConnectorToolKey(key: unknown): ConnectorToolKey | null {
   if (typeof key !== 'string' || key.length > MAX_TOOL_KEY_CHARS) return null;

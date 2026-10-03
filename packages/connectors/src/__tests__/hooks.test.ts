@@ -21,6 +21,7 @@ import {
 import type {
   Capabilities,
   ConnectorDeletedEvent,
+  ConnectorToolNamespacesChangedEvent,
   DeleteInput,
   DeleteOutput,
   GetInput,
@@ -789,6 +790,108 @@ describe('@ax/connectors hooks — delete fires connectors:deleted', () => {
       { userId: 'userA', connectorId: 'sf' },
     );
     expect(events).toEqual([{ connectorId: 'sf', toolNamespaces: [] }]);
+  });
+});
+
+describe('@ax/connectors hooks — upsert fires connectors:tool-namespaces-changed (TASK-752)', () => {
+  function capture(h: TestHarness): ConnectorToolNamespacesChangedEvent[] {
+    const events: ConnectorToolNamespacesChangedEvent[] = [];
+    h.bus.subscribe<ConnectorToolNamespacesChangedEvent>(
+      'connectors:tool-namespaces-changed',
+      'test/capture',
+      async (_ctx, payload) => {
+        events.push(payload);
+        return undefined;
+      },
+    );
+    return events;
+  }
+
+  function withServers(...servers: Array<{ name: string; url: string }>): Capabilities {
+    const base = mcpCaps();
+    return {
+      ...base,
+      mcpServers: servers.map((s) => ({ ...base.mcpServers[0]!, name: s.name, url: s.url })),
+    };
+  }
+
+  it('renaming a server announces old -> new namespace, derived from the row owner', async () => {
+    const h = await makeHarness();
+    const events = capture(h);
+    const url = 'https://mcp.example.com/gdrive';
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: withServers({ name: 'gdrive', url }) }),
+    );
+    expect(events).toEqual([]); // a create moves nothing
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: withServers({ name: 'drive', url }) }),
+    );
+    expect(events).toEqual([
+      {
+        connectorId: 'gdrive',
+        renamed: [
+          {
+            from: { server: 'gdrive', toolNamespace: deriveToolNamespace('userA', 'gdrive', 'gdrive') },
+            to: { server: 'drive', toolNamespace: deriveToolNamespace('userA', 'gdrive', 'drive') },
+          },
+        ],
+        removed: [],
+      },
+    ]);
+    expect(Object.keys(events[0]!).sort()).toEqual(['connectorId', 'removed', 'renamed']);
+  });
+
+  it('removing a server announces it as removed; an unchanged edit announces nothing', async () => {
+    const h = await makeHarness();
+    const events = capture(h);
+    const a = { name: 'a', url: 'https://mcp.example.com/a' };
+    const b = { name: 'b', url: 'https://mcp.example.com/b' };
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: withServers(a, b) }),
+    );
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: withServers(a, b), description: 'just a description edit' }),
+    );
+    expect(events).toEqual([]);
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: withServers(a) }),
+    );
+    expect(events).toEqual([
+      {
+        connectorId: 'gdrive',
+        renamed: [],
+        removed: [{ server: 'b', toolNamespace: deriveToolNamespace('userA', 'gdrive', 'b') }],
+      },
+    ]);
+  });
+
+  it('a throwing subscriber never fails the upsert', async () => {
+    const h = await makeHarness();
+    h.bus.subscribe('connectors:tool-namespaces-changed', 'test/boom', async () => {
+      throw new Error('subscriber exploded');
+    });
+    const url = 'https://mcp.example.com/gdrive';
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: withServers({ name: 'gdrive', url }) }),
+    );
+    const out = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: withServers({ name: 'drive', url }) }),
+    );
+    expect(out.connector.capabilities.mcpServers.map((s) => s.name)).toEqual(['drive']);
   });
 });
 

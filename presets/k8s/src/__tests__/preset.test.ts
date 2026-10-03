@@ -340,7 +340,13 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
     // TASK-736: purges. `agents:deleted` is fired by @ax/agents and
     // `connectors:deleted` by @ax/connectors — both loaded by this preset.
-    expect(tp!.manifest.subscribes).toEqual(['agents:deleted', 'connectors:deleted']);
+    // TASK-752: `connectors:tool-namespaces-changed` (also @ax/connectors)
+    // moves/purges verdicts when a connector's MCP server is renamed/removed.
+    expect(tp!.manifest.subscribes).toEqual([
+      'agents:deleted',
+      'connectors:deleted',
+      'connectors:tool-namespaces-changed',
+    ]);
     const names = plugins.map((p) => p.manifest.name);
     expect(names).toContain('@ax/agents');
     expect(names).toContain('@ax/connectors');

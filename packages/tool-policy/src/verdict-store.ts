@@ -1,7 +1,7 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { ToolPolicyDatabase } from './migrations.js';
 import type { OverrideOrigin, PolicyVerdict } from './types.js';
-import { isPolicyVerdict } from './verdicts.js';
+import { CONNECTOR_TOOL_NAMESPACE_RE, isPolicyVerdict } from './verdicts.js';
 
 /**
  * Storage for per-tool verdicts (TASK-736). The single source of truth for
@@ -57,8 +57,52 @@ export interface VerdictStore {
     updatedBy: string,
   ): Promise<number>;
   purgeAgent(agentId: string): Promise<number>;
-  /** Drop defaults under these namespaces AND every agent's overrides for them. */
+  /**
+   * Drop defaults under these namespaces AND every agent's overrides for them.
+   * THROWS, deleting nothing, when any entry is not a host-minted `c<10 hex>`
+   * namespace (see {@link assertToolNamespaces}).
+   */
   purgeNamespaces(toolNamespaces: readonly string[]): Promise<void>;
+  /**
+   * Move every default and every agent override from `from` to `to`, all
+   * pairs in one write (TASK-752 — a connector's MCP server was renamed, so
+   * its namespace changed). Rows already under `to` are replaced: they can
+   * only be leftovers of an earlier server that held that name, while the
+   * `from` rows are what the admin and the agents chose for the server that
+   * exists now. THROWS, moving nothing, on a malformed namespace, on
+   * `from === to`, or when the pairs overlap (a name used twice, or a `to`
+   * that is also a `from` — a swap or a chain has no order-free meaning).
+   */
+  renameNamespaces(pairs: ReadonlyArray<{ from: string; to: string }>): Promise<void>;
+}
+
+/**
+ * The store-level keyspace guard (TASK-752). The overrides table is keyed by
+ * the whole tool key, so a namespace delete or move is a `LIKE 'mcp.<ns>.%'`
+ * match: a `%` or `_` in `<ns>`, or an empty one, would reach every agent's
+ * rows for OTHER keys. The hook layer already filters, but it is not the only
+ * conceivable caller of a store; this check is the one that sits next to the
+ * `LIKE`. Throwing (rather than skipping the bad entry) makes a broken caller
+ * loud and leaves every row in place.
+ */
+export function assertToolNamespaces(toolNamespaces: readonly unknown[], op: string): void {
+  for (const ns of toolNamespaces) {
+    if (typeof ns !== 'string' || !CONNECTOR_TOOL_NAMESPACE_RE.test(ns)) {
+      throw new Error(`tool-policy verdict store: ${op} refused a malformed tool namespace`);
+    }
+  }
+}
+
+function assertRenamePairs(pairs: ReadonlyArray<{ from: string; to: string }>): void {
+  const seen = new Set<string>();
+  for (const p of pairs) {
+    assertToolNamespaces([p?.from, p?.to], 'renameNamespaces');
+    if (p.from === p.to || seen.has(p.from) || seen.has(p.to)) {
+      throw new Error('tool-policy verdict store: renameNamespaces refused overlapping pairs');
+    }
+    seen.add(p.from);
+    seen.add(p.to);
+  }
 }
 
 /** A stored verdict we cannot read is read as `deny` — it can only tighten. */
@@ -229,6 +273,7 @@ export function createDbVerdictStore(db: Kysely<ToolPolicyDatabase>): VerdictSto
     },
 
     async purgeNamespaces(toolNamespaces) {
+      assertToolNamespaces(toolNamespaces, 'purgeNamespaces');
       if (toolNamespaces.length === 0) return;
       await db.transaction().execute(async (trx) => {
         await trx
@@ -239,6 +284,40 @@ export function createDbVerdictStore(db: Kysely<ToolPolicyDatabase>): VerdictSto
           .deleteFrom('tool_policy_v1_agent_overrides')
           .where((eb) => eb.or(toolNamespaces.map((ns) => eb('tool_key', 'like', nsPrefix(ns)))))
           .execute();
+      });
+    },
+
+    async renameNamespaces(pairs) {
+      assertRenamePairs(pairs);
+      if (pairs.length === 0) return;
+      await db.transaction().execute(async (trx) => {
+        const now = new Date();
+        for (const { from, to } of pairs) {
+          await trx
+            .deleteFrom('tool_policy_v1_connector_defaults')
+            .where('tool_namespace', '=', to)
+            .execute();
+          await trx
+            .updateTable('tool_policy_v1_connector_defaults')
+            .set({ tool_namespace: to, updated_at: now })
+            .where('tool_namespace', '=', from)
+            .execute();
+          await trx
+            .deleteFrom('tool_policy_v1_agent_overrides')
+            .where('tool_key', 'like', nsPrefix(to))
+            .execute();
+          // `mcp.<from>.` and `mcp.<to>.` are the same length (both namespaces
+          // are 11 chars), so the tool half starts at the same offset.
+          const toolStart = `mcp.${from}.`.length + 1;
+          await trx
+            .updateTable('tool_policy_v1_agent_overrides')
+            .set({
+              tool_key: sql<string>`${`mcp.${to}.`} || substr(tool_key, ${toolStart})`,
+              updated_at: now,
+            })
+            .where('tool_key', 'like', nsPrefix(from))
+            .execute();
+        }
       });
     },
   };
@@ -335,11 +414,32 @@ export function createMemoryVerdictStore(): VerdictStore {
     },
 
     async purgeNamespaces(toolNamespaces) {
+      assertToolNamespaces(toolNamespaces, 'purgeNamespaces');
       for (const ns of toolNamespaces) {
         defaults.delete(ns);
         const prefix = `mcp.${ns}.`;
         for (const m of overrides.values()) {
           for (const key of [...m.keys()]) if (key.startsWith(prefix)) m.delete(key);
+        }
+      }
+    },
+
+    async renameNamespaces(pairs) {
+      assertRenamePairs(pairs);
+      for (const { from, to } of pairs) {
+        const moved = defaults.get(from);
+        defaults.delete(to);
+        defaults.delete(from);
+        if (moved !== undefined) defaults.set(to, moved);
+        const fromPrefix = `mcp.${from}.`;
+        const toPrefix = `mcp.${to}.`;
+        for (const m of overrides.values()) {
+          for (const key of [...m.keys()]) if (key.startsWith(toPrefix)) m.delete(key);
+          for (const [key, v] of [...m]) {
+            if (!key.startsWith(fromPrefix)) continue;
+            m.delete(key);
+            m.set(toPrefix + key.slice(fromPrefix.length), v);
+          }
         }
       }
     },

@@ -225,6 +225,20 @@ describe('storage I/O', () => {
     expect(loaded.map((c) => c.id)).toEqual(['github']);
   });
 
+  it('saveConfig refuses an id in the reserved connector-namespace form and writes nothing (TASK-752)', async () => {
+    const bus = await makeBus();
+    for (const id of ['c5e0235982f', 'c0123456789', 'cabcdef0123']) {
+      const err = await saveConfig(bus, ctx(), { ...validStdio, id }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PluginError);
+      expect(err).toMatchObject({ code: 'reserved-id' });
+    }
+    expect(await loadConfigs(bus, ctx())).toEqual([]);
+    // Near misses stay legal: wrong length, non-hex, other prefix, a suffix.
+    for (const id of ['c5e0235982', 'c5e0235982f0', 'c5e0235982g', 'd5e0235982f', 'cabcdefabcd-x']) {
+      await expect(saveConfig(bus, ctx(), { ...validStdio, id })).resolves.toMatchObject({ id });
+    }
+  });
+
   it('saveConfig with the same id updates (no duplicate index entry)', async () => {
     const bus = await makeBus();
     await saveConfig(bus, ctx(), validStdio);
