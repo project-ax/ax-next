@@ -170,6 +170,15 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
         'POST /proxy.drain-egress-blocks returns { hosts: [] } without calling the hook — no egress proxy means no allowlist blocks to surface; the agent simply gets no egress-block note.',
     },
     {
+      // TASK-749: the runner drains the refused saves its model was not told
+      // about. Reached on /conversation.drain-save-refusals, but only in a
+      // conversation-scoped deployment that loaded @ax/conversations; the
+      // handler short-circuits to `{ refusals: [] }` via hasService otherwise.
+      hook: 'conversations:drain-save-refusals',
+      degradation:
+        'POST /conversation.drain-save-refusals returns { refusals: [] } without calling the hook — no conversation store means no persisted refusals; a refused final/idle save is then never told to the model.',
+    },
+    {
       // TASK-67 (out-of-git Part B / B2): the runner-side resume-transcript
       // callers. Reached on the /session.append-transcript /
       // .replace-transcript / .get-transcript routes, but only in a

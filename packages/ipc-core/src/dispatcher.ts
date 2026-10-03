@@ -28,6 +28,7 @@ import { artifactPublishHandler } from './handlers/artifact-publish.js';
 import { attachmentsListHandler } from './handlers/attachments-list.js';
 import { skillProposeHandler } from './handlers/skill-propose.js';
 import { proxyDrainEgressBlocksHandler } from './handlers/proxy-drain-egress-blocks.js';
+import { conversationDrainSaveRefusalsHandler } from './handlers/conversation-drain-save-refusals.js';
 import { toolPreCallHandler } from './handlers/tool-pre-call.js';
 import { toolExecuteHostHandler } from './handlers/tool-execute-host.js';
 import { toolListHandler } from './handlers/tool-list.js';
@@ -123,6 +124,12 @@ ACTIONS.set('/skill.propose', { method: 'POST', handler: skillProposeHandler });
 // Agent-visible egress-block note: the runner drains its session's allowlist-
 // blocked hosts at PostToolUse. Empty JSON request, `{ hosts: string[] }` back.
 ACTIONS.set('/proxy.drain-egress-blocks', { method: 'POST', handler: proxyDrainEgressBlocksHandler });
+// TASK-749: the runner takes the refused saves its model was not told about
+// (empty JSON request; conversation from ctx; `{ refusals }` of closed codes back).
+ACTIONS.set('/conversation.drain-save-refusals', {
+  method: 'POST',
+  handler: conversationDrainSaveRefusalsHandler,
+});
 // TASK-67 (out-of-git Part B / B2): resume-transcript actions. get-transcript
 // takes a JSON request and returns a BINARY response (HandlerBinary) — still an
 // ordinary ACTION (the REQUEST body is JSON). append-transcript and

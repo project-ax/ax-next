@@ -117,6 +117,12 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // Single in-memory map read host-side. 5 s is generous; this rides the hot
   // tool-loop path, so fail-fast (and skip the note) beats stalling a turn.
   'proxy.drain-egress-blocks': 5_000,
+  // TASK-749: `conversation.drain-save-refusals` — the runner takes the
+  // refused saves its model has not been told about as it builds each turn
+  // (empty request, a few closed codes back). Two indexed reads and at most
+  // one UPDATE host-side. It sits on the turn-start path, so fail-fast (and
+  // skip the notice; the rows stay untold for the next turn) beats stalling.
+  'conversation.drain-save-refusals': 5_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */
