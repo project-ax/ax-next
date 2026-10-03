@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useLayoutEffect, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Field,
@@ -76,7 +76,14 @@ export function NewAgentCard({
     [valid, trimmed, onCreate],
   );
 
-  useEffect(() => {
+  // A LAYOUT effect, not a passive one (TASK-478, same shape as TASK-772's
+  // FirstRunAutoCreate). A passive effect attaches the listener in a task
+  // AFTER the commit that showed the card; on any non-discrete render that is
+  // a window in which Cancel is on screen and Escape is silently dropped.
+  // Today's only way in is a click, which flushes passive effects inside the
+  // same commit, so this is latent rather than live — the layout effect makes
+  // "the card is visible" imply "Escape works" however the card got mounted.
+  useLayoutEffect(() => {
     if (!isAdd) return;
     const onKeyDown = (e: KeyboardEvent) => {
       // An Escape that ends an IME composition belongs to the composition.

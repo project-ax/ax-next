@@ -22,6 +22,7 @@
  */
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -105,7 +106,14 @@ export function ThreadFindBar({
   // A keyboard user who opens the bar lands in it. Without this they would
   // have to Tab back into the control they just opened, which is the sort of
   // thing that makes a "keyboard accessible" feature technically true.
-  useEffect(() => {
+  //
+  // A LAYOUT effect, not a passive one (TASK-478, the TASK-451 race shape). A
+  // passive effect focuses in a task AFTER the commit that put the bar on
+  // screen, so on any non-discrete render the box is visible while focus is
+  // still on <body>. The toggle's click flushes passive effects inside the
+  // same commit, so today's path does not hit it — the layout effect makes
+  // "the bar is on screen" imply "focus is in it" however it got mounted.
+  useLayoutEffect(() => {
     boxRef.current?.focus();
   }, []);
 
