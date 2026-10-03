@@ -87,6 +87,18 @@ import {
 
 const PLUGIN_NAME = '@ax/channel-web';
 
+/**
+ * The PluginError code `connectors:upsert` throws (and the `error` the
+ * connector routes answer, 503) when an endpoint change couldn't first reset
+ * that server's tool permissions (TASK-758). The canonical spelling is
+ * `TOOL_PERMISSIONS_RESET_FAILED` in `@ax/connectors` (`src/tool-permissions.ts`)
+ * — rename it there and this copy and the client's (`lib/connectors.ts`) must
+ * follow, or both approve surfaces quietly fall back to the generic message.
+ * Spelled here rather than imported — I2 keeps this file to @ax/core — and
+ * pinned against the client's copy by the route test.
+ */
+const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
+
 // --- duck-typed request/response (mirrors @ax/http-server's HttpRequest /
 // HttpResponse minus the import — Invariant I2) ----------------------------
 
@@ -987,6 +999,21 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           connectorId: body.connectorId ?? null,
           err: err instanceof Error ? err : new Error(String(err)),
         });
+        // TASK-775 — approving a connector promotes it through
+        // `connectors:upsert`, which refuses the whole save when it would move
+        // a server to a new address but couldn't first reset that server's
+        // tool permissions (TASK-758). Nothing was approved and the card stays,
+        // so it is retryable: the same 503 + fixed code the Settings approve
+        // route answers, so the chat card can say so plainly. Only the CODE
+        // crosses — never the cause's message.
+        if (
+          body.connectorId !== undefined &&
+          err instanceof PluginError &&
+          err.code === TOOL_PERMISSIONS_RESET_FAILED
+        ) {
+          res.status(503).json({ error: TOOL_PERMISSIONS_RESET_FAILED });
+          return;
+        }
         res.status(500).json({ error: 'grant-failed' });
       }
     },

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { makeAgentContext, createLogger, type ServiceHandler } from '@ax/core';
+import { makeAgentContext, createLogger, PluginError, type ServiceHandler } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
 
@@ -39,6 +39,8 @@ function buildMocks(opts: {
   resolveThrows?: boolean;
   /** Drop the `connectors:upsert` service to exercise the hasService back-compat guard. */
   noUpsert?: boolean;
+  /** Make `connectors:upsert` throw this (e.g. the TASK-758 reset refusal). */
+  upsertThrows?: Error;
 }): { trace: Trace; services: Record<string, ServiceHandler> } {
   const trace: Trace = { setRows: [], terminate: [], addHost: [], activate: [], upsert: [] };
   const services: Record<string, ServiceHandler> = {
@@ -98,6 +100,7 @@ function buildMocks(opts: {
         visibility: i.visibility,
         capabilities: i.capabilities,
       });
+      if (opts.upsertThrows !== undefined) throw opts.upsertThrows;
       return {
         connector: {
           id: i.connectorId, name: i.name, description: i.description, usageNote: i.usageNote,
@@ -335,5 +338,43 @@ describe('agent:apply-authored-connector-grant', () => {
     // The wall row + activate still happen even when promotion is unavailable.
     expect(mocks.trace.setRows).toEqual([{ connectorId: 'linear', kind: 'host', value: 'api.linear.app' }]);
     expect(mocks.trace.activate).toEqual([{ ownerUserId: 'user-1', agentId: 'agent-1', connectorId: 'linear' }]);
+  });
+
+  // TASK-775 — the promotion's `connectors:upsert` can refuse with the
+  // TASK-758 reset PluginError (`tool-permissions-reset-failed`) when it would
+  // move an MCP server to a new address. The in-chat approve route keys its
+  // 503 on that exact code, so the grant must let the SAME error through —
+  // not re-wrap it, not swallow it into `applied: false` — and must stop
+  // before the activate flip and the warm-session retire.
+  it('a connectors:upsert reset PluginError propagates unchanged and stops before activate/retire', async () => {
+    const resetErr = new PluginError({
+      code: 'tool-permissions-reset-failed',
+      plugin: '@ax/connectors',
+      hookName: 'connectors:upsert',
+      message: 'could not reset tool permissions for a moved server',
+    });
+    const mocks = buildMocks({
+      draft: {
+        connectorId: 'linear',
+        proposal: {
+          ...EMPTY,
+          allowedHosts: ['api.linear.app'],
+          credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+        },
+      },
+      activeSessionId: 'sess-warm', liveSessions: new Set(['sess-warm']),
+      upsertThrows: resetErr,
+    });
+    const h = await harnessFor(mocks);
+    const call = h.bus.call('agent:apply-authored-connector-grant', ctx(), {
+      conversationId: 'cnv-1', userId: 'user-1', agentId: 'agent-1', connectorId: 'linear',
+    });
+    // The very same error object — code, plugin and hookName intact.
+    await expect(call).rejects.toBe(resetErr);
+    expect(mocks.trace.upsert).toHaveLength(1);
+    // The draft stays pending (re-approvable) and the agent is not touched.
+    expect(mocks.trace.activate).toEqual([]);
+    expect(mocks.trace.terminate).toEqual([]);
+    expect(mocks.trace.addHost).toEqual([]);
   });
 });
