@@ -580,6 +580,9 @@ importers:
       '@ax/attachments':
         specifier: workspace:*
         version: link:../attachments
+      '@ax/credentials-admin-routes':
+        specifier: workspace:*
+        version: link:../credentials-admin-routes
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
