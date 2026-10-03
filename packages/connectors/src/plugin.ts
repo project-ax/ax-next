@@ -307,7 +307,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       bus.registerService<ToolLabelsInput, ToolLabelsOutput>(
         'connectors:tool-labels',
         PLUGIN_NAME,
-        async (_ctx, input) => toolLabels(localStore, input),
+        async (ctx, input) => toolLabels(localStore, bus, ctx, input),
         { returns: ToolLabelsOutputSchema },
       );
 
@@ -560,8 +560,13 @@ async function listEffectiveConnectors(
   return { connectors: [...byId.values()] };
 }
 
+/** `connectors:inventory-tool-titles`' own per-call id cap (@ax/mcp-client). */
+const TOOL_TITLES_BATCH_MAX = 500;
+
 async function toolLabels(
   store: ConnectorStore,
+  bus: HookBus,
+  ctx: AgentContext,
   input: ToolLabelsInput,
 ): Promise<ToolLabelsOutput> {
   const userId = requireUserId(input.userId, 'connectors:tool-labels');
@@ -578,7 +583,68 @@ async function toolLabels(
       });
     }
   }
+  if (connectors.length === 0) return { connectors };
+
+  // TASK-753 — fold in the server's own tool titles from the inventory cache.
+  // The inventory read caps one batch at 500 ids; past that, the rest are
+  // named by their humanized tool names rather than failing every title.
+  const titles = await cachedToolTitles(bus, ctx, userId, [
+    ...new Set(connectors.map((c) => c.connectorId)),
+  ].slice(0, TOOL_TITLES_BATCH_MAX));
+  for (const c of connectors) {
+    // A title is only ever attached under the namespace its toolKey names AND
+    // the connector it was cached for, so a row cannot relabel another
+    // connector's tool.
+    const prefix = `mcp.${c.toolNamespace}.`;
+    const tools: Array<{ name: string; title: string }> = [];
+    for (const t of titles) {
+      if (t.connectorId !== c.connectorId || !t.toolKey.startsWith(prefix)) continue;
+      const name = t.toolKey.slice(prefix.length);
+      if (name.length > 0) tools.push({ name, title: t.title });
+    }
+    if (tools.length > 0) c.tools = tools;
+  }
   return { connectors };
+}
+
+/**
+ * `connectors:inventory-tool-titles` (@ax/mcp-client), cache-only. Not
+ * declared in the manifest — @ax/mcp-client already calls
+ * `connectors:resolve`, so a declared edge back would close a plugin
+ * call-graph cycle (same reason as `connectors:describe-tools`; see the
+ * manifest). `hasService`-guarded, and a failed read costs the titles, never
+ * the labels: callers fall back to the humanized tool name.
+ */
+async function cachedToolTitles(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+  connectorIds: string[],
+): Promise<Array<{ connectorId: string; toolKey: string; title: string }>> {
+  const hook = 'connectors:inventory-tool-titles';
+  if (!bus.hasService(hook)) return [];
+  try {
+    const out = await bus.call<
+      { userId: string; connectorIds: string[] },
+      { titles?: unknown }
+    >(hook, ctx, { userId, connectorIds });
+    if (!Array.isArray(out?.titles)) return [];
+    return (out.titles as unknown[]).flatMap((raw) => {
+      const t = raw as { connectorId?: unknown; toolKey?: unknown; title?: unknown } | null;
+      return t !== null &&
+        typeof t === 'object' &&
+        typeof t.connectorId === 'string' &&
+        typeof t.toolKey === 'string' &&
+        typeof t.title === 'string'
+        ? [{ connectorId: t.connectorId, toolKey: t.toolKey, title: t.title }]
+        : [];
+    });
+  } catch (err) {
+    ctx.logger.warn('connectors_tool_titles_read_failed', {
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+    return [];
+  }
 }
 
 async function getConnector(

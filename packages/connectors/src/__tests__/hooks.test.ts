@@ -1206,5 +1206,75 @@ describe('@ax/connectors hooks — tool-labels (TASK-744)', () => {
   it('the return schema keeps every field (a round-trip must not strip one)', () => {
     const row = { toolNamespace: 'c0123456789', connectorId: 'linear', name: 'Linear' };
     expect(ToolLabelsOutputSchema.parse({ connectors: [row] })).toEqual({ connectors: [row] });
+    // TASK-753: z.object strips unknown keys silently, so `tools` is pinned too.
+    const titled = { ...row, tools: [{ name: 'create_issue', title: 'Open a ticket' }] };
+    expect(ToolLabelsOutputSchema.parse({ connectors: [titled] })).toEqual({ connectors: [titled] });
+  });
+
+  describe('cached server tool titles (TASK-753)', () => {
+    type TitlesCall = { userId: string; connectorIds: string[] };
+    async function harnessWithTitles(
+      titles: (input: TitlesCall) => Promise<unknown>,
+    ): Promise<{ h: TestHarness; calls: TitlesCall[] }> {
+      const calls: TitlesCall[] = [];
+      const h = await createTestHarness({
+        services: {
+          'connectors:inventory-tool-titles': async (_ctx, input) => {
+            calls.push(input as TitlesCall);
+            return titles(input as TitlesCall);
+          },
+        },
+        plugins: [createDatabasePostgresPlugin({ connectionString }), createConnectorsPlugin()],
+      });
+      harnesses.push(h);
+      return { h, calls };
+    }
+
+    it('attaches each cached title under the namespace its toolKey names', async () => {
+      let ns = '';
+      const { h, calls } = await harnessWithTitles(async () => ({
+        titles: [
+          { connectorId: 'linear', toolKey: `mcp.${ns}.create_issue`, title: 'Open a ticket' },
+          // A toolKey under another namespace is never attached here…
+          { connectorId: 'linear', toolKey: 'mcp.c0000000000.create_issue', title: 'Wrong namespace' },
+          // …nor a title cached for another connector, even under this namespace.
+          { connectorId: 'other', toolKey: `mcp.${ns}.list_issues`, title: 'Wrong connector' },
+          { connectorId: 'linear', toolKey: `mcp.${ns}.`, title: 'No tool part' },
+          { connectorId: 'linear', toolKey: 7, title: 'malformed' },
+        ],
+      }));
+      await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'linear', name: 'Linear' }));
+      ns = deriveToolNamespace('userA', 'linear', 'gdrive');
+      const out = await labels(h, 'userA');
+      expect(out.connectors).toEqual([
+        {
+          toolNamespace: ns,
+          connectorId: 'linear',
+          name: 'Linear',
+          tools: [{ name: 'create_issue', title: 'Open a ticket' }],
+        },
+      ]);
+      // Asked as the caller, for exactly the connectors the caller can name.
+      expect(calls).toEqual([{ userId: 'userA', connectorIds: ['linear'] }]);
+    });
+
+    it('a failing or malformed titles read costs the titles, never the labels', async () => {
+      const { h } = await harnessWithTitles(async () => {
+        throw new Error('db down');
+      });
+      await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'linear', name: 'Linear' }));
+      expect((await labels(h, 'userA')).connectors).toEqual([
+        { toolNamespace: deriveToolNamespace('userA', 'linear', 'gdrive'), connectorId: 'linear', name: 'Linear' },
+      ]);
+      const bad = await harnessWithTitles(async () => ({ titles: 'nope' }));
+      await bad.h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', bad.h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'linear', name: 'Linear' }));
+      expect((await labels(bad.h, 'userA')).connectors[0]).not.toHaveProperty('tools');
+    });
+
+    it('does not ask for titles when the caller can name no connector', async () => {
+      const { h, calls } = await harnessWithTitles(async () => ({ titles: [] }));
+      expect((await labels(h, 'userB')).connectors).toEqual([]);
+      expect(calls).toEqual([]);
+    });
   });
 });

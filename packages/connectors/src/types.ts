@@ -451,12 +451,25 @@ export interface ResolveOutput {
  * (a person, or a model for an approved authored connector), so callers fence
  * it before it reaches a screen. `toolNamespace` is the same opaque alias
  * `connectors:resolve` returns; it is a lookup key, never something to show.
+ *
+ * TASK-753 — `tools`, when present, is the MCP server's own display title for
+ * each of that namespace's tools that has one, as `connectors:describe-tools`
+ * last cached it for `userId` (read through @ax/mcp-client's cache-only
+ * `connectors:inventory-tool-titles` — this hook never reaches a server).
+ * Callers prefer `title` over a humanized `name`. Absent when no title is
+ * cached (or no inventory plugin is loaded). `title` is UNTRUSTED third-party
+ * text: fence and clamp it before it reaches a screen, exactly like `name`.
  */
 export interface ToolLabelsInput {
   userId: string;
 }
 export interface ToolLabelsOutput {
-  connectors: Array<{ toolNamespace: string; connectorId: string; name: string }>;
+  connectors: Array<{
+    toolNamespace: string;
+    connectorId: string;
+    name: string;
+    tools?: Array<{ name: string; title: string }>;
+  }>;
 }
 
 /**
@@ -747,7 +760,12 @@ export const ResolveOutputSchema = z.object({
 
 export const ToolLabelsOutputSchema = z.object({
   connectors: z.array(
-    z.object({ toolNamespace: z.string(), connectorId: z.string(), name: z.string() }),
+    z.object({
+      toolNamespace: z.string(),
+      connectorId: z.string(),
+      name: z.string(),
+      tools: z.array(z.object({ name: z.string(), title: z.string() })).optional(),
+    }),
   ),
 }) as unknown as ZodType<ToolLabelsOutput>;
 
