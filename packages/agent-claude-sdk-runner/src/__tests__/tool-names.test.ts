@@ -7,6 +7,7 @@ import {
   MCP_SANDBOX_SERVER_NAME,
   activityPhraseForSdkName,
   classifySdkToolName,
+  sdkDisallowedToolNames,
 } from '../tool-names.js';
 
 describe('classifySdkToolName', () => {
@@ -254,5 +255,43 @@ describe('activityPhraseForSdkName (TASK-271)', () => {
   it('returns undefined for disabled built-ins even when catalogued', () => {
     const withDisabled = new Map([...phrases, ['WebFetch', 'Fetching the web']]);
     expect(activityPhraseForSdkName(withDisabled, 'WebFetch')).toBeUndefined();
+  });
+});
+
+describe('sdkDisallowedToolNames', () => {
+  it('passes SDK built-ins through verbatim', () => {
+    expect(sdkDisallowedToolNames(['Bash', 'NotebookEdit'])).toEqual(['Bash', 'NotebookEdit']);
+  });
+
+  it('maps a host-minted connector key to the SDK mcp__<ns>__<tool> name', () => {
+    expect(sdkDisallowedToolNames(['mcp.c0123456789.create_issue'])).toEqual([
+      'mcp__c0123456789__create_issue',
+    ]);
+    // Round-trips through the classifier back to the canonical key.
+    expect(classifySdkToolName('mcp__c0123456789__a.b__c')).toEqual({
+      kind: 'mcp-connector',
+      axName: 'mcp.c0123456789.a.b__c',
+    });
+    expect(sdkDisallowedToolNames(['mcp.c0123456789.a.b__c'])).toEqual([
+      'mcp__c0123456789__a.b__c',
+    ]);
+  });
+
+  it('skips host catalog tools, non-minted namespaces and malformed keys', () => {
+    expect(
+      sdkDisallowedToolNames([
+        'web_search',
+        'web_extract',
+        'mcp.linear.create_issue',
+        'mcp.C0123456789.x',
+        'mcp.c0123456789.',
+        'mcp.c0123456789',
+        '',
+      ]),
+    ).toEqual([]);
+  });
+
+  it('dedupes', () => {
+    expect(sdkDisallowedToolNames(['Bash', 'Bash'])).toEqual(['Bash']);
   });
 });

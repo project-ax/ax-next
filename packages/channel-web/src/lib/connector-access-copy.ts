@@ -15,8 +15,13 @@
  *   - "the same access the key has" — the credential proxy substitutes the
  *     stored key on requests to the connector's bound hosts, and the agent acts
  *     with it. Whatever the key can do, the agent can do.
- *   - "without asking you each time" — true today. It is the thing TASK-328
- *     would change, and the day it does this sentence must change with it.
+ *   - "without asking you each time" — NO LONGER UNIVERSALLY TRUE since
+ *     TASK-736: a connector tool with no admin default is held ("Ask first"),
+ *     and admins/agents can set Ask first or Deny per tool. The copy update is
+ *     owned by connectors-rail slice 9 (design
+ *     `docs/plans/2026-10-02-connectors-rail-design.md` §6), which also updates
+ *     the pinned `asking` count test. Until then the sentence OVERSTATES how
+ *     freely the agent acts — the conservative direction for a disclosure.
  *   - "could trick it" — anything the agent reads (a page, a file) is untrusted
  *     text that reaches the same model that holds the access.
  *   - NOT claimed: that the agent can or cannot see the key (`KEY_SAFETY` says

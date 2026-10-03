@@ -84,6 +84,18 @@ function schemaOf(name: string): {
 }
 
 describe('buildBuiltinTools — the registered set', () => {
+  it('drops a built-in named in `disallowed` (agentConfig.disallowedTools)', () => {
+    const filtered = buildBuiltinTools({
+      policy: fakePolicy(),
+      homeDir: home,
+      env: { PATH: process.env['PATH'] ?? '', HOME: home },
+      holdLatch: createHoldLatch(), onHold: () => {}, onToolFailure: () => {},
+      // Non-built-in names (host tools, connector keys) are simply ignored here.
+      disallowed: ['Bash', 'web_search', 'mcp.c0123456789.x'],
+    });
+    expect(Object.keys(filtered).sort()).toEqual(['Edit', 'Glob', 'Grep', 'Read', 'Write']);
+  });
+
   it('registers exactly the six built-ins and nothing else', () => {
     expect(Object.keys(tools).sort()).toEqual([
       'Bash',

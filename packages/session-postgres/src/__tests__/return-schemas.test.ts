@@ -54,6 +54,25 @@ describe('session-postgres return schemas', () => {
     expect(SessionGetConfigOutputSchema.parse(full)).toEqual(full);
   });
 
+  it('SessionGetConfigOutputSchema preserves disallowedTools when present', () => {
+    const full: SessionGetConfigOutput = {
+      userId: 'u1',
+      agentId: 'a1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: 'p',
+        allowedTools: [],
+        disallowedTools: ['Bash'],
+        mcpConfigIds: [],
+        model: 'claude',
+        runner: 'claude-sdk',
+      },
+      conversationId: 'c1',
+    };
+    const out = SessionGetConfigOutputSchema.parse(full);
+    expect(out.agentConfig.disallowedTools).toEqual(['Bash']);
+  });
+
   it('SessionGetConfigOutputSchema preserves systemPromptBootstrapAugment when present', () => {
     const full: SessionGetConfigOutput = {
       userId: 'u1',

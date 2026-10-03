@@ -164,6 +164,20 @@ function validateOwner(
       message: `'owner.agentConfig.allowedTools' must be a string[]`,
     });
   }
+  // disallowedTools is optional — absent on session rows persisted before
+  // this field existed. A string[] WHEN present.
+  if (
+    cfg.disallowedTools !== undefined &&
+    (!Array.isArray(cfg.disallowedTools) ||
+      !cfg.disallowedTools.every((t) => typeof t === 'string'))
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.agentConfig.disallowedTools' must be a string[] when present`,
+    });
+  }
   if (!Array.isArray(cfg.mcpConfigIds) || !cfg.mcpConfigIds.every((t) => typeof t === 'string')) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -224,6 +238,9 @@ function validateOwner(
         ? { systemPromptBootstrapAugment: cfg.systemPromptBootstrapAugment as string }
         : {}),
       allowedTools: cfg.allowedTools as string[],
+      ...(cfg.disallowedTools !== undefined
+        ? { disallowedTools: cfg.disallowedTools as string[] }
+        : {}),
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,
       runner: cfg.runner as string,

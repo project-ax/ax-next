@@ -192,6 +192,7 @@ interface SessionCreateInput {
       systemPromptAugment: string;
       systemPromptBootstrapAugment?: string | undefined;
       allowedTools: string[];
+      disallowedTools?: string[] | undefined;
       mcpConfigIds: string[];
       model: string;
       runner: string;

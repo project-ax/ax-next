@@ -34,6 +34,9 @@ export interface AgentConfig {
    * as `systemPromptAugment` — flows into the LLM prompt only. */
   systemPromptBootstrapAugment?: string;
   allowedTools: string[];
+  /** Canonical AX tool names the agent's tool policy DENIES. Catalog hygiene
+   * for the runner; enforcement stays host-side. Optional: absent = none. */
+  disallowedTools?: string[];
   mcpConfigIds: string[];
   model: string;
   /** Runner id (e.g. `'claude-sdk'`) the host resolves to a binary path via

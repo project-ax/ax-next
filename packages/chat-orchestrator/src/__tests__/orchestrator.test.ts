@@ -15,6 +15,7 @@ import {
   withBrokerDefaults,
   sessionNeedsCredentialRotation,
   CHAT_START_SUBSCRIBER_TIMEOUT_MS,
+  deniedToolKeys,
 } from '../orchestrator.js';
 
 // Default agent stub — every test gets its own copy via spread to avoid
@@ -6322,5 +6323,124 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
 
     expect(counters.opens).toBe(2);
     expect(augment.calls.n).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tool-policy:list-agent-overrides → agentConfig.disallowedTools (catalog
+// hygiene). Every failure path DEGRADES: the session still opens, just with
+// no extra denies.
+// ---------------------------------------------------------------------------
+describe('agentConfig.disallowedTools from tool-policy overrides', () => {
+  function makeOpen(busRef: { current: HookBus | null }): ServiceHandler {
+    return async (ctx, input: unknown) => {
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const reqId = ctx.reqId;
+      setImmediate(() => {
+        void busRef.current!.fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'test-agent',
+            userId: 'test-user',
+            reqId,
+            logger: createLogger({ reqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+      };
+    };
+  }
+
+  async function run(extra: Record<string, ServiceHandler>) {
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({ openSession: makeOpen(busRef) });
+    Object.assign(mocks.services, extra);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const lines: string[] = [];
+    const ctx = makeAgentContext({
+      sessionId: 'policy-session',
+      agentId: 'test-agent',
+      userId: 'test-user',
+      logger: createLogger({ reqId: 'orch-test', writer: (l) => lines.push(l) }),
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctx, {
+      message: { role: 'user', content: 'hi' },
+    });
+    const agentConfig = (
+      mocks.calls.lastSandboxInput as { owner: { agentConfig: Record<string, unknown> } }
+    ).owner.agentConfig;
+    return { outcome, agentConfig, lines, mocks };
+  }
+
+  it('deny verdicts and deny ceilings become a sorted, deduped disallowedTools', async () => {
+    const seen: unknown[] = [];
+    const { outcome, agentConfig } = await run({
+      'tool-policy:list-agent-overrides': async (_ctx, input) => {
+        seen.push(input);
+        return {
+          overrides: [
+            { toolKey: 'web_search', verdict: 'hold', ceiling: 'deny', origin: 'snapshot' },
+            { toolKey: 'Bash', verdict: 'deny', ceiling: 'allow', origin: 'user' },
+            { toolKey: 'mcp.c0123456789.x', verdict: 'allow', ceiling: 'allow', origin: 'user' },
+            { toolKey: 'Bash', verdict: 'deny', ceiling: 'deny', origin: 'snapshot' },
+          ],
+        };
+      },
+    });
+    expect(outcome.kind).toBe('complete');
+    expect(seen).toEqual([{ agentId: 'test-agent' }]);
+    expect(agentConfig.disallowedTools).toEqual(['Bash', 'web_search']);
+  });
+
+  it('a throwing overrides hook degrades: session opens, no disallowedTools, warn logged', async () => {
+    const { outcome, agentConfig, lines, mocks } = await run({
+      'tool-policy:list-agent-overrides': async () => {
+        throw new Error('db down');
+      },
+    });
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.sandboxOpen).toBe(1);
+    expect('disallowedTools' in agentConfig).toBe(false);
+    expect(lines.some((l) => l.includes('tool_policy_overrides_read_failed'))).toBe(true);
+  });
+
+  it('an absent overrides hook leaves disallowedTools off the snapshot', async () => {
+    const { outcome, agentConfig } = await run({});
+    expect(outcome.kind).toBe('complete');
+    expect('disallowedTools' in agentConfig).toBe(false);
+  });
+
+  it('no denies → field omitted (snapshot unchanged)', async () => {
+    const { agentConfig } = await run({
+      'tool-policy:list-agent-overrides': async () => ({
+        overrides: [{ toolKey: 'Bash', verdict: 'hold', ceiling: 'allow', origin: 'user' }],
+      }),
+    });
+    expect('disallowedTools' in agentConfig).toBe(false);
+  });
+
+  it('deniedToolKeys tolerates malformed responses', () => {
+    expect(deniedToolKeys(undefined)).toEqual([]);
+    expect(deniedToolKeys(null)).toEqual([]);
+    expect(deniedToolKeys({ overrides: 'nope' })).toEqual([]);
+    expect(
+      deniedToolKeys({
+        overrides: [null, 7, { verdict: 'deny' }, { toolKey: 3, verdict: 'deny' }, { toolKey: 'A', ceiling: 'deny' }],
+      }),
+    ).toEqual(['A']);
   });
 });

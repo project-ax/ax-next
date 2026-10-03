@@ -87,6 +87,7 @@ interface SessionGetConfigOutput {
     systemPromptAugment: string;
     systemPromptBootstrapAugment?: string;
     allowedTools: string[];
+    disallowedTools?: string[];
     mcpConfigIds: string[];
     model: string;
     runner: string;

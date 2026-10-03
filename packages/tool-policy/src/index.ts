@@ -13,7 +13,23 @@ export {
 } from './egress-allowlist.js';
 export type { EgressAllowlistStore } from './egress-allowlist.js';
 export { runToolPolicyMigration } from './migrations.js';
-export type { EgressAllowlistRow, ToolPolicyDatabase } from './migrations.js';
+export type {
+  AgentOverrideRow,
+  ConnectorDefaultRow,
+  EgressAllowlistRow,
+  ToolPolicyDatabase,
+} from './migrations.js';
+export { createDbVerdictStore, createMemoryVerdictStore } from './verdict-store.js';
+export type { StoredOverride, VerdictStore } from './verdict-store.js';
+export {
+  ABILITY_TOOLS,
+  ceilingFor,
+  isOverridableKey,
+  layeredVerdict,
+  parseConnectorToolKey,
+  staticCeiling,
+  strictest,
+} from './verdicts.js';
 export {
   CapabilityProvenanceSchema,
   CapabilityRowSchema,
@@ -23,8 +39,14 @@ export {
   EgressRevokeOutputSchema,
   EgressScopeSchema,
   EvaluateResultSchema,
+  GetConnectorDefaultsOutputSchema,
+  ListAgentOverridesOutputSchema,
   ListCapabilitiesOutputSchema,
+  OverrideOriginSchema,
   PolicyVerdictSchema,
+  SetAgentOverrideOutputSchema,
+  SetConnectorDefaultsOutputSchema,
+  SnapshotConnectorForAgentOutputSchema,
 } from './types.js';
 export type {
   CapabilityProvenance,
@@ -47,4 +69,17 @@ export type {
   PredicateSpec,
   RuleProvenance,
   ToolEffect,
+  AgentOverrideView,
+  GetConnectorDefaultsInput,
+  GetConnectorDefaultsOutput,
+  ListAgentOverridesInput,
+  ListAgentOverridesOutput,
+  OverrideOrigin,
+  SetAgentOverrideInput,
+  SetAgentOverrideOutput,
+  SetConnectorDefaultsInput,
+  SetConnectorDefaultsOutput,
+  SnapshotConnectorForAgentInput,
+  SnapshotConnectorForAgentOutput,
+  VerdictWriteRejection,
 } from './types.js';

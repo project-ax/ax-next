@@ -59,6 +59,7 @@ import {
   type Capabilities,
   type ClearAuthoredInput,
   type ClearAuthoredOutput,
+  type ConnectorDeletedEvent,
   type DeleteInput,
   type DeleteOutput,
   type GetInput,
@@ -552,6 +553,30 @@ async function deleteConnector(
           err: err instanceof Error ? err.message : String(err),
         });
       }
+    }
+  }
+
+  // Announce the removal so other plugins reclaim state keyed on this connector's
+  // tool namespaces (@ax/tool-policy purges its per-tool verdict rows). Fired
+  // AFTER the credential purge, and only when a LIVE row was actually removed
+  // (`deleted` + a loaded `connector`) — a delete of an absent / already-deleted
+  // connector announces nothing. The namespaces are derived from `userId`, the
+  // row owner (both queries above filter owner_user_id = userId), so they match
+  // what `connectors:resolve` handed out. Best-effort: HookBus.fire isolates
+  // subscriber throws, and a fire failure must never fail an already-committed
+  // delete.
+  if (deleted && connector !== null) {
+    const event: ConnectorDeletedEvent = {
+      connectorId,
+      toolNamespaces: deriveToolNamespaces(userId, connector),
+    };
+    try {
+      await bus.fire('connectors:deleted', ctx, event);
+    } catch (err) {
+      ctx.logger.warn('connectors_deleted_event_failed', {
+        connectorId,
+        err: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

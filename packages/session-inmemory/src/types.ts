@@ -39,6 +39,9 @@ export interface AgentConfig {
   systemPromptBootstrapAugment?: string;
   /** Tool-name allow-list. Validated when the agent was created. */
   allowedTools: string[];
+  /** Canonical AX tool names the agent's tool policy DENIES. Catalog hygiene
+   * for the runner; enforcement stays host-side. Optional: absent = none. */
+  disallowedTools?: string[];
   /** MCP-config allow-list. Empty = no MCP tools. */
   mcpConfigIds: string[];
   /** LLM model id. Allow-listed at agent creation. */
@@ -321,6 +324,8 @@ export const SessionGetConfigOutputSchema = z.object({
     systemPromptAugment: z.string(),
     systemPromptBootstrapAugment: z.string().optional(),
     allowedTools: z.array(z.string()),
+    // Optional — absent on rows persisted before the field existed.
+    disallowedTools: z.array(z.string()).optional(),
     mcpConfigIds: z.array(z.string()),
     model: z.string(),
     // z.string(), not a zod enum — wire is a transport boundary; the

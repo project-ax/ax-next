@@ -338,6 +338,25 @@ export interface DeleteOutput {
 }
 
 /**
+ * Payload of the `connectors:deleted` SUBSCRIBER event, fired by
+ * `connectors:delete` after a connector is actually removed (`deleted: true`
+ * and the row was live). Lets other plugins reclaim per-tool state keyed on the
+ * connector's tool namespaces (e.g. `@ax/tool-policy` verdict rows) without this
+ * plugin knowing they exist.
+ *
+ * `toolNamespaces` is the same shape `connectors:resolve` returns, derived from
+ * the row OWNER before the delete, so a subscriber can match the exact
+ * namespaces it was handed earlier. No owner/user field rides the payload (the
+ * namespace already encodes the owner) and nothing here is storage-specific.
+ * Empty for a connector with no MCP servers. Best-effort: subscriber failures
+ * never fail the delete.
+ */
+export interface ConnectorDeletedEvent {
+  connectorId: string;
+  toolNamespaces: ToolNamespaceEntry[];
+}
+
+/**
  * Resolve a connector id to its mechanism-agnostic spec descriptor — the
  * future routing entry point (a credential-proxy / sandbox-spawn caller will
  * resolve a connector to its declared credentials + allowedHosts + backing

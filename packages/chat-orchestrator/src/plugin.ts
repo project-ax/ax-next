@@ -71,6 +71,17 @@ export function createChatOrchestratorPlugin(
         'sandbox:open-session',
         'agents:resolve',
       ],
+      optionalCalls: [
+        {
+          // The agent's per-tool DENY verdicts, frozen onto
+          // `agentConfig.disallowedTools` so the runner hides tools the host
+          // will refuse. Catalog hygiene only — enforcement stays on
+          // tool:pre-call.
+          hook: 'tool-policy:list-agent-overrides',
+          degradation:
+            'denied tools stay in the model\'s catalog (no disallowedTools); calls to them are still refused host-side on tool:pre-call',
+        },
+      ],
       // ----- conditionally-called peers (NOT in `calls`) -----
       //
       // Week 10–12 Task 16 (J6) introduces `conversations:get`,

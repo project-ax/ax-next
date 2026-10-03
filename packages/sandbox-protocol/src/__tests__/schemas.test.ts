@@ -476,6 +476,37 @@ describe('AgentConfigSchema', () => {
     }
   });
 
+  it('preserves disallowedTools when present (a z.object would silently strip it)', () => {
+    const result = AgentConfigSchema.safeParse({
+      displayName: 'Helper',
+      systemPromptAugment: '',
+      allowedTools: [],
+      disallowedTools: ['Bash', 'mcp.c0123456789.x'],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.disallowedTools).toEqual(['Bash', 'mcp.c0123456789.x']);
+    }
+  });
+
+  it('leaves disallowedTools absent when omitted', () => {
+    const result = AgentConfigSchema.safeParse({
+      displayName: 'Helper',
+      systemPromptAugment: '',
+      allowedTools: [],
+      mcpConfigIds: [],
+      model: 'claude',
+      runner: 'claude-sdk',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('disallowedTools' in result.data).toBe(false);
+    }
+  });
+
   it('rejects a non-string systemPromptBootstrapAugment', () => {
     const result = AgentConfigSchema.safeParse({
       displayName: 'Helper',

@@ -104,7 +104,8 @@ export interface RunnerDeps {
   env: RunnerEnv;
   /** The frozen per-session agent config the orchestrator wrote. */
   agentConfig: SessionGetConfigResponse['agentConfig'];
-  /** Host tool catalog, already filtered against `agentConfig.allowedTools`. */
+  /** Host tool catalog, already filtered against `agentConfig.allowedTools`
+   *  and with `agentConfig.disallowedTools` removed. */
   tools: ToolListResponse['tools'];
   /** Executors for tools marked `executesIn: 'sandbox'`. */
   localDispatcher: LocalDispatcher;
@@ -676,6 +677,16 @@ async function runRunnerInner(
   if (agentConfig.allowedTools.length > 0) {
     const allow = new Set(agentConfig.allowedTools);
     tools = tools.filter((t) => allow.has(t.name));
+  }
+
+  // Catalog hygiene: drop tools the agent's tool policy DENIES (frozen onto
+  // `agentConfig.disallowedTools` by the orchestrator). Enforcement stays
+  // host-side on tool:pre-call — this only keeps the model from being offered
+  // a tool it will be refused. Absent (older session rows) = no extra denies.
+  const disallowed = agentConfig.disallowedTools ?? [];
+  if (disallowed.length > 0) {
+    const deny = new Set(disallowed);
+    tools = tools.filter((t) => !deny.has(t.name));
   }
 
   // Tracks the last accepted workspace version so the host's optimistic-

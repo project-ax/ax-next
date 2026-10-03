@@ -191,6 +191,50 @@ function splitConnectorToolName(
   return { toolNamespace, tool };
 }
 
+/**
+ * Shape of an SDK built-in tool name (`Bash`, `Read`, `NotebookEdit`, …):
+ * PascalCase ASCII letters. AX host/sandbox catalog tools are snake_case
+ * (`web_search`, `artifact_publish`) and connector keys are `mcp.<ns>.<tool>`,
+ * so neither can match.
+ */
+const SDK_BUILTIN_NAME_RE = /^[A-Z][A-Za-z]*$/;
+
+/**
+ * Map the agent's canonical DENIED tool names (`agentConfig.disallowedTools`:
+ * `Bash`, `web_search`, `mcp.<toolNamespace>.<tool>`, …) to the names the
+ * claude-agent-sdk's `disallowedTools` option understands. The inverse of
+ * `classifySdkToolName` for the two kinds the SDK itself surfaces:
+ *
+ *   - an SDK built-in (`Bash`) passes through verbatim;
+ *   - a connector key `mcp.<toolNamespace>.<tool>` with a host-minted
+ *     namespace (`CONNECTOR_TOOL_NAMESPACE_RE`) becomes
+ *     `mcp__<toolNamespace>__<tool>`.
+ *
+ * Everything else is SKIPPED: host/sandbox catalog tools (`web_search`,
+ * `web_extract`, any other `mcp.*`) are already dropped from the catalog by
+ * `@ax/agent-runner-core` before the in-process MCP servers are built, so
+ * they never reach the SDK. Catalog hygiene only — enforcement stays host-side
+ * on `tool.pre-call`. Deduped, input order preserved.
+ */
+export function sdkDisallowedToolNames(canonical: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const name of canonical) {
+    if (SDK_BUILTIN_NAME_RE.test(name)) {
+      out.add(name);
+      continue;
+    }
+    if (!name.startsWith('mcp.')) continue;
+    const rest = name.slice('mcp.'.length);
+    const dot = rest.indexOf('.');
+    if (dot === -1) continue;
+    const toolNamespace = rest.slice(0, dot);
+    const tool = rest.slice(dot + 1);
+    if (tool.length === 0 || !CONNECTOR_TOOL_NAMESPACE_RE.test(toolNamespace)) continue;
+    out.add(`${MCP_PREFIX}${toolNamespace}__${tool}`);
+  }
+  return [...out];
+}
+
 export function classifySdkToolName(sdkName: string): SdkToolClass {
   if (isDisabledBuiltin(sdkName)) {
     return {

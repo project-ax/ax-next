@@ -264,6 +264,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             holdLatch,
             onHold,
             onToolFailure,
+            // The agent's per-tool DENY verdicts: a denied built-in (e.g.
+            // Bash) is never offered to the model. Host-catalog denies were
+            // already dropped from `catalog` by runner-core.
+            disallowed: agentConfig.disallowedTools,
           }),
         },
         {
