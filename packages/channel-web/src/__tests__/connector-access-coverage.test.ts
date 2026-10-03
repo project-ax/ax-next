@@ -13,7 +13,8 @@
  * This scan turns that into a failing test. Any non-test source file that
  *   - calls `setDestinationCredential(...)` (writes a key to the vault),
  *   - renders `<CredentialSlotForm` (a key-entry form), or
- *   - renders `<ConnectorOAuthConnect` (a sign-in that grants access)
+ *   - renders `<ConnectorOAuthConnect` (a sign-in that grants access), or
+ *   - calls `useOAuthPopup(` (the same sign-in without the widget — TASK-740)
  * must render `<ConnectorAccessNotice` too, or be on the allowlist below with a
  * stated reason. The allowlist is checked BOTH ways: a stale entry (the file no
  * longer matches, or no longer exists) fails as loudly as a missing notice, so
@@ -45,6 +46,7 @@ const TRIGGERS: Array<{ name: string; pattern: RegExp }> = [
   { name: 'setDestinationCredential(', pattern: /\bsetDestinationCredential\s*\(/ },
   { name: '<CredentialSlotForm', pattern: /<CredentialSlotForm\b/ },
   { name: '<ConnectorOAuthConnect', pattern: /<ConnectorOAuthConnect\b/ },
+  { name: 'useOAuthPopup(', pattern: /\buseOAuthPopup\s*\(/ },
 ];
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -95,6 +97,7 @@ describe('connector access disclosure: coverage (TASK-700)', () => {
       'components/settings/RemoteMcpConnectorForm.tsx',
       'components/settings/ProposedConnectorApproveDialog.tsx',
       'components/workspace/GrantRow.tsx',
+      'components/workspace/AddConnector.tsx',
       'components/admin/AgentForm.tsx',
       'components/credentials/CredentialSlotForm.tsx',
     ]) {

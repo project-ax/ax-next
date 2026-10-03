@@ -21,18 +21,28 @@
  * around the same OAuth widget Settings uses) or **Retry** (one fresh check).
  * Health is read from stored state; drawing the list never probes anything.
  *
+ * "+ Add" and the empty state's "Add connector" (TASK-740) open the Add
+ * subview (`AddConnector`); the Connectors tab swaps it in for this list.
+ *
  * Deliberately NOT drawn yet, because nothing behind them is wired
  * (invariant 3 — no half-wired UI):
  *
- *   - "+ Add" and the empty state's "Add connector" — slice 7 (TASK-740)
- *     builds the Add subview and puts both buttons in.
  *   - "View details" — slice 9 (TASK-742).
  *
  * The seams those slices build on: `RowMenu` takes more items above
- * "Edit connector"; `ConnectorsHeader` has room for "+ Add".
+ * "Edit connector".
  */
 import { Fragment, useState } from 'react';
-import { CircleAlert, LogIn, MoreHorizontal, Pencil, Plug, RotateCw, Trash2 } from 'lucide-react';
+import {
+  CircleAlert,
+  LogIn,
+  MoreHorizontal,
+  Pencil,
+  Plug,
+  Plus,
+  RotateCw,
+  Trash2,
+} from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -54,6 +64,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
@@ -87,9 +98,11 @@ interface Props {
   name: string;
   /** Called after a remove lands, so the rest of the rail re-reads. */
   onChanged?: () => void;
+  /** "+ Add" / "Add connector" — open the Add subview (TASK-740). */
+  onAdd?: () => void;
 }
 
-export function AgentConnectors({ agentId, name, onChanged }: Props) {
+export function AgentConnectors({ agentId, name, onChanged, onAdd }: Props) {
   const { connectors, status, removing, remove, shared, retrying, retry, refresh } =
     useAgentConnectors(agentId);
   const isAdmin = useUser()?.role === 'admin';
@@ -163,7 +176,7 @@ export function AgentConnectors({ agentId, name, onChanged }: Props) {
 
   return (
     <>
-      <ConnectorsHeader count={count} />
+      <ConnectorsHeader count={count} onAdd={onAdd} />
       {status === 'loading' && (
         <div className="flex flex-col gap-3" aria-busy="true">
           <Skeleton className="h-4 w-3/5" />
@@ -178,7 +191,7 @@ export function AgentConnectors({ agentId, name, onChanged }: Props) {
         </p>
       )}
       {status === 'ok' && connectors !== null && connectors.length === 0 && (
-        <NoConnectors name={name} />
+        <NoConnectors name={name} onAdd={onAdd} />
       )}
       {status === 'ok' && connectors !== null && connectors.length > 0 && (
         <Card className="shadow-none">
@@ -300,19 +313,45 @@ export function AgentConnectors({ agentId, name, onChanged }: Props) {
   );
 }
 
-/** "Connectors <n>". "+ Add" joins it in slice 7 (TASK-740). */
-function ConnectorsHeader({ count }: { count: number | null }) {
+/** "Connectors <n>" and "+ Add" (TASK-740). */
+function ConnectorsHeader({
+  count,
+  onAdd,
+}: {
+  count: number | null;
+  onAdd: (() => void) | undefined;
+}) {
   return (
-    <h3 className="mb-2.5 flex items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground">
-      Connectors
-      {count !== null && count > 0 && (
-        <span className="tabular-nums">{count}</span>
+    <div className="mb-2.5 flex items-center gap-1.5">
+      <h3 className="flex flex-1 items-center gap-1.5 text-[11.5px] font-medium text-muted-foreground">
+        Connectors
+        {count !== null && count > 0 && (
+          <span className="tabular-nums">{count}</span>
+        )}
+      </h3>
+      {onAdd !== undefined && count !== null && count > 0 && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onAdd}
+          className="-my-1 h-7 gap-1 px-2 text-[12px]"
+        >
+          <Plus aria-hidden="true" />
+          Add
+        </Button>
       )}
-    </h3>
+    </div>
   );
 }
 
-function NoConnectors({ name }: { name: string }) {
+function NoConnectors({
+  name,
+  onAdd,
+}: {
+  name: string;
+  onAdd: (() => void) | undefined;
+}) {
   return (
     <Empty className="border border-dashed p-5 md:p-5">
       <EmptyHeader>
@@ -324,6 +363,13 @@ function NoConnectors({ name }: { name: string }) {
           Connect a tool like Linear or Gmail and {name} can work in it for you.
         </EmptyDescription>
       </EmptyHeader>
+      {onAdd !== undefined && (
+        <EmptyContent>
+          <Button type="button" size="sm" onClick={onAdd}>
+            Add connector
+          </Button>
+        </EmptyContent>
+      )}
     </Empty>
   );
 }

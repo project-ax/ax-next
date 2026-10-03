@@ -69,6 +69,7 @@ import type {
   AgentAbilitiesRead,
   AgentAbility,
   AgentAbilityWrite,
+  AgentConnectorAttached,
   AgentConnectorRemoved,
   AgentConnectorRetried,
   AgentConnectorsRead,
@@ -912,6 +913,18 @@ export const workspaceApi = {
    */
   connectors: (agentId: string) =>
     req<AgentConnectorsRead>(`/agents/${encodeURIComponent(agentId)}/connectors`),
+
+  /**
+   * Attach one connector to this agent (TASK-740, the rail's Add subview).
+   * Atomic server-side, and it copies the connector's tool defaults onto the
+   * agent. Called ONLY after the connector's sign-in / key has succeeded.
+   * 403 = a company-key connector and the caller isn't an admin.
+   */
+  attachConnector: (agentId: string, connectorId: string) =>
+    req<AgentConnectorAttached>(`/agents/${encodeURIComponent(agentId)}/connectors`, {
+      method: 'POST',
+      body: { connectorId },
+    }),
 
   /**
    * "Remove from <agent>". The server decides what removing means for this

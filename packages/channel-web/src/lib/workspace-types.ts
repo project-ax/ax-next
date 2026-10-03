@@ -1055,6 +1055,13 @@ export interface AgentConnectorRetried {
   health: AgentConnectorHealth;
 }
 
+/** `POST /api/workspace/agents/:agentId/connectors {connectorId}` answers this. */
+export interface AgentConnectorAttached {
+  attached: true;
+  /** false = it was already attached. */
+  changed: boolean;
+}
+
 /**
  * `DELETE /api/workspace/agents/:agentId/connectors/:connectorId`.
  * `cleanup: 'partial'` = the connector is gone from the agent, but a per-tool
