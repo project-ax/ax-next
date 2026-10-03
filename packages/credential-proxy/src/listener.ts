@@ -1267,6 +1267,14 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       targetSocket.on('error', cleanup);
       clientSocket.on('close', cleanup);
       clientSocket.on('error', cleanup);
+      // The http server's sockets are half-open: a client FIN emits 'end' but
+      // never 'close'. Before the tunnel exists, a client FIN means it gave
+      // up, so tear down (and audit) now instead of waiting out the OS connect
+      // timeout on a black-holed upstream. After establishment 'end' is a
+      // legitimate half-close that pipe() forwards upstream — leave it alone.
+      clientSocket.once('end', () => {
+        if (!established) cleanup();
+      });
     } catch (err) {
       // BlockedIPError → 403 (policy block); anything else → 502 (network/DNS).
       // Reviewer M3 from Task 5: typed instanceof, not string match.

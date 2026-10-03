@@ -422,6 +422,47 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     expect(entry!.blocked).toBeUndefined();
   });
 
+  it('audits 502 once when the client hangs up before the upstream connect completes (TASK-705)', async () => {
+    // 192.0.2.1 is TEST-NET-1 (RFC 5737): never routed, so the upstream
+    // connect stays pending (or fails) — either way no tunnel is ever
+    // established. The client gives up first; the proxy must not crash, must
+    // not claim a 200, and must audit exactly once.
+    const audits: ProxyAuditEntry[] = [];
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry: new SharedCredentialRegistry(),
+      ca: { key: 'unused-key', cert: 'unused-cert' },
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['192.0.2.1']),
+            allowedIPs: new Set(['192.0.2.1']),
+            bypassMITM: new Set(['192.0.2.1']),
+            sessionId: 's1',
+            proxyToken: tokenFor('s1'),
+          },
+        ],
+      ]),
+      onAudit: (e) => audits.push(e),
+    });
+
+    const sock = net.connect(listener.port, '127.0.0.1', () => {
+      sock.write(rawConnect('192.0.2.1:9', tokenFor('s1')));
+    });
+    sock.on('error', () => {});
+    // Give the proxy time to authenticate and start dialing, then hang up.
+    await new Promise((r) => setTimeout(r, 100));
+    sock.destroy();
+
+    await new Promise((r) => setTimeout(r, 100));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.status).toBe(502);
+    expect(audits[0]!.requestBytes).toBe(0);
+    expect(audits[0]!.responseBytes).toBe(0);
+    expect(audits[0]!.sessionId).toBe('s1');
+  });
+
   it('still audits a successful raw tunnel as 200 once it closes (TASK-705)', async () => {
     const { key, cert } = mintTestCert('localhost');
     upstream = tlsCreate({ key, cert }, (socket) => {
