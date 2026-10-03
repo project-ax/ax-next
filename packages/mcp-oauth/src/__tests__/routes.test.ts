@@ -1280,8 +1280,31 @@ describe('mcp-oauth callback route', () => {
     const { res, state } = fakeRes();
     await handlers.callback(fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }), res);
     expect(store.clearNeedsReconnect).toHaveBeenCalledTimes(1);
-    expect(store.clearNeedsReconnect).toHaveBeenCalledWith('user-1', 'conn-1');
+    // TASK-756 — this pending is a TEAM agent's (credScope 'agent'): the token
+    // is the agent's, so the marker cleared is the agent's, for every member.
+    expect(store.clearNeedsReconnect).toHaveBeenCalledWith({ kind: 'agent', agentId: 'agent-1' }, 'conn-1');
     expect(order).toEqual(['set', 'clear']);
+    expect(state.redirectUrl).toContain('oauth=success');
+  });
+
+  it('TASK-756: a PERSONAL sign-in clears only the signer\'s own marker', async () => {
+    const store = storeWithPending(
+      { ...pending, state: 'STATE-USER', credScope: 'user', agentId: '', userId: 'alice' },
+      { clearNeedsReconnect: vi.fn(async () => {}) },
+    );
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => ({ user: { id: 'alice', isAdmin: false } }),
+        'connectors:get': () => connectorFixture(),
+        'credentials:set': () => {},
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.callback(fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE-USER' } }), res);
+    expect(store.clearNeedsReconnect).toHaveBeenCalledTimes(1);
+    expect(store.clearNeedsReconnect).toHaveBeenCalledWith({ kind: 'user', userId: 'alice' }, 'conn-1');
     expect(state.redirectUrl).toContain('oauth=success');
   });
 

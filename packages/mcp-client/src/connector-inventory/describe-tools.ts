@@ -9,14 +9,20 @@
 //      unless `force`.
 //   4. For each http server: build auth headers from the connector's
 //      credential plan via `credentials:get` (the same refs the session's
-//      credential-proxy spends), then one guarded `tools/list`.
+//      credential-proxy spends), then one guarded `tools/list`. No usable
+//      sign-in → `needs-auth`; a credential that could not be READ (a vault
+//      blip) → the call throws `credential-unavailable` and stores nothing
+//      (TASK-756), so a blip is never reported as a sign-in problem.
 //      stdio servers can't be listed host-side → `unknown`.
 //   5. Store, and fire `connectors:tools-discovered` when an `ok` inventory
 //      differs from the last `ok` one.
 //
-// Secrets: header values live only in the `headers` object handed to the
-// transport for the duration of one listing. They are never logged, stored,
-// or returned.
+// Secrets: header values live only in the per-server `headers` objects of
+// one describe call — read for every server first (so a credential blip
+// stops the call before anything is sent; TASK-756), then handed to the
+// transport for each listing. They are never logged, stored, or returned,
+// and are dropped when the call returns.
+
 // ---------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
@@ -42,6 +48,20 @@ export const OK_TTL_MS = 15 * 60 * 1000;
 /** A failed check is reused for 1 minute — long enough to absorb a page of
  *  renders, short enough that signing in shows up without a forced Retry. */
 export const FAILURE_TTL_MS = 60 * 1000;
+/**
+ * TASK-756 — at most one check of a connector's servers per window per
+ * (user, connector), whichever route asked and whichever agent it was for.
+ * Inside the window a call is answered from the row it already has, fresh or
+ * stale, `force` or not. Only a (user, agent, connector) that has NEVER been
+ * checked is checked inside a window: there is nothing to answer it with, and
+ * that happens once per agent, ever (rows persist). This is the one
+ * chokepoint every check passes through (Retry, Reconnect, `?refresh=1`, an
+ * expired cache), so no caller can probe a third-party server faster. Per
+ * process: N replicas allow N per window, a small fixed multiple that never
+ * grows with how hard a client pushes.
+ */
+export const CHECK_COOLDOWN_MS = 30 * 1000;
+const CHECK_COOLDOWN_MAX_KEYS = 1_000;
 
 // Local structural view of `connectors:resolve` output (I2: no runtime import
 // of @ax/connectors; only the fields this hook reads).
@@ -86,17 +106,47 @@ function fingerprint(tools: InventoryTool[]): string {
 
 const SEVERITY: Record<InventoryStatus, number> = { ok: 0, unknown: 0, unreachable: 1, 'needs-auth': 2 };
 
+/**
+ * TASK-756 — a credential failure that means "there is no usable sign-in":
+ * nothing stored for the ref, or an OAuth sign-in the authorization server
+ * rejected. The reconnect error crosses the bus twice (resolver →
+ * credentials:get → here) and is wrapped on the way, so it is recognised by
+ * name on the error or its cause, never by importing @ax/mcp-oauth (I2) —
+ * the same rule channel-web's `credentialMissing` applies. Anything else (a
+ * vault/storage blip, a refresh the provider could not answer right now) says
+ * nothing about the sign-in, so it must not be reported as one.
+ */
+function noUsableCredential(err: unknown): boolean {
+  if (err instanceof PluginError && err.code === 'credential-not-found') return true;
+  const named = (e: unknown): boolean => e instanceof Error && e.name === 'NeedsReconnectError';
+  return named(err) || named((err as { cause?: unknown } | null)?.cause);
+}
+
 export function createDescribeTools(deps: DescribeToolsDeps) {
   const now = deps.now ?? (() => new Date());
   const list = deps.listTools ?? listServerTools;
   const inFlight = new Map<string, Promise<DescribeToolsOutput>>();
+  /** (user, connector) → when a check of its servers last started (TASK-756). */
+  const lastChecked = new Map<string, number>();
+  function noteChecked(key: string, at: number): void {
+    lastChecked.delete(key);
+    if (lastChecked.size >= CHECK_COOLDOWN_MAX_KEYS) {
+      for (const [k, t] of lastChecked) if (at - t >= CHECK_COOLDOWN_MS || at < t) lastChecked.delete(k);
+      while (lastChecked.size >= CHECK_COOLDOWN_MAX_KEYS) {
+        const oldest = lastChecked.keys().next().value;
+        if (oldest === undefined) break;
+        lastChecked.delete(oldest);
+      }
+    }
+    lastChecked.set(key, at);
+  }
 
   async function headersFor(
     connector: ResolvedConnector,
     server: ResolvedServer,
     ctx: AgentContext,
     userId: string,
-  ): Promise<Record<string, string> | 'needs-auth'> {
+  ): Promise<Record<string, string> | 'needs-auth' | 'unavailable'> {
     const headers: Record<string, string> = {};
     for (const slot of connector.capabilities.credentials) {
       if (slot.server !== server.name) continue;
@@ -111,11 +161,13 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
           userId,
         });
       } catch (err) {
+        const missing = noUsableCredential(err);
         ctx.logger.info('connector_inventory_credential_unavailable', {
           connectorId: connector.id,
           code: err instanceof PluginError ? err.code : 'error',
+          transient: !missing,
         });
-        return 'needs-auth';
+        return missing ? 'needs-auth' : 'unavailable';
       }
       if (typeof value !== 'string' || value.length === 0) return 'needs-auth';
       headers[header] = slot.kind === 'oauth' ? `Bearer ${value}` : value;
@@ -137,24 +189,53 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     const reasons: string[] = [];
     let dropped = 0;
     let anyHttp = false;
+    // Pass 1 — read EVERY server's credential before any network call. A
+    // credential that could not be read (TASK-756) then throws while nothing
+    // has been sent anywhere, which is what lets callers treat
+    // `credential-unavailable` as "no server was asked" (the Retry cooldown
+    // forgets such an attempt; a multi-server connector must not be able to
+    // probe server A and then blip on server B to dodge it).
+    type Planned =
+      | { server: ResolvedServer; ns: string; outcome: ListOutcome }
+      | { server: ResolvedServer; ns: string; url: string; headers: Record<string, string> };
+    const planned: Planned[] = [];
     for (const server of connector.capabilities.mcpServers) {
       if (server.transport !== 'http') continue; // stdio: not listable host-side
       anyHttp = true;
-      const ns = nsByServer.get(server.name);
-      let outcome: ListOutcome;
-      if (ns === undefined || !TOOL_NAMESPACE_RE.test(ns)) {
+      const ns = nsByServer.get(server.name) ?? '';
+      if (!TOOL_NAMESPACE_RE.test(ns)) {
         // No canonical key to attach — fail closed, same as the orchestrator
         // drops an un-namespaced server.
-        outcome = { kind: 'unreachable', reason: 'no-namespace' };
-      } else if (server.url === undefined || server.url.length === 0) {
-        outcome = { kind: 'unreachable', reason: 'no-url' };
-      } else {
-        const headers = await headersFor(connector, server, ctx, input.userId);
-        outcome =
-          headers === 'needs-auth'
-            ? { kind: 'needs-auth' }
-            : await list({ url: server.url, headers });
+        planned.push({ server, ns, outcome: { kind: 'unreachable', reason: 'no-namespace' } });
+        continue;
       }
+      if (server.url === undefined || server.url.length === 0) {
+        planned.push({ server, ns, outcome: { kind: 'unreachable', reason: 'no-url' } });
+        continue;
+      }
+      const headers = await headersFor(connector, server, ctx, input.userId);
+      if (headers === 'unavailable') {
+        // TASK-756 — the credential could not be READ right now. That is not
+        // "needs sign-in": answering needs-auth would misreport a blip, and
+        // storing anything would overwrite the last real answer. So the check
+        // did not happen — say so, store nothing, and let the caller retry.
+        throw new PluginError({
+          code: 'credential-unavailable',
+          plugin: PLUGIN_NAME,
+          hookName: 'connectors:describe-tools',
+          message: 'credential temporarily unavailable; try again',
+        });
+      }
+      planned.push(
+        headers === 'needs-auth'
+          ? { server, ns, outcome: { kind: 'needs-auth' } }
+          : { server, ns, url: server.url, headers },
+      );
+    }
+    // Pass 2 — the listings.
+    for (const p of planned) {
+      const ns = p.ns;
+      const outcome: ListOutcome = 'outcome' in p ? p.outcome : await list({ url: p.url, headers: p.headers });
       const serverStatus: InventoryStatus = outcome.kind;
       if (outcome.kind === 'ok') {
         dropped += outcome.dropped;
@@ -221,21 +302,43 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       { userId: input.userId, connectorId: input.connectorId },
     );
     const previous = await deps.store.get(key);
-    if (previous !== null && input.force !== true) {
+    const coolKey = JSON.stringify([key.userId, key.connectorId]);
+    const at = now().getTime();
+    const cached = (row: InventoryRow): DescribeToolsOutput => ({
+      status: row.status,
+      tools: row.tools,
+      checkedAt: row.checkedAt.toISOString(),
+    });
+    if (previous !== null) {
       const ttl = previous.status === 'ok' ? OK_TTL_MS : FAILURE_TTL_MS;
-      const age = now().getTime() - previous.checkedAt.getTime();
-      if (age >= 0 && age < ttl) {
-        return {
-          status: previous.status,
-          tools: previous.tools,
-          checkedAt: previous.checkedAt.toISOString(),
-        };
+      const age = at - previous.checkedAt.getTime();
+      if (input.force !== true && age >= 0 && age < ttl) return cached(previous);
+      const last = lastChecked.get(coolKey);
+      if (last !== undefined && at >= last && at - last < CHECK_COOLDOWN_MS) {
+        // Forced, or stale: either way not inside the window. What we have is
+        // the last real answer.
+        callerCtx.logger.info('connector_inventory_check_cooled_down', { connectorId: input.connectorId });
+        return cached(previous);
       }
     }
     const flightKey = JSON.stringify([key.userId, key.agentId, key.connectorId]);
     const pending = inFlight.get(flightKey);
     if (pending !== undefined) return pending;
-    const run = check(input, ctx, key, previous, connector).finally(() => inFlight.delete(flightKey));
+    noteChecked(coolKey, at);
+    const run = check(input, ctx, key, previous, connector)
+      .catch((err: unknown) => {
+        // A credential blip throws before any server was asked (pass 1), so
+        // it must not use up the window — "try again" has to mean it.
+        if (
+          err instanceof PluginError &&
+          err.code === 'credential-unavailable' &&
+          lastChecked.get(coolKey) === at
+        ) {
+          lastChecked.delete(coolKey);
+        }
+        throw err;
+      })
+      .finally(() => inFlight.delete(flightKey));
     inFlight.set(flightKey, run);
     return run;
   };

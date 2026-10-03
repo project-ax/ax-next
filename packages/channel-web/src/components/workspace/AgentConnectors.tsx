@@ -98,7 +98,7 @@ import { ConnectorDetails, ConnectorsUnsupported, REMOVE_REFUSED_REASON } from '
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
 const HEALTH_REASON: Record<Exclude<AgentConnectorHealth, 'ok' | 'not-loaded'>, string> = {
-  'needs-reconnect': 'Sign-in expired',
+  'needs-reconnect': 'Your sign-in expired',
   unreachable: 'Can’t reach it',
 };
 
@@ -108,6 +108,8 @@ function healthReason(row: AgentConnectorRow): string {
       ? 'Couldn’t load it. Choose Edit connector to fix it.'
       : 'Couldn’t load it. Ask a workspace admin to fix it.';
   }
+  // TASK-756 — a team agent's shared sign-in is the team's, not this person's.
+  if (row.health === 'needs-reconnect' && row.sharedSignIn === true) return 'Team sign-in expired';
   return row.health === 'ok' ? '' : HEALTH_REASON[row.health];
 }
 
@@ -383,8 +385,17 @@ export function AgentConnectors({
           <DialogHeader>
             <DialogTitle>Reconnect {reconnecting?.name}</DialogTitle>
             <DialogDescription>
-              Your sign-in to {reconnecting?.name} expired. Sign in again and{' '}
-              {name} can keep using it.
+              {reconnecting?.sharedSignIn === true ? (
+                <>
+                  The team sign-in to {reconnecting.name} expired. Sign in again and
+                  everyone using {name} can keep using it.
+                </>
+              ) : (
+                <>
+                  Your sign-in to {reconnecting?.name} expired. Sign in again and{' '}
+                  {name} can keep using it.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           {/* What signing in hands the assistant — drawn here, in the file that

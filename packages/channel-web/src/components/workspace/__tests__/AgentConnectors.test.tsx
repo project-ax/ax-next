@@ -310,7 +310,7 @@ describe('connector health (TASK-741)', () => {
 
   it('puts ONE icon after an errored name, named by its reason, with no inline error text', async () => {
     renderTab();
-    const expired = await screen.findByRole('button', { name: 'Sign-in expired' });
+    const expired = await screen.findByRole('button', { name: 'Your sign-in expired' });
     const unreachable = screen.getByRole('button', { name: 'Can’t reach it' });
     // Right after the name, inside the same row.
     expect(expired.previousElementSibling?.textContent).toBe('Gmail');
@@ -318,17 +318,60 @@ describe('connector health (TASK-741)', () => {
     expect(expired.querySelector('svg.lucide-circle-alert')).not.toBeNull();
     expect(expired.className).toContain('text-destructive');
     // The healthy row has no icon, and nothing spells the reason out inline.
-    expect(screen.getAllByRole('button', { name: /Sign-in expired|Can’t reach it/ })).toHaveLength(2);
-    expect(screen.queryByText('Sign-in expired')).toBeNull();
+    expect(screen.getAllByRole('button', { name: /Your sign-in expired|Can’t reach it/ })).toHaveLength(2);
+    expect(screen.queryByText('Your sign-in expired')).toBeNull();
     expect(screen.queryByText('Can’t reach it')).toBeNull();
   });
 
   it('shows the reason in a tooltip when the icon gets keyboard focus', async () => {
     renderTab();
-    const icon = await screen.findByRole('button', { name: 'Sign-in expired' });
+    const icon = await screen.findByRole('button', { name: 'Your sign-in expired' });
     icon.focus();
     const tip = await screen.findByRole('tooltip');
-    expect(tip.textContent).toBe('Sign-in expired');
+    expect(tip.textContent).toBe('Your sign-in expired');
+  });
+
+  // TASK-756 — a team agent's shared sign-in is the team's, not this person's.
+  it('names a shared expired sign-in as the team’s, in the icon and the Reconnect dialog', async () => {
+    connectorsMock.mockResolvedValue({
+      connectors: [
+        { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: true },
+      ],
+      shared: true,
+      connectorsSupported: true,
+    });
+    renderTab();
+    const icon = await screen.findByRole('button', { name: 'Team sign-in expired' });
+    icon.focus();
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Team sign-in expired');
+    expect(screen.queryByRole('button', { name: 'Your sign-in expired' })).toBeNull();
+    const menu = await openMenu('Gmail');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Reconnect' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/The team sign-in to Gmail expired/)).toBeTruthy();
+    expect(within(dialog).getByText(/everyone using Quill can keep using it/)).toBeTruthy();
+    expect(within(dialog).queryByText(/Your sign-in to Gmail expired/)).toBeNull();
+  });
+
+  it('a personal expired sign-in keeps “your” in the Reconnect dialog', async () => {
+    renderTab();
+    const menu = await openMenu('Gmail');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Reconnect' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Your sign-in to Gmail expired/)).toBeTruthy();
+  });
+
+  it.each([
+    [{ health: 'needs-reconnect', sharedSignIn: true } as const, 'Team sign-in expired'],
+    [{ health: 'needs-reconnect' } as const, 'Your sign-in expired'],
+  ])('Retry answering %j labels the row %s', async (answer, label) => {
+    retryMock.mockResolvedValueOnce(answer);
+    renderTab();
+    const menu = await openMenu('Slack');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Can’t reach it' })).toBeNull());
+    const named = screen.getAllByRole('button', { name: label });
+    expect(named.some((b) => b.previousElementSibling?.textContent === 'Slack')).toBe(true);
   });
 
   it('leads an expired row’s menu with Reconnect, and an unreachable row’s with Retry', async () => {

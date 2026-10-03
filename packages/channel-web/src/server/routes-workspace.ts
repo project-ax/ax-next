@@ -1595,6 +1595,48 @@ function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[
 
 interface McpOAuthStatusBatchOutput {
   needsReconnect: string[];
+  /** TASK-756 — the subset whose rejected sign-in is the agent's shared one. */
+  shared?: string[];
+}
+
+/**
+ * TASK-756 — how long one Retry's answer stands for the same person and
+ * connector. A held-down Retry must not turn into a stream of forced checks
+ * against someone else's server; inside the window the route answers what the
+ * last check found (with a fresh sign-in read) instead of checking again.
+ * Per process: with several replicas it bounds each one, which is the point —
+ * the per-key in-flight collapse in describe-tools only covers concurrency.
+ */
+export const CONNECTOR_RETRY_COOLDOWN_MS = 30_000;
+/** Bound on remembered Retry keys, so the cooldown map cannot grow unbounded. */
+export const CONNECTOR_RETRY_COOLDOWN_MAX_KEYS = 1_000;
+
+/**
+ * TASK-756 — insert `entry` under `key`, keeping `map` at most `maxKeys`.
+ * When full: first drop every entry outside the window (or stamped in the
+ * future — a clock step must not pin an entry forever), then, if it is
+ * still full of live entries, the oldest (Map order is insertion; `key` is
+ * re-inserted so a refresh moves to the back).
+ */
+export function rememberBounded<V extends { at: number }>(
+  map: Map<string, V>,
+  key: string,
+  entry: V,
+  windowMs: number,
+  maxKeys: number,
+): void {
+  map.delete(key);
+  if (map.size >= maxKeys) {
+    for (const [k, v] of map) {
+      if (entry.at - v.at >= windowMs || entry.at < v.at) map.delete(k);
+    }
+    while (map.size >= maxKeys) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+  map.set(key, entry);
 }
 type ConnectorInventoryStatus = 'ok' | 'unreachable' | 'needs-auth' | 'unknown';
 interface InventoryStatusBatchOutput {
@@ -3617,26 +3659,32 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     callerUserId: string,
     connectorIds: string[],
     notLoaded: ReadonlySet<string>,
-  ): Promise<Map<string, AgentConnectorHealth>> {
+  ): Promise<{ health: Map<string, AgentConnectorHealth>; sharedSignIn: Set<string> }> {
     const out = new Map<string, AgentConnectorHealth>();
-    if (connectorIds.length === 0) return out;
+    const sharedSignIn = new Set<string>();
+    if (connectorIds.length === 0) return { health: out, sharedSignIn };
     const ctx = agentWorkspaceCtx(agentId, callerUserId);
-    const [marked, inventory] = await Promise.all([
-      (async (): Promise<Set<string>> => {
-        if (!bus.hasService('mcp-oauth:status-batch')) return new Set();
+    const [signIn, inventory] = await Promise.all([
+      (async (): Promise<{ marked: Set<string>; shared: Set<string> }> => {
+        const none = { marked: new Set<string>(), shared: new Set<string>() };
+        if (!bus.hasService('mcp-oauth:status-batch')) return none;
         try {
-          const r = await bus.call<{ userId: string; connectorIds: string[] }, McpOAuthStatusBatchOutput>(
-            'mcp-oauth:status-batch',
-            ctx,
-            { userId: callerUserId, connectorIds },
-          );
-          return new Set(Array.isArray(r?.needsReconnect) ? r.needsReconnect : []);
+          // TASK-756 — name the agent so a team agent's SHARED sign-in counts
+          // (marked once per agent, for every member), not only the caller's own.
+          const r = await bus.call<
+            { userId: string; agentId: string; connectorIds: string[] },
+            McpOAuthStatusBatchOutput
+          >('mcp-oauth:status-batch', ctx, { userId: callerUserId, agentId, connectorIds });
+          return {
+            marked: new Set(Array.isArray(r?.needsReconnect) ? r.needsReconnect : []),
+            shared: new Set(Array.isArray(r?.shared) ? r.shared : []),
+          };
         } catch (err) {
           initCtx.logger.warn('workspace_connector_health_signin_read_failed', {
             agentId,
             name: err instanceof Error ? err.name : 'unknown',
           });
-          return new Set();
+          return none;
         }
       })(),
       (async (): Promise<Map<string, ConnectorInventoryStatus>> => {
@@ -3658,9 +3706,24 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         }
       })(),
     ]);
-    for (const id of connectorIds) out.set(id, healthOf(notLoaded, marked, inventory, id));
-    return out;
+    for (const id of connectorIds) {
+      const h = healthOf(notLoaded, signIn.marked, inventory, id);
+      out.set(id, h);
+      if (h === 'needs-reconnect' && signIn.shared.has(id)) sharedSignIn.add(id);
+    }
+    return { health: out, sharedSignIn };
   }
+
+  /**
+   * TASK-756 — the last Retry per (person, connector): when it ran, under
+   * which agent, and what its check found (`failed` = the check itself could
+   * not run; `unavailable` = the sign-in could not be READ just now, so the
+   * server was never asked). Shared by concurrent Retries, so a burst is one
+   * check.
+   */
+  type RetryCheck = ConnectorInventoryStatus | 'failed' | 'unavailable';
+  type RetryEntry = { at: number; agentId: string; checked: Promise<RetryCheck> };
+  const retryCooldown = new Map<string, RetryEntry>();
 
   /**
    * TASK-765 — may this caller take a connector every member reaches off this
@@ -6314,7 +6377,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       res.status(200).json({
         connectors: rows.map((r) => ({
           ...r,
-          health: health.get(r.id) ?? 'ok',
+          health: health.health.get(r.id) ?? 'ok',
+          ...(health.sharedSignIn.has(r.id) ? { sharedSignIn: true as const } : {}),
           removable: r.source === 'attached' ? true : canExclude,
         })),
         shared: agent.visibility === 'team',
@@ -6363,23 +6427,53 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         res.status(404).json({ error: 'connector-not-found' });
         return;
       }
-      let checked: DescribeToolsOutput;
-      try {
-        checked = await bus.call<
-          { userId: string; agentId: string; connectorId: string; force: true },
-          DescribeToolsOutput
-        >('connectors:describe-tools', agentWorkspaceCtx(agentId, userId), {
-          userId,
-          agentId,
-          connectorId,
-          force: true,
-        });
-      } catch (err) {
-        initCtx.logger.warn('workspace_connector_retry_failed', {
-          agentId,
-          connectorId,
-          name: err instanceof Error ? err.name : 'unknown',
-        });
+      // TASK-756 — cooldown per (person, connector). Inside the window no new
+      // check runs: the same agent gets what the last check found (a burst
+      // shares the one in flight); another agent gets its stored health.
+      const cooldownKey = JSON.stringify([userId, connectorId]);
+      const at = now().getTime();
+      const recent = retryCooldown.get(cooldownKey);
+      let checked: RetryCheck | 'stored';
+      if (recent !== undefined && at >= recent.at && at - recent.at < CONNECTOR_RETRY_COOLDOWN_MS) {
+        initCtx.logger.info('workspace_connector_retry_cooled_down', { agentId, connectorId });
+        checked = recent.agentId === agentId ? await recent.checked : 'stored';
+      } else {
+        const run = (async (): Promise<RetryCheck> => {
+          try {
+            const r = await bus.call<
+              { userId: string; agentId: string; connectorId: string; force: true },
+              DescribeToolsOutput
+            >('connectors:describe-tools', agentWorkspaceCtx(agentId, userId), {
+              userId,
+              agentId,
+              connectorId,
+              force: true,
+            });
+            return r?.status ?? 'unknown';
+          } catch (err) {
+            const transient = (err as { code?: unknown } | null)?.code === 'credential-unavailable';
+            initCtx.logger.warn('workspace_connector_retry_failed', {
+              agentId,
+              connectorId,
+              name: err instanceof Error ? err.name : 'unknown',
+              transient,
+            });
+            // `credential-unavailable` (TASK-756): the sign-in could not be
+            // read just now — which says nothing about whether it works.
+            return transient ? 'unavailable' : 'failed';
+          }
+        })();
+        const entry: RetryEntry = { at, agentId, checked: run };
+        rememberBounded(retryCooldown, cooldownKey, entry, CONNECTOR_RETRY_COOLDOWN_MS, CONNECTOR_RETRY_COOLDOWN_MAX_KEYS);
+        checked = await run;
+        // A credential blip never reached the server, so it is nothing the
+        // cooldown protects against — and "try again" must mean it. Forget it
+        // (only if nothing newer has replaced it), so the next Retry checks.
+        if (checked === 'unavailable' && retryCooldown.get(cooldownKey) === entry) {
+          retryCooldown.delete(cooldownKey);
+        }
+      }
+      if (checked === 'failed' || checked === 'unavailable') {
         res.status(502).json({ error: 'retry-failed' });
         return;
       }
@@ -6388,11 +6482,22 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // written — the same rule the list applies.
       const notLoaded = connectorsNotLoaded(out);
       const stored = await connectorHealth(agentId, userId, [connectorId], notLoaded);
-      const marked = new Set(stored.get(connectorId) === 'needs-reconnect' ? [connectorId] : []);
-      const reached = new Map([[connectorId, checked?.status ?? 'unknown']]);
-      res
-        .status(200)
-        .json({ health: healthOf(notLoaded, marked, reached, connectorId) } satisfies AgentConnectorRetried);
+      const storedHealth = stored.health.get(connectorId) ?? 'ok';
+      const health =
+        checked === 'stored'
+          ? storedHealth
+          : healthOf(
+              notLoaded,
+              new Set(storedHealth === 'needs-reconnect' ? [connectorId] : []),
+              new Map([[connectorId, checked]]),
+              connectorId,
+            );
+      res.status(200).json({
+        health,
+        ...(health === 'needs-reconnect' && stored.sharedSignIn.has(connectorId)
+          ? { sharedSignIn: true as const }
+          : {}),
+      } satisfies AgentConnectorRetried);
     },
 
     /**

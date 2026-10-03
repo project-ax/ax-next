@@ -691,11 +691,18 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       return;
     }
 
-    // TASK-741 — a completed sign-in renews this person's access, so the rail's
-    // "Sign-in expired" marker goes. Best-effort: the token is already stored,
-    // and a stale marker only costs one unnecessary Reconnect.
+    // TASK-741 — a completed sign-in renews this access, so the rail's
+    // "Sign-in expired" marker goes. TASK-756: the marker is the token OWNER's —
+    // a team agent's shared sign-in clears for every member, a personal one for
+    // this person only. Best-effort: the token is already stored, and a stale
+    // marker only costs one unnecessary Reconnect.
     try {
-      await store.clearNeedsReconnect(pending.userId, pending.connectorId);
+      await store.clearNeedsReconnect(
+        writeScope === 'agent'
+          ? { kind: 'agent', agentId: pending.agentId }
+          : { kind: 'user', userId: pending.userId },
+        pending.connectorId,
+      );
     } catch (err) {
       logger.warn('mcp_oauth_needs_reconnect_clear_failed', {
         connectorId: pending.connectorId,

@@ -287,13 +287,15 @@ describe('connectors:describe-tools through the real connectors:resolve (TASK-74
     for (const r of primary) expect(r.headers['x-api-key']).toBe(SECRET);
     for (const r of secondary) expect(r.headers['x-api-key']).toBeUndefined();
 
-    // Served from the inventory table on the next call; `force` relists.
+    // Served from the inventory table on the next call — and (TASK-756) a
+    // `force` inside the check window is too: the server was just asked, so
+    // asking it again is what the window exists to stop.
     const before = seen.length;
     expect(await describeTools(h)).toEqual(out);
     expect(seen.length).toBe(before);
     const forced = await describeTools(h, true);
-    expect(forced.status).toBe('ok');
-    expect(seen.length).toBeGreaterThan(before);
+    expect(forced).toEqual(out);
+    expect(seen.length).toBe(before);
   });
 
   it('reports needs-auth (and never lists the key-bound server) before the key is stored', async () => {
