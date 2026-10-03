@@ -33,6 +33,8 @@ describe('@ax/connectors plugin manifest', () => {
         // TASK-697 — the read-authorization seam @ax/credentials consults before an
         // `account:` ref may fall through to the global (company) scope.
         'credentials:authorize-global:account',
+        // TASK-711 — its agent-scope twin.
+        'credentials:authorize-agent:account',
       ],
       // database:get-instance is hard — the plugin runs its own migration on
       // init and can't function without a postgres instance.
