@@ -865,10 +865,19 @@ interface OpenSessionResult {
 // us through `proxy:open-session` → `credentials:get` →
 // `credentials:resolve:<kind>`, and HookBus wraps a non-PluginError once, so
 // it is either the thrown value or the wrapper's `.cause`. Matched by NAME —
-// no import across plugins (invariant 2), the same duck-typing
+// no import across plugins (invariant 2), the same name duck-typing
 // `@ax/mcp-client`'s describe-tools `noUsableCredential` uses for the
-// Connectors rail's needs-auth health, so chat and the rail agree. A vault
-// blip, a decrypt failure or a missing provider key keeps `proxy-open-failed`.
+// Connectors rail's needs-auth health. A vault blip, a decrypt failure or a
+// missing provider key keeps `proxy-open-failed`.
+//
+// DELIBERATELY NARROWER than `noUsableCredential`: that one also counts
+// `credential-not-found` as needs-auth, because it asks about ONE connector's
+// ref. `proxy:open-session` resolves the agent's WHOLE merged set — provider
+// keys included — and its error does not say which ref failed, so a bare
+// `credential-not-found` here may be a missing model-provider key, and telling
+// that person to reconnect a connector would send them the wrong way. A
+// connector whose account row is simply absent therefore still reads as
+// `proxy-open-failed` until the open carries the failing ref.
 // ---------------------------------------------------------------------------
 
 /** Turn-error reason: a connector's sign-in expired; reconnect it, then retry. */
