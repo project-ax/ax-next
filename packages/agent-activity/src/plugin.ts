@@ -13,9 +13,9 @@ const PLUGIN_VERSION = '0.0.0';
 const SUBSCRIBES = [
   'chat:start',
   'chat:turn-end',
+  'tool:pre-call',
   'chat:end',
   'chat:turn-error',
-  'tool:pre-call',
 ];
 
 // ---------------------------------------------------------------------------

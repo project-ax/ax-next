@@ -678,9 +678,9 @@ describe('@ax/preset-k8s wiring', () => {
       // TASK-686: this preset runs the orchestrator in keepAlive, where a turn
       // completes on chat:turn-end and chat:end waits for the idle reaper.
       'chat:turn-end',
+      'tool:pre-call',
       'chat:end',
       'chat:turn-error',
-      'tool:pre-call',
     ]);
     // It reads the tool catalog but must never be a reason a deployment fails
     // to boot: no catalog means the line falls to its T0 floor.

@@ -584,9 +584,9 @@ describe('the manifest', () => {
     expect(manifest.subscribes).toEqual([
       'chat:start',
       'chat:turn-end',
+      'tool:pre-call',
       'chat:end',
       'chat:turn-error',
-      'tool:pre-call',
     ]);
   });
 });

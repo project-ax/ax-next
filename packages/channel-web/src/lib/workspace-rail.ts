@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { userFacingMessage } from './http';
 import { workspaceApi } from './workspace-api';
 import { useOptionalWorkspace } from './workspace-context';
-import type { AgentRailData, GrantRef } from './workspace-types';
+import type { AgentRailData, AgentRunState, GrantRef } from './workspace-types';
 
 export interface AgentRailState {
   rail: AgentRailData | null;
@@ -33,7 +33,16 @@ export interface AgentRailState {
   revoke: (ref: GrantRef) => Promise<'revoked' | 'already-gone' | 'failed'>;
 }
 
-export function useAgentRail(agentId: string | null): AgentRailState {
+/**
+ * @param detailWord the agent detail's working/resting word (TASK-707), from
+ *   the caller's own `GET /api/workspace/agents/:id` read. Optional: outside
+ *   the agent view there is no detail to follow, and the roster word below
+ *   still applies.
+ */
+export function useAgentRail(
+  agentId: string | null,
+  detailWord: AgentRunState | null = null,
+): AgentRailState {
   const [rail, setRail] = useState<AgentRailData | null>(null);
   const [loading, setLoading] = useState(agentId !== null);
   const [error, setError] = useState<string | null>(null);
@@ -75,30 +84,40 @@ export function useAgentRail(agentId: string | null): AgentRailState {
   }, [agentId]);
 
   /**
-   * The roster's working/resting word for this agent (TASK-686).
+   * The working/resting words this rail follows (TASK-686, TASK-707).
    *
-   * The rail's "Right now" line is the same server signal as that word, but
+   * The rail's "Right now" line is the same server signal as those words, but
    * this hook used to read it once per agent. A finished reply refreshes the
    * roster — the header pill, the sidebar row and the Today strip all re-read
    * — and the rail kept the "Working on your request" line it read when the
-   * turn began. Re-reading whenever the word CHANGES keeps the four surfaces
+   * turn began. Re-reading whenever a word CHANGES keeps the four surfaces
    * saying the same thing without a poll: one extra read per transition.
-   * `null` outside a provider, where there is no roster to follow.
+   *
+   * TWO words, because neither alone sees every transition. The roster word
+   * (`null` outside a provider) missed the brand-new-agent flow: the roster
+   * read that follows create lands before the server marks the agent working,
+   * so it goes resting -> resting and never moves, while the rail mounted
+   * mid-turn kept "Working". The agent detail's word is the one the SPA DID
+   * see flip — AgentView re-reads it on the done frame — so a change in
+   * either one re-reads. When both move they usually land in separate renders
+   * (the detail re-read and the roster refresh are two fetches), so a
+   * finished turn costs up to two extra reads; one when they land together.
    */
   const rosterWord =
     useOptionalWorkspace()?.board?.agents.find((a) => a.id === agentId)?.state ?? null;
-  const lastRosterWord = useRef({ agentId, word: rosterWord });
+  const lastWords = useRef({ agentId, rosterWord, detailWord });
 
   useEffect(load, [load]);
 
   useEffect(() => {
-    const last = lastRosterWord.current;
-    lastRosterWord.current = { agentId, word: rosterWord };
+    const last = lastWords.current;
+    lastWords.current = { agentId, rosterWord, detailWord };
     // A new agent is the effect above's read; only a change of word for the
     // SAME agent is this one's.
-    if (last.agentId !== agentId || last.word === rosterWord) return;
+    if (last.agentId !== agentId) return;
+    if (last.rosterWord === rosterWord && last.detailWord === detailWord) return;
     load();
-  }, [agentId, rosterWord, load]);
+  }, [agentId, rosterWord, detailWord, load]);
 
   const revoke = useCallback(
     async (ref: GrantRef): Promise<'revoked' | 'already-gone' | 'failed'> => {

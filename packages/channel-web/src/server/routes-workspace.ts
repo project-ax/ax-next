@@ -3435,8 +3435,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * `chat:turn-end`, which ends just its own turn; they never hold the record
    * past an end, so this is still no refcount. So an agent
    * running two turns at once (a routine fire beside a chat, two open threads)
-   * reads `resting` from the moment the first of them ends until the other's
-   * next tool call re-creates the record.
+   * reads `resting` from the moment the first of them reaches `chat:end` (or
+   * `chat:turn-error`) until the other's next tool call re-creates the record.
+   * A `chat:turn-end` is not that moment: it removes only its own turn, and
+   * the record survives it while the other turn's id is still in it.
    *
    * IT IS PINNED, BUT NOT HERE, and the reason is worth a line. This route
    * cannot tell the two-turns case apart from a single turn that simply

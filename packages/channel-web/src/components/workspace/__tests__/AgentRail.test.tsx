@@ -119,6 +119,30 @@ describe('AgentRail — "Right now"', () => {
     expect(screen.queryByText('nothing queued')).toBeNull();
   });
 
+  // TASK-707 — the detail's word is what the rail follows on a brand-new
+  // agent, where the roster's never changes. Rendered without a
+  // WorkspaceProvider on purpose: there is no roster here at all.
+  it("re-reads Right now when the agent detail's state goes working -> resting", async () => {
+    railMock.mockResolvedValue(
+      rail({
+        activity: {
+          status: 'ok',
+          activity: railActivity({ phrase: 'Working on your request', source: 'trigger' }),
+        },
+      }),
+    );
+    const { rerender } = renderRail(detail({ agent: agent({ state: 'working' }) }));
+    expect(await screen.findByText('Working on your request')).toBeTruthy();
+
+    railMock.mockResolvedValue(rail());
+    rerender(
+      <AgentRail detail={detail({ agent: agent({ state: 'resting' }) })} openPastId={null}
+        onOpenPast={vi.fn()} tab={initialTab} />,
+    );
+    await waitFor(() => expect(screen.queryByText('Working on your request')).toBeNull());
+    expect(await screen.findByText('Resting')).toBeTruthy();
+  });
+
   it('renders the phrase, a real counter and elapsed-since-start', async () => {
     railMock.mockResolvedValue(
       rail({

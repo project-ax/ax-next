@@ -82,6 +82,49 @@ describe('useAgentRail', () => {
     await waitFor(() => expect(result.current.rail.rail?.activity.activity).toBeNull());
   });
 
+  /*
+    TASK-707 — the brand-new-agent flow. The roster read that follows create
+    lands BEFORE the server marks the agent working, so the roster word goes
+    resting -> resting and never transitions. The word the SPA did see change
+    is the agent detail's (AgentView re-reads it on the done frame), so that
+    word drives a re-read too.
+  */
+  it("re-reads the rail when the agent detail's word changes but the roster's never does", async () => {
+    boardMock.mockResolvedValue({ agents: [agent('resting')] });
+    railMock.mockResolvedValue(
+      rail({
+        activity: {
+          status: 'ok',
+          activity: railActivity({ phrase: 'Working on your request', source: 'trigger' }),
+        },
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ word }: { word: WorkspaceAgent['state'] }) => ({
+        rail: useAgentRail('a1', word),
+        ws: useWorkspace(),
+      }),
+      { wrapper, initialProps: { word: 'working' as WorkspaceAgent['state'] } },
+    );
+    await waitFor(() => expect(result.current.ws.board?.agents[0]?.state).toBe('resting'));
+    await waitFor(() =>
+      expect(result.current.rail.rail?.activity.activity?.phrase).toBe(
+        'Working on your request',
+      ),
+    );
+
+    // The reply finished: the detail re-read says resting, and the roster's
+    // refresh says resting again — no roster transition at all.
+    railMock.mockResolvedValue(rail());
+    await act(async () => {
+      await result.current.ws.refresh();
+    });
+    rerender({ word: 'resting' });
+
+    await waitFor(() => expect(result.current.rail.rail?.activity.activity).toBeNull());
+  });
+
   it('does not re-read when a roster refresh leaves its agent word unchanged', async () => {
     boardMock.mockResolvedValue({ agents: [agent('resting')] });
     railMock.mockResolvedValue(rail());
@@ -117,6 +160,15 @@ describe('useAgentRail', () => {
     rerender({ id: 'a2' });
     await waitFor(() => expect(result.current.rail.loading).toBe(false));
     expect(railMock.mock.calls.slice(reads)).toEqual([['a2']]);
+  });
+
+  // The word-change effect also runs on mount; only the mount read is the
+  // first effect's, so the second must not add one of its own.
+  it('reads once on mount, not once per effect', async () => {
+    railMock.mockResolvedValue(rail());
+    const { result } = renderHook(() => useAgentRail('a1', 'resting'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(railMock).toHaveBeenCalledTimes(1);
   });
 
   it('still works outside a WorkspaceProvider', async () => {
