@@ -140,6 +140,10 @@ export function RemoteMcpConnectorForm({
   const host = serverHost(url);
   const savedUrl = connector?.capabilities.mcpServers[0]?.url ?? '';
   const originalHost = serverHost(savedUrl);
+  // TASK-755 — the server's tool permissions belong to its address. Saving a
+  // new one drops them (the server resets them to Ask first), so say so before
+  // Save, and don't write choices that were made for the old address.
+  const addressChanged = Boolean(connector) && url !== savedUrl;
   const changedDestination = Boolean(
     originalHost &&
       host &&
@@ -347,7 +351,7 @@ export function RemoteMcpConnectorForm({
           base,
         );
       update('clientSecret', '');
-      const toolChanges = toolPermissions.changes;
+      const toolChanges = addressChanged ? [] : toolPermissions.changes;
       if (connector && toolChanges.length) {
         try {
           await putToolPermissions(connectorId, base, toolChanges);
@@ -442,6 +446,16 @@ export function RemoteMcpConnectorForm({
                   {textField('name', 'Name', 'e.g. Linear')}
                   {textField('url', 'Server URL', 'https://example.com/mcp')}
                 </FieldGroup>
+                {addressChanged && (
+                  <Alert data-testid="address-change-resets-tools">
+                    <AlertDescription>
+                      Changing the address resets this server’s tool permissions.
+                      Every tool goes back to asking first, and choices people made
+                      for their own agents are cleared too. Once it’s saved, you can
+                      choose again.
+                    </AlertDescription>
+                  </Alert>
+                )}
                 {awaitingDiscovery && (
                   <p
                     role="status"
@@ -807,11 +821,13 @@ export function RemoteMcpConnectorForm({
                     </div>
                   </>
                 )}
-                <ConnectorToolPermissions
-                  state={toolPermissions}
-                  connectorName={connector?.name ?? draft.name}
-                  isNew={!connector}
-                />
+                {!addressChanged && (
+                  <ConnectorToolPermissions
+                    state={toolPermissions}
+                    connectorName={connector?.name ?? draft.name}
+                    isNew={!connector}
+                  />
+                )}
                 {errors.workspace && (
                   <FieldError>{errors.workspace}</FieldError>
                 )}

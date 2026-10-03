@@ -682,6 +682,41 @@ describe('tool permissions (TASK-737)', () => {
     expect(toolPermsPuts).toEqual([]);
   });
 
+  it('TASK-755: warns before Save that a new address resets tool permissions, and writes none', async () => {
+    serve(inventory({ defaults: [] }));
+    const options = await openEditor();
+    await screen.findByRole('group', { name: 'Permission for Search issues' });
+    // Same address: no warning, the section is there and has on-screen choices to save.
+    expect(screen.queryByTestId('address-change-resets-tools')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Server URL'), {
+      target: { value: 'https://other.example.com/mcp' },
+    });
+    expect(screen.getByTestId('address-change-resets-tools')).toHaveTextContent(
+      'Changing the address resets this server’s tool permissions.',
+    );
+    // The choices on screen were made for the old address, so they go away.
+    expect(screen.queryByText('Tool permissions')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(writes).toHaveLength(1);
+    expect(toolPermsPuts).toEqual([]);
+  });
+
+  it('TASK-755: putting the original address back removes the warning and restores the section', async () => {
+    serve(inventory({ defaults: [] }));
+    await openEditor();
+    await screen.findByRole('group', { name: 'Permission for Search issues' });
+    const field = screen.getByLabelText('Server URL');
+    fireEvent.change(field, { target: { value: 'https://other.example.com/mcp' } });
+    expect(screen.getByTestId('address-change-resets-tools')).toBeVisible();
+    fireEvent.change(field, { target: { value: ' https://mcp.example.com/mcp ' } });
+    expect(screen.queryByTestId('address-change-resets-tools')).toBeNull();
+    expect(screen.getByRole('group', { name: 'Permission for Search issues' })).toBeVisible();
+  });
+
   it('keeps the dialog open when the connector saves but its tool permissions do not', async () => {
     serve(inventory({ defaults: [] }));
     toolPermsPut = () => new Response(JSON.stringify({ error: 'nope' }), { status: 500 });
