@@ -317,6 +317,18 @@ describe('@ax/preset-k8s wiring', () => {
       // nobody calls means the grant still cannot be taken back.
       'egress-allowlist:list',
       'egress-allowlist:revoke',
+      // TASK-736 (connectors rail slice 3) — the per-tool verdict store.
+      // `list-agent-overrides` is called here by @ax/chat-orchestrator at
+      // session open (asserted below). The four write/read hooks are the
+      // epic's deliberately sequenced window: their callers are the
+      // connector-editor defaults (TASK-737), the abilities route (TASK-738)
+      // and the details view (TASK-742). Until then they are inert — they can
+      // only ever TIGHTEN a verdict, so an uncalled one grants nothing.
+      'tool-policy:set-connector-defaults',
+      'tool-policy:get-connector-defaults',
+      'tool-policy:set-agent-override',
+      'tool-policy:list-agent-overrides',
+      'tool-policy:snapshot-connector-for-agent',
     ]);
     // The rule table is still in-repo and still consulted with no I/O. What
     // needs storage is the per-person egress allowlist, and a deployment
@@ -326,7 +338,21 @@ describe('@ax/preset-k8s wiring', () => {
     expect(tp!.manifest.optionalCalls?.map((c) => c.hook)).toEqual([
       'database:get-instance',
     ]);
-    expect(tp!.manifest.subscribes).toEqual([]);
+    // TASK-736: purges. `agents:deleted` is fired by @ax/agents and
+    // `connectors:deleted` by @ax/connectors — both loaded by this preset.
+    expect(tp!.manifest.subscribes).toEqual(['agents:deleted', 'connectors:deleted']);
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/agents');
+    expect(names).toContain('@ax/connectors');
+  });
+
+  it('gives tool-policy:list-agent-overrides a caller — @ax/chat-orchestrator (TASK-736)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const orch = plugins.find((p) => p.manifest.name === '@ax/chat-orchestrator');
+    expect(orch).toBeDefined();
+    expect(orch!.manifest.optionalCalls?.map((c) => c.hook)).toContain(
+      'tool-policy:list-agent-overrides',
+    );
   });
 
   it('gives egress-allowlist:remember a caller — @ax/web-tools (TASK-330)', () => {

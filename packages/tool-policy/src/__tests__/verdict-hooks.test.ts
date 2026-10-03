@@ -348,7 +348,7 @@ describe('cache', () => {
   });
 
   it('connector defaults are cached per namespace and dropped on write', async () => {
-    let t = 1_000;
+    const t = 1_000;
     const store = createMemoryVerdictStore();
     const h = await boot({ verdictStore: store, now: () => t });
     expect(await verdictOf(h, SEND)).toBe('hold');
