@@ -200,6 +200,20 @@ describe('snapshot-on-attach (agents:set-connector-attachments)', () => {
     expect(await verdictOf(h, fresh, CREATE)).toBe('allow');
   });
 
+  it('KNOWN LIMIT: a tool with no default at attach has nothing to copy, so it follows the live default — a later first-time Allow applies', async () => {
+    // Pins today's behaviour so a change to it is deliberate (design doc,
+    // "As built (TASK-737)"). Before the editor sets anything, the tool asks
+    // first; the copy cannot freeze a value that did not exist.
+    const h = await makeHarness();
+    const agentId = await newAgent(h);
+    await attach(h, agentId, ['linear']);
+    expect(await overrides(h, agentId)).toEqual([]);
+    expect(await verdictOf(h, agentId, CREATE)).toBe('hold');
+
+    await setDefaults(h, [{ toolKey: CREATE, verdict: 'allow' }]);
+    expect(await verdictOf(h, agentId, CREATE)).toBe('allow');
+  });
+
   it('an admin attaching to someone else’s agent still resolves the connector as the agent owner', async () => {
     const h = await makeHarness();
     await setDefaults(h, [{ toolKey: SEARCH, verdict: 'allow' }]);
