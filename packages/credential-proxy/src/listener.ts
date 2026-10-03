@@ -1186,8 +1186,14 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         return;
       }
 
+      // Set once the upstream connect succeeds and we have told the client
+      // "200 Connection Established". Until then there is no tunnel, so the
+      // cleanup audit must not claim one (TASK-705).
+      let established = false;
+
       // Open the raw TCP tunnel against the resolved IP.
       const targetSocket = net.connect(port, resolvedIP, () => {
+        established = true;
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         activeSockets.add(targetSocket);
 
@@ -1220,8 +1226,32 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         cleaned = true;
         activeSockets.delete(targetSocket);
         targetSocket.destroy();
-        clientSocket.destroy();
 
+        if (!established) {
+          // The upstream connect failed (refused, unreachable, reset) — or the
+          // client gave up first — before any tunnel existed. Answer the client
+          // the way the catch path answers a DNS failure (a 502, then close),
+          // rather than hanging up with no status line, and audit what really
+          // happened: a 502 with no bytes moved. Not a policy block, so no
+          // `blocked` reason — same shape as the catch path's network 502.
+          if (clientSocket.writable) {
+            clientSocket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+          } else {
+            clientSocket.destroy();
+          }
+          audit(stampSession({
+            action: 'proxy_request',
+            method: 'CONNECT',
+            url: target,
+            status: 502,
+            requestBytes: 0,
+            responseBytes: 0,
+            durationMs: Date.now() - startTime,
+          }, callerSession));
+          return;
+        }
+
+        clientSocket.destroy();
         audit(stampSession({
           action: 'proxy_request',
           method: 'CONNECT',
@@ -1237,6 +1267,14 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       targetSocket.on('error', cleanup);
       clientSocket.on('close', cleanup);
       clientSocket.on('error', cleanup);
+      // The http server's sockets are half-open: a client FIN emits 'end' but
+      // never 'close'. Before the tunnel exists, a client FIN means it gave
+      // up, so tear down (and audit) now instead of waiting out the OS connect
+      // timeout on a black-holed upstream. After establishment 'end' is a
+      // legitimate half-close that pipe() forwards upstream — leave it alone.
+      clientSocket.once('end', () => {
+        if (!established) cleanup();
+      });
     } catch (err) {
       // BlockedIPError → 403 (policy block); anything else → 502 (network/DNS).
       // Reviewer M3 from Task 5: typed instanceof, not string match.
