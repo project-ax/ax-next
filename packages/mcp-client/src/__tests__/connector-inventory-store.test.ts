@@ -193,6 +193,78 @@ describe('plugin wiring', () => {
     expect(await batch({ userId: 'u1', connectorIds: ['x'.repeat(128)] })).toEqual({ statuses: [] });
   });
 
+  it('TASK-753: inventory-tool-titles reads cached titles only, newest first, scoped to the user', async () => {
+    let listed = 0;
+    const h = await boot(async () => {
+      listed++;
+      return { kind: 'unreachable', reason: 'timeout' };
+    });
+    expect(h.bus.hasService('connectors:inventory-tool-titles')).toBe(true);
+    const titles = (input: unknown) =>
+      h.bus.call<unknown, { titles: Array<{ connectorId: string; toolKey: string; title: string }> }>(
+        'connectors:inventory-tool-titles',
+        h.ctx(),
+        input,
+      );
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    const store = createInventoryStore(db);
+    const tool = (name: string, title: string) => ({
+      name,
+      title,
+      description: '',
+      readOnly: null,
+      outward: null,
+      toolKey: `mcp.c5e0235982f.${name}`,
+    });
+    const older = new Date('2026-01-01T00:00:00Z');
+    const newer = new Date('2026-02-01T00:00:00Z');
+    await store.put(
+      { userId: 'u1', agentId: 'a1', connectorId: 'linear' },
+      {
+        status: 'ok',
+        tools: [tool('create_issue', 'Old title'), tool('list_issues', 'list_issues')],
+        fingerprint: '',
+        checkedAt: older,
+      },
+    );
+    await store.put(
+      { userId: 'u1', agentId: 'a2', connectorId: 'linear' },
+      { status: 'ok', tools: [tool('create_issue', 'Open a ticket')], fingerprint: '', checkedAt: newer },
+    );
+    // A failed check is not an inventory, and another user's row is not ours.
+    await store.put(
+      { userId: 'u1', agentId: 'a3', connectorId: 'gmail' },
+      { status: 'unreachable', tools: [tool('send', 'Send mail')], fingerprint: '', checkedAt: newer },
+    );
+    await store.put(
+      { userId: 'u2', agentId: 'a1', connectorId: 'linear' },
+      { status: 'ok', tools: [tool('create_issue', 'Someone else')], fingerprint: '', checkedAt: newer },
+    );
+
+    const out = await titles({ userId: 'u1', connectorIds: ['linear', 'gmail', 'never'] });
+    // The newest check wins; a title that is just the name is no title.
+    expect(out).toEqual({
+      titles: [{ connectorId: 'linear', toolKey: 'mcp.c5e0235982f.create_issue', title: 'Open a ticket' }],
+    });
+    expect((await titles({ userId: 'u2', connectorIds: ['linear'] })).titles.map((t) => t.title)).toEqual([
+      'Someone else',
+    ]);
+    expect(await titles({ userId: 'u1', connectorIds: [] })).toEqual({ titles: [] });
+    // Never a network call on the label path.
+    expect(listed).toBe(0);
+
+    // A hostile server's title is bounded on the wire.
+    await store.put(
+      { userId: 'u3', agentId: '', connectorId: 'big' },
+      { status: 'ok', tools: [tool('x', 'T'.repeat(5000))], fingerprint: '', checkedAt: newer },
+    );
+    const big = await titles({ userId: 'u3', connectorIds: ['big'] });
+    expect([...big.titles[0]!.title]).toHaveLength(200);
+
+    await expect(titles({ userId: 'u1', connectorIds: 'linear' })).rejects.toThrow();
+    await expect(titles({ userId: 'u1', connectorIds: [], agentId: 'a1' })).rejects.toThrow();
+  });
+
   it('is off by default: no hook, no database call in the manifest', () => {
     const p = createMcpClientPlugin();
     expect(p.manifest.registers).toEqual([]);
@@ -201,6 +273,7 @@ describe('plugin wiring', () => {
     expect(on.manifest.registers).toEqual([
       'connectors:describe-tools',
       'connectors:inventory-status-batch',
+      'connectors:inventory-tool-titles',
     ]);
     expect(on.manifest.subscribes).toEqual(['agents:deleted']);
     expect(p.manifest.subscribes).toEqual([]);

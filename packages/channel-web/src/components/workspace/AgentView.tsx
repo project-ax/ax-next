@@ -72,6 +72,7 @@ import {
   type WorkspaceToolCall,
 } from '@/lib/workspace-steps';
 import { isOpenDecision } from '@/lib/workspace-types';
+import { connectorNamesFromRows } from '@/lib/connector-tool-label';
 import { continuationActions } from '@/lib/continuation-actions';
 import type { SendableAttachment } from '@/lib/workspace-attachments';
 import type { PhaseKind } from '@/server/types';
@@ -1398,9 +1399,7 @@ export function AgentView({
     shape the reloaded thread, so a live connector step reads "Linear · Create
     issue" now rather than only after a reload.
   */
-  const connectorNames = new Map(
-    (detail.connectorTools ?? []).map((c) => [c.toolNamespace, c.name] as const),
-  );
+  const connectorNames = connectorNamesFromRows(detail.connectorTools);
   const livePanel = shapeSteps(
     settleHolds(liveCalls, liveStreamHolds(liveCalls, openInConversation, witnessed)),
     connectorNames,

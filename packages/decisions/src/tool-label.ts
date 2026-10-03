@@ -1,44 +1,39 @@
 /**
- * A connector tool's name, in words a person can read (TASK-744).
+ * A connector tool's name, in words a person can read (TASK-744, TASK-753).
  *
  * Since TASK-734 a connector's MCP tool reaches this gate as the canonical
  * toolKey `mcp.<toolNamespace>.<tool>`, where `<toolNamespace>` is `c` + 10 hex
  * chars — an opaque hash of the connector record. It is the right KEY and the
  * wrong LABEL: printed on an approval card it reads "Wants to run
  * mcp.c5e0235982f.create_issue". This module turns it into "Linear · Create
- * issue", or "Create issue" when the namespace is not one this person can
- * name. The hash itself is never part of the answer.
+ * issue" — or the MCP server's own cached title for the tool when one is known,
+ * or the tool alone when the namespace is not one this person can name. The
+ * hash itself is never part of the answer.
+ *
+ * The label itself is composed by `@ax/core/humanize`'s `connectorToolLabel`,
+ * the SAME function channel-web uses for the activity rail and the transcript,
+ * so one call reads the same on all three surfaces (TASK-753: this module used
+ * to carry its own humanizer, and the card said "Create pdf" beside an activity
+ * row that said "Create PDF").
  *
  * Shape note: the namespace regex is re-stated here rather than imported from
  * `@ax/connectors` (invariant 2). `@ax/connectors`' tests pin a real derived
  * value (`c5e0235982f`); `tool-label.test.ts` pins the same literal so a
  * one-sided shape change is loud.
  *
- * Both halves are untrusted: the tool name comes from a third-party MCP server
- * by way of the model's call, and the connector name was written by whoever
- * authored the connector (a person, or a model for an approved authored one).
- * So both are flattened to one line and clamped here, before they reach a
- * durable row; `templates.ts` re-fences the whole label on its way into prose.
+ * Every input is untrusted: the tool name comes from a third-party MCP server
+ * by way of the model's call, the title from that same server, and the
+ * connector name was written by whoever authored the connector. The core
+ * composer fences and clamps each half before it reaches a durable row;
+ * `templates.ts` re-fences the whole label on its way into prose.
  */
 
-import { replaceSurfaceRewriters } from '@ax/core/surface-text';
+import { connectorToolLabel as composeConnectorToolLabel } from '@ax/core/humanize';
 
 /** @ax/connectors' namespace → display-name read (TASK-744). */
 export const CONNECTOR_TOOL_LABELS_HOOK = 'connectors:tool-labels';
 
 const CONNECTOR_TOOL_KEY = /^mcp\.(c[0-9a-f]{10})\.(.+)$/s;
-
-/** C0/C1 control characters, written as escapes (a raw byte makes git call the file binary). */
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]+/g;
-
-const CONNECTOR_NAME_MAX = 40;
-const TOOL_PART_MAX = 48;
-
-function oneLine(value: string, max: number): string {
-  const flat = replaceSurfaceRewriters(value).replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
-  const points = [...flat];
-  return points.length > max ? `${points.slice(0, max - 1).join('').trimEnd()}…` : flat;
-}
 
 /** `mcp.<ns>.<tool>` → its two parts, or null for any other tool name. */
 export function parseConnectorToolKey(
@@ -50,36 +45,62 @@ export function parseConnectorToolKey(
 }
 
 /**
- * `create_issue` / `create-issue` / `createIssue` → "Create issue". A display
- * guess, never a key: nothing may decide anything off it.
+ * What `connectors:tool-labels` could say about one held connector tool: the
+ * connector's display name and the server's cached title for the tool, each
+ * null when unknown.
  */
-export function humanizeToolName(tool: string): string {
-  const words = tool
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_\-.]+/g, ' ');
-  const flat = oneLine(words, TOOL_PART_MAX);
-  if (flat.length === 0) return '';
-  const lower = flat === flat.toUpperCase() ? flat : flat.toLowerCase();
-  return lower.charAt(0).toUpperCase() + lower.slice(1);
+export interface ConnectorToolNaming {
+  connectorName: string | null;
+  toolTitle: string | null;
 }
 
 /**
  * The friendly label for a connector tool key, or null when `name` is not one
- * (built-in and host tools keep their existing wording).
+ * (built-in and host tools keep their existing wording) or nothing legible is
+ * left of it.
  *
  * `connectorName` is the display name `connectors:tool-labels` returned for the
  * key's namespace, or null when there was none (unknown namespace, deleted
- * connector, lookup unavailable) — then the tool name stands alone.
+ * connector, lookup unavailable) — then the tool stands alone. `toolTitle` is
+ * the server's cached title for the tool, preferred over the humanized name
+ * when present.
  */
 export function connectorToolLabel(
   name: string,
   connectorName: string | null,
+  toolTitle: string | null = null,
 ): string | null {
   const parsed = parseConnectorToolKey(name);
   if (parsed === null) return null;
-  const tool = humanizeToolName(parsed.tool);
-  const connector =
-    connectorName === null ? '' : oneLine(connectorName, CONNECTOR_NAME_MAX);
-  if (tool.length === 0) return connector.length > 0 ? connector : null;
-  return connector.length > 0 ? `${connector} · ${tool}` : tool;
+  return composeConnectorToolLabel(connectorName, parsed.tool, toolTitle);
+}
+
+/**
+ * Pick one held tool's naming out of a `connectors:tool-labels` answer. The
+ * answer is duck-typed (invariant 2) and arrives over the bus, so every field
+ * is checked rather than trusted; a malformed entry names nothing.
+ */
+export function namingFromToolLabels(
+  out: unknown,
+  toolNamespace: string,
+  tool: string,
+): ConnectorToolNaming {
+  const connectors = (out as { connectors?: unknown } | null | undefined)?.connectors;
+  if (!Array.isArray(connectors)) return { connectorName: null, toolTitle: null };
+  for (const entry of connectors as unknown[]) {
+    const c = entry as { toolNamespace?: unknown; name?: unknown; tools?: unknown } | null;
+    if (c === null || typeof c !== 'object' || c.toolNamespace !== toolNamespace) continue;
+    let toolTitle: string | null = null;
+    if (Array.isArray(c.tools)) {
+      for (const t of c.tools as unknown[]) {
+        const tt = t as { name?: unknown; title?: unknown } | null;
+        if (tt !== null && typeof tt === 'object' && tt.name === tool && typeof tt.title === 'string') {
+          toolTitle = tt.title;
+          break;
+        }
+      }
+    }
+    return { connectorName: typeof c.name === 'string' ? c.name : null, toolTitle };
+  }
+  return { connectorName: null, toolTitle: null };
 }

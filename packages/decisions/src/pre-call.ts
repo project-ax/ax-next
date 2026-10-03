@@ -43,7 +43,7 @@ import {
   sanitizeCapability,
   GATE_FAILURE_SENTENCE,
 } from './templates.js';
-import { parseConnectorToolKey } from './tool-label.js';
+import { parseConnectorToolKey, type ConnectorToolNaming } from './tool-label.js';
 import type { Attendance, Decision, DecisionRaisedPayload } from './types.js';
 
 export const PLUGIN_NAME = '@ax/decisions';
@@ -92,16 +92,20 @@ export interface PreCallDeps {
   /** Fires `decisions:raised`. Optional so the unit tests need no bus. */
   bus?: HookBus | undefined;
   /**
-   * TASK-744 — the display name of the connector that owns a connector tool
-   * namespace, for this person, or null when it cannot be named. Consulted
-   * only when a hold has no capability clause and the call is a connector
-   * toolKey, so the row says "Linear · Create issue" rather than the hash.
-   * Optional (no connectors plugin → the tool name alone). MUST NOT throw; the
-   * caller still guards, because a naming failure must never cost the hold.
+   * TASK-744 / TASK-753 — how this person names a connector tool: the
+   * display name of the connector that owns `toolNamespace` and the MCP
+   * server's cached title for `tool`, each null when unknown. Consulted only
+   * when a hold has no capability clause and the call is a connector toolKey,
+   * so the row says "Linear · Create issue" rather than the hash. Optional
+   * (no connectors plugin → the humanized tool name alone). A cache read, never
+   * a network call. MUST NOT throw; the caller still guards, because a naming
+   * failure must never cost the hold.
    */
-  connectorNameFor?: ((ctx: AgentContext, toolNamespace: string) => Promise<string | null>) | undefined;
+  connectorNamingFor?:
+    | ((ctx: AgentContext, toolNamespace: string, tool: string) => Promise<ConnectorToolNaming>)
+    | undefined;
   /**
-   * How long the hold waits for `connectorNameFor` before writing the row
+   * How long the hold waits for `connectorNamingFor` before writing the row
    * without the connector name. Default {@link CONNECTOR_NAME_TIMEOUT_MS};
    * injectable for tests.
    */
@@ -124,28 +128,29 @@ export type PreCallSubscriber = (
 export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
 
   /**
-   * The connector name the hold's prose needs, or null. Only looked up when
-   * the prose will actually name the tool (no capability clause) and the tool
-   * is a connector toolKey; any failure degrades to the bare tool name.
+   * The connector naming the hold's prose needs. Only looked up when the
+   * prose will actually name the tool (no capability clause) and the tool is
+   * a connector toolKey; any failure degrades to the humanized tool name.
    */
-  async function connectorNameForHold(
+  async function connectorNamingForHold(
     ctx: AgentContext,
     call: ToolCall,
     capability: string | null,
-  ): Promise<string | null> {
-    if (deps.connectorNameFor === undefined) return null;
-    if (sanitizeCapability(capability) !== null) return null;
+  ): Promise<ConnectorToolNaming> {
+    const none: ConnectorToolNaming = { connectorName: null, toolTitle: null };
+    if (deps.connectorNamingFor === undefined) return none;
+    if (sanitizeCapability(capability) !== null) return none;
     const parsed = parseConnectorToolKey(call.name);
-    if (parsed === null) return null;
+    if (parsed === null) return none;
     const timeoutMs = deps.connectorNameTimeoutMs ?? CONNECTOR_NAME_TIMEOUT_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        deps.connectorNameFor(ctx, parsed.toolNamespace),
-        new Promise<null>((resolve) => {
+        deps.connectorNamingFor(ctx, parsed.toolNamespace, parsed.tool),
+        new Promise<ConnectorToolNaming>((resolve) => {
           timer = setTimeout(() => {
             ctx.logger.warn('decision_connector_name_timeout', { plugin: PLUGIN_NAME, timeoutMs });
-            resolve(null);
+            resolve(none);
           }, timeoutMs);
         }),
       ]);
@@ -154,7 +159,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
         plugin: PLUGIN_NAME,
         err: err instanceof Error ? err : new Error(String(err)),
       });
-      return null;
+      return none;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -207,10 +212,12 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     // 3. Hold: record the call, then stop.
     const now = deps.now();
     const decisionId = deps.idGen();
+    const naming = await connectorNamingForHold(ctx, call, answer.capability);
     const text = decisionText({
       capability: answer.capability,
       toolName: call.name,
-      connectorName: await connectorNameForHold(ctx, call, answer.capability),
+      connectorName: naming.connectorName,
+      toolTitle: naming.toolTitle,
     });
     const decision: Decision = {
       id: decisionId,

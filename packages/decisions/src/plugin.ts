@@ -37,7 +37,7 @@ import {
   type DecisionStore,
 } from './store.js';
 import { CLAIM_REFUSED_DETAIL } from './templates.js';
-import { CONNECTOR_TOOL_LABELS_HOOK } from './tool-label.js';
+import { CONNECTOR_TOOL_LABELS_HOOK, namingFromToolLabels } from './tool-label.js';
 import {
   DecisionsApproveOutputSchema,
   DecisionsCountOutputSchema,
@@ -332,13 +332,16 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         // channels.
         attendanceFor: opts?.attendanceFor ?? createAttendanceResolver(bus),
         bus,
-        connectorNameFor: async (ctx, toolNamespace) => {
-          if (!bus.hasService(CONNECTOR_TOOL_LABELS_HOOK)) return null;
-          const out = await bus.call<
-            { userId: string },
-            { connectors: Array<{ toolNamespace: string; name: string }> }
-          >(CONNECTOR_TOOL_LABELS_HOOK, ctx, { userId: ctx.userId });
-          return out.connectors.find((c) => c.toolNamespace === toolNamespace)?.name ?? null;
+        connectorNamingFor: async (ctx, toolNamespace, tool) => {
+          if (!bus.hasService(CONNECTOR_TOOL_LABELS_HOOK)) {
+            return { connectorName: null, toolTitle: null };
+          }
+          const out = await bus.call<{ userId: string }, unknown>(
+            CONNECTOR_TOOL_LABELS_HOOK,
+            ctx,
+            { userId: ctx.userId },
+          );
+          return namingFromToolLabels(out, toolNamespace, tool);
         },
       });
       bus.subscribe<ToolCall>('tool:pre-call', PLUGIN_NAME, subscriber);

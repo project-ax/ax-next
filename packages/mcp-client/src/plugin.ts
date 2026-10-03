@@ -47,6 +47,7 @@ import { registerAdminMcpRoutes } from './admin-routes.js';
 import {
   createDescribeTools,
   createInventoryStatusBatch,
+  createInventoryToolTitles,
 } from './connector-inventory/describe-tools.js';
 import type { ListOutcome, ListServerToolsOptions } from './connector-inventory/list-tools.js';
 import {
@@ -142,7 +143,11 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
   const subscribes: string[] = [];
   if (connectorToolInventory) {
     subscribes.push('agents:deleted');
-    registers.push('connectors:describe-tools', 'connectors:inventory-status-batch');
+    registers.push(
+      'connectors:describe-tools',
+      'connectors:inventory-status-batch',
+      'connectors:inventory-tool-titles',
+    );
     calls.push('database:get-instance', 'connectors:resolve', 'agents:resolve');
   }
   return {
@@ -207,6 +212,12 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
           'connectors:inventory-status-batch',
           PLUGIN_NAME,
           createInventoryStatusBatch(store),
+        );
+        // TASK-753 — cached server tool titles for `connectors:tool-labels`.
+        bus.registerService(
+          'connectors:inventory-tool-titles',
+          PLUGIN_NAME,
+          createInventoryToolTitles(store),
         );
       }
 

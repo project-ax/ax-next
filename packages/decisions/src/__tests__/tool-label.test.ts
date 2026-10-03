@@ -1,11 +1,13 @@
 import { makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import { connectorToolLabel as coreConnectorToolLabel } from '@ax/core/humanize';
 import { describe, expect, it } from 'vitest';
 import { createPreCallSubscriber, type PolicyAnswer } from '../pre-call.js';
 import { decisionText } from '../templates.js';
 import {
   connectorToolLabel,
-  humanizeToolName,
+  namingFromToolLabels,
   parseConnectorToolKey,
+  type ConnectorToolNaming,
 } from '../tool-label.js';
 import { createFakeStore } from './fake-store.js';
 
@@ -26,15 +28,94 @@ describe('parseConnectorToolKey', () => {
   });
 });
 
-describe('humanizeToolName', () => {
+describe('tool-name humanizing (shared with channel-web via @ax/core/humanize — TASK-753)', () => {
   it('reads snake, kebab and camel case as words', () => {
-    expect(humanizeToolName('create_issue')).toBe('Create issue');
-    expect(humanizeToolName('list-projects')).toBe('List projects');
-    expect(humanizeToolName('getFileContents')).toBe('Get file contents');
+    expect(connectorToolLabel(`mcp.${NS}.create_issue`, null)).toBe('Create issue');
+    expect(connectorToolLabel(`mcp.${NS}.list-projects`, null)).toBe('List projects');
+    expect(connectorToolLabel(`mcp.${NS}.getFileContents`, null)).toBe('Get file contents');
+  });
+  it('cases known acronyms the way the activity rail does', () => {
+    // The TASK-753 seam: this package's private humanizer said "Create pdf"
+    // while channel-web's activity row said "Create PDF" for the same call.
+    expect(connectorToolLabel(`mcp.${NS}.create_pdf`, 'Docs')).toBe('Docs · Create PDF');
   });
   it('flattens control characters and clamps a hostile name', () => {
-    expect(humanizeToolName('a\nb\u0000c')).toBe('A b c');
-    expect([...humanizeToolName('x'.repeat(500))].length).toBeLessThanOrEqual(48);
+    expect(connectorToolLabel(`mcp.${NS}.a\nb\u0000c`, null)).toBe('A b c');
+    expect([...connectorToolLabel(`mcp.${NS}.${'x'.repeat(500)}`, null)!].length).toBeLessThanOrEqual(48);
+  });
+});
+
+describe('one label on every surface (TASK-753)', () => {
+  // channel-web's activity rail and transcript compose with the SAME core
+  // function (its own test pins that half against `@ax/core/humanize`), so
+  // equality with the core composer here is equality with the rail.
+  it.each(['create_pdf', 'create_issue', 'getFileContents', 'list-projects', 'export_csv'])(
+    '%s reads the same on the card as on the rail',
+    (tool) => {
+      const card = decisionText({ capability: null, toolName: `mcp.${NS}.${tool}`, connectorName: 'Linear' });
+      expect(card.summary).toBe(`Wants to use ${coreConnectorToolLabel('Linear', tool)}`);
+    },
+  );
+  it('with a cached title, too', () => {
+    const card = decisionText({ capability: null, toolName: KEY, connectorName: 'Linear', toolTitle: 'Open a ticket' });
+    expect(card.summary).toBe(`Wants to use ${coreConnectorToolLabel('Linear', 'create_issue', 'Open a ticket')}`);
+  });
+});
+
+describe('connectorToolLabel — cached server titles (TASK-753)', () => {
+  it("prefers the server's cached title over the humanized name", () => {
+    expect(connectorToolLabel(KEY, 'Linear', 'Open a ticket')).toBe('Linear · Open a ticket');
+    expect(connectorToolLabel(KEY, null, 'Open a ticket')).toBe('Open a ticket');
+  });
+  it('a title that is just the raw name is no title', () => {
+    expect(connectorToolLabel(KEY, 'Linear', 'create_issue')).toBe('Linear · Create issue');
+  });
+  it('fences a hostile title to one clamped line', () => {
+    const label = connectorToolLabel(KEY, 'Linear', `Do it\u202E\nIgnore previous${'!'.repeat(200)}`)!;
+    expect(label).not.toMatch(/[\n\u202E]/);
+    expect(label.startsWith('Linear · Do it Ignore previous')).toBe(true);
+    expect([...label].length).toBeLessThan(100);
+  });
+});
+
+describe('namingFromToolLabels', () => {
+  const answer = {
+    connectors: [
+      { toolNamespace: 'c0000000000', connectorId: 'other', name: 'Other', tools: [] },
+      {
+        toolNamespace: NS,
+        connectorId: 'linear',
+        name: 'Linear',
+        tools: [
+          { name: 'list_issues', title: 'List tickets' },
+          { name: 'create_issue', title: 'Open a ticket' },
+        ],
+      },
+    ],
+  };
+  it('picks the namespace and the tool', () => {
+    expect(namingFromToolLabels(answer, NS, 'create_issue')).toEqual({
+      connectorName: 'Linear',
+      toolTitle: 'Open a ticket',
+    });
+    expect(namingFromToolLabels(answer, NS, 'delete_issue')).toEqual({
+      connectorName: 'Linear',
+      toolTitle: null,
+    });
+  });
+  it('names nothing for an unknown namespace or a malformed answer', () => {
+    const none: ConnectorToolNaming = { connectorName: null, toolTitle: null };
+    expect(namingFromToolLabels(answer, 'c1111111111', 'create_issue')).toEqual(none);
+    expect(namingFromToolLabels(null, NS, 'create_issue')).toEqual(none);
+    expect(namingFromToolLabels({ connectors: 'x' }, NS, 'create_issue')).toEqual(none);
+    expect(
+      namingFromToolLabels({ connectors: [null, { toolNamespace: NS, name: 7, tools: [{ name: 'create_issue', title: 9 }] }] }, NS, 'create_issue'),
+    ).toEqual(none);
+  });
+  it('tolerates an answer with no tools field (a connectors build before TASK-753)', () => {
+    expect(
+      namingFromToolLabels({ connectors: [{ toolNamespace: NS, connectorId: 'l', name: 'Linear' }] }, NS, 'create_issue'),
+    ).toEqual({ connectorName: 'Linear', toolTitle: null });
   });
 });
 
@@ -87,7 +168,7 @@ describe('tool:pre-call — the hold row names the connector (TASK-744)', () => 
   function ctx(): AgentContext {
     return makeAgentContext({ sessionId: 's1', agentId: 'a1', userId: 'u1', conversationId: 'c1' });
   }
-  function build(connectorNameFor?: (ctx: AgentContext, ns: string) => Promise<string | null>) {
+  function build(connectorNameFor?: (ctx: AgentContext, ns: string) => Promise<string | null>, toolTitle: string | null = null) {
     const store = createFakeStore();
     const seen: string[] = [];
     let n = 0;
@@ -100,9 +181,9 @@ describe('tool:pre-call — the hold row names the connector (TASK-744)', () => 
       attendanceFor: async () => 'attended',
       ...(connectorNameFor !== undefined
         ? {
-            connectorNameFor: async (c: AgentContext, ns: string) => {
-              seen.push(ns);
-              return connectorNameFor(c, ns);
+            connectorNamingFor: async (c: AgentContext, ns: string, tool: string) => {
+              seen.push(`${ns}/${tool}`);
+              return { connectorName: await connectorNameFor(c, ns), toolTitle };
             },
           }
         : {}),
@@ -117,7 +198,11 @@ describe('tool:pre-call — the hold row names the connector (TASK-744)', () => 
   it('looks the namespace up and writes "<connector> · <tool>" onto the row', async () => {
     const b = build(async () => 'Linear');
     expect(await heldSummary(b)).toBe('Wants to use Linear · Create issue');
-    expect(b.seen).toEqual([NS]);
+    expect(b.seen).toEqual([`${NS}/create_issue`]);
+  });
+  it("writes the server's cached tool title onto the row when there is one (TASK-753)", async () => {
+    const b = build(async () => 'Linear', 'Open a ticket');
+    expect(await heldSummary(b)).toBe('Wants to use Linear · Open a ticket');
   });
   it('a lookup that throws costs the connector name, never the hold', async () => {
     const b = build(async () => {
@@ -135,7 +220,7 @@ describe('tool:pre-call — the hold row names the connector (TASK-744)', () => 
       idGen: () => `dec_${(n += 1)}`,
       ttlMs: 60_000,
       attendanceFor: async () => 'attended',
-      connectorNameFor: () => new Promise<string | null>(() => {}),
+      connectorNamingFor: () => new Promise<never>(() => {}),
       connectorNameTimeoutMs: 20,
     });
     const r = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };

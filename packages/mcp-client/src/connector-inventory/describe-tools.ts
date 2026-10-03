@@ -26,7 +26,9 @@ import type { InventoryKey, InventoryRow, InventoryStore } from './store.js';
 import {
   DescribeToolsInputSchema,
   InventoryStatusBatchInputSchema,
+  InventoryToolTitlesInputSchema,
   type InventoryStatusBatchOutput,
+  type InventoryToolTitlesOutput,
   type DescribeToolsOutput,
   type InventoryStatus,
   type InventoryTool,
@@ -266,5 +268,58 @@ export function createInventoryStatusBatch(store: Pick<InventoryStore, 'statuses
         checkedAt: r.checkedAt.toISOString(),
       })),
     };
+  };
+}
+
+/**
+ * Bound on one cached title in the answer, in code points. Renderers clamp far
+ * tighter (a step row allows 48); this only keeps one hostile server from
+ * inflating every label read.
+ */
+const TOOL_TITLE_WIRE_MAX = 200;
+
+/**
+ * `connectors:inventory-tool-titles` (TASK-753) — the cached server title of
+ * each tool, never a fresh check. See `InventoryToolTitlesInput`.
+ */
+export function createInventoryToolTitles(store: Pick<InventoryStore, 'okInventories'>) {
+  return async function inventoryToolTitles(
+    _ctx: AgentContext,
+    rawInput: unknown,
+  ): Promise<InventoryToolTitlesOutput> {
+    const parsed = InventoryToolTitlesInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName: 'connectors:inventory-tool-titles',
+        message: 'invalid inventory-tool-titles input',
+      });
+    }
+    const { userId, connectorIds } = parsed.data;
+    const rows = await store.okInventories(userId, connectorIds);
+    // Rows arrive newest check first, so the newest REAL title for a toolKey
+    // wins (a row whose server sent no title is skipped, so an older real
+    // title beats none) — the same tool under two agents' rows is one entry.
+    const seen = new Set<string>();
+    const titles: InventoryToolTitlesOutput['titles'] = [];
+    for (const row of rows) {
+      for (const tool of row.tools) {
+        if (tool === null || typeof tool !== 'object') continue;
+        const { toolKey, title, name } = tool as Partial<InventoryTool>;
+        if (typeof toolKey !== 'string' || typeof title !== 'string') continue;
+        if (title === name || title.trim().length === 0) continue;
+        const key = `${row.connectorId}\u0000${toolKey}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const points = [...title];
+        titles.push({
+          connectorId: row.connectorId,
+          toolKey,
+          title: points.length > TOOL_TITLE_WIRE_MAX ? points.slice(0, TOOL_TITLE_WIRE_MAX).join('') : title,
+        });
+      }
+    }
+    return { titles };
   };
 }

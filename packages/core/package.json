@@ -13,6 +13,10 @@
     "./surface-text": {
       "types": "./dist/surface-text.d.ts",
       "default": "./dist/surface-text.js"
+    },
+    "./humanize": {
+      "types": "./dist/humanize.d.ts",
+      "default": "./dist/humanize.js"
     }
   },
   "files": ["dist"],

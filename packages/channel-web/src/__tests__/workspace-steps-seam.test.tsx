@@ -242,10 +242,22 @@ function storedTurns(): unknown[] {
   ];
 }
 
+/**
+ * The `connectorTools` the last `reloadThread` route answer put on the wire —
+ * what the live view is handed in production (TASK-753), so the live half of
+ * a seam test consumes the server's own output rather than a hand-typed copy.
+ */
+let lastConnectorTools: AgentDetail['connectorTools'] = undefined;
+
 async function reloadThread(
   turns: unknown[] = storedTurns(),
   /** `connectors:tool-labels`' answer (TASK-744); absent → hook not registered. */
-  connectorLabels?: Array<{ toolNamespace: string; connectorId: string; name: string }>,
+  connectorLabels?: Array<{
+    toolNamespace: string;
+    connectorId: string;
+    name: string;
+    tools?: Array<{ name: string; title: string }>;
+  }>,
 ): Promise<ThreadMessage[]> {
   const bus = new HookBus();
   if (connectorLabels !== undefined) {
@@ -297,7 +309,9 @@ async function reloadThread(
   const { res, captured } = mkRes();
   await handlers.agentDetail(mkReq(), res);
   expect(captured.status).toBe(200);
-  return (captured.body as { thread: ThreadMessage[] }).thread;
+  const body = captured.body as { thread: ThreadMessage[]; connectorTools?: AgentDetail['connectorTools'] };
+  lastConnectorTools = body.connectorTools;
+  return body.thread;
 }
 
 // ---------------------------------------------------------------------------
@@ -805,17 +819,21 @@ describe('a turn that ran CONNECTOR tools (TASK-744)', () => {
     ];
   }
 
-  it('reads "<connector> · <tool>" live and on reload, and the hash reaches neither', async () => {
+  async function seamPanels(labels: Parameters<typeof reloadThread>[1]): Promise<{
+    onReload: RenderedPanel;
+    onLive: RenderedPanel;
+    live: ReturnType<typeof render>;
+  }> {
     // ---- reload -----------------------------------------------------------
-    const thread = await reloadThread(connectorTurns(), LABELS);
+    const thread = await reloadThread(connectorTurns(), labels);
     const reloaded = render(<AgentConversation {...conversationProps(thread)} />);
     const onReload = readPanel(reloaded.container);
     reloaded.unmount();
 
-    // ---- live -------------------------------------------------------------
+    // ---- live: handed exactly what the route put on the wire ---------------
     vi.mocked(workspaceApi.agent).mockResolvedValue({
       ...liveDetail(),
-      connectorTools: [{ toolNamespace: KNOWN, name: 'Linear' }],
+      connectorTools: lastConnectorTools,
     } as AgentDetail);
     vi.mocked(workspaceApi.sendMessage).mockResolvedValue({
       conversationId: 'c1',
@@ -839,6 +857,12 @@ describe('a turn that ran CONNECTOR tools (TASK-744)', () => {
       expect(live.container.querySelector('[data-testid="workspace-steps"]')).not.toBeNull();
     });
     const onLive = readPanel(live.container);
+    return { onReload, onLive, live };
+  }
+
+  it('reads "<connector> · <tool>" live and on reload, and the hash reaches neither', async () => {
+    const { onReload, onLive, live } = await seamPanels(LABELS);
+    expect(lastConnectorTools).toEqual([{ toolNamespace: KNOWN, name: 'Linear' }]);
 
     // ---- the seam, and the words ------------------------------------------
     expect(onLive.steps).toEqual(onReload.steps);
@@ -847,6 +871,32 @@ describe('a turn that ran CONNECTOR tools (TASK-744)', () => {
       expect(JSON.stringify(onReload)).not.toContain(ns);
       expect(live.container.textContent).not.toContain(ns);
     }
+    live.unmount();
+  });
+
+  it("TASK-753: a cached server title wins, live and on reload, and the wire carries it fenced", async () => {
+    const { onReload, onLive, live } = await seamPanels([
+      {
+        ...LABELS[0]!,
+        tools: [
+          { name: 'create_issue', title: 'Open a\n\u202Eticket' },
+          // A title for a tool that never ran is carried but changes nothing.
+          { name: 'close_issue', title: 'Close a ticket' },
+        ],
+      },
+    ]);
+    expect(lastConnectorTools).toEqual([
+      {
+        toolNamespace: KNOWN,
+        name: 'Linear',
+        tools: [
+          { name: 'create_issue', title: 'Open a ticket' },
+          { name: 'close_issue', title: 'Close a ticket' },
+        ],
+      },
+    ]);
+    expect(onLive.steps).toEqual(onReload.steps);
+    expect(onReload.steps).toEqual(['Linear · Open a ticket', 'List files']);
     live.unmount();
   });
 

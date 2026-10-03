@@ -527,6 +527,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(mcp!.manifest.registers).toEqual([
       'connectors:describe-tools',
       'connectors:inventory-status-batch',
+      'connectors:inventory-tool-titles',
     ]);
     expect(mcp!.manifest.calls).toEqual(
       expect.arrayContaining(['database:get-instance', 'connectors:resolve', 'agents:resolve', 'credentials:get']),

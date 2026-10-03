@@ -177,7 +177,10 @@ import { MAX_DETAIL_CHARS } from '../lib/turn-error-labels.js';
 import { asSaveRefusedCode, saveRefusedRowId } from '../lib/save-refused.js';
 import {
   CONNECTOR_TOOL_NAMESPACE_RE,
+  connectorNamesFromRows,
+  connectorNamesToRows,
   type ConnectorNames,
+  type ConnectorToolsRow,
 } from '../lib/connector-tool-label.js';
 import {
   settleHolds,
@@ -654,7 +657,8 @@ interface ConnectorToolLabelsInput {
   userId: string;
 }
 interface ConnectorToolLabelsOutput {
-  connectors: Array<{ toolNamespace: string; name: string }>;
+  // TASK-753: `tools` carries the server's cached tool titles when known.
+  connectors: Array<{ toolNamespace: string; name: string; tools?: Array<{ name: string; title: string }> }>;
 }
 
 /**
@@ -1128,8 +1132,10 @@ export interface AgentDetail {
    * reloaded `thread` already does ("Linear · Create issue"). `toolNamespace`
    * is a lookup key, never rendered; `name` is fenced. Connectors the reader
    * cannot resolve are absent, and their tools read as the tool name alone.
+   * TASK-753: `tools`, when present, is the MCP server's own cached title for
+   * each tool that has one (fenced), preferred over the humanized name.
    */
-  connectorTools: Array<{ toolNamespace: string; name: string }>;
+  connectorTools: ConnectorToolsRow[];
 }
 
 /**
@@ -1883,8 +1889,6 @@ export const DECISION_UNRESOLVED_TAG = 'Decision';
  * renderer cannot forget to do it.
  */
 export const RAIL_LABEL_MAX_CHARS = 60;
-/** A connector's display name inside a step row: "<name> · <tool>" (TASK-744). */
-export const CONNECTOR_NAME_MAX_CHARS = 40;
 export const RAIL_DESCRIPTION_MAX_CHARS = 400;
 
 /** How far back "This week" looks. */
@@ -3319,39 +3323,36 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * TASK-744 — toolNamespace → connector display name, for ONE reader.
+   * TASK-744 — toolNamespace → connector display name (and, since TASK-753,
+   * the server's cached tool titles), for ONE reader.
    *
    * Scoped to `userId` by `connectors:tool-labels` itself: it answers only for
    * connectors that person can resolve, so another owner's private connector
-   * is never named here. The name is author-written, so it is fenced HERE —
-   * it rides the wire (`AgentDetail.connectorTools`) as well as the shaped
+   * is never named here. The name is author-written and the titles come from
+   * a third-party server, so both are fenced HERE (`connectorNamesFromRows`)
+   * — they ride the wire (`AgentDetail.connectorTools`) as well as the shaped
    * rows. A namespace that is not the documented shape is dropped: it is a
    * lookup key the client matches against tool names, and a key that cannot
-   * match anything is noise.
+   * match anything is noise. A cache read end to end: no server is reached.
    *
    * A failed or missing read degrades to an empty map: connector tools are
    * then named by their tool name alone — a worse label, not a wrong one.
    */
-  async function connectorNames(userId: string): Promise<Map<string, string>> {
-    const names = new Map<string, string>();
-    if (!bus.hasService('connectors:tool-labels')) return names;
+  async function connectorNames(userId: string): Promise<ConnectorNames> {
+    if (!bus.hasService('connectors:tool-labels')) return new Map();
     try {
       const out = await bus.call<ConnectorToolLabelsInput, ConnectorToolLabelsOutput>(
         'connectors:tool-labels',
         initCtx,
         { userId },
       );
-      for (const c of out.connectors ?? []) {
-        if (!CONNECTOR_TOOL_NAMESPACE_RE.test(c.toolNamespace)) continue;
-        const name = fenceLine(c.name, CONNECTOR_NAME_MAX_CHARS);
-        if (name !== null) names.set(c.toolNamespace, name);
-      }
+      return connectorNamesFromRows(out.connectors);
     } catch (err) {
       initCtx.logger.warn('workspace_connector_tool_labels_failed', {
         error: err instanceof Error ? err.message : String(err),
       });
+      return new Map();
     }
-    return names;
   }
 
   /**
@@ -5516,7 +5517,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         decisions: { status: decisionsRead },
         past,
         memory: await readMemory(agent, userId),
-        connectorTools: [...connectors].map(([toolNamespace, name]) => ({ toolNamespace, name })),
+        connectorTools: connectorNamesToRows(connectors),
       } satisfies AgentDetail);
     },
 

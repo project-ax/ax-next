@@ -293,9 +293,10 @@ export interface AgentDetail {
    * TASK-744 — toolNamespace → connector name for this reader, so the LIVE
    * step panel names a connector tool ("Linear · Create issue") the way the
    * reloaded thread does. Optional on read: an older host omits it, and the
-   * tools then read as the tool name alone.
+   * tools then read as the tool name alone. TASK-753: `tools` carries the
+   * server's cached tool titles; parse with `connectorNamesFromRows`.
    */
-  connectorTools?: Array<{ toolNamespace: string; name: string }>;
+  connectorTools?: Array<{ toolNamespace: string; name: string; tools?: Array<{ name: string; title: string }> }>;
 }
 
 /** CSRF: the host's guard accepts the literal `ax-admin` (see @ax/http-server). */
