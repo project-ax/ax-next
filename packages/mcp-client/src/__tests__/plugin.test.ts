@@ -399,16 +399,22 @@ describe('@ax/mcp-client plugin', () => {
       value: enc.encode(JSON.stringify(['a', reserved])),
     });
 
+    // Hand the reserved row a WORKING server too: a connect failure is
+    // swallowed at init, so a throwing factory could not tell "skipped" from
+    // "tried and failed". Record every id the plugin tries to connect.
+    const serverR = await makeFakeMcpServer({
+      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
+    });
+    const attempted: string[] = [];
     await createToolDispatcherPlugin().init({ bus, config: undefined });
     await createMcpClientPlugin({
       transportFactory: async ({ config }) => {
-        if (config.id !== 'a') {
-          throw new Error(`transportFactory should not be called for '${config.id}'`);
-        }
-        return serverA.clientTransport;
+        attempted.push(config.id);
+        return config.id === 'a' ? serverA.clientTransport : serverR.clientTransport;
       },
     }).init({ bus, config: undefined });
 
+    expect(attempted).toEqual(['a']);
     const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
       'tool:list',
       ctx(),
@@ -417,6 +423,7 @@ describe('@ax/mcp-client plugin', () => {
     expect(listed.tools.map((t) => t.name)).toEqual(['mcp.a.echo']);
 
     await serverA.dispose();
+    await serverR.dispose();
   });
 
   it('tool:execute returns a MCP_SERVER_UNAVAILABLE tool-error result when the server dies', async () => {
