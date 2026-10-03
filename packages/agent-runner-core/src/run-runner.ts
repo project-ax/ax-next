@@ -1063,7 +1063,11 @@ async function runRunnerInner(
     const reqId = messageReqIds.get(id);
     if (reqId === undefined) return;
     messageReqIds.delete(id);
-    if (reqId === currentReqId) return;
+    // Recorded even when it IS the current id, and filtered at emission: the
+    // current id can still move before this turn closes (a message pulled
+    // after the hand-over but before the next turn's first chunk adopts at
+    // once), and then the consumed message is one this turn answered under
+    // another name.
     foldedReqIds.add(reqId);
   }
   /** This turn's folded ids, for its turn-ends — never the turn's own id. */

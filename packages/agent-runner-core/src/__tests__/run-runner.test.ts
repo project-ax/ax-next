@@ -758,6 +758,33 @@ describe('runRunner', () => {
         for (const e of ends) expect(e).not.toHaveProperty('foldedReqIds');
       });
 
+      it('lists a consumed message whose turn ends up named after a later one', async () => {
+        // b gets its own turn, but c is pulled after the hand-over and before
+        // b's first chunk, so c adopts at once and b's turn closes under c.
+        inbox('req-a', 'req-b', 'req-c');
+        const loop: Loop = {
+          run: vi.fn(async (ctx: LoopContext) => {
+            const a = await ctx.nextMessage();
+            ctx.markMessageConsumed(a!.id);
+            await ctx.emitChunk({ kind: 'text', text: 'a-1' });
+            const b = await ctx.nextMessage();
+            await ctx.endTurn(endTurnInput);
+            ctx.markMessageConsumed(b!.id);
+            const c = await ctx.nextMessage();
+            await ctx.emitChunk({ kind: 'text', text: 'b-1' });
+            await ctx.endTurn(endTurnInput);
+            void c;
+            return 0;
+          }),
+        };
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+        const ends = turnEnds();
+        expect(ends.map((e) => e.reqId)).toEqual(['req-a', 'req-a', 'req-c', 'req-c']);
+        expect(ends[0]).not.toHaveProperty('foldedReqIds');
+        expect(ends[2]?.foldedReqIds).toEqual(['req-b']);
+        expect(ends[3]?.foldedReqIds).toEqual(['req-b']);
+      });
+
       it('ignores unknown and repeated ids, and messages without a reqId', async () => {
         scriptInbox([
           { type: 'user-message', payload: { role: 'user', content: 'a' }, reqId: 'req-a', cursor: 1 },
