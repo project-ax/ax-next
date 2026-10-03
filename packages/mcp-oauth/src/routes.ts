@@ -691,6 +691,18 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       return;
     }
 
+    // TASK-741 — a completed sign-in renews this person's access, so the rail's
+    // "Sign-in expired" marker goes. Best-effort: the token is already stored,
+    // and a stale marker only costs one unnecessary Reconnect.
+    try {
+      await store.clearNeedsReconnect(pending.userId, pending.connectorId);
+    } catch (err) {
+      logger.warn('mcp_oauth_needs_reconnect_clear_failed', {
+        connectorId: pending.connectorId,
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+    }
+
     res.redirect(returnUrl(pending.connectorId, 'success'));
   }
 

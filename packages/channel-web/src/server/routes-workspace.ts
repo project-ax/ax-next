@@ -127,7 +127,9 @@ import type {
   AgentAbilities,
   AgentAbilitiesRead,
   AgentAbility,
+  AgentConnectorHealth,
   AgentConnectorRemoved,
+  AgentConnectorRetried,
   AgentConnectorRow,
   AgentConnectorSource,
   AgentConnectorsRead,
@@ -1389,6 +1391,7 @@ function isConnectorId(v: unknown): v is string {
  * other label on this surface; a row whose name fences to nothing is shown
  * by its id rather than dropped — dropping it would hide reach.
  */
+/** Rows start `ok`; the GET overlays stored health afterwards (TASK-741). */
 function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[] {
   const rows: AgentConnectorRow[] = [];
   for (const entry of Array.isArray(out?.connectors) ? out.connectors : []) {
@@ -1400,9 +1403,47 @@ function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[
       name: fenceLine(entry.summary.name, RAIL_LABEL_MAX_CHARS) ?? id,
       source,
       editable: entry.summary.canEdit === true,
+      health: 'ok',
     });
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Connector health (TASK-741, connectors-rail slice 8). Structural mirrors of
+// @ax/mcp-oauth's `mcp-oauth:status-batch` and @ax/mcp-client's
+// `connectors:inventory-status-batch` / `connectors:describe-tools` — no
+// import (invariant 2). Both batch reads answer from STORED state: drawing the
+// list never refreshes a token or reaches a server.
+// ---------------------------------------------------------------------------
+
+interface McpOAuthStatusBatchOutput {
+  needsReconnect: string[];
+}
+type ConnectorInventoryStatus = 'ok' | 'unreachable' | 'needs-auth' | 'unknown';
+interface InventoryStatusBatchOutput {
+  statuses: Array<{ connectorId: string; status: ConnectorInventoryStatus; checkedAt: string }>;
+}
+interface DescribeToolsOutput {
+  status: ConnectorInventoryStatus;
+}
+
+/**
+ * One health word per connector. A rejected sign-in outranks an unreachable
+ * server: Reconnect is the fix a person can act on, and a server that refuses
+ * a dead token often looks unreachable too. `needs-auth` from the inventory is
+ * NOT read as "sign-in expired" — it is also what a connector nobody has signed
+ * in to yet reports, and telling that person their sign-in expired would be
+ * wrong; only the marker the token resolver writes on a rejected refresh says so.
+ */
+function healthOf(
+  needsReconnect: ReadonlySet<string>,
+  inventory: ReadonlyMap<string, ConnectorInventoryStatus>,
+  connectorId: string,
+): AgentConnectorHealth {
+  if (needsReconnect.has(connectorId)) return 'needs-reconnect';
+  if (inventory.get(connectorId) === 'unreachable') return 'unreachable';
+  return 'ok';
 }
 
 /**
@@ -3211,6 +3252,61 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         exclusions: (agent.connectorExclusions ?? []).filter(isConnectorId),
       },
     );
+  }
+
+  /**
+   * TASK-741 — each connector's health for this caller on this agent, from
+   * stored state only. Either source failing (or absent) degrades to `ok` for
+   * what it would have said, logged: a missing error icon is the cheaper way
+   * to be wrong than a list that will not load.
+   */
+  async function connectorHealth(
+    agentId: string,
+    callerUserId: string,
+    connectorIds: string[],
+  ): Promise<Map<string, AgentConnectorHealth>> {
+    const out = new Map<string, AgentConnectorHealth>();
+    if (connectorIds.length === 0) return out;
+    const ctx = agentWorkspaceCtx(agentId, callerUserId);
+    const [marked, inventory] = await Promise.all([
+      (async (): Promise<Set<string>> => {
+        if (!bus.hasService('mcp-oauth:status-batch')) return new Set();
+        try {
+          const r = await bus.call<{ userId: string; connectorIds: string[] }, McpOAuthStatusBatchOutput>(
+            'mcp-oauth:status-batch',
+            ctx,
+            { userId: callerUserId, connectorIds },
+          );
+          return new Set(Array.isArray(r?.needsReconnect) ? r.needsReconnect : []);
+        } catch (err) {
+          initCtx.logger.warn('workspace_connector_health_signin_read_failed', {
+            agentId,
+            name: err instanceof Error ? err.name : 'unknown',
+          });
+          return new Set();
+        }
+      })(),
+      (async (): Promise<Map<string, ConnectorInventoryStatus>> => {
+        if (!bus.hasService('connectors:inventory-status-batch')) return new Map();
+        try {
+          const r = await bus.call<
+            { userId: string; agentId: string; connectorIds: string[] },
+            InventoryStatusBatchOutput
+          >('connectors:inventory-status-batch', ctx, { userId: callerUserId, agentId, connectorIds });
+          return new Map(
+            (Array.isArray(r?.statuses) ? r.statuses : []).map((x) => [x.connectorId, x.status]),
+          );
+        } catch (err) {
+          initCtx.logger.warn('workspace_connector_health_inventory_read_failed', {
+            agentId,
+            name: err instanceof Error ? err.name : 'unknown',
+          });
+          return new Map();
+        }
+      })(),
+    ]);
+    for (const id of connectorIds) out.set(id, healthOf(marked, inventory, id));
+    return out;
   }
 
   /**
@@ -5827,9 +5923,88 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
       const out = await listEffectiveConnectors(agent, userId);
+      const rows = toConnectorRows(out);
+      const health = await connectorHealth(
+        agentId,
+        userId,
+        rows.map((r) => r.id),
+      );
+      res.status(200).json({
+        connectors: rows.map((r) => ({ ...r, health: health.get(r.id) ?? 'ok' })),
+        shared: agent.visibility === 'team',
+      } satisfies AgentConnectorsRead);
+    },
+
+    /**
+     * POST /api/workspace/agents/:agentId/connectors/:connectorId/retry —
+     * the row menu's "Retry" (TASK-741).
+     *
+     * The ONE place the rail checks a connector afresh: exactly one forced
+     * `connectors:describe-tools` for one connector the caller can already see
+     * on this agent (a connector outside the agent's list is a 404, so this
+     * cannot be used to make the host reach arbitrary connectors). Answers the
+     * connector's health afterwards, from the same stored state the list reads
+     * — a check that hit a rejected sign-in comes back `needs-reconnect`.
+     */
+    async retryConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const connectorId = req.params.connectorId ?? '';
+      if (!isConnectorId(connectorId)) {
+        res.status(400).json({ error: 'invalid-connector' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+      if (
+        !bus.hasService('connectors:list-effective') ||
+        !bus.hasService('connectors:describe-tools')
+      ) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      const out = await listEffectiveConnectors(agent, userId);
+      const listed = (Array.isArray(out?.connectors) ? out.connectors : []).some(
+        (c) => c?.summary?.id === connectorId,
+      );
+      if (!listed) {
+        res.status(404).json({ error: 'connector-not-found' });
+        return;
+      }
+      let checked: DescribeToolsOutput;
+      try {
+        checked = await bus.call<
+          { userId: string; agentId: string; connectorId: string; force: true },
+          DescribeToolsOutput
+        >('connectors:describe-tools', agentWorkspaceCtx(agentId, userId), {
+          userId,
+          agentId,
+          connectorId,
+          force: true,
+        });
+      } catch (err) {
+        initCtx.logger.warn('workspace_connector_retry_failed', {
+          agentId,
+          connectorId,
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+        res.status(502).json({ error: 'retry-failed' });
+        return;
+      }
+      // Reachability comes from the check just made; whether its sign-in was
+      // rejected comes from the marker that check's token resolve would have
+      // written — the same rule the list applies.
+      const stored = await connectorHealth(agentId, userId, [connectorId]);
+      const marked = new Set(stored.get(connectorId) === 'needs-reconnect' ? [connectorId] : []);
+      const reached = new Map([[connectorId, checked?.status ?? 'unknown']]);
       res
         .status(200)
-        .json({ connectors: toConnectorRows(out) } satisfies AgentConnectorsRead);
+        .json({ health: healthOf(marked, reached, connectorId) } satisfies AgentConnectorRetried);
     },
 
     /**
@@ -6642,6 +6817,12 @@ export async function registerWorkspaceRoutes(
       method: 'DELETE',
       path: '/api/workspace/agents/:agentId/connectors/:connectorId',
       handler: handlers.removeConnector as unknown as RouteHandler,
+    },
+    {
+      // TASK-741 — the row menu's "Retry": one forced check of one connector.
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/retry',
+      handler: handlers.retryConnector as unknown as RouteHandler,
     },
     {
       method: 'PUT',

@@ -81,7 +81,11 @@ describe('agent connector routes', () => {
   let caller: { id: string; isAdmin: boolean };
   /** agentId → owner. */
   let owners: Map<string, string>;
-  let agentRow: { connectorAttachments: string[]; connectorExclusions: string[] };
+  let agentRow: {
+    connectorAttachments: string[];
+    connectorExclusions: string[];
+    visibility?: 'personal' | 'team';
+  };
   let effective: Effective[];
   let listEffectiveCalls: unknown[];
   let detachCalls: Array<Record<string, unknown>>;
@@ -211,16 +215,167 @@ describe('agent connector routes', () => {
     return captured;
   }
 
+  async function retry(connectorId: string, agentId = 'a1'): Promise<Captured> {
+    const { res, captured } = mkRes();
+    await handlers().retryConnector(mkReq({ agentId, connectorId }), res);
+    return captured;
+  }
+
+  describe('health (TASK-741)', () => {
+    let signInCalls: unknown[];
+    let inventoryCalls: unknown[];
+    let describeCalls: unknown[];
+    let marked: Set<string>;
+    let cached: Map<string, string>;
+    let describeStatus: string;
+    let describeThrows: boolean;
+
+    function registerHealth(opts: { signIn?: boolean; inventory?: boolean; describe?: boolean } = {}) {
+      if (opts.signIn !== false) {
+        bus.registerService('mcp-oauth:status-batch', 'mcp-oauth', async (_c, i: unknown) => {
+          signInCalls.push(i);
+          const { connectorIds } = i as { connectorIds: string[] };
+          return { needsReconnect: connectorIds.filter((id) => marked.has(id)) };
+        });
+      }
+      if (opts.inventory !== false) {
+        bus.registerService('connectors:inventory-status-batch', 'mcp-client', async (_c, i: unknown) => {
+          inventoryCalls.push(i);
+          const { connectorIds } = i as { connectorIds: string[] };
+          return {
+            statuses: connectorIds
+              .filter((id) => cached.has(id))
+              .map((id) => ({ connectorId: id, status: cached.get(id), checkedAt: '2026-10-03T00:00:00.000Z' })),
+          };
+        });
+      }
+      if (opts.describe !== false) {
+        bus.registerService('connectors:describe-tools', 'mcp-client', async (_c, i: unknown) => {
+          describeCalls.push(i);
+          if (describeThrows) throw new Error('boom');
+          const { connectorId } = i as { connectorId: string };
+          cached.set(connectorId, describeStatus);
+          return { status: describeStatus, tools: [], checkedAt: '2026-10-03T00:00:00.000Z' };
+        });
+      }
+    }
+
+    beforeEach(() => {
+      signInCalls = [];
+      inventoryCalls = [];
+      describeCalls = [];
+      marked = new Set();
+      cached = new Map();
+      describeStatus = 'ok';
+      describeThrows = false;
+    });
+
+    function healthById(r: Captured): Record<string, string> {
+      const rows = (r.body as { connectors: Array<{ id: string; health: string }> }).connectors;
+      return Object.fromEntries(rows.map((x) => [x.id, x.health]));
+    }
+
+    it('maps stored state to health: marker → needs-reconnect, cached unreachable → unreachable, else ok', async () => {
+      registerHealth();
+      marked = new Set(['gmail']);
+      cached = new Map([
+        ['linear', 'unreachable'],
+        ['notes', 'needs-auth'],
+      ]);
+      const r = await list();
+      expect(r.statusCode).toBe(200);
+      // needs-auth alone is NOT "sign-in expired": a never-signed-in connector reports it too.
+      expect(healthById(r)).toEqual({ gmail: 'needs-reconnect', linear: 'unreachable', notes: 'ok' });
+      // One batch read each, for exactly the listed ids, under the caller + agent — and no probe.
+      expect(signInCalls).toEqual([{ userId: 'u1', connectorIds: ['gmail', 'linear', 'notes'] }]);
+      expect(inventoryCalls).toEqual([
+        { userId: 'u1', agentId: 'a1', connectorIds: ['gmail', 'linear', 'notes'] },
+      ]);
+      expect(describeCalls).toHaveLength(0);
+    });
+
+    it('a rejected sign-in outranks an unreachable server', async () => {
+      registerHealth();
+      marked = new Set(['linear']);
+      cached = new Map([['linear', 'unreachable']]);
+      expect(healthById(await list()).linear).toBe('needs-reconnect');
+    });
+
+    it('a failing or missing health source degrades to ok — the list still loads', async () => {
+      bus.registerService('mcp-oauth:status-batch', 'mcp-oauth', async () => {
+        throw new Error('db down');
+      });
+      const r = await list();
+      expect(r.statusCode).toBe(200);
+      expect(healthById(r)).toEqual({ gmail: 'ok', linear: 'ok', notes: 'ok' });
+    });
+
+    it('says when the agent is shared (Reconnect asks before signing in for a team)', async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      expect((await list()).body).toMatchObject({ shared: true });
+    });
+
+    it('Retry runs exactly one forced check of that connector, under the caller and agent', async () => {
+      registerHealth();
+      describeStatus = 'unreachable';
+      const r = await retry('linear');
+      expect(r.statusCode).toBe(200);
+      expect(r.body).toEqual({ health: 'unreachable' });
+      expect(describeCalls).toEqual([
+        { userId: 'u1', agentId: 'a1', connectorId: 'linear', force: true },
+      ]);
+    });
+
+    it('Retry that reaches the server answers ok', async () => {
+      registerHealth();
+      cached = new Map([['linear', 'unreachable']]);
+      describeStatus = 'ok';
+      expect((await retry('linear')).body).toEqual({ health: 'ok' });
+      expect(describeCalls).toHaveLength(1);
+    });
+
+    it('Retry that hits a rejected sign-in answers needs-reconnect', async () => {
+      registerHealth();
+      describeStatus = 'needs-auth';
+      marked = new Set(['linear']);
+      expect((await retry('linear')).body).toEqual({ health: 'needs-reconnect' });
+    });
+
+    it("Retry 404s a connector that is not on this agent, and another person's agent — no check runs", async () => {
+      registerHealth();
+      expect((await retry('slack')).statusCode).toBe(404);
+      expect((await retry('linear', 'a-theirs')).statusCode).toBe(404);
+      expect(describeCalls).toHaveLength(0);
+    });
+
+    it('Retry rejects a malformed connector id before anything runs', async () => {
+      registerHealth();
+      expect((await retry('../x')).statusCode).toBe(400);
+      expect(listEffectiveCalls).toHaveLength(0);
+      expect(describeCalls).toHaveLength(0);
+    });
+
+    it('Retry answers 503 without the inventory service, and 502 when the check itself throws', async () => {
+      registerHealth({ describe: false });
+      expect((await retry('linear')).statusCode).toBe(503);
+      bus.registerService('connectors:describe-tools', 'mcp-client', async () => {
+        throw new Error('boom');
+      });
+      expect((await retry('linear')).statusCode).toBe(502);
+    });
+  });
+
   describe('GET', () => {
     it('lists the effective set as name-only rows, read under the caller', async () => {
       const r = await list();
       expect(r.statusCode).toBe(200);
       expect(r.body).toEqual({
         connectors: [
-          { id: 'gmail', name: 'Gmail', source: 'default', editable: false },
-          { id: 'linear', name: 'Linear', source: 'attached', editable: true },
-          { id: 'notes', name: 'My notes', source: 'legacy-owned', editable: true },
+          { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok' },
+          { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok' },
+          { id: 'notes', name: 'My notes', source: 'legacy-owned', editable: true, health: 'ok' },
         ],
+        shared: false,
       });
       // The SAME inputs a session opens with: this agent's attachments AND
       // exclusions, under the person asking.

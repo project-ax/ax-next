@@ -25,6 +25,8 @@ import { listServerTools, type ListOutcome, type ListServerToolsOptions } from '
 import type { InventoryKey, InventoryRow, InventoryStore } from './store.js';
 import {
   DescribeToolsInputSchema,
+  InventoryStatusBatchInputSchema,
+  type InventoryStatusBatchOutput,
   type DescribeToolsOutput,
   type InventoryStatus,
   type InventoryTool,
@@ -234,5 +236,35 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     const run = check(input, ctx, key, previous, connector).finally(() => inFlight.delete(flightKey));
     inFlight.set(flightKey, run);
     return run;
+  };
+}
+
+/**
+ * `connectors:inventory-status-batch` (TASK-741) — the cached status of each
+ * connector, never a fresh check. See `InventoryStatusBatchInput`.
+ */
+export function createInventoryStatusBatch(store: Pick<InventoryStore, 'statuses'>) {
+  return async function inventoryStatusBatch(
+    _ctx: AgentContext,
+    rawInput: unknown,
+  ): Promise<InventoryStatusBatchOutput> {
+    const parsed = InventoryStatusBatchInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName: 'connectors:inventory-status-batch',
+        message: 'invalid inventory-status-batch input',
+      });
+    }
+    const { userId, agentId, connectorIds } = parsed.data;
+    const rows = await store.statuses(userId, agentId ?? '', connectorIds);
+    return {
+      statuses: rows.map((r) => ({
+        connectorId: r.connectorId,
+        status: r.status,
+        checkedAt: r.checkedAt.toISOString(),
+      })),
+    };
   };
 }

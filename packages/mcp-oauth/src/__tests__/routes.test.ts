@@ -69,14 +69,17 @@ function fakeStore(over: Partial<McpOAuthRouteDeps['store']> = {}) {
   }));
   const getPending = vi.fn(async (): Promise<PendingAuthorization | null> => null);
   const consumePending = vi.fn(async (): Promise<PendingAuthorization | null> => null);
+  const clearNeedsReconnect = vi.fn(async (_userId: string, _connectorId: string) => {});
   return {
     putPending,
     purgeExpiredPending,
     getClient,
     getPending,
     consumePending,
+    clearNeedsReconnect,
     ...over,
   } as McpOAuthRouteDeps['store'] & {
+    clearNeedsReconnect: typeof clearNeedsReconnect;
     putPending: typeof putPending;
     purgeExpiredPending: typeof purgeExpiredPending;
     getClient: typeof getClient;
@@ -1254,6 +1257,75 @@ describe('mcp-oauth callback route', () => {
   // Phase 2: the callback writes the credential at the pending row's STORED
   // credScope/ownerId, NOT a hardcoded agent scope. These pin the production
   // credentials:set fields for both scope variants.
+
+  it('TASK-741: a completed sign-in clears the caller\'s needs-reconnect marker AFTER the token is stored', async () => {
+    const order: string[] = [];
+    const store = storeWithPending(pending, {
+      clearNeedsReconnect: vi.fn(async () => {
+        order.push('clear');
+      }),
+    });
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'connectors:get': () => connectorFixture(),
+        'credentials:set': () => {
+          order.push('set');
+        },
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.callback(fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }), res);
+    expect(store.clearNeedsReconnect).toHaveBeenCalledTimes(1);
+    expect(store.clearNeedsReconnect).toHaveBeenCalledWith('user-1', 'conn-1');
+    expect(order).toEqual(['set', 'clear']);
+    expect(state.redirectUrl).toContain('oauth=success');
+  });
+
+  it('TASK-741: a sign-in whose token could not be stored leaves the marker alone', async () => {
+    const store = storeWithPending(pending);
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'connectors:get': () => connectorFixture(),
+        'credentials:set': () => {
+          throw new Error('vault down');
+        },
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.callback(fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }), res);
+    expect(store.clearNeedsReconnect).not.toHaveBeenCalled();
+    expect(state.redirectUrl).toContain('oauth=error');
+  });
+
+  it('TASK-741: a failing marker clear is logged and the sign-in still succeeds', async () => {
+    const store = storeWithPending(pending, {
+      clearNeedsReconnect: vi.fn(async () => {
+        throw new Error('db down');
+      }),
+    });
+    const { deps, logger } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'connectors:get': () => connectorFixture(),
+        'credentials:set': () => {},
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.callback(fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }), res);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'mcp_oauth_needs_reconnect_clear_failed',
+      expect.objectContaining({ connectorId: 'conn-1' }),
+    );
+    expect(state.redirectUrl).toContain('oauth=success');
+  });
 
   it('credScope=user: callback writes credentials:set with scope=user, ownerId=userId', async () => {
     const userScopedPending: PendingAuthorization = {

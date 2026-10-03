@@ -15,6 +15,8 @@ import type { Kysely } from 'kysely';
 import pg from 'pg';
 import { createMcpOAuthPlugin } from '../plugin.js';
 import { createMcpOAuthStore } from '../store.js';
+import { encodeTokenBlob } from '../types.js';
+import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { McpOAuthDatabase } from '../migrations.js';
 
 // ---------------------------------------------------------------------------
@@ -69,6 +71,7 @@ afterEach(async () => {
   try {
     await cleanup.query('DROP TABLE IF EXISTS mcp_oauth_v1_clients');
     await cleanup.query('DROP TABLE IF EXISTS mcp_oauth_v1_pending');
+    await cleanup.query('DROP TABLE IF EXISTS mcp_oauth_v1_needs_reconnect');
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -83,6 +86,7 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     const off = createMcpOAuthPlugin();
     expect(off.manifest.name).toBe('@ax/mcp-oauth');
     expect(off.manifest.registers).toContain('credentials:resolve:mcp-oauth');
+    expect(off.manifest.registers).toContain('mcp-oauth:status-batch');
     expect(off.manifest.calls).toEqual(['database:get-instance']);
     // TASK-718: a deleted agent's in-flight handshakes go with it. Subscribed
     // whether or not the routes are mounted — the table exists either way.
@@ -169,6 +173,82 @@ describe('@ax/mcp-oauth plugin init (mountRoutes:false)', () => {
     expect(pending?.userId).toBe('u');
     expect(pending?.clientId).toBe('pending-cid');
     expect(pending?.clientSecret).toBe('pending-secret');
+  });
+});
+
+describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () => {
+  const expiredBlob = () =>
+    encodeTokenBlob({
+      accessToken: 'old',
+      refreshToken: 'rt1',
+      tokenType: 'Bearer',
+      expiresAt: 0,
+      resource: 'https://mcp.example.com',
+      authServerUrl: 'https://auth.example.com',
+      tokenEndpoint: 'https://auth.example.com/token',
+      clientKey: 'gmail|https://auth.example.com',
+      clientId: 'cid',
+    });
+
+  it('a rejected refresh marks the connector, status-batch reports it without refreshing, a good refresh clears it', async () => {
+    let reject = true;
+    const refresh = vi.fn(async () => {
+      if (reject) throw new InvalidGrantError('revoked');
+      return { access_token: 'new', refresh_token: 'rt2', expires_in: 3600 };
+    });
+    const h = await createTestHarness({
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createMcpOAuthPlugin({ testOverrides: { refresh } }),
+      ],
+    });
+    harnesses.push(h);
+    const batch = (connectorIds: string[], userId = 'u1') =>
+      h.bus.call<unknown, { needsReconnect: string[] }>('mcp-oauth:status-batch', h.ctx(), {
+        userId,
+        connectorIds,
+      });
+
+    expect(await batch(['gmail', 'slack'])).toEqual({ needsReconnect: [] });
+
+    await expect(
+      h.bus.call('credentials:resolve:mcp-oauth', h.ctx(), {
+        payload: expiredBlob(),
+        userId: 'u1',
+        ref: 'account:gmail',
+      }),
+    ).rejects.toThrow();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    // The batch read is store-only: it never reaches the refresh.
+    expect(await batch(['gmail', 'slack'])).toEqual({ needsReconnect: ['gmail'] });
+    // Keyed on the user: someone else's sign-in is not reported.
+    expect(await batch(['gmail'], 'u2')).toEqual({ needsReconnect: [] });
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    reject = false;
+    await h.bus.call('credentials:resolve:mcp-oauth', h.ctx(), {
+      payload: expiredBlob(),
+      userId: 'u1',
+      ref: 'account:gmail',
+    });
+    expect(await batch(['gmail', 'slack'])).toEqual({ needsReconnect: [] });
+  });
+
+  it('status-batch refuses a malformed request', async () => {
+    const h = await createTestHarness({
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createMcpOAuthPlugin()],
+    });
+    harnesses.push(h);
+    await expect(
+      h.bus.call('mcp-oauth:status-batch', h.ctx(), { userId: '', connectorIds: [] }),
+    ).rejects.toThrow();
+    await expect(
+      h.bus.call('mcp-oauth:status-batch', h.ctx(), {
+        userId: 'u1',
+        connectorIds: Array.from({ length: 501 }, (_, i) => `c${i}`),
+      }),
+    ).rejects.toThrow();
   });
 });
 

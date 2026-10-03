@@ -734,6 +734,21 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'Activity rows are labelled with the routine path instead of its authored name',
         },
         {
+          hook: 'mcp-oauth:status-batch',
+          degradation:
+            'connector rows never show "Sign-in expired"; a connector whose sign-in was rejected looks healthy until it is used',
+        },
+        {
+          hook: 'connectors:inventory-status-batch',
+          degradation:
+            'connector rows never show "Can\'t reach it"; an unreachable connector looks healthy until it is used',
+        },
+        {
+          hook: 'connectors:describe-tools',
+          degradation:
+            'POST …/connectors/:connectorId/retry answers 503 (the list never offers Retry without an unreachable row, which needs the inventory)',
+        },
+        {
           hook: 'connectors:tool-labels',
           degradation:
             'Connector tool steps are named by the tool name alone, without the connector they belong to',

@@ -57,3 +57,41 @@ export const DescribeToolsInputSchema = z
     force: z.boolean().optional(),
   })
   .strict();
+
+/**
+ * `connectors:inventory-status-batch` (TASK-741). The last KNOWN status of each
+ * connector for one (user, agent), read from the inventory cache only — it never
+ * lists tools, resolves a credential, or reaches a server, so the connectors
+ * rail can show health for a page of rows without N probes. Only an explicit
+ * `connectors:describe-tools {force: true}` (Retry) refreshes it.
+ *
+ * Boundary review: ids, a status word and a time — no url / transport / table
+ * vocabulary. Alternate impl: health reported by the sandbox's own MCP client
+ * as sessions use each connector, written to the same shape.
+ *
+ * The caller is responsible for having decided the user may see these
+ * connectors on this agent (the rail lists them via `connectors:list-effective`
+ * after `agents:resolve`); the answer only ever covers rows cached under
+ * `userId`, so it cannot speak for anyone else's credential.
+ */
+export interface InventoryStatusBatchInput {
+  userId: string;
+  agentId?: string;
+  connectorIds: string[];
+}
+
+export interface InventoryStatusBatchOutput {
+  /** One entry per connector that has EVER been checked; unchecked ones are absent. */
+  statuses: Array<{ connectorId: string; status: InventoryStatus; checkedAt: string }>;
+}
+
+export const InventoryStatusBatchInputSchema = z
+  .object({
+    userId: z.string().min(1).max(256),
+    agentId: z.string().min(1).max(256).optional(),
+    // Same cap as `mcp-oauth:status-batch` and the connector slug rule: the rail
+    // sends ONE id list to both, and an all-or-nothing batch must not refuse
+    // on one side only.
+    connectorIds: z.array(z.string().min(1).max(128)).max(500),
+  })
+  .strict();

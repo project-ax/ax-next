@@ -41,6 +41,7 @@ afterEach(async () => {
     try {
       await k.schema.dropTable('mcp_oauth_v1_pending').ifExists().execute();
       await k.schema.dropTable('mcp_oauth_v1_clients').ifExists().execute();
+      await k.schema.dropTable('mcp_oauth_v1_needs_reconnect').ifExists().execute();
     } catch {
       /* drained pool */
     }
@@ -334,6 +335,29 @@ describe('createMcpOAuthStore', () => {
       expect('clientId' in got!).toBe(false);
       expect('clientSecret' in got!).toBe(false);
     }
+  });
+
+  describe('needs-reconnect marker (TASK-741)', () => {
+    it('mark is idempotent, list filters by user + ids, clear removes only its row', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      expect(await store.listNeedsReconnect('u1', [])).toEqual([]);
+      await store.markNeedsReconnect('u1', 'gmail');
+      await store.markNeedsReconnect('u1', 'gmail');
+      await store.markNeedsReconnect('u1', 'slack');
+      await store.markNeedsReconnect('u2', 'gmail');
+      expect((await store.listNeedsReconnect('u1', ['gmail', 'slack', 'linear'])).sort()).toEqual([
+        'gmail',
+        'slack',
+      ]);
+      expect(await store.listNeedsReconnect('u1', ['linear'])).toEqual([]);
+      await store.clearNeedsReconnect('u1', 'gmail');
+      expect(await store.listNeedsReconnect('u1', ['gmail', 'slack'])).toEqual(['slack']);
+      expect(await store.listNeedsReconnect('u2', ['gmail'])).toEqual(['gmail']);
+      // Clearing a row that is not there is a no-op, not an error.
+      await store.clearNeedsReconnect('u1', 'gmail');
+    });
   });
 
   describe('purgeExpiredPending', () => {

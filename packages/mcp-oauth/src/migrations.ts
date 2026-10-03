@@ -21,6 +21,14 @@ import { sql, type Kysely } from 'kysely';
  *     Carries the OAuth client the authorization started with (`client_id`,
  *     nullable `client_secret`) so the callback redeems the code as that client;
  *     both are NULL on a row written before TASK-696.
+ *
+ *   mcp_oauth_v1_needs_reconnect — TASK-741. One row per (user, connector) whose
+ *     sign-in the authorization server has REJECTED (the resolver threw
+ *     NeedsReconnectError while resolving that user's `account:<connectorId>`
+ *     token). Written by the resolver, cleared by a successful refresh or a
+ *     completed sign-in, read by `mcp-oauth:status-batch` so the connectors rail
+ *     can show "Sign-in expired" from stored state — never by probing a token.
+ *     Holds no secret: ids and a timestamp only.
  */
 export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
@@ -49,6 +57,13 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_id TEXT`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_secret TEXT`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS issuer_required BOOLEAN NOT NULL DEFAULT false`.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS mcp_oauth_v1_needs_reconnect (
+      user_id       TEXT NOT NULL,
+      connector_id  TEXT NOT NULL,
+      marked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, connector_id)
+    )`.execute(db);
 }
 
 export interface McpOAuthClientRow {
@@ -78,7 +93,14 @@ export interface McpOAuthPendingRow {
   created_at: Date;
 }
 
+export interface McpOAuthNeedsReconnectRow {
+  user_id: string;
+  connector_id: string;
+  marked_at: Date;
+}
+
 export interface McpOAuthDatabase {
   mcp_oauth_v1_clients: McpOAuthClientRow;
   mcp_oauth_v1_pending: McpOAuthPendingRow;
+  mcp_oauth_v1_needs_reconnect: McpOAuthNeedsReconnectRow;
 }

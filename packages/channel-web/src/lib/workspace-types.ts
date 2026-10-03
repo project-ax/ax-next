@@ -1021,17 +1021,38 @@ export interface AgentAbilityWrite {
  */
 export type AgentConnectorSource = 'default' | 'attached' | 'legacy-owned';
 
+/**
+ * A connector's health on the rail (TASK-741, connectors-rail slice 8), read
+ * from stored state only — rendering the list never probes a connector.
+ *
+ *   - `needs-reconnect` — the caller's sign-in was rejected (fix: Reconnect).
+ *   - `unreachable` — the last check could not reach it (fix: Retry).
+ *   - `ok` — nothing stored says otherwise (including "never checked").
+ */
+export type AgentConnectorHealth = 'ok' | 'needs-reconnect' | 'unreachable';
+
 export interface AgentConnectorRow {
   id: string;
   name: string;
   source: AgentConnectorSource;
   /** The caller may open this connector's editor. */
   editable: boolean;
+  health: AgentConnectorHealth;
 }
 
 /** `GET /api/workspace/agents/:agentId/connectors` answers this. */
 export interface AgentConnectorsRead {
   connectors: AgentConnectorRow[];
+  /**
+   * The agent is a team agent: signing a connector in again on it lets
+   * everyone who uses the agent act as the signer, so Reconnect asks first.
+   */
+  shared: boolean;
+}
+
+/** `POST /api/workspace/agents/:agentId/connectors/:connectorId/retry`. */
+export interface AgentConnectorRetried {
+  health: AgentConnectorHealth;
 }
 
 /**

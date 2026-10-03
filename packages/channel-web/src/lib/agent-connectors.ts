@@ -9,11 +9,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HttpError, logRequestFailure } from './http';
 import { workspaceApi } from './workspace-api';
-import type { AgentConnectorRow } from './workspace-types';
+import type { AgentConnectorHealth, AgentConnectorRow } from './workspace-types';
 
 export type AgentConnectorsStatus = 'loading' | 'ok' | 'unavailable' | 'failed';
 
 export type RemoveOutcome = 'removed' | 'removed-partial' | 'failed';
+
+/** What Retry found (TASK-741), or that the check itself could not run. */
+export type RetryOutcome = AgentConnectorHealth | 'failed';
 
 export interface AgentConnectorsState {
   connectors: AgentConnectorRow[] | null;
@@ -21,6 +24,12 @@ export interface AgentConnectorsState {
   /** Connector ids with a remove in flight. */
   removing: ReadonlySet<string>;
   remove: (connectorId: string) => Promise<RemoveOutcome>;
+  /** The agent is a team agent (Reconnect asks before signing in for everyone). */
+  shared: boolean;
+  /** Connector ids with a Retry in flight (TASK-741). */
+  retrying: ReadonlySet<string>;
+  /** One fresh check of one connector; the row takes the health it answers. */
+  retry: (connectorId: string) => Promise<RetryOutcome>;
   refresh: () => void;
 }
 
@@ -28,6 +37,8 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
   const [connectors, setConnectors] = useState<AgentConnectorRow[] | null>(null);
   const [status, setStatus] = useState<AgentConnectorsStatus>('loading');
   const [removing, setRemoving] = useState<ReadonlySet<string>>(new Set());
+  const [retrying, setRetrying] = useState<ReadonlySet<string>>(new Set());
+  const [shared, setShared] = useState(false);
   // Only the newest read for the newest agent lands — switching agents fast
   // must never paint one agent's connectors under another's name.
   const scope = useRef(0);
@@ -41,12 +52,15 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
         setConnectors(null);
         setStatus('loading');
         setRemoving(new Set());
+        setRetrying(new Set());
+        setShared(false);
       }
       void (async () => {
         try {
           const out = await workspaceApi.connectors(agentId);
           if (scope.current !== id) return;
           setConnectors(out.connectors);
+          setShared(out.shared === true);
           setStatus('ok');
         } catch (e) {
           if (scope.current !== id) return;
@@ -87,7 +101,37 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
     [agentId, load],
   );
 
+  const retry = useCallback(
+    async (connectorId: string): Promise<RetryOutcome> => {
+      const agentAtStart = agentScope.current;
+      setRetrying((prev) => new Set(prev).add(connectorId));
+      try {
+        const out = await workspaceApi.retryConnector(agentId, connectorId);
+        if (agentScope.current === agentAtStart) {
+          setConnectors((prev) =>
+            prev === null
+              ? prev
+              : prev.map((r) => (r.id === connectorId ? { ...r, health: out.health } : r)),
+          );
+        }
+        return out.health;
+      } catch (e) {
+        logRequestFailure(e, 'agent-connectors');
+        return 'failed';
+      } finally {
+        if (agentScope.current === agentAtStart) {
+          setRetrying((prev) => {
+            const next = new Set(prev);
+            next.delete(connectorId);
+            return next;
+          });
+        }
+      }
+    },
+    [agentId],
+  );
+
   const refresh = useCallback(() => load(false), [load]);
 
-  return { connectors, status, removing, remove, refresh };
+  return { connectors, status, removing, remove, shared, retrying, retry, refresh };
 }

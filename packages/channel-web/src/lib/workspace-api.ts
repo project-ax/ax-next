@@ -70,6 +70,7 @@ import type {
   AgentAbility,
   AgentAbilityWrite,
   AgentConnectorRemoved,
+  AgentConnectorRetried,
   AgentConnectorsRead,
   AgentMemoryRead,
   AgentRailData,
@@ -920,6 +921,16 @@ export const workspaceApi = {
     req<AgentConnectorRemoved>(
       `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}`,
       { method: 'DELETE' },
+    ),
+
+  /**
+   * The row menu's "Retry" (TASK-741): one fresh check of one connector.
+   * Answers its health afterwards.
+   */
+  retryConnector: (agentId: string, connectorId: string) =>
+    req<AgentConnectorRetried>(
+      `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/retry`,
+      { method: 'POST' },
     ),
 
   /**

@@ -60,6 +60,16 @@ export interface InventoryRow {
 export interface InventoryStore {
   get(key: InventoryKey): Promise<InventoryRow | null>;
   put(key: InventoryKey, row: InventoryRow): Promise<void>;
+  /**
+   * TASK-741 — the last stored status of each of `connectorIds` for one
+   * (user, agent), whatever its age. Connectors never checked are absent.
+   * A pure read: nothing here reaches a server.
+   */
+  statuses(
+    userId: string,
+    agentId: string,
+    connectorIds: readonly string[],
+  ): Promise<Array<{ connectorId: string; status: InventoryStatus; checkedAt: Date }>>;
   /** Drop every row cached under an agent (on `agents:deleted`). */
   deleteForAgent(agentId: string): Promise<{ deleted: number }>;
 }
@@ -114,6 +124,23 @@ export function createInventoryStore(db: Kysely<McpClientDatabase>): InventorySt
           }),
         )
         .execute();
+    },
+    async statuses(userId, agentId, connectorIds) {
+      if (connectorIds.length === 0) return [];
+      const rows = await db
+        .selectFrom('mcp_client_v1_tool_inventory')
+        .select(['connector_id', 'status', 'checked_at'])
+        .where('user_id', '=', userId)
+        .where('agent_id', '=', agentId)
+        .where('connector_id', 'in', [...connectorIds])
+        .execute();
+      return rows
+        .filter((r) => STATUSES.has(r.status))
+        .map((r) => ({
+          connectorId: r.connector_id,
+          status: r.status as InventoryStatus,
+          checkedAt: new Date(r.checked_at),
+        }));
     },
     async deleteForAgent(agentId) {
       const res = await db

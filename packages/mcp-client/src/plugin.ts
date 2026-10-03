@@ -44,7 +44,10 @@ import {
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { registerAdminMcpRoutes } from './admin-routes.js';
-import { createDescribeTools } from './connector-inventory/describe-tools.js';
+import {
+  createDescribeTools,
+  createInventoryStatusBatch,
+} from './connector-inventory/describe-tools.js';
 import type { ListOutcome, ListServerToolsOptions } from './connector-inventory/list-tools.js';
 import {
   createInventoryStore,
@@ -139,7 +142,7 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
   const subscribes: string[] = [];
   if (connectorToolInventory) {
     subscribes.push('agents:deleted');
-    registers.push('connectors:describe-tools');
+    registers.push('connectors:describe-tools', 'connectors:inventory-status-batch');
     calls.push('database:get-instance', 'connectors:resolve', 'agents:resolve');
   }
   return {
@@ -200,6 +203,11 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
             : {}),
         });
         bus.registerService('connectors:describe-tools', PLUGIN_NAME, describeTools);
+        bus.registerService(
+          'connectors:inventory-status-batch',
+          PLUGIN_NAME,
+          createInventoryStatusBatch(store),
+        );
       }
 
       // A row whose id is in the reserved connector-namespace form (TASK-752)

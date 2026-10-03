@@ -63,7 +63,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   railMock.mockResolvedValue(rail());
   abilitiesMock.mockResolvedValue({ abilities: ALL_ON });
-  vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [] });
+  vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: false });
 });
 
 describe('Connectors tab shell', () => {

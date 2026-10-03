@@ -90,6 +90,30 @@ const ResolveOutputSchema = z.object({
 }) as unknown as z.ZodType<McpOAuthResolveOutput>;
 
 /**
+ * `mcp-oauth:status-batch` (TASK-741). Boundary review: `{userId, connectorIds}`
+ * → `{needsReconnect: connectorIds}` names no storage or transport; an alternate
+ * impl (a vault that tracks credential health itself, or one that records the
+ * provider's revocation webhook) answers the same shape.
+ */
+export interface StatusBatchInput {
+  userId: string;
+  connectorIds: string[];
+}
+export interface StatusBatchOutput {
+  /** The subset of `connectorIds` whose sign-in was rejected and not yet renewed. */
+  needsReconnect: string[];
+}
+const StatusBatchInputSchema = z
+  .object({
+    userId: z.string().min(1).max(256),
+    connectorIds: z.array(z.string().min(1).max(128)).max(500),
+  })
+  .strict();
+const StatusBatchOutputSchema = z.object({
+  needsReconnect: z.array(z.string()),
+}) as unknown as z.ZodType<StatusBatchOutput>;
+
+/**
  * Build the minimal {@link AuthorizationServerMetadata} the SDK's refresh helper
  * needs, WITHOUT re-discovery — the token endpoint was discovered + stored at
  * connect time and rides in the token blob, so a refresh-on-read must not pay
@@ -143,7 +167,9 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       name: PLUGIN_NAME,
       version: '0.0.0',
       // Registered ALWAYS — harmless when @ax/credentials isn't loaded.
-      registers: ['credentials:resolve:mcp-oauth'],
+      // `mcp-oauth:status-batch` (TASK-741) answers from this plugin's own
+      // table, so it is registered ALWAYS too.
+      registers: ['credentials:resolve:mcp-oauth', 'mcp-oauth:status-batch'],
       calls,
       // The routes name AX on third-party consent screens after the operator's
       // branding when a branding plugin is loaded.
@@ -246,6 +272,31 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         store: { getClient: (k) => store.getClient(k) },
         now: () => Date.now(),
         refresh: config.testOverrides?.refresh ?? realRefresh,
+        // TASK-741 — the stored "sign-in expired" marker. A failed write is
+        // logged and swallowed: the resolve's own answer must never change
+        // because the rail's bookkeeping could not be written.
+        marker: {
+          mark: async (userId, connectorId) => {
+            try {
+              await store.markNeedsReconnect(userId, connectorId);
+            } catch (err) {
+              initCtx.logger.warn('mcp_oauth_needs_reconnect_mark_failed', {
+                connectorId,
+                name: err instanceof Error ? err.name : 'unknown',
+              });
+            }
+          },
+          clear: async (userId, connectorId) => {
+            try {
+              await store.clearNeedsReconnect(userId, connectorId);
+            } catch (err) {
+              initCtx.logger.warn('mcp_oauth_needs_reconnect_clear_failed', {
+                connectorId,
+                name: err instanceof Error ? err.name : 'unknown',
+              });
+            }
+          },
+        },
       });
 
       bus.registerService<McpOAuthResolveInput, McpOAuthResolveOutput>(
@@ -253,6 +304,32 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         PLUGIN_NAME,
         async (_ctx, input) => resolver(input),
         { returns: ResolveOutputSchema },
+      );
+
+      // TASK-741 — which of these connectors need the caller to sign in again.
+      // Reads the marker table ONLY: it never resolves, refreshes or even reads
+      // a token, so a page of rows costs one indexed query, not N probes. The
+      // caller (the connectors rail) has already decided which connectors this
+      // user may see; the answer is keyed on `userId`, so it can only ever say
+      // something about that user's own sign-ins.
+      bus.registerService<StatusBatchInput, StatusBatchOutput>(
+        'mcp-oauth:status-batch',
+        PLUGIN_NAME,
+        async (_ctx, raw) => {
+          const parsed = StatusBatchInputSchema.safeParse(raw);
+          if (!parsed.success) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              hookName: 'mcp-oauth:status-batch',
+              message: 'invalid status-batch input',
+            });
+          }
+          const { userId, connectorIds } = parsed.data;
+          const needsReconnect = await store.listNeedsReconnect(userId, connectorIds);
+          return { needsReconnect };
+        },
+        { returns: StatusBatchOutputSchema },
       );
 
       if (mountRoutes) {
