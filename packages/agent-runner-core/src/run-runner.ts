@@ -27,6 +27,7 @@ import {
   saveRefusedFrom,
   type HostToolFlush,
 } from './commit-notify-resync.js';
+import { prependNotice, saveRefusedNotice } from './save-refused-notice.js';
 import { commitTrace } from './commit-trace.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
 import {
@@ -869,6 +870,33 @@ async function runRunnerInner(
   // with a missing reqId — the host's router can't route it).
   let currentReqId: string | undefined;
 
+  // TASK-732: the model-facing notice for an end-of-turn save the host refused.
+  // `closeTurn` sets it after the refusal undid the turn's files — the model
+  // had stopped talking by then, so it cannot be told in that turn — and the
+  // next turn `nextMessage` starts takes it (prepended to that turn's content)
+  // and clears it, so the model is told exactly once.
+  //
+  // Taken when the next turn's message is BUILT, not when its pull began: a
+  // loop that pulls ahead (the Claude Agent SDK) has a pull pending all through
+  // a turn, and the notice is only set at that turn's close. A message that
+  // arrives before the close (folded into the running turn, or racing the
+  // commit) therefore goes out without it, and the notice rides the message
+  // after — late, but not lost. A notice still pending when another refusal
+  // lands is replaced by the newer one; an accepted save never clears it,
+  // because the files it reports are still gone.
+  //
+  // In-process only. The FINAL/idle commit after the loop drains, and a runner
+  // that exits before its next message, leave no later turn here to tell.
+  let pendingSaveRefusedNotice: string | undefined;
+
+  /** Prepend the pending refused-save notice, if any, and clear it. */
+  function withPendingSaveRefusedNotice(content: unknown): unknown {
+    const notice = pendingSaveRefusedNotice;
+    if (notice === undefined) return content;
+    pendingSaveRefusedNotice = undefined;
+    return prependNotice(content, notice);
+  }
+
   // TASK-573: a reqId belongs to the TURN its message starts, and a turn owns
   // it until its `endTurn` has emitted the turn-end — not merely until the next
   // inbox pull. Those are different moments for a loop that pulls ahead: the
@@ -1116,7 +1144,7 @@ async function runRunnerInner(
             typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined,
         });
         chatEndHistory.push({ role: 'user', content });
-        return { content };
+        return { content: withPendingSaveRefusedNotice(content) };
       }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk
@@ -1186,7 +1214,9 @@ async function runRunnerInner(
       // by conversationId, one-shot keep-warm, clear-active-req-id), closing
       // the live stream before the turn even runs. See orchestrator.
 
-      return { content: messageContent };
+      // chatEndHistory above stays the person's words; the refused-save
+      // notice (TASK-732) is for the model only.
+      return { content: withPendingSaveRefusedNotice(messageContent) };
     }
   }
 
@@ -1560,11 +1590,14 @@ async function runRunnerInner(
         });
         parentVersion = result.parentVersion;
         // TASK-720: a TERMINAL refusal (the host objected, or the save was too
-        // big to carry) just took this turn's files back. The turn is over, so
-        // the model cannot be told; the person can — the code rides this
-        // turn's `event.turn-end`s below as `saveRefused`, and the host
-        // persists it as a display event so it survives a reload (TASK-731).
+        // big to carry) just took this turn's files back. The person is told
+        // now — the code rides this turn's `event.turn-end`s below as
+        // `saveRefused`, and the host persists it as a display event so it
+        // survives a reload (TASK-731). The model has stopped talking, so it is
+        // told at the start of its NEXT turn (TASK-732,
+        // `pendingSaveRefusedNotice`).
         saveRefused = saveRefusedFrom(result);
+        pendingSaveRefusedNotice = saveRefusedNotice(result) ?? pendingSaveRefusedNotice;
         commitTrace(
           `[commit-trace] per-turn DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
         );
@@ -1817,7 +1850,8 @@ async function runRunnerInner(
         // carry files from an EARLIER reply whose own save came back `kept`
         // (host unreachable, retried here), plus late/background writes.
         // Those can be files the person watched being made. The stderr line
-        // stays as an operator log.
+        // stays as an operator log. The MODEL is not told: no later turn runs
+        // in this process (TASK-732 covers only the per-turn commit).
         finalSaveRefused = saveRefusedFrom(result);
         if (finalSaveRefused !== undefined) {
           process.stderr.write(

@@ -1623,6 +1623,178 @@ describe('runRunner', () => {
       expect('saveRefused' in (call![1] as Record<string, unknown>)).toBe(false);
     });
   });
+
+  // TASK-732. The end-of-turn refusal above reaches the PERSON on the turn-end.
+  // The MODEL had stopped talking by then, so it hears about it at the start of
+  // its NEXT turn — or it would carry on as if the files were saved.
+  describe('refused save is told to the model next turn (TASK-732)', () => {
+    const NOTICE_HEAD = 'System message (not from the user): Some or all of the file changes you made in an earlier turn were not saved.';
+
+    /**
+     * Turn 1's save gets `answer`; turns 2 and 3 save nothing. Returns what
+     * `nextMessage()` handed the loop for turns 2 and 3.
+     */
+    async function threeTurns(
+      answer: () => Promise<unknown>,
+      second: unknown = { type: 'user-message', payload: { role: 'user', content: 'and now?' }, reqId: 'req-2', cursor: 2 },
+    ): Promise<{ second: unknown; third: unknown }> {
+      (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('BUNDLE'));
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
+        async (action: string) => {
+          if (action === 'workspace.commit-bundle') return answer();
+          throw new Error(`unexpected upload: ${action}`);
+        },
+      );
+      scriptInbox([
+        { type: 'user-message', payload: { role: 'user', content: 'write it' }, reqId: 'req-1', cursor: 1 },
+        second,
+        { type: 'user-message', payload: { role: 'user', content: 'thanks' }, reqId: 'req-3', cursor: 3 },
+      ]);
+      const seen: unknown[] = [];
+      const end = (ctx: LoopContext) =>
+        ctx.endTurn({
+          contentBlocks: [{ type: 'text', text: 'done' }],
+          toolResultBlocks: [],
+          readTurnId: async () => undefined,
+          usage: null,
+        });
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await end(ctx);
+          seen.push(await ctx.nextMessage());
+          await end(ctx);
+          seen.push(await ctx.nextMessage());
+          await end(ctx);
+          return 0;
+        }),
+      };
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      } finally {
+        stderr.mockRestore();
+      }
+      return { second: seen[0], third: seen[1] };
+    }
+
+    it('prepends the notice, with the host reason, to the next user message', async () => {
+      const { second } = await threeTurns(async () => ({
+        accepted: false,
+        reason: 'The workspace is full.',
+        recoverable: false,
+        code: 'storage-full',
+      }));
+      const content = (second as { content: unknown }).content;
+      expect(typeof content).toBe('string');
+      expect((content as string).startsWith(NOTICE_HEAD)).toBe(true);
+      expect(content as string).toContain('"The workspace is full."');
+      // The person's own words are still there, after the notice.
+      expect((content as string).endsWith('\n\nand now?')).toBe(true);
+    });
+
+    it('tells it ONCE: the turn after carries no notice', async () => {
+      const { third } = await threeTurns(async () => ({
+        accepted: false,
+        reason: 'no',
+        recoverable: false,
+      }));
+      expect(third).toEqual({ content: 'thanks' });
+    });
+
+    it('a save too big to carry (host 413) is told too', async () => {
+      const { IpcRequestError } = await import('@ax/ipc-protocol');
+      const { second } = await threeTurns(async () => {
+        throw new IpcRequestError('PAYLOAD_TOO_LARGE', 413, 'body too large');
+      });
+      expect((second as { content: string }).content).toContain('too large to save');
+    });
+
+    it('reaches a host-started decision turn too', async () => {
+      const { second } = await threeTurns(
+        async () => ({ accepted: false, reason: 'no', recoverable: false }),
+        { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: 'They said yes.' },
+      );
+      const content = (second as { content: string }).content;
+      expect(content.startsWith(NOTICE_HEAD)).toBe(true);
+      expect(content.endsWith('\n\nSystem message (not from the user): They said yes.')).toBe(true);
+    });
+
+    it('an accepted save, an unreachable host, and a recoverable race tell it nothing', async () => {
+      const answers: Array<() => Promise<unknown>> = [
+        async () => ({ accepted: true, version: 'v2', delta: null }),
+        async () => {
+          throw new Error('ECONNRESET');
+        },
+        async () => ({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' }),
+      ];
+      for (const answer of answers) {
+        const { second } = await threeTurns(answer);
+        expect(second).toEqual({ content: 'and now?' });
+      }
+    });
+
+    it('a message pulled AHEAD of the refused turn\'s close goes out bare; the notice rides the next one, even past an accepted save', async () => {
+      // The Claude Agent SDK pulls its next prompt while a turn streams
+      // (TASK-573), so turn 2's message can be built before turn 1's close
+      // learns the save was refused. The notice must not be lost — and an
+      // accepted save on turn 2 must not clear it: turn 1's files are still gone.
+      (commitTurnAndBundle as unknown as Mock)
+        .mockResolvedValueOnce(Buffer.from('BUNDLE-1')) // turn 1's close
+        .mockResolvedValueOnce(Buffer.from('BUNDLE-2')); // turn 2's close
+      const answers = [
+        { accepted: false, reason: 'no', recoverable: false }, // turn 1: refused
+        { accepted: true, version: 'v2', delta: null }, // turn 2: accepted
+      ];
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
+        async () => answers.shift(),
+      );
+      scriptInbox([
+        { type: 'user-message', payload: { role: 'user', content: 'write it' }, reqId: 'req-1', cursor: 1 },
+        { type: 'user-message', payload: { role: 'user', content: 'pulled early' }, reqId: 'req-2', cursor: 2 },
+        { type: 'user-message', payload: { role: 'user', content: 'thanks' }, reqId: 'req-3', cursor: 3 },
+      ]);
+      const seen: unknown[] = [];
+      const end = (ctx: LoopContext) =>
+        ctx.endTurn({
+          contentBlocks: [{ type: 'text', text: 'done' }],
+          toolResultBlocks: [],
+          readTurnId: async () => undefined,
+          usage: null,
+        });
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          // Pull ahead: turn 2's message is built BEFORE turn 1 closes.
+          seen.push(await ctx.nextMessage());
+          await end(ctx); // turn 1 closes: refused
+          await end(ctx); // turn 2 closes: accepted
+          seen.push(await ctx.nextMessage());
+          await end(ctx);
+          return 0;
+        }),
+      };
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(answers).toHaveLength(0);
+      expect(seen[0]).toEqual({ content: 'pulled early' });
+      const third = (seen[1] as { content: string }).content;
+      expect(third.startsWith(NOTICE_HEAD)).toBe(true);
+      expect(third.endsWith('\n\nthanks')).toBe(true);
+    });
+
+    it('keeps the notice out of the person-facing chat-end history', async () => {
+      fakeClient.event.mockClear();
+      await threeTurns(async () => ({ accepted: false, reason: 'no', recoverable: false }));
+      const chatEnd = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end');
+      expect(chatEnd).toBeDefined();
+      expect(JSON.stringify(chatEnd![1])).not.toContain('System message');
+    });
+  });
 });
 
 describe('runRunner — disallowedTools catalog filter', () => {
