@@ -5,11 +5,18 @@ import {
   type McpOAuthTokenBlob,
   type OAuthClientCredentials,
 } from './types.js';
+import type { MarkerOwner } from './store.js';
 
 // --- Local re-declaration of the @ax/credentials resolver contract (invariant #2:
 // no cross-plugin import; same stance as connectors' credential-plan re-declaring
 // CredentialScope). The credentials plugin validates our output at the bus boundary. ---
-export interface McpOAuthResolveInput { payload: Uint8Array; userId: string; ref: string; }
+export interface McpOAuthResolveInput {
+  payload: Uint8Array; userId: string; ref: string;
+  /** TASK-756 — the vault scope + owner of the row `payload` came from. Optional
+   *  so a direct (non-vault) caller still works; absent reads as the caller's own. */
+  scope?: 'user' | 'agent' | 'global';
+  ownerId?: string | null;
+}
 export interface McpOAuthResolveOutput {
   value: string;
   refreshed?: { payload: Uint8Array; expiresAt?: number; metadata?: Record<string, unknown> };
@@ -48,9 +55,23 @@ export interface ResolverDeps {
    * Optional so the resolver unit stays usable without a store.
    */
   marker?: {
-    mark(userId: string, connectorId: string): Promise<void>;
-    clear(userId: string, connectorId: string): Promise<void>;
+    mark(owner: MarkerOwner, connectorId: string): Promise<void>;
+    clear(owner: MarkerOwner, connectorId: string): Promise<void>;
   };
+}
+
+/**
+ * TASK-756 — whose sign-in a resolve is about: the token's OWNER, read from the
+ * vault row it came from. An agent-scope row is a team agent's shared sign-in,
+ * so its marker is the agent's — one member reconnecting clears it for all.
+ * Everything else (a user row, a global row, a caller that did not say) stays
+ * keyed on the person resolving, as before.
+ */
+export function markerOwnerOf(input: McpOAuthResolveInput): MarkerOwner {
+  if (input.scope === 'agent' && typeof input.ownerId === 'string' && input.ownerId.length > 0) {
+    return { kind: 'agent', agentId: input.ownerId };
+  }
+  return { kind: 'user', userId: input.userId };
 }
 
 /** The vault ref the OAuth callback stores a connector's token under. */
@@ -105,7 +126,7 @@ export function createMcpOAuthResolver(deps: ResolverDeps) {
       out = await resolveToken(input);
     } catch (err) {
       if (err instanceof NeedsReconnectError && connectorId !== null) {
-        await marker.mark(input.userId, connectorId).catch(() => undefined);
+        await marker.mark(markerOwnerOf(input), connectorId).catch(() => undefined);
       }
       throw err;
     }
@@ -113,7 +134,7 @@ export function createMcpOAuthResolver(deps: ResolverDeps) {
     // an unexpired token answered from the blob proves nothing new, and clearing
     // on every resolve would put a write on the hot path.
     if (out.refreshed !== undefined && connectorId !== null) {
-      await marker.clear(input.userId, connectorId).catch(() => undefined);
+      await marker.clear(markerOwnerOf(input), connectorId).catch(() => undefined);
     }
     return out;
   };

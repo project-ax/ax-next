@@ -97,20 +97,35 @@ const ResolveOutputSchema = z.object({
  */
 export interface StatusBatchInput {
   userId: string;
+  /**
+   * TASK-756 — the agent the caller is looking at. When given, a rejected
+   * sign-in that agent's members SHARE (a team agent's token) counts too.
+   * The caller must already have resolved this agent for `userId`.
+   */
+  agentId?: string;
   connectorIds: string[];
 }
 export interface StatusBatchOutput {
   /** The subset of `connectorIds` whose sign-in was rejected and not yet renewed. */
   needsReconnect: string[];
+  /**
+   * TASK-756 — the subset of `needsReconnect` where the rejected sign-in is the
+   * agent's shared one, not the caller's own. A connector whose OWN sign-in is
+   * also rejected is not listed here: the caller's own sign-in is the one their
+   * use of it reaches first, so it is theirs to fix.
+   */
+  shared: string[];
 }
 const StatusBatchInputSchema = z
   .object({
     userId: z.string().min(1).max(256),
+    agentId: z.string().min(1).max(256).optional(),
     connectorIds: z.array(z.string().min(1).max(128)).max(500),
   })
   .strict();
 const StatusBatchOutputSchema = z.object({
   needsReconnect: z.array(z.string()),
+  shared: z.array(z.string()),
 }) as unknown as z.ZodType<StatusBatchOutput>;
 
 /**
@@ -276,9 +291,9 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         // logged and swallowed: the resolve's own answer must never change
         // because the rail's bookkeeping could not be written.
         marker: {
-          mark: async (userId, connectorId) => {
+          mark: async (owner, connectorId) => {
             try {
-              await store.markNeedsReconnect(userId, connectorId);
+              await store.markNeedsReconnect(owner, connectorId);
             } catch (err) {
               initCtx.logger.warn('mcp_oauth_needs_reconnect_mark_failed', {
                 connectorId,
@@ -286,9 +301,9 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
               });
             }
           },
-          clear: async (userId, connectorId) => {
+          clear: async (owner, connectorId) => {
             try {
-              await store.clearNeedsReconnect(userId, connectorId);
+              await store.clearNeedsReconnect(owner, connectorId);
             } catch (err) {
               initCtx.logger.warn('mcp_oauth_needs_reconnect_clear_failed', {
                 connectorId,
@@ -325,9 +340,11 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
               message: 'invalid status-batch input',
             });
           }
-          const { userId, connectorIds } = parsed.data;
-          const needsReconnect = await store.listNeedsReconnect(userId, connectorIds);
-          return { needsReconnect };
+          const { userId, agentId, connectorIds } = parsed.data;
+          const { personal, shared } = await store.listNeedsReconnect(userId, agentId, connectorIds);
+          const own = new Set(personal);
+          const sharedOnly = shared.filter((id) => !own.has(id));
+          return { needsReconnect: [...personal, ...sharedOnly], shared: sharedOnly };
         },
         { returns: StatusBatchOutputSchema },
       );

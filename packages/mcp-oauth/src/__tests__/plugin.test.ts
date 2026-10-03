@@ -203,13 +203,15 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
       ],
     });
     harnesses.push(h);
-    const batch = (connectorIds: string[], userId = 'u1') =>
-      h.bus.call<unknown, { needsReconnect: string[] }>('mcp-oauth:status-batch', h.ctx(), {
-        userId,
-        connectorIds,
-      });
+    const batch = async (connectorIds: string[], userId = 'u1') =>
+      (
+        await h.bus.call<unknown, { needsReconnect: string[] }>('mcp-oauth:status-batch', h.ctx(), {
+          userId,
+          connectorIds,
+        })
+      ).needsReconnect;
 
-    expect(await batch(['gmail', 'slack'])).toEqual({ needsReconnect: [] });
+    expect(await batch(['gmail', 'slack'])).toEqual([]);
 
     await expect(
       h.bus.call('credentials:resolve:mcp-oauth', h.ctx(), {
@@ -221,9 +223,9 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
     expect(refresh).toHaveBeenCalledTimes(1);
 
     // The batch read is store-only: it never reaches the refresh.
-    expect(await batch(['gmail', 'slack'])).toEqual({ needsReconnect: ['gmail'] });
+    expect(await batch(['gmail', 'slack'])).toEqual(['gmail']);
     // Keyed on the user: someone else's sign-in is not reported.
-    expect(await batch(['gmail'], 'u2')).toEqual({ needsReconnect: [] });
+    expect(await batch(['gmail'], 'u2')).toEqual([]);
     expect(refresh).toHaveBeenCalledTimes(1);
 
     reject = false;
@@ -232,7 +234,86 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
       userId: 'u1',
       ref: 'account:gmail',
     });
-    expect(await batch(['gmail', 'slack'])).toEqual({ needsReconnect: [] });
+    expect(await batch(['gmail', 'slack'])).toEqual([]);
+  });
+
+  // TASK-756 — a team agent's token is the agent's (vault scope `agent`): one
+  // member's rejected refresh shows for every member, as SHARED, and one
+  // member's good refresh clears it for all of them.
+  it('an agent-scope rejection is shared across members; a personal one stays per user', async () => {
+    let reject = true;
+    const refresh = vi.fn(async () => {
+      if (reject) throw new InvalidGrantError('revoked');
+      return { access_token: 'new', refresh_token: 'rt2', expires_in: 3600 };
+    });
+    const h = await createTestHarness({
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createMcpOAuthPlugin({ testOverrides: { refresh } }),
+      ],
+    });
+    harnesses.push(h);
+    const batch = (userId: string, agentId: string | undefined, connectorIds: string[]) =>
+      h.bus.call<unknown, { needsReconnect: string[]; shared: string[] }>('mcp-oauth:status-batch', h.ctx(), {
+        userId,
+        ...(agentId !== undefined ? { agentId } : {}),
+        connectorIds,
+      });
+    const resolveAs = (userId: string, scope: 'user' | 'agent', ownerId: string, ref: string) =>
+      h.bus.call('credentials:resolve:mcp-oauth', h.ctx(), {
+        payload: expiredBlob(),
+        userId,
+        ref,
+        scope,
+        ownerId,
+      });
+
+    await expect(resolveAs('u1', 'agent', 'team-1', 'account:gmail')).rejects.toThrow();
+    await expect(resolveAs('u1', 'user', 'u1', 'account:slack')).rejects.toThrow();
+
+    expect(await batch('u1', 'team-1', ['gmail', 'slack'])).toEqual({
+      needsReconnect: ['slack', 'gmail'],
+      shared: ['gmail'],
+    });
+    // Another member sees the shared one, and not u1's personal one.
+    expect(await batch('u2', 'team-1', ['gmail', 'slack'])).toEqual({
+      needsReconnect: ['gmail'],
+      shared: ['gmail'],
+    });
+
+    // u2's good refresh of the SHARED token clears it for u1 too.
+    reject = false;
+    await resolveAs('u2', 'agent', 'team-1', 'account:gmail');
+    expect(await batch('u1', 'team-1', ['gmail', 'slack'])).toEqual({
+      needsReconnect: ['slack'],
+      shared: [],
+    });
+    // ...and u2's success says nothing about u1's personal sign-in.
+    await resolveAs('u2', 'user', 'u2', 'account:slack');
+    expect((await batch('u1', 'team-1', ['slack'])).needsReconnect).toEqual(['slack']);
+  });
+
+  it('a connector whose own AND shared sign-in were rejected reads as the caller\'s own', async () => {
+    const refresh = vi.fn(async () => {
+      throw new InvalidGrantError('revoked');
+    });
+    const h = await createTestHarness({
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createMcpOAuthPlugin({ testOverrides: { refresh } }),
+      ],
+    });
+    harnesses.push(h);
+    for (const [scope, ownerId] of [['agent', 'team-1'], ['user', 'u1']] as const) {
+      await expect(
+        h.bus.call('credentials:resolve:mcp-oauth', h.ctx(), {
+          payload: expiredBlob(), userId: 'u1', ref: 'account:gmail', scope, ownerId,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(
+      await h.bus.call('mcp-oauth:status-batch', h.ctx(), { userId: 'u1', agentId: 'team-1', connectorIds: ['gmail'] }),
+    ).toEqual({ needsReconnect: ['gmail'], shared: [] });
   });
 
   it('status-batch refuses a malformed request', async () => {
