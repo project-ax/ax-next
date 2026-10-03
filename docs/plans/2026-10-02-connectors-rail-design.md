@@ -76,6 +76,11 @@ Ask `warning-soft`/`warning`, Deny `destructive-soft`/`destructive`.
   verdict rather than the live default.
 - **A connector tool with no admin default and never inventoried → Ask first.** Today it runs
   unasked (`tool-policy` no-match default `allow`); this closes that hole for connector tools only.
+  **Widened by TASK-699 (owner decision 2026-10-03):** every other MCP-spelled tool (admin host
+  MCP `mcp.<serverId>.*`, an unlifted `mcp__x__y`, a malformed or over-long `mcp.` key) is also
+  Ask first, with a fixed `hold` ceiling (`implicitMcpCeiling`). There is no default slot for those,
+  so an agent can tighten them to Deny but nobody can set them to Allow yet. The approval card now
+  shows the held call's tool and its input (`Decision.request`, fenced, open rows only).
 - **Ability toggles** are agent-level tighten-only overrides on `web_search`, `web_extract`, `Bash`.
   Off = `deny`. They can never loosen a static rule (e.g. SDK `WebFetch` stays denied).
 - **Workspace-keyed connectors are hidden from non-admins in Add** (attach is admin-only for them today).
