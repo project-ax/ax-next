@@ -320,6 +320,18 @@ describe('when the tool list cannot be read', () => {
     expect(screen.queryByText(/signed in as you/)).toBeNull();
   });
 
+  it('says a connector a session cannot fully load could not load — never "Connected" (TASK-745)', async () => {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      shared: false,
+      connectors: [{ ...ROWS[0]!, health: 'not-loaded' }],
+    });
+    toolsMock.mockResolvedValue(read({ status: 'ok' }));
+    renderTab();
+    await openDetails();
+    expect(await screen.findByText('Couldn’t load it')).toBeTruthy();
+    expect(screen.queryByText(/Connected/)).toBeNull();
+  });
+
   it('a needs-auth tool list without the marker says sign-in is needed, never "expired"', async () => {
     toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
     renderTab();

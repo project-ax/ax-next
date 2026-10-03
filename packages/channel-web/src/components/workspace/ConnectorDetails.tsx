@@ -201,8 +201,12 @@ function ConnectionLine({
   // sign-in EXPIRED — a tool list answering needs-auth may just mean nobody
   // has signed in yet.
   const ok = data.status === 'ok' && health === 'ok';
+  // TASK-745 — a connector a session can't fully load says so here too,
+  // rather than "Connected" in red.
   const word =
-    health === 'needs-reconnect'
+    health === 'not-loaded'
+      ? 'Couldn’t load it'
+      : health === 'needs-reconnect'
       ? 'Sign-in expired'
       : health === 'unreachable'
         ? 'Can’t reach it'

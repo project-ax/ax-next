@@ -514,6 +514,12 @@ export function foldConnectorCaps(
     // closed) and reported — never materialized under an unattributable key.
     // The host-side credential binding ABOVE still matches `slotDef.server`
     // against the ORIGINAL spec names; only the sandbox-facing key changes.
+    //
+    // TASK-745 — the agent's connectors rail tells the person about a drop
+    // ("Couldn't load it") by replaying THIS rule over the same
+    // `connectors:list-effective` rows: `connectorsNotLoaded` in
+    // @ax/channel-web's routes-workspace.ts (a mirror — no import, I2). Change
+    // the drop rule here and that mirror changes with it.
     const nsByServer = new Map<string, string>();
     for (const t of c.toolNamespaces ?? []) {
       if (!nsByServer.has(t.server)) nsByServer.set(t.server, t.toolNamespace);

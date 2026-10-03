@@ -74,6 +74,7 @@ interface Effective {
   summary: { id: string; name: string; canEdit?: boolean };
   source: Source;
   toolNamespaces: Array<{ server: string; toolNamespace: string }>;
+  capabilities?: { mcpServers: Array<{ name: string }> };
 }
 
 describe('agent connector routes', () => {
@@ -308,6 +309,82 @@ describe('agent connector routes', () => {
       const r = await list();
       expect(r.statusCode).toBe(200);
       expect(healthById(r)).toEqual({ gmail: 'ok', linear: 'ok', notes: 'ok' });
+    });
+
+    // TASK-745 — a session folds these same rows and DROPS a server it cannot
+    // key (connector-union.ts foldConnectorCaps). The rail must say so.
+    describe("a connector a session can't fully load (TASK-745)", () => {
+      const caps = (...names: string[]) => ({ mcpServers: names.map((name) => ({ name })) });
+
+      it('two servers under one name: the connector is not-loaded, the rest stay ok', async () => {
+        registerHealth();
+        effective[1] = {
+          ...effective[1]!,
+          capabilities: caps('linear', 'linear'),
+          toolNamespaces: [
+            { server: 'linear', toolNamespace: NS_LINEAR },
+            { server: 'linear', toolNamespace: NS_LINEAR },
+          ],
+        };
+        effective[0] = { ...effective[0]!, capabilities: caps('gmail') };
+        expect(healthById(await list())).toEqual({ gmail: 'ok', linear: 'not-loaded', notes: 'ok' });
+      });
+
+      it('a server with no namespace, or a malformed one, is not-loaded', async () => {
+        registerHealth();
+        effective[0] = { ...effective[0]!, capabilities: caps('gmail', 'drive') }; // drive has none
+        effective[1] = {
+          ...effective[1]!,
+          capabilities: caps('linear'),
+          toolNamespaces: [{ server: 'linear', toolNamespace: 'linear' }],
+        };
+        expect(healthById(await list())).toEqual({ gmail: 'not-loaded', linear: 'not-loaded', notes: 'ok' });
+      });
+
+      it('a namespace an EARLIER connector took: only the later one is not-loaded (fold order)', async () => {
+        registerHealth();
+        effective[0] = { ...effective[0]!, capabilities: caps('gmail') };
+        effective[1] = {
+          ...effective[1]!,
+          capabilities: caps('linear'),
+          toolNamespaces: [{ server: 'linear', toolNamespace: NS_GMAIL }],
+        };
+        expect(healthById(await list())).toEqual({ gmail: 'ok', linear: 'not-loaded', notes: 'ok' });
+      });
+
+      it('accepts a REAL namespace @ax/connectors derives (cross-package drift pin)', async () => {
+        // The literal @ax/connectors' tool-namespace.test.ts pins.
+        registerHealth();
+        effective[1] = {
+          ...effective[1]!,
+          capabilities: caps('linear'),
+          toolNamespaces: [{ server: 'linear', toolNamespace: 'c5e0235982f' }],
+        };
+        expect(healthById(await list()).linear).toBe('ok');
+      });
+
+      it('outranks a rejected sign-in and an unreachable server — neither fix would help', async () => {
+        registerHealth();
+        marked = new Set(['linear']);
+        cached = new Map([['linear', 'unreachable']]);
+        effective[1] = { ...effective[1]!, capabilities: caps('linear', 'linear') };
+        expect(healthById(await list()).linear).toBe('not-loaded');
+      });
+
+      it('still says not-loaded when the stored health reads fail', async () => {
+        bus.registerService('mcp-oauth:status-batch', 'mcp-oauth', async () => {
+          throw new Error('db down');
+        });
+        effective[1] = { ...effective[1]!, capabilities: caps('linear', 'linear') };
+        expect(healthById(await list()).linear).toBe('not-loaded');
+      });
+
+      it('Retry on such a connector answers not-loaded, so the row does not flip to ok', async () => {
+        registerHealth();
+        describeStatus = 'ok';
+        effective[1] = { ...effective[1]!, capabilities: caps('linear', 'linear') };
+        expect((await retry('linear')).body).toEqual({ health: 'not-loaded' });
+      });
     });
 
     it('says when the agent is shared (Reconnect asks before signing in for a team)', async () => {

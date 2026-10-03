@@ -324,3 +324,54 @@ describe('connector health (TASK-741)', () => {
     expect(await within(dialog).findByText(/anyone who uses this shared agent act as you/)).toBeTruthy();
   });
 });
+
+describe("a connector a session can't fully load (TASK-745)", () => {
+  const NOT_LOADED: AgentConnectorRow[] = [
+    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'not-loaded' },
+    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'not-loaded' },
+  ];
+
+  beforeEach(() => {
+    connectorsMock.mockResolvedValue({ connectors: NOT_LOADED, shared: false });
+  });
+
+  it('wears the error icon after its name, saying what this person can do about it', async () => {
+    renderTab();
+    const editable = await screen.findByRole('button', {
+      name: 'Couldn’t load it. Choose Edit connector to fix it.',
+    });
+    const locked = screen.getByRole('button', {
+      name: 'Couldn’t load it. Ask a workspace admin to fix it.',
+    });
+    expect(editable.previousElementSibling?.textContent).toBe('Linear');
+    expect(locked.previousElementSibling?.textContent).toBe('Gmail');
+    expect(editable.querySelector('svg.lucide-circle-alert')).not.toBeNull();
+    // No jargon reaches the person.
+    expect(document.body.textContent ?? '').not.toMatch(/MCP|namespace/i);
+  });
+
+  it('shows the reason in a tooltip on keyboard focus', async () => {
+    renderTab();
+    const icon = await screen.findByRole('button', {
+      name: 'Couldn’t load it. Choose Edit connector to fix it.',
+    });
+    icon.focus();
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toBe('Couldn’t load it. Choose Edit connector to fix it.');
+  });
+
+  it('offers no Reconnect or Retry — neither would fix it — and keeps Edit connector', async () => {
+    renderTab();
+    let menu = await openMenu('Linear');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Edit connector',
+      'Remove from Quill',
+    ]);
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    menu = await openMenu('Gmail');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Remove from Quill',
+    ]);
+  });
+});
