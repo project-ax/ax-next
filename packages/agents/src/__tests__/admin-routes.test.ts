@@ -1212,6 +1212,8 @@ describe('@ax/agents admin routes', () => {
       { cookie: cookieB, body: { connectorAttachments: [] } },
     );
     expect(r.status).toBe(403);
+    // The ACL refusal stays opaque (TASK-766 only names the excluded case).
+    expect(r.body).toEqual({ error: 'forbidden' });
   });
 
   it('PATCH /admin/agents/:id/connector-attachments missing field → 400', async () => {
@@ -1342,6 +1344,9 @@ describe('@ax/agents admin routes', () => {
 
     const refused = await patch(memberB.cookie);
     expect(refused.status).toBe(403);
+    // TASK-766 — the specific, stable reason (not a bare `forbidden`), and
+    // nothing about who removed it.
+    expect(refused.body).toEqual({ error: 'connector-excluded' });
     const afterRefusal = await http(stack.port, 'GET', `/admin/agents/${id}`, {
       cookie: adminCookie,
     });

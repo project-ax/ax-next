@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
+import { ConnectorExcludedError, workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import {
   emptyCapabilities,
   getConnector,
@@ -466,6 +466,23 @@ describe('add key, then attach', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
     expect(await screen.findByText('Only a workspace admin can add Stripe to Quill.')).toBeTruthy();
     expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  // TASK-766 — the owner (or an admin) removed it from this team agent; a
+  // plain member re-adding it learns why, and who can help — not who did it.
+  it('a removed-from-this-agent refusal says only its owner or an admin can add it back, with no Retry', async () => {
+    attachMock.mockRejectedValueOnce(new ConnectorExcludedError('/agents/a-quill/connectors'));
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
+    expect(
+      await screen.findByText(
+        'Stripe was removed from Quill, so only Quill’s owner or a workspace admin can add it back. Ask one of them if you need it.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('Only a workspace admin can add Stripe to Quill.')).toBeNull();
+    expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(onAttached).not.toHaveBeenCalled();
   });
 });
 

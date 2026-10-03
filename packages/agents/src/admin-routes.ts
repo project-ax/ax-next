@@ -15,6 +15,7 @@ import {
   type NewAttachmentInput,
 } from './skill-attachments-validation.js';
 import {
+  isConnectorExcludedForbidden,
   isWorkspaceConnectorForbidden,
   workspaceConnectorGrantViolation,
 } from './connector-guard.js';
@@ -882,6 +883,13 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       } catch (err) {
         if (isWorkspaceConnectorForbidden(err)) {
           res.status(403).json({ error: err.message });
+          return;
+        }
+        // TASK-766 — the list adds a connector someone removed from this
+        // agent, and this caller may not bring it back: a stable code, so the
+        // reason survives (no id, no who/when — just that).
+        if (isConnectorExcludedForbidden(err)) {
+          res.status(403).json({ error: 'connector-excluded' });
           return;
         }
         if (writeServiceError(res, err)) return;

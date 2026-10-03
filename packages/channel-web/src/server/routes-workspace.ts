@@ -1824,6 +1824,19 @@ async function authActorOr401(
  */
 function connectorWriteRefused(res: RouteResponse, err: unknown): boolean {
   if (!(err instanceof PluginError)) return false;
+  // TASK-766 — @ax/agents tags one `forbidden` with a reason: this connector
+  // was removed from this agent and the caller may not bring it back (only the
+  // agent's owner or an admin may; TASK-765). Say THAT, with a stable code,
+  // so the add view can explain it. Nothing about who removed it or when —
+  // the hook does not carry that and neither do we. Matched by string, not by
+  // importing @ax/agents (I2). Every other `forbidden` stays opaque.
+  if (err.code === 'forbidden' && err.diagnosis?.['reason'] === 'connector-excluded') {
+    res.status(403).json({
+      error: 'connector-excluded',
+      message: 'This connector was removed from this agent. Only its owner or a workspace admin can add it back.',
+    });
+    return true;
+  }
   if (err.code === 'forbidden') {
     res.status(403).json({ error: 'forbidden' });
     return true;

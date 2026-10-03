@@ -784,6 +784,33 @@ describe('agent connector routes', () => {
       });
       const r = await attach({ connectorId: 'shared' });
       expect(r.statusCode).toBe(403);
+      expect(r.body).toEqual({ error: 'forbidden' });
+    });
+
+    // TASK-766 — a member re-adding a connector the owner/admin removed from
+    // this agent: the hook's tagged refusal keeps its reason, as a stable code.
+    it('says connector-excluded when the hook refuses re-adding a removed connector', async () => {
+      attachRefusal = new PluginError({
+        code: 'forbidden',
+        plugin: 'agents',
+        message: "connector 'linear' was removed from this agent; only its owner or an admin can bring it back",
+        diagnosis: { reason: 'connector-excluded' },
+      });
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(403);
+      const body = r.body as { error: string; message: string };
+      expect(body.error).toBe('connector-excluded');
+      expect(Object.keys(body).sort()).toEqual(['error', 'message']);
+      // Never echoes the hook's message (it names the id) or anyone's identity.
+      expect(body.message).not.toContain('linear');
+      expect(body.message).not.toContain('u1');
+    });
+
+    it('an owner/admin attach the hook allows is unchanged: 200', async () => {
+      caller = { id: 'u1', isAdmin: false };
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(200);
+      expect(r.body).toEqual({ attached: true, changed: true });
     });
 
     it("404s another person's agent and never attaches", async () => {
