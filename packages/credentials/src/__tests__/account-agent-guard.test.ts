@@ -208,7 +208,7 @@ describe('credentials:get — account: refs gate the AGENT step (TASK-711)', () 
     expect(JSON.stringify(lines)).not.toContain('TEAM-TOKEN');
   });
 
-  it('(c) PIN (positive control, passes unfixed): provider says {allowed:true} -> the agent value is returned', async () => {
+  it('(c) positive control + FAILS UNFIXED (provider never consulted there): {allowed:true} -> the agent value is returned', async () => {
     const agent = authzStub(() => ({ allowed: true }));
     const bus = await makeBus({ agent });
     await seed(bus, 'agent', 'team-agent', 'account:linear', 'TEAM-TOKEN');
