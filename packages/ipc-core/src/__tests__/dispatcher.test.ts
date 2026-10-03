@@ -735,6 +735,43 @@ describe('dispatcher', () => {
     expect(received.usage).toEqual(usage);
   });
 
+  it('POST /event.turn-end — foldedReqIds reaches chat:turn-end (TASK-708)', async () => {
+    // agent-activity drains a folded message's turn off this field; the wire
+    // schema strips undeclared keys, so it has to survive validation.
+    let resolved: (v: unknown) => void;
+    const firePromise = new Promise<unknown>((resolve) => {
+      resolved = resolve;
+    });
+    const s = await setup({
+      subscribers: [
+        {
+          hook: 'chat:turn-end',
+          handler: async (_ctx, payload) => {
+            resolved(payload);
+            return undefined;
+          },
+        },
+      ],
+    });
+    setups.push(s);
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.turn-end',
+      s.token,
+      JSON.stringify({
+        reqId: 'r-1',
+        reason: 'user-message-wait',
+        role: 'assistant',
+        foldedReqIds: ['r-2'],
+      }),
+    );
+    expect(res.status).toBe(202);
+    const received = (await firePromise) as { reqId?: unknown; foldedReqIds?: unknown };
+    expect(received.reqId).toBe('r-1');
+    expect(received.foldedReqIds).toEqual(['r-2']);
+  });
+
   it('POST /event.turn-end — a usage count over the ceiling is a 400, not a metered turn (TASK-692)', async () => {
     const s = await setup({});
     setups.push(s);

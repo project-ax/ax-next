@@ -385,6 +385,18 @@ function systemInit(sessionId: string): SDKMessage {
   } as unknown as SDKMessage;
 }
 
+/** The CLI's `--replay-user-messages` echo of a message it consumed. */
+function replayOf(sent: SDKUserMessage): SDKMessage {
+  return {
+    type: 'user',
+    message: sent.message,
+    parent_tool_use_id: null,
+    session_id: 'sess-1',
+    uuid: sent.uuid!,
+    isReplay: true,
+  } as SDKMessage;
+}
+
 function resultSuccess(): SDKMessage {
   return {
     type: 'result',
@@ -732,6 +744,81 @@ describe('main()', () => {
     expect(queryArg.options.env.DISABLE_ERROR_REPORTING).toBe('1');
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  // TASK-708: a message that reaches the CLI mid-turn can be folded into the
+  // running turn — one `result` answers both, so the second message's reqId
+  // never gets a turn-end of its own. The CLI says so only when asked
+  // (`--replay-user-messages`): it echoes the message, by the uuid we gave it,
+  // before the running turn's result. The loop must ask, must name each
+  // message, and must hand the echo to the shell, which lists the folded reqId
+  // on the turn-ends of the turn that answered it.
+  it('a message folded into the running turn is named on that turn\'s turn-ends (TASK-708)', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([
+      userEntry('run the slow thing', 'req-a'),
+      userEntry('also, what is 2+2?', 'req-b'),
+      cancelEntry,
+    ]);
+    const yieldedUuids: Array<string | undefined> = [];
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+        (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          const a = await it.next();
+          yieldedUuids.push((a.value as SDKUserMessage).uuid);
+          yield { ...replayOf(a.value as SDKUserMessage) };
+          yield assistantText('running it');
+          // The second message arrives mid-turn and the CLI folds it in.
+          const b = await it.next();
+          yieldedUuids.push((b.value as SDKUserMessage).uuid);
+          yield { ...replayOf(b.value as SDKUserMessage) };
+          yield resultSuccess();
+          await it.next();
+        })(),
+    );
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    const queryArg = queryMock.mock.calls[0]?.[0] as {
+      options: { extraArgs?: Record<string, string | null> };
+    };
+    expect(queryArg.options.extraArgs).toEqual({ 'replay-user-messages': null });
+    // Each message went to the SDK under its own id.
+    expect(yieldedUuids).toHaveLength(2);
+    expect(new Set(yieldedUuids).size).toBe(2);
+    for (const u of yieldedUuids) expect(typeof u).toBe('string');
+
+    const turnEnds = fakeClient.event.mock.calls
+      .filter((c) => c[0] === 'event.turn-end')
+      .map((c) => c[1] as { reqId?: string; foldedReqIds?: string[]; contentBlocks?: unknown });
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]).toMatchObject({ reqId: 'req-a', foldedReqIds: ['req-b'] });
+    // A replay publishes nothing of its own: the person's words are not
+    // re-emitted as turn content.
+    expect(turnEnds[0]?.contentBlocks).toEqual([{ type: 'text', text: 'running it' }]);
   });
 
   // PR 2 (provider-agnostic model refs, docs/plans/2026-08-18-provider-

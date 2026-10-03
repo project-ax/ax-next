@@ -161,6 +161,19 @@ export const EventTurnEndSchema = z.object({
    * way the runner keeps and retries next turn.
    */
   saveRefused: SaveRefusedCodeSchema.optional(),
+  /**
+   * The reqIds of OTHER user messages this turn answered (TASK-708). A runner
+   * whose model folds a message that arrived mid-turn into the running turn
+   * (the Claude Code CLI does, at a tool boundary) produces ONE turn for two
+   * `chat:start`s; the folded message never gets a turn-end of its own, so
+   * without this a per-turn subscriber keeps waiting on it until `chat:end`.
+   *
+   * Only ids the runner OBSERVED being consumed into this turn — never a guess
+   * from counting messages — and never the turn's own `reqId`. Runner-reported
+   * and therefore untrusted: bounded, and a subscriber may only use it to stop
+   * waiting on an id it was already waiting on.
+   */
+  foldedReqIds: z.array(z.string().min(1).max(256)).max(64).optional(),
 });
 export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
 

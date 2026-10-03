@@ -241,6 +241,12 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           yield {
             type: 'user',
             parent_tool_use_id: null,
+            // TASK-708: the shell's id for this message. With
+            // `--replay-user-messages` (below) the CLI echoes it back as the
+            // message is consumed — including when it is folded into a turn
+            // already running — which is how the shell learns which turn
+            // answered it.
+            uuid: next.id as NonNullable<SDKUserMessage['uuid']>,
             // Cast: SDKUserMessage.message.content is typed `string` today, but
             // the SDK accepts content-block arrays at runtime (the SDK's outbound
             // schema permits both shapes; the type just hasn't been widened yet).
@@ -644,6 +650,17 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //
           // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
           settingSources: ['user'],
+          // TASK-708: echo each user message back (`isReplay`) as the CLI
+          // consumes it. That echo is the ONLY observable sign that a message
+          // which arrived mid-turn was folded into the running turn (the CLI's
+          // `queued_command` attachment, drained at a tool boundary) rather
+          // than queued for a turn of its own — and a folded message gets no
+          // `result`, so without it its reqId is never closed. Measured
+          // against the pinned CLI with a mock model API (2026-10-03): with
+          // the flag a fold echoes the message BEFORE the running turn's
+          // `result`; a message that gets its own turn echoes AFTER it; and
+          // without the flag a fold emits nothing at all.
+          extraArgs: { 'replay-user-messages': null },
           // The file-based prompt-engine composed this at spawn for this session
           // (the shell's `buildSystemPrompt` call). It also folds in the
           // ephemeral-scratch / python-venv operational notes (paired with
@@ -792,6 +809,13 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               });
             }
           }
+        } else if (msg.type === 'user' && 'isReplay' in msg && msg.isReplay === true) {
+          // TASK-708: the CLI acknowledging a user message it has consumed
+          // (see `replay-user-messages` above). The shell decides whether
+          // that was a fold; an id it did not mint is ignored there. Nothing
+          // else in a replay is ours to publish — the person's own words
+          // reach the conversation through POST /api/chat/messages.
+          ctx.markMessageConsumed(msg.uuid);
         } else if (msg.type === 'user') {
           // The SDK echoes tool_result blocks back as `user` messages once
           // a tool finishes (the model issued a tool_use; the runner ran

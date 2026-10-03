@@ -599,6 +599,21 @@ describe('events', () => {
     }
   });
 
+  // TASK-708: the reqIds of messages folded into this turn. The schema strips
+  // unknown keys, so without the field declared the host would never see it.
+  it('EventTurnEnd keeps foldedReqIds, and bounds them', () => {
+    const parsed = EventTurnEndSchema.parse({
+      reqId: 'r1',
+      reason: 'user-message-wait',
+      foldedReqIds: ['r2', 'r3'],
+    });
+    expect(parsed.foldedReqIds).toEqual(['r2', 'r3']);
+    for (const bad of [[''], ['x'.repeat(257)], Array.from({ length: 65 }, (_, i) => `r${i}`), 'r2', [7]]) {
+      const r = EventTurnEndSchema.safeParse({ reason: 'complete', foldedReqIds: bad });
+      expect(r.success).toBe(false);
+    }
+  });
+
   it('EventTurnEnd rejects an unknown reason', () => {
     const r = EventTurnEndSchema.safeParse({ reason: 'giving-up' });
     expect(r.success).toBe(false);
