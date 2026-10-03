@@ -155,7 +155,12 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         {
           hook: 'connectors:resolve',
           degradation:
-            "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected",
+            "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected; a newly attached connector also cannot copy its per-tool defaults",
+        },
+        {
+          hook: 'tool-policy:snapshot-connector-for-agent',
+          degradation:
+            "a newly attached connector does not copy its per-tool defaults; the agent follows the connector's live defaults instead (a later loosening by the connector's editor then applies to it too)",
         },
         {
           hook: 'models:get-policy',

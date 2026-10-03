@@ -22,6 +22,18 @@ import type {
   UpsertOutput,
 } from './types.js';
 import { deriveCredentialPlan } from './credential-plan.js';
+import { deriveToolNamespaces } from './tool-namespace.js';
+import {
+  parseToolPermissionsBody,
+  shapeInventory,
+  type DescribeToolsInputLike,
+  type DescribeToolsOutputLike,
+  type GetConnectorDefaultsInputLike,
+  type GetConnectorDefaultsOutputLike,
+  type InventoryToolLike,
+  type SetConnectorDefaultsInputLike,
+  type SetConnectorDefaultsOutputLike,
+} from './tool-permissions.js';
 
 // Structural mirrors of the orchestrator's authored-connector grant hook
 // (registered by @ax/chat-orchestrator) + the agents ACL gate. Re-declared here
@@ -377,6 +389,48 @@ export function createConnectorRouteHandlers(
     return actor;
   }
 
+  /**
+   * Authenticate, then load a connector the actor may EDIT (TASK-737). 404 for
+   * a missing / invisible one (same leak posture as `show`), 403 `read-only`
+   * for one they can only read. On success also returns the connector's tool
+   * namespaces — derived from the actor, which is correct ONLY because an
+   * editable connector is always one the actor owns (`canEdit` is
+   * `row owner === actor`; namespaces are keyed by the row owner).
+   */
+  async function loadEditable(
+    req: RouteRequest,
+    res: RouteResponse,
+  ): Promise<{
+    actor: { id: string; isAdmin: boolean };
+    connector: Connector;
+    namespaces: string[];
+  } | null> {
+    const actor = await authenticate(req, res);
+    if (actor === null) return null;
+    const id = req.params.id;
+    if (typeof id !== 'string' || id.length === 0) {
+      res.status(400).json({ error: 'missing-id' });
+      return null;
+    }
+    let connector: Connector;
+    try {
+      const got = await deps.bus.call<GetInput, GetOutput>('connectors:get', ctx, {
+        userId: actor.id,
+        connectorId: id,
+      });
+      connector = got.connector;
+    } catch (err) {
+      handleHookError(err, res);
+      return null;
+    }
+    if (isReadOnly(connector, mode) || connector.canEdit !== true) {
+      res.status(403).json({ error: 'read-only' });
+      return null;
+    }
+    const namespaces = deriveToolNamespaces(actor.id, connector).map((e) => e.toolNamespace);
+    return { actor, connector, namespaces };
+  }
+
   return {
     /** GET /admin/connectors */
     async list(req: RouteRequest, res: RouteResponse): Promise<void> {
@@ -619,6 +673,114 @@ export function createConnectorRouteHandlers(
     },
 
     /**
+     * GET …/connectors/:id/tool-permissions[?refresh=1] — the connector's tool
+     * list plus the per-tool defaults saved for it (TASK-737). Only someone who
+     * may EDIT the connector gets an answer (the same `isReadOnly` gate PATCH
+     * uses): a default here becomes a ceiling on every agent that uses it.
+     *
+     * Inventory is best-effort — an unreachable server or a preset without
+     * `connectors:describe-tools` answers `status` + `tools: []`, and the saved
+     * defaults still come back so the editor can show and change them.
+     */
+    async toolPermissions(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const target = await loadEditable(req, res);
+      if (target === null) return;
+      if (!deps.bus.hasService('tool-policy:get-connector-defaults')) {
+        res.status(503).json({ error: 'unavailable' });
+        return;
+      }
+      const { actor, connector, namespaces } = target;
+      const own = new Set(namespaces);
+      let status: DescribeToolsOutputLike['status'] = 'unknown';
+      let checkedAt: string | null = null;
+      let tools: InventoryToolLike[] = [];
+      if (namespaces.length > 0 && deps.bus.hasService('connectors:describe-tools')) {
+        try {
+          const out = await deps.bus.call<DescribeToolsInputLike, DescribeToolsOutputLike>(
+            'connectors:describe-tools',
+            ctx,
+            {
+              userId: actor.id,
+              connectorId: connector.id,
+              ...(req.query.refresh === '1' && { force: true }),
+            },
+          );
+          status = out.status;
+          checkedAt = out.checkedAt;
+          tools = shapeInventory(out.tools, own);
+        } catch (err) {
+          // The list of tools is a convenience for the editor, never a gate:
+          // a failed lookup reads as "we can't list them right now".
+          ctx.logger.warn('connectors_tool_permissions_inventory_failed', {
+            connectorId: connector.id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      const saved =
+        namespaces.length === 0
+          ? { defaults: [] }
+          : await deps.bus.call<GetConnectorDefaultsInputLike, GetConnectorDefaultsOutputLike>(
+              'tool-policy:get-connector-defaults',
+              ctx,
+              { connectorId: connector.id, toolNamespaces: namespaces },
+            );
+      res.status(200).json({ status, checkedAt, tools, defaults: saved.defaults });
+    },
+
+    /**
+     * PUT …/connectors/:id/tool-permissions — body
+     * `{ verdicts: [{ toolKey, verdict: 'allow'|'hold'|'deny'|null }] }`.
+     * Same editor-only gate as the read. Every key must be one of THIS
+     * connector's tools (see `parseToolPermissionsBody` — the policy hook does
+     * not check that, by design). All-or-nothing.
+     */
+    async setToolPermissions(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const target = await loadEditable(req, res);
+      if (target === null) return;
+      if (!deps.bus.hasService('tool-policy:set-connector-defaults')) {
+        res.status(503).json({ error: 'unavailable' });
+        return;
+      }
+      const body = parseAndValidateBody(req.body);
+      if (!body.ok) {
+        res.status(body.status).json({ error: body.message });
+        return;
+      }
+      const parsed = parseToolPermissionsBody(body.value, new Set(target.namespaces));
+      if (!parsed.ok) {
+        res.status(400).json({
+          error: parsed.error,
+          ...(parsed.toolKey !== undefined && { toolKey: parsed.toolKey.slice(0, 200) }),
+        });
+        return;
+      }
+      if (parsed.verdicts.length === 0) {
+        res.status(200).json({ ok: true });
+        return;
+      }
+      const out = await deps.bus.call<SetConnectorDefaultsInputLike, SetConnectorDefaultsOutputLike>(
+        'tool-policy:set-connector-defaults',
+        // Attribute the write to the real editor (`updated_by`), not the
+        // bundle's synthetic ctx.
+        makeAgentContext({
+          sessionId: `connectors-${mode}`,
+          agentId: PLUGIN_NAME,
+          userId: target.actor.id,
+        }),
+        { connectorId: target.connector.id, verdicts: parsed.verdicts },
+      );
+      if (!out.ok) {
+        res.status(400).json({
+          error: out.reason,
+          ...(out.toolKey !== undefined && { toolKey: out.toolKey }),
+        });
+        return;
+      }
+      res.status(200).json({ ok: true });
+    },
+
+    /**
      * GET /settings/connectors/authored — the Settings "Proposed by your
      * assistant" fallback list. Returns the session user's PENDING authored
      * connector drafts across ALL their agents (each carrying its `agentId` so
@@ -814,7 +976,7 @@ export function createAdminConnectorRouteHandlers(deps: AdminRouteDeps) {
 // --- registration ---------------------------------------------------------
 
 /**
- * Register all six admin routes against @ax/http-server. Returned unregister
+ * Register the admin routes against @ax/http-server. Returned unregister
  * callbacks should be tracked by the plugin and called on shutdown so a re-init
  * (tests) doesn't trip duplicate-route.
  */
@@ -824,7 +986,7 @@ export async function registerAdminConnectorRoutes(
 ): Promise<Array<() => void>> {
   const handlers = createConnectorRouteHandlers({ bus, mode: 'admin' });
   const routes: Array<{
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
@@ -834,6 +996,17 @@ export async function registerAdminConnectorRoutes(
     { method: 'PATCH', path: '/admin/connectors/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/connectors/:id', handler: handlers.destroy },
     { method: 'POST', path: '/admin/connectors/:id/test', handler: handlers.test },
+    // TASK-737 — per-tool default permissions (editor-only; see handlers).
+    {
+      method: 'GET',
+      path: '/admin/connectors/:id/tool-permissions',
+      handler: handlers.toolPermissions,
+    },
+    {
+      method: 'PUT',
+      path: '/admin/connectors/:id/tool-permissions',
+      handler: handlers.setToolPermissions,
+    },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {
@@ -866,7 +1039,7 @@ export async function registerUserConnectorRoutes(
 ): Promise<Array<() => void>> {
   const handlers = createConnectorRouteHandlers({ bus, mode: 'user' });
   const routes: Array<{
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
@@ -900,6 +1073,17 @@ export async function registerUserConnectorRoutes(
       method: 'DELETE',
       path: '/settings/connectors/:id',
       handler: handlers.destroy,
+    },
+    // TASK-737 — a private connector's author sets its per-tool defaults.
+    {
+      method: 'GET',
+      path: '/settings/connectors/:id/tool-permissions',
+      handler: handlers.toolPermissions,
+    },
+    {
+      method: 'PUT',
+      path: '/settings/connectors/:id/tool-permissions',
+      handler: handlers.setToolPermissions,
     },
   ];
   const unregisters: Array<() => void> = [];

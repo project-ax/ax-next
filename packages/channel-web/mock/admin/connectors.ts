@@ -23,6 +23,10 @@ import { requireSession } from '../auth';
  *   GET    <base>/:id  → { connector: Connector }
  *   PATCH  <base>/:id  body Partial<ConnectorUpsertInput> → { connector, created:false }
  *   DELETE <base>/:id  → 204
+ *   GET    <base>/:id/tool-permissions[?refresh=1]
+ *          → { status, checkedAt, tools: InventoryTool[], defaults: SavedDefault[] }
+ *   PUT    <base>/:id/tool-permissions  body { verdicts: [{ toolKey, verdict|null }] }
+ *          → { ok: true }   (TASK-737; editors only, 403 otherwise)
  *
  * Note the path has NO `/api/` prefix (unlike the mock `/api/admin/mcp-servers`)
  * — it matches the real `@ax/connectors` routes, which the UI hits directly.
@@ -236,6 +240,54 @@ function rejectAdminOnlyFields(body: Record<string, unknown>): string | null {
   return null;
 }
 
+// ---- tool permissions (TASK-737) -------------------------------------------
+
+type ToolVerdict = 'allow' | 'hold' | 'deny';
+const TOOL_VERDICTS: readonly ToolVerdict[] = ['allow', 'hold', 'deny'];
+const TOOL_PUT_MAX = 500;
+
+interface InventoryTool {
+  toolKey: string;
+  name: string;
+  title: string;
+  description: string;
+  readOnly: boolean | null;
+  outward: boolean | null;
+}
+
+/** A plausible Linear-like inventory. Every remote connector reports it — the
+ *  mock has no real server to list tools from. */
+const MOCK_TOOLS: Omit<InventoryTool, 'toolKey'>[] = [
+  { name: 'search_issues', title: 'Search issues', description: 'Search issues by text, team, or status.', readOnly: true, outward: false },
+  { name: 'get_issue', title: 'Read an issue', description: 'Get the details and comments of one issue.', readOnly: true, outward: false },
+  { name: 'list_projects', title: 'List projects', description: 'List the projects in your workspace.', readOnly: true, outward: false },
+  { name: 'create_issue', title: 'Create issue', description: 'Create a new issue. Teammates are notified.', readOnly: false, outward: true },
+  { name: 'update_issue', title: 'Update issue', description: 'Change an issue’s title, status, or assignee.', readOnly: false, outward: false },
+  { name: 'delete_issue', title: 'Delete issue', description: 'Delete an issue for everyone.', readOnly: false, outward: true },
+];
+
+function mockInventory(connectorId: string): InventoryTool[] {
+  return MOCK_TOOLS.map((tool) => ({ ...tool, toolKey: `mcp.${connectorId}.${tool.name}` }));
+}
+
+/** In-memory saved defaults, per store: row id → toolKey → verdict. Shared by
+ *  the admin and user bundles (same connector, same defaults). */
+const toolDefaultsByStore = new WeakMap<Store, Map<string, Map<string, ToolVerdict>>>();
+
+function toolDefaultsFor(store: Store, rowId: string): Map<string, ToolVerdict> {
+  let byRow = toolDefaultsByStore.get(store);
+  if (!byRow) {
+    byRow = new Map();
+    toolDefaultsByStore.set(store, byRow);
+  }
+  let defaults = byRow.get(rowId);
+  if (!defaults) {
+    defaults = new Map();
+    byRow.set(rowId, defaults);
+  }
+  return defaults;
+}
+
 /**
  * The shared connector-routes mock, parameterized by `base` (the bundle's path)
  * and `mode` (`'admin'` = the registry, `'user'` = locked-down authoring). One
@@ -247,7 +299,11 @@ function connectorsMiddleware(
   opts: { base: string; mode: RouteMode },
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
   const { base, mode } = opts;
-  const idRe = new RegExp(`^${base.replace(/[/]/g, '\\/')}\\/([^/]+)$`);
+  // Escape EVERY regex metacharacter in the base (not just `/`), so the
+  // pattern matches the literal prefix whatever it contains.
+  const escapedBase = base.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  const idRe = new RegExp(`^${escapedBase}\\/([^/]+)$`);
+  const toolPermsRe = new RegExp(`^${escapedBase}\\/([^/]+)\\/tool-permissions$`);
   return async (req, res) => {
     const url = req.url ?? '';
     if (!url.startsWith(base)) return false;
@@ -322,6 +378,61 @@ function connectorsMiddleware(
       connectors.upsert(row);
       send(res, existing ? 200 : 201, { connector: toConnector(row, actor.id), created: !existing });
       return true;
+    }
+
+    // ---- <base>/:id/tool-permissions (TASK-737) ----------------------------
+    const toolPermsMatch = path.match(toolPermsRe);
+    if (toolPermsMatch && toolPermsMatch[1]) {
+      const connectorId = decodeURIComponent(toolPermsMatch[1]);
+      const row = availableById(connectorId);
+      if (!row) {
+        send(res, 404, { error: 'not-found' });
+        return true;
+      }
+      // Only someone who can edit the connector can see or set its defaults.
+      if (isReadOnly(row, actor.id, mode)) {
+        send(res, 403, { error: 'read-only' });
+        return true;
+      }
+      const defaults = toolDefaultsFor(store, row.id);
+      if (method === 'GET') {
+        const remote = row.capabilities.mcpServers.some((s) => s.transport === 'http');
+        send(res, 200, {
+          status: remote ? 'ok' : 'unknown',
+          checkedAt: remote ? new Date().toISOString() : null,
+          tools: remote ? mockInventory(connectorId) : [],
+          defaults: [...defaults].map(([toolKey, verdict]) => ({ toolKey, verdict })),
+        });
+        return true;
+      }
+      if (method === 'PUT') {
+        const body = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>;
+        const verdicts = body.verdicts;
+        if (!Array.isArray(verdicts) || verdicts.length > TOOL_PUT_MAX) {
+          send(res, 400, { error: `verdicts must be an array of at most ${TOOL_PUT_MAX} rows` });
+          return true;
+        }
+        const next = new Map(defaults);
+        for (const entry of verdicts as Record<string, unknown>[]) {
+          const toolKey = entry?.toolKey;
+          const verdict = entry?.verdict;
+          if (typeof toolKey !== 'string' || toolKey.length === 0 || toolKey.length > 256) {
+            send(res, 400, { error: 'toolKey must be a non-empty string' });
+            return true;
+          }
+          if (verdict === null) next.delete(toolKey);
+          else if (TOOL_VERDICTS.includes(verdict as ToolVerdict)) next.set(toolKey, verdict as ToolVerdict);
+          else {
+            send(res, 400, { error: 'verdict must be allow, hold, deny, or null', toolKey });
+            return true;
+          }
+        }
+        defaults.clear();
+        for (const [k, v] of next) defaults.set(k, v);
+        send(res, 200, { ok: true });
+        return true;
+      }
+      return false;
     }
 
     // ---- <base>/:id --------------------------------------------------------

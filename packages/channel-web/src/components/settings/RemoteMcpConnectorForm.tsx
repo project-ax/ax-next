@@ -7,6 +7,11 @@ import {
 } from '@/lib/connectors';
 import { connectorIdFromName } from '@/lib/connector-form';
 import {
+  putToolPermissions,
+  ToolPermissionsError,
+} from '@/lib/connector-tool-permissions';
+import { useToolPermissions } from '@/lib/use-tool-permissions';
+import {
   discoverOAuthHosts,
   getOAuthClientMetadata,
   type OAuthDiscovery,
@@ -47,6 +52,7 @@ import { Separator } from '@/components/ui/separator';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
+import { ConnectorToolPermissions } from './ConnectorToolPermissions';
 import type { ConnectorEditDialogProps } from './LegacyConnectorEditDialog';
 
 function Disclosure({
@@ -104,6 +110,8 @@ export function RemoteMcpConnectorForm({
   const [headersOpen, setHeadersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const keyMode = connector?.keyMode ?? 'personal';
+  const base = isAdmin ? '/admin/connectors' : '/settings/connectors';
+  const toolPermissions = useToolPermissions(connector?.id, base);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -332,18 +340,30 @@ export function RemoteMcpConnectorForm({
         capabilities,
         keyMode,
       };
-      if (connector)
-        await patchConnector(
-          connectorId,
-          input,
-          isAdmin ? '/admin/connectors' : '/settings/connectors',
-        );
+      if (connector) await patchConnector(connectorId, input, base);
       else
         await createConnector(
           { ...input, visibility: 'shared', defaultAttached: false },
-          isAdmin ? '/admin/connectors' : '/settings/connectors',
+          base,
         );
       update('clientSecret', '');
+      const toolChanges = toolPermissions.changes;
+      if (connector && toolChanges.length) {
+        try {
+          await putToolPermissions(connectorId, base, toolChanges);
+        } catch (err) {
+          // The connector itself is saved; stay open so Save can retry this.
+          const status = err instanceof ToolPermissionsError ? err.status : 0;
+          setSaveError(
+            status === 503
+              ? 'We saved the connector, but tool permissions can’t be saved right now. Try again in a little while.'
+              : status === 400
+                ? 'We saved the connector, but these tool permissions didn’t look right to us. Reopen the connector and try again.'
+                : 'We saved the connector, but not its tool permissions. Try saving again.',
+          );
+          return;
+        }
+      }
       onSaved();
       onOpenChange(false);
     } catch {
@@ -787,6 +807,11 @@ export function RemoteMcpConnectorForm({
                     </div>
                   </>
                 )}
+                <ConnectorToolPermissions
+                  state={toolPermissions}
+                  connectorName={connector?.name ?? draft.name}
+                  isNew={!connector}
+                />
                 {errors.workspace && (
                   <FieldError>{errors.workspace}</FieldError>
                 )}

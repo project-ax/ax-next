@@ -11,7 +11,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --build",
     "test": "vitest run",
@@ -31,6 +33,7 @@
     "@ax/skills": "workspace:*",
     "@ax/teams": "workspace:*",
     "@ax/test-harness": "workspace:*",
+    "@ax/tool-policy": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",
     "@types/pg": "8.20.0",

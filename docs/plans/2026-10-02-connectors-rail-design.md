@@ -64,6 +64,12 @@ Ask `warning-soft`/`warning`, Deny `destructive-soft`/`destructive`.
   The agent's choice is snapshotted from the admin default at attach (decision 2: "copy"), so an
   admin *loosening* a default later does not silently loosen agents already using the connector,
   while an admin *tightening* applies to every agent immediately (it is a ceiling).
+  **As built (TASK-737), the copy covers only defaults that exist at attach time.** Two cases follow
+  the connector's *live* default instead: (1) a tool that had no default when the agent attached
+  (nothing to copy, so it sits at the implicit Ask first until the editor sets one, and then follows
+  it, looser included); (2) default-on (workspace) connectors, which reach agents without an attach
+  and so are never snapshotted. Freezing those would need the tool list at attach time, or a
+  namespace-level "unset means Ask first" row in tool-policy. That's tracked as a follow-up, not done.
 - **A connector tool with no admin default and never inventoried → Ask first.** Today it runs
   unasked (`tool-policy` no-match default `allow`); this closes that hole for connector tools only.
 - **Ability toggles** are agent-level tighten-only overrides on `web_search`, `web_extract`, `Bash`.

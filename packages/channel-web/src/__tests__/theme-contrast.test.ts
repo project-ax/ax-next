@@ -843,6 +843,9 @@ describe('ACCENT_SOFT_PAIRS covers every soft tint the tree paints as text', () 
    */
   it('finds the warning tint exactly where TASK-445 measured it', () => {
     expect(softTextSites('warning')).toEqual([
+      // TASK-737: the selected "Ask first" toggle in the connector editor.
+      // Same --warning on --warning-soft pair the loop below measures.
+      'components/settings/ConnectorToolPermissions.tsx',
       'components/ui/badge.tsx',
       'components/workspace/bits.tsx',
     ]);
