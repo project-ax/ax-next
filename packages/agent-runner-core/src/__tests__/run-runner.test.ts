@@ -1918,6 +1918,60 @@ describe('runRunner — refused saves the host kept for the model (TASK-749)', (
     expect(seen[2]).toEqual({ content: 'thanks' });
   });
 
+  it('pull-ahead: a message built before the refused turn closes, then the host handing that refusal back, still tells it ONCE', async () => {
+    // The Claude Agent SDK pulls its next prompt while a turn streams, so turn
+    // 2's message (and its drain) runs before turn 1's close. The drain for
+    // turn 3 then sees turn 1's row; the in-process notice must be the only one.
+    const original = fakeClient.call.getMockImplementation()!;
+    const drains: unknown[] = [
+      { refusals: [] }, // turn 1
+      { refusals: [] }, // turn 2, pulled ahead: the row does not exist yet
+      { refusals: [{ code: 'refused', turnReqId: 'req-1' }] }, // turn 3
+    ];
+    fakeClient.call.mockImplementation(async (action: string, ...args: unknown[]) => {
+      if (action === 'session.get-config') return { ...(await original(action, ...args)), conversationId: 'c1' };
+      if (action === 'attachments.list') return { files: [] };
+      if (action === 'conversation.drain-save-refusals') return drains.shift() ?? { refusals: [] };
+      return original(action, ...args);
+    });
+    (commitTurnAndBundle as unknown as Mock).mockResolvedValueOnce(Buffer.from('BUNDLE-1'));
+    (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
+      async () => ({ accepted: false, reason: 'no', recoverable: false }),
+    );
+    scriptInbox([msg('write it', 'req-1', 1), msg('pulled early', 'req-2', 2), msg('thanks', 'req-3', 3)]);
+    const seen: unknown[] = [];
+    const end = (ctx: LoopContext) =>
+      ctx.endTurn({
+        contentBlocks: [{ type: 'text', text: 'done' }],
+        toolResultBlocks: [],
+        readTurnId: async () => undefined,
+        usage: null,
+      });
+    const loop: Loop = {
+      run: vi.fn(async (ctx: LoopContext) => {
+        await ctx.nextMessage();
+        seen.push(await ctx.nextMessage()); // pulled ahead of turn 1's close
+        await end(ctx); // turn 1 closes: refused
+        await end(ctx); // turn 2 closes: nothing to save
+        seen.push(await ctx.nextMessage());
+        await end(ctx);
+        return 0;
+      }),
+    };
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(drains).toHaveLength(0);
+    expect(seen[0]).toEqual({ content: 'pulled early' });
+    const third = (seen[1] as { content: string }).content;
+    expect(third.split('System message (not from the user)')).toHaveLength(2);
+    expect(third).toContain('"no"');
+    expect(third.endsWith('\n\nthanks')).toBe(true);
+  });
+
   it('reaches a host-started decision turn too', async () => {
     const { seen } = await run({
       inbox: [{ type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: 'They said yes.' }],

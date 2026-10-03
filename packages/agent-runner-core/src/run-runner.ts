@@ -902,6 +902,12 @@ async function runRunnerInner(
   // same derivation as ipc-core's turn-end persist). A drained refusal with
   // one of these keys is one this process already told (or will tell) the
   // model about in-process, so it is dropped rather than told twice.
+  //
+  // Imprecise for dark turns: every reqId-less turn shares the `''` key (the
+  // host folds them that way, TASK-731), so once this process has refused a
+  // dark turn, another process's orphaned dark-turn refusal is dropped too.
+  // Dark turns are decision-resolved turns with no continuation id, so this
+  // costs an advisory notice in a narrow case; the person still sees the row.
   const refusedTurnKeys = new Set<string>();
 
   /**
