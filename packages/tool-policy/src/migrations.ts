@@ -64,7 +64,8 @@ export async function runToolPolicyMigration<DB>(db: Kysely<DB>): Promise<void> 
 
   // `origin` says who chose the row: `snapshot` was copied from the admin
   // default when the connector was attached, `user` was picked by a person.
-  // A later re-snapshot overwrites `snapshot` rows and never `user` ones.
+  // A later re-snapshot from an ATTACH overwrites `snapshot` rows and never
+  // `user` ones; a first-session copy (TASK-754) overwrites nothing.
   await sql`
     CREATE TABLE IF NOT EXISTS tool_policy_v1_agent_overrides (
       agent_id   TEXT NOT NULL,
@@ -74,6 +75,24 @@ export async function runToolPolicyMigration<DB>(db: Kysely<DB>): Promise<void> 
       updated_by TEXT NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (agent_id, tool_key)
+    )
+  `.execute(db);
+
+  // TASK-754 — the namespaces whose defaults an agent has COPIED (design
+  // decision 2, "copy on attach"). A tool under a copied namespace with no
+  // override row of its own is held (Ask first): "no default when I copied"
+  // is itself a verdict the agent keeps, so an admin setting a first, looser
+  // default later does not loosen this agent. A tightening still applies —
+  // the default stays a live ceiling. One row per (agent, namespace) rather
+  // than one per tool because the tool list is not known when the copy
+  // happens (attach, or a default-on connector's first session).
+  await sql`
+    CREATE TABLE IF NOT EXISTS tool_policy_v1_agent_copied_namespaces (
+      agent_id       TEXT NOT NULL,
+      tool_namespace TEXT NOT NULL,
+      copied_by      TEXT NOT NULL,
+      copied_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (agent_id, tool_namespace)
     )
   `.execute(db);
 }
@@ -103,8 +122,16 @@ export interface AgentOverrideRow {
   updated_at: Date;
 }
 
+export interface AgentCopiedNamespaceRow {
+  agent_id: string;
+  tool_namespace: string;
+  copied_by: string;
+  copied_at: Date;
+}
+
 export interface ToolPolicyDatabase {
   tool_policy_v1_egress_allowlist: EgressAllowlistRow;
   tool_policy_v1_connector_defaults: ConnectorDefaultRow;
   tool_policy_v1_agent_overrides: AgentOverrideRow;
+  tool_policy_v1_agent_copied_namespaces: AgentCopiedNamespaceRow;
 }

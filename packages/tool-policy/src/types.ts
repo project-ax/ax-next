@@ -862,6 +862,13 @@ export interface AgentOverrideView {
 
 export interface ListAgentOverridesOutput {
   overrides: AgentOverrideView[];
+  /**
+   * Connector tool namespaces whose defaults this agent has copied (TASK-754).
+   * A tool under one of them with NO entry in `overrides` is held (Ask first)
+   * for this agent whatever its live default says — the default can only
+   * tighten it. A tool under any other namespace follows its live default.
+   */
+  copiedNamespaces: string[];
 }
 
 export interface SnapshotConnectorForAgentInput {
@@ -869,6 +876,14 @@ export interface SnapshotConnectorForAgentInput {
   connectorId: string;
   /** From `connectors:resolve` — one namespace per MCP server the connector declares. */
   toolNamespaces: string[];
+  /**
+   * `true` when the connector reached the agent WITHOUT an attach (a
+   * workspace default, copied at session open): copy only namespaces never
+   * copied for this agent before, and overwrite no existing row. Absent or
+   * `false` is an attach: copy again, overwriting earlier copied rows (never
+   * a person's own choice).
+   */
+  onlyIfNotCopied?: boolean;
 }
 
 export interface SnapshotConnectorForAgentOutput {
@@ -909,6 +924,7 @@ export const ListAgentOverridesOutputSchema = z.object({
       origin: OverrideOriginSchema,
     }),
   ),
+  copiedNamespaces: z.array(z.string()),
 });
 
 export const SnapshotConnectorForAgentOutputSchema = z.object({

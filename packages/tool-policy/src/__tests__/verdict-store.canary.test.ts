@@ -57,6 +57,7 @@ afterEach(async () => {
   try {
     await c.query('DROP TABLE IF EXISTS tool_policy_v1_connector_defaults');
     await c.query('DROP TABLE IF EXISTS tool_policy_v1_agent_overrides');
+    await c.query('DROP TABLE IF EXISTS tool_policy_v1_agent_copied_namespaces');
   } finally {
     await c.end().catch(() => {});
   }
@@ -281,6 +282,123 @@ describe('verdict store canary (Postgres)', () => {
     ]);
     expect(await verdictOf(h, `mcp.${NEW}.send_message`)).toBe('deny');
     expect(await verdictOf(h, `mcp.${NEW}.list_messages`, 'agent-3')).toBe('allow');
+  });
+
+  // TASK-754 — the copied-namespace record, against the real SQL.
+  describe('copied namespaces (TASK-754)', () => {
+    const snap = (h: TestHarness, extra: Record<string, unknown> = {}, agentId = 'agent-1') =>
+      h.bus.call<unknown, SnapshotConnectorForAgentOutput>('tool-policy:snapshot-connector-for-agent', ctx(h), {
+        agentId,
+        connectorId: 'gmail',
+        toolNamespaces: [NS],
+        ...extra,
+      });
+    const setDefault = (h: TestHarness, toolKey: string, verdict: string) =>
+      h.bus.call('tool-policy:set-connector-defaults', ctx(h), {
+        connectorId: 'gmail',
+        verdicts: [{ toolKey, verdict }],
+      });
+
+    it('a tool with no default at attach stays held after a loosening, and across a restart', async () => {
+      const h1 = await boot();
+      await snap(h1);
+      await setDefault(h1, SEND, 'allow');
+      expect(await verdictOf(h1, SEND)).toBe('hold');
+      expect(await verdictOf(h1, SEND, 'agent-2')).toBe('allow');
+      await h1.close({ onError: () => {} });
+      harnesses.splice(harnesses.indexOf(h1), 1);
+      const h2 = await boot();
+      expect(await verdictOf(h2, SEND)).toBe('hold');
+      await setDefault(h2, SEND, 'deny');
+      expect(await verdictOf(h2, SEND)).toBe('deny');
+    });
+
+    it('a first-session copy claims once, even when two sessions open at the same moment', async () => {
+      const h = await boot();
+      await setDefault(h, LIST, 'hold');
+      const store = await dbStore(h);
+      const results = await Promise.all(
+        [1, 2, 3, 4].map(() =>
+          store.copyConnectorDefaults('agent-1', 'gmail', [NS], { onlyIfNotCopied: true }, 'u'),
+        ),
+      );
+      expect(results.reduce((a, b) => a + b, 0)).toBe(1);
+      expect(
+        await rawRows('SELECT agent_id, tool_namespace, copied_by FROM tool_policy_v1_agent_copied_namespaces'),
+      ).toEqual([{ agent_id: 'agent-1', tool_namespace: NS, copied_by: 'u' }]);
+    });
+
+    it('a first-session copy never overwrites a row written before the record existed', async () => {
+      const h = await boot();
+      await setDefault(h, SEND, 'allow');
+      // A snapshot row copied by an attach that predates this table.
+      await rawRows(
+        `INSERT INTO tool_policy_v1_agent_overrides (agent_id, tool_key, verdict, origin, updated_by)
+         VALUES ('agent-1', '${SEND}', 'hold', 'snapshot', 'old')`,
+      );
+      expect(await snap(h, { onlyIfNotCopied: true })).toEqual({ copied: 0 });
+      expect(await verdictOf(h, SEND)).toBe('hold');
+      // A repeat claim is a no-op.
+      await setDefault(h, LIST, 'allow');
+      expect(await snap(h, { onlyIfNotCopied: true })).toEqual({ copied: 0 });
+      expect(await verdictOf(h, LIST)).toBe('hold');
+    });
+
+    it('an attach re-copies snapshot rows and keeps the record', async () => {
+      const h = await boot();
+      await setDefault(h, SEND, 'hold');
+      expect(await snap(h)).toEqual({ copied: 1 });
+      await setDefault(h, SEND, 'allow');
+      expect(await snap(h)).toEqual({ copied: 1 });
+      expect(await verdictOf(h, SEND)).toBe('allow');
+      const list = await h.bus.call<unknown, ListAgentOverridesOutput>(
+        'tool-policy:list-agent-overrides',
+        ctx(h),
+        { agentId: 'agent-1' },
+      );
+      expect(list.copiedNamespaces).toEqual([NS]);
+    });
+
+    it('purges and renames carry the record', async () => {
+      const NEW = 'cabcdef0123';
+      const h = await boot();
+      await snap(h);
+      await snap(h, { toolNamespaces: [NS2] }, 'agent-2');
+      await snap(h, {}, 'agent-3');
+      // A stale record already under the new namespace is replaced.
+      await snap(h, { toolNamespaces: [NEW] }, 'agent-1');
+      await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+        connectorId: 'gmail',
+        renamed: [{ from: { server: 'gmail', toolNamespace: NS }, to: { server: 'mail', toolNamespace: NEW } }],
+        removed: [],
+      });
+      await h.bus.fire('agents:deleted', h.ctx(), { agentId: 'agent-3' });
+      expect(
+        await rawRows(
+          'SELECT agent_id, tool_namespace FROM tool_policy_v1_agent_copied_namespaces ORDER BY agent_id, tool_namespace',
+        ),
+      ).toEqual([
+        { agent_id: 'agent-1', tool_namespace: NEW },
+        { agent_id: 'agent-2', tool_namespace: NS2 },
+      ]);
+      await h.bus.fire('connectors:deleted', h.ctx(), {
+        connectorId: 'linear',
+        toolNamespaces: [{ server: 'linear', toolNamespace: NS2 }],
+      });
+      expect(
+        await rawRows('SELECT agent_id, tool_namespace FROM tool_policy_v1_agent_copied_namespaces'),
+      ).toEqual([{ agent_id: 'agent-1', tool_namespace: NEW }]);
+    });
+
+    it('copyConnectorDefaults refuses a malformed namespace and records nothing', async () => {
+      const h = await boot();
+      const store = await dbStore(h);
+      await expect(
+        store.copyConnectorDefaults('agent-1', 'gmail', [NS, '%'], { onlyIfNotCopied: false }, 'u'),
+      ).rejects.toThrow(/malformed tool namespace/);
+      // The table may not exist yet if nothing wrote; read through the store.
+      expect(await store.copiedNamespacesFor('agent-1')).toEqual([]);
+    });
   });
 });
 
