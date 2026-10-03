@@ -2356,6 +2356,56 @@ describe('chat-orchestrator', () => {
     expect(turnErrors[0]).not.toHaveProperty('error');
   });
 
+  // TASK-713 — a connector whose OAuth sign-in is dead makes the credential
+  // resolver throw an error NAMED NeedsReconnectError. Through the REAL bus it
+  // arrives as the wrapper's `.cause` (HookBus wraps non-PluginErrors), so the
+  // turn must surface `connector-needs-reconnect` — the person can fix that by
+  // reconnecting — instead of the generic `proxy-open-failed`.
+  it.each([
+    ['bus-wrapped (production shape)', () => {
+      const e = new Error('refresh token rejected; reconnect required');
+      e.name = 'NeedsReconnectError';
+      return e;
+    }],
+    // What proxy:open-session actually rethrows: credentials:get's PluginError
+    // wrapper (the bus passes a PluginError through unchanged).
+    ['PluginError wrapper with the named cause', () => {
+      const cause = new Error('no refresh token; reconnect required');
+      cause.name = 'NeedsReconnectError';
+      return new PluginError({
+        code: 'unknown',
+        plugin: '@ax/mcp-oauth',
+        message: "service hook 'credentials:resolve:mcp-oauth' threw: x",
+        cause,
+      });
+    }],
+  ])('TASK-713: a dead connector sign-in at proxy:open-session → turn-error connector-needs-reconnect (%s)', async (_label, make) => {
+    const proxy = buildProxyHooks({ openThrows: make() });
+    const mocks = buildMocks();
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
+      ],
+    });
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('reconnect-sess', 'r-reconnect'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+    expect(turnErrors).toEqual([{ reqId: 'r-reconnect', reason: 'connector-needs-reconnect' }]);
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
   // TASK-22 — sibling pre-waiter early-return: same swallow-the-error class.
   // A skewed/missing proxy config (proxy-hooks-misconfigured) must also surface
   // a turn error rather than hang. Locks the whole class, not just the

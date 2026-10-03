@@ -91,3 +91,17 @@ describe('turnErrorText — storage full (TASK-690)', () => {
     expect(turnErrorText(code).toLowerCase()).not.toContain('delete');
   });
 });
+
+describe('turnErrorText — a connector sign-in expired (TASK-713)', () => {
+  it('points at Connectors instead of the generic "stopped unexpectedly" line', () => {
+    const text = turnErrorText('connector-needs-reconnect');
+    expect(text).not.toBe(DEFAULT_TURN_ERROR);
+    expect(text).toBe(
+      'One of this agent’s connectors needs you to sign in again. Open Connectors, reconnect it, then retry.',
+    );
+  });
+
+  it('keeps the generic line for an ordinary session-open failure', () => {
+    expect(turnErrorText('proxy-open-failed')).toBe(DEFAULT_TURN_ERROR);
+  });
+});

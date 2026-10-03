@@ -858,6 +858,28 @@ interface OpenSessionResult {
 }
 
 // ---------------------------------------------------------------------------
+// TASK-713 — a session that could not open because a connector's sign-in is
+// dead (the OAuth refresh token was rejected, or there is none) is not a
+// generic failure: the person can fix it by reconnecting that connector. The
+// credential resolver throws an error NAMED `NeedsReconnectError`; it reaches
+// us through `proxy:open-session` → `credentials:get` →
+// `credentials:resolve:<kind>`, and HookBus wraps a non-PluginError once, so
+// it is either the thrown value or the wrapper's `.cause`. Matched by NAME —
+// no import across plugins (invariant 2), the same duck-typing
+// `@ax/mcp-client`'s describe-tools `noUsableCredential` uses for the
+// Connectors rail's needs-auth health, so chat and the rail agree. A vault
+// blip, a decrypt failure or a missing provider key keeps `proxy-open-failed`.
+// ---------------------------------------------------------------------------
+
+/** Turn-error reason: a connector's sign-in expired; reconnect it, then retry. */
+const CONNECTOR_NEEDS_RECONNECT = 'connector-needs-reconnect';
+
+function isNeedsReconnect(err: unknown): boolean {
+  const named = (e: unknown): boolean => e instanceof Error && e.name === 'NeedsReconnectError';
+  return named(err) || named((err as { cause?: unknown } | null)?.cause);
+}
+
+// ---------------------------------------------------------------------------
 // Deferred — a Promise we can resolve/reject externally, with an idempotent
 // `settled` guard. Using this (vs. wiring promise executors by hand) keeps
 // the orchestrator flow readable.
@@ -2988,7 +3010,7 @@ export function createOrchestrator(
       }
       const outcome: AgentOutcome = {
         kind: 'terminated',
-        reason: 'proxy-open-failed',
+        reason: isNeedsReconnect(err) ? CONNECTOR_NEEDS_RECONNECT : 'proxy-open-failed',
         error: err,
       };
       // TASK-22 — credential resolution failure at session-open. This is the
