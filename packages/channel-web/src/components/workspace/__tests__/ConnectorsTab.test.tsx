@@ -88,6 +88,22 @@ describe('Connectors tab shell', () => {
     renderTab();
     expect(await screen.findByText(/Changes apply to Quill only\./)).toBeTruthy();
   });
+
+  it('says on the tab itself when the reach record would not load', async () => {
+    // The list moved behind a link; a failed read must not hide behind it too.
+    railMock.mockRejectedValue(new WorkspaceApiError('/agents/a-quill/rail', 500));
+    renderTab();
+    expect(
+      await screen.findByText(/couldn’t read what Quill can reach just now/),
+    ).toBeTruthy();
+  });
+
+  it('says nothing about a failed read when the rail loaded', async () => {
+    renderTab();
+    await sw('Web search');
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+    expect(screen.queryByText(/couldn’t read what Quill can reach/)).toBeNull();
+  });
 });
 
 describe('Other abilities', () => {

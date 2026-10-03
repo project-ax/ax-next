@@ -119,6 +119,17 @@ export function ConnectorsTab({
           See everything it can do
         </Button>
       </p>
+      {/*
+        The reach list lives behind the link now, so a rail that would not load
+        has to say so HERE too — otherwise the tab reads as complete when the
+        one record of what this agent can reach never arrived.
+      */}
+      {rail === null && !loading && (
+        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+          We couldn’t read what {name} can reach just now. Treat it as unknown
+          rather than empty.
+        </p>
+      )}
       <Collapsible className="mt-6">
         <h3 className="text-[11.5px] font-medium text-muted-foreground">
           <CollapsibleTrigger asChild>

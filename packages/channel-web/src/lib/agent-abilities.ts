@@ -7,7 +7,7 @@
  * with a sentence saying nothing changed.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { HttpError } from './http';
+import { HttpError, logRequestFailure } from './http';
 import { workspaceApi } from './workspace-api';
 import type { AgentAbilities, AgentAbility } from './workspace-types';
 
@@ -43,6 +43,7 @@ export function useAgentAbilities(agentId: string): AgentAbilitiesState {
         setStatus('ok');
       } catch (e) {
         if (scope.current !== id) return;
+        logRequestFailure(e, 'agent-abilities');
         setStatus(e instanceof HttpError && e.status === 503 ? 'unavailable' : 'failed');
       }
     })();
@@ -56,7 +57,9 @@ export function useAgentAbilities(agentId: string): AgentAbilitiesState {
         const out = await workspaceApi.setAbility(agentId, ability, enabled);
         if (scope.current === id) setAbilities(out.abilities);
         return true;
-      } catch {
+      } catch (e) {
+        // The person is told "nothing changed"; the operator gets the status.
+        logRequestFailure(e, 'agent-abilities');
         return false;
       } finally {
         if (scope.current === id) {
