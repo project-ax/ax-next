@@ -1443,12 +1443,6 @@ interface DescribeToolsOutput {
 }
 
 /**
- * Mirror of @ax/chat-orchestrator's `CONNECTOR_TOOL_NAMESPACE_RE`
- * (connector-union.ts) — no import (invariant 2). The routes test pins it.
- */
-const CONNECTOR_TOOL_NAMESPACE_RE = /^c[0-9a-f]{10}$/;
-
-/**
  * TASK-745 — the connectors a session on this agent would open WITHOUT one
  * or more of their servers.
  *
