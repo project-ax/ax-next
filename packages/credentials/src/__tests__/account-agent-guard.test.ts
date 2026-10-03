@@ -278,7 +278,7 @@ describe('credentials:get — account: refs gate the AGENT step (TASK-711)', () 
     expect(agent.calls).toEqual([]);
   });
 
-  it('(i) PIN: a denied agent step walks on to the (separately gated) global step', async () => {
+  it('(i) FAILS UNFIXED (the ungated agent row answered first): a denied agent step walks on to the (separately gated) global step', async () => {
     const agent = authzStub(() => ({ allowed: false }));
     const global = authzStub(() => ({ allowed: true }));
     const bus = await makeBus({ agent, global });
