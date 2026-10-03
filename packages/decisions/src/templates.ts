@@ -111,6 +111,12 @@ export interface DecisionTextInput {
    * Ignored for every other tool.
    */
   connectorName?: string | null | undefined;
+  /**
+   * TASK-753 — the MCP server's own cached title for the tool, when
+   * `connectors:tool-labels` had one. Preferred over the humanized raw name.
+   * Untrusted; fenced by the shared composer. Ignored for non-connector tools.
+   */
+  toolTitle?: string | null | undefined;
 }
 
 /**
@@ -123,7 +129,11 @@ export interface DecisionTextInput {
  */
 function rowToolName(input: DecisionTextInput): { tool: string; verb: 'use' | 'run' } {
   if (parseConnectorToolKey(input.toolName) !== null) {
-    const label = connectorToolLabel(input.toolName, input.connectorName ?? null);
+    const label = connectorToolLabel(
+      input.toolName,
+      input.connectorName ?? null,
+      input.toolTitle ?? null,
+    );
     const clean = label === null ? '' : oneLine(label, TOOL_LABEL_MAX);
     return { tool: clean.length > 0 ? clean : UNNAMEABLE_TOOL, verb: 'use' };
   }
