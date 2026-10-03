@@ -1042,6 +1042,13 @@ export interface AgentConnectorRow {
   editable: boolean;
   health: AgentConnectorHealth;
   /**
+   * TASK-756 — present (true) when `health` is `needs-reconnect` and the
+   * expired sign-in is the agent's SHARED one (a team agent's token, used by
+   * every member), so one member reconnecting fixes it for all. Absent: it is
+   * the caller's own sign-in.
+   */
+  sharedSignIn?: true;
+  /**
    * The caller may remove it from this agent. A workspace default on a team
    * agent: only the agent's owner (a team admin) or a workspace admin
    * (TASK-765). An attached connector is always removable here; the server
@@ -1069,6 +1076,8 @@ export interface AgentConnectorsRead {
 /** `POST /api/workspace/agents/:agentId/connectors/:connectorId/retry`. */
 export interface AgentConnectorRetried {
   health: AgentConnectorHealth;
+  /** TASK-756 — same meaning as on {@link AgentConnectorRow}. */
+  sharedSignIn?: true;
 }
 
 /** `POST /api/workspace/agents/:agentId/connectors {connectorId}` answers this. */
