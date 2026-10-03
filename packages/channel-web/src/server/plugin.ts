@@ -285,6 +285,26 @@ export function createChannelWebServerPlugin(
             'Activity rows are labelled with the routine path instead of its authored name',
         },
         {
+          // TASK-741 — the Connectors tab's "Sign-in expired" icon. A stored
+          // marker read, never a token refresh.
+          hook: 'mcp-oauth:status-batch',
+          degradation:
+            'connector rows never show "Sign-in expired"; a connector whose sign-in was rejected looks healthy until it is used',
+        },
+        {
+          // TASK-741 — the Connectors tab's "Can't reach it" icon, from the
+          // inventory cache (no probe on render).
+          hook: 'connectors:inventory-status-batch',
+          degradation:
+            'connector rows never show "Can\'t reach it"; an unreachable connector looks healthy until it is used',
+        },
+        {
+          // TASK-741 — the row menu's Retry: one forced check of one connector.
+          hook: 'connectors:describe-tools',
+          degradation:
+            'POST …/connectors/:connectorId/retry answers 503 (the list never offers Retry without an unreachable row, which needs the inventory)',
+        },
+        {
           // TASK-744 — names the connector behind a connector tool's opaque
           // namespace in the agent's step panels ("Linear · Create issue").
           hook: 'connectors:tool-labels',
