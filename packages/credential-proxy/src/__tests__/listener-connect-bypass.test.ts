@@ -468,12 +468,12 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
   });
 
   it('still audits a successful raw tunnel as 200 once it closes (TASK-705)', async () => {
-    const { key, cert } = mintTestCert('localhost');
-    upstream = tlsCreate({ key, cert }, (socket) => {
-      socket.end('bye');
+    // Plain TCP upstream: reply to the first chunk, then close.
+    const plain = net.createServer((socket) => {
+      socket.once('data', () => socket.end('bye'));
     });
     const upPort = await new Promise<number>((r) =>
-      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+      plain.listen(0, '127.0.0.1', () => r((plain.address() as { port: number }).port)),
     );
 
     const audits: ProxyAuditEntry[] = [];
@@ -502,18 +502,17 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
       `127.0.0.1:${upPort}`,
       tokenFor('s1'),
     );
-    const tlsSock = tlsConnect({ // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
-      socket: tunnel,
-      rejectUnauthorized: false,
-      servername: 'localhost',
-    });
+    // The raw tunnel never inspects bytes, so plain TCP through it is enough:
+    // send a few bytes up, read the upstream's reply until it closes.
+    tunnel.write('ping');
     await new Promise<void>((resolve) => {
-      tlsSock.on('data', () => {});
-      tlsSock.on('close', () => resolve());
-      tlsSock.on('error', () => resolve());
+      tunnel.on('data', () => {});
+      tunnel.on('close', () => resolve());
+      tunnel.on('error', () => resolve());
     });
 
     await new Promise((r) => setTimeout(r, 50));
+    await new Promise<void>((r) => plain.close(() => r()));
     expect(audits).toHaveLength(1);
     expect(audits[0]!.status).toBe(200);
     expect(audits[0]!.requestBytes).toBeGreaterThan(0);
