@@ -1326,6 +1326,9 @@ interface ToolPolicyListAgentOverridesOutput {
   /** `ceiling` is the loosest verdict the store would accept for that key
    *  right now (TASK-742 reads it; the abilities switches do not need it). */
   overrides: Array<{ toolKey: string; verdict: AbilityVerdict; ceiling?: AbilityVerdict }>;
+  /** TASK-754 — namespaces whose defaults the agent copied. A tool under one
+   *  with no override is held (Ask first) whatever its live default says. */
+  copiedNamespaces?: string[];
 }
 
 /**
@@ -6647,6 +6650,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           ...(o.ceiling !== undefined && { ceiling: isToolVerdict(o.ceiling) ? o.ceiling : 'hold' }),
         });
       }
+      // TASK-754 — the agent copied these namespaces' defaults, so a tool with
+      // no row of its own is Ask first for it, even if the default is looser
+      // now. Show what the gate enforces, not the live default.
+      const copied = new Set(
+        (Array.isArray(listed?.copiedNamespaces) ? listed.copiedNamespaces : []).filter(
+          (ns): ns is string => typeof ns === 'string' && own.has(ns),
+        ),
+      );
 
       const row = (
         toolKey: string,
@@ -6655,13 +6666,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       ): AgentConnectorTool => {
         const override = overrides.get(toolKey);
         const ceiling = override?.ceiling ?? defaults.get(toolKey) ?? 'hold';
+        const held: AgentToolVerdict | undefined =
+          override === undefined && copied.has(ns) ? 'hold' : undefined;
         return {
           toolKey,
           title: connectorToolTitle(toolKey, ns, fields.title, fields.name),
           description: fenceToolDescription(fields.description),
           readOnly: typeof fields.readOnly === 'boolean' ? fields.readOnly : null,
           outward: typeof fields.outward === 'boolean' ? fields.outward : null,
-          verdict: strictestVerdict(override?.verdict, ceiling),
+          verdict: strictestVerdict(override?.verdict ?? held, ceiling),
           ceiling,
         };
       };

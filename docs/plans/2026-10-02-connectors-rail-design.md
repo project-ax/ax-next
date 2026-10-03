@@ -64,12 +64,16 @@ Ask `warning-soft`/`warning`, Deny `destructive-soft`/`destructive`.
   The agent's choice is snapshotted from the admin default at attach (decision 2: "copy"), so an
   admin *loosening* a default later does not silently loosen agents already using the connector,
   while an admin *tightening* applies to every agent immediately (it is a ceiling).
-  **As built (TASK-737), the copy covers only defaults that exist at attach time.** Two cases follow
-  the connector's *live* default instead: (1) a tool that had no default when the agent attached
-  (nothing to copy, so it sits at the implicit Ask first until the editor sets one, and then follows
-  it, looser included); (2) default-on (workspace) connectors, which reach agents without an attach
-  and so are never snapshotted. Freezing those would need the tool list at attach time, or a
-  namespace-level "unset means Ask first" row in tool-policy. That's tracked as a follow-up, not done.
+  **As built (TASK-737 + TASK-754).** The copy also records each of the connector's tool namespaces
+  as *copied* for the agent (`tool_policy_v1_agent_copied_namespaces`). A tool under a copied
+  namespace with no row of its own is held (Ask first), so a tool that had **no default** when the
+  agent got the connector stays Ask first after the editor first sets Allow; the person may then pick
+  Allow themselves (the live default is still the ceiling). **Default-on (workspace) connectors**,
+  which never attach, are copied by the orchestrator at the agent's first session that sees them
+  (`onlyIfNotCopied: true` — first sight only, never overwrites a row). Before that first session such
+  an agent follows the live default. An explicit attach re-copies (overwriting copied rows, never a
+  person's own choice). `list-agent-overrides` returns `copiedNamespaces` so the rail shows the held
+  verdict rather than the live default.
 - **A connector tool with no admin default and never inventoried → Ask first.** Today it runs
   unasked (`tool-policy` no-match default `allow`); this closes that hole for connector tools only.
 - **Ability toggles** are agent-level tighten-only overrides on `web_search`, `web_extract`, `Bash`.
