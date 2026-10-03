@@ -21,7 +21,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
-import { CONNECTOR_RETRY_COOLDOWN_MS, makeWorkspaceHandlers } from '../../server/routes-workspace.js';
+import { CONNECTOR_RETRY_COOLDOWN_MS, makeWorkspaceHandlers, rememberBounded } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 
 function mkReq(params: Record<string, string>, body?: unknown, raw?: string): RouteRequest {
@@ -456,6 +456,25 @@ describe('agent connector routes', () => {
         expect(describeCalls).toHaveLength(1);
       });
 
+      // Review F1 — a vault blip never reached the server: "try again" must
+      // mean it, so it does not hold the next Retry back.
+      it('a credential blip does not start the window — the next Retry checks again', async () => {
+        registerHealth({ describe: false });
+        let blip = true;
+        bus.registerService('connectors:describe-tools', 'mcp-client', async (_c, i: unknown) => {
+          describeCalls.push(i);
+          if (blip) throw new PluginError({ code: 'credential-unavailable', plugin: 'mcp-client', message: 'blip' });
+          return { status: 'ok', tools: [], checkedAt: '2026-10-03T00:00:00.000Z' };
+        });
+        expect((await retryOn('linear')).statusCode).toBe(502);
+        blip = false;
+        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
+        expect(describeCalls).toHaveLength(2);
+        // ...and a check that DID run starts the window as usual.
+        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
+        expect(describeCalls).toHaveLength(2);
+      });
+
       it('keyed on person + connector: the same connector on another agent is not re-checked; it answers that agent\'s stored health', async () => {
         owners.set('a2', 'u1');
         registerHealth();
@@ -487,6 +506,37 @@ describe('agent connector routes', () => {
         } as (typeof effective)[number]);
         expect((await retryOn('slack')).statusCode).toBe(200);
         expect(describeCalls).toHaveLength(1);
+      });
+    });
+
+    describe('rememberBounded (TASK-756 cooldown map bound)', () => {
+      const W = 1_000;
+      it('never grows past the bound: expired entries go first, then the oldest live one', () => {
+        const m = new Map<string, { at: number }>();
+        rememberBounded(m, 'old', { at: 0 }, W, 3);
+        rememberBounded(m, 'a', { at: 1_500 }, W, 3);
+        rememberBounded(m, 'b', { at: 1_600 }, W, 3);
+        // Full: 'old' is outside the window at 1_700 and is the one dropped.
+        rememberBounded(m, 'c', { at: 1_700 }, W, 3);
+        expect([...m.keys()]).toEqual(['a', 'b', 'c']);
+        // Full of live entries: the oldest live one goes.
+        rememberBounded(m, 'd', { at: 1_800 }, W, 3);
+        expect([...m.keys()]).toEqual(['b', 'c', 'd']);
+        expect(m.size).toBe(3);
+      });
+      it('re-remembering a key moves it to the back instead of evicting another', () => {
+        const m = new Map<string, { at: number }>();
+        rememberBounded(m, 'a', { at: 10 }, W, 2);
+        rememberBounded(m, 'b', { at: 20 }, W, 2);
+        rememberBounded(m, 'a', { at: 30 }, W, 2);
+        expect([...m.entries()]).toEqual([['b', { at: 20 }], ['a', { at: 30 }]]);
+      });
+      it('drops an entry stamped in the future (a clock step cannot pin it)', () => {
+        const m = new Map<string, { at: number }>();
+        rememberBounded(m, 'future', { at: 99_999 }, W, 2);
+        rememberBounded(m, 'a', { at: 100 }, W, 2);
+        rememberBounded(m, 'b', { at: 200 }, W, 2);
+        expect([...m.keys()]).toEqual(['a', 'b']);
       });
     });
 

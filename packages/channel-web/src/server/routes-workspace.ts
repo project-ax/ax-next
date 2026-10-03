@@ -1606,7 +1606,35 @@ interface McpOAuthStatusBatchOutput {
  */
 export const CONNECTOR_RETRY_COOLDOWN_MS = 30_000;
 /** Bound on remembered Retry keys, so the cooldown map cannot grow unbounded. */
-const CONNECTOR_RETRY_COOLDOWN_MAX_KEYS = 1_000;
+export const CONNECTOR_RETRY_COOLDOWN_MAX_KEYS = 1_000;
+
+/**
+ * TASK-756 — insert `entry` under `key`, keeping `map` at most `maxKeys`.
+ * When full: first drop every entry outside the window (or stamped in the
+ * future — a clock step must not pin an entry forever), then, if it is
+ * still full of live entries, the oldest (Map order is insertion; `key` is
+ * re-inserted so a refresh moves to the back).
+ */
+export function rememberBounded<V extends { at: number }>(
+  map: Map<string, V>,
+  key: string,
+  entry: V,
+  windowMs: number,
+  maxKeys: number,
+): void {
+  map.delete(key);
+  if (map.size >= maxKeys) {
+    for (const [k, v] of map) {
+      if (entry.at - v.at >= windowMs || entry.at < v.at) map.delete(k);
+    }
+    while (map.size >= maxKeys) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
+  map.set(key, entry);
+}
 type ConnectorInventoryStatus = 'ok' | 'unreachable' | 'needs-auth' | 'unknown';
 interface InventoryStatusBatchOutput {
   statuses: Array<{ connectorId: string; status: ConnectorInventoryStatus; checkedAt: string }>;
@@ -3673,28 +3701,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   /**
    * TASK-756 — the last Retry per (person, connector): when it ran, under
    * which agent, and what its check found (`failed` = the check itself could
-   * not run). Shared by concurrent Retries, so a burst is one check.
+   * not run; `unavailable` = the sign-in could not be READ just now, so the
+   * server was never asked). Shared by concurrent Retries, so a burst is one
+   * check.
    */
-  type RetryCheck = ConnectorInventoryStatus | 'failed';
-  const retryCooldown = new Map<string, { at: number; agentId: string; checked: Promise<RetryCheck> }>();
-  function rememberRetry(
-    key: string,
-    entry: { at: number; agentId: string; checked: Promise<RetryCheck> },
-  ): void {
-    retryCooldown.delete(key);
-    if (retryCooldown.size >= CONNECTOR_RETRY_COOLDOWN_MAX_KEYS) {
-      for (const [k, v] of retryCooldown) {
-        if (entry.at - v.at >= CONNECTOR_RETRY_COOLDOWN_MS || entry.at < v.at) retryCooldown.delete(k);
-      }
-      // Still full of live entries: drop the oldest (Map order is insertion).
-      while (retryCooldown.size >= CONNECTOR_RETRY_COOLDOWN_MAX_KEYS) {
-        const oldest = retryCooldown.keys().next().value;
-        if (oldest === undefined) break;
-        retryCooldown.delete(oldest);
-      }
-    }
-    retryCooldown.set(key, entry);
-  }
+  type RetryCheck = ConnectorInventoryStatus | 'failed' | 'unavailable';
+  type RetryEntry = { at: number; agentId: string; checked: Promise<RetryCheck> };
+  const retryCooldown = new Map<string, RetryEntry>();
 
   /**
    * TASK-765 — may this caller take a connector every member reaches off this
@@ -6422,21 +6435,29 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             });
             return r?.status ?? 'unknown';
           } catch (err) {
-            // Includes `credential-unavailable` (TASK-756): the sign-in could
-            // not be read just now, which says nothing about whether it works.
+            const transient = (err as { code?: unknown } | null)?.code === 'credential-unavailable';
             initCtx.logger.warn('workspace_connector_retry_failed', {
               agentId,
               connectorId,
               name: err instanceof Error ? err.name : 'unknown',
-              transient: (err as { code?: unknown } | null)?.code === 'credential-unavailable',
+              transient,
             });
-            return 'failed';
+            // `credential-unavailable` (TASK-756): the sign-in could not be
+            // read just now — which says nothing about whether it works.
+            return transient ? 'unavailable' : 'failed';
           }
         })();
-        rememberRetry(cooldownKey, { at, agentId, checked: run });
+        const entry: RetryEntry = { at, agentId, checked: run };
+        rememberBounded(retryCooldown, cooldownKey, entry, CONNECTOR_RETRY_COOLDOWN_MS, CONNECTOR_RETRY_COOLDOWN_MAX_KEYS);
         checked = await run;
+        // A credential blip never reached the server, so it is nothing the
+        // cooldown protects against — and "try again" must mean it. Forget it
+        // (only if nothing newer has replaced it), so the next Retry checks.
+        if (checked === 'unavailable' && retryCooldown.get(cooldownKey) === entry) {
+          retryCooldown.delete(cooldownKey);
+        }
       }
-      if (checked === 'failed') {
+      if (checked === 'failed' || checked === 'unavailable') {
         res.status(502).json({ error: 'retry-failed' });
         return;
       }
