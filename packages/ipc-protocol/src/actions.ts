@@ -99,6 +99,20 @@ export const ToolPreCallRequestSchema = z.object({
 });
 export type ToolPreCallRequest = z.infer<typeof ToolPreCallRequestSchema>;
 
+/**
+ * Ceiling on the `reject` arm's `reason`, in UTF-16 code units (zod's
+ * `.max()` unit). Same number as the `hold` arm's `note` on purpose: both
+ * are prose the model reads and the transcript keeps, so they get the same
+ * budget. Today's longest legit reason (`@ax/decisions`' `denialSentence`
+ * with a capped capability and tool name) is ~300 characters.
+ *
+ * The host handler (`@ax/ipc-core`'s tool.pre-call) truncates to this BEFORE
+ * the response parse, so an over-long deny still arrives as a deny. A cap
+ * that only threw here would turn it into a 500 and then the runner's
+ * generic gate-failed deny — still closed, but carrying the wrong message.
+ */
+export const PRE_CALL_REJECT_REASON_MAX = 2000;
+
 export const ToolPreCallResponseSchema = z.discriminatedUnion('verdict', [
   z.object({
     verdict: z.literal('allow'),
@@ -106,7 +120,7 @@ export const ToolPreCallResponseSchema = z.discriminatedUnion('verdict', [
   }),
   z.object({
     verdict: z.literal('reject'),
-    reason: z.string(),
+    reason: z.string().max(PRE_CALL_REJECT_REASON_MAX),
   }),
   // `hold` — a human must see this before it happens. Returns as fast as
   // `reject` (the 10 s ceiling in IPC_TIMEOUTS_MS makes waiting for a person

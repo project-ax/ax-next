@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { WorkspaceCommitNotifyResponseSchema, ToolPreCallResponseSchema } from '../actions.js';
+import {
+  WorkspaceCommitNotifyResponseSchema,
+  ToolPreCallResponseSchema,
+  PRE_CALL_REJECT_REASON_MAX,
+} from '../actions.js';
 
 describe('WorkspaceCommitNotifyResponseSchema', () => {
   it('accepted:false carries only the actualParent re-sync signal (no inline bundle)', () => {
@@ -147,5 +151,21 @@ describe('ToolPreCallResponseSchema hold arm', () => {
         note: 'x'.repeat(2000),
       }),
     ).not.toThrow();
+  });
+});
+
+describe('ToolPreCallResponseSchema reject arm', () => {
+  it('caps a deny reason at the same 2000 characters as a hold note', () => {
+    // The host handler truncates before it parses; this is the wire boundary
+    // for anything that does not go through that handler.
+    expect(PRE_CALL_REJECT_REASON_MAX).toBe(2000);
+    expect(
+      ToolPreCallResponseSchema.safeParse({ verdict: 'reject', reason: 'x'.repeat(2001) })
+        .success,
+    ).toBe(false);
+    expect(
+      ToolPreCallResponseSchema.safeParse({ verdict: 'reject', reason: 'x'.repeat(2000) })
+        .success,
+    ).toBe(true);
   });
 });
