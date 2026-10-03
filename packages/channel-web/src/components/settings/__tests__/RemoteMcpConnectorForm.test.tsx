@@ -210,9 +210,10 @@ describe('remote connector editor', () => {
     await openEditor();
     expect(screen.getByLabelText('Client ID')).toHaveValue('existing-client');
     expect(screen.getByText('Saved securely')).toBeInTheDocument();
+    // The only choice offered is HOW people sign in — never CIMD vs DCR.
     expect(
-      screen.queryByRole('radio', { name: /CIMD|DCR/ }),
-    ).not.toBeInTheDocument();
+      screen.getAllByRole('radio').map((r) => r.getAttribute('value')),
+    ).toEqual(['oauth', 'key']);
     fireEvent.click(
       screen.getByRole('button', { name: 'Use automatic setup instead' }),
     );
@@ -385,9 +386,10 @@ describe('remote connector editor', () => {
       };
       await openEditor();
       expect(screen.getByText(text)).toBeVisible();
+      // The only choice offered is HOW people sign in — never CIMD vs DCR.
       expect(
-      screen.queryByRole('radio', { name: /CIMD|DCR/ }),
-    ).not.toBeInTheDocument();
+        screen.getAllByRole('radio').map((r) => r.getAttribute('value')),
+      ).toEqual(['oauth', 'key']);
       expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
