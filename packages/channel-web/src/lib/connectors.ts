@@ -220,6 +220,9 @@ export async function patchConnector(
  * server at a new address but couldn't first reset that server's tool
  * permissions. The server refused the whole save, so nothing changed: the old
  * address is still in use, with the choices people made for it.
+ *
+ * Canonical spelling: `TOOL_PERMISSIONS_RESET_FAILED` in `@ax/connectors`
+ * (`src/tool-permissions.ts`); `server/routes-chat.ts` carries a third copy.
  */
 export const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
 
