@@ -130,6 +130,43 @@ describe('Other abilities', () => {
     expect(abilitiesMock).toHaveBeenCalledWith('a-quill');
   });
 
+  it('says Read web pages asks first, on the row and to a screen reader', async () => {
+    abilitiesMock.mockResolvedValue({
+      abilities: { webSearch: true, readPages: true, runCode: true },
+    });
+    renderTab();
+
+    const read = await sw('Read web pages');
+    // The built-in rule is Ask first; the switch can only turn it off.
+    expect(read).toHaveAttribute(
+      'aria-description',
+      'On: asks you before opening a new site',
+    );
+    const hint = screen.getByText('· asks first');
+    expect(hint).toHaveClass('text-muted-foreground');
+    // Same row as the label, not a subtitle line under it.
+    expect(hint.closest('label')).toBe(
+      document.querySelector('label[for="ability-readPages"]'),
+    );
+    // The hint is the only one — the other rows carry no such claim.
+    expect(screen.getAllByText(/asks first/)).toHaveLength(1);
+    expect(await sw('Web search')).not.toHaveAttribute('aria-description');
+    expect(await sw('Run code')).not.toHaveAttribute('aria-description');
+  });
+
+  it('keeps the ask-first description while Read web pages is off', async () => {
+    abilitiesMock.mockResolvedValue({
+      abilities: { webSearch: true, readPages: false, runCode: true },
+    });
+    renderTab();
+
+    expect(await sw('Read web pages')).toHaveAttribute(
+      'aria-description',
+      'On: asks you before opening a new site',
+    );
+    expect(screen.getByText('· asks first')).toBeInTheDocument();
+  });
+
   it('writes one switch and draws what the server answered', async () => {
     setAbilityMock.mockResolvedValue({
       abilities: { webSearch: false, readPages: true, runCode: true },
