@@ -4,7 +4,12 @@
  * Pinned: rows are the connector NAME only; the ⋯ menu holds exactly what is
  * wired (Edit connector for an editable one, then Remove from <agent>);
  * removing asks first and never drops a row the server still has; the empty
- * state; and no Add / View details / Reconnect before their slices land.
+ * state; and no Add / View details before their slices land.
+ *
+ * TASK-741 (slice 8): an errored row wears ONE red icon after its name — no
+ * inline error text — whose reason is its accessible name and a tooltip that
+ * opens on keyboard focus too; the menu leads with Reconnect or Retry, on
+ * errored rows only; Retry runs one check and the row takes its answer.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -25,7 +30,17 @@ vi.mock('@/lib/workspace-api', async () => {
       setAbility: vi.fn(),
       connectors: vi.fn(),
       removeConnector: vi.fn(),
+      retryConnector: vi.fn(),
     },
+  };
+});
+
+vi.mock('@/lib/connectors-oauth', async () => {
+  const actual = await vi.importActual<Record<string, unknown>>('@/lib/connectors-oauth');
+  return {
+    ...actual,
+    getOAuthStatus: vi.fn(async () => 'needs-reconnect'),
+    beginOAuth: vi.fn(),
   };
 });
 
@@ -39,8 +54,8 @@ const removeMock = vi.mocked(workspaceApi.removeConnector);
 const railMock = vi.mocked(workspaceApi.rail);
 
 const ROWS: AgentConnectorRow[] = [
-  { id: 'linear', name: 'Linear', source: 'attached', editable: true },
-  { id: 'gmail', name: 'Gmail', source: 'default', editable: false },
+  { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok' },
+  { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok' },
 ];
 
 function detail(): AgentDetail {
@@ -80,7 +95,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.abilities).mockResolvedValue({
     abilities: { webSearch: true, readPages: true, runCode: true },
   });
-  connectorsMock.mockResolvedValue({ connectors: ROWS });
+  connectorsMock.mockResolvedValue({ connectors: ROWS, shared: false });
 });
 
 describe('connector list', () => {
@@ -115,7 +130,7 @@ describe('row menu', () => {
     const menu = await openMenu('Linear');
     const items = within(menu).getAllByRole('menuitem').map((i) => i.textContent);
     expect(items).toEqual(['Edit connector', 'Remove from Quill']);
-    // Not wired yet — their slices add them.
+    // Not wired yet — its slice adds it. A healthy row offers no fix.
     expect(within(menu).queryByText(/View details|Reconnect|Retry/)).toBeNull();
   });
 
@@ -157,7 +172,7 @@ describe('remove', () => {
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from Quill' }));
     const dialog = await screen.findByRole('dialog');
     const railReads = railMock.mock.calls.length;
-    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!] });
+    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(screen.queryByText('Linear')).toBeNull());
     expect(removeMock).toHaveBeenCalledWith('a-quill', 'linear');
@@ -181,7 +196,7 @@ describe('remove', () => {
     renderTab();
     const menu = await openMenu('Linear');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from Quill' }));
-    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!] });
+    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false });
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(await screen.findByText(/Removed Linear\. Some of what you’d approved/)).toBeTruthy();
   });
@@ -189,7 +204,7 @@ describe('remove', () => {
 
 describe('empty state', () => {
   it('is a dashed card with the plug, the title and the copy — and no Add yet', async () => {
-    connectorsMock.mockResolvedValue({ connectors: [] });
+    connectorsMock.mockResolvedValue({ connectors: [], shared: false });
     const { container } = renderTab();
     expect(await screen.findByText('No connectors yet')).toBeTruthy();
     expect(
@@ -203,5 +218,103 @@ describe('empty state', () => {
     expect(screen.getByRole('heading', { level: 3, name: /^Connectors/ }).textContent).toBe(
       'Connectors',
     );
+  });
+});
+
+describe('connector health (TASK-741)', () => {
+  const ERRORED: AgentConnectorRow[] = [
+    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok' },
+    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect' },
+    { id: 'slack', name: 'Slack', source: 'attached', editable: true, health: 'unreachable' },
+  ];
+  const retryMock = vi.mocked(workspaceApi.retryConnector);
+
+  beforeEach(() => {
+    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: false });
+  });
+
+  it('puts ONE icon after an errored name, named by its reason, with no inline error text', async () => {
+    renderTab();
+    const expired = await screen.findByRole('button', { name: 'Sign-in expired' });
+    const unreachable = screen.getByRole('button', { name: 'Can’t reach it' });
+    // Right after the name, inside the same row.
+    expect(expired.previousElementSibling?.textContent).toBe('Gmail');
+    expect(unreachable.previousElementSibling?.textContent).toBe('Slack');
+    expect(expired.querySelector('svg.lucide-circle-alert')).not.toBeNull();
+    expect(expired.className).toContain('text-destructive');
+    // The healthy row has no icon, and nothing spells the reason out inline.
+    expect(screen.getAllByRole('button', { name: /Sign-in expired|Can’t reach it/ })).toHaveLength(2);
+    expect(screen.queryByText('Sign-in expired')).toBeNull();
+    expect(screen.queryByText('Can’t reach it')).toBeNull();
+  });
+
+  it('shows the reason in a tooltip when the icon gets keyboard focus', async () => {
+    renderTab();
+    const icon = await screen.findByRole('button', { name: 'Sign-in expired' });
+    icon.focus();
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toBe('Sign-in expired');
+  });
+
+  it('leads an expired row’s menu with Reconnect, and an unreachable row’s with Retry', async () => {
+    renderTab();
+    let menu = await openMenu('Gmail');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Reconnect',
+      'Remove from Quill',
+    ]);
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    menu = await openMenu('Slack');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Retry',
+      'Edit connector',
+      'Remove from Quill',
+    ]);
+  });
+
+  it('Retry runs exactly one check, and the row takes the health it answers', async () => {
+    retryMock.mockResolvedValue({ health: 'ok' });
+    renderTab();
+    const menu = await openMenu('Slack');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Can’t reach it' })).toBeNull());
+    expect(retryMock).toHaveBeenCalledTimes(1);
+    expect(retryMock).toHaveBeenCalledWith('a-quill', 'slack');
+    // The list itself was not re-read to find out.
+    expect(connectorsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('says so when Retry still cannot reach it, and when the check could not run', async () => {
+    retryMock.mockResolvedValueOnce({ health: 'unreachable' });
+    renderTab();
+    let menu = await openMenu('Slack');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
+    expect(await screen.findByText(/Still can’t reach Slack/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Can’t reach it' })).toBeTruthy();
+
+    retryMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors/slack/retry', 502));
+    menu = await openMenu('Slack');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
+    expect(await screen.findByText(/couldn’t check Slack just now/)).toBeTruthy();
+  });
+
+  it('Reconnect opens the sign-in for that connector on this agent, with no Retry check', async () => {
+    renderTab();
+    const menu = await openMenu('Gmail');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Reconnect' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Reconnect Gmail')).toBeTruthy();
+    expect(await within(dialog).findByRole('button', { name: 'Reconnect' })).toBeTruthy();
+    expect(retryMock).not.toHaveBeenCalled();
+  });
+
+  it('Reconnect on a shared agent asks before signing in for everyone', async () => {
+    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: true });
+    renderTab();
+    const menu = await openMenu('Gmail');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Reconnect' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText(/anyone who uses this shared agent act as you/)).toBeTruthy();
   });
 });
