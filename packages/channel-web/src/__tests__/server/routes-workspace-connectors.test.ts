@@ -101,6 +101,12 @@ describe('agent connector routes', () => {
   let revokeCalls: Array<Record<string, unknown>>;
   let approvedListThrows: boolean;
   let revokeClears: boolean;
+  /** TASK-761 — what `connectors:get` knows, by id (absent = not visible). */
+  let catalog: Map<string, { id: string; name: string; keyMode: string; capabilities: { credentials: Array<Record<string, unknown>> } }>;
+  /** TASK-761 — refs `credentials:get` resolves; anything else is not-found. */
+  let vault: Set<string>;
+  let credentialReads: Array<{ ref: string; userId: string; agentId: string }>;
+  let credentialError: unknown;
 
   function handlers() {
     return makeWorkspaceHandlers({ bus, initCtx });
@@ -150,6 +156,39 @@ describe('agent connector routes', () => {
     revokeCalls = [];
     approvedListThrows = false;
     revokeClears = true;
+    const conn = (id: string, keyMode: string, credentials: Array<Record<string, unknown>>) => ({
+      id,
+      name: id,
+      keyMode,
+      capabilities: { credentials },
+    });
+    catalog = new Map([
+      ['linear', conn('linear', 'personal', [])],
+      ['shared', conn('shared', 'personal', [])],
+      ['figma', conn('figma', 'personal', [{ slot: 'MCP_OAUTH', kind: 'oauth', server: 'figma' }])],
+      ['stripe', conn('stripe', 'personal', [{ slot: 'STRIPE_KEY', kind: 'api-key' }])],
+      ['company', conn('company', 'workspace', [{ slot: 'KEY', kind: 'api-key' }])],
+    ]);
+    vault = new Set();
+    credentialReads = [];
+    credentialError = null;
+    bus.registerService('connectors:get', 'connectors', async (_c, i: unknown) => {
+      const { connectorId } = i as { connectorId: string };
+      const found = catalog.get(connectorId);
+      if (found === undefined) {
+        throw new PluginError({ code: 'not-found', plugin: 'connectors', message: 'nope' });
+      }
+      return { connector: found };
+    });
+    bus.registerService('credentials:get', 'credentials', async (c, i: unknown) => {
+      const { ref, userId } = i as { ref: string; userId: string };
+      credentialReads.push({ ref, userId, agentId: c.agentId });
+      if (credentialError !== null) throw credentialError;
+      if (!vault.has(ref)) {
+        throw new PluginError({ code: 'credential-not-found', plugin: 'credentials', message: 'none' });
+      }
+      return 'secret-value';
+    });
 
     bus.registerService('auth:require-user', 'auth', async () => ({ user: caller }));
     bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
@@ -639,6 +678,95 @@ describe('agent connector routes', () => {
       const r = await attach({ connectorId: 'linear' }, 'a-theirs');
       expect(r.statusCode).toBe(404);
       expect(attachCalls).toHaveLength(0);
+    });
+
+    describe('signed in / keyed first (TASK-761)', () => {
+      it('refuses an OAuth connector nobody signed in to, and attaches nothing', async () => {
+        const r = await attach({ connectorId: 'figma' });
+        expect(r.statusCode).toBe(409);
+        expect(r.body).toMatchObject({ error: 'connector-needs-sign-in' });
+        expect(attachCalls).toHaveLength(0);
+      });
+
+      it('attaches it once the sign-in resolves, checked under the caller AND this agent', async () => {
+        vault.add('account:figma');
+        const r = await attach({ connectorId: 'figma' });
+        expect(r.statusCode).toBe(200);
+        expect(credentialReads).toEqual([{ ref: 'account:figma', userId: 'u1', agentId: 'a1' }]);
+        expect(attachCalls).toHaveLength(1);
+        // The token is read host-side and dropped — never echoed back.
+        expect(JSON.stringify(r.body)).not.toContain('secret-value');
+      });
+
+      it('treats an expired sign-in (refresh rejected) as not signed in', async () => {
+        vault.add('account:figma');
+        const reconnect = new Error('needs reconnect');
+        reconnect.name = 'NeedsReconnectError';
+        credentialError = new PluginError({
+          code: 'unknown',
+          plugin: 'credentials',
+          message: 'wrapped',
+          cause: reconnect,
+        });
+        const r = await attach({ connectorId: 'figma' });
+        expect(r.statusCode).toBe(409);
+        expect(r.body).toMatchObject({ error: 'connector-needs-sign-in' });
+        expect(attachCalls).toHaveLength(0);
+      });
+
+      it('refuses a connector whose required key is missing', async () => {
+        const r = await attach({ connectorId: 'stripe' });
+        expect(r.statusCode).toBe(409);
+        expect(r.body).toMatchObject({ error: 'connector-needs-key' });
+        expect(attachCalls).toHaveLength(0);
+        vault.add('account:stripe');
+        expect((await attach({ connectorId: 'stripe' })).statusCode).toBe(200);
+      });
+
+      it('attaches a connector that needs nothing without reading the vault', async () => {
+        expect((await attach({ connectorId: 'linear' })).statusCode).toBe(200);
+        expect(credentialReads).toHaveLength(0);
+      });
+
+      it('fails closed: an unexpected vault error, or no vault, refuses the attach', async () => {
+        credentialError = new Error('db down');
+        expect((await attach({ connectorId: 'figma' })).statusCode).toBe(503);
+        bus = new HookBus();
+        // Rebuild without credentials:get by re-registering only what POST needs.
+        bus.registerService('auth:require-user', 'auth', async () => ({ user: caller }));
+        bus.registerService('agents:resolve', 'agents', async () => ({
+          agent: { id: 'a1', displayName: 'Quill', ...agentRow },
+        }));
+        bus.registerService('agents:attach-connector', 'agents', async (_c, i: unknown) => {
+          attachCalls.push(i as Record<string, unknown>);
+          return { agent: {}, changed: true };
+        });
+        bus.registerService('connectors:get', 'connectors', async () => ({
+          connector: catalog.get('figma'),
+        }));
+        expect((await attach({ connectorId: 'figma' })).statusCode).toBe(503);
+        expect(attachCalls).toHaveLength(0);
+      });
+
+      it('404s a connector the caller cannot see, and attaches nothing', async () => {
+        const r = await attach({ connectorId: 'someone-elses' });
+        expect(r.statusCode).toBe(404);
+        expect(attachCalls).toHaveLength(0);
+      });
+
+      it("403s a non-admin on a company-key connector without reading the company key", async () => {
+        const r = await attach({ connectorId: 'company' });
+        expect(r.statusCode).toBe(403);
+        expect(credentialReads).toHaveLength(0);
+        expect(attachCalls).toHaveLength(0);
+      });
+
+      it('lets an admin attach a company-key connector once the company key exists', async () => {
+        caller = { id: 'u1', isAdmin: true };
+        expect((await attach({ connectorId: 'company' })).statusCode).toBe(409);
+        vault.add('account:company');
+        expect((await attach({ connectorId: 'company' })).statusCode).toBe(200);
+      });
     });
 
     it('400s a malformed body', async () => {

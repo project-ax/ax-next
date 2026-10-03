@@ -420,6 +420,22 @@ describe('add key, then attach', () => {
   });
 });
 
+describe('server refuses the attach until set up (TASK-761)', () => {
+  it('a 409 says it is not set up yet and offers Retry that re-checks, not a blind attach', async () => {
+    attachMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors', 409));
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
+    expect(
+      await screen.findByText(
+        'Stripe isn’t signed in or set up yet, so we didn’t add it to Quill. Try again to finish setting it up.',
+      ),
+    ).toBeTruthy();
+    expect(onAttached).not.toHaveBeenCalled();
+    expect(within(row('Stripe')).getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+});
+
 describe('ready connectors', () => {
   it('"Add" attaches straight away, with no sign-in and no key dialog', async () => {
     const { onAttached } = renderAdd();

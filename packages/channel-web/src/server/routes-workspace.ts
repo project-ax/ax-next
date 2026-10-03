@@ -171,6 +171,11 @@ import { isStorageFullRefusal } from './storage-full-refusal.js';
 // sentence ends (invariant 4) — the module is pure constants and one pure
 // function, with no DOM or React in it.
 import { MAX_DETAIL_CHARS } from '../lib/turn-error-labels.js';
+// TASK-761 — the attach route's "signed in / keyed first" gate derives the
+// vault refs a connector spends with the SAME function the browser's connect
+// flow writes them with (pure, no DOM), so the two cannot disagree about
+// which row "has a key" means.
+import { deriveCredentialPlan, type Connector } from '../lib/connectors.js';
 // The closed-code check and the one builder of a save-refused row's id
 // (TASK-731), shared with the browser, which matches its live copy against
 // that same id.
@@ -1404,6 +1409,109 @@ const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = [
 const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 function isConnectorId(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0 && v.length <= 128 && CONNECTOR_ID_RE.test(v);
+}
+
+/**
+ * TASK-761 — what stands between a connector and being attached.
+ *
+ * Product rule (owner, 2026-10-02): a connector is attached to an agent ONLY
+ * after its sign-in / key has succeeded. The Add subview already waits; this
+ * is the server holding the same line, so a hand-rolled POST cannot attach an
+ * OAuth connector nobody signed in to (measured on the TASK-743 walk).
+ *
+ * Every credential slot must RESOLVE through `credentials:get` under
+ * (caller, agent) — the same lookup a chat turn and the OAuth status route
+ * make, so "signed in" here means what it means at run time (an agent-scope
+ * sign-in on a team agent counts; a company key counts for a workspace
+ * connector, subject to the vault's own global-read authorization). The value
+ * is read host-side and DROPPED: it never leaves this function.
+ *
+ * Fails CLOSED: a missing service or an unexpected error refuses the attach.
+ */
+type AttachGate =
+  | { ok: true }
+  | { ok: false; status: number; error: string; message?: string };
+
+async function attachCredentialGate(
+  bus: HookBus,
+  ctx: AgentContext,
+  actor: { id: string; isAdmin: boolean },
+  connectorId: string,
+): Promise<AttachGate> {
+  const userId = actor.id;
+  if (!bus.hasService('connectors:get')) {
+    return { ok: false, status: 503, error: 'connectors-unavailable' };
+  }
+  let connector: Connector;
+  try {
+    const out = await bus.call<{ userId: string; connectorId: string }, { connector: Connector }>(
+      'connectors:get',
+      ctx,
+      { userId, connectorId },
+    );
+    connector = out.connector;
+  } catch (err) {
+    if (err instanceof PluginError && err.code === 'not-found') {
+      return { ok: false, status: 404, error: 'connector-not-found' };
+    }
+    return { ok: false, status: 503, error: 'connector-check-failed' };
+  }
+  // A connector that spends the company key is admin-only to attach, and
+  // `agents:attach-connector` refuses it for anyone else. Refuse it HERE
+  // first, the same 403, so a non-admin's request never makes the host read
+  // the company key's presence on their behalf.
+  if (!actor.isAdmin && connector?.keyMode === 'workspace') {
+    return { ok: false, status: 403, error: 'forbidden' };
+  }
+  const slots = Array.isArray(connector?.capabilities?.credentials)
+    ? connector.capabilities.credentials
+    : [];
+  if (slots.length === 0) return { ok: true };
+  if (!bus.hasService('credentials:get')) {
+    return { ok: false, status: 503, error: 'connector-check-failed' };
+  }
+  const plan = deriveCredentialPlan(connector);
+  for (const entry of plan) {
+    const slot = slots.find((s) => s.slot === entry.slot);
+    const signIn = slot?.kind === 'oauth';
+    try {
+      await bus.call<{ ref: string; userId: string }, unknown>('credentials:get', ctx, {
+        ref: entry.ref,
+        userId,
+      });
+    } catch (err) {
+      if (credentialMissing(err)) {
+        return signIn
+          ? {
+              ok: false,
+              status: 409,
+              error: 'connector-needs-sign-in',
+              message: 'Sign in to this connector first, then add it.',
+            }
+          : {
+              ok: false,
+              status: 409,
+              error: 'connector-needs-key',
+              message: 'Add the key this connector needs first, then add it.',
+            };
+      }
+      return { ok: false, status: 503, error: 'connector-check-failed' };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * "There is no usable credential" — absent, or an OAuth sign-in whose refresh
+ * was rejected. The reconnect error crosses the bus twice (resolver →
+ * credentials:get → here) and is wrapped on the way, so it is recognised by
+ * name on the error or its cause, never by importing @ax/mcp-oauth (I2).
+ */
+function credentialMissing(err: unknown): boolean {
+  if ((err as { code?: unknown })?.code === 'credential-not-found') return true;
+  const named = (e: unknown): boolean =>
+    e instanceof Error && e.name === 'NeedsReconnectError';
+  return named(err) || named((err as { cause?: unknown })?.cause);
 }
 
 /**
@@ -6226,6 +6334,19 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       if (!bus.hasService('agents:attach-connector')) {
         res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      // TASK-761 — signed in / keyed FIRST, attached second (see the gate).
+      const gate = await attachCredentialGate(
+        bus,
+        agentWorkspaceCtx(agentId, actor.id),
+        { id: actor.id, isAdmin: actor.isAdmin },
+        connectorId,
+      );
+      if (!gate.ok) {
+        res
+          .status(gate.status)
+          .json(gate.message === undefined ? { error: gate.error } : { error: gate.error, message: gate.message });
         return;
       }
       try {
