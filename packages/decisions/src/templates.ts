@@ -25,9 +25,13 @@
  * earns bespoke prose, the prose belongs on the rule.
  */
 
+import { connectorToolLabel, parseConnectorToolKey } from './tool-label.js';
+
 /** Matches `@ax/tool-policy`'s own `CAPABILITY_MAX_CHARS`, with headroom. */
 const CAPABILITY_MAX = 120;
 const TOOL_NAME_MAX = 64;
+/** "<connector> · <tool>" — see `tool-label.ts` for the per-half clamps. */
+const TOOL_LABEL_MAX = 96;
 /**
  * A host executor's failure message is free text written by whatever library
  * or API the tool wraps, not by us. It is audit-trail detail, not prose a
@@ -100,6 +104,30 @@ export interface DecisionTextInput {
   capability: string | null;
   /** The tool the model asked for. */
   toolName: string;
+  /**
+   * TASK-744 — the display name of the connector that owns `toolName`, when
+   * `toolName` is a connector toolKey (`mcp.<toolNamespace>.<tool>`) and the
+   * namespace is one this person can name. Null/absent → the tool name alone.
+   * Ignored for every other tool.
+   */
+  connectorName?: string | null | undefined;
+}
+
+/**
+ * How the decision row names the tool when no capability clause described it.
+ *
+ * A connector toolKey's namespace is an opaque hash, so it is NEVER printed:
+ * the row says "Linear · Create issue", or "Create issue" when the connector
+ * cannot be named, or "a tool" when even that is unreadable. `verb` follows the
+ * noun: a person "uses" Linear · Create issue but "runs" a command.
+ */
+function rowToolName(input: DecisionTextInput): { tool: string; verb: 'use' | 'run' } {
+  if (parseConnectorToolKey(input.toolName) !== null) {
+    const label = connectorToolLabel(input.toolName, input.connectorName ?? null);
+    const clean = label === null ? '' : oneLine(label, TOOL_LABEL_MAX);
+    return { tool: clean.length > 0 ? clean : UNNAMEABLE_TOOL, verb: 'use' };
+  }
+  return { tool: sanitizeToolName(input.toolName) ?? UNNAMEABLE_TOOL, verb: 'run' };
 }
 
 export interface DecisionText {
@@ -123,13 +151,14 @@ export interface DecisionText {
  */
 export function decisionText(input: DecisionTextInput): DecisionText {
   const capability = sanitizeCapability(input.capability);
-  const tool = sanitizeToolName(input.toolName) ?? UNNAMEABLE_TOOL;
+  const { tool, verb } = rowToolName(input);
+  const verbing = verb === 'use' ? 'using' : 'running';
 
   // The subject is always "it" — the agent. Naming the agent would mean
   // reading a display name from another plugin at hold time, and the row has
   // to be writable inside a 10-second ceiling.
   const summary =
-    capability !== null ? `Wants to ${capability}` : `Wants to run ${tool}`;
+    capability !== null ? `Wants to ${capability}` : `Wants to ${verb} ${tool}`;
 
   // WHEN WE HAVE THE CLAUSE, THE CLAUSE IS THE WHOLE ANSWER — the tool's
   // internal name never appears (TASK-429). `connector_propose` and
@@ -153,7 +182,7 @@ export function decisionText(input: DecisionTextInput): DecisionText {
     capability !== null
       ? `It stopped before doing this, because that would ${capability}. ` +
         `Nothing has happened yet — it is waiting for your answer.`
-      : `It stopped before running ${tool} and is waiting for your answer. ` +
+      : `It stopped before ${verbing} ${tool} and is waiting for your answer. ` +
         `Nothing has happened yet.`;
 
   return {
@@ -165,7 +194,7 @@ export function decisionText(input: DecisionTextInput): DecisionText {
     approvedText:
       capability !== null
         ? `You said yes, so it may ${capability}.`
-        : `You said yes, so it may run ${tool}.`,
+        : `You said yes, so it may ${verb} ${tool}.`,
     // Written from scratch, not from the line above. It states what did NOT
     // happen, which is the claim a dismissal is actually making.
     dismissedText:

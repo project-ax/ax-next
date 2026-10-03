@@ -2645,3 +2645,75 @@ describe('decisions canary — per-tool verdicts (TASK-736)', () => {
     expect(isHold(denied)).toBe(false);
   });
 });
+
+describe('decisions canary — connector tools are named, never hashed (TASK-744)', () => {
+  // `c5e0235982f` is the literal @ax/connectors' tests pin as a real derived
+  // namespace. The policy is stubbed here (not the real rule table) because
+  // every real rule carries a capability clause, and the connector name only
+  // matters on the clause-less path — the one per-tool verdicts produce.
+  const NS = 'c5e0235982f';
+  const CONNECTOR_CALL = { id: 'c-conn', name: `mcp.${NS}.create_issue`, input: { title: 'x' } };
+
+  async function bootWithConnectors(
+    labels: Array<{ toolNamespace: string; connectorId: string; name: string }> | 'absent',
+  ): Promise<{ h: TestHarness; askedFor: string[] }> {
+    const askedFor: string[] = [];
+    const h = await createTestHarness({
+      services: {
+        'tool-policy:evaluate': async () => ({ verdict: 'hold', ruleId: null, capability: null }),
+        ...(labels === 'absent'
+          ? {}
+          : {
+              'connectors:tool-labels': async (_c: AgentContext, input: unknown) => {
+                askedFor.push((input as { userId: string }).userId);
+                return { connectors: labels };
+              },
+            }),
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createDecisionsPlugin({ sweepIntervalMs: 0 }),
+      ],
+    });
+    harnesses.push(h);
+    return { h, askedFor };
+  }
+
+  async function heldRow(h: TestHarness): Promise<Decision> {
+    const ctx = userCtx(h);
+    expect(isHold(await h.bus.fire('tool:pre-call', ctx, CONNECTOR_CALL))).toBe(true);
+    const { decisions } = await h.bus.call<unknown, DecisionsListOutput>(
+      'decisions:list',
+      ctx,
+      { userId: 'u1', status: 'pending' },
+    );
+    expect(decisions).toHaveLength(1);
+    return decisions[0]!;
+  }
+
+  it('asks connectors:tool-labels as the calling user and writes "<connector> · <tool>"', async () => {
+    const { h, askedFor } = await bootWithConnectors([
+      { toolNamespace: 'c0000000000', connectorId: 'other', name: 'Other' },
+      { toolNamespace: NS, connectorId: 'linear', name: 'Linear' },
+    ]);
+    const row = await heldRow(h);
+    expect(askedFor).toEqual(['u1']);
+    expect(row.summary).toBe('Wants to use Linear · Create issue');
+    expect(row.approvedText).toBe('You said yes, so it may use Linear · Create issue.');
+    // The call itself is still recorded verbatim — only the prose is friendly.
+    expect(row.call).toEqual(CONNECTOR_CALL);
+  });
+
+  it('an unknown namespace falls back to the tool name alone', async () => {
+    const { h } = await bootWithConnectors([]);
+    const row = await heldRow(h);
+    expect(row.summary).toBe('Wants to use Create issue');
+    expect(`${row.summary} ${row.detail} ${row.approvedText}`).not.toContain(NS);
+  });
+
+  it('with no connectors plugin loaded, the tool name still stands alone', async () => {
+    const { h } = await bootWithConnectors('absent');
+    const row = await heldRow(h);
+    expect(row.summary).toBe('Wants to use Create issue');
+  });
+});

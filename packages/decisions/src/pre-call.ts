@@ -40,8 +40,10 @@ import {
   decisionText,
   denialSentence,
   holdNote,
+  sanitizeCapability,
   GATE_FAILURE_SENTENCE,
 } from './templates.js';
+import { parseConnectorToolKey } from './tool-label.js';
 import type { Attendance, Decision, DecisionRaisedPayload } from './types.js';
 
 export const PLUGIN_NAME = '@ax/decisions';
@@ -89,6 +91,15 @@ export interface PreCallDeps {
   attendanceFor: (ctx: AgentContext) => Attendance | Promise<Attendance>;
   /** Fires `decisions:raised`. Optional so the unit tests need no bus. */
   bus?: HookBus | undefined;
+  /**
+   * TASK-744 — the display name of the connector that owns a connector tool
+   * namespace, for this person, or null when it cannot be named. Consulted
+   * only when a hold has no capability clause and the call is a connector
+   * toolKey, so the row says "Linear · Create issue" rather than the hash.
+   * Optional (no connectors plugin → the tool name alone). MUST NOT throw; the
+   * caller still guards, because a naming failure must never cost the hold.
+   */
+  connectorNameFor?: ((ctx: AgentContext, toolNamespace: string) => Promise<string | null>) | undefined;
 }
 
 export type PreCallSubscriber = (
@@ -97,6 +108,31 @@ export type PreCallSubscriber = (
 ) => Promise<undefined | Rejection>;
 
 export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
+
+  /**
+   * The connector name the hold's prose needs, or null. Only looked up when
+   * the prose will actually name the tool (no capability clause) and the tool
+   * is a connector toolKey; any failure degrades to the bare tool name.
+   */
+  async function connectorNameForHold(
+    ctx: AgentContext,
+    call: ToolCall,
+    capability: string | null,
+  ): Promise<string | null> {
+    if (deps.connectorNameFor === undefined) return null;
+    if (sanitizeCapability(capability) !== null) return null;
+    const parsed = parseConnectorToolKey(call.name);
+    if (parsed === null) return null;
+    try {
+      return await deps.connectorNameFor(ctx, parsed.toolNamespace);
+    } catch (err) {
+      ctx.logger.warn('decision_connector_name_failed', {
+        plugin: PLUGIN_NAME,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return null;
+    }
+  }
 
   async function decide(ctx: AgentContext, call: ToolCall): Promise<undefined | Rejection> {
     const fingerprint = callFingerprint(call);
@@ -145,7 +181,11 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     // 3. Hold: record the call, then stop.
     const now = deps.now();
     const decisionId = deps.idGen();
-    const text = decisionText({ capability: answer.capability, toolName: call.name });
+    const text = decisionText({
+      capability: answer.capability,
+      toolName: call.name,
+      connectorName: await connectorNameForHold(ctx, call, answer.capability),
+    });
     const decision: Decision = {
       id: decisionId,
       agentId: ctx.agentId,
