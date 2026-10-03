@@ -6,7 +6,10 @@ import {
   type Connector,
 } from '@/lib/connectors';
 import { connectorIdFromName } from '@/lib/connector-form';
-import { putToolPermissions } from '@/lib/connector-tool-permissions';
+import {
+  putToolPermissions,
+  ToolPermissionsError,
+} from '@/lib/connector-tool-permissions';
 import { useToolPermissions } from '@/lib/use-tool-permissions';
 import {
   discoverOAuthHosts,
@@ -348,10 +351,15 @@ export function RemoteMcpConnectorForm({
       if (connector && toolChanges.length) {
         try {
           await putToolPermissions(connectorId, base, toolChanges);
-        } catch {
+        } catch (err) {
           // The connector itself is saved; stay open so Save can retry this.
+          const status = err instanceof ToolPermissionsError ? err.status : 0;
           setSaveError(
-            'We saved the connector, but not its tool permissions. Try saving again.',
+            status === 503
+              ? 'We saved the connector, but tool permissions can’t be saved right now. Try again in a little while.'
+              : status === 400
+                ? 'We saved the connector, but these tool permissions didn’t look right to us. Reopen the connector and try again.'
+                : 'We saved the connector, but not its tool permissions. Try saving again.',
           );
           return;
         }

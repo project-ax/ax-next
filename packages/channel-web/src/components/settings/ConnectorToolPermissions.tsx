@@ -186,8 +186,16 @@ function unavailableMessage(data: ToolPermissions): string {
     case 'unknown':
       return 'We can’t list this connector’s tools right now.';
     case 'ok':
-      return 'This connector didn’t list any tools.';
+      return data.defaults.length > 0
+        ? 'This connector didn’t list any tools this time. The ones you set before are below.'
+        : 'This connector didn’t list any tools.';
   }
+}
+
+/** Inventory tools with no saved default: their selection is a suggestion. */
+function unsavedSuggestions(data: ToolPermissions): number {
+  const saved = new Set(data.defaults.map((d) => d.toolKey));
+  return data.tools.filter((t) => !saved.has(t.toolKey)).length;
 }
 
 export function ConnectorToolPermissions({
@@ -238,8 +246,21 @@ export function ConnectorToolPermissions({
     const { data } = load;
     const unavailable = data.status !== 'ok' || data.tools.length === 0;
     const groups = groupTools(toolRows(data));
+    const suggested = unsavedSuggestions(data);
     body = (
       <>
+        {suggested > 0 && (
+          // A suggestion comes from how each tool describes ITSELF, which we
+          // can't check. Saving writes what's on screen, so say so before the
+          // person presses Save — not after.
+          <p data-testid="tool-permission-suggestions" className="text-sm text-muted-foreground">
+            {suggested === 1
+              ? 'One tool hasn’t been set yet, so we’ve suggested a choice'
+              : `${suggested} tools haven’t been set yet, so we’ve suggested a choice for each`}{' '}
+            based on how the tool describes itself. Check them before you save. Saving keeps
+            them; until then, agents ask first.
+          </p>
+        )}
         {unavailable && (
           <Alert>
             <AlertDescription className="flex flex-col gap-3">

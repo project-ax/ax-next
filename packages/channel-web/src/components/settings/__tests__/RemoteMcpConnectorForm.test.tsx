@@ -684,7 +684,7 @@ describe('tool permissions (TASK-737)', () => {
 
   it('keeps the dialog open when the connector saves but its tool permissions do not', async () => {
     serve(inventory({ defaults: [] }));
-    toolPermsPut = () => new Response(JSON.stringify({ error: 'nope' }), { status: 400 });
+    toolPermsPut = () => new Response(JSON.stringify({ error: 'nope' }), { status: 500 });
     const options = await openEditor();
     await screen.findByRole('group', { name: 'Permission for Search issues' });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -696,6 +696,51 @@ describe('tool permissions (TASK-737)', () => {
     expect(writes).toHaveLength(1);
     expect(options.onSaved).not.toHaveBeenCalled();
     expect(options.onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [503, 'We saved the connector, but tool permissions can’t be saved right now. Try again in a little while.'],
+    [400, 'We saved the connector, but these tool permissions didn’t look right to us. Reopen the connector and try again.'],
+  ])('says why a tool-permissions save failed (%i)', async (status, message) => {
+    serve(inventory({ defaults: [] }));
+    toolPermsPut = () => new Response(JSON.stringify({ error: 'x' }), { status });
+    const options = await openEditor();
+    await screen.findByRole('group', { name: 'Permission for Search issues' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(options.onSaved).not.toHaveBeenCalled();
+  });
+
+  it('says which choices are unsaved suggestions before Save writes them', async () => {
+    // get_issue has a saved default; the other three are suggestions.
+    serve(inventory());
+    await openEditor();
+    const note = await screen.findByTestId('tool-permission-suggestions');
+    expect(note).toHaveTextContent(
+      /^3 tools haven’t been set yet, so we’ve suggested a choice for each based on how the tool describes itself\. Check them before you save\./,
+    );
+  });
+
+  it('has no suggestion note once every listed tool has a saved choice', async () => {
+    serve(
+      inventory({
+        defaults: inventory().tools.map((t) => ({ toolKey: t.toolKey, verdict: 'hold' })),
+      }),
+    );
+    await openEditor();
+    await screen.findByRole('group', { name: 'Permission for Search issues' });
+    expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
+  });
+
+  it('does not claim a server listed no tools while showing earlier choices without saying so', async () => {
+    serve(inventory({ tools: [], defaults: [{ toolKey: 'mcp.linear.get_issue', verdict: 'deny' }] }));
+    await openEditor();
+    expect(
+      await screen.findByText(
+        /This connector didn’t list any tools this time\. The ones you set before are below\./,
+      ),
+    ).toBeVisible();
+    expect(group('get_issue')).toBeVisible();
   });
 
   it('explains an unreachable inventory, keeps saved defaults editable, still saves, and checks again', async () => {
