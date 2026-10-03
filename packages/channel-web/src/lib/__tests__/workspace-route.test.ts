@@ -75,6 +75,19 @@ describe('parseWorkspaceRoute', () => {
     });
   });
 
+  it('opens the Connectors tab for an old rules link (TASK-738)', () => {
+    expect(parseWorkspaceRoute('/workspace/agents/a1/rules')).toEqual({
+      kind: 'agent', id: 'a1', tab: 'connectors',
+    });
+    expect(parseWorkspaceRoute('/workspace/agents/a1/connectors')).toEqual({
+      kind: 'agent', id: 'a1', tab: 'connectors',
+    });
+    // The canonical path is the new name; the alias is read-only.
+    expect(
+      workspaceRoutePath({ kind: 'agent', id: 'a1', tab: 'connectors' }),
+    ).toBe('/workspace/agents/a1/connectors');
+  });
+
   it('drops trailing segments it has no meaning for', () => {
     expect(parseWorkspaceRoute('/workspace/agents/a1/files/extra')).toEqual({
       kind: 'agent',

@@ -764,6 +764,16 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'approved-capability grants render without a Revoke control (there is no writer to honour one)',
         },
         {
+          hook: 'tool-policy:list-agent-overrides',
+          degradation:
+            'the rail says the "Other abilities" switches are not available here instead of drawing them',
+        },
+        {
+          hook: 'tool-policy:set-agent-override',
+          degradation:
+            'the "Other abilities" switches are not drawn (there is no writer to honour them)',
+        },
+        {
           hook: 'decisions:list',
           degradation:
             'the chat surface renders no approval cards and the decisions queue is empty (nothing records decisions here)',

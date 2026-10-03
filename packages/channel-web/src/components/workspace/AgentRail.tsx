@@ -1,14 +1,13 @@
-import { Fragment, useState } from 'react';
+import { useState } from 'react';
 import {
-  AlertTriangle,
   Activity,
   Folder,
   Lightbulb,
   MessageSquare,
   MoreHorizontal,
   PanelRight,
+  Plug,
   Plus,
-  Shield,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -31,8 +30,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Separator } from '@/components/ui/separator';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CompactSurfaceContext } from '@/lib/use-compact';
 import { cn } from '@/lib/utils';
@@ -44,13 +41,11 @@ import type { AgentRailData, AgentDetail, GrantRow } from '@/lib/workspace-api';
 import {
   AgentTile,
   Elapsed,
-  GrantLine,
-  PermissionLine,
-  ReadFailure,
   SectionLabel,
   StateDot,
   stateWord,
 } from './bits';
+import { ConnectorsTab } from './ConnectorsTab';
 import { IconTooltip } from './IconTooltip';
 
 export const RAIL_TABS = {
@@ -58,7 +53,7 @@ export const RAIL_TABS = {
   chat: { label: 'Conversations', Icon: MessageSquare },
   memory: { label: 'Memory', Icon: Lightbulb },
   files: { label: 'Files', Icon: Folder },
-  rules: { label: 'What it may do alone', Icon: Shield },
+  connectors: { label: 'Connectors', Icon: Plug },
 } satisfies Record<AgentTab, { label: string; Icon: typeof Activity }>;
 
 interface Props {
@@ -76,14 +71,6 @@ interface Props {
   onNew?: () => Promise<void>;
   busy?: boolean;
   counts?: { memory: number | null; files: number | null };
-}
-
-function Note({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[13px] leading-relaxed text-muted-foreground">
-      {children}
-    </p>
-  );
 }
 
 export function AgentRail(props: Props) {
@@ -219,9 +206,7 @@ export function AgentRailContent({
     );
   }
   const count =
-    active === 'rules' && rail?.permissions.status === 'ok'
-      ? `${rail.permissions.rows.length} ${rail.permissions.rows.length === 1 ? 'rule' : 'rules'}`
-      : active === 'memory' && counts?.memory != null
+    active === 'memory' && counts?.memory != null
         ? `${counts.memory} ${counts.memory === 1 ? 'note' : 'notes'}`
         : active === 'files' && counts?.files != null
           ? `${counts.files} ${counts.files === 1 ? 'file' : 'files'}`
@@ -315,8 +300,23 @@ export function AgentRailContent({
           forceMount
           className="mt-0 flex min-h-0 flex-1 flex-col"
         >
-          <div className="flex h-12 shrink-0 items-center gap-2 px-4">
-            <h2 className="text-[14px] font-semibold">
+          {/*
+            The Connectors tab has no visible title (product decision,
+            TASK-738): its sections say what they are. The h2 stays for the
+            heading outline, so the rail's h3s still hang off it.
+          */}
+          <div
+            className={cn(
+              'flex h-12 shrink-0 items-center gap-2 px-4',
+              active === 'connectors' && 'h-4',
+            )}
+          >
+            <h2
+              className={cn(
+                'text-[14px] font-semibold',
+                active === 'connectors' && 'sr-only',
+              )}
+            >
               {RAIL_TABS[active].label}
             </h2>
             {count && (
@@ -423,26 +423,17 @@ export function AgentRailContent({
                 </>
               )}
               {active === 'files' && panels?.files}
-              {active === 'rules' && (
-                <>
-                  <Permissions
-                    name={agent.name}
-                    rail={rail}
-                    loading={loading}
-                    error={error}
-                  />
-                  <p className="mt-4 text-[12px] text-muted-foreground">
-                    Rules guide it. They don’t limit which tools it can reach.
-                  </p>
-                  <SectionLabel>Granted by you</SectionLabel>
-                  <Grants
-                    rail={rail}
-                    loading={loading}
-                    revoking={revoking}
-                    notice={notice}
-                    onRevoke={onRevoke}
-                  />
-                </>
+              {active === 'connectors' && (
+                <ConnectorsTab
+                  agentId={agent.id}
+                  name={agent.name}
+                  rail={rail}
+                  loading={loading}
+                  error={error}
+                  revoking={revoking}
+                  notice={notice}
+                  onRevoke={onRevoke}
+                />
               )}
             </div>
           </CompactSurfaceContext.Provider>
@@ -589,167 +580,6 @@ function RightNow({
         </CardContent>
       </Card>
     </>
-  );
-}
-
-/** The security claim. See the file header for the three rules it obeys. */
-function Permissions({
-  name,
-  rail,
-  loading,
-  error,
-}: {
-  name: string;
-  rail: AgentRailData | null;
-  loading: boolean;
-  error: string | null;
-}) {
-  if (loading && rail === null) {
-    return (
-      <div className="flex flex-col gap-3">
-        <Skeleton className="h-4 w-4/5" />
-        <Skeleton className="h-4 w-3/5" />
-      </div>
-    );
-  }
-  if (rail === null) {
-    return (
-      <Note>
-        {error === null
-          ? 'We can’t show this yet.'
-          : 'We couldn’t read this just now.'}{' '}
-        Until it loads, treat what {name} may do as unknown rather than empty.
-      </Note>
-    );
-  }
-  const { status, rows, incomplete, unrestrictedTools } = rail.permissions;
-  if (status !== 'ok') {
-    return (
-      <Note>
-        {status === 'unavailable'
-          ? `This deployment doesn’t publish the rules that govern ${name}.`
-          : `We couldn’t read the rules that govern ${name} just now.`}{' '}
-        Treat this as unknown rather than empty — an agent with no list shown is
-        not an agent with no reach.
-      </Note>
-    );
-  }
-  return (
-    <div className="flex flex-col">
-      {rows.length === 0 && (
-        <Note>
-          Nothing here describes {name}&apos;s reach yet. That means we
-          can&apos;t tell you — not that there isn&apos;t any.
-        </Note>
-      )}
-      {rows.length > 0 && (
-        <div className="flex flex-col">
-          {rows.map((row, i) => (
-            <Fragment key={`${row.source}#${String(i)}`}>
-              {/*
-                  A rule from the group above ends here. Twenty rows separated
-                  only by a small coloured glyph is a list nobody scans; a
-                  hairline between "can", "asks first" and "never" makes the
-                  three blocks findable without adding three headings that
-                  repeat what each row already says.
-                */}
-              {i > 0 && rows[i - 1]?.verdict !== row.verdict && (
-                <Separator className="my-2" />
-              )}
-              <PermissionLine row={row} />
-            </Fragment>
-          ))}
-        </div>
-      )}
-      {unrestrictedTools && (
-        <Alert className="mt-3">
-          <AlertTriangle aria-hidden="true" />
-          <AlertDescription>
-            Nothing limits which tools {name} can use — it can reach anything
-            installed here, now or later. The rules above are what&apos;s
-            installed today, not a boundary.
-          </AlertDescription>
-        </Alert>
-      )}
-      {incomplete && (
-        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
-          One of the places we look didn&apos;t answer, so the rules above may
-          be missing something. It is not a complete list of what {name} cannot
-          do.
-        </p>
-      )}
-    </div>
-  );
-}
-
-/**
- * "Granted by you" — the group a person can act on, and the one they are most
- * likely to have forgotten they created (design §4.3.4).
- */
-/*
-  No `error` prop any more (TASK-288). It existed only to glue the raw thrown
-  message into the sentence below; `rail === null && !loading` already says
-  everything this group can act on, and the cause is a console line now.
-*/
-function Grants({
-  rail,
-  loading,
-  revoking,
-  notice,
-  onRevoke,
-}: {
-  rail: AgentRailData | null;
-  loading: boolean;
-  revoking: ReadonlySet<string>;
-  notice: string | null;
-  onRevoke: (row: GrantRow) => void;
-}) {
-  if (rail === null) {
-    if (loading) return <Note>Reading what you&apos;ve granted…</Note>;
-    return (
-      <Note>
-        {/*
-          The raw detail used to ride in a parenthetical here — `We couldn't
-          read this just now (workspace /agents/ag_… → 401).` A request path
-          inside a sentence is the one shape a grep for a raw status never
-          finds. `workspace-rail.ts` logs it now (TASK-288).
-        */}
-        We couldn&apos;t read this just now.
-      </Note>
-    );
-  }
-  const { status, rows, incomplete } = rail.grants;
-  if (status !== 'ok') {
-    return (
-      <ReadFailure status={status} what="a record of what you've granted" />
-    );
-  }
-  return (
-    <div className="flex flex-col">
-      {rows.length === 0 && (
-        <Note>
-          Nothing yet — you haven&apos;t granted anything beyond the rules
-          above.
-        </Note>
-      )}
-      {rows.map((row, i) => (
-        <GrantLine
-          key={`${row.source}#${String(i)}`}
-          row={row}
-          busy={revoking.has(row.source)}
-          onRevoke={onRevoke}
-        />
-      ))}
-      {incomplete && (
-        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
-          One of the places we look didn&apos;t answer, so there may be more
-          than this.
-        </p>
-      )}
-      {notice !== null && (
-        <p className="mt-2 text-[11.5px] text-muted-foreground">{notice}</p>
-      )}
-    </div>
   );
 }
 

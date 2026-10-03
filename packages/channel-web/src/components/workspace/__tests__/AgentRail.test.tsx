@@ -17,12 +17,19 @@ vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
   return {
     ...actual,
-    workspaceApi: { rail: vi.fn(), revokeGrant: vi.fn() },
+    workspaceApi: {
+      rail: vi.fn(),
+      revokeGrant: vi.fn(),
+      abilities: vi.fn(),
+      setAbility: vi.fn(),
+    },
   };
 });
 
 const railMock = vi.mocked(workspaceApi.rail);
 const revokeMock = vi.mocked(workspaceApi.revokeGrant);
+const abilitiesMock = vi.mocked(workspaceApi.abilities);
+const ALL_ON = { webSearch: true, readPages: true, runCode: true };
 
 function agent(over: Partial<WorkspaceAgent> = {}): WorkspaceAgent {
   return {
@@ -49,20 +56,32 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
   };
 }
 
-let initialTab: 'activity' | 'rules' = 'rules';
+let initialTab: 'activity' | 'connectors' = 'connectors';
+/**
+ * `container` is the whole document: the permissions list now lives in a
+ * Dialog (TASK-738), which portals out of the render root.
+ */
 function renderRail(d: AgentDetail = detail()) {
-  return render(<AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} />);
+  const r = render(<AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} />);
+  return { ...r, container: document.body };
 }
 
-/** Wait for the selected rules panel's live count. */
+/** Open "See everything it can do" — where the rules list moved (TASK-738). */
 async function openPermissions(): Promise<void> {
-  await screen.findByText(/^\d+ rules?$/);
+  fireEvent.click(await screen.findByRole('button', { name: 'See everything it can do' }));
+  await screen.findByRole('dialog', { name: 'Everything Quill can do' });
+}
+
+/** Expand the collapsed "Granted by you" group. */
+async function openGrants(): Promise<void> {
+  fireEvent.click(await screen.findByRole('button', { name: /Granted by you/ }));
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  initialTab = 'rules';
+  initialTab = 'connectors';
   railMock.mockResolvedValue(rail());
+  abilitiesMock.mockResolvedValue({ abilities: ALL_ON });
 });
 
 describe('AgentRail — simplified tabs', () => {
@@ -163,8 +182,8 @@ describe('AgentRail — "Right now"', () => {
   });
 });
 
-describe('AgentRail — "What it may do alone"', () => {
-  beforeEach(() => { initialTab = 'rules'; });
+describe('AgentRail — "See everything it can do"', () => {
+  beforeEach(() => { initialTab = 'connectors'; });
   it('groups allow first, then hold, then deny', async () => {
     railMock.mockResolvedValue(
       rail({
@@ -707,6 +726,7 @@ describe('AgentRail — "What it may do alone"', () => {
       }),
     );
     const first = renderRail();
+    await openPermissions();
     expect(
       await screen.findByText(/doesn’t publish the rules that govern Quill/),
     ).toBeTruthy();
@@ -723,6 +743,7 @@ describe('AgentRail — "What it may do alone"', () => {
       }),
     );
     renderRail();
+    await openPermissions();
     expect(
       await screen.findByText(/couldn’t read the rules that govern Quill/),
     ).toBeTruthy();
@@ -741,7 +762,7 @@ describe('AgentRail — "What it may do alone"', () => {
   });
 });
 
-describe('AgentRail — rules are disclosed by their tab', () => {
+describe('AgentRail — rules are disclosed behind "See everything it can do"', () => {
   const rows = [describedRow(), mcpRow()];
   beforeEach(() => {
     railMock.mockResolvedValue(rail({ permissions: {
@@ -749,24 +770,16 @@ describe('AgentRail — rules are disclosed by their tab', () => {
     } }));
   });
 
-  it('starts on Conversations and reveals every rule when its tab is selected', async () => {
-    const { container } = render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
+  it('starts on Conversations and reveals every rule only once the dialog opens', async () => {
+    render(<AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} />);
     expect(screen.getByRole('tab', { name: 'Conversations' })).toHaveAttribute('aria-selected', 'true');
-    expect(container.textContent).not.toContain(rows[0]!.source);
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'What it may do alone' }), { button: 0, ctrlKey: false });
-    await screen.findByText('2 rules');
-    for (const row of rows) expect(container.textContent).toContain(row.source);
-    expect(screen.queryByRole('button', { name: /^Show / })).toBeNull();
-    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Conversations' }), { button: 0, ctrlKey: false });
-    expect(container.textContent).not.toContain(rows[0]!.source);
-  });
-
-  it('counts one rule in the singular', async () => {
-    railMock.mockResolvedValue(rail({ permissions: {
-      status: 'ok', incomplete: false, unrestrictedTools: false, rows: [describedRow()],
-    } }));
-    renderRail();
-    expect(await screen.findByText('1 rule')).toBeTruthy();
+    expect(document.body.textContent).not.toContain(rows[0]!.source);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Connectors' }), { button: 0, ctrlKey: false });
+    // The tab itself does not list rules — the list moved, it was not dropped.
+    await screen.findByText('Other abilities');
+    expect(document.body.textContent).not.toContain(rows[0]!.source);
+    await openPermissions();
+    for (const row of rows) expect(document.body.textContent).toContain(row.source);
   });
 
   it('keeps the unknown-reach sentence for an empty list', async () => {
@@ -774,15 +787,15 @@ describe('AgentRail — rules are disclosed by their tab', () => {
       status: 'ok', incomplete: false, unrestrictedTools: false, rows: [],
     } }));
     renderRail();
+    await openPermissions();
     expect(await screen.findByText(/Nothing here describes Quill/)).toBeTruthy();
-    expect(screen.getByText('0 rules')).toBeTruthy();
   });
 });
 
 describe('AgentRail icon tabs', () => {
   it('preserves Radix active styling while each tab has a tooltip', () => {
     renderRail();
-    const selected = screen.getByRole('tab', { name: 'What it may do alone' });
+    const selected = screen.getByRole('tab', { name: 'Connectors' });
     expect(selected).toHaveAttribute('data-state', 'active');
     expect(screen.getByRole('tab', { name: 'Conversations' })).toHaveAttribute('data-state', 'inactive');
   });
@@ -800,6 +813,7 @@ describe('AgentRail — "Granted by you"', () => {
       rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
     );
     renderRail();
+    await openGrants();
 
     expect(await screen.findByText('api.linear.app')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Revoke' })).toBeTruthy();
@@ -811,6 +825,7 @@ describe('AgentRail — "Granted by you"', () => {
     );
     revokeMock.mockResolvedValue({ revoked: true });
     renderRail();
+    await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
     await waitFor(() => {
@@ -840,6 +855,7 @@ describe('AgentRail — "Granted by you"', () => {
     );
     revokeMock.mockResolvedValue({ revoked: false });
     renderRail();
+    await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
     expect(await screen.findByText(/already gone/)).toBeTruthy();
@@ -851,6 +867,7 @@ describe('AgentRail — "Granted by you"', () => {
     );
     revokeMock.mockRejectedValue(new Error('boom'));
     renderRail();
+    await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
     expect(await screen.findByText(/Nothing changed/)).toBeTruthy();
@@ -867,6 +884,7 @@ describe('AgentRail — "Granted by you"', () => {
       }),
     );
     renderRail();
+    await openGrants();
 
     await screen.findByText('api.linear.app');
     expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
@@ -920,6 +938,7 @@ describe('AgentRail — a rail that would not load', () => {
   it('drops the rail rather than showing stale claims beside an error', async () => {
     railMock.mockRejectedValue(new Error('workspace /rail → 500'));
     const { container } = renderRail();
+    await openPermissions();
 
     await waitFor(() => {
       expect(container.textContent).toMatch(/unknown rather than empty/);

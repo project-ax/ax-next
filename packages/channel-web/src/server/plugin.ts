@@ -333,6 +333,20 @@ export function createChannelWebServerPlugin(
             'approved-capability grants render without a Revoke control (there is no writer to honour one)',
         },
         {
+          // TASK-738 — the Connectors tab's "Other abilities" switches read
+          // the agent's per-tool overrides. Without @ax/tool-policy there is
+          // nothing a switch could change, so none are drawn.
+          hook: 'tool-policy:list-agent-overrides',
+          degradation:
+            'the rail says the "Other abilities" switches are not available here instead of drawing them',
+        },
+        {
+          // Same switches' writer: off = a `deny` override, on = cleared.
+          hook: 'tool-policy:set-agent-override',
+          degradation:
+            'the "Other abilities" switches are not drawn (there is no writer to honour them)',
+        },
+        {
           // TASK-235 — the open decisions behind the queue and the approval
           // cards in a thread. NOT the counter any more: TASK-266 moved that
           // to `decisions:count`, below.

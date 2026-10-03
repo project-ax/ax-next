@@ -124,6 +124,9 @@ import {
 import { stripSurfaceRewritersFromDocument } from '@ax/core/surface-text';
 import type {
   ActivityEvent,
+  AgentAbilities,
+  AgentAbilitiesRead,
+  AgentAbility,
   AgentMemoryRead,
   FactMemoryPage,
   AgentRailData,
@@ -144,7 +147,7 @@ import type {
   WorkspaceAgent,
   WorkspaceReadStatus,
 } from '../lib/workspace-types.js';
-import { isOpenDecision } from '../lib/workspace-types.js';
+import { AGENT_ABILITIES, isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
 import { fenceLine } from '../lib/fence-line.js';
 import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
@@ -1254,6 +1257,59 @@ async function authOr401(
     }
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// "Other abilities" (TASK-738). Structural mirrors of @ax/tool-policy's
+// override hooks — no import (invariant 2); the hook bus is the API.
+// ---------------------------------------------------------------------------
+
+type AbilityVerdict = 'allow' | 'hold' | 'deny';
+
+interface ToolPolicySetAgentOverrideInput {
+  agentId: string;
+  toolKey: string;
+  verdict: AbilityVerdict | null;
+}
+type ToolPolicySetAgentOverrideOutput =
+  | { ok: true }
+  | { ok: false; reason: string; ceiling?: AbilityVerdict | undefined };
+interface ToolPolicyListAgentOverridesOutput {
+  overrides: Array<{ toolKey: string; verdict: AbilityVerdict }>;
+}
+
+/**
+ * The ONLY tool keys this surface can write. A closed table, server-side: the
+ * browser names a product word and never a tool key, so nothing on the wire
+ * can reach a key outside these three (tool-policy refuses others too — this
+ * is the second lock, not the only one).
+ */
+export const ABILITY_TOOL_KEYS: Readonly<Record<AgentAbility, string>> = Object.freeze({
+  webSearch: 'web_search',
+  readPages: 'web_extract',
+  runCode: 'Bash',
+});
+
+function isAgentAbility(v: unknown): v is AgentAbility {
+  return typeof v === 'string' && (AGENT_ABILITIES as readonly string[]).includes(v);
+}
+
+/**
+ * Off = an override of `deny`. Anything else — no override, or a `hold` that
+ * a person did not set here — reads as on, because the switch only ever
+ * writes `deny` or clears.
+ */
+function abilitiesFrom(out: ToolPolicyListAgentOverridesOutput): AgentAbilities {
+  const denied = new Set(
+    (Array.isArray(out?.overrides) ? out.overrides : [])
+      .filter((o) => o?.verdict === 'deny')
+      .map((o) => o.toolKey),
+  );
+  return {
+    webSearch: !denied.has(ABILITY_TOOL_KEYS.webSearch),
+    readPages: !denied.has(ABILITY_TOOL_KEYS.readPages),
+    runCode: !denied.has(ABILITY_TOOL_KEYS.runCode),
+  };
 }
 
 /** Resolve the agent for ACL. Any PluginError → 404 (do not leak existence). */
@@ -5362,6 +5418,103 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/agents/:agentId/abilities — the three "Other
+     * abilities" switches (TASK-738).
+     *
+     * ACL is `agents:resolve`, and a refusal is a 404 like every per-agent
+     * route here. Read and write share that gate on purpose: the people
+     * `agents:resolve` lets in (the owner of a personal agent, a member of a
+     * team agent's team) are exactly the people `@ax/agents`' write rule lets
+     * edit it, so a separate 403 branch would be unreachable.
+     */
+    async abilities(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+      if (!bus.hasService('tool-policy:list-agent-overrides')) {
+        // No verdict store: there is nothing a switch could change, and three
+        // "on" switches would claim a control that does not exist.
+        res.status(503).json({ error: 'abilities-unavailable' });
+        return;
+      }
+      const out = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
+        'tool-policy:list-agent-overrides',
+        agentWorkspaceCtx(agentId, userId),
+        { agentId },
+      );
+      res.status(200).json({ abilities: abilitiesFrom(out) } satisfies AgentAbilitiesRead);
+    },
+
+    /**
+     * PUT /api/workspace/agents/:agentId/abilities — flip ONE switch.
+     *
+     * Off writes a `deny` override; on CLEARS the override (never writes
+     * `allow`), so turning a switch back on returns the tool to whatever the
+     * deployment's own rules say — it can never loosen past them. The answer
+     * is the re-read state, so the browser shows what the store holds rather
+     * than what it asked for.
+     */
+    async setAbility(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+      if (
+        !bus.hasService('tool-policy:set-agent-override') ||
+        !bus.hasService('tool-policy:list-agent-overrides')
+      ) {
+        res.status(503).json({ error: 'abilities-unavailable' });
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = parsed as { ability?: unknown; enabled?: unknown } | null;
+      if (!isAgentAbility(body?.ability) || typeof body?.enabled !== 'boolean') {
+        res.status(400).json({ error: 'invalid-ability' });
+        return;
+      }
+
+      const ctx = agentWorkspaceCtx(agentId, userId);
+      const wrote = await bus.call<
+        ToolPolicySetAgentOverrideInput,
+        ToolPolicySetAgentOverrideOutput
+      >('tool-policy:set-agent-override', ctx, {
+        agentId,
+        toolKey: ABILITY_TOOL_KEYS[body.ability],
+        verdict: body.enabled ? null : 'deny',
+      });
+      if (wrote.ok !== true) {
+        // Neither `deny` nor a clear can be looser than a ceiling, so this is
+        // the store refusing for a reason of its own. Say so; never "saved".
+        res.status(409).json({ error: 'ability-not-saved', reason: wrote.reason });
+        return;
+      }
+      const out = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
+        'tool-policy:list-agent-overrides',
+        ctx,
+        { agentId },
+      );
+      res.status(200).json({ abilities: abilitiesFrom(out) } satisfies AgentAbilitiesRead);
+    },
+
+    /**
      * PUT /api/workspace/agents/:agentId/memory/rules — save the human tier.
      *
      * This route does not write a file. It calls `memory:rules:write`, which
@@ -6019,6 +6172,17 @@ export async function registerWorkspaceRoutes(
       method: 'POST',
       path: '/api/workspace/agents/:agentId/grants/revoke',
       handler: handlers.revokeGrant as unknown as RouteHandler,
+    },
+    {
+      // TASK-738 — the Connectors tab's "Other abilities" switches.
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/abilities',
+      handler: handlers.abilities as unknown as RouteHandler,
+    },
+    {
+      method: 'PUT',
+      path: '/api/workspace/agents/:agentId/abilities',
+      handler: handlers.setAbility as unknown as RouteHandler,
     },
     {
       method: 'PUT',

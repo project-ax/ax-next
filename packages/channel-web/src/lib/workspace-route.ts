@@ -18,7 +18,7 @@
  */
 
 /** The tabs an agent view offers, in the order they appear. */
-export const WORKSPACE_AGENT_TABS = ['activity', 'chat', 'memory', 'files', 'rules'] as const;
+export const WORKSPACE_AGENT_TABS = ['activity', 'chat', 'memory', 'files', 'connectors'] as const;
 
 export type AgentTab = (typeof WORKSPACE_AGENT_TABS)[number];
 
@@ -83,10 +83,14 @@ export function parseWorkspaceRoute(pathname: string): WorkspaceRoute {
   const id = parseAgentId(third);
   if (id === null) return TODAY;
 
-  // Preserve links to the two panels now combined into Activity.
+  // Preserve links to the two panels now combined into Activity, and to the
+  // old "What it may do alone" tab, which the Connectors tab replaced
+  // (TASK-738) — a bookmarked `/rules` still opens the same place.
   const tab = fourth === 'now' || fourth === 'did'
     ? 'activity'
-    : fourth !== undefined && isAgentTab(fourth) ? fourth : DEFAULT_TAB;
+    : fourth === 'rules'
+      ? 'connectors'
+      : fourth !== undefined && isAgentTab(fourth) ? fourth : DEFAULT_TAB;
   return { kind: 'agent', id, tab };
 }
 
