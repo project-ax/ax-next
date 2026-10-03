@@ -47,6 +47,9 @@ vi.mock('@/lib/workspace-api', async () => {
       // this file's subject renders at all.
       rail: vi.fn(async () => railFixture()),
       revokeGrant: vi.fn(),
+      abilities: vi.fn(async () => ({
+        abilities: { webSearch: true, readPages: true, runCode: true },
+      })),
       sendMessage: vi.fn(),
       streamReply: vi.fn(),
     },
@@ -127,7 +130,7 @@ describe('AgentView heading outline', () => {
     THE CARD'S HEADLINE DEFECT, on every tab. Before the fix this array was
     empty on all four — the assertion that fails first, and loudest.
   */
-  for (const tab of ['activity', 'chat', 'files', 'memory', 'rules'] as const) {
+  for (const tab of ['activity', 'chat', 'files', 'memory', 'connectors'] as const) {
     it(`gives the ${tab} tab an outline with no skipped levels and exactly one h1`, async () => {
       renderView({ tab });
 
@@ -170,22 +173,26 @@ describe('AgentView heading outline', () => {
     off the page title two levels up.
   */
   it('names the open panel and the rail, and hangs the rail sections off the rail', async () => {
-    renderView({ tab: 'rules' });
+    renderView({ tab: 'connectors' });
     // The rail arrives on its own read; wait for one of its sections by TEXT,
     // which is there before the fix as well as after, so the wait itself never
     // becomes the thing under test.
     await screen.findByText('Granted by you');
 
+    // "Connectors" has no VISIBLE title (TASK-738) — the h2 is still there.
     expect(headingOutline().slice(0, 3)).toEqual([
       'h1: Quill',
       'h2: Conversation',
-      'h2: What it may do alone',
+      'h2: Connectors',
     ]);
     // The rail's own sections — `SectionLabel`, now an `h3`. At least one, so
     // this cannot pass on a rail that rendered nothing.
     const railSections = screen.getAllByRole('heading', { level: 3 });
     expect(railSections.length).toBeGreaterThan(0);
-    expect(railSections.map((h) => h.textContent)).toContain('Granted by you');
+    const labels = railSections.map((h) => h.textContent ?? '');
+    expect(labels).toContain('Other abilities');
+    // The group's h3 wraps its disclosure button, which carries the count.
+    expect(labels.some((l) => l.startsWith('Granted by you'))).toBe(true);
   });
 
   /*

@@ -984,3 +984,31 @@ export function isJustResolved(
     now - Date.parse(d.resolvedAt) < JUST_RESOLVED_MS
   );
 }
+
+/**
+ * The rail's "Other abilities" switches (TASK-738, connectors-rail slice 5).
+ *
+ * Three product words, never tool names: the server owns the mapping onto
+ * `web_search` / `web_extract` / `Bash`, so a browser can only ever name one
+ * of these three and never an arbitrary tool key.
+ */
+export const AGENT_ABILITIES = ['webSearch', 'readPages', 'runCode'] as const;
+export type AgentAbility = (typeof AGENT_ABILITIES)[number];
+
+/**
+ * `true` = the person has not switched it off. That is NOT a promise the tool
+ * runs unasked: a switch can only tighten, so "on" means "whatever this
+ * deployment's own rules say" (reading a web page still asks first, say).
+ */
+export type AgentAbilities = Record<AgentAbility, boolean>;
+
+/** `GET` and `PUT /api/workspace/agents/:agentId/abilities` answer this. */
+export interface AgentAbilitiesRead {
+  abilities: AgentAbilities;
+}
+
+/** The `PUT` body: one switch at a time. */
+export interface AgentAbilityWrite {
+  ability: AgentAbility;
+  enabled: boolean;
+}

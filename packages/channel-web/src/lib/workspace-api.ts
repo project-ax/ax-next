@@ -66,6 +66,9 @@ import { asSaveRefusedCode, type SaveRefusedCode } from './save-refused';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
+  AgentAbilitiesRead,
+  AgentAbility,
+  AgentAbilityWrite,
   AgentMemoryRead,
   AgentRailData,
   CounterRow,
@@ -884,6 +887,21 @@ export const workspaceApi = {
       `/agents/${encodeURIComponent(agentId)}/grants/revoke`,
       { method: 'POST', body: { ref } },
     ),
+
+  /**
+   * The Connectors tab's "Other abilities" switches (TASK-738).
+   *
+   * One switch per write, and the answer is the state the server re-read
+   * after writing — the switch draws that, never what it asked for.
+   */
+  abilities: (agentId: string) =>
+    req<AgentAbilitiesRead>(`/agents/${encodeURIComponent(agentId)}/abilities`),
+
+  setAbility: (agentId: string, ability: AgentAbility, enabled: boolean) =>
+    req<AgentAbilitiesRead>(`/agents/${encodeURIComponent(agentId)}/abilities`, {
+      method: 'PUT',
+      body: { ability, enabled } satisfies AgentAbilityWrite,
+    }),
 
   /**
    * Turn a pending grant down, durably (TASK-444).
