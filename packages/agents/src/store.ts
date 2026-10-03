@@ -683,8 +683,23 @@ export interface AgentStore {
    * with validateConnectorAttachmentIds before calling. Throws
    * PluginError(not-found) when the agent row doesn't exist. Mirrors
    * setSkillAttachments.
+   *
+   * It is a row-locked read-modify-write (`SELECT ... FOR UPDATE`, as attach /
+   * detach), and never edits connector_exclusions. TASK-765 --
+   * `opts.refuseIfExcluded`: an explicit attachment wins over an exclusion at
+   * resolve time, so ADDING an id that is excluded would undo whoever removed
+   * it. When set, a list that adds (is not already attached in the locked row,
+   * and is excluded in it) such an id throws PluginError(forbidden), writing
+   * nothing. Checked here, on the locked row, because a read made beforehand can
+   * miss an exclusion committed in between; deciding whether the actor MAY
+   * clear an exclusion is the caller's job (it needs bus calls, which must stay
+   * out of this transaction): it passes `refuseIfExcluded: !mayClear`.
    */
-  setConnectorAttachments(agentId: string, connectorIds: string[]): Promise<Agent>;
+  setConnectorAttachments(
+    agentId: string,
+    connectorIds: string[],
+    opts?: { refuseIfExcluded?: boolean },
+  ): Promise<Agent>;
   /**
    * TASK-739 — attach ONE connector: append to connector_attachments if absent
    * (max 50 → invalid-payload) and drop it from connector_exclusions. ONE
@@ -986,41 +1001,30 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       return rowToAgent(row as AgentsRow);
     },
 
-    async setConnectorAttachments(agentId, connectorIds) {
-      const row = await db
-        .updateTable('agents_v1_agents')
-        .set({
-          connector_attachments: JSON.stringify(connectorIds) as unknown,
-          updated_at: new Date(),
-        } as never)
-        .where('agent_id', '=', agentId)
-        .returning([
-          'agent_id',
-          'owner_id',
-          'owner_type',
-          'visibility',
-          'display_name',
-          'allowed_tools',
-          'mcp_config_ids',
-          'model',
-          'runner',
-          'workspace_ref',
-          'webhook_token',
-          'skill_attachments',
-          'connector_attachments',
-          'connector_exclusions',
-          'created_at',
-          'updated_at',
-        ])
-        .executeTakeFirst();
-      if (row === undefined) {
-        throw new PluginError({
-          code: 'not-found',
-          plugin: PLUGIN_NAME,
-          message: `agent '${agentId}' not found`,
-        });
-      }
-      return rowToAgent(row as AgentsRow);
+    async setConnectorAttachments(agentId, connectorIds, opts) {
+      // One row-locked read-modify-write (the same path attach / detach use),
+      // so the TASK-765 check below reads the exclusions that are actually
+      // there at write time. `exclusions` pass through untouched.
+      const { agent } = await editConnectorLists(db, agentId, (attachments, exclusions) => {
+        if (opts?.refuseIfExcluded === true) {
+          // Only an id being ADDED counts: one already attached (and, by some
+          // earlier state, excluded too) is not new reach, so it must not make
+          // an unrelated save fail.
+          const added = connectorIds.find(
+            (id) => exclusions.includes(id) && !attachments.includes(id),
+          );
+          if (added !== undefined) {
+            // Thrown inside the transaction -> rolled back, nothing written.
+            throw new PluginError({
+              code: 'forbidden',
+              plugin: PLUGIN_NAME,
+              message: `connector '${added}' was removed from this agent; only its owner or an admin can bring it back`,
+            });
+          }
+        }
+        return { attachments: connectorIds, exclusions };
+      });
+      return agent;
     },
 
     async attachConnector(agentId, connectorId, opts) {

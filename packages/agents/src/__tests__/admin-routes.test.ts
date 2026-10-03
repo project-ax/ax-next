@@ -1297,6 +1297,73 @@ describe('@ax/agents admin routes', () => {
     ]);
   });
 
+  // TASK-765 — a default connector reaches every member of a team agent, and an
+  // explicit attachment beats an exclusion at resolve time. So putting an
+  // EXCLUDED id back via this route needs the right to exclude (team admin /
+  // workspace admin); the hook's `forbidden` surfaces as a plain 403.
+  it('SECURITY: connector-attachments adding an EXCLUDED id — plain team member → 403 and nothing written; team admin and workspace admin → 200', async () => {
+    const memberB = await mintSecondUserCookie();
+    const teamAdminC = await mintSecondUserCookie();
+    const roles: Record<string, 'admin' | 'member'> = {
+      [teamAdminC.userId]: 'admin',
+    };
+    stack.harness.bus.registerService(
+      'teams:is-member',
+      'mock-teams',
+      async (_ctx, input: unknown) => {
+        const { userId } = input as { teamId: string; userId: string };
+        return { member: true, role: roles[userId] ?? ('member' as const) };
+      },
+    );
+    const adminCookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie: adminCookie,
+      body: makeBody({ visibility: 'team', teamId: 'team-x' }),
+    });
+    expect(created.status).toBe(201);
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    // The workspace admin removes a default the whole team would get.
+    await stack.harness.bus.call(
+      'agents:detach-connector',
+      stack.harness.ctx(),
+      {
+        actor: { userId: 'someone-admin', isAdmin: true },
+        agentId: id,
+        connectorId: 'personal-conn',
+        exclude: true,
+      },
+    );
+
+    const patch = (cookie: string) =>
+      http(stack.port, 'PATCH', `/admin/agents/${id}/connector-attachments`, {
+        cookie,
+        body: { connectorAttachments: ['personal-conn'] },
+      });
+
+    const refused = await patch(memberB.cookie);
+    expect(refused.status).toBe(403);
+    const afterRefusal = await http(stack.port, 'GET', `/admin/agents/${id}`, {
+      cookie: adminCookie,
+    });
+    const refusedAgent = (afterRefusal.body as { agent: SerializedAgent }).agent;
+    expect(refusedAgent.connectorAttachments).toEqual([]);
+    expect(refusedAgent.connectorExclusions).toEqual(['personal-conn']);
+
+    const byTeamAdmin = await patch(teamAdminC.cookie);
+    expect(byTeamAdmin.status).toBe(200);
+    expect(
+      (byTeamAdmin.body as { agent: SerializedAgent }).agent.connectorAttachments,
+    ).toEqual(['personal-conn']);
+
+    // And the workspace admin (a team member of no particular rank here).
+    await http(stack.port, 'PATCH', `/admin/agents/${id}/connector-attachments`, {
+      cookie: adminCookie,
+      body: { connectorAttachments: [] },
+    });
+    const byWorkspaceAdmin = await patch(adminCookie);
+    expect(byWorkspaceAdmin.status).toBe(200);
+  });
+
   it('skill-attachments: a non-admin OWNER may attach their OWN user-scoped skill → 200', async () => {
     const { cookie } = await mintSecondUserCookie();
     const created = await http(stack.port, 'POST', '/admin/agents', {

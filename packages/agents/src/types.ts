@@ -303,6 +303,14 @@ export interface ListPersonalOwnersOutput {
 // mechanism vocab (no `mcp`/`url`/`transport`). A dangling id is tolerated — it
 // simply never resolves at session open (the orchestrator's NON-FATAL union),
 // mirroring skill_attachments' orphan tolerance.
+//
+// TASK-765 — an explicit attachment wins over an exclusion at resolve time, so
+// a list that ADDS an id the agent has excluded (an id in `connectorExclusions`
+// that is not already attached) is refused with `forbidden` unless the actor may
+// exclude connectors on this agent (the agent's owner / a team admin / a
+// workspace admin — see agents:can-exclude-connector). Otherwise a plain team
+// member could undo the owner's removal of a default. `connectorExclusions`
+// itself is never edited by this hook.
 
 export interface SetConnectorAttachmentsInput {
   actor: Actor;
@@ -318,7 +326,8 @@ export interface SetConnectorAttachmentsOutput {
 //
 // Single-connector edits, each ONE row-locked read-modify-write so two
 // concurrent edits of the same agent never lose a write (the wholesale
-// set-connector-attachments is last-writer-wins). ACL: the ownership ACL
+// set-connector-attachments replaces the list, so it is last-writer-wins on the
+// list's contents). ACL: the ownership ACL
 // (owner OR admin for a personal agent; any team member or an admin for a team
 // agent), plus two further gates that exist because a DEFAULT connector reaches
 // every member of a team agent:

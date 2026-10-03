@@ -1535,6 +1535,101 @@ describe('agents: removing a default connector is owner/admin only (TASK-765)', 
     });
   });
 
+  // The wholesale setter is the OTHER way to put an excluded id back on an agent
+  // (@ax/connectors resolves an explicit attachment even when it is excluded),
+  // so it gets the same gate: adding an excluded id needs exclude rights.
+  describe('agents:set-connector-attachments adding an excluded id', () => {
+    function setList(h: TestHarness, actor: typeof member, agentId: string, ids: string[]) {
+      return h.bus.call<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
+        'agents:set-connector-attachments',
+        h.ctx(),
+        { actor, agentId, connectorIds: ids },
+      );
+    }
+    async function seedExcluded() {
+      const s = await seedTeamAgent();
+      await detach(s.h, {
+        actor: teamAdmin,
+        agentId: s.agentId,
+        connectorId: 'personal-conn',
+        exclude: true,
+      });
+      return s;
+    }
+
+    // UNFIXED: the plain UPDATE puts the excluded id on the agent -> fails.
+    it('SECURITY: a plain member cannot add an excluded id; nothing is written', async () => {
+      const { h, agentId } = await seedExcluded();
+      await expect(
+        setList(h, member, agentId, ['fresh-conn', 'personal-conn']),
+      ).rejects.toMatchObject({ code: 'forbidden' });
+      const after = await stored(h, agentId);
+      expect(after.connectorAttachments).toEqual([]);
+      expect(after.connectorExclusions).toEqual(['personal-conn']);
+    });
+
+    // UNFIXED: lands and nothing throws -> fails.
+    it('a role lookup failing for any OTHER reason propagates', async () => {
+      const { h, agentId } = await seedExcluded();
+      teamsFailsAfter(1, 'broken');
+      await expect(setList(h, member, agentId, ['personal-conn'])).rejects.toThrow(
+        'teams db is down',
+      );
+    });
+
+    // UNFIXED: the exclusion lands inside connectors:resolve, after the hook
+    // read the agent, and the plain UPDATE then re-adds the id -> fails.
+    it('SECURITY (race): an exclusion that lands AFTER the hook read the agent is not undone', async () => {
+      const { h, agentId } = await seedTeamAgent();
+      betweenReadAndWrite = async () => {
+        betweenReadAndWrite = null; // once
+        await detach(h, {
+          actor: teamAdmin,
+          agentId,
+          connectorId: 'personal-conn',
+          exclude: true,
+        });
+      };
+      await expect(setList(h, member, agentId, ['personal-conn'])).rejects.toMatchObject({
+        code: 'forbidden',
+      });
+      const after = await stored(h, agentId);
+      expect(after.connectorAttachments).toEqual([]);
+      expect(after.connectorExclusions).toEqual(['personal-conn']);
+    });
+
+    // Passes UNFIXED too: guards against over-blocking.
+    it('a team admin may add it; the exclusion is left as it was', async () => {
+      const { h, agentId } = await seedExcluded();
+      const out = await setList(h, teamAdmin, agentId, ['personal-conn']);
+      expect(out.agent.connectorAttachments).toEqual(['personal-conn']);
+      expect(out.agent.connectorExclusions).toEqual(['personal-conn']);
+    });
+
+    // Passes UNFIXED too: guards against over-blocking.
+    it('a workspace admin may add it', async () => {
+      const { h, agentId } = await seedExcluded();
+      const out = await setList(h, workspaceAdmin, agentId, ['personal-conn']);
+      expect(out.agent.connectorAttachments).toEqual(['personal-conn']);
+    });
+
+    // Passes UNFIXED too: a save that adds nothing excluded is unchanged.
+    it('a plain member may save a list that adds no excluded id', async () => {
+      const { h, agentId } = await seedExcluded();
+      const out = await setList(h, member, agentId, ['fresh-conn']);
+      expect(out.agent.connectorAttachments).toEqual(['fresh-conn']);
+      expect(out.agent.connectorExclusions).toEqual(['personal-conn']);
+    });
+
+    // Passes UNFIXED too: personal agents are unchanged.
+    it('a personal agent owner may add their own excluded id', async () => {
+      const { h, agentId } = await seedPersonalAgent();
+      await detach(h, { actor: owner, agentId, connectorId: 'personal-conn', exclude: true });
+      const out = await setList(h, owner, agentId, ['personal-conn']);
+      expect(out.agent.connectorAttachments).toEqual(['personal-conn']);
+    });
+  });
+
   // UNFIXED: the hook is not registered -> every case fails with no-service.
   describe('agents:can-exclude-connector', () => {
     it('a plain team member: allowed:false', async () => {

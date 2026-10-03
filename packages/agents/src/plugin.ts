@@ -375,10 +375,11 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
 
       // TASK-107 — per-agent connector attachments. Replaces the agent's
       // connector_attachments id list wholesale. Same ACL as
-      // agents:set-skill-attachments (owner OR admin). The id shape is validated
-      // by the admin route (validateConnectorAttachmentIds) before this call; a
-      // dangling-but-well-formed id is tolerated (it simply never resolves at
-      // session open — the orchestrator's NON-FATAL union).
+      // agents:set-skill-attachments (owner OR admin), plus the TASK-765 rule that
+      // adding an id the agent has EXCLUDED needs the right to exclude. The id
+      // shape is validated by the admin route (validateConnectorAttachmentIds)
+      // before this call; a dangling-but-well-formed id is tolerated (it simply
+      // never resolves at session open — the orchestrator's NON-FATAL union).
       bus.registerService<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
         'agents:set-connector-attachments',
         PLUGIN_NAME,
@@ -404,9 +405,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             input.connectorIds,
             'agents:set-connector-attachments',
           );
+          // TASK-765 — an explicit attachment wins over an exclusion at resolve
+          // time, so ADDING an excluded id here would undo the owner's removal
+          // of a default just as attach-connector would. Same rule: computed
+          // here (bus calls stay out of the store's transaction), enforced in
+          // the store on the locked row. Exclusions are never edited on this path.
+          const mayClearExclusion = await exclusionAllowed(existing, bus, ctx, input.actor);
           const updated = await localStore.setConnectorAttachments(
             input.agentId,
             input.connectorIds,
+            { refuseIfExcluded: !mayClearExclusion },
           );
           // TASK-737 — newly attached connectors copy their per-tool
           // defaults (best-effort; see connector-snapshot.ts). Resolved as the
