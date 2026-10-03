@@ -140,7 +140,9 @@ describe('tool:pre-call — the hold row names the connector (TASK-744)', () => 
     });
     const r = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
     expect((await store.get(r.hold.decisionId))!.summary).toBe('Wants to use Create issue');
-  });
+    // A tight per-test deadline: if the bound is ever removed this fails in
+    // ~2 s instead of holding the suite for the 60 s default.
+  }, 2_000);
   it('with no lookup wired, the row still never shows the hash', async () => {
     const b = build();
     const summary = await heldSummary(b);
