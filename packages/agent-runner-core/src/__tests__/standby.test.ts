@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, readFile, rm, symlink, stat } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rename, rm, symlink, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -17,7 +17,15 @@ async function fixture() {
   const assignment = { version: 1, assignmentId: randomUUID(), instanceId: env.AX_INSTANCE_ID,
     expiresAt: Date.now() + 60_000, env: { AX_SESSION_ID: 'session', AX_AUTH_TOKEN: 'private-token',
       AX_RUNNER_ENDPOINT: 'http://host:8080', AX_PROXY_ENDPOINT: 'http://proxy:8888' } };
-  const publish = () => writeFile(join(root, 'session.json'), JSON.stringify(assignment), { mode: 0o600 });
+  // Publish the way the storage node does (storage-node/engine.ts): write a temp file, then
+  // rename it into place. A plain writeFile creates session.json empty before the bytes land,
+  // and a reader polling every 1ms can open it in that window — which the reader correctly
+  // refuses (and consumes) as a torn assignment. That window was TASK-748's flake.
+  const publish = async () => {
+    const temp = join(root, 'session.tmp');
+    await writeFile(temp, JSON.stringify(assignment), { mode: 0o600 });
+    await rename(temp, join(root, 'session.json'));
+  };
   return { root, env, assignment, publish };
 }
 describe('single-use standby activation', () => {
@@ -57,6 +65,14 @@ describe('single-use standby activation', () => {
     if (kind === 'mode') { const { chmod } = await import('node:fs/promises'); await chmod(join(f.root, 'session.json'), 0o644); }
     if (kind === 'malformed') await writeFile(join(f.root, 'session.json'), '{private-token');
     await expect(waitForAssignment(f)).rejects.toThrow('standby activation failed');
+    expect(f.env.AX_AUTH_TOKEN).toBeUndefined();
+    await expect(stat(join(f.root, 'session.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('fails closed on a torn publish instead of waiting for the rest of the bytes', async () => {
+    // Pins the contract the atomic publish above exists for: an assignment file seen before its
+    // bytes land is never retried, it is consumed and refused. Publishers must rename into place.
+    const f = await fixture(); await writeFile(join(f.root, 'session.json'), '', { mode: 0o600 });
+    await expect(waitForAssignment({ ...f, pollMs: 1 })).rejects.toThrow('standby activation failed');
     expect(f.env.AX_AUTH_TOKEN).toBeUndefined();
     await expect(stat(join(f.root, 'session.json'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
