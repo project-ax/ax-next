@@ -27,6 +27,13 @@ import { logRequestFailure } from '../../lib/http';
  * deliberate double-invoke, but this app never enables it — `main.tsx` renders
  * a bare `createRoot`. The ref is not dead code either way: the "Try again"
  * handler below resets it on purpose so a retry can re-run the effect.
+ *
+ * `ran` guards one mount's effect; `createdAgentId` guards the SERVER (TASK-709).
+ * The POST and the hand-off after it (hydrate, onDone) share one `try`, so a
+ * failure in the hand-off shows the same card as a failed create — and "Try
+ * again" used to POST again, making a second agent with the same name while
+ * the first one never got its kickoff. Once the POST has returned an id we
+ * keep it, and a retry only re-runs the hand-off.
  */
 export function FirstRunAutoCreate({
   agentName,
@@ -54,6 +61,9 @@ export function FirstRunAutoCreate({
   onDone: (agentId: string) => void;
 }) {
   const ran = useRef(false);
+  // Set the moment the bootstrap POST returns. Never cleared: a retry must not
+  // create the agent twice (TASK-709).
+  const createdAgentId = useRef<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const isAdd = mode === 'add';
@@ -87,11 +97,18 @@ export function FirstRunAutoCreate({
     let cancelled = false;
     void (async () => {
       try {
-        const agent = await autoCreateBareAgent(agentName);
+        // Reuse the agent an earlier attempt already created; only POST when
+        // there is none. Recorded BEFORE the `cancelled` check: it is a fact
+        // about the server, not this component's view state.
+        let agentId = createdAgentId.current;
+        if (agentId === null) {
+          agentId = (await autoCreateBareAgent(agentName)).agentId;
+          createdAgentId.current = agentId;
+        }
         if (cancelled) return;
         // Select + hydrate so the App-level gate flips (agent list no longer
         // empty) and the workspace renders this agent.
-        agentStoreActions.setSelectedAgent(agent.agentId);
+        agentStoreActions.setSelectedAgent(agentId);
         await hydrateAgentsOnce();
         /*
           NOT gated on `cancelled` — and that is the fix for a silent failure
@@ -121,7 +138,7 @@ export function FirstRunAutoCreate({
           write happened to take, which is not a property this component should
           be resting on.
         */
-        onDone(agent.agentId);
+        onDone(agentId);
       } catch (e) {
         // The operator's half (TASK-695): the person is told below, but a real
         // bootstrap failure used to leave nothing in the console to start from.
@@ -141,7 +158,7 @@ export function FirstRunAutoCreate({
       cancelled = true;
     };
     // `attempt` is a dep so "Try again" (which resets `ran` + bumps `attempt`)
-    // re-runs the effect. `agentName` and `onDone` are intentionally omitted —
+    // re-runs the effect — without a second POST once `createdAgentId` is set. `agentName` and `onDone` are intentionally omitted —
     // they're stable for the lifetime of this mount, and the `ran` ref already
     // guards against re-creation.
   }, [attempt]);

@@ -336,3 +336,91 @@ describe('FirstRunAutoCreate — a failure has a way out (TASK-689)', () => {
     expect(screen.queryByRole('button', { name: /cancel/i })).toBeNull();
   });
 });
+
+/**
+ * TASK-709 — "Try again" after the agent ALREADY EXISTS.
+ *
+ * The POST, the hydrate and `onDone` share one `try`. When the POST succeeded
+ * and a later step threw, the card looked exactly like a failed create, and
+ * "Try again" POSTed again: a second agent with the same name, while the first
+ * one never got its kickoff. A retry must only redo what actually failed.
+ *
+ * VACUITY: against the unfixed component every test below fails on `create`
+ * being called more than once (and `onDone` receiving 'second'). The second
+ * create mock returns a DIFFERENT id on purpose, so a re-POST cannot hide.
+ * The pre-existing '"Try again" retries with the SAME name' test above is the
+ * control: when the POST itself failed, a retry must still POST.
+ */
+describe('FirstRunAutoCreate — retry never creates a second agent (TASK-709)', () => {
+  beforeEach(() => {
+    agentStoreActions.resetForTest();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const twoDistinctCreates = () =>
+    vi
+      .spyOn(autoCreate, 'autoCreateBareAgent')
+      .mockResolvedValueOnce({ agentId: 'first', displayName: 'Scout', visibility: 'personal' })
+      .mockResolvedValueOnce({ agentId: 'second', displayName: 'Scout', visibility: 'personal' });
+
+  it('hydrate fails after the create: Try again re-hydrates the SAME agent and never POSTs again', async () => {
+    const create = twoDistinctCreates();
+    const hyd = vi
+      .spyOn(hydrate, 'hydrateAgentsOnce')
+      .mockRejectedValueOnce(new Error('hydrate blip'))
+      .mockResolvedValueOnce();
+    const select = vi.spyOn(agentStoreActions, 'setSelectedAgent');
+    const onDone = vi.fn();
+    render(
+      <FirstRunAutoCreate agentName="Scout" mode="first-run" onBack={vi.fn()} onDone={onDone} />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /try again/i }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(onDone).toHaveBeenCalledWith('first');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(hyd).toHaveBeenCalledTimes(2);
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(select).toHaveBeenLastCalledWith('first');
+  });
+
+  it('the hand-off throws after the create: Try again hands off the SAME agent and never POSTs again', async () => {
+    const create = twoDistinctCreates();
+    vi.spyOn(hydrate, 'hydrateAgentsOnce').mockResolvedValue();
+    const onDone = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('kickoff blew up');
+      })
+      .mockImplementation(() => {});
+    render(<FirstRunAutoCreate agentName="Scout" mode="add" onBack={vi.fn()} onDone={onDone} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /try again/i }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(2));
+    expect(onDone).toHaveBeenNthCalledWith(1, 'first');
+    expect(onDone).toHaveBeenNthCalledWith(2, 'first');
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second hand-off failure: the next Try again still does not POST', async () => {
+    const create = twoDistinctCreates();
+    vi.spyOn(hydrate, 'hydrateAgentsOnce')
+      .mockRejectedValueOnce(new Error('one'))
+      .mockRejectedValueOnce(new Error('two'))
+      .mockResolvedValueOnce();
+    const onDone = vi.fn();
+    render(<FirstRunAutoCreate agentName="Scout" mode="add" onBack={vi.fn()} onDone={onDone} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /try again/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /try again/i }));
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith('first'));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+});
