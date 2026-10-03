@@ -18,6 +18,17 @@ export type RemoveOutcome = 'removed' | 'removed-partial' | 'failed';
 /** What Retry found (TASK-741), or that the check itself could not run. */
 export type RetryOutcome = AgentConnectorHealth | 'failed';
 
+/**
+ * TASK-774 — Retry's answer plus whose sign-in it found expired, so the
+ * caller can name the right fix (Reconnect for the team's shared sign-in,
+ * Sign in again for this person's own).
+ */
+export interface RetryResult {
+  outcome: RetryOutcome;
+  /** True only when `outcome` is `needs-reconnect` and the sign-in is shared. */
+  sharedSignIn: boolean;
+}
+
 export interface AgentConnectorsState {
   connectors: AgentConnectorRow[] | null;
   status: AgentConnectorsStatus;
@@ -34,7 +45,7 @@ export interface AgentConnectorsState {
   /** Connector ids with a Retry in flight (TASK-741). */
   retrying: ReadonlySet<string>;
   /** One fresh check of one connector; the row takes the health it answers. */
-  retry: (connectorId: string) => Promise<RetryOutcome>;
+  retry: (connectorId: string) => Promise<RetryResult>;
   refresh: () => void;
 }
 
@@ -112,7 +123,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
   );
 
   const retry = useCallback(
-    async (connectorId: string): Promise<RetryOutcome> => {
+    async (connectorId: string): Promise<RetryResult> => {
       const agentAtStart = agentScope.current;
       setRetrying((prev) => new Set(prev).add(connectorId));
       try {
@@ -134,10 +145,13 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
                 }),
           );
         }
-        return out.health;
+        return {
+          outcome: out.health,
+          sharedSignIn: out.health === 'needs-reconnect' && out.sharedSignIn === true,
+        };
       } catch (e) {
         logRequestFailure(e, 'agent-connectors');
-        return 'failed';
+        return { outcome: 'failed', sharedSignIn: false };
       } finally {
         if (agentScope.current === agentAtStart) {
           setRetrying((prev) => {

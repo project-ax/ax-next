@@ -16,6 +16,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError, type AgentDetail } from '@/lib/workspace-api';
 import { getConnector } from '@/lib/connectors';
+import { beginOAuth, getOAuthStatus } from '@/lib/connectors-oauth';
 import type { AgentConnectorRow } from '@/lib/workspace-types';
 import { AgentRail } from '../AgentRail';
 import { rail } from './rail-fixture';
@@ -430,12 +431,120 @@ describe('connector health (TASK-741)', () => {
   });
 
   it('Reconnect on a shared agent asks before signing in for everyone', async () => {
-    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: true, connectorsSupported: true });
+    // The team's shared sign-in (TASK-774: a member's own expiry offers
+    // Sign in again instead, see below).
+    connectorsMock.mockResolvedValue({
+      connectors: ERRORED.map((r) => (r.id === 'gmail' ? { ...r, sharedSignIn: true as const } : r)),
+      shared: true,
+      connectorsSupported: true,
+    });
     renderTab();
     const menu = await openMenu('Gmail');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Reconnect' }));
     const dialog = await screen.findByRole('dialog');
     expect(await within(dialog).findByText(/anyone who uses this shared agent act as you/)).toBeTruthy();
+  });
+});
+
+// TASK-774 — on a team agent, a member's OWN expired sign-in is fixed by a
+// personal sign-in ("Sign in again"); Reconnect stays for the team's shared one.
+describe('a team agent member’s own expired sign-in (TASK-774)', () => {
+  const PERSONAL: AgentConnectorRow[] = [
+    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', removable: true },
+  ];
+  const SHARED: AgentConnectorRow[] = [
+    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: true },
+  ];
+  const UNREACHABLE: AgentConnectorRow[] = [
+    { id: 'slack', name: 'Slack', source: 'attached', editable: true, health: 'unreachable', removable: true },
+  ];
+  const beginMock = vi.mocked(beginOAuth);
+  const statusMock = vi.mocked(getOAuthStatus);
+  const retryMock = vi.mocked(workspaceApi.retryConnector);
+
+  it('says “Your sign-in expired” and offers Sign in again, not Reconnect', async () => {
+    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: true, connectorsSupported: true });
+    renderTab();
+    expect(await screen.findByRole('button', { name: 'Your sign-in expired' })).toBeTruthy();
+    const menu = await openMenu('Gmail');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Sign in again',
+      'View details',
+      'Remove from Quill',
+    ]);
+  });
+
+  it('Sign in again runs a PERSONAL sign-in: no agent, no shared-agent consent', async () => {
+    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: true, connectorsSupported: true });
+    beginMock.mockResolvedValue({ authorizationUrl: 'https://auth.example/authorize' });
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      renderTab();
+      const menu = await openMenu('Gmail');
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in again' }));
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByText('Sign in to Gmail again')).toBeTruthy();
+      expect(within(dialog).getByText(/This only affects you/)).toBeTruthy();
+      // Asks about THIS person's sign-in, not the agent's.
+      await waitFor(() => expect(statusMock).toHaveBeenCalledWith({ connectorId: 'gmail' }));
+      const button = await within(dialog).findByRole('button', { name: 'Sign in again' });
+      // A personal sign-in hands nobody else this person's account.
+      expect(within(dialog).queryByText(/anyone who uses this shared agent/)).toBeNull();
+      fireEvent.click(button);
+      await waitFor(() => expect(beginMock).toHaveBeenCalledTimes(1));
+      expect(beginMock).toHaveBeenCalledWith({ connectorId: 'gmail' });
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('a shared expired sign-in keeps Reconnect, which signs in on this agent', async () => {
+    connectorsMock.mockResolvedValue({ connectors: SHARED, shared: true, connectorsSupported: true });
+    beginMock.mockResolvedValue({ authorizationUrl: 'https://auth.example/authorize' });
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      renderTab();
+      const menu = await openMenu('Gmail');
+      expect(within(menu).queryByRole('menuitem', { name: 'Sign in again' })).toBeNull();
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Reconnect' }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(await within(dialog).findByRole('button', { name: 'Continue' }));
+      fireEvent.click(await within(dialog).findByRole('button', { name: 'Reconnect' }));
+      await waitFor(() => expect(beginMock).toHaveBeenCalledTimes(1));
+      expect(beginMock).toHaveBeenCalledWith({ connectorId: 'gmail', agentId: 'a-quill' });
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('a personal agent keeps Reconnect for its (always personal) sign-in', async () => {
+    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: false, connectorsSupported: true });
+    renderTab();
+    const menu = await openMenu('Gmail');
+    expect(within(menu).getByRole('menuitem', { name: 'Reconnect' })).toBeTruthy();
+    expect(within(menu).queryByRole('menuitem', { name: 'Sign in again' })).toBeNull();
+  });
+
+  it('Retry finding the member’s own sign-in expired points at Sign in again, and the menu follows', async () => {
+    connectorsMock.mockResolvedValue({ connectors: UNREACHABLE, shared: true, connectorsSupported: true });
+    retryMock.mockResolvedValueOnce({ health: 'needs-reconnect' });
+    renderTab();
+    const menu = await openMenu('Slack');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
+    expect(await screen.findByText(/your sign-in expired\. Choose Sign in again/)).toBeTruthy();
+    const next = await openMenu('Slack');
+    expect(within(next).getByRole('menuitem', { name: 'Sign in again' })).toBeTruthy();
+  });
+
+  it('Retry finding the team’s sign-in expired points at Reconnect', async () => {
+    connectorsMock.mockResolvedValue({ connectors: UNREACHABLE, shared: true, connectorsSupported: true });
+    retryMock.mockResolvedValueOnce({ health: 'needs-reconnect', sharedSignIn: true });
+    renderTab();
+    const menu = await openMenu('Slack');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
+    expect(await screen.findByText(/Choose Reconnect to sign in again/)).toBeTruthy();
+    const next = await openMenu('Slack');
+    expect(within(next).getByRole('menuitem', { name: 'Reconnect' })).toBeTruthy();
   });
 });
 

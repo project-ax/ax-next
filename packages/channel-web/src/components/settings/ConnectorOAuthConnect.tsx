@@ -43,6 +43,12 @@ export interface ConnectorOAuthConnectProps {
   showAccessNotice?: boolean;
   /** Called after a successful connect so the parent can refresh. */
   onConnected?: () => void;
+  /**
+   * TASK-774 — what the fix is called when the sign-in expired. Defaults to
+   * "Reconnect"; the connectors rail says "Sign in again" for a team-agent
+   * member's own (personal) sign-in, so the dialog matches the menu item.
+   */
+  reconnectLabel?: string;
 }
 
 export function ConnectorOAuthConnect({
@@ -52,6 +58,7 @@ export function ConnectorOAuthConnect({
   requiresConsent = false,
   showAccessNotice = true,
   onConnected,
+  reconnectLabel = 'Reconnect',
 }: ConnectorOAuthConnectProps) {
   // 'checking' while the status request is in flight; 'error' if the fetch threw.
   const [status, setStatus] = useState<OAuthStatus | 'checking' | 'error'>('checking');
@@ -112,7 +119,7 @@ export function ConnectorOAuthConnect({
       return (
         <>
           <Badge variant="destructive">Reconnect needed</Badge>
-          <span className="text-xs text-muted-foreground">Your sign-in to {serviceName} needs a refresh. Reconnect to keep this working.</span>
+          <span className="text-xs text-muted-foreground">Your sign-in to {serviceName} needs a refresh. {reconnectLabel} to keep this working.</span>
         </>
       );
     }
@@ -123,7 +130,7 @@ export function ConnectorOAuthConnect({
   // ── Connect button label ──────────────────────────────────────────────────
 
   const connectLabel =
-    status === 'needs-reconnect' ? 'Reconnect' : `Connect with ${serviceName}`;
+    status === 'needs-reconnect' ? reconnectLabel : `Connect with ${serviceName}`;
 
   // ── Consent gate (only when requiresConsent && not yet accepted) ──────────
 

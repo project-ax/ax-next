@@ -24,6 +24,15 @@
  * around the same OAuth widget Settings uses) or **Retry** (one fresh check).
  * Health is read from stored state; drawing the list never probes anything.
  *
+ * On a team agent, Reconnect is the fix for the agent's SHARED sign-in (the
+ * one every member uses — "Team sign-in expired"). When the sign-in that
+ * expired is this member's OWN personal one (TASK-774: no `sharedSignIn` on
+ * the row), Reconnect would sign in for the team and leave theirs expired —
+ * their personal sign-in is reached first — so the menu offers **Sign in
+ * again** instead, which runs a personal sign-in (no agent, so it is stored
+ * for this person only). A personal agent's sign-in is always personal, and
+ * its Reconnect already signs in that way, so it keeps Reconnect.
+ *
  * A connector a session cannot fully load (TASK-745 — e.g. two of its servers
  * share a name) wears the same icon, reason "Couldn’t load it". Reconnect and
  * Retry cannot fix that, so neither is offered; the tooltip points at the fix
@@ -113,6 +122,14 @@ function healthReason(row: AgentConnectorRow): string {
   return row.health === 'ok' ? '' : HEALTH_REASON[row.health];
 }
 
+/**
+ * TASK-774 — a team agent's row whose expired sign-in is this person's OWN.
+ * Its fix is a personal sign-in ("Sign in again"), never Reconnect.
+ */
+function personalExpiry(row: AgentConnectorRow, teamAgent: boolean): boolean {
+  return teamAgent && row.health === 'needs-reconnect' && row.sharedSignIn !== true;
+}
+
 interface Props {
   agentId: string;
   /** The agent's display name — "Remove from <agent>". */
@@ -175,10 +192,12 @@ export function AgentConnectors({
   >(null);
   const [editing, setEditing] = useState<Connector | null>(null);
   const [reconnecting, setReconnecting] = useState<AgentConnectorRow | null>(null);
+  // TASK-774 — a team-agent member re-signing in for themselves only.
+  const [signingIn, setSigningIn] = useState<AgentConnectorRow | null>(null);
 
   async function onRetry(row: AgentConnectorRow) {
     setNotice(null);
-    const outcome = await retry(row.id);
+    const { outcome, sharedSignIn } = await retry(row.id);
     if (outcome === 'failed') {
       setNotice({
         tone: 'error',
@@ -196,7 +215,10 @@ export function AgentConnectors({
     if (outcome === 'needs-reconnect') {
       setNotice({
         tone: 'note',
-        text: `${row.name} is reachable, but its sign-in expired. Choose Reconnect to sign in again.`,
+        text:
+          shared && !sharedSignIn
+            ? `${row.name} is reachable, but your sign-in expired. Choose Sign in again to fix it.`
+            : `${row.name} is reachable, but its sign-in expired. Choose Reconnect to sign in again.`,
       });
     }
   }
@@ -261,9 +283,14 @@ export function AgentConnectors({
       row={row}
       agentName={name}
       busy={removing.has(row.id) || retrying.has(row.id)}
+      personalSignIn={personalExpiry(row, shared)}
       onReconnect={() => {
         setNotice(null);
         setReconnecting(row);
+      }}
+      onSignInAgain={() => {
+        setNotice(null);
+        setSigningIn(row);
       }}
       onRetry={() => void onRetry(row)}
       {...(withView && onView !== undefined ? { onView: () => onView(row.id) } : {})}
@@ -416,6 +443,42 @@ export function AgentConnectors({
           )}
         </DialogContent>
       </Dialog>
+      <Dialog
+        open={signingIn !== null}
+        onOpenChange={(open) => {
+          if (!open) setSigningIn(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sign in to {signingIn?.name} again</DialogTitle>
+            <DialogDescription>
+              Your sign-in to {signingIn?.name} expired. Sign in again and {name} can
+              keep using it for you. This only affects you — everyone else on {name}{' '}
+              stays as they are.
+            </DialogDescription>
+          </DialogHeader>
+          {/* What signing in hands the assistant — drawn here, in the file that
+              starts the sign-in, so the TASK-700 coverage scan sees it. */}
+          <ConnectorAccessNotice kind="sign-in" />
+          {signingIn !== null && (
+            // No agentId on purpose: the flow is then personal (stored for this
+            // person only), which is the sign-in their use of this team agent
+            // reaches first. With the agent it would sign in for the team.
+            // No shared-agent consent either — nobody else acts as them.
+            <ConnectorOAuthConnect
+              connectorId={signingIn.id}
+              serviceName={signingIn.name}
+              showAccessNotice={false}
+              reconnectLabel="Sign in again"
+              onConnected={() => {
+                setSigningIn(null);
+                refresh();
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
       {editing !== null && (
         <ConnectorEditDialog
           target={editing}
@@ -525,7 +588,9 @@ function RowMenu({
   row,
   agentName,
   busy,
+  personalSignIn,
   onReconnect,
+  onSignInAgain,
   onRetry,
   onView,
   onEdit,
@@ -534,7 +599,10 @@ function RowMenu({
   row: AgentConnectorRow;
   agentName: string;
   busy: boolean;
+  /** TASK-774 — the fix is this person's own sign-in, not Reconnect. */
+  personalSignIn: boolean;
   onReconnect: () => void;
+  onSignInAgain: () => void;
   onRetry: () => void;
   /** Absent inside the details view itself. */
   onView?: () => void;
@@ -560,10 +628,17 @@ function RowMenu({
           <>
             <DropdownMenuGroup>
               {row.health === 'needs-reconnect' ? (
-                <DropdownMenuItem onSelect={onReconnect}>
-                  <LogIn aria-hidden="true" />
-                  Reconnect
-                </DropdownMenuItem>
+                personalSignIn ? (
+                  <DropdownMenuItem onSelect={onSignInAgain}>
+                    <LogIn aria-hidden="true" />
+                    Sign in again
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem onSelect={onReconnect}>
+                    <LogIn aria-hidden="true" />
+                    Reconnect
+                  </DropdownMenuItem>
+                )
               ) : (
                 <DropdownMenuItem onSelect={onRetry}>
                   <RotateCw aria-hidden="true" />
