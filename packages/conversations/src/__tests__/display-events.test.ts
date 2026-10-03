@@ -16,6 +16,8 @@ import type {
   AppendEventOutput,
   CreateInput,
   CreateOutput,
+  DrainSaveRefusalsInput,
+  DrainSaveRefusalsOutput,
   GetInput,
   GetOutput,
 } from '../types.js';
@@ -478,5 +480,44 @@ describe('TASK-731 save-refused display events', () => {
     );
     expect(got.turns).toHaveLength(1);
     expect(got.displayEvents).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-749 — conversations:drain-save-refusals hands the runner the refused
+// saves the model has not been told about. A final/idle row (the host-minted
+// `final:<uuid>` key) comes back with `turnReqId: null`, so the runner can
+// never mistake it for one of its own turns.
+// ---------------------------------------------------------------------------
+describe('TASK-749 conversations:drain-save-refusals', () => {
+  it('returns per-turn refusals with their reqId and the final one with null, once, for the owner only', async () => {
+    const h = await makeHarness();
+    const conversationId = await createConv(h, 'userA');
+    const refuse = (key: string, code: string) =>
+      h.bus.call<AppendEventInput, AppendEventOutput>(
+        'conversations:append-event',
+        h.ctx({ conversationId }),
+        { conversationId, kind: 'save-refused', key, payload: { code } },
+      );
+    await refuse('req-1', 'refused');
+    await refuse('', 'too-large');
+    await refuse('final:0b6e', 'storage-full');
+
+    const drain = (userId: string) =>
+      h.bus.call<DrainSaveRefusalsInput, DrainSaveRefusalsOutput>(
+        'conversations:drain-save-refusals',
+        h.ctx({ userId, conversationId }),
+        { conversationId },
+      );
+    // Someone else's runner gets nothing, and consumes nothing.
+    expect(await drain('userB')).toEqual({ refusals: [] });
+    expect(await drain('userA')).toEqual({
+      refusals: [
+        { code: 'refused', turnReqId: 'req-1' },
+        { code: 'too-large', turnReqId: '' },
+        { code: 'storage-full', turnReqId: null },
+      ],
+    });
+    expect(await drain('userA')).toEqual({ refusals: [] });
   });
 });

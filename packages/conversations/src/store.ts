@@ -1,6 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
-import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
+import {
+  ContentBlockSchema,
+  SaveRefusedCodeSchema,
+  type ContentBlock,
+  type SaveRefusedCode,
+} from '@ax/ipc-protocol';
 import { z } from 'zod';
 import { sql, type Kysely } from 'kysely';
 import type {
@@ -451,6 +456,21 @@ export interface ConversationStore {
     conversationId: string,
     opts?: ListEventsOptions,
   ): Promise<StoredEvent[]>;
+  /**
+   * TASK-749. Take the conversation's `save-refused` rows the MODEL has not
+   * been told about yet, and mark them told. "Told" is a per-conversation
+   * watermark (`save_refused_drained_seq`): this returns the rows above it,
+   * folded to the last row per fold key, and advances it to the highest seq
+   * it read with a compare-and-set, so two concurrent drains never both
+   * return the same row. At most once: the rows are marked before the caller
+   * uses them. userId-scoped like storeRunnerSession — a foreign, missing or
+   * tombstoned conversation drains nothing. A row whose payload carries no
+   * known code is consumed and dropped.
+   */
+  drainSaveRefusals(args: {
+    conversationId: string;
+    userId: string;
+  }): Promise<DrainedSaveRefusal[]>;
 
   // -------------------------------------------------------------------------
   // TASK-67 (out-of-git Part B / B2) — resume transcript store.
@@ -558,6 +578,16 @@ export interface StoreAppendEventArgs {
   /** Fold key (see ConversationDisplayEvent.key). Defaults to ''. */
   foldKey?: string;
   payload: Record<string, unknown>;
+}
+
+/**
+ * TASK-749 — one drained `save-refused` row: its fold key (the refused turn's
+ * reqId, `''` for a turn with none, or `final:<uuid>` for the final/idle
+ * flush) and its closed code.
+ */
+export interface DrainedSaveRefusal {
+  key: string;
+  code: SaveRefusedCode;
 }
 
 /** TASK-731 — options for ConversationStore.listEvents. */
@@ -1068,6 +1098,55 @@ export function createConversationStore(
       }));
     },
 
+    async drainSaveRefusals({ conversationId, userId }) {
+      // Bounded retry: each lost CAS means another drain advanced the mark
+      // between our two reads, so the next attempt sees fewer rows.
+      for (let attempt = 0; attempt < DRAIN_CAS_ATTEMPTS; attempt += 1) {
+        const conv = await db
+          .selectFrom('conversations_v1_conversations')
+          .select(['save_refused_drained_seq'])
+          .where('conversation_id', '=', conversationId)
+          .where('user_id', '=', userId)
+          .where('deleted_at', 'is', null)
+          .executeTakeFirst();
+        if (conv === undefined) return [];
+        const from =
+          conv.save_refused_drained_seq === null ||
+          conv.save_refused_drained_seq === undefined
+            ? 0
+            : coerceSeq(conv.save_refused_drained_seq);
+        const rows = await db
+          .selectFrom('conversations_v1_events')
+          .select(['seq', 'fold_key', 'payload'])
+          .where('conversation_id', '=', conversationId)
+          .where('event_kind', '=', 'save-refused')
+          .where('seq', '>', from)
+          .orderBy('seq', 'asc')
+          .execute();
+        if (rows.length === 0) return [];
+        const to = coerceSeq(rows[rows.length - 1]!.seq);
+        const advanced = await db
+          .updateTable('conversations_v1_conversations')
+          .set({ save_refused_drained_seq: to })
+          .where('conversation_id', '=', conversationId)
+          .where('user_id', '=', userId)
+          .where('deleted_at', 'is', null)
+          .where(sql<number>`COALESCE(save_refused_drained_seq, 0)`, '=', from)
+          .executeTakeFirst();
+        if (Number(advanced.numUpdatedRows ?? 0n) === 0) continue;
+        // Fold to the last row per key (both turn-ends of one turn write a
+        // row under its reqId), keeping first-seen order.
+        const byKey = new Map<string, SaveRefusedCode>();
+        for (const r of rows) {
+          const code = asRecord(r.payload).code;
+          if (typeof code !== 'string' || !SAVE_REFUSED_CODES.has(code)) continue;
+          byKey.set(r.fold_key, code as SaveRefusedCode);
+        }
+        return [...byKey].map(([key, code]) => ({ key, code }));
+      }
+      return [];
+    },
+
     // -----------------------------------------------------------------------
     // TASK-67 — resume transcript store.
     // -----------------------------------------------------------------------
@@ -1298,6 +1377,12 @@ export function roleOfJsonlLine(line: string): TurnRole | null {
 // ---------------------------------------------------------------------------
 // TASK-66 display-event helpers.
 // ---------------------------------------------------------------------------
+
+/** TASK-749 — the closed `save-refused` codes a drained row may carry. */
+const SAVE_REFUSED_CODES: ReadonlySet<string> = new Set(SaveRefusedCodeSchema.options);
+
+/** TASK-749 — bound on drainSaveRefusals' compare-and-set retries. */
+const DRAIN_CAS_ATTEMPTS = 3;
 
 const VALID_EVENT_KINDS: ReadonlySet<ConversationEventKind> = new Set([
   'turn',
