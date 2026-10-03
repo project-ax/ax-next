@@ -675,7 +675,7 @@ describe('store attach / detach connector (TASK-739)', () => {
     await store.detachConnector(id, 'gh', true);
     await expect(
       store.attachConnector(id, 'gh', { refuseIfExcluded: true }),
-    ).rejects.toMatchObject({ code: 'forbidden' });
+    ).rejects.toMatchObject({ code: 'forbidden', diagnosis: { reason: 'connector-excluded' } });
     const after = await store.getById(id);
     expect(after!.connectorExclusions).toEqual(['gh']);
     expect(after!.connectorAttachments).toEqual([]);
@@ -749,7 +749,7 @@ describe('store attach / detach connector (TASK-739)', () => {
       await store.detachConnector(id, 'gh', true);
       await expect(
         store.setConnectorAttachments(id, ['keep', 'gh'], { refuseIfExcluded: true }),
-      ).rejects.toMatchObject({ code: 'forbidden' });
+      ).rejects.toMatchObject({ code: 'forbidden', diagnosis: { reason: 'connector-excluded' } });
       const after = await store.getById(id);
       expect(after!.connectorAttachments).toEqual(['keep']);
       expect(after!.connectorExclusions).toEqual(['gh']);

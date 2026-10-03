@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { isModelRef, parseModelRef, PluginError } from '@ax/core';
 import { REWRITES_THE_SURFACE, replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { sql, type Kysely, type Transaction } from 'kysely';
+import { connectorExcludedForbidden } from './connector-guard.js';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
 import type { Agent, AgentInput, RunnerId, SkillAttachment } from './types.js';
@@ -1015,11 +1016,8 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           );
           if (added !== undefined) {
             // Thrown inside the transaction -> rolled back, nothing written.
-            throw new PluginError({
-              code: 'forbidden',
-              plugin: PLUGIN_NAME,
-              message: `connector '${added}' was removed from this agent; only its owner or an admin can bring it back`,
-            });
+            // Tagged (TASK-766) so routes can say why, not just "forbidden".
+            throw connectorExcludedForbidden(added);
           }
         }
         return { attachments: connectorIds, exclusions };
@@ -1031,11 +1029,8 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       return editConnectorLists(db, agentId, (attachments, exclusions) => {
         if (opts?.refuseIfExcluded === true && exclusions.includes(connectorId)) {
           // Thrown inside the transaction → rolled back, nothing written.
-          throw new PluginError({
-            code: 'forbidden',
-            plugin: PLUGIN_NAME,
-            message: `connector '${connectorId}' was removed from this agent; only its owner or an admin can bring it back`,
-          });
+          // Tagged (TASK-766) so routes can say why, not just "forbidden".
+          throw connectorExcludedForbidden(connectorId);
         }
         const nextAttachments = attachments.includes(connectorId)
           ? attachments

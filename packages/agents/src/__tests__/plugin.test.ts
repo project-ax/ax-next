@@ -1462,7 +1462,7 @@ describe('agents: removing a default connector is owner/admin only (TASK-765)', 
       const { h, agentId } = await seedExcluded();
       await expect(
         attach(h, { actor: member, agentId, connectorId: 'personal-conn' }),
-      ).rejects.toMatchObject({ code: 'forbidden' });
+      ).rejects.toMatchObject({ code: 'forbidden', diagnosis: { reason: 'connector-excluded' } });
       const after = await stored(h, agentId);
       expect(after.connectorExclusions).toEqual(['personal-conn']);
       expect(after.connectorAttachments).toEqual([]);
@@ -1562,7 +1562,7 @@ describe('agents: removing a default connector is owner/admin only (TASK-765)', 
       const { h, agentId } = await seedExcluded();
       await expect(
         setList(h, member, agentId, ['fresh-conn', 'personal-conn']),
-      ).rejects.toMatchObject({ code: 'forbidden' });
+      ).rejects.toMatchObject({ code: 'forbidden', diagnosis: { reason: 'connector-excluded' } });
       const after = await stored(h, agentId);
       expect(after.connectorAttachments).toEqual([]);
       expect(after.connectorExclusions).toEqual(['personal-conn']);
