@@ -75,6 +75,10 @@ import {
 } from '@/lib/grant-destinations';
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
+import {
+  TOOL_PERMISSIONS_RESET_FAILED,
+  TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE,
+} from '@/lib/connectors';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
@@ -83,6 +87,32 @@ import {
   getGrantDraft,
   setGrantDraftValue,
 } from '@/lib/workspace-grant-drafts';
+
+/**
+ * TASK-775 — the one connector-approval refusal that gets its own sentence.
+ *
+ * Approving a connector promotes it through the same save the Settings editors
+ * use, so it can hit the same TASK-758 refusal: the server couldn't reset a
+ * moved server's tool permissions and approved nothing. The route answers 503
+ * `{ error: 'tool-permissions-reset-failed' }` — and a bare 503 otherwise reads
+ * as "unavailable", which sends someone to wait out an outage that isn't one.
+ * The Settings approve dialog's sentence fits here word for word: this row's
+ * button is also "Connect", and the card stays, so Connect can be tried again.
+ *
+ * `undefined` (the status's own sentence) for anything else, including a body
+ * that isn't JSON — the code is the only thing read, never echoed.
+ */
+async function connectorRefusalMessage(resp: Response): Promise<string | undefined> {
+  if (resp.status !== 503) return undefined;
+  try {
+    const body = (await resp.json()) as { error?: unknown } | null;
+    return body?.error === TOOL_PERMISSIONS_RESET_FAILED
+      ? TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 interface Props {
   grant: WorkspaceGrant;
@@ -302,7 +332,13 @@ export function GrantRow({
             : { conversationId, skillId: subjectId, shown },
         ),
       });
-      if (!resp.ok) throw new HttpError('/api/chat/permission-decision', resp.status);
+      if (!resp.ok) {
+        throw new HttpError(
+          '/api/chat/permission-decision',
+          resp.status,
+          forConnector ? await connectorRefusalMessage(resp) : undefined,
+        );
+      }
       // Answered — clear the draft here, not only in `onResolved`'s caller:
       // the `stalled` branch below never calls `onResolved` (the row stays on
       // screen to say the agent didn't restart), but the key has already been

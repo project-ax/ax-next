@@ -23,6 +23,10 @@ import {
   SLOT_HINT,
 } from '@/lib/grant-copy';
 import { connectorAccessCopy } from '@/lib/connector-access-copy';
+import {
+  TOOL_PERMISSIONS_RESET_FAILED,
+  TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE,
+} from '@/lib/connectors';
 import type { PermissionRequest } from '@/server/types';
 
 function row(
@@ -360,6 +364,59 @@ describe('a connector grant', () => {
     );
     expect(decision?.[1]?.body).toContain('"connectorId":"linear"');
     expect(decision?.[1]?.body).not.toContain('"skillId"');
+  });
+
+  /*
+    TASK-775 — the route answers 503 `tool-permissions-reset-failed` when the
+    approval's promotion couldn't reset a moved server's tool permissions
+    (TASK-758). Without reading the body that is just "a 503", whose sentence
+    (HTTP_UNAVAILABLE) tells the person the service is down. It isn't: nothing
+    was approved and Connect can simply be tried again.
+  */
+  test('a 503 tool-permissions-reset-failed shows the plain reset message, and the row stays', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: TOOL_PERMISSIONS_RESET_FAILED }), { status: 503 }),
+    );
+    const { onResolved, onGranted } = row(connectorReq);
+
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE);
+    expect(alert).not.toHaveTextContent(HTTP_UNAVAILABLE);
+    expect(alert).not.toHaveTextContent('tool-permissions-reset-failed');
+    expect(alert).not.toHaveTextContent(/503/);
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(onGranted).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled(),
+    );
+  });
+
+  test('any other 503 keeps the status sentence, not the reset message', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'something-else' }), { status: 503 }),
+    );
+    row(connectorReq);
+
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(HTTP_UNAVAILABLE);
+    expect(alert).not.toHaveTextContent(TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE);
+  });
+
+  test('a 500 grant-failed keeps the generic server sentence', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: 'grant-failed' }), { status: 500 }),
+    );
+    row(connectorReq);
+
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(HTTP_SERVER_ERROR);
+    expect(alert).not.toHaveTextContent(TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE);
   });
 });
 

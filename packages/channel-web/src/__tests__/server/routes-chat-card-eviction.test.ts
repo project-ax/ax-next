@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createChatRouteHandlers, type RouteRequest, type RouteResponse } from '../../server/routes-chat';
+import { TOOL_PERMISSIONS_RESET_FAILED } from '../../lib/connectors';
 
 // ---------------------------------------------------------------------------
 // TASK-82 — the permission-decision (grant) and conversation-delete routes
@@ -55,6 +56,8 @@ function makeBus(opts: {
   connectorGrant?: { applied: boolean };
   /** Captures the connector-grant input for assertions. */
   connectorGrantTrace?: Array<Record<string, unknown>>;
+  /** TASK-775 — make the connector grant throw this instead of answering. */
+  connectorGrantThrows?: Error;
 } = {}): HookBus {
   const bus = new HookBus();
   bus.registerService('auth:require-user', 'mock-auth', async () => ({
@@ -88,6 +91,7 @@ function makeBus(opts: {
       'mock-connector-grant',
       async (_ctx, input) => {
         opts.connectorGrantTrace?.push(input as Record<string, unknown>);
+        if (opts.connectorGrantThrows !== undefined) throw opts.connectorGrantThrows;
         return opts.connectorGrant!.applied
           ? { applied: true, respawned: false }
           : { applied: false, reason: 'not-authored' };
@@ -183,6 +187,56 @@ describe('TASK-82 — card eviction wiring', () => {
     // signal; the card is NOT evicted (nothing was approved).
     expect(captured.status).toBe(409);
     expect(resolved).toEqual([]);
+  });
+
+  // TASK-775 — a connector approval whose promotion was refused because the
+  // tool-permissions reset failed (TASK-758) answers the SAME 503 + fixed code
+  // as the Settings approve route, not the generic 500 grant-failed, and never
+  // echoes the cause's message. Nothing was approved, so the card stays.
+  it('maps a connector grant reset refusal to 503 tool-permissions-reset-failed (no eviction)', async () => {
+    const bus = makeBus({
+      connectorGrant: { applied: true },
+      connectorGrantThrows: new PluginError({
+        code: 'tool-permissions-reset-failed',
+        plugin: '@ax/connectors',
+        hookName: 'connectors:upsert',
+        message: 'secret internal detail: db row 42',
+      }),
+    });
+    const resolved: Array<[string, string]> = [];
+    const handlers = createChatRouteHandlers({
+      bus,
+      initCtx,
+      onCardResolved: (c, s) => resolved.push([c, s]),
+    });
+    const { res, captured } = fakeRes();
+    await handlers.postPermissionDecision(
+      fakeReq({ conversationId: 'cnv1', connectorId: 'linear' }),
+      res,
+    );
+    expect(captured.status).toBe(503);
+    // The body is exactly the code the chat card keys its message on.
+    expect(captured.json).toEqual({ error: TOOL_PERMISSIONS_RESET_FAILED });
+    expect(resolved).toEqual([]);
+  });
+
+  it('any OTHER connector grant failure is still the generic 500 grant-failed', async () => {
+    const bus = makeBus({
+      connectorGrant: { applied: true },
+      connectorGrantThrows: new PluginError({
+        code: 'internal',
+        plugin: '@ax/connectors',
+        message: 'boom',
+      }),
+    });
+    const handlers = createChatRouteHandlers({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await handlers.postPermissionDecision(
+      fakeReq({ conversationId: 'cnv1', connectorId: 'linear' }),
+      res,
+    );
+    expect(captured.status).toBe(500);
+    expect(captured.json).toEqual({ error: 'grant-failed' });
   });
 
   it('400s a decision carrying NEITHER skillId NOR connectorId', async () => {
