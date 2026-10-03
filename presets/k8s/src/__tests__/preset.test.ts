@@ -518,7 +518,10 @@ describe('@ax/preset-k8s wiring', () => {
     // the inventory every later connectors-rail card reads.
     const plugins = createK8sPlugins(stubConfig);
     const mcp = plugins.find((p) => p.manifest.name === '@ax/mcp-client');
-    expect(mcp!.manifest.registers).toEqual(['connectors:describe-tools']);
+    expect(mcp!.manifest.registers).toEqual([
+      'connectors:describe-tools',
+      'connectors:inventory-status-batch',
+    ]);
     expect(mcp!.manifest.calls).toEqual(
       expect.arrayContaining(['database:get-instance', 'connectors:resolve', 'agents:resolve', 'credentials:get']),
     );
@@ -904,6 +907,7 @@ describe('@ax/preset-k8s wiring', () => {
     // CLASSIFIES the resulting `mcp-*` traffic; it does not dispatch this).
     expect(mcpOAuth!.manifest.registers).toEqual([
       'credentials:resolve:mcp-oauth',
+      'mcp-oauth:status-batch',
     ]);
     // mountRoutes:true in the preset expands the manifest `calls` to the OAuth
     // route + resolver deps. All are registered by plugins loaded above

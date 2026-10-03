@@ -67,6 +67,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ConnectorEditDialog } from '@/components/settings/ConnectorEditDialog';
 import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConnect';
 import { useAgentConnectors } from '@/lib/agent-connectors';
@@ -263,12 +264,16 @@ export function AgentConnectors({ agentId, name, onChanged }: Props) {
               {name} can keep using it.
             </DialogDescription>
           </DialogHeader>
+          {/* What signing in hands the assistant — drawn here, in the file that
+              starts the sign-in, so the TASK-700 coverage scan sees it. */}
+          <ConnectorAccessNotice kind="sign-in" />
           {reconnecting !== null && (
             <ConnectorOAuthConnect
               connectorId={reconnecting.id}
               serviceName={reconnecting.name}
               agentId={agentId}
               requiresConsent={shared}
+              showAccessNotice={false}
               onConnected={() => {
                 setReconnecting(null);
                 refresh();
