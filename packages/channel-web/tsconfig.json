@@ -22,6 +22,7 @@
     { "path": "../conversations" },
     { "path": "../ipc-protocol" },
     { "path": "../attachments" },
+    { "path": "../credentials-admin-routes" },
     { "path": "../skills" },
     { "path": "../skills-parser" },
     { "path": "../routines" },

@@ -537,6 +537,9 @@ describe('destination credential handlers', () => {
   // (`lib/connector-credential-slots.ts`) must round-trip through this route.
   // They used to mint `header-<uuid>` / `oauth-client-secret`, which this
   // grammar refuses, so no header key or OAuth client secret saved from the UI.
+  // These literals are examples; the live pin — channel-web's real minting
+  // functions POSTed through this route — is channel-web's
+  // connector-credential-slots.contract.test.ts (TASK-767).
   it.each([
     ['a request-header slot', 'HEADER_0F3C2A9B7D1E4F6A8B0C2D4E6F8A0B1C'],
     ['the OAuth client secret slot', 'OAUTH_CLIENT_SECRET'],

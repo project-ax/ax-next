@@ -9,9 +9,10 @@
 // `400 invalid account slot`, so nobody could save a request header or an OAuth
 // client secret from the UI.
 //
-// Local mirror of that grammar (invariant 2: no cross-plugin import). Keep it in
-// step with `destination-routes.ts`; the route's own tests pin the shapes below.
-export const CONNECTOR_SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+// There is deliberately no local copy of that grammar here: a hand-kept mirror
+// is how the two drifted. `__tests__/connector-credential-slots.contract.test.ts`
+// (TASK-767) POSTs what these functions mint through the REAL route instead, so
+// a change on either side goes red.
 
 /** Where a connector's own OAuth client secret is stored. */
 export const OAUTH_CLIENT_SECRET_SLOT = 'OAUTH_CLIENT_SECRET';
