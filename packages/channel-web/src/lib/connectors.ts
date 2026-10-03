@@ -227,7 +227,20 @@ export const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
 export const TOOL_PERMISSIONS_RESET_FAILED_MESSAGE =
   'We couldn’t reset this server’s tool permissions, so we didn’t save your changes. It still uses its old address. Try saving again in a moment.';
 
-/** True when a {@link createConnector} / {@link patchConnector} failure is the reset refusal. */
+/**
+ * TASK-771 — the same refusal on the authored-connector APPROVE path
+ * ({@link approveAuthoredConnector}): approving promotes the draft through the
+ * same save, so it can hit the same reset. Same message, with the verbs the
+ * approve dialog actually uses — there is no "save" button there, only Connect.
+ * Nothing was approved; the proposal stays put, so Connect can be tried again.
+ */
+export const TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE =
+  'We couldn’t reset this server’s tool permissions, so we didn’t connect it. It still uses its old address. Try Connect again in a moment.';
+
+/**
+ * True when a {@link createConnector} / {@link patchConnector} /
+ * {@link approveAuthoredConnector} failure is the reset refusal.
+ */
 export function isToolPermissionsResetFailure(err: unknown): boolean {
   return err instanceof Error && err.message === TOOL_PERMISSIONS_RESET_FAILED;
 }

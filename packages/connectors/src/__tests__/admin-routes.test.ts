@@ -1164,12 +1164,15 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
   // Captured grant calls + a configurable verdict the stub returns.
   let grantCalls: Array<Record<string, unknown>>;
   let grantApplied: boolean;
+  // When set, the grant stub throws this instead of returning a verdict.
+  let grantThrows: Error | null;
   // agents:resolve verdict: 'ok' | 'forbidden' | 'not-found'.
   let agentsResolveVerdict: 'ok' | 'forbidden' | 'not-found';
 
   async function makeAuthoredHarness(): Promise<TestHarness> {
     grantCalls = [];
     grantApplied = true;
+    grantThrows = null;
     agentsResolveVerdict = 'ok';
     const h = await createTestHarness({
       services: {
@@ -1194,6 +1197,7 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
         },
         'agent:apply-authored-connector-grant': async (_ctx, input: unknown) => {
           grantCalls.push(input as Record<string, unknown>);
+          if (grantThrows !== null) throw grantThrows;
           return grantApplied
             ? { applied: true, respawned: false }
             : { applied: false, reason: 'not-authored' };
@@ -1320,6 +1324,28 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
     );
     expect(captured.status).toBe(409);
     expect((captured.body as { error: string }).error).toBe('not-authored');
+  });
+
+  // TASK-771 — approving promotes the draft via connectors:upsert, which refuses
+  // an endpoint move whose tool-permission reset failed (TASK-758). The Settings
+  // approve dialog keys its message on this exact 503 body.
+  it('POST approve 503 tool-permissions-reset-failed when the promotion’s reset fails', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    grantThrows = new PluginError({
+      code: 'tool-permissions-reset-failed',
+      plugin: '@ax/connectors',
+      hookName: 'connectors:upsert',
+      message: 'internal detail that must not reach the client',
+    });
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.approveAuthored(
+      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
+      res,
+    );
+    expect(captured.status).toBe(503);
+    expect(captured.body).toEqual({ error: 'tool-permissions-reset-failed' });
   });
 
   // DELETE /settings/connectors/authored/:id — the "Dismiss" action on the
