@@ -456,11 +456,13 @@ describe('a turn ends on chat:turn-end, even while the runner stays warm', () =>
   it('ignores a malformed foldedReqIds rather than reading it as a turn', async () => {
     const bus = new HookBus();
     await boot(bus);
+    // A one-character id, so a reader that iterated a bare string (strings
+    // are iterable) would find it and wrongly end the turn.
     await bus.fire('chat:start', ctx({ reqId: 'r1' }), {});
-    await bus.fire('chat:start', ctx({ reqId: 'r2' }), {});
+    await bus.fire('chat:start', ctx({ reqId: 'x' }), {});
 
-    await turnEnd(bus, { reqId: 'r1', foldedReqIds: 'r2' });
-    await turnEnd(bus, { reqId: 'r1', foldedReqIds: [42, null, { id: 'r2' }] });
+    await turnEnd(bus, { reqId: 'r1', foldedReqIds: 'x' });
+    await turnEnd(bus, { reqId: 'r1', foldedReqIds: [42, null, { id: 'x' }] });
     expect((await get(bus)).activity).not.toBeNull();
   });
 
