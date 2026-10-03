@@ -657,6 +657,34 @@ describe('tool-permissions — an endpoint change resets verdicts (TASK-755)', (
       expect(await overrides(h)).toEqual([]);
     });
 
+    it('another user editing a same-id connector never resets the owner’s choices (authz)', async () => {
+      const { h, ns } = await seeded();
+      // member1 can READ admin1's shared `linear` but not edit it: the route refuses.
+      currentActor = { id: 'member1', isAdmin: false };
+      const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+      const refused = makeRes();
+      await userHandlers.update(
+        makeReq({ params: { id: 'linear' }, body: { capabilities: movedCaps() } }),
+        refused.res,
+      );
+      expect(refused.captured.status).toBe(403);
+      // Going straight at the hook with the same id only ever touches member1's
+      // OWN keyspace (owner-scoped prior read; namespaces derive from userId).
+      await h.bus.call('connectors:upsert', h.ctx({ userId: 'member1' }), {
+        ...linear,
+        userId: 'member1',
+        capabilities: movedCaps(),
+      });
+      currentActor = { id: 'admin1', isAdmin: true };
+      expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({
+        defaults: [
+          { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
+          { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
+        ],
+      });
+      expect(await overrides(h)).toEqual([`mcp.${ns}.create_issue`]);
+    });
+
     it('an edit that keeps the address never calls the reset, so a down store does not block it', async () => {
       const { flaky, state } = flakyStore();
       const { h } = await seeded({ verdictStore: flaky });

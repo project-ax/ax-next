@@ -12,7 +12,12 @@ import {
   STARTER_SERVICE_EXAMPLES,
   type ConnectorFormState,
 } from '../connector-form';
-import { emptyCapabilities, type Connector } from '../connectors';
+import {
+  emptyCapabilities,
+  isToolPermissionsResetFailure,
+  TOOL_PERMISSIONS_RESET_FAILED,
+  type Connector,
+} from '../connectors';
 import { ServiceDescriptorSchema } from '@ax/skills-parser';
 
 const PINNED = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
@@ -704,5 +709,18 @@ describe('endpointChangedServers (TASK-758)', () => {
     expect(endpointChangedServers([stdio('a', 'x')], [stdio('b', 'y')])).toEqual([]);
     expect(endpointChangedServers([], [stdio('a', 'x')])).toEqual([]);
     expect(endpointChangedServers([stdio('a', 'x')], [])).toEqual([]);
+  });
+});
+
+describe('TOOL_PERMISSIONS_RESET_FAILED (TASK-758)', () => {
+  it('is the exact wire string @ax/connectors answers in the 503 body', () => {
+    // Pinned to the literal on purpose: the server side is pinned to the same
+    // literal in packages/connectors tool-permission-routes.test.ts, so a
+    // drift on either side reddens a test instead of silently falling back to
+    // the generic "couldn't save" message.
+    expect(TOOL_PERMISSIONS_RESET_FAILED).toBe('tool-permissions-reset-failed');
+    expect(isToolPermissionsResetFailure(new Error('tool-permissions-reset-failed'))).toBe(true);
+    expect(isToolPermissionsResetFailure(new Error('connector id taken'))).toBe(false);
+    expect(isToolPermissionsResetFailure('tool-permissions-reset-failed')).toBe(false);
   });
 });
