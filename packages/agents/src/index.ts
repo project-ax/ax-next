@@ -25,6 +25,8 @@ export type {
   AgentsResolvedEvent,
   AttachConnectorInput,
   AttachConnectorOutput,
+  CanExcludeConnectorInput,
+  CanExcludeConnectorOutput,
   DetachConnectorInput,
   DetachConnectorOutput,
   CreateInput,

@@ -11,6 +11,9 @@
  *   - **Remove from <agent>** — destructive, behind a confirmation. Removing
  *     touches THIS agent only: the connector, and every other agent using it,
  *     stay as they are.
+ *     A workspace default on a team agent is the owner's or an admin's to
+ *     remove (TASK-765): for anyone else the server says `removable: false`
+ *     and the item stays, disabled, with the reason on hover and focus.
  *
  * Connector health (TASK-741, slice 8): a row whose sign-in was rejected or
  * whose server could not be reached gets ONE red `CircleAlert` right after its
@@ -91,7 +94,7 @@ import { getConnector, type Connector } from '@/lib/connectors';
 import { useUser } from '@/lib/user-context';
 import type { GrantRow } from '@/lib/workspace-api';
 import type { AgentConnectorHealth, AgentConnectorRow } from '@/lib/workspace-types';
-import { ConnectorDetails, ConnectorsUnsupported } from './ConnectorDetails';
+import { ConnectorDetails, ConnectorsUnsupported, REMOVE_REFUSED_REASON } from './ConnectorDetails';
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
 const HEALTH_REASON: Record<Exclude<AgentConnectorHealth, 'ok' | 'not-loaded'>, string> = {
@@ -575,13 +578,35 @@ function RowMenu({
           </>
         )}
         <DropdownMenuGroup>
-          <DropdownMenuItem
-            className="text-destructive focus:text-destructive"
-            onSelect={onRemove}
-          >
-            <Trash2 aria-hidden="true" />
-            Remove from {agentName}
-          </DropdownMenuItem>
+          {row.removable ? (
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={onRemove}
+            >
+              <Trash2 aria-hidden="true" />
+              Remove from {agentName}
+            </DropdownMenuItem>
+          ) : (
+            // TASK-765 — not Radix's `disabled`: that drops the item from
+            // keyboard navigation and pointer events, so the reason could
+            // never be reached. Focusable + aria-disabled + a no-op select.
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuItem
+                    aria-disabled="true"
+                    aria-description={REMOVE_REFUSED_REASON}
+                    className="cursor-not-allowed text-muted-foreground focus:text-muted-foreground"
+                    onSelect={(e) => e.preventDefault()}
+                  >
+                    <Trash2 aria-hidden="true" />
+                    Remove from {agentName}
+                  </DropdownMenuItem>
+                </TooltipTrigger>
+                <TooltipContent side="left">{REMOVE_REFUSED_REASON}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>

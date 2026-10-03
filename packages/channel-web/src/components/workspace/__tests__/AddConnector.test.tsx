@@ -99,7 +99,7 @@ beforeEach(() => {
   popup = { closed: false, close: vi.fn() };
   vi.spyOn(window, 'open').mockImplementation(() => popup as unknown as Window);
   vi.mocked(workspaceApi.connectors).mockResolvedValue({
-    connectors: [{ id: 'linear', name: 'Linear', source: 'attached', editable: false, health: 'ok' }],
+    connectors: [{ id: 'linear', name: 'Linear', source: 'attached', editable: false, health: 'ok', removable: true }],
     shared: false,
       connectorsSupported: true,
   });

@@ -58,6 +58,13 @@ import type {
 } from '@/lib/workspace-types';
 import { GrantLine } from './bits';
 
+/**
+ * TASK-765 — why Remove is drawn disabled: taking a workspace default off a
+ * team agent takes it away from every member, so the server only lets the
+ * agent's owner or an admin. Shared with the list's `⋯` menu.
+ */
+export const REMOVE_REFUSED_REASON = "Only the agent’s owner or an admin can remove this.";
+
 /** Decision 3: an unattended run cannot stop to ask, so it waits. */
 export const ROUTINES_WAIT_NOTE = 'With Ask first, routines pause and wait for you.';
 
@@ -202,17 +209,41 @@ export function ConnectorDetails({
         ) : (
           <span />
         )}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="text-destructive hover:bg-destructive-soft hover:text-destructive"
-          onClick={onRemove}
-          disabled={busy}
-        >
-          <Trash2 data-icon="inline-start" aria-hidden="true" />
-          Remove
-        </Button>
+        {row.removable ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:bg-destructive-soft hover:text-destructive"
+            onClick={onRemove}
+            disabled={busy}
+          >
+            <Trash2 data-icon="inline-start" aria-hidden="true" />
+            Remove
+          </Button>
+        ) : (
+          // TASK-765 — focusable rather than `disabled`, so the reason
+          // reaches a keyboard (tooltip) and a screen reader (description).
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-disabled="true"
+                  aria-description={REMOVE_REFUSED_REASON}
+                  className="cursor-not-allowed text-muted-foreground hover:bg-transparent hover:text-muted-foreground"
+                  onClick={(e) => e.preventDefault()}
+                >
+                  <Trash2 data-icon="inline-start" aria-hidden="true" />
+                  Remove
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">{REMOVE_REFUSED_REASON}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
       </div>
     </div>
   );

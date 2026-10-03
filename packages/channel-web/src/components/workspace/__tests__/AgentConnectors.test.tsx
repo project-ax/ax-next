@@ -13,7 +13,7 @@
  * errored rows only; Retry runs one check and the row takes its answer.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError, type AgentDetail } from '@/lib/workspace-api';
 import { getConnector } from '@/lib/connectors';
 import type { AgentConnectorRow } from '@/lib/workspace-types';
@@ -55,8 +55,8 @@ const removeMock = vi.mocked(workspaceApi.removeConnector);
 const railMock = vi.mocked(workspaceApi.rail);
 
 const ROWS: AgentConnectorRow[] = [
-  { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok' },
-  { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok' },
+  { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
+  { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok', removable: true },
 ];
 
 function detail(): AgentDetail {
@@ -204,6 +204,72 @@ describe('remove', () => {
   });
 });
 
+// TASK-765 — removing a workspace default from a team agent takes it away
+// from every member, so only the agent's owner or an admin may. The server
+// says which rows this caller may remove; the item for any other row stays in
+// the menu (so the reason can be found) but is disabled and says why.
+describe('a connector this person may not remove (TASK-765)', () => {
+  const REASON = "Only the agent’s owner or an admin can remove this.";
+  const MIXED: AgentConnectorRow[] = [
+    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
+    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok', removable: false },
+  ];
+
+  beforeEach(() => {
+    connectorsMock.mockResolvedValue({ connectors: MIXED, shared: true, connectorsSupported: true });
+  });
+
+  it('keeps the item, same name, announced as disabled with the reason as its description', async () => {
+    renderTab();
+    const menu = await openMenu('Gmail');
+    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
+    expect(item.getAttribute('aria-disabled')).toBe('true');
+    expect(item.getAttribute('aria-description')).toBe(REASON);
+    // Muted, not destructive red: it is not an action this person has.
+    expect(item.className).toContain('text-muted-foreground');
+    expect(item.className).not.toContain('text-destructive');
+  });
+
+  it('selecting it does nothing: no confirmation, no DELETE', async () => {
+    renderTab();
+    const menu = await openMenu('Gmail');
+    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
+    fireEvent.click(item);
+    fireEvent.keyDown(item, { key: 'Enter' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+
+  it('says why in a tooltip on keyboard focus', async () => {
+    renderTab();
+    const menu = await openMenu('Gmail');
+    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
+    act(() => item.focus());
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toBe(REASON);
+  });
+
+  it('says why in a tooltip on hover', async () => {
+    renderTab();
+    const menu = await openMenu('Gmail');
+    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
+    fireEvent.pointerMove(item, { pointerType: 'mouse' });
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toBe(REASON);
+  });
+
+  it('a removable row in the same list is unchanged: enabled, and it asks first', async () => {
+    renderTab();
+    const menu = await openMenu('Linear');
+    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
+    expect(item.getAttribute('aria-disabled')).toBeNull();
+    expect(item.getAttribute('aria-description')).toBeNull();
+    fireEvent.click(item);
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+  });
+});
+
 describe('empty state', () => {
   it('is a dashed card with the plug, the title, the copy and "Add connector"', async () => {
     connectorsMock.mockResolvedValue({ connectors: [], shared: false, connectorsSupported: true });
@@ -227,9 +293,9 @@ describe('empty state', () => {
 
 describe('connector health (TASK-741)', () => {
   const ERRORED: AgentConnectorRow[] = [
-    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok' },
-    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect' },
-    { id: 'slack', name: 'Slack', source: 'attached', editable: true, health: 'unreachable' },
+    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
+    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', removable: true },
+    { id: 'slack', name: 'Slack', source: 'attached', editable: true, health: 'unreachable', removable: true },
   ];
   const retryMock = vi.mocked(workspaceApi.retryConnector);
 
@@ -327,8 +393,8 @@ describe('connector health (TASK-741)', () => {
 
 describe("a connector a session can't fully load (TASK-745)", () => {
   const NOT_LOADED: AgentConnectorRow[] = [
-    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'not-loaded' },
-    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'not-loaded' },
+    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'not-loaded', removable: true },
+    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'not-loaded', removable: true },
   ];
 
   beforeEach(() => {

@@ -668,6 +668,160 @@ describe('store attach / detach connector (TASK-739)', () => {
     expect(d.agent.connectorExclusions).toEqual(['sf', 'default-one']);
   });
 
+  // TASK-765 — `refuseIfExcluded` is checked on the LOCKED row, so an exclusion
+  // that lands after the caller's pre-read still wins.
+  it('attachConnector{refuseIfExcluded} refuses an excluded id (forbidden) and writes nothing', async () => {
+    const { store, id } = await seed();
+    await store.detachConnector(id, 'gh', true);
+    await expect(
+      store.attachConnector(id, 'gh', { refuseIfExcluded: true }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    const after = await store.getById(id);
+    expect(after!.connectorExclusions).toEqual(['gh']);
+    expect(after!.connectorAttachments).toEqual([]);
+  });
+
+  it('attachConnector{refuseIfExcluded} attaches an id that is not excluded, as before', async () => {
+    const { store, id } = await seed();
+    await store.detachConnector(id, 'other', true);
+    const out = await store.attachConnector(id, 'gh', { refuseIfExcluded: true });
+    expect(out.changed).toBe(true);
+    expect(out.agent.connectorAttachments).toEqual(['gh']);
+    expect(out.agent.connectorExclusions).toEqual(['other']);
+  });
+
+  it('attachConnector{refuseIfExcluded:false} still clears the exclusion', async () => {
+    const { store, id } = await seed();
+    await store.detachConnector(id, 'gh', true);
+    const out = await store.attachConnector(id, 'gh', { refuseIfExcluded: false });
+    expect(out.agent.connectorAttachments).toEqual(['gh']);
+    expect(out.agent.connectorExclusions).toEqual([]);
+  });
+
+  it('RACE: the check reads the LOCKED row — an exclusion committed while attach waits on the lock still refuses it', async () => {
+    const { db, store, id } = await seed();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    // Another writer takes the row lock, and will commit an exclusion of 'gh'
+    // — AFTER the attach below has started (so anything the attach's caller
+    // read beforehand did not contain it).
+    const holder = db.transaction().execute(async (trx) => {
+      await sql`SELECT 1 FROM agents_v1_agents WHERE agent_id = ${id} FOR UPDATE`.execute(trx);
+      locked();
+      await gate;
+      await sql`
+        UPDATE agents_v1_agents
+           SET connector_exclusions = ${JSON.stringify(['gh'])}::jsonb
+         WHERE agent_id = ${id}
+      `.execute(trx);
+    });
+    await lockTaken;
+    const attempt = store.attachConnector(id, 'gh', { refuseIfExcluded: true });
+    const settled = attempt.then(
+      () => 'resolved' as const,
+      (err: unknown) => err,
+    );
+    // Give the attach time to start and block on the row lock.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    release();
+    await holder;
+    const outcome = await settled;
+    expect(outcome).toMatchObject({ code: 'forbidden' });
+    const after = await store.getById(id);
+    expect(after!.connectorExclusions).toEqual(['gh']);
+    expect(after!.connectorAttachments).toEqual([]);
+  });
+
+  // TASK-765 — the wholesale setter is the other way to put an id back on an
+  // agent that excluded it (@ax/connectors resolves an explicit attachment even
+  // when the id is excluded). `refuseIfExcluded` refuses ADDING such an id, on
+  // the locked row, and never edits the exclusions.
+  describe('setConnectorAttachments{refuseIfExcluded} (TASK-765)', () => {
+    it('refuses a list that ADDS an excluded id (forbidden) and writes nothing', async () => {
+      const { store, id } = await seed();
+      await store.setConnectorAttachments(id, ['keep']);
+      await store.detachConnector(id, 'gh', true);
+      await expect(
+        store.setConnectorAttachments(id, ['keep', 'gh'], { refuseIfExcluded: true }),
+      ).rejects.toMatchObject({ code: 'forbidden' });
+      const after = await store.getById(id);
+      expect(after!.connectorAttachments).toEqual(['keep']);
+      expect(after!.connectorExclusions).toEqual(['gh']);
+    });
+
+    it('allows a list that adds nothing excluded, and leaves the exclusions alone', async () => {
+      const { store, id } = await seed();
+      await store.detachConnector(id, 'gh', true);
+      const out = await store.setConnectorAttachments(id, ['a', 'b'], { refuseIfExcluded: true });
+      expect(out.connectorAttachments).toEqual(['a', 'b']);
+      expect(out.connectorExclusions).toEqual(['gh']);
+    });
+
+    it('does not block an unrelated save when an id is already attached AND excluded (stale state)', async () => {
+      const { db, store, id } = await seed();
+      await sql`
+        UPDATE agents_v1_agents
+           SET connector_attachments = ${JSON.stringify(['gh'])}::jsonb,
+               connector_exclusions = ${JSON.stringify(['gh'])}::jsonb
+         WHERE agent_id = ${id}
+      `.execute(db);
+      const out = await store.setConnectorAttachments(id, ['gh', 'other'], {
+        refuseIfExcluded: true,
+      });
+      expect(out.connectorAttachments).toEqual(['gh', 'other']);
+      expect(out.connectorExclusions).toEqual(['gh']);
+    });
+
+    it('without the option, adding an excluded id is allowed and the exclusion is NOT cleared', async () => {
+      const { store, id } = await seed();
+      await store.detachConnector(id, 'gh', true);
+      const out = await store.setConnectorAttachments(id, ['gh']);
+      expect(out.connectorAttachments).toEqual(['gh']);
+      expect(out.connectorExclusions).toEqual(['gh']);
+    });
+
+    it('RACE: the check reads the LOCKED row — an exclusion committed while the save waits on the lock still refuses it', async () => {
+      const { db, store, id } = await seed();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let locked!: () => void;
+      const lockTaken = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const holder = db.transaction().execute(async (trx) => {
+        await sql`SELECT 1 FROM agents_v1_agents WHERE agent_id = ${id} FOR UPDATE`.execute(trx);
+        locked();
+        await gate;
+        await sql`
+          UPDATE agents_v1_agents
+             SET connector_exclusions = ${JSON.stringify(['gh'])}::jsonb
+           WHERE agent_id = ${id}
+        `.execute(trx);
+      });
+      await lockTaken;
+      const attempt = store.setConnectorAttachments(id, ['gh'], { refuseIfExcluded: true });
+      const settled = attempt.then(
+        () => 'resolved' as const,
+        (err: unknown) => err,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      release();
+      await holder;
+      expect(await settled).toMatchObject({ code: 'forbidden' });
+      const after = await store.getById(id);
+      expect(after!.connectorAttachments).toEqual([]);
+      expect(after!.connectorExclusions).toEqual(['gh']);
+    });
+  });
+
   it('attach / detach throw not-found for a missing agent', async () => {
     const { store } = await seed();
     await expect(store.attachConnector('agt_missing', 'gh')).rejects.toMatchObject({

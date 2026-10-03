@@ -1041,6 +1041,13 @@ export interface AgentConnectorRow {
   /** The caller may open this connector's editor. */
   editable: boolean;
   health: AgentConnectorHealth;
+  /**
+   * The caller may remove it from this agent. A workspace default on a team
+   * agent: only the agent's owner (a team admin) or a workspace admin
+   * (TASK-765). An attached connector is always removable here; the server
+   * still decides on the DELETE.
+   */
+  removable: boolean;
 }
 
 /** `GET /api/workspace/agents/:agentId/connectors` answers this. */
