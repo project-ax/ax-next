@@ -90,7 +90,7 @@ describe('storage-node ledger and lifecycle', () => {
   // An in-place `writeFile` of session.json creates it empty, then fills it.
   it('publishes session.json by same-directory rename: target absent until the complete file lands', async () => {
     const f = engineFixture(); const bootstrapDir = join(f.volume, 'bootstrap');
-    const seen: Array<{ entries: string[]; temp?: string; tempMode?: number; tempIno?: number }> = [];
+    const seen: Array<{ entries: string[]; temp?: string; tempMode?: number; tempIno?: bigint }> = [];
     vi.mocked(f.authority.authorize).mockImplementation(async () => {
       let entries: string[] = [];
       try { entries = readdirSync(bootstrapDir).sort(); } catch { /* not created yet */ }
@@ -98,7 +98,7 @@ describe('storage-node ledger and lifecycle', () => {
       if (entries.includes('session.tmp')) {
         const fd = openSync(join(bootstrapDir, 'session.tmp'), 'r');
         try {
-          const st = fstatSync(fd); snapshot.tempMode = st.mode & 0o777; snapshot.tempIno = st.ino;
+          const st = fstatSync(fd, { bigint: true }); snapshot.tempMode = Number(st.mode & 0o777n); snapshot.tempIno = st.ino;
           snapshot.temp = readFileSync(fd, 'utf8');
         } finally { closeSync(fd); }
       }
@@ -120,7 +120,7 @@ describe('storage-node ledger and lifecycle', () => {
     try {
       // Same inode = the complete temp file was renamed into place. A copy into a
       // freshly created target (empty, then filled) gets a new inode.
-      expect(fstatSync(fd).ino).toBe(prePublish.tempIno);
+      expect(fstatSync(fd, { bigint: true }).ino).toBe(prePublish.tempIno);
       expect(JSON.parse(readFileSync(fd, 'utf8'))).toEqual(f.data.bootstrap);
     } finally { closeSync(fd); }
   });
