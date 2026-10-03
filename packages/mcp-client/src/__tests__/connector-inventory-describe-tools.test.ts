@@ -563,7 +563,7 @@ describe('connectors:describe-tools', () => {
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       const failed = t.logLines.filter((l) => l.includes('connector_inventory_store_failed'));
       expect(failed).toHaveLength(1);
-      expect(failed[0]).toContain('"connectorId":"linear"');
+      expect(JSON.parse(failed[0]!)).toMatchObject({ level: 'error', connectorId: 'linear' });
       expect(failed[0]).toContain('"code":"Error"');
       expect(failed[0]).not.toContain('tok-secret');
     });
