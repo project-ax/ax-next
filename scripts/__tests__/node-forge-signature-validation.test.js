@@ -54,5 +54,9 @@ it('limits the advisory exception to the pinned, patched node-forge release', ()
   const proxy = JSON.parse(readFileSync(`${root}/packages/credential-proxy/package.json`, 'utf8'));
   expect(proxy.dependencies['node-forge']).toBe('1.4.0');
   expect(manifest.pnpm.patchedDependencies['node-forge@1.4.0']).toBe('patches/node-forge@1.4.0.patch');
-  expect(manifest.pnpm.auditConfig).toEqual({ ignoreGhsas: ['GHSA-86w9-cpqp-85rv'] });
+  // The braces exception (GHSA-vfj7-8cjw-p6xm, TASK-750) has its own guard in
+  // braces-dev-only-audit-exception.test.js. Any third entry needs one too.
+  expect(manifest.pnpm.auditConfig).toEqual({
+    ignoreGhsas: ['GHSA-86w9-cpqp-85rv', 'GHSA-vfj7-8cjw-p6xm'],
+  });
 });
