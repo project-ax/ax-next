@@ -99,8 +99,9 @@ export function useAgentRail(
    * so it goes resting -> resting and never moves, while the rail mounted
    * mid-turn kept "Working". The agent detail's word is the one the SPA DID
    * see flip — AgentView re-reads it on the done frame — so a change in
-   * either one re-reads. When both move, one render or two, the cost is at
-   * most one extra read.
+   * either one re-reads. When both move they usually land in separate renders
+   * (the detail re-read and the roster refresh are two fetches), so a
+   * finished turn costs up to two extra reads; one when they land together.
    */
   const rosterWord =
     useOptionalWorkspace()?.board?.agents.find((a) => a.id === agentId)?.state ?? null;

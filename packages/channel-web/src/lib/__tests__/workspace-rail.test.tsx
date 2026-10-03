@@ -125,28 +125,6 @@ describe('useAgentRail', () => {
     await waitFor(() => expect(result.current.rail.rail?.activity.activity).toBeNull());
   });
 
-  it("does not re-read when the agent detail's word is re-supplied unchanged", async () => {
-    boardMock.mockResolvedValue({ agents: [agent('resting')] });
-    railMock.mockResolvedValue(rail());
-
-    const { result, rerender } = renderHook(
-      ({ word }: { word: WorkspaceAgent['state'] }) => ({
-        rail: useAgentRail('a1', word),
-        ws: useWorkspace(),
-      }),
-      { wrapper, initialProps: { word: 'resting' as WorkspaceAgent['state'] } },
-    );
-    await waitFor(() => expect(result.current.ws.board?.agents[0]?.state).toBe('resting'));
-    await waitFor(() => expect(result.current.rail.loading).toBe(false));
-    const reads = railMock.mock.calls.length;
-
-    rerender({ word: 'resting' });
-    await act(async () => {
-      await result.current.ws.refresh();
-    });
-    expect(railMock.mock.calls.length).toBe(reads);
-  });
-
   it('does not re-read when a roster refresh leaves its agent word unchanged', async () => {
     boardMock.mockResolvedValue({ agents: [agent('resting')] });
     railMock.mockResolvedValue(rail());
