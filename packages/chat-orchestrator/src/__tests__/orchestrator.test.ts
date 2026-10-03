@@ -6410,8 +6410,9 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
 // no extra denies.
 // ---------------------------------------------------------------------------
 describe('agentConfig.disallowedTools from tool-policy overrides', () => {
-  function makeOpen(busRef: { current: HookBus | null }): ServiceHandler {
+  function makeOpen(busRef: { current: HookBus | null }, onOpen?: () => void): ServiceHandler {
     return async (ctx, input: unknown) => {
+      onOpen?.();
       const sessionId = (input as { sessionId: string }).sessionId;
       const reqId = ctx.reqId;
       setImmediate(() => {
@@ -6434,9 +6435,9 @@ describe('agentConfig.disallowedTools from tool-policy overrides', () => {
     };
   }
 
-  async function run(extra: Record<string, ServiceHandler>) {
+  async function run(extra: Record<string, ServiceHandler>, onOpen?: () => void) {
     const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({ openSession: makeOpen(busRef) });
+    const mocks = buildMocks({ openSession: makeOpen(busRef, onOpen) });
     Object.assign(mocks.services, extra);
     const h = await createTestHarness({
       services: mocks.services,
@@ -6539,10 +6540,10 @@ describe('agentConfig.disallowedTools from tool-policy overrides', () => {
         copies.push(input);
         throw new Error('store down');
       },
-    });
+    }, () => order.push('sandbox-open'));
     expect(outcome.kind).toBe('complete');
     expect(mocks.calls.sandboxOpen).toBe(1);
-    expect(order).toEqual(['list-effective', 'copy']);
+    expect(order).toEqual(['list-effective', 'copy', 'sandbox-open']);
     expect(copies).toEqual([
       {
         agentId: 'test-agent',
