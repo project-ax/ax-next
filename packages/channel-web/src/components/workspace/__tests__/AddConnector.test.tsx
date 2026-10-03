@@ -101,6 +101,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.connectors).mockResolvedValue({
     connectors: [{ id: 'linear', name: 'Linear', source: 'attached', editable: false, health: 'ok' }],
     shared: false,
+      connectorsSupported: true,
   });
   vi.mocked(listConnectors).mockResolvedValue(CATALOG);
   vi.mocked(getConnector).mockImplementation(async (id) => full(id));
@@ -347,7 +348,7 @@ describe('sign in, then attach', () => {
   });
 
   it('a team agent (the server says shared) asks for consent before the sign-in starts', async () => {
-    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true });
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true, connectorsSupported: true });
     renderAdd();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
@@ -417,6 +418,22 @@ describe('add key, then attach', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
     expect(await screen.findByText('Only a workspace admin can add Stripe to Quill.')).toBeTruthy();
     expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+});
+
+describe('server refuses the attach until set up (TASK-761)', () => {
+  it('a 409 says it is not set up yet and offers Retry that re-checks, not a blind attach', async () => {
+    attachMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors', 409));
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
+    expect(
+      await screen.findByText(
+        'Stripe isn’t signed in or set up yet, so we didn’t add it to Quill. Try again to finish setting it up.',
+      ),
+    ).toBeTruthy();
+    expect(onAttached).not.toHaveBeenCalled();
+    expect(within(row('Stripe')).getByRole('button', { name: 'Retry' })).toBeTruthy();
   });
 });
 

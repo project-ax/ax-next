@@ -1051,6 +1051,12 @@ export interface AgentConnectorsRead {
    * everyone who uses the agent act as the signer, so Reconnect asks first.
    */
   shared: boolean;
+  /**
+   * TASK-761 — false when this agent's runner is not given connector tools
+   * at all (the aisdk runner does not load connectors). The tab then says so
+   * and offers no Add, so nobody sets up access that can't apply.
+   */
+  connectorsSupported: boolean;
 }
 
 /** `POST /api/workspace/agents/:agentId/connectors/:connectorId/retry`. */

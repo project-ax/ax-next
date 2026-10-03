@@ -130,7 +130,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.abilities).mockResolvedValue({
     abilities: { webSearch: true, readPages: true, runCode: true },
   });
-  vi.mocked(workspaceApi.connectors).mockResolvedValue({ shared: false, connectors: ROWS });
+  vi.mocked(workspaceApi.connectors).mockResolvedValue({ shared: false, connectorsSupported: true, connectors: ROWS });
   toolsMock.mockResolvedValue(read());
 });
 
@@ -311,6 +311,7 @@ describe('when the tool list cannot be read', () => {
     // that answers needs-auth may be a connector nobody has signed in to.
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
+      connectorsSupported: true,
       connectors: [{ ...ROWS[0]!, health: 'needs-reconnect' }],
     });
     toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
@@ -323,6 +324,7 @@ describe('when the tool list cannot be read', () => {
   it('says a connector a session cannot fully load could not load — never "Connected" (TASK-745)', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
+      connectorsSupported: true,
       connectors: [{ ...ROWS[0]!, health: 'not-loaded' }],
     });
     toolsMock.mockResolvedValue(read({ status: 'ok' }));
@@ -403,5 +405,42 @@ describe('access you approved', () => {
     renderTab();
     const toggle = await screen.findByRole('button', { name: /Granted by you/ });
     await waitFor(() => expect(toggle.textContent).toBe('Granted by you2'));
+  });
+});
+
+describe('pinned footer (TASK-761)', () => {
+  it("sits on the rail's bottom edge, over the rows, not 20px above it with rows showing underneath", async () => {
+    toolsMock.mockResolvedValue(read());
+    renderTab();
+    await openDetails();
+    const footer = await screen.findByTestId('connector-details-footer');
+    const cls = footer.className.split(/\s+/);
+    // Sticky, offset by the rail scroller's bottom padding, and layered over
+    // the rows' segmented controls.
+    expect(cls).toEqual(expect.arrayContaining(['sticky', '-bottom-5', '-mb-5', 'z-10', 'bg-background']));
+    expect(cls).not.toContain('bottom-0');
+    // The offset is only right while the rail's scroller keeps `pb-5`: find
+    // the real scroller this footer sticks inside and pin that pairing.
+    let scroller: HTMLElement | null = footer.parentElement;
+    while (scroller !== null && !scroller.className.includes('overflow-y-auto')) {
+      scroller = scroller.parentElement;
+    }
+    expect(scroller?.className.split(/\s+/)).toContain('pb-5');
+  });
+});
+
+describe("an agent whose model can't use connectors (TASK-761)", () => {
+  it('says so in the details view too', async () => {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      shared: false,
+      connectorsSupported: false,
+      connectors: ROWS,
+    });
+    toolsMock.mockResolvedValue(read());
+    renderTab();
+    await openDetails();
+    expect(
+      await screen.findByText('Quill’s model can’t use connectors yet, so nothing here applies to Quill for now.'),
+    ).toBeTruthy();
   });
 });

@@ -141,4 +141,64 @@ describe('remote MCP form data', () => {
       'name-c',
     ]);
   });
+  describe('OAuth or an API key (TASK-761)', () => {
+    const keyConnector: Connector = {
+      ...connector,
+      capabilities: {
+        ...connector.capabilities,
+        credentials: [
+          {
+            kind: 'api-key',
+            slot: 'header-key',
+            server: 'remote',
+            headerName: 'Authorization',
+          },
+        ],
+      },
+    };
+    it('opens a saved header-only connector in API-key mode and everything else in OAuth mode', () => {
+      expect(remoteDraft().useKey).toBe(false);
+      expect(remoteDraft(connector).useKey).toBe(false);
+      const draft = remoteDraft(keyConnector);
+      expect(draft.useKey).toBe(true);
+      expect(draft.signIn).toBe('none');
+      expect(draft.headers).toEqual([
+        { slot: 'header-key', name: 'Authorization', value: '', saved: true },
+      ]);
+    });
+    it('accepts an Authorization header in API-key mode but not with OAuth', () => {
+      const draft = remoteDraft(keyConnector);
+      expect(remoteErrors(draft)).toEqual({});
+      expect(
+        Object.keys(remoteErrors({ ...draft, useKey: false, signIn: 'oauth' })),
+      ).toEqual(['name-header-key']);
+    });
+    it('asks for the header that carries the key when API-key mode has none', () => {
+      const draft = { ...remoteDraft(keyConnector), headers: [] };
+      expect(Object.keys(remoteErrors(draft))).toEqual(['keyHeader']);
+      expect(
+        remoteErrors({ ...draft, useKey: false, signIn: 'none' }),
+      ).toEqual({});
+    });
+    it('saves API-key mode as header slots with no OAuth slot', () => {
+      const draft = remoteDraft(connector);
+      draft.useKey = true;
+      draft.signIn = 'none';
+      draft.headers = [
+        { slot: 'header-key', name: 'Authorization', value: 'Bearer k', saved: false },
+      ];
+      expect(remoteErrors(draft)).toEqual({});
+      expect(
+        remoteCapabilities(draft, connector.id, connector).credentials,
+      ).toEqual([
+        {
+          kind: 'api-key',
+          slot: 'header-key',
+          headerName: 'Authorization',
+          server: 'remote',
+          description: 'Authorization',
+        },
+      ]);
+    });
+  });
 });

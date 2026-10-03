@@ -96,7 +96,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.abilities).mockResolvedValue({
     abilities: { webSearch: true, readPages: true, runCode: true },
   });
-  connectorsMock.mockResolvedValue({ connectors: ROWS, shared: false });
+  connectorsMock.mockResolvedValue({ connectors: ROWS, shared: false, connectorsSupported: true });
 });
 
 describe('connector list', () => {
@@ -174,7 +174,7 @@ describe('remove', () => {
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from Quill' }));
     const dialog = await screen.findByRole('dialog');
     const railReads = railMock.mock.calls.length;
-    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false });
+    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false, connectorsSupported: true });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(screen.queryByText('Linear')).toBeNull());
     expect(removeMock).toHaveBeenCalledWith('a-quill', 'linear');
@@ -198,7 +198,7 @@ describe('remove', () => {
     renderTab();
     const menu = await openMenu('Linear');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from Quill' }));
-    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false });
+    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false, connectorsSupported: true });
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(await screen.findByText(/Removed Linear\. Some of what you’d approved/)).toBeTruthy();
   });
@@ -206,7 +206,7 @@ describe('remove', () => {
 
 describe('empty state', () => {
   it('is a dashed card with the plug, the title, the copy and "Add connector"', async () => {
-    connectorsMock.mockResolvedValue({ connectors: [], shared: false });
+    connectorsMock.mockResolvedValue({ connectors: [], shared: false, connectorsSupported: true });
     const { container } = renderTab();
     expect(await screen.findByText('No connectors yet')).toBeTruthy();
     expect(
@@ -234,7 +234,7 @@ describe('connector health (TASK-741)', () => {
   const retryMock = vi.mocked(workspaceApi.retryConnector);
 
   beforeEach(() => {
-    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: false });
+    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: false, connectorsSupported: true });
   });
 
   it('puts ONE icon after an errored name, named by its reason, with no inline error text', async () => {
@@ -316,7 +316,7 @@ describe('connector health (TASK-741)', () => {
   });
 
   it('Reconnect on a shared agent asks before signing in for everyone', async () => {
-    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: true });
+    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: true, connectorsSupported: true });
     renderTab();
     const menu = await openMenu('Gmail');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Reconnect' }));
@@ -332,7 +332,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
   ];
 
   beforeEach(() => {
-    connectorsMock.mockResolvedValue({ connectors: NOT_LOADED, shared: false });
+    connectorsMock.mockResolvedValue({ connectors: NOT_LOADED, shared: false, connectorsSupported: true });
   });
 
   it('wears the error icon after its name, saying what this person can do about it', async () => {
@@ -375,5 +375,32 @@ describe("a connector a session can't fully load (TASK-745)", () => {
       'View details',
       'Remove from Quill',
     ]);
+  });
+});
+
+describe("an agent whose model can't use connectors (TASK-761)", () => {
+  const NOTICE = 'Quill’s model can’t use connectors yet, so nothing here applies to Quill for now.';
+
+  it('says so plainly and offers no Add, while still listing what is there', async () => {
+    connectorsMock.mockResolvedValue({ connectors: ROWS, shared: false, connectorsSupported: false });
+    renderTab();
+    expect(await screen.findByText(NOTICE)).toBeTruthy();
+    expect(screen.getByText('Linear')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+  });
+
+  it('replaces the empty state (and its "Add connector") with the same notice', async () => {
+    connectorsMock.mockResolvedValue({ connectors: [], shared: false, connectorsSupported: false });
+    renderTab();
+    expect(await screen.findByText(NOTICE)).toBeTruthy();
+    expect(screen.queryByText('No connectors yet')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add connector' })).toBeNull();
+  });
+
+  it('shows no notice for an agent that can use them', async () => {
+    renderTab();
+    await screen.findByText('Linear');
+    expect(screen.queryByText(NOTICE)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add' })).toBeTruthy();
   });
 });

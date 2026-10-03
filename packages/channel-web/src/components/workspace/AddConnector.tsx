@@ -191,7 +191,15 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
           c.id,
           e instanceof HttpError && e.status === 403
             ? { text: `Only a workspace admin can add ${c.name} to ${name}.`, retry: null }
-            : {
+            : e instanceof HttpError && e.status === 409
+              ? {
+                  // TASK-761 — the server holds the same line this subview
+                  // does: no attach until the sign-in / key resolves. Retry
+                  // re-reads what is still needed; it never attaches blind.
+                  text: `${c.name} isn’t signed in or set up yet, so we didn’t add it to ${name}. Try again to finish setting it up.`,
+                  retry: 'recheck',
+                }
+              : {
                 text: `We couldn’t add ${c.name} to ${name} just now. What you set up is saved — ${name} just can’t use it until it’s added.`,
                 retry: 'attach',
               },
