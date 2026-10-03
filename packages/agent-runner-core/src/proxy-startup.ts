@@ -66,7 +66,9 @@ const PROXY_TOKEN_RE = /^[0-9a-f]{32}$/;
  * With no token (or a malformed one) the URL is returned unchanged — and the
  * proxy then refuses every request from this runner (407). That is the
  * fail-closed direction: a missing token can never widen egress, it can only
- * cost the runner its egress.
+ * cost the runner its egress. A runner booted through `readRunnerEnv` never
+ * gets here without a valid token — it refuses to boot instead (TASK-704) —
+ * so this branch only serves callers that build a `RunnerEnv` by hand.
  */
 export function withProxyToken(proxyUrl: string, token: string | undefined): string {
   if (token === undefined || !PROXY_TOKEN_RE.test(token)) return proxyUrl;

@@ -65,10 +65,12 @@ export interface RunnerEnv {
    * credential since TASK-158). When present, proxy-startup embeds it as
    * `Proxy-Authorization: Basic ax:<token>` (HTTP Basic userinfo on the proxy
    * URL), so the host listener can authenticate every request as coming from
-   * this session and gate it on this session's allowlist. A missing or
-   * malformed token NEVER widens egress — the proxy refuses the runner's
-   * requests (407) instead. Validated as 32 lowercase hex chars at read time;
-   * a malformed value is ignored.
+   * this session and gate it on this session's allowlist. `readRunnerEnv`
+   * always sets it: a missing or malformed `AX_PROXY_TOKEN` (anything but 32
+   * lowercase hex chars) fails the runner at boot (TASK-704) rather than
+   * letting every request die with a 407. Optional in the type only for
+   * callers that build a `RunnerEnv` by hand (tests); a missing token still
+   * never widens egress — the proxy refuses the request.
    */
   proxyToken?: string;
   memoryRoot?: string;
@@ -85,6 +87,23 @@ export class MissingEnvError extends Error {
     super(`missing required env: ${varName}`);
   }
 }
+
+/**
+ * An env var that is set but unusable. The message names the variable and
+ * what was expected — never the value, which may be a credential.
+ */
+export class InvalidEnvError extends Error {
+  public override readonly name = 'InvalidEnvError';
+  constructor(
+    public readonly varName: string,
+    expected: string,
+  ) {
+    super(`invalid env: ${varName} (${expected})`);
+  }
+}
+
+/** What credential-proxy mints: 16 random bytes as lowercase hex. */
+const PROXY_TOKEN_FORMAT = /^[0-9a-f]{32}$/;
 
 export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   const need = (k: string): string => {
@@ -143,15 +162,24 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   if (userFilesRoot !== undefined) result.userFilesRoot = userFilesRoot;
   if (proxyEndpoint !== undefined) result.proxyEndpoint = proxyEndpoint;
   if (proxyUnixSocket !== undefined) result.proxyUnixSocket = proxyUnixSocket;
-  // TASK-52: per-session egress-attribution token. Validate the format at the
-  // trust boundary (defense in depth, mirroring the listener's parse) — a
-  // malformed value is ignored, not forwarded, so a garbled env can't produce
-  // a weird Proxy-Authorization header. Fail-closed: an ignored token means the
-  // proxy refuses this runner's requests (TASK-158), never that egress widens.
+  // TASK-52/158/704: per-session proxy token — the credential the proxy
+  // authenticates this runner with. A proxy is ALWAYS configured (I9, checked
+  // above) and since TASK-158 it refuses (407) every request without this
+  // session's token, so a runner booting without a usable token can reach
+  // nothing, and every failure would look like a network outage. Fail loud at
+  // boot instead (TASK-704). Validate the format at the trust boundary too
+  // (mirroring the listener's parse) so a garbled env can't produce a weird
+  // Proxy-Authorization header. The error names the variable, NEVER the value:
+  // it is a bearer credential and the message lands in runner logs.
   const proxyToken = opt('AX_PROXY_TOKEN');
-  if (proxyToken !== undefined && /^[0-9a-f]{32}$/.test(proxyToken)) {
-    result.proxyToken = proxyToken;
+  if (proxyToken === undefined) throw new MissingEnvError('AX_PROXY_TOKEN');
+  if (!PROXY_TOKEN_FORMAT.test(proxyToken)) {
+    throw new InvalidEnvError(
+      'AX_PROXY_TOKEN',
+      'expected 32 lowercase hex characters',
+    );
   }
+  result.proxyToken = proxyToken;
   const memoryRoot = opt('AX_MEMORY_ROOT');
   if (memoryRoot !== undefined) result.memoryRoot = memoryRoot;
   return result;
