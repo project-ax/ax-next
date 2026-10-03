@@ -674,11 +674,14 @@ async function upsertConnector(
  * follows a renamed server and goes with a removed one instead of being
  * orphaned — and is dropped for a server that kept its name but now points at
  * a different endpoint (TASK-755), so no verdict carries over to a service
- * nobody chose it for. `userId` is the row owner (the upsert is keyed on it), so these are
- * the namespaces `connectors:resolve` handed out. Best-effort like
+ * nobody chose it for. `userId` is the row owner (the upsert is keyed on it),
+ * so these are the namespaces `connectors:resolve` handed out. Best-effort like
  * `connectors:deleted`: the edit is committed, and a failed fire must not undo
- * it — the cost of a miss is orphaned rows under a namespace nothing calls,
- * which grant nothing.
+ * it. For a rename or a removal the cost of a miss is orphaned rows under a
+ * namespace nothing calls, which grant nothing. For an ENDPOINT change it is
+ * worse: the namespace is still live, so a miss (here, or a failed purge in the
+ * subscriber) leaves the old verdicts applying to the new address — logged,
+ * not surfaced to the editor, and only corrected by a later endpoint edit.
  */
 async function announceNamespaceChange(
   bus: HookBus,
