@@ -8,6 +8,7 @@ import type {
   ToolCall,
   ToolDescriptor,
 } from '@ax/ipc-protocol';
+import { PRE_CALL_REJECT_REASON_MAX } from '@ax/ipc-protocol';
 import {
   createMockWorkspacePlugin,
   createTestHarness,
@@ -265,6 +266,39 @@ describe('dispatcher', () => {
     const parsed = JSON.parse(res.body);
     expect(parsed.verdict).toBe('reject');
     expect(parsed.reason).toBe('rm -rf blocked');
+  });
+
+  it('POST /tool.pre-call — an over-long deny reason is shortened, and is still that deny', async () => {
+    // A subscriber can put any string in `reason`. Too long must come back as
+    // the same "no", cut to the wire ceiling — not a 500 that the runner turns
+    // into a generic gate-failed message.
+    const long = 'Not allowed: ' + 'blocked because '.repeat(400);
+    expect(long.length).toBeGreaterThan(PRE_CALL_REJECT_REASON_MAX);
+    const s = await setup({
+      subscribers: [{ hook: 'tool:pre-call', handler: async () => reject({ reason: long }) }],
+    });
+    setups.push(s);
+    const call: ToolCall = { id: 'c1', name: 'bash', input: { cmd: 'rm -rf /' } };
+    const res = await doRequest(s.socketPath, 'POST', '/tool.pre-call', s.token, JSON.stringify({ call }));
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.verdict).toBe('reject');
+    expect(parsed.reason).toBe(long.slice(0, PRE_CALL_REJECT_REASON_MAX));
+  });
+
+  it('POST /tool.pre-call — shortening a deny reason never splits an emoji in half', async () => {
+    // Puts a surrogate pair straddling the cut: code units 1999 and 2000.
+    const long = 'x'.repeat(PRE_CALL_REJECT_REASON_MAX - 1) + '\u{1F6AB}' + 'tail';
+    const s = await setup({
+      subscribers: [{ hook: 'tool:pre-call', handler: async () => reject({ reason: long }) }],
+    });
+    setups.push(s);
+    const call: ToolCall = { id: 'c1', name: 'bash', input: {} };
+    const res = await doRequest(s.socketPath, 'POST', '/tool.pre-call', s.token, JSON.stringify({ call }));
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.verdict).toBe('reject');
+    expect(parsed.reason).toBe('x'.repeat(PRE_CALL_REJECT_REASON_MAX - 1));
   });
 
   it('POST /tool.pre-call — subscriber holds → 200 with verdict: hold, not reject', async () => {
