@@ -184,6 +184,15 @@ describe('useAgentRail', () => {
     expect(railMock.mock.calls.slice(reads)).toEqual([['a2']]);
   });
 
+  // The word-change effect also runs on mount; only the mount read is the
+  // first effect's, so the second must not add one of its own.
+  it('reads once on mount, not once per effect', async () => {
+    railMock.mockResolvedValue(rail());
+    const { result } = renderHook(() => useAgentRail('a1', 'resting'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(railMock).toHaveBeenCalledTimes(1);
+  });
+
   it('still works outside a WorkspaceProvider', async () => {
     railMock.mockResolvedValue(rail());
     const { result } = renderHook(() => useAgentRail('a1'));
