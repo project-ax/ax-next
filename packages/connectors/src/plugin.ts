@@ -185,10 +185,18 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
             'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
         },
         // TASK-737 — the connector editor's per-tool permissions routes. The
-        // values live in @ax/tool-policy; the tool list comes from
-        // @ax/mcp-client. Both soft: without tool-policy the routes answer 503
-        // (the editor says it can't load them); without the inventory they
-        // answer `status: 'unknown'` and the saved defaults alone.
+        // values live in @ax/tool-policy: without it the routes answer 503
+        // (the editor says it can't load them).
+        //
+        // The tool LIST comes from `connectors:describe-tools` (@ax/mcp-client),
+        // which is deliberately NOT declared here, neither in `calls` nor in
+        // `optionalCalls`: @ax/mcp-client already calls `connectors:resolve`,
+        // so a declared edge back would close a plugin call-graph cycle
+        // (connectors -> mcp-client -> connectors) and bootstrap would refuse
+        // every preset that loads both. It is `bus.hasService`-guarded at call
+        // time (same precedent as `credentials:authorize-global:account`);
+        // without it the route answers `status: 'unknown'` and the saved
+        // defaults alone.
         {
           hook: 'tool-policy:get-connector-defaults',
           degradation:
@@ -198,11 +206,6 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
           hook: 'tool-policy:set-connector-defaults',
           degradation:
             'the connector editor cannot save per-tool permissions (the route answers 503)',
-        },
-        {
-          hook: 'connectors:describe-tools',
-          degradation:
-            "the connector editor cannot list a connector's tools; saved per-tool permissions still show",
         },
         {
           hook: 'auth:get-user',
