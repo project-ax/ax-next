@@ -18,6 +18,10 @@ export interface RemoteMcpDraft {
   name: string;
   url: string;
   signIn: 'none' | 'oauth';
+  /** The server offers OAuth, but this connector sends an API key in a
+   * request header instead. Only meaningful when the server supports OAuth;
+   * the editor sets signIn 'none' alongside it. */
+  useKey: boolean;
   registration: ClientRegistration;
   clientId: string;
   clientSecret: string;
@@ -52,20 +56,24 @@ export function remoteDraft(connector?: Connector): RemoteMcpDraft {
     (s): s is ConnectorOAuthSlot =>
       s.kind === 'oauth' && s.server === server?.name,
   );
+  const headers = (connector?.capabilities.credentials ?? []).flatMap((s) =>
+    s.kind === 'api-key' && s.server === server?.name && s.headerName
+      ? [{ slot: s.slot, name: s.headerName, value: '', saved: true }]
+      : [],
+  );
   return {
     name: connector?.name ?? '',
     url: server?.url ?? '',
     signIn: oauth ? 'oauth' : 'none',
+    // A saved connector that signs in with a header rather than OAuth reopens
+    // the way it was saved.
+    useKey: !oauth && headers.length > 0,
     registration:
       oauth?.clientRegistration ?? (oauth?.clientId ? 'custom' : 'auto'),
     clientId: oauth?.clientId ?? '',
     clientSecret: '',
     clientSecretRef: oauth?.clientSecretRef ?? '',
-    headers: (connector?.capabilities.credentials ?? []).flatMap((s) =>
-      s.kind === 'api-key' && s.server === server?.name && s.headerName
-        ? [{ slot: s.slot, name: s.headerName, value: '', saved: true }]
-        : [],
-    ),
+    headers,
     scopes: (oauth?.scopes ?? []).join(' '),
   };
 }
@@ -102,6 +110,9 @@ export function remoteErrors(draft: RemoteMcpDraft): Record<string, string> {
     !draft.clientId.trim()
   )
     errors.clientId = 'Enter the client ID registered with this service.';
+  if (draft.useKey && draft.headers.length === 0)
+    errors.keyHeader =
+      'Add the request header that carries your API key — usually Authorization.';
   const names = new Set<string>();
   for (const header of draft.headers) {
     const name = header.name.trim().toLowerCase();
@@ -112,7 +123,7 @@ export function remoteErrors(draft: RemoteMcpDraft): Record<string, string> {
       errors[`name-${header.slot}`] = 'Enter a valid custom header name.';
     else if (draft.signIn === 'oauth' && name === 'authorization')
       errors[`name-${header.slot}`] =
-        'OAuth supplies Authorization. Choose a different header.';
+        'OAuth supplies Authorization. Choose a different header, or sign in with an API key instead.';
     else if (names.has(name))
       errors[`name-${header.slot}`] = 'Each header needs a different name.';
     names.add(name);

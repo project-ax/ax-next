@@ -42,7 +42,10 @@ import {
   FieldError,
   FieldSet,
   FieldTitle,
+  FieldContent,
+  FieldLegend,
 } from '@/components/ui/field';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
   Collapsible,
   CollapsibleContent,
@@ -165,8 +168,14 @@ export function RemoteMcpConnectorForm({
   // so the rest of the connector stays editable. A new or changed URL has no
   // saved answer to fall back on.
   const usingSavedSignIn = discoveryFailed && Boolean(connector) && url === savedUrl;
+  // A server that offers OAuth may still take an API key in a request header;
+  // the admin picks which. Without OAuth on offer there is nothing to choose.
+  const offersOAuth = discovered?.auth === 'oauth';
+  const useKey = discovered
+    ? offersOAuth && draft.useKey
+    : usingSavedSignIn && draft.useKey && draft.signIn === 'none';
   const signIn: RemoteMcpDraft['signIn'] = discovered
-    ? discovered.auth === 'oauth'
+    ? offersOAuth && !draft.useKey
       ? 'oauth'
       : 'none'
     : draft.signIn;
@@ -190,17 +199,31 @@ export function RemoteMcpConnectorForm({
     : draft.registration === 'custom' || !automaticMethod
       ? 'custom'
       : 'auto';
-  const effectiveDraft: RemoteMcpDraft = { ...draft, signIn, registration };
-  const addHeader = () =>
-    update('headers', [
-      ...draft.headers,
-      {
-        slot: `header-${crypto.randomUUID()}`,
-        name: '',
-        value: '',
-        saved: false,
-      },
-    ]);
+  const effectiveDraft: RemoteMcpDraft = {
+    ...draft,
+    signIn,
+    registration,
+    useKey,
+  };
+  const newHeader = (name = '') => ({
+    slot: `header-${crypto.randomUUID()}`,
+    name,
+    value: '',
+    saved: false,
+  });
+  const addHeader = () => update('headers', [...draft.headers, newHeader()]);
+  const chooseSignIn = (choice: string) => {
+    const nextUseKey = choice === 'key';
+    setDraft((current) => ({
+      ...current,
+      useKey: nextUseKey,
+      headers:
+        nextUseKey && current.headers.length === 0
+          ? [newHeader('Authorization')]
+          : current.headers,
+    }));
+    if (nextUseKey) setHeadersOpen(true);
+  };
   const addHeaderButton = (
     <Button
       type="button"
@@ -208,6 +231,12 @@ export function RemoteMcpConnectorForm({
       className="self-start"
       disabled={draft.headers.length >= 4}
       onClick={addHeader}
+      aria-invalid={draft.headers.length === 0 && Boolean(errors.keyHeader)}
+      aria-describedby={
+        draft.headers.length === 0 && errors.keyHeader
+          ? fieldId('key-header-error')
+          : undefined
+      }
     >
       Add header
     </Button>
@@ -254,8 +283,9 @@ export function RemoteMcpConnectorForm({
   }, [url, host, retry]);
   useEffect(() => {
     // A server that wants a key but has no OAuth needs the header section.
-    if (discovered?.auth === 'other') setHeadersOpen(true);
-  }, [discovered?.auth]);
+    // So does one that sends its API key there instead of OAuth.
+    if (discovered?.auth === 'other' || useKey) setHeadersOpen(true);
+  }, [discovered?.auth, useKey]);
 
   const blocked = awaitingDiscovery || (discoveryFailed && !usingSavedSignIn);
 
@@ -285,7 +315,8 @@ export function RemoteMcpConnectorForm({
         Object.keys(nextErrors).some(
           (key) => key.startsWith('name-') || key.startsWith('value-'),
         ) ||
-        nextErrors.destination
+        nextErrors.destination ||
+        nextErrors.keyHeader
       )
         setHeadersOpen(true);
       requestAnimationFrame(() =>
@@ -402,8 +433,9 @@ export function RemoteMcpConnectorForm({
     </Field>
   );
 
-  const signInDescription =
-    signIn === 'none'
+  const signInDescription = useKey
+    ? 'Add the key this server expects as a request header — usually Authorization, with a value like “Bearer <key>”.'
+    : signIn === 'none'
       ? discovered?.auth === 'other'
         ? undefined
         : 'This server doesn’t need sign-in. If it expects a key, add it as a request header.'
@@ -491,7 +523,9 @@ export function RemoteMcpConnectorForm({
                       <FieldTitle>
                         {signIn === 'oauth'
                           ? 'Sign-in: OAuth'
-                          : discovered?.auth === 'other'
+                          : useKey
+                            ? 'Sign-in: API key'
+                            : discovered?.auth === 'other'
                             ? 'Sign-in: request header'
                             : 'Sign-in: none'}
                       </FieldTitle>
@@ -532,6 +566,40 @@ export function RemoteMcpConnectorForm({
                           </div>
                         )}
                     </Field>
+                    {offersOAuth && (
+                      <FieldSet>
+                        <FieldLegend variant="label" className="sr-only">
+                          How people sign in
+                        </FieldLegend>
+                        <RadioGroup
+                          value={useKey ? 'key' : 'oauth'}
+                          onValueChange={chooseSignIn}
+                        >
+                          <Field orientation="horizontal">
+                            <RadioGroupItem
+                              value="oauth"
+                              id={fieldId('sign-in-oauth')}
+                            />
+                            <FieldContent>
+                              <FieldLabel htmlFor={fieldId('sign-in-oauth')}>
+                                Each person signs in (OAuth)
+                              </FieldLabel>
+                            </FieldContent>
+                          </Field>
+                          <Field orientation="horizontal">
+                            <RadioGroupItem
+                              value="key"
+                              id={fieldId('sign-in-key')}
+                            />
+                            <FieldContent>
+                              <FieldLabel htmlFor={fieldId('sign-in-key')}>
+                                API key in a request header
+                              </FieldLabel>
+                            </FieldContent>
+                          </Field>
+                        </RadioGroup>
+                      </FieldSet>
+                    )}
                     {signIn === 'oauth' && registration === 'custom' && (
                       <FieldGroup className="gap-4">
                           {textField('clientId', 'Client ID')}
@@ -754,6 +822,11 @@ export function RemoteMcpConnectorForm({
                       </FieldGroup>
                     ))}
                     {draft.headers.length === 0 && addHeaderButton}
+                    {draft.headers.length === 0 && errors.keyHeader && (
+                      <FieldError id={fieldId('key-header-error')}>
+                        {errors.keyHeader}
+                      </FieldError>
+                    )}
                     {draft.headers.length > 0 && (
                       <FieldDescription>
                         Only add a key with the permissions this assistant

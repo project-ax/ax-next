@@ -210,7 +210,9 @@ describe('remote connector editor', () => {
     await openEditor();
     expect(screen.getByLabelText('Client ID')).toHaveValue('existing-client');
     expect(screen.getByText('Saved securely')).toBeInTheDocument();
-    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('radio', { name: /CIMD|DCR/ }),
+    ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole('button', { name: 'Use automatic setup instead' }),
     );
@@ -383,7 +385,9 @@ describe('remote connector editor', () => {
       };
       await openEditor();
       expect(screen.getByText(text)).toBeVisible();
-      expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+      expect(
+      screen.queryByRole('radio', { name: /CIMD|DCR/ }),
+    ).not.toBeInTheDocument();
       expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
@@ -524,6 +528,95 @@ describe('remote connector editor', () => {
     await waitFor(() => expect(writes).toHaveLength(2));
     expect(writes[0]!.body.payloadB64).toBe(btoa('second-secret'));
     expect(JSON.stringify(writes)).not.toContain('first-secret');
+  });
+  describe('OAuth or an API key (TASK-761)', () => {
+    it('defaults a new connector on an OAuth server to OAuth', async () => {
+      await openNew(true);
+      expect(screen.getByText('Sign-in: OAuth')).toBeVisible();
+      expect(
+        screen.getByRole('radio', { name: 'Each person signs in (OAuth)' }),
+      ).toBeChecked();
+      expect(
+        screen.getByRole('radio', { name: 'API key in a request header' }),
+      ).not.toBeChecked();
+    });
+    it('saves an API key in an Authorization header for a server that also offers OAuth', async () => {
+      const options = await openNew(true);
+      fireEvent.click(
+        screen.getByRole('radio', { name: 'API key in a request header' }),
+      );
+      expect(screen.getByText('Sign-in: API key')).toBeVisible();
+      expect(
+        screen.queryByRole('button', { name: /Use my own OAuth client/ }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /Advanced/ }),
+      ).not.toBeInTheDocument();
+      // The headers section opens with an Authorization header ready to fill.
+      expect(screen.getByLabelText('Header name')).toHaveValue('Authorization');
+      fireEvent.change(screen.getByLabelText('Value'), {
+        target: { value: 'Bearer secret-key' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+      expect(screen.queryByText(/OAuth supplies Authorization/)).toBeNull();
+      expect(writes).toHaveLength(2);
+      const credentials = (
+        writes[1]!.body.capabilities as { credentials: { kind: string }[] }
+      ).credentials;
+      expect(credentials).toEqual([
+        expect.objectContaining({ kind: 'api-key', headerName: 'Authorization' }),
+      ]);
+      expect(JSON.stringify(writes[1]!.body)).not.toContain('secret-key');
+    });
+    it('asks for the key header when API-key mode has none', async () => {
+      await openNew(true);
+      fireEvent.click(
+        screen.getByRole('radio', { name: 'API key in a request header' }),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Remove header 1' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      expect(
+        await screen.findByText(/Add the request header that carries your API key/),
+      ).toBeVisible();
+      const add = screen.getByRole('button', { name: 'Add header' });
+      expect(add).toHaveAttribute('aria-invalid', 'true');
+      await waitFor(() => expect(add).toHaveFocus());
+      expect(writes).toEqual([]);
+    });
+    it('reopens a saved API-key connector in API-key mode', async () => {
+      fixture.keyMode = 'workspace';
+      fixture.capabilities.credentials = [
+        {
+          kind: 'api-key',
+          slot: 'header-key',
+          server: 'linear',
+          headerName: 'Authorization',
+        },
+      ];
+      const options = { ...props(), isAdmin: true };
+      render(<ConnectorEditDialog {...options} />);
+      await screen.findByLabelText('Name');
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: 'Save changes' }),
+        ).toBeEnabled(),
+      );
+      expect(
+        screen.getByRole('radio', { name: 'API key in a request header' }),
+      ).toBeChecked();
+      expect(screen.getByText('Sign-in: API key')).toBeVisible();
+      expect(screen.getByLabelText('Header name')).toHaveValue('Authorization');
+      // A workspace key is fine here: only OAuth refuses one.
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+      expect(writes[0]!.body.capabilities).toMatchObject({
+        credentials: [{ kind: 'api-key', headerName: 'Authorization' }],
+      });
+      expect(
+        (writes[0]!.body.capabilities as { credentials: unknown[] }).credentials,
+      ).toHaveLength(1);
+    });
   });
   it.each(['api', 'cli', 'stdio'] as const)(
     'keeps the %s connector editor reachable without converting it to remote MCP',
