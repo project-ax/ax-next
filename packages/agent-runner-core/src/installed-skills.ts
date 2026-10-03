@@ -57,20 +57,21 @@ function assertSafeRelPath(p: unknown): asserts p is string {
 
 // Phase B (capabilities.mcpServers) — translate the parsed McpServerSpec
 // into the Anthropic SDK's `.mcp.json` shape. stdio: { command, args, env }.
-// http: { url, type: 'http' }. The SDK discovers `.mcp.json` alongside each
-// skill dir via the `'user'` setting source (skills are materialized under
-// $CLAUDE_CONFIG_DIR/skills/<id>/, the SDK's user root — NOT via the
-// `'project'` source, which walks from cwd and can never reach the user root;
-// Phase 3 also dropped `'project'` from settingSources). Twin of
+// http: { url, type: 'http' }. The Claude SDK does NOT discover a skill
+// dir's `.mcp.json` on its own — measured against CLI 2.1.119 it reads
+// `.mcp.json` only from the project scope (cwd upward, and only with the
+// `'project'` setting source, which Phase 3 dropped) and from plugin roots.
+// The claude-sdk runner therefore reads these files back out of
+// $CLAUDE_CONFIG_DIR/skills/*/ itself and passes them as `query()`'s
+// `mcpServers` (TASK-760, `projected-mcp-servers.ts`). Twin of
 // sandbox-subprocess/open-session.ts's `toMcpJsonShape` (I2 — no
 // cross-plugin imports). The reason this helper lives here too (despite
 // already running in the host-side sandbox path) is that for k8s the .mcp.json
 // is materialized by the runner from AX_INSTALLED_SKILLS_JSON, not by the
 // host; the subprocess sandbox runs both paths in-process. Keeping the
 // translation local to each materializer avoids a cross-plugin coupling.
-// NOTE: end-to-end SDK loading of a per-skill `.mcp.json` is not yet covered
-// by an automated test; confirm in the Phase-6 kind walk with a real
-// MCP-bundling skill.
+// End-to-end loading is pinned against the real SDK binary by the claude-sdk
+// runner's `connector-mcp-real-sdk.e2e.test.ts` (TASK-760).
 function toMcpJsonShape(s: {
   transport: 'stdio' | 'http';
   command?: string;
@@ -365,15 +366,12 @@ export async function materializeInstalledSkillsFromEnv(): Promise<void> {
       throw new Error(`installed skill '${e.id}' is missing SKILL.md`);
     }
 
-    // Phase B — write `.mcp.json` alongside SKILL.md so the SDK discovers
-    // the bundled MCP servers via the `'user'` setting source (skills live
-    // under $CLAUDE_CONFIG_DIR/skills/<id>/, the SDK's user root — NOT via
-    // `'project'`, which walks from cwd and can't reach the user root; Phase
-    // 3 also dropped `'project'` from settingSources). Validate each entry
-    // first (defense-in-depth: even though sandbox-k8s ran zod upstream, a
-    // buggy host could otherwise spawn arbitrary commands inside the sandbox).
-    // NOTE: end-to-end SDK loading of a per-skill `.mcp.json` is not yet
-    // covered by an automated test; confirm in the Phase-6 kind walk.
+    // Phase B — write `.mcp.json` alongside SKILL.md. The SDK does NOT pick
+    // this up by itself (no setting source reads a skill dir's `.mcp.json`);
+    // the claude-sdk runner loads it from here and passes it as `mcpServers`
+    // (TASK-760). Validate each entry first (defense-in-depth: even though
+    // sandbox-k8s ran zod upstream, a buggy host could otherwise spawn
+    // arbitrary commands inside the sandbox).
     if (e.mcpServers !== undefined && e.mcpServers.length > 0) {
       const validated = e.mcpServers.map(validateMcpEntry);
       const mcpJsonContent = JSON.stringify(

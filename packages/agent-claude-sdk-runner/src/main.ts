@@ -37,6 +37,7 @@ import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
+import { loadProjectedMcpServers } from './projected-mcp-servers.js';
 import {
   DISABLED_BUILTINS,
   MCP_HOST_SERVER_NAME,
@@ -159,6 +160,19 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
         dispatcher: localDispatcher,
         tools,
       });
+
+      // TASK-760: connector MCP servers. The host projection writes them as a
+      // `.mcp.json` per connector bundle under `$CLAUDE_CONFIG_DIR/skills/`, but
+      // the SDK CLI never reads a skill dir's `.mcp.json` (only project scope —
+      // deliberately off — and plugin roots), so the runner loads them itself
+      // and passes them explicitly below. Read once, at boot, AFTER runRunner
+      // materialized the projection and BEFORE the model has had a turn. Uses
+      // the CLAUDE_CONFIG_DIR the SDK subprocess gets (providerEnv), falling
+      // back to this process's (where the k8s materializer wrote). See
+      // projected-mcp-servers.ts for the trust shape.
+      const connectorMcp = await loadProjectedMcpServers(
+        proxyStartup.providerEnv['CLAUDE_CONFIG_DIR'] ?? process.env['CLAUDE_CONFIG_DIR'],
+      );
 
       // TASK-271: bare-ax-name → host-authored activityPhrase, attached to
       // the tool-use chunks/blocks below so the transcript can render a
@@ -608,6 +622,12 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             ],
           },
           mcpServers: {
+            // Connector servers first, keyed by host-minted toolNamespace
+            // (`c` + 10 hex, so they cannot collide with our two names — and
+            // ours are spread last so they would win if they ever did). The
+            // SDK names their tools `mcp__<ns>__<tool>`; classifySdkToolName
+            // lifts that to `mcp.<ns>.<tool>` for tool.pre-call / tool-policy.
+            ...connectorMcp.servers,
             [MCP_HOST_SERVER_NAME]: hostMcpServer,
             [MCP_SANDBOX_SERVER_NAME]: sandboxMcpServer,
           },

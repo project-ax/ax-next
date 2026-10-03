@@ -276,8 +276,8 @@ describe('materializeInstalledSkillsFromEnv', () => {
 
   // -------------------------------------------------------------------------
   // Phase B (capabilities.mcpServers) — materialize a per-skill `.mcp.json`
-  // alongside SKILL.md so the SDK auto-discovers bundled MCP servers via its
-  // `'project'` setting source. Empty / absent mcpServers must NOT create
+  // alongside SKILL.md; the claude-sdk runner loads it into `query()`'s
+  // `mcpServers` (TASK-760 — the SDK never reads it). Empty / absent mcpServers must NOT create
   // the file. http and stdio transports produce different JSON shapes.
   // -------------------------------------------------------------------------
 
