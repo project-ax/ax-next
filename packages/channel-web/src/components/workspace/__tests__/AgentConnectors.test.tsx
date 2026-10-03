@@ -224,7 +224,11 @@ describe('a connector this person may not remove (TASK-765)', () => {
     const menu = await openMenu('Gmail');
     const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
     expect(item.getAttribute('aria-disabled')).toBe('true');
-    expect(item.getAttribute('aria-description')).toBe(REASON);
+    // TASK-768 — via aria-describedby (jest-dom honours aria-description
+    // too, so assert the attribute shape, not just the computed text).
+    expect(item).not.toHaveAttribute('aria-description');
+    expect(document.getElementById(item.getAttribute('aria-describedby') ?? '')).not.toBeNull();
+    expect(item).toHaveAccessibleDescription(REASON);
     // Muted, not destructive red: it is not an action this person has.
     expect(item.className).toContain('text-muted-foreground');
     expect(item.className).not.toContain('text-destructive');
@@ -265,6 +269,7 @@ describe('a connector this person may not remove (TASK-765)', () => {
     const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
     expect(item.getAttribute('aria-disabled')).toBeNull();
     expect(item.getAttribute('aria-description')).toBeNull();
+    expect(item).toHaveAccessibleDescription('');
     fireEvent.click(item);
     expect(await screen.findByRole('dialog')).toBeTruthy();
   });

@@ -114,6 +114,28 @@ describe('Connectors tab shell', () => {
   });
 });
 
+/**
+ * TASK-768 — the description must come from aria-describedby, not
+ * aria-description (read unevenly by VoiceOver). jest-dom's
+ * toHaveAccessibleDescription honours BOTH, so it alone cannot tell the two
+ * wirings apart: assert the attribute shape as well.
+ */
+function expectDescribedBy(el: HTMLElement, text: string) {
+  expect(el).not.toHaveAttribute('aria-description');
+  const ids = el.getAttribute('aria-describedby');
+  expect(ids).toBeTruthy();
+  for (const id of ids!.split(/\s+/)) {
+    expect(document.getElementById(id)).not.toBeNull();
+  }
+  expect(el).toHaveAccessibleDescription(text);
+}
+
+function expectNoDescription(el: HTMLElement) {
+  expect(el).not.toHaveAttribute('aria-description');
+  expect(el).not.toHaveAttribute('aria-describedby');
+  expect(el).toHaveAccessibleDescription('');
+}
+
 describe('Other abilities', () => {
   it('draws one switch per ability, set from the server', async () => {
     abilitiesMock.mockResolvedValue({
@@ -126,7 +148,9 @@ describe('Other abilities', () => {
     const run = await sw('Run code');
     expect(run).toHaveAttribute('aria-checked', 'false');
     // The caveat travels with the switch while it is off — no visible subtitle.
-    expect(run).toHaveAttribute('aria-description', "Some skills won't work.");
+    expectDescribedBy(run, "Some skills won't work.");
+    // The accessible name is unchanged by the description wiring.
+    expect(run).toHaveAccessibleName('Run code');
     expect(abilitiesMock).toHaveBeenCalledWith('a-quill');
   });
 
@@ -138,10 +162,9 @@ describe('Other abilities', () => {
 
     const read = await sw('Read web pages');
     // The built-in rule is Ask first; the switch can only turn it off.
-    expect(read).toHaveAttribute(
-      'aria-description',
-      'On: asks you before opening a new site',
-    );
+    expectDescribedBy(read, 'On: asks you before opening a new site');
+    // The visible "· asks first" stays out of the name (aria-hidden).
+    expect(read).toHaveAccessibleName('Read web pages');
     const hint = screen.getByText('· asks first');
     expect(hint).toHaveClass('text-muted-foreground');
     // Same row as the label, not a subtitle line under it.
@@ -150,8 +173,9 @@ describe('Other abilities', () => {
     );
     // The hint is the only one — the other rows carry no such claim.
     expect(screen.getAllByText(/asks first/)).toHaveLength(1);
-    expect(await sw('Web search')).not.toHaveAttribute('aria-description');
-    expect(await sw('Run code')).not.toHaveAttribute('aria-description');
+    expectNoDescription(await sw('Web search'));
+    // Run code is on here, so its off-only caveat is not attached.
+    expectNoDescription(await sw('Run code'));
   });
 
   it('keeps the ask-first description while Read web pages is off', async () => {
@@ -160,8 +184,8 @@ describe('Other abilities', () => {
     });
     renderTab();
 
-    expect(await sw('Read web pages')).toHaveAttribute(
-      'aria-description',
+    expectDescribedBy(
+      await sw('Read web pages'),
       'On: asks you before opening a new site',
     );
     expect(screen.getByText('· asks first')).toBeInTheDocument();
