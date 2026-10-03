@@ -12,7 +12,7 @@ import {
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConnectorsPlugin } from '../plugin.js';
-import { ListDefaultsOutputSchema, ResolveOutputSchema } from '../types.js';
+import { ListDefaultsOutputSchema, ResolveOutputSchema, ToolLabelsOutputSchema } from '../types.js';
 import {
   deriveToolNamespace,
   deriveToolNamespaces,
@@ -31,6 +31,8 @@ import type {
   ListOutput,
   ResolveInput,
   ResolveOutput,
+  ToolLabelsInput,
+  ToolLabelsOutput,
   UpsertInput,
   UpsertOutput,
 } from '../types.js';
@@ -1029,5 +1031,77 @@ describe('@ax/connectors hooks — toolNamespaces (TASK-734)', () => {
         requiresSharedKeyConsent: false,
       }),
     ).toThrow();
+  });
+});
+
+describe('@ax/connectors hooks — tool-labels (TASK-744)', () => {
+  async function labels(h: TestHarness, userId: string): Promise<ToolLabelsOutput> {
+    return h.bus.call<ToolLabelsInput, ToolLabelsOutput>(
+      'connectors:tool-labels',
+      h.ctx({ userId }),
+      { userId },
+    );
+  }
+
+  it('names every namespace the caller can resolve, keyed exactly as connectors:resolve derives it', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'linear', name: 'Linear' }));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'sf', name: 'Salesforce', capabilities: cliCaps() }));
+    const resolved = await h.bus.call<ResolveInput, ResolveOutput>('connectors:resolve', h.ctx({ userId: 'userA' }), { userId: 'userA', connectorId: 'linear' });
+    const out = await labels(h, 'userA');
+    // A connector with no MCP servers has no tools to name.
+    expect(out.connectors).toEqual([
+      { toolNamespace: resolved.toolNamespaces[0]!.toolNamespace, connectorId: 'linear', name: 'Linear' },
+    ]);
+  });
+
+  it('a shared connector is named for a non-owner under the OWNER-derived namespace', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'shared-mcp', name: 'Team Drive', visibility: 'shared' }));
+    const out = await labels(h, 'userB');
+    expect(out.connectors).toEqual([
+      { toolNamespace: deriveToolNamespace('userA', 'shared-mcp', 'gdrive'), connectorId: 'shared-mcp', name: 'Team Drive' },
+    ]);
+  });
+
+  it('SECURITY: another owner\'s PRIVATE connector is never named, and a deleted one drops out', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'secret', name: 'A private thing' }));
+    expect((await labels(h, 'userB')).connectors).toEqual([]);
+    expect((await labels(h, 'userA')).connectors).toHaveLength(1);
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userA' }), { userId: 'userA', connectorId: 'secret' });
+    expect((await labels(h, 'userA')).connectors).toEqual([]);
+  });
+
+  it('a multi-server connector gets one entry per server, all carrying its name', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({
+      connectorId: 'duo',
+      name: 'Duo',
+      capabilities: {
+        ...mcpCaps(),
+        mcpServers: [
+          { name: 'alpha', transport: 'http', url: 'https://mcp.example.com/a', allowedHosts: ['mcp.example.com'], credentials: [] },
+          { name: 'beta', transport: 'http', url: 'https://mcp.example.com/b', allowedHosts: ['mcp.example.com'], credentials: [] },
+        ],
+      },
+    }));
+    const out = await labels(h, 'userA');
+    expect(out.connectors).toEqual([
+      { toolNamespace: deriveToolNamespace('userA', 'duo', 'alpha'), connectorId: 'duo', name: 'Duo' },
+      { toolNamespace: deriveToolNamespace('userA', 'duo', 'beta'), connectorId: 'duo', name: 'Duo' },
+    ]);
+  });
+
+  it('rejects a missing userId', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<ToolLabelsInput, ToolLabelsOutput>('connectors:tool-labels', h.ctx({ userId: 'userA' }), { userId: '' }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('the return schema keeps every field (a round-trip must not strip one)', () => {
+    const row = { toolNamespace: 'c0123456789', connectorId: 'linear', name: 'Linear' };
+    expect(ToolLabelsOutputSchema.parse({ connectors: [row] })).toEqual({ connectors: [row] });
   });
 });

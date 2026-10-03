@@ -12,6 +12,7 @@ export {
   ListDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
+  ToolLabelsOutputSchema,
   UpsertOutputSchema,
 } from './types.js';
 export type {
@@ -46,6 +47,8 @@ export type {
   PackagesSpec,
   ResolveInput,
   ResolveOutput,
+  ToolLabelsInput,
+  ToolLabelsOutput,
   UpsertInput,
   UpsertOutput,
   Visibility,

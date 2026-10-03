@@ -417,6 +417,29 @@ export interface ResolveOutput {
 }
 
 /**
+ * TASK-744 — `connectors:tool-labels`: which connector each tool namespace
+ * belongs to, so a person reads "Linear · Create issue" instead of the opaque
+ * `mcp.c0123456789.create_issue` toolKey (TASK-734).
+ *
+ * Scope: exactly the connectors `userId` can resolve (`connectors:list`'s set —
+ * owned, or an unambiguous shared one), one entry per declared MCP server. A
+ * namespace that is not in the answer is NOT the caller's to name: render the
+ * tool name alone. That is also the fallback for a connector deleted since the
+ * call ran.
+ *
+ * `name` is the connector's management display name — written by its author
+ * (a person, or a model for an approved authored connector), so callers fence
+ * it before it reaches a screen. `toolNamespace` is the same opaque alias
+ * `connectors:resolve` returns; it is a lookup key, never something to show.
+ */
+export interface ToolLabelsInput {
+  userId: string;
+}
+export interface ToolLabelsOutput {
+  connectors: Array<{ toolNamespace: string; connectorId: string; name: string }>;
+}
+
+/**
  * List the workspace-DEFAULT connectors — those flagged `defaultAttached` (the
  * admin-curated set that flows into every agent's effective connector set).
  * Mirrors `skills:list-defaults`. Returns FULL connectors (capabilities
@@ -660,6 +683,12 @@ export const ResolveOutputSchema = z.object({
   requiresSharedKeyConsent: z.boolean(),
   toolNamespaces: z.array(ToolNamespaceEntrySchema),
 }) as unknown as ZodType<ResolveOutput>;
+
+export const ToolLabelsOutputSchema = z.object({
+  connectors: z.array(
+    z.object({ toolNamespace: z.string(), connectorId: z.string(), name: z.string() }),
+  ),
+}) as unknown as ZodType<ToolLabelsOutput>;
 
 export const ListDefaultsOutputSchema = z.object({
   connectors: z.array(
