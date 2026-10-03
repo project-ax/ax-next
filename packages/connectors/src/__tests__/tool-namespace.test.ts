@@ -222,6 +222,23 @@ describe('diffToolNamespaces (TASK-752)', () => {
     ).toEqual(reset);
   });
 
+  it('TASK-758: no args and an empty arg list are the same endpoint', () => {
+    const stdio: Capabilities['mcpServers'][number] = {
+      name: 'a',
+      transport: 'stdio',
+      command: 'npx',
+      allowedHosts: [],
+      credentials: [],
+    };
+    expect(diffToolNamespaces('userA', 'linear', [stdio], [{ ...stdio, args: [] }])).toEqual({
+      renamed: [],
+      removed: [],
+    });
+    expect(
+      diffToolNamespaces('userA', 'linear', [stdio], [{ ...stdio, args: ['pkg'] }]).removed,
+    ).toEqual([{ server: 'a', toolNamespace: ns('a') }]);
+  });
+
   it('TASK-755: a kept-name endpoint change and a rename in one edit are both reported', () => {
     expect(
       diffToolNamespaces(

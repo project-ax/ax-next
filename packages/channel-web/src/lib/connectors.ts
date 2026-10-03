@@ -215,6 +215,23 @@ export async function patchConnector(
   return body.connector;
 }
 
+/**
+ * TASK-758 — the `error` a connector save answers (503) when it pointed a
+ * server at a new address but couldn't first reset that server's tool
+ * permissions. The server refused the whole save, so nothing changed: the old
+ * address is still in use, with the choices people made for it.
+ */
+export const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
+
+/** What the editors say for {@link TOOL_PERMISSIONS_RESET_FAILED}. */
+export const TOOL_PERMISSIONS_RESET_FAILED_MESSAGE =
+  'We couldn’t reset this server’s tool permissions, so we didn’t save your changes. It still uses its old address. Try saving again in a moment.';
+
+/** True when a {@link createConnector} / {@link patchConnector} failure is the reset refusal. */
+export function isToolPermissionsResetFailure(err: unknown): boolean {
+  return err instanceof Error && err.message === TOOL_PERMISSIONS_RESET_FAILED;
+}
+
 export async function deleteConnector(
   id: string,
   base: ConnectorRouteBase = DEFAULT_BASE,

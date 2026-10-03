@@ -33,6 +33,7 @@ import {
   EgressRevokeOutputSchema,
   EvaluateResultSchema,
   GetConnectorDefaultsOutputSchema,
+  ResetToolNamespacesOutputSchema,
   ListAgentOverridesOutputSchema,
   ListCapabilitiesOutputSchema,
   SetAgentOverrideOutputSchema,
@@ -48,6 +49,8 @@ import {
   type EvaluateInput,
   type EvaluateResult,
   type GetConnectorDefaultsInput,
+  type ResetToolNamespacesInput,
+  type ResetToolNamespacesOutput,
   type GetConnectorDefaultsOutput,
   type ListAgentOverridesInput,
   type ListAgentOverridesOutput,
@@ -311,6 +314,10 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         'tool-policy:set-agent-override',
         'tool-policy:list-agent-overrides',
         'tool-policy:snapshot-connector-for-agent',
+        // TASK-758 — the reset a connector endpoint change needs to SUCCEED
+        // before the edit commits (a subscriber failure is invisible to the
+        // firer, so the event alone cannot gate it).
+        'tool-policy:reset-tool-namespaces',
       ],
       // The rule TABLE is still in-repo and still consulted with no I/O. What
       // needs storage is the egress ALLOWLIST (TASK-330) — per-person data a
@@ -430,16 +437,29 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       // out. A tightened ceiling can therefore lag by up to the TTL on a
       // multi-replica host — stated, not hidden.
       // -------------------------------------------------------------------
-      const overrideCache = new Map<string, Cached<Map<string, StoredOverride>>>();
+      // Per agent: its override rows AND the namespaces whose defaults it has
+      // copied (TASK-754) — read together, because the second decides what a
+      // missing row in the first means.
+      interface AgentVerdicts {
+        rows: Map<string, StoredOverride>;
+        copied: Set<string>;
+      }
+      const overrideCache = new Map<string, Cached<AgentVerdicts>>();
       const defaultsCache = new Map<string, Cached<Map<string, PolicyVerdict>>>();
       const fresh = <T,>(c: Cached<T> | undefined): c is Cached<T> =>
         c !== undefined && clock() - c.at < cacheTtlMs;
 
-      const overridesFor = async (agentId: string): Promise<Map<string, StoredOverride>> => {
+      const overridesFor = async (agentId: string): Promise<AgentVerdicts> => {
         const hit = overrideCache.get(agentId);
         if (fresh(hit)) return hit.value;
-        const rows = await verdictStore.overridesFor(agentId);
-        const value = new Map(rows.map((r) => [r.toolKey, r] as const));
+        const [rows, copied] = await Promise.all([
+          verdictStore.overridesFor(agentId),
+          verdictStore.copiedNamespacesFor(agentId),
+        ]);
+        const value: AgentVerdicts = {
+          rows: new Map(rows.map((r) => [r.toolKey, r] as const)),
+          copied: new Set(copied),
+        };
         overrideCache.set(agentId, { at: clock(), value });
         return value;
       };
@@ -497,8 +517,15 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       ): Promise<PolicyVerdict> => {
         try {
           if (!isId(agentId)) throw new Error('evaluate payload has no usable agentId');
-          const override = (await overridesFor(agentId)).get(toolName)?.verdict;
+          const agent = await overridesFor(agentId);
           const conn = parseConnectorToolKey(toolName);
+          // A connector tool with no row of its own, under a namespace this
+          // agent has copied, keeps the verdict it had when the copy was
+          // taken: there was no default, so Ask first (TASK-754). Without
+          // this it would follow the LIVE default — looser included.
+          const override =
+            agent.rows.get(toolName)?.verdict ??
+            (conn !== null && agent.copied.has(conn.toolNamespace) ? 'hold' : undefined);
           const connectorDefault =
             conn === null ? undefined : (await defaultsFor([conn.toolNamespace])).get(toolName);
           return layeredVerdict({ toolName, staticVerdict, connectorDefault, override });
@@ -762,6 +789,38 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         { returns: GetConnectorDefaultsOutputSchema },
       );
 
+      // TASK-758 — forget every stored choice under these namespaces (admin
+      // defaults + every agent's overrides). A store failure THROWS: the
+      // caller (`@ax/connectors`, about to point a kept-name server at a new
+      // endpoint) refuses the edit on a throw, which is the whole point —
+      // swallowing it here would let Allow verdicts chosen for one service
+      // apply to another. Malformed input throws too, rather than resetting a
+      // guessed subset and reporting success.
+      bus.registerService<ResetToolNamespacesInput, ResetToolNamespacesOutput>(
+        'tool-policy:reset-tool-namespaces',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const namespaces = namespaceList(input?.toolNamespaces);
+          if (namespaces === null) {
+            throw new Error(
+              'tool-policy:reset-tool-namespaces needs a list of connector tool namespaces',
+            );
+          }
+          if (namespaces.length === 0) return { toolNamespaces: [] };
+          try {
+            await verdictStore.purgeNamespaces(namespaces);
+          } finally {
+            // Clear even on a failure: a half-applied purge must not be masked
+            // by a cache that still answers with the pre-reset rows.
+            for (const ns of namespaces) defaultsCache.delete(ns);
+            overrideCache.clear();
+          }
+          ctx.logger.info('tool_policy_reset_tool_namespaces', { toolNamespaces: namespaces });
+          return { toolNamespaces: namespaces };
+        },
+        { returns: ResetToolNamespacesOutputSchema },
+      );
+
       bus.registerService<SetAgentOverrideInput, SetAgentOverrideOutput>(
         'tool-policy:set-agent-override',
         PLUGIN_NAME,
@@ -808,7 +867,10 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           }
           // Uncached on purpose: this is a settings/session-open read, and the
           // person who just changed something should see it.
-          const rows = await verdictStore.overridesFor(input.agentId);
+          const [rows, copiedNamespaces] = await Promise.all([
+            verdictStore.overridesFor(input.agentId),
+            verdictStore.copiedNamespacesFor(input.agentId),
+          ]);
           const defaults = await verdictStore.connectorDefaultsFor(
             namespacesOf(rows.map((r) => r.toolKey)),
           );
@@ -819,6 +881,7 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
               ceiling: ceilingFor(rules, r.toolKey, defaults.get(r.toolKey)),
               origin: r.origin,
             })),
+            copiedNamespaces,
           };
         },
         { returns: ListAgentOverridesOutputSchema },
@@ -834,12 +897,34 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
               'tool-policy:snapshot-connector-for-agent needs agentId, connectorId and toolNamespaces',
             );
           }
+          if (input.onlyIfNotCopied !== undefined && typeof input.onlyIfNotCopied !== 'boolean') {
+            throw new Error('tool-policy:snapshot-connector-for-agent onlyIfNotCopied must be a boolean');
+          }
+          const onlyIfNotCopied = input.onlyIfNotCopied === true;
           // "Copy on attach" (design decision 2): the agent keeps what the
           // admin said at attach time, so a later admin LOOSENING does not
           // silently loosen it — while a later TIGHTENING still applies,
           // because the default stays a live ceiling in `layeredVerdict`.
-          const defaults = await verdictStore.listConnectorDefaults(input.connectorId, namespaces);
-          const copied = await verdictStore.snapshot(input.agentId, defaults, ctx.userId);
+          // The namespace is recorded as copied, so a tool that had NO
+          // default keeps Ask first too (TASK-754).
+          //
+          // `onlyIfNotCopied` is the session-open path (a default-on
+          // connector reaches an agent without an attach). It runs every
+          // session, so skip the write when this process already knows every
+          // namespace is copied; the store's claim is what makes it exact.
+          if (onlyIfNotCopied) {
+            const hit = overrideCache.get(input.agentId);
+            if (fresh(hit) && namespaces.every((ns) => hit.value.copied.has(ns))) {
+              return { copied: 0 };
+            }
+          }
+          const copied = await verdictStore.copyConnectorDefaults(
+            input.agentId,
+            input.connectorId,
+            namespaces,
+            { onlyIfNotCopied },
+            ctx.userId,
+          );
           overrideCache.delete(input.agentId);
           return { copied };
         },

@@ -315,6 +315,42 @@ function buildLeadingMcpServer(
 }
 
 /**
+ * WHICH server a spec is — the same fields the server compares
+ * (`@ax/connectors` `endpointOf`, TASK-755): transport, url, command, args. No
+ * args and an empty arg list start the same process, so they compare equal.
+ */
+function endpointOf(spec: ConnectorMcpServerSpec): string {
+  return JSON.stringify([
+    spec.transport,
+    spec.url ?? null,
+    spec.command ?? null,
+    spec.args ?? [],
+  ]);
+}
+
+/**
+ * Names of the servers that keep their name but would now reach a different
+ * endpoint (TASK-758). Saving that resets each one's tool permissions to Ask
+ * first — for the admin defaults AND every agent's own choices — so the editor
+ * says so before Save. First spec per name, like the server.
+ */
+export function endpointChangedServers(
+  before: readonly ConnectorMcpServerSpec[],
+  after: readonly ConnectorMcpServerSpec[],
+): string[] {
+  const was = new Map<string, ConnectorMcpServerSpec>();
+  for (const s of before) if (!was.has(s.name)) was.set(s.name, s);
+  const out: string[] = [];
+  for (const s of after) {
+    const prior = was.get(s.name);
+    if (prior !== undefined && !out.includes(s.name) && endpointOf(prior) !== endpointOf(s)) {
+      out.push(s.name);
+    }
+  }
+  return out;
+}
+
+/**
  * Assemble the opaque capabilities fill for the chosen mechanism. MERGES the
  * edited LEADING slice onto the loaded connector's original capabilities so the
  * un-surfaced fill (beyond-first mcpServers / packages) is PRESERVED, never

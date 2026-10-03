@@ -3,6 +3,8 @@ import { ChevronDown, Loader2 } from 'lucide-react';
 import {
   createConnector,
   patchConnector,
+  isToolPermissionsResetFailure,
+  TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
 import { connectorIdFromName } from '@/lib/connector-form';
@@ -398,16 +400,21 @@ export function RemoteMcpConnectorForm({
               ? 'We saved the connector, but tool permissions can’t be saved right now. Try again in a little while.'
               : status === 400
                 ? 'We saved the connector, but these tool permissions didn’t look right to us. Reopen the connector and try again.'
-                : 'We saved the connector, but not its tool permissions. Try saving again.',
+                : status === 403
+                  ? // Saving again cannot help here, so don't suggest it.
+                    'We saved the connector, but your account can’t change its tool permissions. Ask a workspace admin to set them.'
+                  : 'We saved the connector, but not its tool permissions. Try saving again.',
           );
           return;
         }
       }
       onSaved();
       onOpenChange(false);
-    } catch {
+    } catch (err) {
       setSaveError(
-        'We couldn’t save this connector. Check the settings and try again.',
+        isToolPermissionsResetFailure(err)
+          ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
+          : 'We couldn’t save this connector. Check the settings and try again.',
       );
     } finally {
       setSaving(false);

@@ -1326,6 +1326,9 @@ interface ToolPolicyListAgentOverridesOutput {
   /** `ceiling` is the loosest verdict the store would accept for that key
    *  right now (TASK-742 reads it; the abilities switches do not need it). */
   overrides: Array<{ toolKey: string; verdict: AbilityVerdict; ceiling?: AbilityVerdict }>;
+  /** TASK-754 — namespaces whose defaults the agent copied. A tool under one
+   *  with no override is held (Ask first) whatever its live default says. */
+  copiedNamespaces?: string[];
 }
 
 /**
@@ -1863,6 +1866,19 @@ async function authActorOr401(
  */
 function connectorWriteRefused(res: RouteResponse, err: unknown): boolean {
   if (!(err instanceof PluginError)) return false;
+  // TASK-766 — @ax/agents tags one `forbidden` with a reason: this connector
+  // was removed from this agent and the caller may not bring it back (only the
+  // agent's owner or an admin may; TASK-765). Say THAT, with a stable code,
+  // so the add view can explain it. Nothing about who removed it or when —
+  // the hook does not carry that and neither do we. Matched by string, not by
+  // importing @ax/agents (I2). Every other `forbidden` stays opaque.
+  if (err.code === 'forbidden' && err.diagnosis?.['reason'] === 'connector-excluded') {
+    res.status(403).json({
+      error: 'connector-excluded',
+      message: 'This connector was removed from this agent. Only its owner or a workspace admin can add it back.',
+    });
+    return true;
+  }
   if (err.code === 'forbidden') {
     res.status(403).json({ error: 'forbidden' });
     return true;
@@ -6752,6 +6768,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           ...(o.ceiling !== undefined && { ceiling: isToolVerdict(o.ceiling) ? o.ceiling : 'hold' }),
         });
       }
+      // TASK-754 — the agent copied these namespaces' defaults, so a tool with
+      // no row of its own is Ask first for it, even if the default is looser
+      // now. Show what the gate enforces, not the live default.
+      const copied = new Set(
+        (Array.isArray(listed?.copiedNamespaces) ? listed.copiedNamespaces : []).filter(
+          (ns): ns is string => typeof ns === 'string' && own.has(ns),
+        ),
+      );
 
       const row = (
         toolKey: string,
@@ -6760,13 +6784,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       ): AgentConnectorTool => {
         const override = overrides.get(toolKey);
         const ceiling = override?.ceiling ?? defaults.get(toolKey) ?? 'hold';
+        const held: AgentToolVerdict | undefined =
+          override === undefined && copied.has(ns) ? 'hold' : undefined;
         return {
           toolKey,
           title: connectorToolTitle(toolKey, ns, fields.title, fields.name),
           description: fenceToolDescription(fields.description),
           readOnly: typeof fields.readOnly === 'boolean' ? fields.readOnly : null,
           outward: typeof fields.outward === 'boolean' ? fields.outward : null,
-          verdict: strictestVerdict(override?.verdict, ceiling),
+          verdict: strictestVerdict(override?.verdict ?? held, ceiling),
           ceiling,
         };
       };
@@ -6911,11 +6937,30 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         });
         return;
       }
-      const out = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
-        'tool-policy:list-agent-overrides',
-        ctx,
-        { agentId },
-      );
+      let out: ToolPolicyListAgentOverridesOutput;
+      try {
+        out = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
+          'tool-policy:list-agent-overrides',
+          ctx,
+          { agentId },
+        );
+      } catch (err) {
+        // TASK-757 — the store already said yes (and it refuses anything
+        // looser than the ceiling), so the write landed; only the read-back
+        // failed. Answering 500 here made the screen say "Nothing changed"
+        // about a change that HAD been made. Say what was written and that
+        // we could not confirm it, rather than either lie.
+        initCtx.logger.warn('workspace_tool_verdict_reread_failed', {
+          agentId,
+          connectorId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        res.status(200).json({
+          tool: { toolKey, verdict },
+          unconfirmed: true,
+        } satisfies AgentToolVerdictSaved);
+        return;
+      }
       const stored = (Array.isArray(out?.overrides) ? out.overrides : []).find(
         (o) => o?.toolKey === toolKey,
       );

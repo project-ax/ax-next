@@ -39,7 +39,7 @@
  * details), so Reconnect / Retry are there too — and the dialogs stay mounted
  * across the switch, so a sign-in started from either view is never cut off.
  */
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useId, useState } from 'react';
 import {
   CircleAlert,
   Info,
@@ -126,6 +126,11 @@ interface Props {
   onView?: (connectorId: string | null) => void;
   /** Approved-access rows; the details view shows the ones for its connector. */
   grants?: GrantRow[];
+  /**
+   * TASK-757 — the approved-access read failed, so `grants` is empty for
+   * want of an answer, not because there is none. The details view says so.
+   */
+  grantsFailed?: boolean;
   revoking?: ReadonlySet<string>;
   onRevoke?: (row: GrantRow) => void;
   /** The ids currently listed, or null while unknown — so the tab can tell
@@ -144,6 +149,7 @@ export function AgentConnectors({
   viewing = null,
   onView,
   grants = NO_GRANTS,
+  grantsFailed = false,
   revoking = NOTHING,
   onRevoke,
   onListed,
@@ -278,6 +284,7 @@ export function AgentConnectors({
           grants={grants.filter(
             (g) => g.grantedFor?.kind === 'connection' && g.grantedFor.id === open.id,
           )}
+          grantsFailed={grantsFailed}
           revoking={revoking}
           onRevoke={(g) => onRevoke?.(g)}
           busy={removing.has(open.id)}
@@ -534,6 +541,7 @@ function RowMenu({
   onEdit: () => void;
   onRemove: () => void;
 }) {
+  const refusedReasonId = useId();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -601,12 +609,18 @@ function RowMenu({
             // TASK-765 — not Radix's `disabled`: that drops the item from
             // keyboard navigation and pointer events, so the reason could
             // never be reached. Focusable + aria-disabled + a no-op select.
+            // TASK-768 — the reason is wired with aria-describedby to a
+            // `hidden` node (aria-description is read unevenly by VoiceOver).
+            <>
+            <span id={refusedReasonId} hidden>
+              {REMOVE_REFUSED_REASON}
+            </span>
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuItem
                     aria-disabled="true"
-                    aria-description={REMOVE_REFUSED_REASON}
+                    aria-describedby={refusedReasonId}
                     className="cursor-not-allowed text-muted-foreground focus:text-muted-foreground"
                     onSelect={(e) => e.preventDefault()}
                   >
@@ -617,6 +631,7 @@ function RowMenu({
                 <TooltipContent side="left">{REMOVE_REFUSED_REASON}</TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            </>
           )}
         </DropdownMenuGroup>
       </DropdownMenuContent>

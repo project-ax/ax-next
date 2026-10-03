@@ -6410,8 +6410,9 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
 // no extra denies.
 // ---------------------------------------------------------------------------
 describe('agentConfig.disallowedTools from tool-policy overrides', () => {
-  function makeOpen(busRef: { current: HookBus | null }): ServiceHandler {
+  function makeOpen(busRef: { current: HookBus | null }, onOpen?: () => void): ServiceHandler {
     return async (ctx, input: unknown) => {
+      onOpen?.();
       const sessionId = (input as { sessionId: string }).sessionId;
       const reqId = ctx.reqId;
       setImmediate(() => {
@@ -6434,9 +6435,9 @@ describe('agentConfig.disallowedTools from tool-policy overrides', () => {
     };
   }
 
-  async function run(extra: Record<string, ServiceHandler>) {
+  async function run(extra: Record<string, ServiceHandler>, onOpen?: () => void) {
     const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({ openSession: makeOpen(busRef) });
+    const mocks = buildMocks({ openSession: makeOpen(busRef, onOpen) });
     Object.assign(mocks.services, extra);
     const h = await createTestHarness({
       services: mocks.services,
@@ -6509,6 +6510,48 @@ describe('agentConfig.disallowedTools from tool-policy overrides', () => {
       }),
     });
     expect('disallowedTools' in agentConfig).toBe(false);
+  });
+
+  // TASK-754 — a workspace-default connector never gets an attach, so the
+  // session open is where it copies its per-tool defaults (first sight only).
+  it('copies a default-on connector\u2019s defaults before the sandbox opens; a failure still opens it', async () => {
+    const order: string[] = [];
+    const copies: unknown[] = [];
+    const { outcome, mocks } = await run({
+      'connectors:list-effective': async () => {
+        order.push('list-effective');
+        return {
+          connectors: [
+            {
+              summary: { id: 'linear' },
+              capabilities: {
+                allowedHosts: [],
+                credentials: [],
+                mcpServers: [],
+                packages: { npm: [], pypi: [] },
+              },
+              toolNamespaces: [{ server: 'linear', toolNamespace: 'c0123456789' }],
+            },
+          ],
+        };
+      },
+      'tool-policy:snapshot-connector-for-agent': async (_ctx, input) => {
+        order.push('copy');
+        copies.push(input);
+        throw new Error('store down');
+      },
+    }, () => order.push('sandbox-open'));
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.sandboxOpen).toBe(1);
+    expect(order).toEqual(['list-effective', 'copy', 'sandbox-open']);
+    expect(copies).toEqual([
+      {
+        agentId: 'test-agent',
+        connectorId: 'linear',
+        toolNamespaces: ['c0123456789'],
+        onlyIfNotCopied: true,
+      },
+    ]);
   });
 
   it('deniedToolKeys tolerates malformed responses', () => {

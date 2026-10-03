@@ -19,7 +19,7 @@
  * description is deliberately not drawn here (the editor in Settings shows it,
  * fenced); the rail is too narrow to set it apart as "their words".
  */
-import { Fragment, useState } from 'react';
+import { Fragment, useId, useState } from 'react';
 import {
   ChevronLeft,
   CircleAlert,
@@ -56,7 +56,7 @@ import type {
   AgentConnectorToolsRead,
   AgentToolVerdict,
 } from '@/lib/workspace-types';
-import { GrantLine } from './bits';
+import { GrantLine, ReadFailure } from './bits';
 
 /**
  * TASK-765 — why Remove is drawn disabled: taking a workspace default off a
@@ -75,6 +75,8 @@ interface Props {
   row: AgentConnectorRow;
   /** Approved access whose subject is THIS connector, with Revoke. */
   grants: GrantRow[];
+  /** TASK-757 — the approved-access read failed: say so, don't hide it. */
+  grantsFailed?: boolean;
   revoking: ReadonlySet<string>;
   onRevoke: (row: GrantRow) => void;
   busy: boolean;
@@ -108,6 +110,7 @@ export function ConnectorDetails({
   agentName,
   row,
   grants,
+  grantsFailed = false,
   revoking,
   onRevoke,
   busy,
@@ -119,6 +122,7 @@ export function ConnectorDetails({
 }: Props) {
   const state = useConnectorTools(agentId, row.id);
   const { data, status } = state;
+  const refusedReasonId = useId();
   return (
     <div className="flex min-h-full flex-col">
       <div className="-ml-2 mb-3 flex items-center justify-between gap-2">
@@ -167,11 +171,18 @@ export function ConnectorDetails({
         {status === 'ok' && data !== null && (
           <ToolList agentName={agentName} data={data} state={state} />
         )}
-        {grants.length > 0 && (
+        {(grants.length > 0 || grantsFailed) && (
           <section aria-label="Access you approved" className="mt-6">
             <h4 className="mb-1.5 text-[12px] font-medium text-muted-foreground">
               Access you approved
             </h4>
+            {grantsFailed && (
+              <ReadFailure
+                status="failed"
+                what={`the access you approved for ${row.name}`}
+                className="text-[12.5px]"
+              />
+            )}
             {grants.map((g, i) => (
               <GrantLine
                 key={`${g.source}#${String(i)}`}
@@ -224,6 +235,12 @@ export function ConnectorDetails({
         ) : (
           // TASK-765 — focusable rather than `disabled`, so the reason
           // reaches a keyboard (tooltip) and a screen reader (description).
+          // TASK-768 — aria-describedby to a `hidden` node, not
+          // aria-description (read unevenly by VoiceOver).
+          <>
+          <span id={refusedReasonId} hidden>
+            {REMOVE_REFUSED_REASON}
+          </span>
           <TooltipProvider delayDuration={200}>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -232,7 +249,7 @@ export function ConnectorDetails({
                   variant="ghost"
                   size="sm"
                   aria-disabled="true"
-                  aria-description={REMOVE_REFUSED_REASON}
+                  aria-describedby={refusedReasonId}
                   className="cursor-not-allowed text-muted-foreground hover:bg-transparent hover:text-muted-foreground"
                   onClick={(e) => e.preventDefault()}
                 >
@@ -243,6 +260,7 @@ export function ConnectorDetails({
               <TooltipContent side="top">{REMOVE_REFUSED_REASON}</TooltipContent>
             </Tooltip>
           </TooltipProvider>
+          </>
         )}
       </div>
     </div>
@@ -326,12 +344,17 @@ function ToolList({
   state: ConnectorToolsState;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
+  // TASK-757 — the save landed but we couldn't read it back. Soft, not red:
+  // nothing went wrong with the change itself.
+  const [unconfirmed, setUnconfirmed] = useState(false);
   const groups = groupTools(data.tools);
   const missing = unavailableText(data);
 
   async function change(tool: AgentConnectorTool, verdict: AgentToolVerdict) {
     setNotice(null);
+    setUnconfirmed(false);
     const outcome = await state.setVerdict(tool.toolKey, verdict);
+    if (outcome === 'saved-unconfirmed') setUnconfirmed(true);
     if (outcome === 'failed') setNotice('We couldn’t change that just now. Nothing changed.');
     if (outcome === 'refused')
       setNotice(
@@ -382,6 +405,13 @@ function ToolList({
       {notice !== null && (
         <Alert variant="destructive" className="mt-3">
           <AlertDescription>{notice}</AlertDescription>
+        </Alert>
+      )}
+      {unconfirmed && (
+        <Alert className="mt-3" data-testid="verdict-unconfirmed">
+          <AlertDescription className="text-[12.5px]">
+            Saved. We couldn’t refresh this list just now, so reload to confirm.
+          </AlertDescription>
         </Alert>
       )}
 

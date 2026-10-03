@@ -47,6 +47,7 @@
   },
   "devDependencies": {
     "@ax/attachments": "workspace:*",
+    "@ax/credentials-admin-routes": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@ax/tool-policy": "workspace:*",

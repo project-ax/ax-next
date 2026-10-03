@@ -10,6 +10,12 @@
  * the server re-read after writing, never what it asked for. A control that
  * showed "Deny" while the store still said "Allow" would be this surface
  * claiming less reach than the agent really has.
+ *
+ * One narrow exception (TASK-757): when the store ACCEPTED the write but its
+ * read-back failed, the server answers `unconfirmed` with the verdict it
+ * wrote. The store refuses anything looser than the ceiling, so an accepted
+ * write is what it now holds; the row shows it and the view says to reload.
+ * Showing the old verdict — or "Nothing changed" — would be the wrong claim.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HttpError, logRequestFailure } from './http';
@@ -67,7 +73,11 @@ export function groupTools(tools: readonly AgentConnectorTool[]): ToolGroups {
 
 export type ConnectorToolsStatus = 'loading' | 'ok' | 'unavailable' | 'failed';
 
-export type SetVerdictOutcome = 'saved' | 'refused' | 'failed';
+/**
+ * `saved-unconfirmed`: the store accepted it but we could not read it back
+ * (TASK-757). The row shows what was written; the view says to reload.
+ */
+export type SetVerdictOutcome = 'saved' | 'saved-unconfirmed' | 'refused' | 'failed';
 
 export interface ConnectorToolsState {
   data: AgentConnectorToolsRead | null;
@@ -131,12 +141,19 @@ export function useConnectorTools(agentId: string, connectorId: string): Connect
               : {
                   ...prev,
                   tools: prev.tools.map((t) =>
-                    t.toolKey === out.tool.toolKey
-                      ? { ...t, verdict: out.tool.verdict, ceiling: out.tool.ceiling }
-                      : t,
+                    t.toolKey !== out.tool.toolKey
+                      ? t
+                      : out.unconfirmed === true
+                        ? // No ceiling came back; keep the one we have.
+                          { ...t, verdict: out.tool.verdict }
+                        : { ...t, verdict: out.tool.verdict, ceiling: out.tool.ceiling },
                   ),
                 },
           );
+        }
+        if (out.unconfirmed === true) {
+          console.warn('[connector-tools] verdict saved but the server could not read it back');
+          return 'saved-unconfirmed';
         }
         return out.tool.verdict === verdict ? 'saved' : 'refused';
       } catch (e) {

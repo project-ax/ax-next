@@ -41,6 +41,8 @@ import {
   getConnector,
   createConnector,
   patchConnector,
+  isToolPermissionsResetFailure,
+  TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
   type Connector,
   type ConnectorSummary,
   type ConnectorKeyMode,
@@ -54,6 +56,7 @@ import {
   emptyServiceRow,
   formFromConnector,
   capabilitiesFromForm,
+  endpointChangedServers,
   applyComposeToForm,
   summaryToForm,
   connectorIdFromName,
@@ -562,6 +565,17 @@ export function LegacyConnectorEditDialog({
     };
   }, [open, target, base, connector]);
 
+  // TASK-758 — a saved server that keeps its name but gets a new command,
+  // args or URL loses its tool permissions on save (the server resets them to
+  // Ask first), so say so before Save. Compared on what Save would actually
+  // send, against what was loaded; a new connector has nothing to lose.
+  const endpointChanged =
+    target !== 'new' &&
+    endpointChangedServers(
+      form.baseCapabilities.mcpServers,
+      capabilitiesFromForm(form).mcpServers,
+    ).length > 0;
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy || discoveringHosts) return;
@@ -658,8 +672,12 @@ export function LegacyConnectorEditDialog({
         await patchConnector(target.id, body, base);
       }
       onSaved();
-    } catch {
-      setError("We couldn't save this connector. Please try again.");
+    } catch (err) {
+      setError(
+        isToolPermissionsResetFailure(err)
+          ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
+          : "We couldn't save this connector. Please try again.",
+      );
     } finally {
       setBusy(false);
     }
@@ -904,6 +922,16 @@ export function LegacyConnectorEditDialog({
                       }
                     />
                   </div>
+                )}
+                {endpointChanged && (
+                  <Alert role="note" data-testid="endpoint-change-resets-tools">
+                    <AlertDescription>
+                      Changing how this server starts resets its tool permissions.
+                      Every tool goes back to asking first, and choices people made
+                      for their own agents are cleared too. Once it’s saved, you can
+                      choose again.
+                    </AlertDescription>
+                  </Alert>
                 )}
               </>
             )}

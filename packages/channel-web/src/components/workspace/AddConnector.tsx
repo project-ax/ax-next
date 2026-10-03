@@ -53,7 +53,7 @@ import { adminCredentials, myCredentials, type CredentialMeta } from '@/lib/cred
 import { HttpError, logRequestFailure } from '@/lib/http';
 import { useOAuthPopup } from '@/lib/use-oauth-popup';
 import { useUser } from '@/lib/user-context';
-import { workspaceApi } from '@/lib/workspace-api';
+import { ConnectorExcludedError, workspaceApi } from '@/lib/workspace-api';
 
 interface Props {
   agentId: string;
@@ -98,9 +98,18 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
     global: CredentialMeta[];
   }> => {
     // Presence only. A failed read reads as "absent", which can only ask for
-    // a key that is already there — never attach one that isn't.
-    const user = await myCredentials.list().catch(() => []);
-    const global = isAdmin ? await adminCredentials.list().catch(() => []) : [];
+    // a key that is already there — never attach one that isn't. Logged
+    // (TASK-757): a safe fallback is still not a silent one.
+    const user = await myCredentials.list().catch((e: unknown) => {
+      logRequestFailure(e, 'add-connector my-credentials');
+      return [];
+    });
+    const global = isAdmin
+      ? await adminCredentials.list().catch((e: unknown) => {
+          logRequestFailure(e, 'add-connector workspace-credentials');
+          return [];
+        })
+      : [];
     return { user, global };
   }, [isAdmin]);
 
@@ -189,7 +198,14 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         logRequestFailure(e, 'add-connector');
         setProblem(
           c.id,
-          e instanceof HttpError && e.status === 403
+          // TASK-766 — removed from this agent by its owner or an admin (who,
+          // we don't say). Checked before the generic 403: it IS one.
+          e instanceof ConnectorExcludedError
+            ? {
+                text: `${c.name} was removed from ${name}, so only ${name}’s owner or a workspace admin can add it back. Ask one of them if you need it.`,
+                retry: null,
+              }
+            : e instanceof HttpError && e.status === 403
             ? { text: `Only a workspace admin can add ${c.name} to ${name}.`, retry: null }
             : e instanceof HttpError && e.status === 409
               ? {

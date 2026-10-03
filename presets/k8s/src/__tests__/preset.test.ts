@@ -329,6 +329,9 @@ describe('@ax/preset-k8s wiring', () => {
       'tool-policy:set-agent-override',
       'tool-policy:list-agent-overrides',
       'tool-policy:snapshot-connector-for-agent',
+      // TASK-758 — called by @ax/connectors before it commits an edit that
+      // points a kept-name server at a new endpoint.
+      'tool-policy:reset-tool-namespaces',
     ]);
     // The rule table is still in-repo and still consulted with no I/O. What
     // needs storage is the per-person egress allowlist, and a deployment

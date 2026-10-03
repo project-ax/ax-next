@@ -8,6 +8,7 @@ import {
 import {
   resolveEffectiveConnectors,
   resolveSkillReferencedConnectors,
+  copyConnectorDefaultsForSession,
   foldConnectorCaps,
   stampConnectorHeaders,
   connectorCredentialEnvName,
@@ -975,5 +976,72 @@ describe('toolNamespace keys (TASK-734)', () => {
     });
     const out = await resolveSkillReferencedConnectors(bus, ctx(), ['sk'], new Set());
     expect(out[0]!.toolNamespaces).toEqual(NS('sk', 'ceeeeeeeeee'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-754 — a connector that reached the agent without an attach copies its
+// per-tool defaults at session open.
+// ---------------------------------------------------------------------------
+describe('copyConnectorDefaultsForSession (TASK-754)', () => {
+  const connector = (id: string, namespaces: unknown[]): ResolvedConnectorForOrch => ({
+    id,
+    capabilities: CAPS(),
+    toolNamespaces: namespaces as ResolvedConnectorForOrch['toolNamespaces'],
+  });
+
+  it('asks tool-policy to copy each connector once, first-sight only, as the session agent', async () => {
+    const calls: unknown[] = [];
+    const bus = busWith({
+      'tool-policy:snapshot-connector-for-agent': async (_c, input) => {
+        calls.push(input);
+        return { copied: 0 };
+      },
+    });
+    await copyConnectorDefaultsForSession(bus, ctx(), [
+      connector('linear', [
+        { server: 'a', toolNamespace: 'c0123456789' },
+        { server: 'b', toolNamespace: 'c0123456789' },
+        { server: 'c', toolNamespace: 'cabcdef0123' },
+      ]),
+      // Nothing to copy: no namespace, or none of the host-minted shape.
+      connector('stdio-only', []),
+      connector('bad', [{ server: 'x', toolNamespace: 'mcp.evil' }, null]),
+    ]);
+    expect(calls).toEqual([
+      {
+        agentId: 'a',
+        connectorId: 'linear',
+        toolNamespaces: ['c0123456789', 'cabcdef0123'],
+        onlyIfNotCopied: true,
+      },
+    ]);
+  });
+
+  it('a failed copy is logged and the rest still copy (never fatal)', async () => {
+    const seen: string[] = [];
+    const bus = busWith({
+      'tool-policy:snapshot-connector-for-agent': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        seen.push(id);
+        if (id === 'one') throw new Error('store down');
+        return { copied: 1 };
+      },
+    });
+    await expect(
+      copyConnectorDefaultsForSession(bus, ctx(), [
+        connector('one', [{ server: 's', toolNamespace: 'c0123456789' }]),
+        connector('two', [{ server: 's', toolNamespace: 'cabcdef0123' }]),
+      ]),
+    ).resolves.toBeUndefined();
+    expect(seen).toEqual(['one', 'two']);
+  });
+
+  it('is a no-op without tool-policy', async () => {
+    await expect(
+      copyConnectorDefaultsForSession(new HookBus(), ctx(), [
+        connector('one', [{ server: 's', toolNamespace: 'c0123456789' }]),
+      ]),
+    ).resolves.toBeUndefined();
   });
 });

@@ -39,6 +39,12 @@ export interface VerdictStore {
     updatedBy: string,
   ): Promise<void>;
   overridesFor(agentId: string): Promise<StoredOverride[]>;
+  /**
+   * The namespaces whose defaults this agent has copied (TASK-754). A tool
+   * under one of them with no override row is held: see
+   * {@link VerdictStore.copyConnectorDefaults}.
+   */
+  copiedNamespacesFor(agentId: string): Promise<string[]>;
   /** A person's own choice (`origin: 'user'`); `null` clears the row. */
   setOverride(
     agentId: string,
@@ -47,24 +53,39 @@ export interface VerdictStore {
     updatedBy: string,
   ): Promise<void>;
   /**
-   * Copy verdicts in as `origin: 'snapshot'`. Overwrites an earlier snapshot
-   * row, NEVER a `user` row — re-attaching a connector must not undo a choice
-   * a person made. Returns how many rows were written.
+   * "Copy on attach" (design decision 2), in ONE transaction: record each
+   * namespace as copied for this agent, then copy `connectorId`'s defaults
+   * under those namespaces in as `origin: 'snapshot'` rows. A tool with no
+   * default gets no row — the copied-namespace record is what holds it.
+   *
+   * `onlyIfNotCopied: false` (an attach): copies every namespace, overwriting
+   * an earlier snapshot row — NEVER a `user` row, so re-attaching a connector
+   * cannot undo a choice a person made.
+   *
+   * `onlyIfNotCopied: true` (a default-on connector reaching a session): only
+   * namespaces this call newly recorded are copied, and no existing row is
+   * overwritten. The record is claimed atomically, so two sessions opening at
+   * once copy once. THROWS, writing nothing, on a malformed namespace.
+   * Returns how many override rows were written.
    */
-  snapshot(
+  copyConnectorDefaults(
     agentId: string,
-    rows: ReadonlyArray<{ toolKey: string; verdict: PolicyVerdict }>,
+    connectorId: string,
+    toolNamespaces: readonly string[],
+    opts: { onlyIfNotCopied: boolean },
     updatedBy: string,
   ): Promise<number>;
   purgeAgent(agentId: string): Promise<number>;
   /**
-   * Drop defaults under these namespaces AND every agent's overrides for them.
+   * Drop defaults under these namespaces AND every agent's overrides and
+   * copied-namespace records for them.
    * THROWS, deleting nothing, when any entry is not a host-minted `c<10 hex>`
    * namespace (see {@link assertToolNamespaces}).
    */
   purgeNamespaces(toolNamespaces: readonly string[]): Promise<void>;
   /**
-   * Move every default and every agent override from `from` to `to`, all
+   * Move every default, every agent override and every copied-namespace
+   * record from `from` to `to`, all
    * pairs in one write (TASK-752 — a connector's MCP server was renamed, so
    * its namespace changed). Rows already under `to` are replaced: they can
    * only be leftovers of an earlier server that held that name, while the
@@ -234,42 +255,89 @@ export function createDbVerdictStore(db: Kysely<ToolPolicyDatabase>): VerdictSto
         .execute();
     },
 
-    async snapshot(agentId, rows, updatedBy) {
-      if (rows.length === 0) return 0;
-      let written = 0;
-      await db.transaction().execute(async (trx) => {
+    async copiedNamespacesFor(agentId) {
+      const rows = await db
+        .selectFrom('tool_policy_v1_agent_copied_namespaces')
+        .select('tool_namespace')
+        .where('agent_id', '=', agentId)
+        .orderBy('tool_namespace')
+        .execute();
+      return rows.map((r) => r.tool_namespace);
+    },
+
+    async copyConnectorDefaults(agentId, connectorId, toolNamespaces, opts, updatedBy) {
+      assertToolNamespaces(toolNamespaces, 'copyConnectorDefaults');
+      const namespaces = [...new Set(toolNamespaces)];
+      if (namespaces.length === 0) return 0;
+      return db.transaction().execute(async (trx) => {
         const now = new Date();
-        for (const row of rows) {
-          const res = await trx
-            .insertInto('tool_policy_v1_agent_overrides')
-            .values({
+        // Claim the record first. ON CONFLICT DO NOTHING + RETURNING names
+        // exactly the namespaces THIS call recorded; a concurrent claimer
+        // waits on the row lock and then finds it taken.
+        const claimed = await trx
+          .insertInto('tool_policy_v1_agent_copied_namespaces')
+          .values(
+            namespaces.map((ns) => ({
               agent_id: agentId,
-              tool_key: row.toolKey,
-              verdict: row.verdict,
-              origin: 'snapshot',
-              updated_by: updatedBy,
-              updated_at: now,
-            })
-            .onConflict((oc) =>
-              oc
-                .columns(['agent_id', 'tool_key'])
-                .doUpdateSet({ verdict: row.verdict, updated_by: updatedBy, updated_at: now })
-                // A person's own choice survives a re-attach.
-                .where('tool_policy_v1_agent_overrides.origin', '=', 'snapshot'),
-            )
-            .executeTakeFirst();
+              tool_namespace: ns,
+              copied_by: updatedBy,
+              copied_at: now,
+            })),
+          )
+          .onConflict((oc) => oc.columns(['agent_id', 'tool_namespace']).doNothing())
+          .returning('tool_namespace')
+          .execute();
+        const targets = opts.onlyIfNotCopied ? claimed.map((r) => r.tool_namespace) : namespaces;
+        if (targets.length === 0) return 0;
+        const defaults = await trx
+          .selectFrom('tool_policy_v1_connector_defaults')
+          .select(['tool_namespace', 'tool_name', 'verdict'])
+          .where('connector_id', '=', connectorId)
+          .where('tool_namespace', 'in', targets)
+          .orderBy('tool_namespace')
+          .orderBy('tool_name')
+          .execute();
+        let written = 0;
+        for (const d of defaults) {
+          const verdict = narrowVerdict(d.verdict);
+          const insert = trx.insertInto('tool_policy_v1_agent_overrides').values({
+            agent_id: agentId,
+            tool_key: toolKeyOf(d.tool_namespace, d.tool_name),
+            verdict,
+            origin: 'snapshot',
+            updated_by: updatedBy,
+            updated_at: now,
+          });
+          const res = await (opts.onlyIfNotCopied
+            ? // A first-session copy never overwrites: a row already here was
+              // written by an earlier attach or by a person.
+              insert.onConflict((oc) => oc.columns(['agent_id', 'tool_key']).doNothing())
+            : insert.onConflict((oc) =>
+                oc
+                  .columns(['agent_id', 'tool_key'])
+                  .doUpdateSet({ verdict, updated_by: updatedBy, updated_at: now })
+                  // A person's own choice survives a re-attach.
+                  .where('tool_policy_v1_agent_overrides.origin', '=', 'snapshot'),
+              )
+          ).executeTakeFirst();
           written += Number(res.numInsertedOrUpdatedRows ?? 0n);
         }
+        return written;
       });
-      return written;
     },
 
     async purgeAgent(agentId) {
-      const res = await db
-        .deleteFrom('tool_policy_v1_agent_overrides')
-        .where('agent_id', '=', agentId)
-        .executeTakeFirst();
-      return Number(res.numDeletedRows ?? 0n);
+      return db.transaction().execute(async (trx) => {
+        await trx
+          .deleteFrom('tool_policy_v1_agent_copied_namespaces')
+          .where('agent_id', '=', agentId)
+          .execute();
+        const res = await trx
+          .deleteFrom('tool_policy_v1_agent_overrides')
+          .where('agent_id', '=', agentId)
+          .executeTakeFirst();
+        return Number(res.numDeletedRows ?? 0n);
+      });
     },
 
     async purgeNamespaces(toolNamespaces) {
@@ -283,6 +351,10 @@ export function createDbVerdictStore(db: Kysely<ToolPolicyDatabase>): VerdictSto
         await trx
           .deleteFrom('tool_policy_v1_agent_overrides')
           .where((eb) => eb.or(toolNamespaces.map((ns) => eb('tool_key', 'like', nsPrefix(ns)))))
+          .execute();
+        await trx
+          .deleteFrom('tool_policy_v1_agent_copied_namespaces')
+          .where('tool_namespace', 'in', [...toolNamespaces])
           .execute();
       });
     },
@@ -317,6 +389,15 @@ export function createDbVerdictStore(db: Kysely<ToolPolicyDatabase>): VerdictSto
             })
             .where('tool_key', 'like', nsPrefix(from))
             .execute();
+          await trx
+            .deleteFrom('tool_policy_v1_agent_copied_namespaces')
+            .where('tool_namespace', '=', to)
+            .execute();
+          await trx
+            .updateTable('tool_policy_v1_agent_copied_namespaces')
+            .set({ tool_namespace: to })
+            .where('tool_namespace', '=', from)
+            .execute();
         }
       });
     },
@@ -336,6 +417,8 @@ export function createMemoryVerdictStore(): VerdictStore {
   const defaults = new Map<string, Map<string, { connectorId: string; verdict: PolicyVerdict }>>();
   // agentId -> toolKey -> {verdict, origin}
   const overrides = new Map<string, Map<string, { verdict: PolicyVerdict; origin: OverrideOrigin }>>();
+  // agentId -> copied namespaces
+  const copied = new Map<string, Set<string>>();
 
   const agentMap = (agentId: string) => {
     let m = overrides.get(agentId);
@@ -396,13 +479,35 @@ export function createMemoryVerdictStore(): VerdictStore {
       agentMap(agentId).set(toolKey, { verdict, origin: 'user' });
     },
 
-    async snapshot(agentId, rows) {
+    async copiedNamespacesFor(agentId) {
+      return [...(copied.get(agentId) ?? [])].sort();
+    },
+
+    async copyConnectorDefaults(agentId, connectorId, toolNamespaces, opts) {
+      assertToolNamespaces(toolNamespaces, 'copyConnectorDefaults');
+      const namespaces = [...new Set(toolNamespaces)];
+      let set = copied.get(agentId);
+      if (set === undefined) {
+        set = new Set();
+        copied.set(agentId, set);
+      }
+      const already = set;
+      const claimed = namespaces.filter((ns) => !already.has(ns));
+      for (const ns of claimed) already.add(ns);
+      const targets = opts.onlyIfNotCopied ? claimed : namespaces;
       const m = agentMap(agentId);
       let written = 0;
-      for (const row of rows) {
-        if (m.get(row.toolKey)?.origin === 'user') continue;
-        m.set(row.toolKey, { verdict: row.verdict, origin: 'snapshot' });
-        written += 1;
+      for (const ns of [...targets].sort()) {
+        const tools = [...(defaults.get(ns) ?? [])].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+        for (const [tool, v] of tools) {
+          if (v.connectorId !== connectorId) continue;
+          const key = toolKeyOf(ns, tool);
+          const existing = m.get(key);
+          if (existing?.origin === 'user') continue;
+          if (opts.onlyIfNotCopied && existing !== undefined) continue;
+          m.set(key, { verdict: v.verdict, origin: 'snapshot' });
+          written += 1;
+        }
       }
       return written;
     },
@@ -410,6 +515,7 @@ export function createMemoryVerdictStore(): VerdictStore {
     async purgeAgent(agentId) {
       const n = overrides.get(agentId)?.size ?? 0;
       overrides.delete(agentId);
+      copied.delete(agentId);
       return n;
     },
 
@@ -421,6 +527,7 @@ export function createMemoryVerdictStore(): VerdictStore {
         for (const m of overrides.values()) {
           for (const key of [...m.keys()]) if (key.startsWith(prefix)) m.delete(key);
         }
+        for (const set of copied.values()) set.delete(ns);
       }
     },
 
@@ -440,6 +547,10 @@ export function createMemoryVerdictStore(): VerdictStore {
             m.delete(key);
             m.set(toPrefix + key.slice(fromPrefix.length), v);
           }
+        }
+        for (const set of copied.values()) {
+          set.delete(to);
+          if (set.delete(from)) set.add(to);
         }
       }
     },

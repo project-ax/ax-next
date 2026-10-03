@@ -734,6 +734,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'Activity rows are labelled with the routine path instead of its authored name',
         },
         {
+          hook: 'connectors:list-effective',
+          degradation:
+            'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and Retry all answer 503 (there is no list of what this agent may use to check against)',
+        },
+        {
           hook: 'mcp-oauth:status-batch',
           degradation:
             'connector rows never show "Sign-in expired"; a connector whose sign-in was rejected looks healthy until it is used',
@@ -878,6 +883,15 @@ describe('@ax/channel-web server plugin (integration)', () => {
         `http://127.0.0.1:${booted.port}/api/chat/allowed-sites/agt_test`,
       );
       expect(r.status).toBe(401);
+    });
+
+    it('declares connectors:list-effective as optional, not required (TASK-757)', () => {
+      // Every Connectors-tab route is hasService-gated on it and answers 503
+      // without it, so it is an optional edge — and the manifest must say so.
+      const plugin = createChannelWebServerPlugin();
+      const hooks = (plugin.manifest.optionalCalls ?? []).map((o) => o.hook);
+      expect(hooks).toContain('connectors:list-effective');
+      expect(plugin.manifest.calls ?? []).not.toContain('connectors:list-effective');
     });
 
     it('declares the host-grants grant hook in manifest.optionalCalls (TASK-131)', () => {

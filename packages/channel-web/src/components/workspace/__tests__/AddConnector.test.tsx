@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
+import { ConnectorExcludedError, workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import {
   emptyCapabilities,
   getConnector,
@@ -203,6 +203,54 @@ describe('what it shows', () => {
     renderAdd();
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
     await ready();
+  });
+});
+
+describe('a swallowed failure is never silent (TASK-757)', () => {
+  function warnSpy() {
+    return vi.spyOn(console, 'warn').mockImplementation(() => {});
+  }
+  const logged = (warn: ReturnType<typeof warnSpy>, tag: string) =>
+    warn.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes(`[${tag}]`));
+
+  it('a failed sign-in status read is logged and falls back to "Sign in"', async () => {
+    const warn = warnSpy();
+    vi.mocked(getOAuthStatus).mockRejectedValue(new Error('status down'));
+    renderAdd();
+    expect(await screen.findByRole('button', { name: 'Sign in — Notion' })).toBeTruthy();
+    expect(logged(warn, 'add-connector oauth-status notion')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('a failed personal key read is logged and falls back to asking for the key', async () => {
+    const warn = warnSpy();
+    vi.mocked(myCredentials.list).mockRejectedValue(new Error('creds down'));
+    renderAdd();
+    expect(await screen.findByRole('button', { name: 'Add key — Zendesk' })).toBeTruthy();
+    expect(logged(warn, 'add-connector my-credentials')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("an admin's failed workspace key read is logged", async () => {
+    const warn = warnSpy();
+    vi.mocked(adminCredentials.list).mockRejectedValue(new Error('creds down'));
+    renderAdd('admin');
+    await screen.findByRole('button', { name: 'Add key — Zendesk' });
+    await waitFor(() => expect(logged(warn, 'add-connector workspace-credentials')).toBe(true));
+    warn.mockRestore();
+  });
+
+  it('a sign-in that cannot start is logged, says so with a next step, and attaches nothing', async () => {
+    const warn = warnSpy();
+    vi.mocked(beginOAuth).mockRejectedValue(new Error('begin down'));
+    renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    expect(await screen.findByText(/We couldn't start the sign-in\. Please try again/)).toBeTruthy();
+    expect(logged(warn, 'oauth-sign-in notion')).toBe(true);
+    expect(window.open).not.toHaveBeenCalled();
+    expect(attachMock).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 
@@ -418,6 +466,23 @@ describe('add key, then attach', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
     expect(await screen.findByText('Only a workspace admin can add Stripe to Quill.')).toBeTruthy();
     expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  // TASK-766 — the owner (or an admin) removed it from this team agent; a
+  // plain member re-adding it learns why, and who can help — not who did it.
+  it('a removed-from-this-agent refusal says only its owner or an admin can add it back, with no Retry', async () => {
+    attachMock.mockRejectedValueOnce(new ConnectorExcludedError('/agents/a-quill/connectors'));
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
+    expect(
+      await screen.findByText(
+        'Stripe was removed from Quill, so only Quill’s owner or a workspace admin can add it back. Ask one of them if you need it.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('Only a workspace admin can add Stripe to Quill.')).toBeNull();
+    expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(onAttached).not.toHaveBeenCalled();
   });
 });
 

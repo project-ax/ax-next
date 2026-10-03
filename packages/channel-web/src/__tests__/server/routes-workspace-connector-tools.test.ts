@@ -19,8 +19,14 @@
  *      checks the route's writes against `tool-policy:evaluate`.
  *   4. UNTRUSTED TEXT. A server's titles / descriptions are fenced.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  HookBus,
+  PluginError,
+  makeAgentContext,
+  type AgentContext,
+  type ServiceHandler,
+} from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import {
   createMemoryEgressAllowlistStore,
@@ -540,6 +546,38 @@ describe('connector details routes (mock bus)', () => {
       });
     });
 
+    it('a yes whose re-read THROWS is reported as written-but-unconfirmed, not as a failure (TASK-757)', async () => {
+      // The store accepted the write; only the read-back broke. A 500 here
+      // made the screen say "Nothing changed" about a change that was made.
+      bus = new HookBus();
+      registerAll(['tool-policy:list-agent-overrides']);
+      bus.registerService('tool-policy:list-agent-overrides', 'mock', async () => {
+        throw new Error('store read blipped');
+      });
+      const warn = vi.spyOn(initCtx.logger, 'warn');
+      try {
+        const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' });
+        expect(r).toEqual({
+          statusCode: 200,
+          body: { tool: { toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' }, unconfirmed: true },
+        });
+        expect(setCalls).toEqual([
+          { agentId: 'a1', toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' },
+        ]);
+        expect(warn).toHaveBeenCalledWith(
+          'workspace_tool_verdict_reread_failed',
+          expect.objectContaining({ agentId: 'a1', connectorId: 'linear', error: expect.stringContaining('store read blipped') }),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a normal save carries no unconfirmed flag', async () => {
+      const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' });
+      expect('unconfirmed' in (r.body as object)).toBe(false);
+    });
+
     it("404s another person's agent and never writes", async () => {
       const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' }, 'linear', 'a-theirs');
       expect(r.statusCode).toBe(404);
@@ -576,9 +614,10 @@ describe('connector details routes against the real tool-policy', () => {
     while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
   });
 
-  async function boot(): Promise<TestHarness> {
+  async function boot(extra: Record<string, ServiceHandler> = {}): Promise<TestHarness> {
     const h = await createTestHarness({
       services: {
+        ...extra,
         'auth:require-user': async () => ({ user: { id: 'u1', isAdmin: false } }),
         'agents:resolve': async (_c, i) => {
           const { agentId, userId } = i as { agentId: string; userId: string };
@@ -665,6 +704,46 @@ describe('connector details routes against the real tool-policy', () => {
       body: { error: 'ceiling-violation', ceiling: 'hold' },
     });
     expect(await evaluate(h)).toBe('hold');
+  });
+
+  // TASK-754 — a tool with no default when the agent copied the connector is
+  // Ask first for it after the admin first allows it; the details view says
+  // so too, instead of showing the live (looser) default.
+  it('a tool unset at copy time reads Ask first after a loosening, at the gate and in the view', async () => {
+    const h = await boot({
+      'connectors:describe-tools': async () => ({
+        status: 'ok',
+        checkedAt: '2026-10-03T10:00:00.000Z',
+        tools: [
+          {
+            name: 'send_message',
+            title: 'send_message',
+            description: '',
+            readOnly: false,
+            outward: true,
+            toolKey: SEND,
+          },
+        ],
+      }),
+    });
+    await h.bus.call('tool-policy:snapshot-connector-for-agent', h.ctx({ userId: 'u1' }), {
+      agentId: AGENT,
+      connectorId: 'gmail',
+      toolNamespaces: [NS],
+    });
+    expect(await adminDefault(h, 'allow')).toEqual({ ok: true });
+    expect(await evaluate(h)).toBe('hold');
+    const { res, captured } = mkRes();
+    await makeWorkspaceHandlers({ bus: h.bus, initCtx }).connectorTools(
+      mkReq({ agentId: AGENT, connectorId: 'gmail' }),
+      res,
+    );
+    expect(toolsOfAny(captured)).toEqual([
+      expect.objectContaining({ toolKey: SEND, verdict: 'hold', ceiling: 'allow' }),
+    ]);
+    // The person may still choose Allow now that the admin allows it.
+    expect((await putVerdict(h, 'allow')).statusCode).toBe(200);
+    expect(await evaluate(h)).toBe('allow');
   });
 });
 

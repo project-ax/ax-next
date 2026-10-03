@@ -832,6 +832,32 @@ export interface GetConnectorDefaultsOutput {
   defaults: Array<{ toolKey: string; verdict: PolicyVerdict }>;
 }
 
+/**
+ * `tool-policy:reset-tool-namespaces` (TASK-758). Forget every stored per-tool
+ * choice under these connector tool namespaces — admin defaults AND every
+ * agent's overrides — so each of their tools is back to Ask first.
+ *
+ * Called by `@ax/connectors` BEFORE it commits an edit that points a server at
+ * a different endpoint while keeping its name (so its namespace stays live). A
+ * service, not just the `connectors:tool-namespaces-changed` event, because a
+ * subscriber failure is invisible to the firer (`HookBus.fire` isolates
+ * throws): a failed reset here THROWS, the caller refuses the edit, and no
+ * Allow chosen for the old service ever applies to the new one.
+ *
+ * Host-internal: authz is the caller's (the namespaces must be ones the caller
+ * owns — connectors derives them from the row it is editing). Malformed input
+ * throws rather than resetting a guessed subset.
+ */
+export interface ResetToolNamespacesInput {
+  /** Connector tool namespaces (`c` + 10 hex), from `connectors:resolve`. */
+  toolNamespaces: string[];
+}
+
+export interface ResetToolNamespacesOutput {
+  /** The namespaces that were reset (deduplicated, input order). */
+  toolNamespaces: string[];
+}
+
 export interface SetAgentOverrideInput {
   agentId: string;
   toolKey: string;
@@ -862,6 +888,13 @@ export interface AgentOverrideView {
 
 export interface ListAgentOverridesOutput {
   overrides: AgentOverrideView[];
+  /**
+   * Connector tool namespaces whose defaults this agent has copied (TASK-754).
+   * A tool under one of them with NO entry in `overrides` is held (Ask first)
+   * for this agent whatever its live default says — the default can only
+   * tighten it. A tool under any other namespace follows its live default.
+   */
+  copiedNamespaces: string[];
 }
 
 export interface SnapshotConnectorForAgentInput {
@@ -869,6 +902,14 @@ export interface SnapshotConnectorForAgentInput {
   connectorId: string;
   /** From `connectors:resolve` — one namespace per MCP server the connector declares. */
   toolNamespaces: string[];
+  /**
+   * `true` when the connector reached the agent WITHOUT an attach (a
+   * workspace default, copied at session open): copy only namespaces never
+   * copied for this agent before, and overwrite no existing row. Absent or
+   * `false` is an attach: copy again, overwriting earlier copied rows (never
+   * a person's own choice).
+   */
+  onlyIfNotCopied?: boolean;
 }
 
 export interface SnapshotConnectorForAgentOutput {
@@ -891,6 +932,10 @@ export const GetConnectorDefaultsOutputSchema = z.object({
   defaults: z.array(z.object({ toolKey: z.string(), verdict: PolicyVerdictSchema })),
 });
 
+export const ResetToolNamespacesOutputSchema = z.object({
+  toolNamespaces: z.array(z.string()),
+});
+
 export const SetAgentOverrideOutputSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true) }),
   z.object({
@@ -909,6 +954,7 @@ export const ListAgentOverridesOutputSchema = z.object({
       origin: OverrideOriginSchema,
     }),
   ),
+  copiedNamespaces: z.array(z.string()),
 });
 
 export const SnapshotConnectorForAgentOutputSchema = z.object({
