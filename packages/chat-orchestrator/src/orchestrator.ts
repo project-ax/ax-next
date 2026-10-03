@@ -2742,6 +2742,8 @@ export function createOrchestrator(
       connectorFold = foldConnectorCaps(allConnectors, baseAllowSet, baseCreds, slotOwners);
       // TASK-734 — a server the fold refused to key (no/invalid/duplicate tool
       // namespace) is absent from the sandbox; say so instead of silently losing it.
+      // This log is for operators; the PERSON sees it on the agent's connectors
+      // rail as "Couldn't load it" (TASK-745, health `not-loaded`).
       for (const d of connectorFold.droppedMcpServers) {
         ctx.logger.warn('connector_mcp_server_unnamespaced', { connectorId: d.connectorId, server: d.server });
       }

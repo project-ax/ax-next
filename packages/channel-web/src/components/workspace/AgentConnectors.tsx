@@ -21,6 +21,11 @@
  * around the same OAuth widget Settings uses) or **Retry** (one fresh check).
  * Health is read from stored state; drawing the list never probes anything.
  *
+ * A connector a session cannot fully load (TASK-745 — e.g. two of its servers
+ * share a name) wears the same icon, reason "Couldn’t load it". Reconnect and
+ * Retry cannot fix that, so neither is offered; the tooltip points at the fix
+ * this person has: Edit connector, or asking a workspace admin.
+ *
  * "+ Add" and the empty state's "Add connector" (TASK-740) open the Add
  * subview (`AddConnector`); the Connectors tab swaps it in for this list.
  *
@@ -89,10 +94,19 @@ import type { AgentConnectorHealth, AgentConnectorRow } from '@/lib/workspace-ty
 import { ConnectorDetails } from './ConnectorDetails';
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
-const HEALTH_REASON: Record<Exclude<AgentConnectorHealth, 'ok'>, string> = {
+const HEALTH_REASON: Record<Exclude<AgentConnectorHealth, 'ok' | 'not-loaded'>, string> = {
   'needs-reconnect': 'Sign-in expired',
   unreachable: 'Can’t reach it',
 };
+
+function healthReason(row: AgentConnectorRow): string {
+  if (row.health === 'not-loaded') {
+    return row.editable
+      ? 'Couldn’t load it. Choose Edit connector to fix it.'
+      : 'Couldn’t load it. Ask a workspace admin to fix it.';
+  }
+  return row.health === 'ok' ? '' : HEALTH_REASON[row.health];
+}
 
 interface Props {
   agentId: string;
@@ -282,7 +296,7 @@ export function AgentConnectors({
               <div className="flex h-11 items-center gap-2 pl-3 pr-1.5">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
                   <span className="min-w-0 truncate text-[13px]">{row.name}</span>
-                  {row.health !== 'ok' && <HealthIcon health={row.health} />}
+                  {row.health !== 'ok' && <HealthIcon reason={healthReason(row)} />}
                 </div>
                 {menuFor(row, true)}
               </div>
@@ -453,8 +467,7 @@ function NoConnectors({
  * tooltip. Clicking it does nothing on its own — the fix lives in the `⋯`
  * menu. Standard tooltip colours (product owner's call); only the icon is red.
  */
-function HealthIcon({ health }: { health: Exclude<AgentConnectorHealth, 'ok'> }) {
-  const reason = HEALTH_REASON[health];
+function HealthIcon({ reason }: { reason: string }) {
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
@@ -507,7 +520,7 @@ function RowMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4} className="shadow-popover">
-        {row.health !== 'ok' && (
+        {(row.health === 'needs-reconnect' || row.health === 'unreachable') && (
           <>
             <DropdownMenuGroup>
               {row.health === 'needs-reconnect' ? (

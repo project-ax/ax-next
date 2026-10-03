@@ -1027,9 +1027,12 @@ export type AgentConnectorSource = 'default' | 'attached' | 'legacy-owned';
  *
  *   - `needs-reconnect` — the caller's sign-in was rejected (fix: Reconnect).
  *   - `unreachable` — the last check could not reach it (fix: Retry).
+ *   - `not-loaded` (TASK-745) — a session on this agent would open without
+ *     some of its servers, because of how the connector is set up. Neither
+ *     Reconnect nor Retry fixes that; editing the connector does.
  *   - `ok` — nothing stored says otherwise (including "never checked").
  */
-export type AgentConnectorHealth = 'ok' | 'needs-reconnect' | 'unreachable';
+export type AgentConnectorHealth = 'ok' | 'needs-reconnect' | 'unreachable' | 'not-loaded';
 
 export interface AgentConnectorRow {
   id: string;

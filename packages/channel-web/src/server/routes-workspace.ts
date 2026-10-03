@@ -1371,6 +1371,8 @@ interface ConnectorsListEffectiveOutput {
     };
     source: AgentConnectorSource;
     toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
+    /** Only the server names are read here (TASK-745). */
+    capabilities?: { mcpServers?: Array<{ name: string }> };
   }>;
 }
 interface AgentsAttachConnectorInput {
@@ -1441,7 +1443,51 @@ interface DescribeToolsOutput {
 }
 
 /**
- * One health word per connector. A rejected sign-in outranks an unreachable
+ * TASK-745 — the connectors a session on this agent would open WITHOUT one
+ * or more of their servers.
+ *
+ * When a session opens, the orchestrator's `foldConnectorCaps` keys each
+ * connector server by its tool namespace and DROPS (fail closed, log only) a
+ * server whose namespace is missing, malformed, or already taken by an earlier
+ * server in the session. Today the only realistic way to get there is a
+ * connector that declares two servers under one name. The person never saw
+ * it: the connector just quietly had fewer tools.
+ *
+ * This replays THAT rule over the SAME input — `connectors:list-effective`,
+ * read under the caller, in the order the session folds it — so the rail can
+ * say so before a session even starts. It is a mirror, not a second decision:
+ * the orchestrator's fold stays the enforcement, and keeping this in step is
+ * pinned on both sides (connector-union.ts names this function). Skill-referenced
+ * connectors fold AFTER this list, so they can never take a namespace from a
+ * connector on it.
+ */
+function connectorsNotLoaded(out: ConnectorsListEffectiveOutput): Set<string> {
+  const notLoaded = new Set<string>();
+  const used = new Set<string>();
+  for (const entry of Array.isArray(out?.connectors) ? out.connectors : []) {
+    const id = entry?.summary?.id;
+    const nsByServer = new Map<string, string>();
+    for (const t of Array.isArray(entry?.toolNamespaces) ? entry.toolNamespaces : []) {
+      if (!nsByServer.has(t?.server)) nsByServer.set(t?.server, t?.toolNamespace);
+    }
+    const servers = entry?.capabilities?.mcpServers;
+    for (const s of Array.isArray(servers) ? servers : []) {
+      const ns = nsByServer.get(s?.name);
+      if (typeof ns !== 'string' || !CONNECTOR_TOOL_NAMESPACE_RE.test(ns) || used.has(ns)) {
+        if (typeof id === 'string') notLoaded.add(id);
+        continue;
+      }
+      used.add(ns);
+    }
+  }
+  return notLoaded;
+}
+
+/**
+ * One health word per connector. A connector that cannot load first: neither
+ * Reconnect nor Retry can fix it (only editing it can), and it is certain,
+ * where the other two come from cached checks. Then a rejected sign-in
+ * outranks an unreachable
  * server: Reconnect is the fix a person can act on, and a server that refuses
  * a dead token often looks unreachable too. `needs-auth` from the inventory is
  * NOT read as "sign-in expired" — it is also what a connector nobody has signed
@@ -1449,10 +1495,12 @@ interface DescribeToolsOutput {
  * wrong; only the marker the token resolver writes on a rejected refresh says so.
  */
 function healthOf(
+  notLoaded: ReadonlySet<string>,
   needsReconnect: ReadonlySet<string>,
   inventory: ReadonlyMap<string, ConnectorInventoryStatus>,
   connectorId: string,
 ): AgentConnectorHealth {
+  if (notLoaded.has(connectorId)) return 'not-loaded';
   if (needsReconnect.has(connectorId)) return 'needs-reconnect';
   if (inventory.get(connectorId) === 'unreachable') return 'unreachable';
   return 'ok';
@@ -3391,12 +3439,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * TASK-741 — each connector's health for this caller on this agent, from
    * stored state only. Either source failing (or absent) degrades to `ok` for
    * what it would have said, logged: a missing error icon is the cheaper way
-   * to be wrong than a list that will not load.
+   * to be wrong than a list that will not load. `notLoaded` (TASK-745) comes
+   * from the list itself, not a stored read, so it never degrades.
    */
   async function connectorHealth(
     agentId: string,
     callerUserId: string,
     connectorIds: string[],
+    notLoaded: ReadonlySet<string>,
   ): Promise<Map<string, AgentConnectorHealth>> {
     const out = new Map<string, AgentConnectorHealth>();
     if (connectorIds.length === 0) return out;
@@ -3438,7 +3488,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         }
       })(),
     ]);
-    for (const id of connectorIds) out.set(id, healthOf(marked, inventory, id));
+    for (const id of connectorIds) out.set(id, healthOf(notLoaded, marked, inventory, id));
     return out;
   }
 
@@ -6061,6 +6111,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         agentId,
         userId,
         rows.map((r) => r.id),
+        connectorsNotLoaded(out),
       );
       res.status(200).json({
         connectors: rows.map((r) => ({ ...r, health: health.get(r.id) ?? 'ok' })),
@@ -6132,12 +6183,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // Reachability comes from the check just made; whether its sign-in was
       // rejected comes from the marker that check's token resolve would have
       // written — the same rule the list applies.
-      const stored = await connectorHealth(agentId, userId, [connectorId]);
+      const notLoaded = connectorsNotLoaded(out);
+      const stored = await connectorHealth(agentId, userId, [connectorId], notLoaded);
       const marked = new Set(stored.get(connectorId) === 'needs-reconnect' ? [connectorId] : []);
       const reached = new Map([[connectorId, checked?.status ?? 'unknown']]);
       res
         .status(200)
-        .json({ health: healthOf(marked, reached, connectorId) } satisfies AgentConnectorRetried);
+        .json({ health: healthOf(notLoaded, marked, reached, connectorId) } satisfies AgentConnectorRetried);
     },
 
     /**
