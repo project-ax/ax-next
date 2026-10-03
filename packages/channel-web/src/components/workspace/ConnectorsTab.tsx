@@ -72,15 +72,32 @@ const ABILITY_ROWS: ReadonlyArray<{
   ability: AgentAbility;
   label: string;
   Icon: typeof Globe;
+  /** A few muted words on the label's own row — never a subtitle line. */
+  hint?: string;
 }> = [
   { ability: 'webSearch', label: 'Web search', Icon: Globe },
-  { ability: 'readPages', label: 'Read web pages', Icon: LinkIcon },
+  {
+    ability: 'readPages',
+    label: 'Read web pages',
+    Icon: LinkIcon,
+    hint: '· asks first',
+  },
   { ability: 'runCode', label: 'Run code', Icon: Terminal },
 ];
 
 /**
+ * What ON means for Read web pages (TASK-763, owner decision 2026-10-03).
+ * Its built-in rule is Ask first (`web_extract` holds for a site nobody has
+ * cleared yet), and this switch can only turn that OFF. ON never means
+ * "reads without asking", so the row says so: "· asks first" on screen, and
+ * this as the switch's description for a screen reader, on or off.
+ */
+export const READ_PAGES_ASKS_FIRST = 'On: asks you before opening a new site';
+
+/**
  * Run code's one caveat. The design gave it a help line; the product owner
- * removed every ability subtitle, so it lives where it is needed instead: in
+ * removed every ability subtitle (a same-row hint, like Read web pages'
+ * "asks first", is not a subtitle), so it lives where it is needed instead: in
  * the confirmation before switching it off, and as the switch's description
  * for a screen reader while it IS off.
  */
@@ -262,7 +279,7 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
   return (
     <>
       <Card className="shadow-none">
-        {ABILITY_ROWS.map(({ ability, label, Icon }, i) => {
+        {ABILITY_ROWS.map(({ ability, label, Icon, hint }, i) => {
           const id = `ability-${ability}`;
           const on = abilities[ability];
           return (
@@ -278,6 +295,14 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                   className="flex-1 text-[13px] font-normal"
                 >
                   {label}
+                  {hint && (
+                    // Hidden from the accessible NAME on purpose: the switch
+                    // stays "Read web pages", and a screen reader hears the
+                    // fuller sentence as its description instead.
+                    <span aria-hidden="true" className="ml-1 text-muted-foreground">
+                      {hint}
+                    </span>
+                  )}
                 </Label>
                 <Switch
                   id={id}
@@ -286,7 +311,9 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                   aria-description={
                     ability === 'runCode' && !on
                       ? RUN_CODE_OFF_WARNING
-                      : undefined
+                      : ability === 'readPages'
+                        ? READ_PAGES_ASKS_FIRST
+                        : undefined
                   }
                   onCheckedChange={(next) => {
                     if (ability === 'runCode' && !next) {
