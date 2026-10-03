@@ -189,7 +189,12 @@ describe('a connector this person may not remove (TASK-765)', () => {
     await openDetails();
     const remove = screen.getByRole('button', { name: 'Remove' });
     expect(remove.getAttribute('aria-disabled')).toBe('true');
-    expect(remove.getAttribute('aria-description')).toBe(REASON);
+    // TASK-768 — via aria-describedby (jest-dom honours aria-description
+    // too, so assert the attribute shape, not just the computed text).
+    expect(remove).not.toHaveAttribute('aria-description');
+    expect(document.getElementById(remove.getAttribute('aria-describedby') ?? '')).not.toBeNull();
+    expect(remove).toHaveAccessibleDescription(REASON);
+    expect(remove).toHaveAccessibleName('Remove');
     fireEvent.click(remove);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(workspaceApi.removeConnector).not.toHaveBeenCalled();

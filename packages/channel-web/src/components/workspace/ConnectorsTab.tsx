@@ -285,6 +285,13 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
         {ABILITY_ROWS.map(({ ability, label, Icon, hint }, i) => {
           const id = `ability-${ability}`;
           const on = abilities[ability];
+          const description =
+            ability === 'runCode' && !on
+              ? RUN_CODE_OFF_WARNING
+              : ability === 'readPages'
+                ? READ_PAGES_ASKS_FIRST
+                : undefined;
+          const descriptionId = description ? `${id}-description` : undefined;
           return (
             <Fragment key={ability}>
               {i > 0 && <Separator />}
@@ -301,7 +308,7 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                   {hint && (
                     // Hidden from the accessible NAME on purpose: the switch
                     // stays "Read web pages", and a screen reader hears the
-                    // fuller sentence as its description instead.
+                    // fuller sentence as its description instead (below).
                     <span aria-hidden="true" className="ml-1 text-muted-foreground">
                       {hint}
                     </span>
@@ -311,13 +318,7 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                   id={id}
                   checked={on}
                   disabled={pending.has(ability)}
-                  aria-description={
-                    ability === 'runCode' && !on
-                      ? RUN_CODE_OFF_WARNING
-                      : ability === 'readPages'
-                        ? READ_PAGES_ASKS_FIRST
-                        : undefined
-                  }
+                  aria-describedby={descriptionId}
                   onCheckedChange={(next) => {
                     if (ability === 'runCode' && !next) {
                       setConfirmRunCodeOff(true);
@@ -326,6 +327,15 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                     void change(ability, next);
                   }}
                 />
+                {description && (
+                  // TASK-768 — aria-describedby, not aria-description: the
+                  // latter is read unevenly (VoiceOver). `hidden` keeps the
+                  // sentence out of browse-mode reading (no echo after the
+                  // row) while the switch's description still resolves it.
+                  <span id={descriptionId} hidden>
+                    {description}
+                  </span>
+                )}
               </div>
             </Fragment>
           );

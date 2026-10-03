@@ -19,7 +19,7 @@
  * description is deliberately not drawn here (the editor in Settings shows it,
  * fenced); the rail is too narrow to set it apart as "their words".
  */
-import { Fragment, useState } from 'react';
+import { Fragment, useId, useState } from 'react';
 import {
   ChevronLeft,
   CircleAlert,
@@ -122,6 +122,7 @@ export function ConnectorDetails({
 }: Props) {
   const state = useConnectorTools(agentId, row.id);
   const { data, status } = state;
+  const refusedReasonId = useId();
   return (
     <div className="flex min-h-full flex-col">
       <div className="-ml-2 mb-3 flex items-center justify-between gap-2">
@@ -234,6 +235,12 @@ export function ConnectorDetails({
         ) : (
           // TASK-765 — focusable rather than `disabled`, so the reason
           // reaches a keyboard (tooltip) and a screen reader (description).
+          // TASK-768 — aria-describedby to a `hidden` node, not
+          // aria-description (read unevenly by VoiceOver).
+          <>
+          <span id={refusedReasonId} hidden>
+            {REMOVE_REFUSED_REASON}
+          </span>
           <TooltipProvider delayDuration={200}>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -242,7 +249,7 @@ export function ConnectorDetails({
                   variant="ghost"
                   size="sm"
                   aria-disabled="true"
-                  aria-description={REMOVE_REFUSED_REASON}
+                  aria-describedby={refusedReasonId}
                   className="cursor-not-allowed text-muted-foreground hover:bg-transparent hover:text-muted-foreground"
                   onClick={(e) => e.preventDefault()}
                 >
@@ -253,6 +260,7 @@ export function ConnectorDetails({
               <TooltipContent side="top">{REMOVE_REFUSED_REASON}</TooltipContent>
             </Tooltip>
           </TooltipProvider>
+          </>
         )}
       </div>
     </div>
