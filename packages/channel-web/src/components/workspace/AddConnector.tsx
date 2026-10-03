@@ -385,7 +385,7 @@ function AvailableRow({
   let control: React.ReactNode;
   if (pending) {
     control = (
-      <Button variant="ghost" size="sm" className="h-7" onClick={signIn.cancel}>
+      <Button variant="ghost" size="sm" className="h-7 px-2.5 text-[12px]" onClick={signIn.cancel}>
         Cancel
       </Button>
     );
@@ -398,7 +398,7 @@ function AvailableRow({
     );
   } else if (problem?.retry === true) {
     control = (
-      <Button variant="outline" size="sm" className="h-7" onClick={onAdd}>
+      <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]" onClick={onAdd}>
         Retry
       </Button>
     );
@@ -410,7 +410,7 @@ function AvailableRow({
       <Button
         variant="outline"
         size="sm"
-        className="h-7"
+        className="h-7 px-2.5 text-[12px]"
         aria-label={`${label} — ${connector.name}`}
         disabled={consenting}
         onClick={() => {
