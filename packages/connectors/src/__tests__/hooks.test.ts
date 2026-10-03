@@ -875,6 +875,35 @@ describe('@ax/connectors hooks — upsert fires connectors:tool-namespaces-chang
     ]);
   });
 
+  it('TASK-755: same server name + new endpoint announces it as removed; same endpoint announces nothing', async () => {
+    const h = await makeHarness();
+    const events = capture(h);
+    const at = (url: string) => withServers({ name: 'gdrive', url });
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: at('https://mcp.example.com/gdrive') }),
+    );
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: at('https://mcp.example.com/gdrive'), name: 'Drive (renamed)' }),
+    );
+    expect(events).toEqual([]);
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: at('https://elsewhere.example.com/mcp') }),
+    );
+    expect(events).toEqual([
+      {
+        connectorId: 'gdrive',
+        renamed: [],
+        removed: [{ server: 'gdrive', toolNamespace: deriveToolNamespace('userA', 'gdrive', 'gdrive') }],
+      },
+    ]);
+  });
+
   it('a throwing subscriber never fails the upsert', async () => {
     const h = await makeHarness();
     h.bus.subscribe('connectors:tool-namespaces-changed', 'test/boom', async () => {

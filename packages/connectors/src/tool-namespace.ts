@@ -90,11 +90,20 @@ export function deriveToolNamespaces(
  * namespace — and everything keyed to the old one (admin per-tool defaults,
  * every agent's per-tool choices) would be orphaned. This works out which
  * old namespaces became which new ones, and which simply went away.
+ *
+ * TASK-755: a server that kept its name but now points somewhere else (a new
+ * endpoint) is also reported as removed. Its namespace stays the same — it is
+ * still a hash of the name — but the choices stored under it were made for a
+ * different service, so they must not carry over. Dropping them puts every
+ * tool of the new address back to Ask first.
  */
 export interface ToolNamespaceChange {
   /** Same server, new name: carry its per-tool state across. */
   renamed: Array<{ from: ToolNamespaceEntry; to: ToolNamespaceEntry }>;
-  /** A server that is no longer there: drop its per-tool state. */
+  /**
+   * Drop the per-tool state under these namespaces: a server that is no longer
+   * there, or (TASK-755) one that kept its name but changed its endpoint.
+   */
   removed: ToolNamespaceEntry[];
 }
 
@@ -129,9 +138,14 @@ function byName(specs: readonly ServerSpec[]): Map<string, ServerSpec> {
  * a new name appeared, and exactly one vanished server and exactly one new
  * server share the endpoint. Anything less certain is REMOVED, which drops the
  * old per-tool state rather than handing it to a server nobody chose it for —
- * the new namespace then starts with no rows, i.e. Ask first. A name that is
- * present on both sides keeps its namespace and is neither (so a swap of two
- * names is not detected: the state follows the name, as it always has).
+ * the new namespace then starts with no rows, i.e. Ask first.
+ *
+ * A name that is present on both sides keeps its namespace. If its endpoint is
+ * unchanged it is neither renamed nor removed. If its endpoint CHANGED it is
+ * REMOVED (TASK-755): same name, different service, so the old Allow/Ask/Deny
+ * choices are dropped rather than handed to a server nobody chose them for.
+ * (So swapping two servers' endpoints between their names resets both, which
+ * is the safe reading of that edit.)
  */
 export function diffToolNamespaces(
   ownerUserId: string,
@@ -160,6 +174,10 @@ export function diffToolNamespaces(
     } else {
       removed.push(entry(old));
     }
+  }
+  for (const [name, now] of newByName) {
+    const was = oldByName.get(name);
+    if (was !== undefined && endpointOf(was) !== endpointOf(now)) removed.push(entry(was));
   }
   return { renamed, removed };
 }

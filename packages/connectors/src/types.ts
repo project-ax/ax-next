@@ -360,12 +360,17 @@ export interface ConnectorDeletedEvent {
  * Payload of the `connectors:tool-namespaces-changed` SUBSCRIBER event
  * (TASK-752), fired by `connectors:upsert` when an edit changed which
  * namespaces a LIVE connector's MCP servers live under — a server was renamed
- * (its namespace is a hash of its name) or removed. Lets plugins that key
+ * (its namespace is a hash of its name) or removed — or kept a server's name
+ * but pointed it at a different endpoint (TASK-755). Lets plugins that key
  * per-tool state on a namespace (`@ax/tool-policy` verdict rows) move it to
- * the new namespace or drop it, instead of leaving it orphaned.
+ * the new namespace or drop it, instead of leaving it orphaned or handing it
+ * to a different service.
  *
  * `renamed` pairs the old entry with the new one for a server that is the same
- * server under a new name; `removed` lists entries whose server is gone. Same
+ * server under a new name; `removed` lists entries whose per-tool state must be
+ * dropped: the server is gone, OR it kept its name (so the namespace is still
+ * live) but now reaches a different endpoint. A subscriber must treat `removed`
+ * as "forget what you stored here", not as "this namespace no longer exists". Same
  * entry shape as `connectors:deleted`; no owner field (the namespace encodes
  * it). Not fired for a create, or when nothing moved. Best-effort: subscriber
  * failures never fail the upsert.

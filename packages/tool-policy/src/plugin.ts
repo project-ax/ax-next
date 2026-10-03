@@ -893,7 +893,10 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
       // live under. `renamed` pairs carry verdicts across (admin defaults AND
       // every agent's overrides, one write); `removed` namespaces are purged
       // like a deleted connector's. Either way nothing is left keyed to a
-      // namespace no tool can reach any more.
+      // namespace no tool can reach any more. TASK-755: `removed` also names a
+      // server that kept its name but changed its endpoint — the namespace is
+      // still live, but its verdicts were chosen for a different service, so
+      // the same purge resets it to Ask first.
       //
       // A malformed entry is dropped, never guessed at: dropping a rename
       // leaves the new namespace with no rows (Ask first — the safe side), and
