@@ -368,8 +368,10 @@ export async function commitNotifyWithResync(input: {
     // Hand the host's stated reason back to the caller when — and only when —
     // the host refused on the merits. Everything else on this path is
     // write-only (a stderr line and an off-by-default commit trace). The reason
-    // is how the MODEL learns what it did wrong, on the mid-turn flush before a
-    // host tool (the forwarder renders it into the tool error). The PERSON
+    // is how the MODEL learns what it did wrong: on the mid-turn flush before a
+    // host tool (the forwarder renders it into the tool error), and, for an
+    // end-of-turn refusal, at the start of its next turn (run-runner prepends
+    // `saveRefusedNotice`, TASK-732). The PERSON
     // learns of an end-of-turn refusal a different way: the runner maps this
     // result to `saveRefused` on `event.turn-end` (saveRefusedFrom, TASK-720;
     // on `event.chat-end` for the final save, TASK-731), a closed code — never
