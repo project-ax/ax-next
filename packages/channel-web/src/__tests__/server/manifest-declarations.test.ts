@@ -106,8 +106,12 @@ function enclosingFunctionName(node: ts.Node): string | null {
 /**
  * `Object.prototype.hasOwnProperty.call(obj, key)` and friends — the JS
  * `Function.prototype.call`, not the bus. Recognised narrowly (the receiver is
- * itself a `<x>.prototype.<method>` access) so a bus held under any name is
- * still scanned.
+ * itself a `<x>.prototype.<method>` access) so a bus held under any variable
+ * name is still scanned. Shapes the scan cannot follow — a destructured
+ * `call` / `hasService`, or `bus['call']` — are refused in scanHost, not
+ * skipped. What it still cannot see: a method re-bound under a different
+ * name (`const c = bus.call.bind(bus)`), and modules reached only through a
+ * computed dynamic import.
  */
 function isFunctionPrototypeCall(callee: ts.PropertyAccessExpression): boolean {
   if (callee.name.text !== 'call') return false;
@@ -164,6 +168,19 @@ function scanHost(): Scan {
               computed.push(`${rel}:${line + 1} ${callee.name.text}(${text})`);
             }
           }
+        } else if (
+          (ts.isIdentifier(callee) &&
+            (callee.text === 'call' || callee.text === 'hasService')) ||
+          (ts.isElementAccessExpression(callee) &&
+            ts.isStringLiteralLike(callee.argumentExpression) &&
+            (callee.argumentExpression.text === 'call' ||
+              callee.argumentExpression.text === 'hasService'))
+        ) {
+          // A destructured `const { call } = bus` or a `bus['call']` would
+          // hide its hook from the property-access branch above. Refuse the
+          // shape rather than miss the hook.
+          const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
+          computed.push(`${rel}:${line + 1} ${callee.getText(sf)}(…) — unscannable call shape`);
         } else if (ts.isIdentifier(callee) && helperNames.has(callee.text)) {
           const arg = node.arguments[helperNames.get(callee.text)!];
           if (arg !== undefined && ts.isStringLiteralLike(arg)) {

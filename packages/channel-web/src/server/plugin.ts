@@ -510,7 +510,7 @@ export function createChannelWebServerPlugin(
           // Same gate: is each required credential slot filled?
           hook: 'credentials:get',
           degradation:
-            'Add a connector that needs a sign-in or key is refused as vault-missing; connectors with no credential slots still attach',
+            'Add a connector that needs a sign-in or key answers 503 connector-check-failed; connectors with no credential slots still attach',
         },
         {
           // The decision routes resolve the row (and check it is yours) here
