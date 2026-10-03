@@ -116,18 +116,22 @@ function ToolRow({
   const title = displayTitle(tool);
   return (
     <li className="flex min-h-10 items-center gap-2">
-      <span className="min-w-0 flex-1 truncate text-sm" title={title}>
-        {title}
-      </span>
-      {suggested && (
-        <Badge
-          variant="outline"
-          data-testid="tool-permission-suggested"
-          className="shrink-0 border-border px-2 font-normal text-muted-foreground"
-        >
-          Suggested
-        </Badge>
-      )}
+      {/* Title and badge wrap together, so on a narrow screen the badge drops
+          under the title instead of pushing the choices off the edge. */}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+        <span className="min-w-0 max-w-full truncate text-sm" title={title}>
+          {title}
+        </span>
+        {suggested && (
+          <Badge
+            variant="outline"
+            data-testid="tool-permission-suggested"
+            className="shrink-0 border-border px-2 font-normal text-muted-foreground"
+          >
+            Suggested
+          </Badge>
+        )}
+      </div>
       {tool.description.trim() && (
         <TheirDescription
           connectorName={connectorName}
