@@ -692,8 +692,22 @@ export interface AgentStore {
    * attach / detach calls on the same agent serialize instead of losing a
    * write. `changed` is whether either array changed. Throws not-found.
    * The caller pre-validates the id (validateConnectorId) and the ACL.
+   *
+   * TASK-765 — `opts.refuseIfExcluded`: attaching clears the id from
+   * connector_exclusions, which would undo someone's removal of a default
+   * connector. When set, the LOCKED row's exclusions are checked and the call
+   * throws PluginError(forbidden) (nothing written) if they contain the id. It
+   * is checked here, inside the transaction, because a check on a row read
+   * beforehand can miss an exclusion committed in between. Deciding whether
+   * the actor MAY clear an exclusion is the caller's job (it needs bus calls,
+   * which must not run inside this transaction): it passes
+   * `refuseIfExcluded: !mayClear`. Default (unset) is the TASK-739 behaviour.
    */
-  attachConnector(agentId: string, connectorId: string): Promise<ConnectorEditResult>;
+  attachConnector(
+    agentId: string,
+    connectorId: string,
+    opts?: { refuseIfExcluded?: boolean },
+  ): Promise<ConnectorEditResult>;
   /**
    * TASK-739 — detach ONE connector: drop it from connector_attachments; when
    * `exclude`, also add it to connector_exclusions if absent (max 100 →
@@ -1009,8 +1023,16 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       return rowToAgent(row as AgentsRow);
     },
 
-    async attachConnector(agentId, connectorId) {
+    async attachConnector(agentId, connectorId, opts) {
       return editConnectorLists(db, agentId, (attachments, exclusions) => {
+        if (opts?.refuseIfExcluded === true && exclusions.includes(connectorId)) {
+          // Thrown inside the transaction → rolled back, nothing written.
+          throw new PluginError({
+            code: 'forbidden',
+            plugin: PLUGIN_NAME,
+            message: `connector '${connectorId}' was removed from this agent; only its owner or an admin can bring it back`,
+          });
+        }
         const nextAttachments = attachments.includes(connectorId)
           ? attachments
           : [...attachments, connectorId];

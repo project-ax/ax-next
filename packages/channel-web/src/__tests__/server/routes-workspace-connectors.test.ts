@@ -488,9 +488,16 @@ describe('agent connector routes', () => {
       expect(r.statusCode).toBe(200);
       expect(r.body).toEqual({
         connectors: [
-          { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok' },
-          { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok' },
-          { id: 'notes', name: 'My notes', source: 'legacy-owned', editable: true, health: 'ok' },
+          { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok', removable: false },
+          { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
+          {
+            id: 'notes',
+            name: 'My notes',
+            source: 'legacy-owned',
+            editable: true,
+            health: 'ok',
+            removable: false,
+          },
         ],
         shared: false,
         connectorsSupported: true,
@@ -542,6 +549,80 @@ describe('agent connector routes', () => {
       // A runner nobody wired for connectors is not assumed to load them.
       agentRow.runner = 'something-new';
       expect((await list()).body).toMatchObject({ connectorsSupported: false });
+    });
+
+    // TASK-765 — removing a default (or legacy-owned) connector from a TEAM
+    // agent takes it away from every member, so only the agent's owner or a
+    // workspace admin may. @ax/agents owns that rule; the route only asks it
+    // once and shows the answer per row. The server still enforces on DELETE.
+    describe('removable (TASK-765)', () => {
+      let canExcludeCalls: Array<Record<string, unknown>>;
+      let canExclude: boolean;
+      let canExcludeThrows: boolean;
+
+      function registerCanExclude() {
+        bus.registerService('agents:can-exclude-connector', 'agents', async (_c, i: unknown) => {
+          canExcludeCalls.push(i as Record<string, unknown>);
+          if (canExcludeThrows) throw new Error('teams store row 9 is corrupt');
+          return { allowed: canExclude };
+        });
+      }
+
+      function removableById(r: Captured): Record<string, boolean> {
+        const rows = (r.body as { connectors: Array<{ id: string; removable: boolean }> }).connectors;
+        return Object.fromEntries(rows.map((x) => [x.id, x.removable]));
+      }
+
+      beforeEach(() => {
+        canExcludeCalls = [];
+        canExclude = false;
+        canExcludeThrows = false;
+        agentRow = { ...agentRow, visibility: 'team' };
+      });
+
+      it('a member who may not exclude: defaults and legacy-owned are not removable, attached is', async () => {
+        registerCanExclude();
+        const r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(removableById(r)).toEqual({ gmail: false, linear: true, notes: false });
+      });
+
+      it('an owner/admin the hook allows: every row is removable', async () => {
+        registerCanExclude();
+        canExclude = true;
+        expect(removableById(await list())).toEqual({ gmail: true, linear: true, notes: true });
+      });
+
+      it("asks the hook ONCE, with the caller's real admin bit and this agent", async () => {
+        registerCanExclude();
+        caller = { id: 'u1', isAdmin: true };
+        await list();
+        expect(canExcludeCalls).toEqual([{ actor: { userId: 'u1', isAdmin: true }, agentId: 'a1' }]);
+      });
+
+      it('does not ask when every row is attached', async () => {
+        registerCanExclude();
+        effective = effective.filter((e) => e.source === 'attached');
+        expect(removableById(await list())).toEqual({ linear: true });
+        expect(canExcludeCalls).toHaveLength(0);
+      });
+
+      it('no hook: non-attached rows fail closed to not removable', async () => {
+        expect(removableById(await list())).toEqual({ gmail: false, linear: true, notes: false });
+      });
+
+      it('a throwing hook: fails closed, the list still loads, logged by error NAME only', async () => {
+        registerCanExclude();
+        canExcludeThrows = true;
+        const warn = vi.spyOn(initCtx.logger, 'warn');
+        const r = await list();
+        const call = warn.mock.calls.find((c) => c[0] === 'workspace_connector_can_exclude_failed');
+        warn.mockRestore();
+        expect(r.statusCode).toBe(200);
+        expect(removableById(r)).toEqual({ gmail: false, linear: true, notes: false });
+        expect(call?.[1]).toEqual({ agentId: 'a1', name: expect.any(String) });
+        expect(JSON.stringify(call?.[1])).not.toContain('corrupt');
+      });
     });
 
     it('503s when there is no effective-list hook rather than claiming none', async () => {
@@ -625,6 +706,23 @@ describe('agent connector routes', () => {
       detachRefusal = new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
       const r = await remove('linear');
       expect(r.statusCode).toBe(403);
+      expect(overrideClears).toHaveLength(0);
+      expect(revokeCalls).toHaveLength(0);
+    });
+
+    it('403s a member removing a default from a team agent when the hook refuses — nothing cleaned (TASK-765)', async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      detachRefusal = new PluginError({
+        code: 'forbidden',
+        plugin: 'agents',
+        message: "only the agent's owner or an admin can remove a connector every member reaches",
+      });
+      const r = await remove('gmail');
+      expect(r.statusCode).toBe(403);
+      expect(r.body).toEqual({ error: 'forbidden' });
+      expect(detachCalls).toEqual([
+        { actor: { userId: 'u1', isAdmin: false }, agentId: 'a1', connectorId: 'gmail', exclude: true },
+      ]);
       expect(overrideClears).toHaveLength(0);
       expect(revokeCalls).toHaveLength(0);
     });

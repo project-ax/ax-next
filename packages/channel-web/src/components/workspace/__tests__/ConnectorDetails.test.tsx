@@ -41,7 +41,7 @@ const toolsMock = vi.mocked(workspaceApi.connectorTools);
 const setMock = vi.mocked(workspaceApi.setToolVerdict);
 
 const ROWS: AgentConnectorRow[] = [
-  { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok' },
+  { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
 ];
 
 const NS = 'c0123456789';
@@ -169,6 +169,45 @@ describe('opening and closing', () => {
     expect(screen.getByText('With Ask first, routines pause and wait for you.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Edit connector' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy();
+  });
+});
+
+// TASK-765 — the footer's Remove follows the same rule as the menu's.
+describe('a connector this person may not remove (TASK-765)', () => {
+  const REASON = "Only the agent’s owner or an admin can remove this.";
+
+  beforeEach(() => {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      shared: true,
+      connectorsSupported: true,
+      connectors: [{ ...ROWS[0]!, source: 'default', removable: false }],
+    });
+  });
+
+  it('the footer Remove is disabled, says why on focus, and does nothing', async () => {
+    renderTab();
+    await openDetails();
+    const remove = screen.getByRole('button', { name: 'Remove' });
+    expect(remove.getAttribute('aria-disabled')).toBe('true');
+    expect(remove.getAttribute('aria-description')).toBe(REASON);
+    fireEvent.click(remove);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(workspaceApi.removeConnector).not.toHaveBeenCalled();
+    act(() => remove.focus());
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toBe(REASON);
+  });
+
+  it('the details menu disables its Remove too', async () => {
+    renderTab();
+    await openDetails();
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for Linear' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const menu = await screen.findByRole('menu');
+    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
+    expect(item.getAttribute('aria-disabled')).toBe('true');
   });
 });
 

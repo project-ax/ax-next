@@ -1399,6 +1399,19 @@ interface AgentsDetachConnectorInput extends AgentsAttachConnectorInput {
 interface AgentsConnectorChangeOutput {
   changed: boolean;
 }
+/**
+ * Structural mirror of @ax/agents' `agents:can-exclude-connector` (TASK-765)
+ * — no import (invariant 2). Answers whether the actor may take a connector
+ * every member reaches (a workspace default, a legacy-owned one) off this
+ * agent. The same rule guards `agents:detach-connector {exclude: true}`.
+ */
+interface AgentsCanExcludeConnectorInput {
+  actor: { userId: string; isAdmin: boolean };
+  agentId: string;
+}
+interface AgentsCanExcludeConnectorOutput {
+  allowed: boolean;
+}
 
 const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = [
   'default',
@@ -1545,7 +1558,10 @@ function credentialMissing(err: unknown): boolean {
  * other label on this surface; a row whose name fences to nothing is shown
  * by its id rather than dropped — dropping it would hide reach.
  */
-/** Rows start `ok`; the GET overlays stored health afterwards (TASK-741). */
+/**
+ * Rows start `ok` and non-attached rows start not-removable; the GET overlays
+ * stored health (TASK-741) and the exclusion answer (TASK-765) afterwards.
+ */
 function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[] {
   const rows: AgentConnectorRow[] = [];
   for (const entry of Array.isArray(out?.connectors) ? out.connectors : []) {
@@ -1558,6 +1574,9 @@ function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[
       source,
       editable: entry.summary.canEdit === true,
       health: 'ok',
+      // Detaching an attachment is always the caller's to ask for; the GET
+      // overlays the exclusion answer onto the rest (TASK-765).
+      removable: source === 'attached',
     });
   }
   return rows;
@@ -3625,6 +3644,33 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     ]);
     for (const id of connectorIds) out.set(id, healthOf(notLoaded, marked, inventory, id));
     return out;
+  }
+
+  /**
+   * TASK-765 — may this caller take a connector every member reaches off this
+   * agent? Asked once per list. Absent or failing → false, logged by error
+   * name only: a Remove item greyed out by mistake is the cheaper way to be
+   * wrong, and the DELETE asks @ax/agents again regardless.
+   */
+  async function connectorExclusionAllowed(
+    agentId: string,
+    actor: { id: string; isAdmin: boolean },
+  ): Promise<boolean> {
+    if (!bus.hasService('agents:can-exclude-connector')) return false;
+    try {
+      const r = await bus.call<AgentsCanExcludeConnectorInput, AgentsCanExcludeConnectorOutput>(
+        'agents:can-exclude-connector',
+        agentWorkspaceCtx(agentId, actor.id),
+        { actor: { userId: actor.id, isAdmin: actor.isAdmin }, agentId },
+      );
+      return r?.allowed === true;
+    } catch (err) {
+      initCtx.logger.warn('workspace_connector_can_exclude_failed', {
+        agentId,
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+      return false;
+    }
   }
 
   /**
@@ -6227,8 +6273,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * caller, as a session opened by the caller would be.
      */
     async connectors(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const userId = actor.id;
       const agentId = req.params.agentId ?? '';
       if (agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -6242,14 +6289,18 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       const out = await listEffectiveConnectors(agent, userId);
       const rows = toConnectorRows(out);
-      const health = await connectorHealth(
-        agentId,
-        userId,
-        rows.map((r) => r.id),
-        connectorsNotLoaded(out),
-      );
+      const [health, canExclude] = await Promise.all([
+        connectorHealth(agentId, userId, rows.map((r) => r.id), connectorsNotLoaded(out)),
+        rows.some((r) => r.source !== 'attached')
+          ? connectorExclusionAllowed(agentId, actor)
+          : Promise.resolve(false),
+      ]);
       res.status(200).json({
-        connectors: rows.map((r) => ({ ...r, health: health.get(r.id) ?? 'ok' })),
+        connectors: rows.map((r) => ({
+          ...r,
+          health: health.get(r.id) ?? 'ok',
+          removable: r.source === 'attached' ? true : canExclude,
+        })),
         shared: agent.visibility === 'team',
         connectorsSupported: runnerLoadsConnectors(agent.runner),
       } satisfies AgentConnectorsRead);
@@ -6400,6 +6451,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * `legacy-owned` one is EXCLUDED from this agent (the connector, and every
      * other agent using it, are untouched — product decision 4). A connector
      * that is not in this agent's list is a 404, never a silent exclusion.
+     *
+     * Excluding a `default` or `legacy-owned` connector from a TEAM agent
+     * takes it away from every member, so it is the agent's owner (a team
+     * admin) or a workspace admin only (TASK-765). @ax/agents enforces that
+     * inside `agents:detach-connector`; its `forbidden` is a 403 here, and
+     * nothing is cleaned up. The GET's `removable` is only the same answer
+     * shown ahead of time.
      *
      * After the detach lands, what this agent held for the connector goes
      * too: its per-tool choices (tool-policy overrides under the connector's

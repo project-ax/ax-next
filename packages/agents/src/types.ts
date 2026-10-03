@@ -318,12 +318,22 @@ export interface SetConnectorAttachmentsOutput {
 //
 // Single-connector edits, each ONE row-locked read-modify-write so two
 // concurrent edits of the same agent never lose a write (the wholesale
-// set-connector-attachments is last-writer-wins). ACL: owner OR admin, plus —
-// for attach only — the non-admin workspace-connector guard (attaching a
-// shared/company-keyed connector is admin-only). `changed` is false when the
-// call was a no-op (already attached / already absent and not newly excluded).
-// `exclude` records the id in `connectorExclusions` so a connector that reaches
-// the agent by another source (a default) stays removed.
+// set-connector-attachments is last-writer-wins). ACL: the ownership ACL
+// (owner OR admin for a personal agent; any team member or an admin for a team
+// agent), plus two further gates that exist because a DEFAULT connector reaches
+// every member of a team agent:
+//   - attach: the non-admin workspace-connector guard (attaching a
+//     shared/company-keyed connector is admin-only), and (TASK-765) attaching
+//     an id that is in `connectorExclusions` is limited to whoever may EXCLUDE
+//     it — otherwise a plain member could undo the owner's removal.
+//   - detach with `exclude:true` (TASK-765): limited to the agent's owner (a
+//     personal agent) / a team admin (a team agent) / a workspace admin. A
+//     plain team member may still detach an ATTACHED connector (`exclude:false`)
+//     — that only changes what this agent attaches, not what every member gets.
+// `changed` is false when the call was a no-op (already attached / already
+// absent and not newly excluded). `exclude` records the id in
+// `connectorExclusions` so a connector that reaches the agent by another
+// source (a default) stays removed.
 
 export interface AttachConnectorInput {
   actor: Actor;
@@ -346,6 +356,24 @@ export interface DetachConnectorInput {
 export interface DetachConnectorOutput {
   agent: Agent;
   changed: boolean;
+}
+
+// --- agents:can-exclude-connector (TASK-765) ---------------------------------
+//
+// Can `actor` remove a connector that reaches this agent by another source (a
+// default), or re-attach one that was removed? The same predicate
+// `agents:detach-connector` (exclude:true) and `agents:attach-connector` (of an
+// excluded id) enforce, exposed so a caller can show the affordance only to
+// someone it will work for. `allowed` is `false` — not an error — for an actor
+// who cannot reach the agent at all. `not-found` when the agent does not exist.
+
+export interface CanExcludeConnectorInput {
+  actor: Actor;
+  agentId: string;
+}
+
+export interface CanExcludeConnectorOutput {
+  allowed: boolean;
 }
 
 // --- Subscriber payloads -----------------------------------------------------
