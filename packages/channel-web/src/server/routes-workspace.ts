@@ -127,6 +127,10 @@ import type {
   AgentAbilities,
   AgentAbilitiesRead,
   AgentAbility,
+  AgentConnectorRemoved,
+  AgentConnectorRow,
+  AgentConnectorSource,
+  AgentConnectorsRead,
   AgentMemoryRead,
   FactMemoryPage,
   AgentRailData,
@@ -235,6 +239,8 @@ interface ResolvedAgent {
   mcpConfigIds?: string[];
   skillAttachments?: Array<{ skillId?: string }>;
   connectorAttachments?: string[];
+  /** TASK-739 — connectors removed from THIS agent (defaults / legacy-owned). */
+  connectorExclusions?: string[];
   visibility?: 'personal' | 'team';
 }
 interface AgentsResolveOutput {
@@ -1333,6 +1339,120 @@ function abilitiesFrom(out: ToolPolicyListAgentOverridesOutput): AgentAbilities 
     readPages: !denied.has(ABILITY_TOOL_KEYS.readPages),
     runCode: !denied.has(ABILITY_TOOL_KEYS.runCode),
   };
+}
+
+// ---------------------------------------------------------------------------
+// The agent's connector list (TASK-739, connectors-rail slice 6). Structural
+// mirrors of @ax/connectors' `connectors:list-effective` and @ax/agents'
+// attach / detach hooks — no import (invariant 2).
+// ---------------------------------------------------------------------------
+
+interface ConnectorsListEffectiveInput {
+  userId: string;
+  attachmentIds: string[];
+  exclusions: string[];
+}
+interface ConnectorsListEffectiveOutput {
+  connectors: Array<{
+    summary: { id: string; name: string; canEdit?: boolean };
+    source: AgentConnectorSource;
+    toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
+  }>;
+}
+interface AgentsAttachConnectorInput {
+  actor: { userId: string; isAdmin: boolean };
+  agentId: string;
+  connectorId: string;
+}
+interface AgentsDetachConnectorInput extends AgentsAttachConnectorInput {
+  exclude: boolean;
+}
+interface AgentsConnectorChangeOutput {
+  changed: boolean;
+}
+
+const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = [
+  'default',
+  'attached',
+  'legacy-owned',
+];
+
+/** Same slug rule @ax/connectors and @ax/agents enforce; checked here so a
+ *  malformed id is a 400 before any hook runs. */
+const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
+function isConnectorId(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0 && v.length <= 128 && CONNECTOR_ID_RE.test(v);
+}
+
+/**
+ * The wire rows. Names are author-chosen text, so they are fenced like every
+ * other label on this surface; a row whose name fences to nothing is shown
+ * by its id rather than dropped — dropping it would hide reach.
+ */
+function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[] {
+  const rows: AgentConnectorRow[] = [];
+  for (const entry of Array.isArray(out?.connectors) ? out.connectors : []) {
+    const id = entry?.summary?.id;
+    if (!isConnectorId(id)) continue;
+    const source = AGENT_CONNECTOR_SOURCES.includes(entry.source) ? entry.source : 'attached';
+    rows.push({
+      id,
+      name: fenceLine(entry.summary.name, RAIL_LABEL_MAX_CHARS) ?? id,
+      source,
+      editable: entry.summary.canEdit === true,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Resolve the authenticated caller WITH the admin bit, or write 401 and
+ * return null. Only the routes that hand an `actor` to a write hook need it
+ * (TASK-739): the hook, not the route, decides what an admin may do.
+ */
+async function authActorOr401(
+  bus: HookBus,
+  ctx: AgentContext,
+  req: RouteRequest,
+  res: RouteResponse,
+): Promise<{ id: string; isAdmin: boolean } | null> {
+  try {
+    const r = await bus.call<AuthRequireUserInput, AuthRequireUserOutput>(
+      'auth:require-user',
+      ctx,
+      { req },
+    );
+    return { id: r.user.id, isAdmin: r.user.isAdmin === true };
+  } catch (err) {
+    if (err instanceof PluginError || isRejection(err)) {
+      res.status(401).json({ error: 'unauthenticated' });
+      return null;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Map an `@ax/agents` connector-write refusal onto a status. `forbidden`
+ * (not allowed to edit this agent, or a non-admin attaching a workspace
+ * connector) is a 403 — the caller already passed `agents:resolve`, so the
+ * agent's existence is not a secret from them. Anything else is not ours.
+ */
+function connectorWriteRefused(res: RouteResponse, err: unknown): boolean {
+  if (!(err instanceof PluginError)) return false;
+  if (err.code === 'forbidden') {
+    res.status(403).json({ error: 'forbidden' });
+    return true;
+  }
+  if (err.code === 'not-found') {
+    res.status(404).json({ error: 'agent-not-found' });
+    return true;
+  }
+  if (err.code === 'invalid-payload') {
+    res.status(400).json({ error: 'invalid-connector' });
+    return true;
+  }
+  return false;
 }
 
 /** Resolve the agent for ACL. Any PluginError → 404 (do not leak existence). */
@@ -3075,6 +3195,106 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       userId: callerUserId,
       workspace: initCtx.workspace,
     });
+  }
+
+  /** TASK-739 — this agent's effective connector set, read under the caller. */
+  async function listEffectiveConnectors(
+    agent: ResolvedAgent,
+    callerUserId: string,
+  ): Promise<ConnectorsListEffectiveOutput> {
+    return bus.call<ConnectorsListEffectiveInput, ConnectorsListEffectiveOutput>(
+      'connectors:list-effective',
+      agentWorkspaceCtx(agent.id, callerUserId),
+      {
+        userId: callerUserId,
+        attachmentIds: (agent.connectorAttachments ?? []).filter(isConnectorId),
+        exclusions: (agent.connectorExclusions ?? []).filter(isConnectorId),
+      },
+    );
+  }
+
+  /**
+   * TASK-739 — after a connector leaves an agent, clear what the agent held
+   * for it: per-tool overrides under its tool namespaces, and the access the
+   * caller approved for it. Resolves `true` only when every step answered.
+   * Never throws: the detach already landed, and a leftover row is inert
+   * (nothing reaches a connector that is not in the effective set).
+   */
+  async function clearConnectorLeftovers(
+    ctx: AgentContext,
+    ownerUserId: string,
+    agentId: string,
+    connectorId: string,
+    toolNamespaces: ReadonlyArray<{ toolNamespace?: unknown }>,
+  ): Promise<boolean> {
+    let complete = true;
+    const prefixes = toolNamespaces
+      .map((n) => n?.toolNamespace)
+      .filter((ns): ns is string => typeof ns === 'string' && CONNECTOR_TOOL_NAMESPACE_RE.test(ns))
+      .map((ns) => `mcp.${ns}.`);
+    if (
+      prefixes.length > 0 &&
+      bus.hasService('tool-policy:list-agent-overrides') &&
+      bus.hasService('tool-policy:set-agent-override')
+    ) {
+      try {
+        const out = await bus.call<{ agentId: string }, ToolPolicyListAgentOverridesOutput>(
+          'tool-policy:list-agent-overrides',
+          ctx,
+          { agentId },
+        );
+        for (const o of Array.isArray(out?.overrides) ? out.overrides : []) {
+          const key = o?.toolKey;
+          if (typeof key !== 'string' || !prefixes.some((p) => key.startsWith(p))) continue;
+          const wrote = await bus.call<
+            ToolPolicySetAgentOverrideInput,
+            ToolPolicySetAgentOverrideOutput
+          >('tool-policy:set-agent-override', ctx, { agentId, toolKey: key, verdict: null });
+          if (wrote?.ok !== true) complete = false;
+        }
+      } catch (err) {
+        complete = false;
+        initCtx.logger.warn('workspace_connector_remove_overrides_failed', {
+          agentId,
+          connectorId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    if (
+      bus.hasService('skills:approved-caps-list') &&
+      bus.hasService('skills:approved-caps-revoke')
+    ) {
+      try {
+        const out = await bus.call<ApprovedCapsListInput, ApprovedCapsListOutput>(
+          'skills:approved-caps-list',
+          ctx,
+          { ownerUserId, agentId, connectorId },
+        );
+        for (const cap of Array.isArray(out?.capabilities) ? out.capabilities : []) {
+          if (typeof cap?.value !== 'string' || !APPROVED_CAP_KINDS.includes(cap.kind)) {
+            complete = false;
+            continue;
+          }
+          const revoked = await bus.call<ApprovedCapsRevokeInput, ApprovedCapsRevokeOutput>(
+            'skills:approved-caps-revoke',
+            ctx,
+            { ownerUserId, agentId, kind: cap.kind, value: cap.value, connectorId },
+          );
+          // A grant listed a moment ago that did not clear is a miss, not
+          // success — the same rule the override step above follows.
+          if (revoked?.cleared !== true) complete = false;
+        }
+      } catch (err) {
+        complete = false;
+        initCtx.logger.warn('workspace_connector_remove_grants_failed', {
+          agentId,
+          connectorId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return complete;
   }
 
   /**
@@ -5583,6 +5803,161 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/agents/:agentId/connectors — the Connectors tab's
+     * list (TASK-739, connectors-rail slice 6).
+     *
+     * The list is `connectors:list-effective` — the SAME union a session opens
+     * with (workspace defaults ∪ this agent's attachments ∪ the caller's own
+     * legacy connectors, minus this agent's exclusions) — so the rail cannot
+     * show a different set than the agent actually gets. Read under the
+     * caller, as a session opened by the caller would be.
+     */
+    async connectors(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+      if (!bus.hasService('connectors:list-effective')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      const out = await listEffectiveConnectors(agent, userId);
+      res
+        .status(200)
+        .json({ connectors: toConnectorRows(out) } satisfies AgentConnectorsRead);
+    },
+
+    /**
+     * POST /api/workspace/agents/:agentId/connectors — attach one connector.
+     *
+     * One id per call, through `agents:attach-connector`, which is atomic
+     * (two people attaching at once never lose either write) and which owns
+     * the workspace-connector rule: only an admin may attach a connector that
+     * spends the company's key. This route does not re-decide that; it passes
+     * the caller's identity and reports the hook's refusal as a 403.
+     */
+    async attachConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, actor.id, res);
+      if (agent === null) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const connectorId = (parsed as { connectorId?: unknown } | null)?.connectorId;
+      if (!isConnectorId(connectorId)) {
+        res.status(400).json({ error: 'invalid-connector' });
+        return;
+      }
+      if (!bus.hasService('agents:attach-connector')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      try {
+        const out = await bus.call<AgentsAttachConnectorInput, AgentsConnectorChangeOutput>(
+          'agents:attach-connector',
+          agentWorkspaceCtx(agentId, actor.id),
+          { actor: { userId: actor.id, isAdmin: actor.isAdmin }, agentId, connectorId },
+        );
+        res.status(200).json({ attached: true, changed: out.changed === true });
+      } catch (err) {
+        if (connectorWriteRefused(res, err)) return;
+        throw err;
+      }
+    },
+
+    /**
+     * DELETE /api/workspace/agents/:agentId/connectors/:connectorId —
+     * "Remove from <agent>".
+     *
+     * What removing means depends on where the connector came from, and the
+     * server works that out from the same effective list the tab drew:
+     * an `attached` one is detached; a workspace `default` or the caller's own
+     * `legacy-owned` one is EXCLUDED from this agent (the connector, and every
+     * other agent using it, are untouched — product decision 4). A connector
+     * that is not in this agent's list is a 404, never a silent exclusion.
+     *
+     * After the detach lands, what this agent held for the connector goes
+     * too: its per-tool choices (tool-policy overrides under the connector's
+     * tool namespaces) and the access the caller approved for it. Those are
+     * best-effort — the agent can no longer reach the connector, so a leftover
+     * row is inert — and a miss is reported as `cleanup: 'partial'` rather
+     * than dressed up as complete.
+     */
+    async removeConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const connectorId = req.params.connectorId ?? '';
+      if (!isConnectorId(connectorId)) {
+        res.status(400).json({ error: 'invalid-connector' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, actor.id, res);
+      if (agent === null) return;
+      if (
+        !bus.hasService('connectors:list-effective') ||
+        !bus.hasService('agents:detach-connector')
+      ) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      const out = await listEffectiveConnectors(agent, actor.id);
+      const entry = (Array.isArray(out?.connectors) ? out.connectors : []).find(
+        (c) => c?.summary?.id === connectorId,
+      );
+      if (entry === undefined) {
+        res.status(404).json({ error: 'connector-not-found' });
+        return;
+      }
+      const ctx = agentWorkspaceCtx(agentId, actor.id);
+      try {
+        await bus.call<AgentsDetachConnectorInput, AgentsConnectorChangeOutput>(
+          'agents:detach-connector',
+          ctx,
+          {
+            actor: { userId: actor.id, isAdmin: actor.isAdmin },
+            agentId,
+            connectorId,
+            exclude: entry.source !== 'attached',
+          },
+        );
+      } catch (err) {
+        if (connectorWriteRefused(res, err)) return;
+        throw err;
+      }
+      const complete = await clearConnectorLeftovers(
+        ctx,
+        actor.id,
+        agentId,
+        connectorId,
+        Array.isArray(entry.toolNamespaces) ? entry.toolNamespaces : [],
+      );
+      res.status(200).json({
+        removed: true,
+        cleanup: complete ? 'complete' : 'partial',
+      } satisfies AgentConnectorRemoved);
+    },
+
+    /**
      * PUT /api/workspace/agents/:agentId/memory/rules — save the human tier.
      *
      * This route does not write a file. It calls `memory:rules:write`, which
@@ -6098,7 +6473,7 @@ export async function registerWorkspaceRoutes(
   // HttpResponse are a structural superset of our adapter.
   type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
   const routes: Array<{
-    method: 'GET' | 'POST' | 'PUT';
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
     path: string;
     handler: RouteHandler;
   }> = [
@@ -6251,6 +6626,22 @@ export async function registerWorkspaceRoutes(
       method: 'PUT',
       path: '/api/workspace/agents/:agentId/abilities',
       handler: handlers.setAbility as unknown as RouteHandler,
+    },
+    {
+      // TASK-739 — the Connectors tab's list, attach, and "Remove from <agent>".
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/connectors',
+      handler: handlers.connectors as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/agents/:agentId/connectors',
+      handler: handlers.attachConnector as unknown as RouteHandler,
+    },
+    {
+      method: 'DELETE',
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId',
+      handler: handlers.removeConnector as unknown as RouteHandler,
     },
     {
       method: 'PUT',

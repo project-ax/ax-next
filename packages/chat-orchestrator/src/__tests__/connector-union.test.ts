@@ -106,142 +106,97 @@ describe('connectorSandboxDirId', () => {
   });
 });
 
-describe('resolveEffectiveConnectors', () => {
-  it('unions defaults + the owner\'s own connectors, deduped by id (default wins)', async () => {
+/** One `connectors:list-effective` entry (the fields the orchestrator mirrors). */
+function effective(
+  id: string,
+  over: { source?: string; usageNote?: string; toolNamespaces?: Array<{ server: string; toolNamespace: string }> } = {},
+) {
+  return {
+    summary: { id, name: id, usageNote: over.usageNote ?? `${id} note` },
+    source: over.source ?? 'attached',
+    capabilities: CAPS(),
+    ...(over.toolNamespaces !== undefined ? { toolNamespaces: over.toolNamespaces } : {}),
+  };
+}
+
+describe('resolveEffectiveConnectors (TASK-739 — connectors:list-effective only)', () => {
+  it('forwards userId, attachments and exclusions, and projects entries in hook order', async () => {
+    const inputs: unknown[] = [];
     const bus = busWith({
-      'connectors:list-defaults': async () => ({
-        connectors: [{ id: 'shared', capabilities: CAPS(), usageNote: 'default note' }],
-      }),
-      'connectors:list': async () => ({
-        connectors: [{ id: 'shared' }, { id: 'mine' }],
-      }),
-      'connectors:resolve': async (_c, input) => {
-        const id = (input as { connectorId: string }).connectorId;
-        return { id, capabilities: CAPS(), usageNote: `${id} note` };
+      'connectors:list-effective': async (_c, input) => {
+        inputs.push(input);
+        return {
+          connectors: [
+            effective('d', { source: 'default', usageNote: 'default note' }),
+            effective('att'),
+            effective('own', { source: 'legacy-owned' }),
+          ],
+        };
       },
     });
-    const out = await resolveEffectiveConnectors(bus, ctx());
-    expect(out.map((c) => c.id).sort()).toEqual(['mine', 'shared']);
-    // 'shared' came from defaults (its note), NOT re-resolved from the owner list.
-    expect(out.find((c) => c.id === 'shared')!.usageNote).toBe('default note');
-  });
-
-  it('is NON-FATAL: a throwing list-defaults yields the owner connectors only', async () => {
-    const bus = busWith({
-      'connectors:list-defaults': async () => {
-        throw new Error('boom');
-      },
-      'connectors:list': async () => ({ connectors: [{ id: 'mine' }] }),
-      'connectors:resolve': async () => ({ id: 'mine', capabilities: CAPS() }),
-    });
-    const out = await resolveEffectiveConnectors(bus, ctx());
-    expect(out.map((c) => c.id)).toEqual(['mine']);
-  });
-
-  it('is NON-FATAL: a per-connector resolve failure skips just that connector', async () => {
-    const bus = busWith({
-      'connectors:list': async () => ({ connectors: [{ id: 'ok' }, { id: 'bad' }] }),
-      'connectors:resolve': async (_c, input) => {
-        const id = (input as { connectorId: string }).connectorId;
-        if (id === 'bad') throw new Error('cannot resolve');
-        return { id, capabilities: CAPS() };
-      },
-    });
-    const out = await resolveEffectiveConnectors(bus, ctx());
-    expect(out.map((c) => c.id)).toEqual(['ok']);
-  });
-
-  it('new and foreign shared definitions add no reach until explicitly attached', async () => {
-    const resolvedIds: string[] = [];
-    const bus = busWith({
-      'connectors:list': async () => ({ connectors: [
-        { id: 'legacy', canEdit: true, requiresAttachment: false },
-        { id: 'new', canEdit: true, requiresAttachment: true },
-        { id: 'foreign', canEdit: false, requiresAttachment: false },
-      ] }),
-      'connectors:resolve': async (_c, input) => {
-        const id = (input as { connectorId: string }).connectorId;
-        resolvedIds.push(id);
-        return { id, capabilities: CAPS() };
-      },
-    });
-    expect((await resolveEffectiveConnectors(bus, ctx())).map((c) => c.id)).toEqual(['legacy']);
-    expect(resolvedIds).toEqual(['legacy']);
-    resolvedIds.length = 0;
-    expect((await resolveEffectiveConnectors(bus, ctx(), ['new', 'foreign'])).map((c) => c.id).sort()).toEqual(['foreign', 'legacy', 'new']);
-    expect(resolvedIds.sort()).toEqual(['foreign', 'legacy', 'new']);
-  });
-
-  it('returns [] when no connector hooks are registered (stripped preset)', async () => {
-    const out = await resolveEffectiveConnectors(busWith({}), ctx());
-    expect(out).toEqual([]);
-  });
-
-  // TASK-107 — the per-agent attachment store is the THIRD source.
-  it('resolves per-agent ATTACHMENTS as a third source (TASK-107)', async () => {
-    const bus = busWith({
-      'connectors:resolve': async (_c, input) => {
-        const id = (input as { connectorId: string }).connectorId;
-        return { id, capabilities: CAPS(), usageNote: `${id} note` };
-      },
-    });
-    const out = await resolveEffectiveConnectors(bus, ctx(), ['salesforce', 'gh']);
-    expect(out.map((c) => c.id).sort()).toEqual(['gh', 'salesforce']);
-    expect(out.find((c) => c.id === 'gh')!.capabilities.allowedHosts).toEqual([
-      'api.example.com',
+    const out = await resolveEffectiveConnectors(bus, ctx(), ['att'], ['gone']);
+    expect(inputs).toEqual([{ userId: 'u', attachmentIds: ['att'], exclusions: ['gone'] }]);
+    expect(out).toEqual([
+      { id: 'd', capabilities: CAPS(), usageNote: 'default note' },
+      { id: 'att', capabilities: CAPS(), usageNote: 'att note' },
+      { id: 'own', capabilities: CAPS(), usageNote: 'own note' },
     ]);
   });
 
-  it('dedups an attachment id against a default (default copy wins)', async () => {
-    const resolvedIds: string[] = [];
+  it('defaults attachments and exclusions to empty lists', async () => {
+    const inputs: unknown[] = [];
     const bus = busWith({
-      'connectors:list-defaults': async () => ({
-        connectors: [{ id: 'shared', capabilities: CAPS(), usageNote: 'default note' }],
-      }),
-      'connectors:resolve': async (_c, input) => {
-        const id = (input as { connectorId: string }).connectorId;
-        resolvedIds.push(id);
-        return { id, capabilities: CAPS(), usageNote: `${id} note` };
+      'connectors:list-effective': async (_c, input) => {
+        inputs.push(input);
+        return { connectors: [] };
       },
     });
-    // 'shared' is both a default AND an attachment; 'extra' is attachment-only.
-    const out = await resolveEffectiveConnectors(bus, ctx(), ['shared', 'extra']);
-    expect(out.map((c) => c.id).sort()).toEqual(['extra', 'shared']);
-    // 'shared' kept its default copy (note), and was NOT re-resolved as an attachment.
-    expect(out.find((c) => c.id === 'shared')!.usageNote).toBe('default note');
-    expect(resolvedIds).toEqual(['extra']);
+    expect(await resolveEffectiveConnectors(bus, ctx())).toEqual([]);
+    expect(inputs).toEqual([{ userId: 'u', attachmentIds: [], exclusions: [] }]);
   });
 
-  it('is NON-FATAL: a dangling/unapproved attachment id is skipped, never widens reach', async () => {
+  it('does not read the retired three-source hooks', async () => {
+    const called: string[] = [];
     const bus = busWith({
-      'connectors:resolve': async (_c, input) => {
-        const id = (input as { connectorId: string }).connectorId;
-        if (id === 'pending') throw new Error('not-found'); // unapproved/dangling
-        return { id, capabilities: CAPS() };
+      'connectors:list-effective': async () => ({ connectors: [effective('x')] }),
+      'connectors:list-defaults': async () => {
+        called.push('list-defaults');
+        return { connectors: [] };
+      },
+      'connectors:list': async () => {
+        called.push('list');
+        return { connectors: [] };
+      },
+      'connectors:resolve': async () => {
+        called.push('resolve');
+        return { id: 'y', capabilities: CAPS() };
       },
     });
-    const out = await resolveEffectiveConnectors(bus, ctx(), ['ok', 'pending']);
-    expect(out.map((c) => c.id)).toEqual(['ok']);
+    expect((await resolveEffectiveConnectors(bus, ctx(), ['y'])).map((c) => c.id)).toEqual(['x']);
+    expect(called).toEqual([]);
   });
 
-  it('empty attachments + no other source = [] (mcpConfigIds reverted, no stopgap)', async () => {
-    const out = await resolveEffectiveConnectors(busWith({}), ctx(), []);
-    expect(out).toEqual([]);
-  });
-
-  it('attachments + owner-own + defaults all union, deduped by id', async () => {
+  it('is NON-FATAL: a throwing list-effective yields [] and logs a warning', async () => {
+    const lines: string[] = [];
+    const warnCtx = makeAgentContext({
+      sessionId: 's',
+      agentId: 'a',
+      userId: 'u',
+      logger: createLogger({ reqId: 'r', writer: (line: string) => { lines.push(line); } }),
+    });
     const bus = busWith({
-      'connectors:list-defaults': async () => ({
-        connectors: [{ id: 'd', capabilities: CAPS() }],
-      }),
-      'connectors:list': async () => ({ connectors: [{ id: 'own' }] }),
-      'connectors:resolve': async (_c, input) => {
-        const id = (input as { connectorId: string }).connectorId;
-        return { id, capabilities: CAPS() };
+      'connectors:list-effective': async () => {
+        throw new Error('boom');
       },
     });
-    const out = await resolveEffectiveConnectors(bus, ctx(), ['att']);
-    expect(out.map((c) => c.id).sort()).toEqual(['att', 'd', 'own']);
+    expect(await resolveEffectiveConnectors(bus, warnCtx, ['att'])).toEqual([]);
+    const warned = lines.join('\n');
+    expect(warned).toContain('connectors_list_effective_failed');
+    expect(warned).toContain('boom');
+  });
+
+  it('returns [] when connectors:list-effective is not registered (stripped preset)', async () => {
+    expect(await resolveEffectiveConnectors(busWith({}), ctx(), ['att'], ['x'])).toEqual([]);
   });
 });
 
@@ -992,16 +947,15 @@ describe('toolNamespace keys (TASK-734)', () => {
     expect(r.droppedMcpServers).toEqual([{ connectorId: 'second', server: 'srv' }]);
   });
 
-  it('resolveEffectiveConnectors carries toolNamespaces from list-defaults, attachments and owned paths', async () => {
+  it('resolveEffectiveConnectors carries toolNamespaces from every list-effective entry', async () => {
     const bus = busWith({
-      'connectors:list-defaults': async () => ({
-        connectors: [{ id: 'def', capabilities: CAPS(), toolNamespaces: NS('def', 'cdddddddddd') }],
+      'connectors:list-effective': async () => ({
+        connectors: [
+          effective('def', { source: 'default', toolNamespaces: NS('def', 'cdddddddddd') }),
+          effective('att', { toolNamespaces: NS('att', 'caaaaaaaaaa') }),
+          effective('owned', { source: 'legacy-owned', toolNamespaces: NS('owned', 'c0000000000') }),
+        ],
       }),
-      'connectors:list': async () => ({ connectors: [{ id: 'owned' }] }),
-      'connectors:resolve': async (_c, input) => {
-        const id = (input as { connectorId: string }).connectorId;
-        return { id, capabilities: CAPS(), toolNamespaces: NS(id, id === 'att' ? 'caaaaaaaaaa' : 'c0000000000') };
-      },
     });
     const out = await resolveEffectiveConnectors(bus, ctx(), ['att']);
     const byId = Object.fromEntries(out.map((c) => [c.id, c.toolNamespaces]));

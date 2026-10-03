@@ -15,6 +15,7 @@ describe('agents return schemas', () => {
     workspaceRef: 'v123',
     skillAttachments: [{ skillId: 's1', credentialBindings: { slotA: 'ref1' } }],
     connectorAttachments: ['salesforce', 'gh'],
+    connectorExclusions: ['notion'],
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-02T00:00:00.000Z'),
   };
@@ -33,6 +34,13 @@ describe('agents return schemas', () => {
         agent: { ...agent, connectorAttachments: 'gh' },
       }).success,
     ).toBe(false);
+  });
+
+  it('requires connectorExclusions on the resolve output and does not strip it (TASK-739)', () => {
+    const { connectorExclusions: _omit, ...without } = agent;
+    expect(ResolveOutputSchema.safeParse({ agent: without }).success).toBe(false);
+    const parsed = ResolveOutputSchema.parse({ agent }) as { agent: Agent };
+    expect(parsed.agent.connectorExclusions).toEqual(['notion']);
   });
 
   // PR 2 — `AgentSchema` is the `returns` schema on `agents:resolve` and zod

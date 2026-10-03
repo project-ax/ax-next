@@ -67,6 +67,14 @@ export interface Agent {
    */
   connectorAttachments: string[];
   /**
+   * TASK-739 — connector ids the owner removed from this agent although they
+   * reach it by another source (a default, or a legacy owned connector). The
+   * effective-connector union skips every id here in ALL sources. Opaque
+   * connector-id slugs. Written only by agents:attach-connector (removes) and
+   * agents:detach-connector with `exclude: true` (adds).
+   */
+  connectorExclusions: string[];
+  /**
    * Set only on the record `agents:resolve` returns, when the admin has since
    * removed this agent's stored model: `model` is then the Default and this is
    * what the owner originally chose. Never persisted.
@@ -177,6 +185,8 @@ const AgentSchema = z.object({
   workspaceRef: z.string().nullable(),
   skillAttachments: z.array(SkillAttachmentSchema),
   connectorAttachments: z.array(z.string()),
+  // TASK-739 — declared for the same strip reason as `runner` below.
+  connectorExclusions: z.array(z.string()),
   // Declared explicitly for the same reason as `runner`: a zod object strips
   // undeclared keys, and this schema is the `returns` contract of agents:resolve.
   requestedModel: z.string().optional(),
@@ -302,6 +312,40 @@ export interface SetConnectorAttachmentsInput {
 
 export interface SetConnectorAttachmentsOutput {
   agent: Agent;
+}
+
+// --- agents:attach-connector / agents:detach-connector (TASK-739) -----------
+//
+// Single-connector edits, each ONE row-locked read-modify-write so two
+// concurrent edits of the same agent never lose a write (the wholesale
+// set-connector-attachments is last-writer-wins). ACL: owner OR admin, plus —
+// for attach only — the non-admin workspace-connector guard (attaching a
+// shared/company-keyed connector is admin-only). `changed` is false when the
+// call was a no-op (already attached / already absent and not newly excluded).
+// `exclude` records the id in `connectorExclusions` so a connector that reaches
+// the agent by another source (a default) stays removed.
+
+export interface AttachConnectorInput {
+  actor: Actor;
+  agentId: string;
+  connectorId: string;
+}
+
+export interface AttachConnectorOutput {
+  agent: Agent;
+  changed: boolean;
+}
+
+export interface DetachConnectorInput {
+  actor: Actor;
+  agentId: string;
+  connectorId: string;
+  exclude: boolean;
+}
+
+export interface DetachConnectorOutput {
+  agent: Agent;
+  changed: boolean;
 }
 
 // --- Subscriber payloads -----------------------------------------------------

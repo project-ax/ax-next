@@ -15,6 +15,10 @@ import {
   type NewAttachmentInput,
 } from './skill-attachments-validation.js';
 import {
+  isWorkspaceConnectorForbidden,
+  workspaceConnectorGrantViolation,
+} from './connector-guard.js';
+import {
   DISPLAY_NAME_FORBIDDEN,
   DISPLAY_NAME_FORBIDDEN_MESSAGE,
   validateConnectorAttachmentIds,
@@ -397,6 +401,7 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     workspaceRef: a.workspaceRef,
     skillAttachments: a.skillAttachments,
     connectorAttachments: a.connectorAttachments,
+    connectorExclusions: a.connectorExclusions,
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString(),
   };
@@ -425,54 +430,8 @@ function writeServiceError(res: RouteResponse, err: unknown): boolean {
   return false;
 }
 
-// --- non-admin attachment guard -------------------------------------------
-
-/**
- * SECURITY (non-admin owner-scoped attachment). Agent CRUD + attachments are
- * owner-scoped (the agent-ownership ACL lives in the hooks' `assertWriteAllowed`),
- * so a non-admin may manage their OWN agents. The one escalation an attachment
- * could enable is making the agent spend a GLOBAL (company) credential — and that
- * only ever comes from a `keyMode:'workspace'` connector. So a non-admin's set is
- * rejected iff ANY of the given connector ids resolves — OWNER-SCOPED to the actor
- * — to keyMode 'workspace'. A personal connector is the user's own per-user key
- * (their own reach → no escalation); a connector the actor doesn't own never
- * resolves and is a runtime no-op (tolerated, like a dangling id). Admins bypass
- * this entirely (admin curation is unchanged).
- *
- * Fail-closed: if `connectors:resolve` is unavailable we can't verify keyMode, so
- * a non-empty connector set from a non-admin is refused (attaching stays
- * admin-only in a connectors-less preset).
- *
- * Returns an error message to 403 with, or null when the set is allowed.
- */
-async function workspaceConnectorGrantViolation(
-  bus: HookBus,
-  ctx: AgentContext,
-  userId: string,
-  connectorIds: readonly string[],
-): Promise<string | null> {
-  if (connectorIds.length === 0) return null;
-  if (!bus.hasService('connectors:resolve')) {
-    return 'cannot verify connector reach — attaching connectors is admin-only here';
-  }
-  for (const connectorId of connectorIds) {
-    let keyMode: string | undefined;
-    try {
-      const resolved = await bus.call<
-        { userId: string; connectorId: string },
-        { keyMode: string }
-      >('connectors:resolve', ctx, { userId, connectorId });
-      keyMode = resolved.keyMode;
-    } catch {
-      // not-found / not owned by this user → never resolves at runtime → no-op.
-      continue;
-    }
-    if (keyMode === 'workspace') {
-      return `forbidden: '${connectorId}' is a workspace (shared) connector — only an admin can attach it`;
-    }
-  }
-  return null;
-}
+// The non-admin workspace-connector guard lives in ./connector-guard.ts (shared
+// with the agents:* connector hooks, which enforce it on every path).
 
 // --- handler factory -------------------------------------------------------
 
@@ -906,20 +865,10 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         }
         throw err;
       }
-      // Non-admin owner-scoped guard: reject attaching a workspace (shared/
-      // global-keyed) connector. Personal connectors (own per-user key) are fine.
-      if (!actor.isAdmin) {
-        const violation = await workspaceConnectorGrantViolation(
-          deps.bus,
-          ctx,
-          actor.id,
-          connectorIds,
-        );
-        if (violation !== null) {
-          res.status(403).json({ error: violation });
-          return;
-        }
-      }
+      // The non-admin workspace-connector guard (reject ADDING a shared/
+      // global-keyed connector) is enforced inside agents:set-connector-
+      // attachments so every caller gets it; its refusal surfaces as a 403
+      // carrying the guard's message (it names only ids this caller sent).
       try {
         const out = await deps.bus.call<
           SetConnectorAttachmentsInput,
@@ -931,6 +880,10 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         });
         res.status(200).json({ agent: serializeAgent(out.agent) });
       } catch (err) {
+        if (isWorkspaceConnectorForbidden(err)) {
+          res.status(403).json({ error: err.message });
+          return;
+        }
         if (writeServiceError(res, err)) return;
         throw err;
       }

@@ -465,6 +465,47 @@ export interface ListDefaultsOutput {
   connectors: Array<Connector & { toolNamespaces: ToolNamespaceEntry[] }>;
 }
 
+/**
+ * TASK-739 — `connectors:list-effective`: the ONE implementation of an agent's
+ * effective connector set. Host-internal (no IPC surface). The orchestrator
+ * folds `capabilities` + `toolNamespaces` into the sandbox; the agent connector
+ * list UI shows `summary` + `source`.
+ *
+ * Union, in order, deduped by id (first wins); an id in `exclusions` is
+ * skipped in the IMPLICIT sources (`default`, `legacy-owned`) — an explicit
+ * attachment always wins over a stale exclusion:
+ *   1. `default`      — the user's default-attached connectors (id asc).
+ *   2. `attached`     — each `attachmentIds` entry the user can resolve; a
+ *                       malformed / unknown id is skipped (grants nothing).
+ *   3. `legacy-owned` — the user's own connectors that predate explicit
+ *                       attachment (`canEdit !== false && requiresAttachment !== true`).
+ *
+ * `attachmentIds` / `exclusions` are the agent row's per-agent lists; the caller
+ * passes them (this plugin never reads agent state — I2/I4).
+ */
+export interface ListEffectiveInput {
+  userId: string;
+  attachmentIds?: string[];
+  exclusions?: string[];
+}
+
+export type EffectiveConnectorSource = 'default' | 'attached' | 'legacy-owned';
+
+export interface EffectiveConnectorEntry {
+  /** The same metadata-only shape `connectors:list` returns (no capabilities). */
+  summary: ConnectorSummary;
+  /** Which union source contributed the connector. */
+  source: EffectiveConnectorSource;
+  /** The mechanism-agnostic fill the orchestrator folds into the session. */
+  capabilities: Capabilities;
+  /** Same derivation as `connectors:resolve` (row owner + id + server name). */
+  toolNamespaces: ToolNamespaceEntry[];
+}
+
+export interface ListEffectiveOutput {
+  connectors: EffectiveConnectorEntry[];
+}
+
 // ---------------------------------------------------------------------------
 // Authored-connector drafts (TASK-94 — install_authored_connector + the
 // approval gate). The hook fields are FLAT (hosts / slots / packages /
@@ -695,6 +736,21 @@ export const ListDefaultsOutputSchema = z.object({
     ConnectorSchema.extend({ toolNamespaces: z.array(ToolNamespaceEntrySchema) }),
   ),
 }) as unknown as ZodType<ListDefaultsOutput>;
+
+export const ListEffectiveOutputSchema = z.object({
+  connectors: z.array(
+    z.object({
+      summary: ConnectorSummarySchema,
+      source: z.union([
+        z.literal('default'),
+        z.literal('attached'),
+        z.literal('legacy-owned'),
+      ]),
+      capabilities: CapabilitiesSchema,
+      toolNamespaces: z.array(ToolNamespaceEntrySchema),
+    }),
+  ),
+}) as unknown as ZodType<ListEffectiveOutput>;
 
 const AuthoredConnectorDraftSchema = z.object({
   connectorId: z.string(),

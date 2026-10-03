@@ -105,7 +105,7 @@ export function AgentRailContent({
   counts,
 }: Props) {
   const { agent, past } = detail;
-  const { rail, loading, error, revoke } = useAgentRail(agent.id);
+  const { rail, loading, error, revoke, refresh } = useAgentRail(agent.id);
   const [localTab, setLocalTab] = useState<AgentTab>(tab);
   const active = onTab ? tab : localTab;
   const [revoking, setRevoking] = useState<ReadonlySet<string>>(new Set());
@@ -433,6 +433,7 @@ export function AgentRailContent({
                   revoking={revoking}
                   notice={notice}
                   onRevoke={onRevoke}
+                  onConnectorsChanged={refresh}
                 />
               )}
             </div>

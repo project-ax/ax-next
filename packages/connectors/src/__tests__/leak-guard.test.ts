@@ -7,6 +7,7 @@ import {
   InstallAuthoredOutputSchema,
   ListAuthoredOutputSchema,
   ListDefaultsOutputSchema,
+  ListEffectiveOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
   UpsertOutputSchema,
@@ -71,6 +72,7 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
   const schemas = {
     'connectors:list': ListOutputSchema,
     'connectors:list-defaults': ListDefaultsOutputSchema,
+    'connectors:list-effective': ListEffectiveOutputSchema,
     'connectors:get': GetOutputSchema,
     'connectors:upsert': UpsertOutputSchema,
     'connectors:delete': DeleteOutputSchema,
@@ -128,7 +130,7 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
     // declared name, `toolNamespace` the derived hash alias. Neither is a
     // backing-mechanism field (no transport / command / url / mcp), and the
     // field sits at the top level of BOTH shapes (resolve and each default).
-    for (const schema of [ResolveOutputSchema, ListDefaultsOutputSchema]) {
+    for (const schema of [ResolveOutputSchema, ListDefaultsOutputSchema, ListEffectiveOutputSchema]) {
       const keys = topLevelKeysOutsideCapabilities(schema);
       expect(keys).toContain('toolNamespaces');
       expect(keys).toContain('toolNamespace');

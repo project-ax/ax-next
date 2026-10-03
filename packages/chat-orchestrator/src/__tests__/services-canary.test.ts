@@ -132,7 +132,7 @@ function connectorCaps(services: ServiceDescriptorParsed[]): Record<string, unkn
 }
 
 // Build a self-contained orchestrator harness. `defaultConnectors` are returned
-// from `connectors:list-defaults` (admin-curated, approved — they feed the
+// as defaults from `connectors:list-effective` (admin-curated, approved — they feed the
 // fold). `sandbox:open-session` captures `input.services` and fires chat:end so
 // the orchestrator's waiter resolves. A `chat:turn-error` subscriber records the
 // broadcasts so the error path can assert the SSE got an error frame.
@@ -149,7 +149,13 @@ function buildMocks(
 
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
-    'connectors:list-defaults': async () => ({ connectors: defaultConnectors }),
+    'connectors:list-effective': async () => ({
+      connectors: defaultConnectors.map(({ id, capabilities }) => ({
+        summary: { id },
+        source: 'default',
+        capabilities,
+      })),
+    }),
     'session:queue-work': async () => ({ cursor: 0 }),
     'session:terminate': async () => ({}),
     'proxy:open-session': async () => ({

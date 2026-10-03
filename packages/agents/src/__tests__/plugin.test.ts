@@ -26,6 +26,12 @@ import type {
   ResolveOutput,
   UpdateInput,
   UpdateOutput,
+  AttachConnectorInput,
+  AttachConnectorOutput,
+  DetachConnectorInput,
+  DetachConnectorOutput,
+  SetConnectorAttachmentsInput,
+  SetConnectorAttachmentsOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -130,6 +136,8 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
         'agents:set-connector-attachments',
+        'agents:attach-connector',
+        'agents:detach-connector',
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
@@ -999,4 +1007,220 @@ describe('model policy (models:get-policy)', () => {
     });
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// TASK-739 — atomic per-connector attach / detach + the workspace-connector
+// guard enforced in the hooks (every path, not just the admin route).
+// ---------------------------------------------------------------------------
+describe('agents:attach-connector / agents:detach-connector (TASK-739)', () => {
+  // keyMode per connector id; anything else → connectors:resolve throws
+  // not-found (a connector the actor doesn't own never resolves → no-op).
+  const KEY_MODES: Record<string, 'personal' | 'workspace'> = {
+    'personal-conn': 'personal',
+    'workspace-conn': 'workspace',
+  };
+  const connectorsResolve = {
+    'connectors:resolve': async (_ctx: unknown, input: unknown) => {
+      const { connectorId } = input as { connectorId: string };
+      const keyMode = KEY_MODES[connectorId];
+      if (keyMode === undefined) {
+        throw new PluginError({ code: 'not-found', plugin: 'stub', message: 'nope' });
+      }
+      return { keyMode };
+    },
+  };
+  const owner = { userId: 'u1', isAdmin: false };
+  const admin = { userId: 'admin', isAdmin: true };
+
+  async function seed(withConnectors = true) {
+    const h = await makeHarness(withConnectors ? { extraServices: connectorsResolve } : {});
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: owner,
+      input: makeInput(),
+    });
+    return { h, agentId: created.agent.id };
+  }
+
+  function attach(h: TestHarness, input: AttachConnectorInput) {
+    return h.bus.call<AttachConnectorInput, AttachConnectorOutput>(
+      'agents:attach-connector',
+      h.ctx(),
+      input,
+    );
+  }
+  function detach(h: TestHarness, input: DetachConnectorInput) {
+    return h.bus.call<DetachConnectorInput, DetachConnectorOutput>(
+      'agents:detach-connector',
+      h.ctx(),
+      input,
+    );
+  }
+  async function current(h: TestHarness, agentId: string) {
+    const out = await h.bus.call<ResolveInput, ResolveOutput>('agents:resolve', h.ctx(), {
+      agentId,
+      userId: 'u1',
+    });
+    return out.agent;
+  }
+
+  it('attach adds, clears an exclusion, and is idempotent (changed:false)', async () => {
+    const { h, agentId } = await seed();
+    await detach(h, { actor: owner, agentId, connectorId: 'personal-conn', exclude: true });
+    const first = await attach(h, { actor: owner, agentId, connectorId: 'personal-conn' });
+    expect(first.changed).toBe(true);
+    expect(first.agent.connectorAttachments).toEqual(['personal-conn']);
+    expect(first.agent.connectorExclusions).toEqual([]);
+    const second = await attach(h, { actor: owner, agentId, connectorId: 'personal-conn' });
+    expect(second.changed).toBe(false);
+    expect(second.agent.connectorAttachments).toEqual(['personal-conn']);
+  });
+
+  it('agents:resolve carries connectorExclusions (not stripped by the returns schema)', async () => {
+    const { h, agentId } = await seed();
+    await detach(h, { actor: owner, agentId, connectorId: 'a-default', exclude: true });
+    expect((await current(h, agentId)).connectorExclusions).toEqual(['a-default']);
+  });
+
+  it('detach removes; detach with exclude records an exclusion', async () => {
+    const { h, agentId } = await seed();
+    await attach(h, { actor: owner, agentId, connectorId: 'personal-conn' });
+    const removed = await detach(h, {
+      actor: owner,
+      agentId,
+      connectorId: 'personal-conn',
+      exclude: false,
+    });
+    expect(removed.changed).toBe(true);
+    expect(removed.agent.connectorAttachments).toEqual([]);
+    expect(removed.agent.connectorExclusions).toEqual([]);
+    const excluded = await detach(h, {
+      actor: owner,
+      agentId,
+      connectorId: 'some-default',
+      exclude: true,
+    });
+    expect(excluded.changed).toBe(true);
+    expect(excluded.agent.connectorExclusions).toEqual(['some-default']);
+  });
+
+  it('rejects a malformed connector id (invalid-payload)', async () => {
+    const { h, agentId } = await seed();
+    await expect(
+      attach(h, { actor: owner, agentId, connectorId: 'Bad Id!' }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+    await expect(
+      detach(h, { actor: owner, agentId, connectorId: '', exclude: false }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('not-found for a missing agent', async () => {
+    const { h } = await seed();
+    await expect(
+      attach(h, { actor: owner, agentId: 'agt_missing', connectorId: 'personal-conn' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+    await expect(
+      detach(h, { actor: owner, agentId: 'agt_missing', connectorId: 'x', exclude: true }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+  });
+
+  it("SECURITY (IDOR): another non-admin user cannot attach/detach on someone else's personal agent", async () => {
+    const { h, agentId } = await seed();
+    await attach(h, { actor: owner, agentId, connectorId: 'personal-conn' });
+    const intruder = { userId: 'u2', isAdmin: false };
+    await expect(
+      attach(h, { actor: intruder, agentId, connectorId: 'other-conn' }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(
+      detach(h, { actor: intruder, agentId, connectorId: 'personal-conn', exclude: true }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    const after = await current(h, agentId);
+    expect(after.connectorAttachments).toEqual(['personal-conn']);
+    expect(after.connectorExclusions).toEqual([]);
+  });
+
+  it('SECURITY: a non-admin cannot attach a workspace connector; an admin can', async () => {
+    const { h, agentId } = await seed();
+    await expect(
+      attach(h, { actor: owner, agentId, connectorId: 'workspace-conn' }),
+    ).rejects.toMatchObject({
+      code: 'forbidden',
+      message: expect.stringMatching(/workspace \(shared\) connector/),
+    });
+    expect((await current(h, agentId)).connectorAttachments).toEqual([]);
+    const byAdmin = await attach(h, { actor: admin, agentId, connectorId: 'workspace-conn' });
+    expect(byAdmin.agent.connectorAttachments).toEqual(['workspace-conn']);
+  });
+
+  it('SECURITY: fail-closed without connectors:resolve — non-admin attach is forbidden', async () => {
+    const { h, agentId } = await seed(false);
+    await expect(
+      attach(h, { actor: owner, agentId, connectorId: 'personal-conn' }),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    // An admin is unaffected.
+    await attach(h, { actor: admin, agentId, connectorId: 'personal-conn' });
+    // detach never grants reach, so it is not guarded.
+    const out = await detach(h, { actor: owner, agentId, connectorId: 'x', exclude: true });
+    expect(out.agent.connectorExclusions).toEqual(['x']);
+  });
+
+  it('set-connector-attachments: a non-admin ADDING a workspace connector is forbidden', async () => {
+    const { h, agentId } = await seed();
+    await expect(
+      h.bus.call<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
+        'agents:set-connector-attachments',
+        h.ctx(),
+        { actor: owner, agentId, connectorIds: ['personal-conn', 'workspace-conn'] },
+      ),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect((await current(h, agentId)).connectorAttachments).toEqual([]);
+  });
+
+  it('set-connector-attachments: a non-admin list that still NAMES a workspace connector is forbidden (whole list, no stale-read re-attach)', async () => {
+    const { h, agentId } = await seed();
+    await h.bus.call<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
+      'agents:set-connector-attachments',
+      h.ctx(),
+      { actor: admin, agentId, connectorIds: ['workspace-conn', 'personal-conn'] },
+    );
+    await expect(
+      h.bus.call<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
+        'agents:set-connector-attachments',
+        h.ctx(),
+        { actor: owner, agentId, connectorIds: ['workspace-conn'] },
+      ),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    // The single-id detach is how a non-admin takes one away instead.
+    const out = await h.bus.call<
+      { actor: typeof owner; agentId: string; connectorId: string; exclude: boolean },
+      { changed: boolean }
+    >('agents:detach-connector', h.ctx(), {
+      actor: owner,
+      agentId,
+      connectorId: 'personal-conn',
+      exclude: false,
+    });
+    expect(out.changed).toBe(true);
+    expect((await current(h, agentId)).connectorAttachments).toEqual(['workspace-conn']);
+  });
+
+  it('CONCURRENCY: 10 parallel hook attaches of distinct ids all land', async () => {
+    const { h, agentId } = await seed();
+    const ids = Array.from({ length: 10 }, (_, i) => `conn-${i}`);
+    await Promise.all(ids.map((connectorId) => attach(h, { actor: admin, agentId, connectorId })));
+    const after = await current(h, agentId);
+    expect([...after.connectorAttachments].sort()).toEqual([...ids].sort());
+  });
+
+  it('CONCURRENCY: attach(A) racing detach(B, exclude) keeps both effects', async () => {
+    const { h, agentId } = await seed();
+    await attach(h, { actor: admin, agentId, connectorId: 'b' });
+    await Promise.all([
+      attach(h, { actor: admin, agentId, connectorId: 'a' }),
+      detach(h, { actor: admin, agentId, connectorId: 'b', exclude: true }),
+    ]);
+    const after = await current(h, agentId);
+    expect(after.connectorAttachments).toEqual(['a']);
+    expect(after.connectorExclusions).toEqual(['b']);
+  });
 });

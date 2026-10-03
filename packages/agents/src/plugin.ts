@@ -17,9 +17,11 @@ import {
   createAgentStore,
   resolveAllowedModels,
   validateCreateInput,
+  validateConnectorId,
   validateUpdatePatch,
   type AgentStore,
 } from './store.js';
+import { assertConnectorGrantAllowed } from './connector-guard.js';
 import { randomBytes } from 'node:crypto';
 import {
   AgentsResolveAuthoredSkillsOutputSchema,
@@ -37,11 +39,15 @@ import type {
   AgentsResolveAuthoredSkillsOutput,
   AgentsResolvedEvent,
   AgentsWebhookTokenRotatedEvent,
+  AttachConnectorInput,
+  AttachConnectorOutput,
   AuthoredResolvedSkill,
   CreateInput,
   CreateOutput,
   DeleteInput,
   DeleteOutput,
+  DetachConnectorInput,
+  DetachConnectorOutput,
   EnsureWebhookTokenInput,
   EnsureWebhookTokenOutput,
   ListForUserInput,
@@ -121,6 +127,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
         'agents:set-connector-attachments',
+        'agents:attach-connector',
+        'agents:detach-connector',
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
@@ -381,6 +389,18 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             });
           }
           await assertWriteAllowed(existing, bus, ctx, input.actor);
+          // TASK-739 — the workspace-connector guard runs HERE (not only in the
+          // admin route) so every caller gets it. Over the WHOLE list, as the
+          // route always did: checking only the ids "being added" would read
+          // the row outside any lock, so a non-admin saving a stale list could
+          // re-attach a workspace connector an admin removed a moment earlier.
+          await assertConnectorGrantAllowed(
+            bus,
+            ctx,
+            input.actor,
+            input.connectorIds,
+            'agents:set-connector-attachments',
+          );
           const updated = await localStore.setConnectorAttachments(
             input.agentId,
             input.connectorIds,
@@ -397,6 +417,65 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             actorId: input.actor.userId,
           });
           return { agent: updated };
+        },
+      );
+
+      // TASK-739 — attach ONE connector. Order: id shape → agent exists →
+      // ownership ACL → workspace-connector guard (non-admin) → one row-locked
+      // read-modify-write (append if absent, drop from exclusions).
+      bus.registerService<AttachConnectorInput, AttachConnectorOutput>(
+        'agents:attach-connector',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const connectorId = validateConnectorId(input.connectorId);
+          const existing = await getForConnectorEdit(
+            localStore,
+            input.agentId,
+            'agents:attach-connector',
+          );
+          await assertWriteAllowed(existing, bus, ctx, input.actor);
+          await assertConnectorGrantAllowed(
+            bus,
+            ctx,
+            input.actor,
+            [connectorId],
+            'agents:attach-connector',
+          );
+          const out = await localStore.attachConnector(input.agentId, connectorId);
+          // TASK-737's snapshot-on-attach, on THIS path too: a newly attached
+          // connector copies its per-tool defaults. Only when the id is new to
+          // the attachment list — re-copying an existing attachment would
+          // overwrite the attach-time copy with today's (maybe looser) default.
+          await snapshotNewlyAttachedConnectors(bus, ctx, {
+            agentId: input.agentId,
+            before: existing.connectorAttachments,
+            after: out.agent.connectorAttachments,
+            resolveAs: existing.ownerType === 'user' ? existing.ownerId : input.actor.userId,
+            actorId: input.actor.userId,
+          });
+          return out;
+        },
+      );
+
+      // TASK-739 — detach ONE connector; `exclude` also hides it from the
+      // agent's other sources (a default). Removing reach is never an
+      // escalation, so only the ownership ACL applies.
+      bus.registerService<DetachConnectorInput, DetachConnectorOutput>(
+        'agents:detach-connector',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const connectorId = validateConnectorId(input.connectorId);
+          const existing = await getForConnectorEdit(
+            localStore,
+            input.agentId,
+            'agents:detach-connector',
+          );
+          await assertWriteAllowed(existing, bus, ctx, input.actor);
+          return localStore.detachConnector(
+            input.agentId,
+            connectorId,
+            input.exclude === true,
+          );
         },
       );
 
@@ -764,6 +843,23 @@ async function deleteAgent(
 // any member for team (Task 5 acceptable scope; Task 14 may tighten to
 // team admins only once @ax/teams ships role semantics).
 // ---------------------------------------------------------------------------
+
+async function getForConnectorEdit(
+  store: AgentStore,
+  agentId: string,
+  hookName: string,
+): Promise<Agent> {
+  const existing = await store.getById(agentId);
+  if (existing === null) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `agent '${agentId}' not found`,
+    });
+  }
+  return existing;
+}
 
 async function assertWriteAllowed(
   agent: Agent,

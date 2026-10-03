@@ -296,6 +296,48 @@ describe('runAgentsMigration', () => {
     expect(row.skill_attachments).toEqual([]);
   });
 
+  // TASK-739 — per-agent connector exclusions (hides a default / legacy-owned
+  // connector from one agent). Additive + idempotent; existing rows read [].
+  it('adds connector_exclusions as JSONB NOT NULL DEFAULT [] and backfills existing rows, idempotently', async () => {
+    const k = makeKysely();
+    await runAgentsMigration(k);
+    // Simulate a DB deployed BEFORE TASK-739: drop the column, seed a row.
+    await sql`ALTER TABLE agents_v1_agents DROP COLUMN connector_exclusions`.execute(k);
+    await k
+      .insertInto('agents_v1_agents')
+      .values({
+        agent_id: 'a-old',
+        owner_id: 'u1',
+        owner_type: 'user',
+        visibility: 'personal',
+        display_name: 'Old',
+        allowed_tools: JSON.stringify([]) as unknown,
+        mcp_config_ids: JSON.stringify([]) as unknown,
+        model: 'anthropic/claude-opus-4-7',
+        workspace_ref: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      } as never)
+      .execute();
+    await runAgentsMigration(k);
+    await runAgentsMigration(k); // second run is a no-op
+    const cols = await sql<{ data_type: string; column_default: string | null; is_nullable: 'YES' | 'NO' }>`
+      SELECT data_type, column_default, is_nullable
+        FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents'
+         AND column_name = 'connector_exclusions'
+    `.execute(k);
+    expect(cols.rows).toHaveLength(1);
+    expect(cols.rows[0]).toMatchObject({ data_type: 'jsonb', is_nullable: 'NO' });
+    expect(cols.rows[0]?.column_default ?? '').toContain('[]');
+    const row = await k
+      .selectFrom('agents_v1_agents')
+      .select('connector_exclusions')
+      .where('agent_id', '=', 'a-old')
+      .executeTakeFirstOrThrow();
+    expect(row.connector_exclusions).toEqual([]);
+  });
+
   // PR 2 (provider-agnostic runner, design §6 / §1) ------------------------
 
   it('adds the runner column as TEXT NOT NULL DEFAULT claude-sdk', async () => {

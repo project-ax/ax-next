@@ -435,13 +435,19 @@ interface AgentRecord {
   /**
    * TASK-107 — the connector ids this agent is attached to (the agent row's
    * `connector_attachments` store, replacing TASK-98's `mcpConfigIds` stopgap).
-   * The orchestrator resolves each via `connectors:resolve` and folds its
-   * Capabilities into the session (the THIRD source of resolveEffectiveConnectors,
-   * alongside defaults + the owner's own). Opaque connector-id slugs — no backing
+   * Forwarded to `connectors:list-effective`, which resolves each; the
+   * orchestrator folds its Capabilities into the session (one source of the
+   * effective set, alongside defaults + the owner's legacy items). Opaque connector-id slugs — no backing
    * mechanism vocab. Empty/absent ⟹ no attached connectors (back-compat with a
    * resolve impl predating the field).
    */
   connectorAttachments?: string[];
+  /**
+   * TASK-739 — connector ids removed from this agent that would otherwise
+   * arrive as a default or legacy item (the agent row's `connector_exclusions`).
+   * Forwarded to `connectors:list-effective`. Absent ⟹ no exclusions.
+   */
+  connectorExclusions?: string[];
 }
 interface AgentsResolveOutput {
   agent: AgentRecord;
@@ -2670,9 +2676,10 @@ export function createOrchestrator(
       ...(config.builtinSkills ?? []).filter((s) => !presentIds.has(s.id)),
     ];
 
-    // TASK-97/107 — CONNECTOR union. Resolve the agent's effective connector set
-    // (workspace defaults ∪ the agent's per-agent ATTACHMENTS ∪ the owner's own
-    // connectors) and fold each connector's Capabilities through the SAME
+    // TASK-97/107/739 — CONNECTOR union. Resolve the agent's effective connector
+    // set via connectors:list-effective (workspace defaults ∪ the agent's
+    // per-agent ATTACHMENTS ∪ the owner's legacy connectors, minus the agent's
+    // EXCLUSIONS) and fold each connector's Capabilities through the SAME
     // materialization path skills use: hosts → baseAllowSet, credential slots →
     // baseCreds (namespaced `connector:<id>:<slot>`), packages → the registry
     // auto-allow below, mcpServers → installed-skill entries (synthetic SKILL.md +
@@ -2681,11 +2688,12 @@ export function createOrchestrator(
     // resolve failure yields fewer connectors, never terminates (connectors are
     // additive reach). TASK-107 — the per-agent attachment ids (the agent row's
     // `connector_attachments` store, replacing TASK-98's `mcpConfigIds` stopgap)
-    // are the THIRD source; an agent row predating the column reads [].
+    // and exclusions are forwarded; an agent row predating a column reads [].
     const effectiveConnectors = await resolveEffectiveConnectors(
       bus,
       ctx,
       agent.connectorAttachments ?? [],
+      agent.connectorExclusions ?? [],
     );
 
     // TASK-111 — the skill→connector cap-resolution bridge. A skill declares the
