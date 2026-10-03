@@ -8,6 +8,7 @@ import {
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
+import { snapshotNewlyAttachedConnectors } from './connector-snapshot.js';
 import { listAuthoredSkills } from './authored-skills.js';
 import { projectAuthoredBundle } from './authored-caps.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
@@ -154,7 +155,12 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         {
           hook: 'connectors:resolve',
           degradation:
-            "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected",
+            "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected; a newly attached connector also cannot copy its per-tool defaults",
+        },
+        {
+          hook: 'tool-policy:snapshot-connector-for-agent',
+          degradation:
+            "a newly attached connector does not copy its per-tool defaults; the agent follows the connector's live defaults instead (a later loosening by the connector's editor then applies to it too)",
         },
         {
           hook: 'models:get-policy',
@@ -379,6 +385,17 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             input.agentId,
             input.connectorIds,
           );
+          // TASK-737 — newly attached connectors copy their per-tool
+          // defaults (best-effort; see connector-snapshot.ts). Resolved as the
+          // agent's owner for a personal agent — who its sessions resolve as —
+          // else as the person attaching.
+          await snapshotNewlyAttachedConnectors(bus, ctx, {
+            agentId: input.agentId,
+            before: existing.connectorAttachments,
+            after: updated.connectorAttachments,
+            resolveAs: existing.ownerType === 'user' ? existing.ownerId : input.actor.userId,
+            actorId: input.actor.userId,
+          });
           return { agent: updated };
         },
       );
