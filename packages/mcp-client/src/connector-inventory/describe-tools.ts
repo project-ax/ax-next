@@ -14,7 +14,8 @@
 //      blip) → the call throws `credential-unavailable` and stores nothing
 //      (TASK-756), so a blip is never reported as a sign-in problem.
 //      stdio servers can't be listed host-side → `unknown`.
-//   5. Store, and fire `connectors:tools-discovered` when an `ok` inventory
+//   5. Store (a failed write is logged and the answer held in memory, so
+//      the cooldown still sees it — TASK-773), and fire `connectors:tools-discovered` when an `ok` inventory
 //      differs from the last `ok` one.
 //
 // Secrets: header values live only in the per-server `headers` objects of
@@ -54,7 +55,8 @@ export const FAILURE_TTL_MS = 60 * 1000;
  * Inside the window a call is answered from the row it already has, fresh or
  * stale, `force` or not. Only a (user, agent, connector) that has NEVER been
  * checked is checked inside a window: there is nothing to answer it with, and
- * that happens once per agent, ever (rows persist). This is the one
+ * that happens once per agent, ever (rows persist; an answer the store
+ * refused to keep is held in memory instead, TASK-773). This is the one
  * chokepoint every check passes through (Retry, Reconnect, `?refresh=1`, an
  * expired cache), so no caller can probe a third-party server faster. Per
  * process: N replicas allow N per window, a small fixed multiple that never
@@ -62,6 +64,13 @@ export const FAILURE_TTL_MS = 60 * 1000;
  */
 export const CHECK_COOLDOWN_MS = 30 * 1000;
 const CHECK_COOLDOWN_MAX_KEYS = 1_000;
+/**
+ * TASK-773 — bound on answers held in memory because the store refused them.
+ * The cooldown above reads the stored row ("rows persist"); when the write
+ * fails there is no row, so without this a never-stored (user, agent,
+ * connector) would be checked on every call. Oldest goes first when full.
+ */
+const UNSTORED_MAX_KEYS = 1_000;
 
 // Local structural view of `connectors:resolve` output (I2: no runtime import
 // of @ax/connectors; only the fields this hook reads).
@@ -140,6 +149,22 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     }
     lastChecked.set(key, at);
   }
+  /**
+   * (user, agent, connector) → the last answer this process produced that the
+   * store did NOT keep (TASK-773). It stands in for the missing row, so the
+   * TTL and the cooldown see a checked connector whether or not the write
+   * landed. Dropped as soon as a write for that key succeeds.
+   */
+  const unstored = new Map<string, InventoryRow>();
+  function keepUnstored(key: string, row: InventoryRow): void {
+    unstored.delete(key);
+    while (unstored.size >= UNSTORED_MAX_KEYS) {
+      const oldest = unstored.keys().next().value;
+      if (oldest === undefined) break;
+      unstored.delete(oldest);
+    }
+    unstored.set(key, row);
+  }
 
   async function headersFor(
     connector: ResolvedConnector,
@@ -179,6 +204,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     input: { userId: string; connectorId: string },
     ctx: AgentContext,
     key: InventoryKey,
+    flightKey: string,
     previous: InventoryRow | null,
     connector: ResolvedConnector,
   ): Promise<DescribeToolsOutput> {
@@ -249,7 +275,21 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
 
     const checkedAt = now();
     const fp = status === 'ok' ? fingerprint(tools) : (previous?.fingerprint ?? '');
-    await deps.store.put(key, { status, tools, fingerprint: fp, checkedAt });
+    const row: InventoryRow = { status, tools, fingerprint: fp, checkedAt };
+    try {
+      await deps.store.put(key, row);
+      unstored.delete(flightKey);
+    } catch (err) {
+      // TASK-773 — the servers WERE asked, so this is a real answer: return it,
+      // and hold it in memory so the next call inside the window is answered
+      // from it instead of asking again. Logged loudly; never swallowed. Only
+      // the error's code/name is logged — a driver message can quote values.
+      ctx.logger.error('connector_inventory_store_failed', {
+        connectorId: input.connectorId,
+        code: err instanceof PluginError ? err.code : err instanceof Error ? err.name : 'error',
+      });
+      keepUnstored(flightKey, row);
+    }
     ctx.logger.info('connector_inventory_checked', {
       connectorId: input.connectorId,
       status,
@@ -301,7 +341,15 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       ctx,
       { userId: input.userId, connectorId: input.connectorId },
     );
-    const previous = await deps.store.get(key);
+    const flightKey = JSON.stringify([key.userId, key.agentId, key.connectorId]);
+    // TASK-773 — the newest real answer: the stored row, or the one the store
+    // refused to keep (whichever was checked later).
+    const stored = await deps.store.get(key);
+    const kept = unstored.get(flightKey);
+    const previous =
+      kept !== undefined && (stored === null || kept.checkedAt.getTime() > stored.checkedAt.getTime())
+        ? kept
+        : stored;
     const coolKey = JSON.stringify([key.userId, key.connectorId]);
     const at = now().getTime();
     const cached = (row: InventoryRow): DescribeToolsOutput => ({
@@ -321,11 +369,10 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
         return cached(previous);
       }
     }
-    const flightKey = JSON.stringify([key.userId, key.agentId, key.connectorId]);
     const pending = inFlight.get(flightKey);
     if (pending !== undefined) return pending;
     noteChecked(coolKey, at);
-    const run = check(input, ctx, key, previous, connector)
+    const run = check(input, ctx, key, flightKey, previous, connector)
       .catch((err: unknown) => {
         // A credential blip throws before any server was asked (pass 1), so
         // it must not use up the window — "try again" has to mean it.
