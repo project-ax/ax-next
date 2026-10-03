@@ -285,6 +285,33 @@ describe('FirstRunAutoCreate — a failure has a way out (TASK-689)', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
+  it('adding: Escape works the instant the failure card is on screen (TASK-772)', async () => {
+    // OLD (passive useEffect): the card committed on a non-sync lane and the
+    // keydown listener attached in a LATER task, so an Escape pressed in that
+    // gap was silently dropped — 20/20 with this test, and the cause of the
+    // CI flake in the test above. The MutationObserver callback is a microtask
+    // right after React's DOM mutation, i.e. the earliest moment a person
+    // could see Cancel; Escape must already work then.
+    vi.spyOn(autoCreate, 'autoCreateBareAgent').mockRejectedValue(new Error('boom'));
+    const onBack = vi.fn();
+    let pressed = false;
+    const observer = new MutationObserver(() => {
+      if (pressed || !screen.queryByRole('button', { name: /cancel/i })) return;
+      pressed = true;
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    try {
+      render(
+        <FirstRunAutoCreate agentName="Scout" mode="add" onBack={onBack} onDone={vi.fn()} />,
+      );
+      await waitFor(() => expect(pressed).toBe(true));
+    } finally {
+      observer.disconnect();
+    }
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
   it('first run: Escape on the failure card does nothing', async () => {
     // Passes on the old component; pins that the new listener is add-only.
     const onBack = await renderFailed('first-run');

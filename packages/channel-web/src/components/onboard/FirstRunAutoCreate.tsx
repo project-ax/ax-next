@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { SetupShell } from '../setup/SetupShell';
@@ -62,7 +62,16 @@ export function FirstRunAutoCreate({
   // Escape is the same "out" as Cancel, but only when adding and only once the
   // create has failed. First run has nothing to go back to that Escape should
   // promise; a running create is not something to walk away from.
-  useEffect(() => {
+  //
+  // A LAYOUT effect, not a passive one (TASK-772). The failure arrives from a
+  // promise continuation, so React commits the card on a non-sync lane and
+  // defers passive effects to a later task: for that gap the Cancel button is
+  // on screen but Escape was silently dropped. Measured 20/20 with a keydown
+  // fired from a MutationObserver the moment Cancel appeared; it is also what
+  // made the CI test flaky (the test's keydown landed in the gap). Layout
+  // effects run inside the commit, so "the card is visible" now implies
+  // "Escape works".
+  useLayoutEffect(() => {
     if (!isAdd || !failed) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing) return;
