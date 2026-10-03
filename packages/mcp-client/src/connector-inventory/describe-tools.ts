@@ -17,9 +17,12 @@
 //   5. Store, and fire `connectors:tools-discovered` when an `ok` inventory
 //      differs from the last `ok` one.
 //
-// Secrets: header values live only in the `headers` object handed to the
-// transport for the duration of one listing. They are never logged, stored,
-// or returned.
+// Secrets: header values live only in the per-server `headers` objects of
+// one describe call — read for every server first (so a credential blip
+// stops the call before anything is sent; TASK-756), then handed to the
+// transport for each listing. They are never logged, stored, or returned,
+// and are dropped when the call returns.
+
 // ---------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
@@ -46,16 +49,19 @@ export const OK_TTL_MS = 15 * 60 * 1000;
  *  renders, short enough that signing in shows up without a forced Retry. */
 export const FAILURE_TTL_MS = 60 * 1000;
 /**
- * TASK-756 — a `force` (Retry / Reconnect / `?refresh=1`) is honoured at most
- * once per window per (user, connector), whichever route asked. Inside the
- * window a forced call is served like an unforced one (the cached row while
- * it is fresh). This is the one chokepoint every forced check passes through,
- * so no caller can probe a third-party server faster than this. Per process:
- * N replicas bound it at N per window, a small fixed multiple — never one
- * that grows with how hard a client pushes.
+ * TASK-756 — at most one check of a connector's servers per window per
+ * (user, connector), whichever route asked and whichever agent it was for.
+ * Inside the window a call is answered from the row it already has, fresh or
+ * stale, `force` or not. Only a (user, agent, connector) that has NEVER been
+ * checked is checked inside a window: there is nothing to answer it with, and
+ * that happens once per agent, ever (rows persist). This is the one
+ * chokepoint every check passes through (Retry, Reconnect, `?refresh=1`, an
+ * expired cache), so no caller can probe a third-party server faster. Per
+ * process: N replicas allow N per window, a small fixed multiple that never
+ * grows with how hard a client pushes.
  */
-export const FORCE_COOLDOWN_MS = 30 * 1000;
-const FORCE_COOLDOWN_MAX_KEYS = 1_000;
+export const CHECK_COOLDOWN_MS = 30 * 1000;
+const CHECK_COOLDOWN_MAX_KEYS = 1_000;
 
 // Local structural view of `connectors:resolve` output (I2: no runtime import
 // of @ax/connectors; only the fields this hook reads).
@@ -120,19 +126,19 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
   const now = deps.now ?? (() => new Date());
   const list = deps.listTools ?? listServerTools;
   const inFlight = new Map<string, Promise<DescribeToolsOutput>>();
-  /** (user, connector) → when a forced check last started (TASK-756). */
-  const lastForced = new Map<string, number>();
-  function noteForced(key: string, at: number): void {
-    lastForced.delete(key);
-    if (lastForced.size >= FORCE_COOLDOWN_MAX_KEYS) {
-      for (const [k, t] of lastForced) if (at - t >= FORCE_COOLDOWN_MS || at < t) lastForced.delete(k);
-      while (lastForced.size >= FORCE_COOLDOWN_MAX_KEYS) {
-        const oldest = lastForced.keys().next().value;
+  /** (user, connector) → when a check of its servers last started (TASK-756). */
+  const lastChecked = new Map<string, number>();
+  function noteChecked(key: string, at: number): void {
+    lastChecked.delete(key);
+    if (lastChecked.size >= CHECK_COOLDOWN_MAX_KEYS) {
+      for (const [k, t] of lastChecked) if (at - t >= CHECK_COOLDOWN_MS || at < t) lastChecked.delete(k);
+      while (lastChecked.size >= CHECK_COOLDOWN_MAX_KEYS) {
+        const oldest = lastChecked.keys().next().value;
         if (oldest === undefined) break;
-        lastForced.delete(oldest);
+        lastChecked.delete(oldest);
       }
     }
-    lastForced.set(key, at);
+    lastChecked.set(key, at);
   }
 
   async function headersFor(
@@ -296,42 +302,39 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       { userId: input.userId, connectorId: input.connectorId },
     );
     const previous = await deps.store.get(key);
-    const forceKey = JSON.stringify([key.userId, key.connectorId]);
+    const coolKey = JSON.stringify([key.userId, key.connectorId]);
     const at = now().getTime();
-    let force = input.force === true;
-    if (force) {
-      const last = lastForced.get(forceKey);
-      if (last !== undefined && at >= last && at - last < FORCE_COOLDOWN_MS) {
-        callerCtx.logger.info('connector_inventory_force_cooled_down', { connectorId: input.connectorId });
-        force = false;
-      }
-    }
-    if (previous !== null && !force) {
+    const cached = (row: InventoryRow): DescribeToolsOutput => ({
+      status: row.status,
+      tools: row.tools,
+      checkedAt: row.checkedAt.toISOString(),
+    });
+    if (previous !== null) {
       const ttl = previous.status === 'ok' ? OK_TTL_MS : FAILURE_TTL_MS;
-      const age = now().getTime() - previous.checkedAt.getTime();
-      if (age >= 0 && age < ttl) {
-        return {
-          status: previous.status,
-          tools: previous.tools,
-          checkedAt: previous.checkedAt.toISOString(),
-        };
+      const age = at - previous.checkedAt.getTime();
+      if (input.force !== true && age >= 0 && age < ttl) return cached(previous);
+      const last = lastChecked.get(coolKey);
+      if (last !== undefined && at >= last && at - last < CHECK_COOLDOWN_MS) {
+        // Forced, or stale: either way not inside the window. What we have is
+        // the last real answer.
+        callerCtx.logger.info('connector_inventory_check_cooled_down', { connectorId: input.connectorId });
+        return cached(previous);
       }
     }
     const flightKey = JSON.stringify([key.userId, key.agentId, key.connectorId]);
     const pending = inFlight.get(flightKey);
     if (pending !== undefined) return pending;
-    if (force) noteForced(forceKey, at);
+    noteChecked(coolKey, at);
     const run = check(input, ctx, key, previous, connector)
       .catch((err: unknown) => {
         // A credential blip throws before any server was asked (pass 1), so
         // it must not use up the window — "try again" has to mean it.
         if (
-          force &&
           err instanceof PluginError &&
           err.code === 'credential-unavailable' &&
-          lastForced.get(forceKey) === at
+          lastChecked.get(coolKey) === at
         ) {
-          lastForced.delete(forceKey);
+          lastChecked.delete(coolKey);
         }
         throw err;
       })

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { PluginError, makeAgentContext, createLogger, type AgentContext } from '@ax/core';
 import {
   FAILURE_TTL_MS,
-  FORCE_COOLDOWN_MS,
+  CHECK_COOLDOWN_MS,
   OK_TTL_MS,
   createDescribeTools,
   type BusLike,
@@ -257,6 +257,7 @@ describe('connectors:describe-tools', () => {
     expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('ok');
     const before = [...t.store.rows.values()][0];
     blip = true;
+    t.advance(CHECK_COOLDOWN_MS);
     await expect(t.run({ userId: 'u1', connectorId: 'linear', force: true })).rejects.toMatchObject({
       code: 'credential-unavailable',
     });
@@ -321,6 +322,7 @@ describe('connectors:describe-tools', () => {
     it('force bypasses a fresh row', async () => {
       const t = setup();
       await t.run({ userId: 'u1', connectorId: 'linear' });
+      t.advance(CHECK_COOLDOWN_MS); // TASK-756: one check per window
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       expect(t.list).toHaveBeenCalledTimes(2);
     });
@@ -385,10 +387,12 @@ describe('connectors:describe-tools', () => {
         hook: 'connectors:tools-discovered',
         payload: { connectorId: 'linear', tools: [{ ...tools[0], toolKey: `mcp.${NS}.a` }] },
       });
+      t.advance(CHECK_COOLDOWN_MS);
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(2); // really re-listed, and unchanged
       expect(t.fired).toHaveLength(1);
       tools = [...tools, { name: 'b', title: 'b', description: '', readOnly: null, outward: null }];
-      t.advance(FORCE_COOLDOWN_MS); // TASK-756: one honoured force per window
+      t.advance(CHECK_COOLDOWN_MS); // TASK-756: one honoured force per window
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       expect(t.fired).toHaveLength(2);
     });
@@ -398,9 +402,10 @@ describe('connectors:describe-tools', () => {
       const t = setup({ list: async () => outcome });
       await t.run({ userId: 'u1', connectorId: 'linear' });
       outcome = { kind: 'unreachable', reason: 'timeout' };
+      t.advance(CHECK_COOLDOWN_MS);
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       outcome = { kind: 'ok', dropped: 0, tools: [] };
-      t.advance(FORCE_COOLDOWN_MS);
+      t.advance(CHECK_COOLDOWN_MS);
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       expect(t.list).toHaveBeenCalledTimes(3);
       expect(t.fired).toHaveLength(1);
@@ -413,7 +418,7 @@ describe('connectors:describe-tools', () => {
     it('a second force inside the window is served from the cache — no new listing', async () => {
       const t = setup();
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
-      t.advance(FORCE_COOLDOWN_MS - 1);
+      t.advance(CHECK_COOLDOWN_MS - 1);
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       expect(t.list).toHaveBeenCalledTimes(1);
       t.advance(1);
@@ -421,20 +426,38 @@ describe('connectors:describe-tools', () => {
       expect(t.list).toHaveBeenCalledTimes(2);
     });
 
-    it('is keyed on user + connector: switching agent does not buy another forced probe', async () => {
+    // Round-3 review F1 — switching agent must not buy a probe either.
+    it('is keyed on user + connector: inside the window another agent with a STALE row is answered from it', async () => {
       const t = setup();
+      const stale: InventoryRow = {
+        status: 'unreachable',
+        tools: [],
+        fingerprint: '',
+        checkedAt: new Date(Date.parse('2026-10-02T11:00:00Z')), // an hour old
+      };
+      await t.store.put({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear' }, stale);
       await t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true });
-      await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true });
-      // agent-2 had no row, so it is checked — but as an UNFORCED check, and a
-      // third call inside the window for either agent reads its fresh row.
-      await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true });
-      await t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(1);
+      const out = await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true });
+      expect(out.status).toBe('unreachable');
+      expect(t.list).toHaveBeenCalledTimes(1);
+      // Unforced but expired: same answer inside the window.
+      await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear' });
+      expect(t.list).toHaveBeenCalledTimes(1);
+      // A never-checked agent has nothing to answer with, so it is checked — once.
+      await t.run({ userId: 'u1', agentId: 'agent-3', connectorId: 'linear', force: true });
+      await t.run({ userId: 'u1', agentId: 'agent-3', connectorId: 'linear', force: true });
       expect(t.list).toHaveBeenCalledTimes(2);
       // Another person is not held back by u1.
-      await t.run({ userId: 'u2', connectorId: 'linear', force: true });
+      await t.run({ userId: 'u2', agentId: 'agent-1', connectorId: 'linear', force: true });
       expect(t.list).toHaveBeenCalledTimes(3);
+      // After the window, agent-2's stale row is re-checked.
+      t.advance(CHECK_COOLDOWN_MS);
+      await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear' });
+      expect(t.list).toHaveBeenCalledTimes(4);
     });
 
+    // Round-3 review F2 — observable only when ANOTHER row could be served.
     it('a credential blip does not use up the window (no server was asked)', async () => {
       let blip = true;
       const t = setup({
@@ -443,11 +466,20 @@ describe('connectors:describe-tools', () => {
           return 'tok-123';
         },
       });
-      await expect(t.run({ userId: 'u1', connectorId: 'linear', force: true })).rejects.toMatchObject({
-        code: 'credential-unavailable',
-      });
+      const stale: InventoryRow = {
+        status: 'unreachable',
+        tools: [],
+        fingerprint: '',
+        checkedAt: new Date(Date.parse('2026-10-02T11:00:00Z')),
+      };
+      await t.store.put({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear' }, stale);
+      await expect(
+        t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true }),
+      ).rejects.toMatchObject({ code: 'credential-unavailable' });
       blip = false;
-      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      // Had the blip kept its window, agent-2 would be served its stale row.
+      const out = await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true });
+      expect(out.status).toBe('ok');
       expect(t.list).toHaveBeenCalledTimes(1);
     });
 
