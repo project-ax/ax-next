@@ -857,25 +857,102 @@ describe('tool permissions (TASK-737)', () => {
     expect(options.onSaved).not.toHaveBeenCalled();
   });
 
-  it('says which choices are unsaved suggestions before Save writes them', async () => {
-    // get_issue has a saved default; the other three are suggestions.
-    serve(inventory());
-    await openEditor();
-    const note = await screen.findByTestId('tool-permission-suggestions');
-    expect(note).toHaveTextContent(
-      /^3 tools haven’t been set yet, so we’ve suggested a choice for each based on how the tool describes itself\. Check them before you save\./,
-    );
-  });
+  describe('Suggested badge (TASK-764)', () => {
+    const NOTE =
+      'Suggestions come from how the connector describes its tools — check them before saving.';
+    const row = (title: string) => group(title).closest('li') as HTMLElement;
+    const isSuggested = (title: string) =>
+      within(row(title)).queryByText('Suggested') !== null;
 
-  it('has no suggestion note once every listed tool has a saved choice', async () => {
-    serve(
-      inventory({
-        defaults: inventory().tools.map((t) => ({ toolKey: t.toolKey, verdict: 'hold' })),
-      }),
-    );
-    await openEditor();
-    await screen.findByRole('group', { name: 'Permission for Search issues' });
-    expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
+    it('marks only untouched prefilled rows Suggested, with a one-line note above', async () => {
+      // get_issue has a saved default; the other three are suggestions.
+      serve(inventory());
+      await openEditor();
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      expect(screen.getByTestId('tool-permission-suggestions')).toHaveTextContent(NOTE);
+      expect(isSuggested('Search issues')).toBe(true);
+      expect(isSuggested('Create issue')).toBe(true);
+      expect(isSuggested('Update issue')).toBe(true);
+      expect(isSuggested('Read an issue')).toBe(false);
+      expect(screen.getAllByTestId('tool-permission-suggested')).toHaveLength(3);
+    });
+
+    it('drops the badge from a row the person picks, and the note once none are left', async () => {
+      serve(inventory());
+      await openEditor();
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      fireEvent.click(within(group('Create issue')).getByRole('radio', { name: 'Deny' }));
+      expect(isSuggested('Create issue')).toBe(false);
+      expect(isSuggested('Search issues')).toBe(true);
+      // Picking a different choice and coming back is still the person's choice.
+      fireEvent.click(within(group('Update issue')).getByRole('radio', { name: 'Deny' }));
+      fireEvent.click(within(group('Update issue')).getByRole('radio', { name: 'Ask first' }));
+      expect(isSuggested('Update issue')).toBe(false);
+      expect(screen.getByTestId('tool-permission-suggestions')).toBeVisible();
+      fireEvent.click(within(group('Search issues')).getByRole('radio', { name: 'Deny' }));
+      expect(screen.queryByTestId('tool-permission-suggested')).toBeNull();
+      expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
+    });
+
+    it('Save writes the untouched suggestions, and once saved they are no longer marked', async () => {
+      serve(inventory({ defaults: [] }));
+      const options = { ...props(), isAdmin: true };
+      const view = render(<ConnectorEditDialog {...options} />);
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      expect(screen.getAllByTestId('tool-permission-suggested')).toHaveLength(4);
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+      const saved = toolPermsPuts[0]!.body.verdicts as { toolKey: string; verdict: string }[];
+      expect(saved).toEqual([
+        { toolKey: 'mcp.linear.search_issues', verdict: 'allow' },
+        { toolKey: 'mcp.linear.get_issue', verdict: 'allow' },
+        { toolKey: 'mcp.linear.create_issue', verdict: 'hold' },
+        { toolKey: 'mcp.linear.update_issue', verdict: 'hold' },
+      ]);
+      // The server now holds them as saved defaults: reopening shows no suggestions.
+      view.unmount();
+      serve(inventory({ defaults: saved }));
+      render(<ConnectorEditDialog {...{ ...props(), isAdmin: true }} />);
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      expect(pressed('Search issues')).toEqual(['Allow']);
+      expect(screen.queryByTestId('tool-permission-suggested')).toBeNull();
+      expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
+    });
+
+    it('keeps the badges when the connector saves but its tool permissions do not', async () => {
+      serve(inventory({ defaults: [] }));
+      toolPermsPut = () => new Response(JSON.stringify({ error: 'nope' }), { status: 500 });
+      await openEditor();
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      await screen.findByText(
+        'We saved the connector, but not its tool permissions. Try saving again.',
+      );
+      expect(screen.getAllByTestId('tool-permission-suggested')).toHaveLength(4);
+    });
+
+    it('has no badge or note once every listed tool has a saved choice', async () => {
+      serve(
+        inventory({
+          defaults: inventory().tools.map((t) => ({ toolKey: t.toolKey, verdict: 'hold' })),
+        }),
+      );
+      await openEditor();
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
+      expect(screen.queryByTestId('tool-permission-suggested')).toBeNull();
+    });
+
+    it('never marks a saved choice for a tool the server no longer lists', async () => {
+      serve(inventory({ tools: [], defaults: [{ toolKey: 'mcp.linear.get_issue', verdict: 'deny' }] }));
+      await openEditor();
+      await screen.findByRole('group', { name: 'Permission for get_issue' });
+      expect(screen.queryByTestId('tool-permission-suggested')).toBeNull();
+      expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
+    });
   });
 
   it('does not claim a server listed no tools while showing earlier choices without saying so', async () => {

@@ -7,6 +7,8 @@
  *
  * Always visible, never collapsed: a prefilled choice (read-only → Allow,
  * anything else → Ask first) is written on Save, so it must be on screen first.
+ * Until then each such row carries a "Suggested" badge (TASK-764): the choice
+ * came from the server's own, unchecked, description of the tool.
  *
  * SECURITY — tool titles and descriptions are written by the connector's
  * server, not by us. They render as React text only (never markup), the
@@ -25,6 +27,7 @@ import {
 import type { ToolPermissionsState } from '@/lib/use-tool-permissions';
 import { cn } from '@/lib/utils';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FieldDescription, FieldSet, FieldLegend } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -99,11 +102,14 @@ function TheirDescription({
 function ToolRow({
   tool,
   verdict,
+  suggested,
   connectorName,
   onChange,
 }: {
   tool: InventoryTool;
   verdict: ToolVerdict | undefined;
+  /** The choice is our untouched prefill, not a saved one. */
+  suggested: boolean;
   connectorName: string;
   onChange: (verdict: ToolVerdict) => void;
 }) {
@@ -113,6 +119,15 @@ function ToolRow({
       <span className="min-w-0 flex-1 truncate text-sm" title={title}>
         {title}
       </span>
+      {suggested && (
+        <Badge
+          variant="outline"
+          data-testid="tool-permission-suggested"
+          className="shrink-0 border-border px-2 font-normal text-muted-foreground"
+        >
+          Suggested
+        </Badge>
+      )}
       {tool.description.trim() && (
         <TheirDescription
           connectorName={connectorName}
@@ -169,6 +184,7 @@ function ToolGroup({
             key={tool.toolKey}
             tool={tool}
             verdict={state.verdicts.get(tool.toolKey)}
+            suggested={state.suggested.has(tool.toolKey)}
             connectorName={connectorName}
             onChange={(v) => state.setVerdict(tool.toolKey, v)}
           />
@@ -191,12 +207,6 @@ function unavailableMessage(data: ToolPermissions): string {
         ? 'This connector didn’t list any tools this time. The ones you set before are below.'
         : 'This connector didn’t list any tools.';
   }
-}
-
-/** Inventory tools with no saved default: their selection is a suggestion. */
-function unsavedSuggestions(data: ToolPermissions): number {
-  const saved = new Set(data.defaults.map((d) => d.toolKey));
-  return data.tools.filter((t) => !saved.has(t.toolKey)).length;
 }
 
 export function ConnectorToolPermissions({
@@ -247,19 +257,15 @@ export function ConnectorToolPermissions({
     const { data } = load;
     const unavailable = data.status !== 'ok' || data.tools.length === 0;
     const groups = groupTools(toolRows(data));
-    const suggested = unsavedSuggestions(data);
     body = (
       <>
-        {suggested > 0 && (
+        {state.suggested.size > 0 && (
           // A suggestion comes from how each tool describes ITSELF, which we
-          // can't check. Saving writes what's on screen, so say so before the
-          // person presses Save — not after.
+          // can't check. Save writes every choice on screen, suggestions
+          // included (TASK-764), so say so before the person presses Save.
           <p data-testid="tool-permission-suggestions" className="text-sm text-muted-foreground">
-            {suggested === 1
-              ? 'One tool hasn’t been set yet, so we’ve suggested a choice'
-              : `${suggested} tools haven’t been set yet, so we’ve suggested a choice for each`}{' '}
-            based on how the tool describes itself. Check them before you save. Saving keeps
-            them; until then, agents ask first.
+            Suggestions come from how the connector describes its tools — check them
+            before saving.
           </p>
         )}
         {unavailable && (

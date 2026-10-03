@@ -34,6 +34,10 @@ export interface ToolPermissionsState {
   reload: (refresh?: boolean) => void;
   /** Rows to PUT on Save — empty unless the section has loaded. */
   changes: VerdictChange[];
+  /** Tools still showing the untouched prefill: no saved default, and the
+   *  person hasn't picked a choice for them. Save writes these too, so the
+   *  section marks them "Suggested" until then (TASK-764). */
+  suggested: ReadonlySet<string>;
 }
 
 export function useToolPermissions(
@@ -82,6 +86,15 @@ export function useToolPermissions(
     () => (data ? changedRows(savedVerdicts(data), verdicts) : []),
     [data, verdicts],
   );
+  const suggested = useMemo(() => {
+    if (!data) return new Set<string>();
+    const saved = new Set(data.defaults.map((d) => d.toolKey));
+    return new Set(
+      data.tools
+        .map((t) => t.toolKey)
+        .filter((k) => !saved.has(k) && !edits.has(k)),
+    );
+  }, [data, edits]);
   const setVerdict = useCallback((toolKey: string, verdict: ToolVerdict) => {
     setEdits((current) => new Map(current).set(toolKey, verdict));
   }, []);
@@ -89,5 +102,5 @@ export function useToolPermissions(
     setRequest((r) => ({ n: r.n + 1, refresh }));
   }, []);
 
-  return { load, verdicts, setVerdict, reload, changes };
+  return { load, verdicts, setVerdict, reload, changes, suggested };
 }
