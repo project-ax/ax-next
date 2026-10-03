@@ -282,6 +282,45 @@ describe('sign in, then attach', () => {
     await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'notion'));
   });
 
+  it('a sign-in + key connector: sign in, then the key, then attach — even while the status read lags', async () => {
+    vi.mocked(getConnector).mockImplementation(async (id) => {
+      const c = full(id);
+      if (id === 'notion') c.capabilities.credentials.push({ slot: 'token', kind: 'api-key' });
+      return c;
+    });
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    // getOAuthStatus keeps answering not-connected throughout.
+    postOAuth('notion', 'success');
+    const dialog = await screen.findByRole('dialog', { name: 'Key for Notion' });
+    expect(attachMock).not.toHaveBeenCalled();
+    userCreds = [
+      { scope: 'user', ownerId: 'u1', ref: 'account:notion:token', kind: 'api-key', createdAt: '' },
+      { scope: 'user', ownerId: 'u1', ref: 'account:notion:notion', kind: 'oauth', createdAt: '' },
+    ];
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save key' }));
+    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'notion'));
+    expect(onAttached).toHaveBeenCalled();
+    expect(beginOAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed re-check after a good sign-in offers Retry that re-reads, not a second sign-in', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    vi.mocked(getConnector).mockRejectedValueOnce(new Error('blip'));
+    postOAuth('notion', 'success');
+    expect(await screen.findByText('We couldn’t check Notion just now. Please try again.')).toBeTruthy();
+    expect(attachMock).not.toHaveBeenCalled();
+    fireEvent.click(within(row('Notion')).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'notion'));
+    expect(onAttached).toHaveBeenCalled();
+    expect(beginOAuth).toHaveBeenCalledTimes(1);
+  });
+
   it('a failed sign-in attaches nothing and says so', async () => {
     renderAdd();
     await ready();

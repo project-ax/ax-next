@@ -69,8 +69,12 @@ type RowAction = AddAction | 'checking';
 
 interface RowProblem {
   text: string;
-  /** Retry the attach (the sign-in / key is already done). */
-  retry: boolean;
+  /**
+   * What Retry does. `attach` re-attaches (the sign-in / key is already
+   * done); `recheck` re-reads what the connector still needs. Neither ever
+   * starts a second sign-in.
+   */
+  retry: 'attach' | 'recheck' | null;
 }
 
 export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
@@ -140,7 +144,8 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
             let action: AddAction;
             try {
               action = await actionFor(c.id);
-            } catch {
+            } catch (e) {
+              logRequestFailure(e, 'add-connector');
               // The full record didn't load. "Add key" opens the key dialog,
               // which re-reads it and says plainly if it still can't — it
               // never attaches on its own.
@@ -192,10 +197,10 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         setProblem(
           c.id,
           e instanceof HttpError && e.status === 403
-            ? { text: `Only a workspace admin can add ${c.name} to ${name}.`, retry: false }
+            ? { text: `Only a workspace admin can add ${c.name} to ${name}.`, retry: null }
             : {
                 text: `We couldn’t add ${c.name} to ${name} just now. What you set up is saved — ${name} just can’t use it until it’s added.`,
-                retry: true,
+                retry: 'attach',
               },
         );
       } finally {
@@ -213,18 +218,25 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
    * A sign-in or key just succeeded: re-read what the connector still needs,
    * then do the next step. Attach only when nothing is left.
    */
+  // Connectors whose sign-in succeeded in this subview. The status read can
+  // lag the callback, so a later re-check (after a key, or a Retry) must not
+  // send the person back to "Sign in" for a sign-in they just finished.
+  const signedIn = useRef(new Set<string>());
+
   const advance = useCallback(
-    async (c: ConnectorSummary, signedIn: boolean) => {
+    async (c: ConnectorSummary) => {
       let next: AddAction;
       try {
-        next = await actionFor(c.id, signedIn);
-      } catch {
+        next = await actionFor(c.id, signedIn.current.has(c.id));
+      } catch (e) {
+        logRequestFailure(e, 'add-connector');
         setProblem(c.id, {
           text: `We couldn’t check ${c.name} just now. Please try again.`,
-          retry: false,
+          retry: 'recheck',
         });
         return;
       }
+      setProblem(c.id, null);
       setActions((prev) => ({ ...prev, [c.id]: next }));
       if (next === 'add') {
         setKeying(null);
@@ -316,12 +328,16 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
               attaching={attaching.has(c.id)}
               problem={problems[c.id] ?? null}
               teamAgent={teamAgent}
-              onSignedIn={() => void advance(c, true)}
+              onSignedIn={() => {
+                signedIn.current.add(c.id);
+                void advance(c);
+              }}
               onAddKey={() => {
                 setProblem(c.id, null);
                 setKeying(c);
               }}
               onAdd={() => void attach(c)}
+              onRecheck={() => void advance(c)}
             />
           ))}
         </Card>
@@ -341,7 +357,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
           }}
           // A key was saved. Attach only once EVERY key it needs is there —
           // a multi-key connector calls this once per key.
-          onConnected={() => void advance(keying, false)}
+          onConnected={() => void advance(keying)}
         />
       )}
     </>
@@ -360,6 +376,7 @@ function AvailableRow({
   onSignedIn,
   onAddKey,
   onAdd,
+  onRecheck,
 }: {
   hidden: boolean;
   connector: ConnectorSummary;
@@ -372,6 +389,7 @@ function AvailableRow({
   onSignedIn: () => void;
   onAddKey: () => void;
   onAdd: () => void;
+  onRecheck: () => void;
 }) {
   const [consenting, setConsenting] = useState(false);
   const signIn = useOAuthPopup({
@@ -396,9 +414,14 @@ function AvailableRow({
         aria-label={`Adding ${connector.name}`}
       />
     );
-  } else if (problem?.retry === true) {
+  } else if (problem !== null && problem.retry !== null) {
     control = (
-      <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]" onClick={onAdd}>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 px-2.5 text-[12px]"
+        onClick={problem.retry === 'attach' ? onAdd : onRecheck}
+      >
         Retry
       </Button>
     );
