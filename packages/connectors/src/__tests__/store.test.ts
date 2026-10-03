@@ -196,6 +196,35 @@ describe('createConnectorStore', () => {
     expect(await store.getAvailableById('reader', 'duplicate')).toMatchObject({ ownerUserId: 'reader', connector: { visibility: 'private' } });
   });
 
+  it('getSoleSharedById (TASK-711): only the one shared definition, never a shadowing private row or an ambiguous id', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = { connectorId: 'linear', name: 'Team Linear', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
+    // No shared definition yet: nobody gets one, not even the private owner.
+    await store.upsert({ ...base, userId: 'owner', visibility: 'private' });
+    expect(await store.getSoleSharedById('owner', 'linear')).toBeNull();
+    // The owner shares it: the owner and every member see the same row.
+    await store.upsert({ ...base, userId: 'owner', visibility: 'shared' });
+    expect(await store.getSoleSharedById('owner', 'linear')).toMatchObject({ ownerUserId: 'owner' });
+    expect(await store.getSoleSharedById('member', 'linear')).toMatchObject({ ownerUserId: 'owner', connector: { canEdit: false } });
+    // The attack shape: a member's OWN private definition with the same id
+    // shadows the shared one for them (getAvailableById picks it) — denied.
+    await store.upsert({ ...base, userId: 'mallory', name: 'Mine', visibility: 'private' });
+    expect(await store.getAvailableById('mallory', 'linear')).toMatchObject({ ownerUserId: 'mallory' });
+    expect(await store.getSoleSharedById('mallory', 'linear')).toBeNull();
+    // Other members are unaffected by mallory's private row.
+    expect(await store.getSoleSharedById('member', 'linear')).toMatchObject({ ownerUserId: 'owner' });
+    // Mallory shares hers too: two shared definitions, so the id is ambiguous for everyone.
+    await store.upsert({ ...base, userId: 'mallory', name: 'Mine', visibility: 'shared' });
+    expect(await store.getSoleSharedById('mallory', 'linear')).toBeNull();
+    expect(await store.getSoleSharedById('owner', 'linear')).toBeNull();
+    expect(await store.getSoleSharedById('member', 'linear')).toBeNull();
+    // A deleted definition does not count.
+    await store.softDelete('mallory', 'linear');
+    expect(await store.getSoleSharedById('member', 'linear')).toMatchObject({ ownerUserId: 'owner' });
+  });
+
   it('defaultAttached round-trips; upsert preserves it on a content-only update, clears on explicit false', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);

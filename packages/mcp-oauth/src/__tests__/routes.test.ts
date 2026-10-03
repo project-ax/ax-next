@@ -54,6 +54,9 @@ function fakeBus(stubs: BusStubs) {
       if (!stub) throw new Error(`unexpected hook ${hook}`);
       return (await stub(input)) as O;
     },
+    hasService(hook: string): boolean {
+      return typeof (stubs as Record<string, unknown>)[hook] === 'function';
+    },
   };
   return { bus, calls };
 }
@@ -881,13 +884,15 @@ describe('mcp-oauth begin route', () => {
     expect(pending.credScope).toBe('user');
   });
 
-  it('credScope: team agent (visibility=team) → pending.credScope === "agent"', async () => {
+  it('credScope: team agent (visibility=team) + the shared connector → pending.credScope === "agent"', async () => {
     const store = fakeStore();
+    const authz = vi.fn(() => ({ allowed: true }));
     const { deps } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
         'connectors:get': () => connectorFixture(),
+        'credentials:authorize-agent:account': authz,
       },
       { store },
     );
@@ -901,6 +906,65 @@ describe('mcp-oauth begin route', () => {
     expect(store.putPending).toHaveBeenCalledTimes(1);
     const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
     expect(pending.credScope).toBe('agent');
+    // The vault's own agent-scope read question, asked for the signer.
+    expect(authz).toHaveBeenCalledWith({
+      userId: OK_USER.user.id,
+      agentId: 'agent-1',
+      ref: 'account:conn-1',
+    });
+  });
+
+  // TASK-711 — a team-agent sign-in is stored ON the agent only when the vault
+  // would let members read it back there. Anything else lands on the signer.
+  // Each of these FAILS against the unfixed begin (which stored on the agent
+  // for every team agent).
+  it.each([
+    ['the provider denies (a private connector that shares the id)', { 'credentials:authorize-agent:account': () => ({ allowed: false }) }],
+    ['no provider is loaded', {}],
+    ['the provider throws', { 'credentials:authorize-agent:account': () => { throw new Error('boom'); } }],
+    ['the provider answers a truthy non-true', { 'credentials:authorize-agent:account': () => ({ allowed: 'yes' }) }],
+  ])('credScope: team agent but %s → pending.credScope === "user" (stored on the signer)', async (_label, extra) => {
+    const store = fakeStore();
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
+        'connectors:get': () => connectorFixture(),
+        ...extra,
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      res,
+    );
+    expect(state.status).toBe(200);
+    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
+    expect(pending.credScope).toBe('user');
+  });
+
+  it('credScope: personal agent never asks the agent-scope question', async () => {
+    const store = fakeStore();
+    const authz = vi.fn(() => ({ allowed: true }));
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'connectors:get': () => connectorFixture(),
+        'credentials:authorize-agent:account': authz,
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      res,
+    );
+    expect((store.putPending.mock.calls[0]![0] as PendingAuthorization).credScope).toBe('user');
+    expect(authz).not.toHaveBeenCalled();
   });
 
   it('credScope: no agentId in body → credScope === "user", agentId === "", agents:resolve NOT called', async () => {

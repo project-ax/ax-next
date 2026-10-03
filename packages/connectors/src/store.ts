@@ -283,6 +283,16 @@ export interface ConnectorStore {
   listAvailable(userId: string): Promise<AvailableConnector[]>;
   /** Read-only lookup: own definition first, otherwise an unambiguous shared one. */
   getAvailableById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
+  /**
+   * TASK-711 — the connector `userId` resolves for this id, but ONLY when it is
+   * the one live SHARED definition with that id (exactly one shared row exists,
+   * and `getAvailableById` picks that row for this user rather than their own
+   * private one). This is "the connector every member of a team agent sees
+   * under this id": the only connector a credential stored ON an agent can
+   * belong to. Null otherwise (no shared row, two or more, or a private row of
+   * the user's own shadows the shared one).
+   */
+  getSoleSharedById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
   /** Idempotent create-or-update keyed (owner, connectorId). */
   upsert(args: UpsertArgs): Promise<{ connector: Connector; created: boolean }>;
   /** Soft-delete; true iff a live row was tombstoned. */
@@ -313,6 +323,22 @@ export function createConnectorStore(
       return row === null ? null : {
         connector: { ...rowToConnector(row), canEdit: row.owner_user_id === userId },
         ownerUserId: row.owner_user_id,
+      };
+    },
+
+    async getSoleSharedById(userId, connectorId) {
+      const rows = await availableConnectors(db, { userId })
+        .where('connector_id', '=', connectorId)
+        .execute();
+      // `availableConnectors` returns every live shared row (any owner) plus the
+      // caller's own rows, so this is the complete set of shared rows for the id.
+      const shared = rows.filter((row) => row.visibility === 'shared');
+      if (shared.length !== 1) return null;
+      const picked = selectAvailableRow(rows, userId);
+      if (picked === null || picked !== shared[0]) return null;
+      return {
+        connector: { ...rowToConnector(picked), canEdit: picked.owner_user_id === userId },
+        ownerUserId: picked.owner_user_id,
       };
     },
 

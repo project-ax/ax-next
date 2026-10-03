@@ -36,7 +36,7 @@ import {
   registerAdminConnectorRoutes,
   registerUserConnectorRoutes,
 } from './admin-routes.js';
-import { authorizeGlobalAccountRead } from './credential-authz.js';
+import { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
 import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
 import {
@@ -45,6 +45,7 @@ import {
 } from './tool-permissions.js';
 import {
   ActivateAuthoredOutputSchema,
+  AuthorizeAgentOutputSchema,
   AuthorizeGlobalOutputSchema,
   ClearAuthoredOutputSchema,
   DeleteOutputSchema,
@@ -62,6 +63,8 @@ import {
   type ToolLabelsOutput,
   type ActivateAuthoredInput,
   type ActivateAuthoredOutput,
+  type AuthorizeAgentInput,
+  type AuthorizeAgentOutput,
   type AuthorizeGlobalInput,
   type AuthorizeGlobalOutput,
   type AuthoredConnectorSlot,
@@ -194,6 +197,10 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         // belongs to the vault, this plugin only supplies the answer because it
         // owns the ref -> connector -> keyMode mapping. See credential-authz.ts.
         'credentials:authorize-global:account',
+        // TASK-711 — the agent-scope twin: may this user read the credential
+        // stored ON an agent for an `account:` ref (and so, may a team-agent
+        // sign-in be stored there)? See credential-authz.ts.
+        'credentials:authorize-agent:account',
       ],
       // database:get-instance is hard — we run our own migration on init.
       calls,
@@ -374,6 +381,13 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => authorizeGlobalAccountRead(localStore, bus, ctx, input),
         { returns: AuthorizeGlobalOutputSchema },
+      );
+
+      bus.registerService<AuthorizeAgentInput, AuthorizeAgentOutput>(
+        'credentials:authorize-agent:account',
+        PLUGIN_NAME,
+        async (ctx, input) => authorizeAgentAccountRead(localStore, ctx, input),
+        { returns: AuthorizeAgentOutputSchema },
       );
 
       // TASK-98 — the connector registry's HTTP bridge. Mounted only when the

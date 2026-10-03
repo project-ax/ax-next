@@ -2,6 +2,7 @@ export { createConnectorsPlugin } from './plugin.js';
 export type { ConnectorsConfig } from './plugin.js';
 export {
   ActivateAuthoredOutputSchema,
+  AuthorizeAgentOutputSchema,
   AuthorizeGlobalOutputSchema,
   CapabilitiesSchema,
   ClearAuthoredOutputSchema,
@@ -19,6 +20,8 @@ export {
 export type {
   ActivateAuthoredInput,
   ActivateAuthoredOutput,
+  AuthorizeAgentInput,
+  AuthorizeAgentOutput,
   AuthorizeGlobalInput,
   AuthorizeGlobalOutput,
   AuthoredConnectorDraftDescriptor,
@@ -59,7 +62,7 @@ export type {
   UpsertOutput,
   Visibility,
 } from './types.js';
-export { authorizeGlobalAccountRead } from './credential-authz.js';
+export { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
 export { runConnectorsMigration } from './migrations.js';
 export type {
   ConnectorDatabase,
