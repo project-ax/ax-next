@@ -100,7 +100,21 @@ export interface PreCallDeps {
    * caller still guards, because a naming failure must never cost the hold.
    */
   connectorNameFor?: ((ctx: AgentContext, toolNamespace: string) => Promise<string | null>) | undefined;
+  /**
+   * How long the hold waits for `connectorNameFor` before writing the row
+   * without the connector name. Default {@link CONNECTOR_NAME_TIMEOUT_MS};
+   * injectable for tests.
+   */
+  connectorNameTimeoutMs?: number | undefined;
 }
+
+/**
+ * The connector-name lookup rides INSIDE the 10 s `tool.pre-call` ceiling the
+ * runner turns into a deny, and a bus call's own backstop is 120 s. A slow or
+ * hung connectors store must cost the name, never the hold — so it is bounded
+ * here, well under the ceiling, and a late answer is simply dropped.
+ */
+export const CONNECTOR_NAME_TIMEOUT_MS = 1_500;
 
 export type PreCallSubscriber = (
   ctx: AgentContext,
@@ -123,14 +137,26 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     if (sanitizeCapability(capability) !== null) return null;
     const parsed = parseConnectorToolKey(call.name);
     if (parsed === null) return null;
+    const timeoutMs = deps.connectorNameTimeoutMs ?? CONNECTOR_NAME_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await deps.connectorNameFor(ctx, parsed.toolNamespace);
+      return await Promise.race([
+        deps.connectorNameFor(ctx, parsed.toolNamespace),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => {
+            ctx.logger.warn('decision_connector_name_timeout', { plugin: PLUGIN_NAME, timeoutMs });
+            resolve(null);
+          }, timeoutMs);
+        }),
+      ]);
     } catch (err) {
       ctx.logger.warn('decision_connector_name_failed', {
         plugin: PLUGIN_NAME,
         err: err instanceof Error ? err : new Error(String(err)),
       });
       return null;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 

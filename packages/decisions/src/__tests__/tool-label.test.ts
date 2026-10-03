@@ -125,6 +125,22 @@ describe('tool:pre-call — the hold row names the connector (TASK-744)', () => 
     });
     expect(await heldSummary(b)).toBe('Wants to use Create issue');
   });
+  it('a lookup that HANGS is bounded: the hold is written, without the connector name', async () => {
+    const store = createFakeStore();
+    let n = 0;
+    const sub = createPreCallSubscriber({
+      evaluate: async () => HOLD_NO_CLAUSE,
+      store,
+      now: () => new Date('2026-10-02T00:00:00.000Z'),
+      idGen: () => `dec_${(n += 1)}`,
+      ttlMs: 60_000,
+      attendanceFor: async () => 'attended',
+      connectorNameFor: () => new Promise<string | null>(() => {}),
+      connectorNameTimeoutMs: 20,
+    });
+    const r = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    expect((await store.get(r.hold.decisionId))!.summary).toBe('Wants to use Create issue');
+  });
   it('with no lookup wired, the row still never shows the hash', async () => {
     const b = build();
     const summary = await heldSummary(b);
