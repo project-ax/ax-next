@@ -862,3 +862,47 @@ describe('invalid caller-id credential floor', () => {
     expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
   });
 });
+
+// TASK-711 — the connector card says who supplies the key. Before this, a
+// workspace-keyed proposal looked identical to a personal one, so an admin could
+// approve a connector that would be handed the company's shared key without
+// seeing that. Each `keyMode` case FAILS against the unfixed row (it rendered
+// nothing about the key mode); the absent/skill cases pin that we do not guess.
+describe('GrantRow — connector key mode (TASK-711)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetGrantDraftsForTest();
+  });
+
+  test('a shared company key is called out, as a note rather than an error', () => {
+    row({ ...connectorReq, keyMode: 'workspace' });
+    const notice = screen.getByTestId('connector-key-mode');
+    expect(notice).toHaveAttribute('data-key-mode', 'workspace');
+    expect(notice).toHaveAttribute('role', 'note');
+    expect(notice).toHaveTextContent(/shared company key, not a key of your own/i);
+    expect(notice).toHaveTextContent(/only approve this if you expected a shared key/i);
+  });
+
+  test('a personal key gets one plain line', () => {
+    row({ ...connectorReq, keyMode: 'personal' });
+    const notice = screen.getByTestId('connector-key-mode');
+    expect(notice).toHaveAttribute('data-key-mode', 'personal');
+    expect(notice).toHaveTextContent(/each person who uses it adds their own/i);
+    expect(notice).not.toHaveTextContent(/shared company key/i);
+  });
+
+  test('no key mode on the card (older cards) says nothing either way', () => {
+    row(connectorReq);
+    expect(screen.queryByTestId('connector-key-mode')).toBeNull();
+  });
+
+  test('a value we do not know is not described', () => {
+    row({ ...connectorReq, keyMode: 'everyone' } as unknown as PermissionRequest);
+    expect(screen.queryByTestId('connector-key-mode')).toBeNull();
+  });
+
+  test('a skill card never shows a key mode', () => {
+    row({ ...skillReq, keyMode: 'workspace' } as unknown as PermissionRequest);
+    expect(screen.queryByTestId('connector-key-mode')).toBeNull();
+  });
+});

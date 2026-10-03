@@ -39,6 +39,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
+import { ConnectorKeyModeNotice } from '@/components/credentials/ConnectorKeyModeNotice';
 import {
   RESOLUTION_FOCUS_RING,
   returnFocusToConsentRegion,
@@ -595,6 +596,16 @@ export function GrantRow({
             {authoredWarning}
           </AlertDescription>
         </Alert>
+      )}
+
+      {/*
+        (TASK-711) WHO SUPPLIES THE KEY, before the reach and the key field: a
+        proposal that would use the company's shared key is the case an approver
+        most needs to see, and it changes how they read everything below it.
+        Connector cards only — a skill has no key mode.
+      */}
+      {request.kind === 'connector' && (
+        <ConnectorKeyModeNotice keyMode={request.keyMode} className="mt-3 max-w-[660px]" />
       )}
 
       {request.hosts.length > 0 && (
