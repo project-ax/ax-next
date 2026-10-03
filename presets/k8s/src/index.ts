@@ -1009,7 +1009,10 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // http:register-route + auth:require-user; the kernel's topo-sort picks
   // up the new edges automatically.
   plugins.push(createToolDispatcherPlugin());
-  plugins.push(createMcpClientPlugin({ mountAdminRoutes: true }));
+  // TASK-735: `connectorToolInventory` registers `connectors:describe-tools`
+  // (host-side tools/list per connector, cached in mcp_client_v1_tool_inventory)
+  // and adds database:get-instance + connectors:resolve + agents:resolve edges.
+  plugins.push(createMcpClientPlugin({ mountAdminRoutes: true, connectorToolInventory: true }));
 
   // ----- 7b. the "Right now" line ----------------------------------------
   // Observe-only: watches chat:start / tool:pre-call / chat:turn-end /

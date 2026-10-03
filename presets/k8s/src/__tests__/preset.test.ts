@@ -484,6 +484,22 @@ describe('@ax/preset-k8s wiring', () => {
     expect(registered.has('connectors:resolve')).toBe(true);
   });
 
+  it('loads the connector tool inventory and the producers it calls (TASK-735)', () => {
+    // `connectors:describe-tools` is opt-in on @ax/mcp-client (the CLI preset
+    // has no database / connectors). Losing the flag here would silently drop
+    // the inventory every later connectors-rail card reads.
+    const plugins = createK8sPlugins(stubConfig);
+    const mcp = plugins.find((p) => p.manifest.name === '@ax/mcp-client');
+    expect(mcp!.manifest.registers).toEqual(['connectors:describe-tools']);
+    expect(mcp!.manifest.calls).toEqual(
+      expect.arrayContaining(['database:get-instance', 'connectors:resolve', 'agents:resolve', 'credentials:get']),
+    );
+    const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
+    expect(registered.has('connectors:resolve')).toBe(true);
+    expect(registered.has('agents:resolve')).toBe(true);
+    expect(registered.has('credentials:get')).toBe(true);
+  });
+
   it('never ships a freshness half-pair (TASK-228)', () => {
     // A `check` with no `capture` guards nothing and says nothing: nothing
     // writes the predicate it exists to re-read. @ax/decisions logs it at boot,

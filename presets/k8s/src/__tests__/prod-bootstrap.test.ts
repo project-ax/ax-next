@@ -334,6 +334,11 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
             "SELECT to_regclass('public.disk_quota_v1_usage')::text AS t",
           );
           expect(quota.rows[0]?.t).toBe('disk_quota_v1_usage');
+          // TASK-735: @ax/mcp-client's connector tool-inventory cache table.
+          const inventory = await probe.query<{ t: string | null }>(
+            "SELECT to_regclass('public.mcp_client_v1_tool_inventory')::text AS t",
+          );
+          expect(inventory.rows[0]?.t).toBe('mcp_client_v1_tool_inventory');
         } finally {
           await probe.end();
         }
@@ -373,6 +378,16 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         expect(bus.hasService('memory:facts:revert')).toBe(true);
         expect(bus.hasService('memory:facts:clear')).toBe(true);
         expect(bus.hasService('memory:facts:reindex')).toBe(true);
+        // TASK-735: connectors:describe-tools is reachable in the production
+        // graph and resolves through the REAL @ax/connectors visibility check —
+        // an unknown connector is refused before any network or cache work.
+        expect(bus.hasService('connectors:describe-tools')).toBe(true);
+        await expect(
+          bus.call('connectors:describe-tools', policyCtx, {
+            userId: policyCtx.userId,
+            connectorId: 'no-such-connector',
+          }),
+        ).rejects.toMatchObject({ code: 'not-found' });
       } finally {
         await handle.shutdown();
       }

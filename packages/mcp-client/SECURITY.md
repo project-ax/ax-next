@@ -89,3 +89,23 @@ Every descriptor is marked `executesIn: 'host'`. MCP tools never execute in the 
 ## Security contact
 
 If we find a hole, we'd rather hear about it from you than read about it on Hacker News. Please email `vinay@canopyworks.com`.
+
+## Connector tool inventory (`connectors:describe-tools`, TASK-735)
+
+The k8s preset turns on `connectorToolInventory`, which makes the host itself send one MCP `tools/list` to a connector's http server. This is new: a connector's MCP traffic from a chat session goes through the sandbox and the credential-proxy, but this request starts on the host. The connector URL is typed by whoever wrote the connector, and any signed-in user can write a private one. So we treat that URL as hostile.
+
+- **Sandbox / reach:** The only network destination is the connector server's own origin.
+  - The URL must be https, carry no userinfo, and not be `localhost` or a non-public IP literal.
+  - Every request must stay on that origin. Any 3xx is refused.
+  - The destination IP is checked when the socket connects. A custom `lookup` on a dedicated undici `Agent` refuses the connection if *any* resolved address is private, loopback, link-local (including `169.254.169.254`), CGNAT, ULA, multicast, reserved, NAT64/6to4/teredo, or Azure's `168.63.0.0/16`. It hands the socket exactly the addresses it checked, so DNS rebinding gets no second lookup to race.
+  - Limits: a 10 s deadline per request, a 20 s budget per server, 2 MiB per response (counted while streaming, not trusted from `Content-Length`), at most 10 pages and 500 tools.
+  - stdio connectors are never spawned for this. They report `unknown`.
+- **Credentials:** Header values come from `credentials:get`, using the refs in the connector's own `credentialPlan`. These are the same refs the session's proxy spends, run as the requesting user and agent.
+  - When an agent is named, `agents:resolve` must pass first, so a caller cannot borrow another agent's credential scope.
+  - Secrets live only in the transport's header map for one listing. They are never logged, stored, or returned.
+  - Visibility is checked through `connectors:resolve` on every call, cache hits included.
+- **Injection:** Tool names, titles, descriptions, and the `readOnlyHint` / `destructiveHint` / `openWorldHint` annotations are untrusted descriptions the server writes about itself.
+  - Names must be printable ASCII with no whitespace, at most 128 characters. Titles are capped at 200 and descriptions at 2,000. Control characters and bidi-override characters are stripped.
+  - `inputSchema` and `outputSchema` are dropped. We call `tools/list` directly instead of `client.listTools()`, so the host never compiles a JSON Schema the server supplied.
+  - Hints only choose UI defaults and grouping. They are not a security claim, and nothing enforces policy from them. Renderers must still fence descriptions.
+  - Errors are reduced to a short reason code. The server's response text is never echoed.
