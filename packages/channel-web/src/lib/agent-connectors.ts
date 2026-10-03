@@ -121,7 +121,17 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
           setConnectors((prev) =>
             prev === null
               ? prev
-              : prev.map((r) => (r.id === connectorId ? { ...r, health: out.health } : r)),
+              : prev.map((r) => {
+                  if (r.id !== connectorId) return r;
+                  // TASK-756 — whose sign-in expired comes with the answer;
+                  // an absent flag must clear one the row carried before.
+                  const { sharedSignIn: _was, ...rest } = r;
+                  return {
+                    ...rest,
+                    health: out.health,
+                    ...(out.sharedSignIn === true ? { sharedSignIn: true as const } : {}),
+                  };
+                }),
           );
         }
         return out.health;

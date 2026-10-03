@@ -57,19 +57,32 @@ export interface McpOAuthStore {
    */
   deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
   /**
-   * TASK-741 — record that `userId`'s sign-in to `connectorId` was rejected by
+   * TASK-741 — record that `owner`'s sign-in to `connectorId` was rejected by
    * the authorization server (re-authorization required). Idempotent: marking
-   * twice keeps one row and moves `marked_at`.
+   * twice keeps one row and moves `marked_at`. TASK-756: the owner is whoever
+   * owns the TOKEN — a person, or an agent whose members share it.
    */
-  markNeedsReconnect(userId: string, connectorId: string): Promise<void>;
+  markNeedsReconnect(owner: MarkerOwner, connectorId: string): Promise<void>;
   /** TASK-741 — the sign-in works again (refreshed, or signed in anew). */
-  clearNeedsReconnect(userId: string, connectorId: string): Promise<void>;
+  clearNeedsReconnect(owner: MarkerOwner, connectorId: string): Promise<void>;
   /**
-   * TASK-741 — which of `connectorIds` carry a needs-reconnect marker for
-   * `userId`. A pure read: it never touches a token, so it can never refresh one.
+   * TASK-741/756 — which of `connectorIds` carry a needs-reconnect marker for
+   * `userId`'s own sign-in (`personal`) and, when `agentId` is given, for that
+   * agent's shared sign-in (`shared`). A pure read: it never touches a token,
+   * so it can never refresh one.
    */
-  listNeedsReconnect(userId: string, connectorIds: readonly string[]): Promise<string[]>;
+  listNeedsReconnect(
+    userId: string,
+    agentId: string | undefined,
+    connectorIds: readonly string[],
+  ): Promise<{ personal: string[]; shared: string[] }>;
 }
+
+/**
+ * TASK-756 — who owns the token a needs-reconnect marker is about: one person
+ * (their own sign-in), or an agent (a team agent's sign-in its members share).
+ */
+export type MarkerOwner = { kind: 'user'; userId: string } | { kind: 'agent'; agentId: string };
 
 /** Map a DB row to the domain {@link PendingAuthorization}. Shared by
  *  `getPending` and `consumePending` so the two never drift. */
@@ -198,34 +211,66 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
       return { deleted: Number(res.numDeletedRows ?? 0n) };
     },
 
-    async markNeedsReconnect(userId, connectorId) {
+    async markNeedsReconnect(owner, connectorId) {
       const markedAt = new Date();
+      if (owner.kind === 'agent') {
+        await db
+          .insertInto('mcp_oauth_v1_needs_reconnect_agent')
+          .values({ agent_id: owner.agentId, connector_id: connectorId, marked_at: markedAt })
+          .onConflict((oc) =>
+            oc.columns(['agent_id', 'connector_id']).doUpdateSet({ marked_at: markedAt }),
+          )
+          .execute();
+        return;
+      }
       await db
         .insertInto('mcp_oauth_v1_needs_reconnect')
-        .values({ user_id: userId, connector_id: connectorId, marked_at: markedAt })
+        .values({ user_id: owner.userId, connector_id: connectorId, marked_at: markedAt })
         .onConflict((oc) =>
           oc.columns(['user_id', 'connector_id']).doUpdateSet({ marked_at: markedAt }),
         )
         .execute();
     },
 
-    async clearNeedsReconnect(userId, connectorId) {
+    async clearNeedsReconnect(owner, connectorId) {
+      if (owner.kind === 'agent') {
+        await db
+          .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
+          .where('agent_id', '=', owner.agentId)
+          .where('connector_id', '=', connectorId)
+          .execute();
+        return;
+      }
       await db
         .deleteFrom('mcp_oauth_v1_needs_reconnect')
-        .where('user_id', '=', userId)
+        .where('user_id', '=', owner.userId)
         .where('connector_id', '=', connectorId)
         .execute();
     },
 
-    async listNeedsReconnect(userId, connectorIds) {
-      if (connectorIds.length === 0) return [];
-      const rows = await db
-        .selectFrom('mcp_oauth_v1_needs_reconnect')
-        .select('connector_id')
-        .where('user_id', '=', userId)
-        .where('connector_id', 'in', [...connectorIds])
-        .execute();
-      return rows.map((r) => r.connector_id);
+    async listNeedsReconnect(userId, agentId, connectorIds) {
+      if (connectorIds.length === 0) return { personal: [], shared: [] };
+      const ids = [...connectorIds];
+      const [personal, shared] = await Promise.all([
+        db
+          .selectFrom('mcp_oauth_v1_needs_reconnect')
+          .select('connector_id')
+          .where('user_id', '=', userId)
+          .where('connector_id', 'in', ids)
+          .execute(),
+        agentId === undefined || agentId.length === 0
+          ? Promise.resolve([] as Array<{ connector_id: string }>)
+          : db
+              .selectFrom('mcp_oauth_v1_needs_reconnect_agent')
+              .select('connector_id')
+              .where('agent_id', '=', agentId)
+              .where('connector_id', 'in', ids)
+              .execute(),
+      ]);
+      return {
+        personal: personal.map((r) => r.connector_id),
+        shared: shared.map((r) => r.connector_id),
+      };
     },
   };
 }

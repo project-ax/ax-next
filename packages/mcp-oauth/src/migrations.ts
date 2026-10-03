@@ -29,6 +29,11 @@ import { sql, type Kysely } from 'kysely';
  *     completed sign-in, read by `mcp-oauth:status-batch` so the connectors rail
  *     can show "Sign-in expired" from stored state — never by probing a token.
  *     Holds no secret: ids and a timestamp only.
+ *
+ *   mcp_oauth_v1_needs_reconnect_agent — TASK-756. The same marker for a token
+ *     an AGENT owns (a team agent's shared sign-in, vault scope `agent`), keyed
+ *     (agent, connector) so one member's reconnect clears it for every member.
+ *     The per-user table above keeps the markers for tokens a person owns.
  */
 export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
@@ -63,6 +68,13 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
       connector_id  TEXT NOT NULL,
       marked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (user_id, connector_id)
+    )`.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS mcp_oauth_v1_needs_reconnect_agent (
+      agent_id      TEXT NOT NULL,
+      connector_id  TEXT NOT NULL,
+      marked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (agent_id, connector_id)
     )`.execute(db);
 }
 
@@ -99,8 +111,15 @@ export interface McpOAuthNeedsReconnectRow {
   marked_at: Date;
 }
 
+export interface McpOAuthNeedsReconnectAgentRow {
+  agent_id: string;
+  connector_id: string;
+  marked_at: Date;
+}
+
 export interface McpOAuthDatabase {
   mcp_oauth_v1_clients: McpOAuthClientRow;
   mcp_oauth_v1_pending: McpOAuthPendingRow;
   mcp_oauth_v1_needs_reconnect: McpOAuthNeedsReconnectRow;
+  mcp_oauth_v1_needs_reconnect_agent: McpOAuthNeedsReconnectAgentRow;
 }

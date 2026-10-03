@@ -338,25 +338,57 @@ describe('createMcpOAuthStore', () => {
   });
 
   describe('needs-reconnect marker (TASK-741)', () => {
+    const u = (userId: string) => ({ kind: 'user' as const, userId });
+    const a = (agentId: string) => ({ kind: 'agent' as const, agentId });
+    const personal = async (
+      store: ReturnType<typeof createMcpOAuthStore>,
+      userId: string,
+      ids: string[],
+    ) => (await store.listNeedsReconnect(userId, undefined, ids)).personal.sort();
+
     it('mark is idempotent, list filters by user + ids, clear removes only its row', async () => {
       const db = makeKysely();
       await runMcpOAuthMigration(db);
       const store = createMcpOAuthStore(db);
-      expect(await store.listNeedsReconnect('u1', [])).toEqual([]);
-      await store.markNeedsReconnect('u1', 'gmail');
-      await store.markNeedsReconnect('u1', 'gmail');
-      await store.markNeedsReconnect('u1', 'slack');
-      await store.markNeedsReconnect('u2', 'gmail');
-      expect((await store.listNeedsReconnect('u1', ['gmail', 'slack', 'linear'])).sort()).toEqual([
-        'gmail',
-        'slack',
-      ]);
-      expect(await store.listNeedsReconnect('u1', ['linear'])).toEqual([]);
-      await store.clearNeedsReconnect('u1', 'gmail');
-      expect(await store.listNeedsReconnect('u1', ['gmail', 'slack'])).toEqual(['slack']);
-      expect(await store.listNeedsReconnect('u2', ['gmail'])).toEqual(['gmail']);
+      expect(await store.listNeedsReconnect('u1', undefined, [])).toEqual({ personal: [], shared: [] });
+      await store.markNeedsReconnect(u('u1'), 'gmail');
+      await store.markNeedsReconnect(u('u1'), 'gmail');
+      await store.markNeedsReconnect(u('u1'), 'slack');
+      await store.markNeedsReconnect(u('u2'), 'gmail');
+      expect(await personal(store, 'u1', ['gmail', 'slack', 'linear'])).toEqual(['gmail', 'slack']);
+      expect(await personal(store, 'u1', ['linear'])).toEqual([]);
+      await store.clearNeedsReconnect(u('u1'), 'gmail');
+      expect(await personal(store, 'u1', ['gmail', 'slack'])).toEqual(['slack']);
+      expect(await personal(store, 'u2', ['gmail'])).toEqual(['gmail']);
       // Clearing a row that is not there is a no-op, not an error.
-      await store.clearNeedsReconnect('u1', 'gmail');
+      await store.clearNeedsReconnect(u('u1'), 'gmail');
+    });
+
+    // TASK-756 — a team agent's shared sign-in is marked per AGENT.
+    it('an agent marker is read for every member and cleared once for all', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markNeedsReconnect(a('team-1'), 'gmail');
+      await store.markNeedsReconnect(a('team-1'), 'gmail');
+      await store.markNeedsReconnect(a('team-2'), 'slack');
+      for (const member of ['u1', 'u2']) {
+        expect(await store.listNeedsReconnect(member, 'team-1', ['gmail', 'slack'])).toEqual({
+          personal: [],
+          shared: ['gmail'],
+        });
+      }
+      // Without the agent named, an agent's marker is nobody's personal one.
+      expect(await store.listNeedsReconnect('u1', undefined, ['gmail'])).toEqual({ personal: [], shared: [] });
+      // A user marker and an agent marker are separate rows.
+      await store.markNeedsReconnect(u('u1'), 'gmail');
+      await store.clearNeedsReconnect(a('team-1'), 'gmail');
+      expect(await store.listNeedsReconnect('u1', 'team-1', ['gmail'])).toEqual({
+        personal: ['gmail'],
+        shared: [],
+      });
+      expect(await store.listNeedsReconnect('u2', 'team-1', ['gmail'])).toEqual({ personal: [], shared: [] });
+      expect(await store.listNeedsReconnect('u2', 'team-2', ['slack'])).toEqual({ personal: [], shared: ['slack'] });
     });
   });
 

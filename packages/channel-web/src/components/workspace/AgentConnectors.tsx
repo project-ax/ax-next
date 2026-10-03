@@ -39,7 +39,7 @@
  * details), so Reconnect / Retry are there too — and the dialogs stay mounted
  * across the switch, so a sign-in started from either view is never cut off.
  */
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useId, useState } from 'react';
 import {
   CircleAlert,
   Info,
@@ -98,7 +98,7 @@ import { ConnectorDetails, ConnectorsUnsupported, REMOVE_REFUSED_REASON } from '
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
 const HEALTH_REASON: Record<Exclude<AgentConnectorHealth, 'ok' | 'not-loaded'>, string> = {
-  'needs-reconnect': 'Sign-in expired',
+  'needs-reconnect': 'Your sign-in expired',
   unreachable: 'Can’t reach it',
 };
 
@@ -108,6 +108,8 @@ function healthReason(row: AgentConnectorRow): string {
       ? 'Couldn’t load it. Choose Edit connector to fix it.'
       : 'Couldn’t load it. Ask a workspace admin to fix it.';
   }
+  // TASK-756 — a team agent's shared sign-in is the team's, not this person's.
+  if (row.health === 'needs-reconnect' && row.sharedSignIn === true) return 'Team sign-in expired';
   return row.health === 'ok' ? '' : HEALTH_REASON[row.health];
 }
 
@@ -383,8 +385,17 @@ export function AgentConnectors({
           <DialogHeader>
             <DialogTitle>Reconnect {reconnecting?.name}</DialogTitle>
             <DialogDescription>
-              Your sign-in to {reconnecting?.name} expired. Sign in again and{' '}
-              {name} can keep using it.
+              {reconnecting?.sharedSignIn === true ? (
+                <>
+                  The team sign-in to {reconnecting.name} expired. Sign in again and
+                  everyone using {name} can keep using it.
+                </>
+              ) : (
+                <>
+                  Your sign-in to {reconnecting?.name} expired. Sign in again and{' '}
+                  {name} can keep using it.
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           {/* What signing in hands the assistant — drawn here, in the file that
@@ -530,6 +541,7 @@ function RowMenu({
   onEdit: () => void;
   onRemove: () => void;
 }) {
+  const refusedReasonId = useId();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -597,12 +609,18 @@ function RowMenu({
             // TASK-765 — not Radix's `disabled`: that drops the item from
             // keyboard navigation and pointer events, so the reason could
             // never be reached. Focusable + aria-disabled + a no-op select.
+            // TASK-768 — the reason is wired with aria-describedby to a
+            // `hidden` node (aria-description is read unevenly by VoiceOver).
+            <>
+            <span id={refusedReasonId} hidden>
+              {REMOVE_REFUSED_REASON}
+            </span>
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenuItem
                     aria-disabled="true"
-                    aria-description={REMOVE_REFUSED_REASON}
+                    aria-describedby={refusedReasonId}
                     className="cursor-not-allowed text-muted-foreground focus:text-muted-foreground"
                     onSelect={(e) => e.preventDefault()}
                   >
@@ -613,6 +631,7 @@ function RowMenu({
                 <TooltipContent side="left">{REMOVE_REFUSED_REASON}</TooltipContent>
               </Tooltip>
             </TooltipProvider>
+            </>
           )}
         </DropdownMenuGroup>
       </DropdownMenuContent>

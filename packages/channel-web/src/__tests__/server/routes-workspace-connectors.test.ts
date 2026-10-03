@@ -21,7 +21,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
-import { makeWorkspaceHandlers } from '../../server/routes-workspace.js';
+import { CONNECTOR_RETRY_COOLDOWN_MS, makeWorkspaceHandlers, rememberBounded } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 
 function mkReq(params: Record<string, string>, body?: unknown, raw?: string): RouteRequest {
@@ -267,6 +267,8 @@ describe('agent connector routes', () => {
     let inventoryCalls: unknown[];
     let describeCalls: unknown[];
     let marked: Set<string>;
+    /** TASK-756 — connectors whose expired sign-in is the agent's shared one. */
+    let sharedMarked: Set<string>;
     let cached: Map<string, string>;
     let describeStatus: string;
     let describeThrows: boolean;
@@ -276,7 +278,10 @@ describe('agent connector routes', () => {
         bus.registerService('mcp-oauth:status-batch', 'mcp-oauth', async (_c, i: unknown) => {
           signInCalls.push(i);
           const { connectorIds } = i as { connectorIds: string[] };
-          return { needsReconnect: connectorIds.filter((id) => marked.has(id)) };
+          return {
+            needsReconnect: connectorIds.filter((id) => marked.has(id) || sharedMarked.has(id)),
+            shared: connectorIds.filter((id) => sharedMarked.has(id) && !marked.has(id)),
+          };
         });
       }
       if (opts.inventory !== false) {
@@ -306,6 +311,7 @@ describe('agent connector routes', () => {
       inventoryCalls = [];
       describeCalls = [];
       marked = new Set();
+      sharedMarked = new Set();
       cached = new Map();
       describeStatus = 'ok';
       describeThrows = false;
@@ -328,11 +334,212 @@ describe('agent connector routes', () => {
       // needs-auth alone is NOT "sign-in expired": a never-signed-in connector reports it too.
       expect(healthById(r)).toEqual({ gmail: 'needs-reconnect', linear: 'unreachable', notes: 'ok' });
       // One batch read each, for exactly the listed ids, under the caller + agent — and no probe.
-      expect(signInCalls).toEqual([{ userId: 'u1', connectorIds: ['gmail', 'linear', 'notes'] }]);
+      // TASK-756 — the agent is named, so its shared sign-in counts too.
+      expect(signInCalls).toEqual([{ userId: 'u1', agentId: 'a1', connectorIds: ['gmail', 'linear', 'notes'] }]);
       expect(inventoryCalls).toEqual([
         { userId: 'u1', agentId: 'a1', connectorIds: ['gmail', 'linear', 'notes'] },
       ]);
       expect(describeCalls).toHaveLength(0);
+    });
+
+    // TASK-756 — whose sign-in expired: a team agent's shared one is flagged,
+    // so the rail says so instead of "your sign-in".
+    it('flags a needs-reconnect row whose expired sign-in is the shared one — and only that row', async () => {
+      registerHealth();
+      sharedMarked = new Set(['gmail']);
+      marked = new Set(['linear']);
+      const rows = (await list()).body as { connectors: Array<Record<string, unknown>> };
+      const byId = Object.fromEntries(rows.connectors.map((r) => [r.id, r]));
+      expect(byId.gmail).toMatchObject({ health: 'needs-reconnect', sharedSignIn: true });
+      expect(byId.linear).toMatchObject({ health: 'needs-reconnect' });
+      expect('sharedSignIn' in byId.linear!).toBe(false);
+      expect('sharedSignIn' in byId.notes!).toBe(false);
+    });
+
+    it('a shared flag never rides on a row that is not needs-reconnect', async () => {
+      registerHealth();
+      sharedMarked = new Set(['linear']);
+      effective[1] = { ...effective[1]!, capabilities: { mcpServers: [{ name: 'linear' }, { name: 'linear' }] } };
+      const rows = (await list()).body as { connectors: Array<Record<string, unknown>> };
+      const linear = rows.connectors.find((r) => r.id === 'linear')!;
+      expect(linear.health).toBe('not-loaded');
+      expect('sharedSignIn' in linear).toBe(false);
+    });
+
+    it('Retry that hits a SHARED rejected sign-in says so', async () => {
+      registerHealth();
+      describeStatus = 'needs-auth';
+      sharedMarked = new Set(['linear']);
+      expect((await retry('linear')).body).toEqual({ health: 'needs-reconnect', sharedSignIn: true });
+    });
+
+    it('Retry answers 502 — not ok — when the sign-in could not be read just now', async () => {
+      registerHealth({ describe: false });
+      bus.registerService('connectors:describe-tools', 'mcp-client', async () => {
+        throw new PluginError({ code: 'credential-unavailable', plugin: 'mcp-client', message: 'blip' });
+      });
+      const r = await retry('linear');
+      expect(r.statusCode).toBe(502);
+      expect(r.body).toEqual({ error: 'retry-failed' });
+    });
+
+    describe('Retry cooldown (TASK-756)', () => {
+      let clock: number;
+      let h: ReturnType<typeof makeWorkspaceHandlers>;
+      beforeEach(() => {
+        clock = Date.parse('2026-10-03T12:00:00Z');
+        h = makeWorkspaceHandlers({ bus, initCtx, now: () => new Date(clock) });
+      });
+      async function retryOn(connectorId: string, agentId = 'a1'): Promise<Captured> {
+        const { res, captured } = mkRes();
+        await h.retryConnector(mkReq({ agentId, connectorId }), res);
+        return captured;
+      }
+
+      it('a second Retry inside the window answers the cached health and runs no check', async () => {
+        registerHealth();
+        describeStatus = 'unreachable';
+        expect((await retryOn('linear')).body).toEqual({ health: 'unreachable' });
+        describeStatus = 'ok'; // the server came back — but we must not ask it again yet
+        clock += CONNECTOR_RETRY_COOLDOWN_MS - 1;
+        expect((await retryOn('linear')).body).toEqual({ health: 'unreachable' });
+        expect(describeCalls).toHaveLength(1);
+      });
+
+      it('after the window a Retry checks again', async () => {
+        registerHealth();
+        describeStatus = 'unreachable';
+        await retryOn('linear');
+        describeStatus = 'ok';
+        clock += CONNECTOR_RETRY_COOLDOWN_MS;
+        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
+        expect(describeCalls).toHaveLength(2);
+      });
+
+      it('inside the window the sign-in is still read fresh (a reconnect shows at once)', async () => {
+        registerHealth();
+        describeStatus = 'needs-auth';
+        marked = new Set(['linear']);
+        expect((await retryOn('linear')).body).toEqual({ health: 'needs-reconnect' });
+        marked = new Set(); // reconnected
+        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
+        expect(describeCalls).toHaveLength(1);
+      });
+
+      it('a burst of Retries shares the one check in flight', async () => {
+        registerHealth({ describe: false });
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        bus.registerService('connectors:describe-tools', 'mcp-client', async (_c, i: unknown) => {
+          describeCalls.push(i);
+          await gate;
+          return { status: 'unreachable', tools: [], checkedAt: '2026-10-03T00:00:00.000Z' };
+        });
+        const all = Promise.all([retryOn('linear'), retryOn('linear'), retryOn('linear')]);
+        await new Promise((r) => setTimeout(r, 0));
+        release();
+        const answers = await all;
+        expect(answers.map((a) => a.body)).toEqual([
+          { health: 'unreachable' },
+          { health: 'unreachable' },
+          { health: 'unreachable' },
+        ]);
+        expect(describeCalls).toHaveLength(1);
+      });
+
+      it('a check that could not run is answered again (502) without running another', async () => {
+        registerHealth();
+        describeThrows = true;
+        expect((await retryOn('linear')).statusCode).toBe(502);
+        describeThrows = false;
+        expect((await retryOn('linear')).statusCode).toBe(502);
+        expect(describeCalls).toHaveLength(1);
+      });
+
+      // Review F1 — a vault blip never reached the server: "try again" must
+      // mean it, so it does not hold the next Retry back.
+      it('a credential blip does not start the window — the next Retry checks again', async () => {
+        registerHealth({ describe: false });
+        let blip = true;
+        bus.registerService('connectors:describe-tools', 'mcp-client', async (_c, i: unknown) => {
+          describeCalls.push(i);
+          if (blip) throw new PluginError({ code: 'credential-unavailable', plugin: 'mcp-client', message: 'blip' });
+          return { status: 'ok', tools: [], checkedAt: '2026-10-03T00:00:00.000Z' };
+        });
+        expect((await retryOn('linear')).statusCode).toBe(502);
+        blip = false;
+        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
+        expect(describeCalls).toHaveLength(2);
+        // ...and a check that DID run starts the window as usual.
+        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
+        expect(describeCalls).toHaveLength(2);
+      });
+
+      it('keyed on person + connector: the same connector on another agent is not re-checked; it answers that agent\'s stored health', async () => {
+        owners.set('a2', 'u1');
+        registerHealth();
+        describeStatus = 'ok';
+        await retryOn('linear', 'a1');
+        cached = new Map([['linear', 'unreachable']]); // a2's stored state
+        expect((await retryOn('linear', 'a2')).body).toEqual({ health: 'unreachable' });
+        expect(describeCalls).toHaveLength(1);
+      });
+
+      it('another connector, or another person, is not held back', async () => {
+        owners.set('a2', 'u2');
+        registerHealth();
+        await retryOn('linear');
+        await retryOn('gmail');
+        expect(describeCalls).toHaveLength(2);
+        caller = { id: 'u2', isAdmin: false };
+        await retryOn('linear', 'a2');
+        expect(describeCalls).toHaveLength(3);
+      });
+
+      it('a refused Retry (404) does not start the window', async () => {
+        registerHealth();
+        expect((await retryOn('slack')).statusCode).toBe(404);
+        effective.push({
+          summary: { id: 'slack', name: 'Slack', canEdit: true },
+          source: 'attached',
+          toolNamespaces: [{ server: 'slack', toolNamespace: 'c0000000001' }],
+        } as (typeof effective)[number]);
+        expect((await retryOn('slack')).statusCode).toBe(200);
+        expect(describeCalls).toHaveLength(1);
+      });
+    });
+
+    describe('rememberBounded (TASK-756 cooldown map bound)', () => {
+      const W = 1_000;
+      it('never grows past the bound: expired entries go first, then the oldest live one', () => {
+        const m = new Map<string, { at: number }>();
+        rememberBounded(m, 'old', { at: 0 }, W, 3);
+        rememberBounded(m, 'a', { at: 1_500 }, W, 3);
+        rememberBounded(m, 'b', { at: 1_600 }, W, 3);
+        // Full: 'old' is outside the window at 1_700 and is the one dropped.
+        rememberBounded(m, 'c', { at: 1_700 }, W, 3);
+        expect([...m.keys()]).toEqual(['a', 'b', 'c']);
+        // Full of live entries: the oldest live one goes.
+        rememberBounded(m, 'd', { at: 1_800 }, W, 3);
+        expect([...m.keys()]).toEqual(['b', 'c', 'd']);
+        expect(m.size).toBe(3);
+      });
+      it('re-remembering a key moves it to the back instead of evicting another', () => {
+        const m = new Map<string, { at: number }>();
+        rememberBounded(m, 'a', { at: 10 }, W, 2);
+        rememberBounded(m, 'b', { at: 20 }, W, 2);
+        rememberBounded(m, 'a', { at: 30 }, W, 2);
+        expect([...m.entries()]).toEqual([['b', { at: 20 }], ['a', { at: 30 }]]);
+      });
+      it('drops an entry stamped in the future (a clock step cannot pin it)', () => {
+        const m = new Map<string, { at: number }>();
+        // 'future' is NOT the oldest, so only the future-stamp rule drops it
+        // (oldest-first eviction alone would drop 'a').
+        rememberBounded(m, 'a', { at: 100 }, W, 2);
+        rememberBounded(m, 'future', { at: 99_999 }, W, 2);
+        rememberBounded(m, 'b', { at: 200 }, W, 2);
+        expect([...m.keys()]).toEqual(['a', 'b']);
+      });
     });
 
     it('a rejected sign-in outranks an unreachable server', async () => {

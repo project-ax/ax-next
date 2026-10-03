@@ -104,6 +104,15 @@ export interface CredentialsResolveInput {
   payload: Uint8Array;
   userId: string;
   ref: string;
+  /**
+   * TASK-756 — the scope + owner of the row this payload was read from (the
+   * same pair a refresh is re-stored under). Lets a resolver tell a token
+   * one person owns from one an agent's members share — e.g. so a "sign in
+   * again" marker is kept per agent for a shared token. Vault vocabulary
+   * only (`user` / `agent` / `global`); no backend detail.
+   */
+  scope: CredentialScope;
+  ownerId: string | null;
 }
 
 export interface CredentialsResolveOutput {
@@ -561,7 +570,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
             subService,
             ctx,
-            { payload: env.payload, userId, ref },
+            { payload: env.payload, userId, ref, scope, ownerId },
           );
           if (out.refreshed !== undefined) {
             // Re-store under the SAME scope+ownerId we resolved from.

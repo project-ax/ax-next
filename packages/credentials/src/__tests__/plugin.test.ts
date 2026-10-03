@@ -471,6 +471,43 @@ describe('@ax/credentials plugin', () => {
     expect(captured?.userId).toBe('u');
     expect(captured?.ref).toBe('oauth1');
     expect(new TextDecoder().decode(captured?.payload)).toBe('refresh-token-blob');
+    // TASK-756 — the resolver learns which row it was handed.
+    expect(captured).toMatchObject({ scope: 'user', ownerId: 'u' });
+  });
+
+  it('credentials:resolve:<kind> is told the scope + owner of an AGENT-scope row (TASK-756)', async () => {
+    const bus = new HookBus();
+    let captured: Record<string, unknown> | undefined;
+    const fakeResolverPlugin = {
+      manifest: {
+        name: 'fake-resolver',
+        version: '0.0.0',
+        registers: ['credentials:resolve:fake-oauth'],
+        calls: [],
+        subscribes: [],
+      },
+      async init({ bus }: { bus: HookBus }) {
+        bus.registerService('credentials:resolve:fake-oauth', 'fake-resolver', async (_ctx, input: Record<string, unknown>) => {
+          captured = input;
+          return { value: 'tok' };
+        });
+      },
+    };
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin(), fakeResolverPlugin],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), {
+      scope: 'agent',
+      ownerId: 'agent-team-1',
+      ref: 'oauth1',
+      kind: 'fake-oauth',
+      payload: bytes('blob'),
+    });
+    const agentCtx = makeAgentContext({ sessionId: 's', agentId: 'agent-team-1', userId: 'member-2' });
+    await bus.call('credentials:get', agentCtx, { ref: 'oauth1', userId: 'member-2' });
+    expect(captured).toMatchObject({ userId: 'member-2', scope: 'agent', ownerId: 'agent-team-1' });
   });
 
   it('credentials:get re-stores when sub-service returns refreshed blob', async () => {

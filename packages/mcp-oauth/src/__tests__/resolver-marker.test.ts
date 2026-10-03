@@ -3,7 +3,7 @@ import {
   TemporarilyUnavailableError,
 } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { describe, expect, it, vi } from 'vitest';
-import { createMcpOAuthResolver, NeedsReconnectError, connectorIdOfRef } from '../resolver.js';
+import { createMcpOAuthResolver, NeedsReconnectError, connectorIdOfRef, markerOwnerOf } from '../resolver.js';
 import { encodeTokenBlob } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -19,8 +19,8 @@ const baseBlob = {
 
 function markerSpy(over: { mark?: () => Promise<void>; clear?: () => Promise<void> } = {}) {
   return {
-    mark: vi.fn(over.mark ?? (async (_u: string, _c: string) => {})),
-    clear: vi.fn(over.clear ?? (async (_u: string, _c: string) => {})),
+    mark: vi.fn(over.mark ?? (async (_o: unknown, _c: string) => {})),
+    clear: vi.fn(over.clear ?? (async (_o: unknown, _c: string) => {})),
   };
 }
 
@@ -41,7 +41,7 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
     await expect(resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail' }))
       .rejects.toBeInstanceOf(NeedsReconnectError);
     expect(marker.mark).toHaveBeenCalledTimes(1);
-    expect(marker.mark).toHaveBeenCalledWith('u1', 'gmail');
+    expect(marker.mark).toHaveBeenCalledWith({ kind: 'user', userId: 'u1' }, 'gmail');
     expect(marker.clear).not.toHaveBeenCalled();
   });
 
@@ -51,7 +51,7 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
     const { refreshToken: _rt, ...noRt } = baseBlob;
     await expect(resolve({ payload: encodeTokenBlob(noRt), userId: 'u1', ref: 'account:gmail' }))
       .rejects.toBeInstanceOf(NeedsReconnectError);
-    expect(marker.mark).toHaveBeenCalledWith('u1', 'gmail');
+    expect(marker.mark).toHaveBeenCalledWith({ kind: 'user', userId: 'u1' }, 'gmail');
   });
 
   it('does NOT mark on a transient refresh failure (the sign-in may be fine)', async () => {
@@ -72,7 +72,7 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
     const out = await resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail' });
     expect(out.value).toBe('new');
     expect(marker.clear).toHaveBeenCalledTimes(1);
-    expect(marker.clear).toHaveBeenCalledWith('u1', 'gmail');
+    expect(marker.clear).toHaveBeenCalledWith({ kind: 'user', userId: 'u1' }, 'gmail');
     expect(marker.mark).not.toHaveBeenCalled();
   });
 
@@ -111,6 +111,40 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
     await expect(resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'something-else' }))
       .rejects.toBeInstanceOf(NeedsReconnectError);
     expect(marker.mark).not.toHaveBeenCalled();
+  });
+
+  // TASK-756 — a team agent's token lives in the vault's AGENT scope; its
+  // marker is the agent's, so one member reconnecting clears it for all.
+  it('marks the AGENT when the rejected token is an agent-scope (shared) row', async () => {
+    const marker = markerSpy();
+    const resolve = createMcpOAuthResolver(deps({
+      marker,
+      refresh: async () => { throw new InvalidGrantError('revoked'); },
+    }));
+    await expect(resolve({
+      payload: encodeTokenBlob(baseBlob), userId: 'member-2', ref: 'account:gmail',
+      scope: 'agent', ownerId: 'team-agent-1',
+    })).rejects.toBeInstanceOf(NeedsReconnectError);
+    expect(marker.mark).toHaveBeenCalledWith({ kind: 'agent', agentId: 'team-agent-1' }, 'gmail');
+  });
+
+  it('clears the AGENT marker when an agent-scope refresh succeeds', async () => {
+    const marker = markerSpy();
+    const resolve = createMcpOAuthResolver(deps({ marker }));
+    await resolve({
+      payload: encodeTokenBlob(baseBlob), userId: 'member-2', ref: 'account:gmail',
+      scope: 'agent', ownerId: 'team-agent-1',
+    });
+    expect(marker.clear).toHaveBeenCalledWith({ kind: 'agent', agentId: 'team-agent-1' }, 'gmail');
+  });
+
+  it('markerOwnerOf keys user and global rows on the person resolving', () => {
+    const base = { payload: new Uint8Array(), userId: 'u1', ref: 'account:gmail' };
+    expect(markerOwnerOf({ ...base, scope: 'user', ownerId: 'u1' })).toEqual({ kind: 'user', userId: 'u1' });
+    expect(markerOwnerOf({ ...base, scope: 'global', ownerId: null })).toEqual({ kind: 'user', userId: 'u1' });
+    expect(markerOwnerOf(base)).toEqual({ kind: 'user', userId: 'u1' });
+    expect(markerOwnerOf({ ...base, scope: 'agent', ownerId: '' })).toEqual({ kind: 'user', userId: 'u1' });
+    expect(markerOwnerOf({ ...base, scope: 'agent', ownerId: 'a9' })).toEqual({ kind: 'agent', agentId: 'a9' });
   });
 
   it('connectorIdOfRef reads only the `account:<slug>` shape', () => {

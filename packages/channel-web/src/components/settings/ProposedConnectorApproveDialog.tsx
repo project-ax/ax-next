@@ -15,6 +15,8 @@ import { Badge } from '@/components/ui/badge';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import {
   approveAuthoredConnector,
+  isToolPermissionsResetFailure,
+  TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE,
   serviceTagForSlot,
   accountRef,
   type PendingAuthoredConnector,
@@ -123,7 +125,17 @@ export function ProposedConnectorApproveDialog({
       onApproved();
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // TASK-771 — the server refuses the approve with 503
+      // `tool-permissions-reset-failed` when the promotion moved a server to a
+      // new address and couldn't reset its tool permissions first. Say that in
+      // words; every other failure keeps its own message.
+      setError(
+        isToolPermissionsResetFailure(err)
+          ? TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      );
     } finally {
       setBusy(false);
     }
