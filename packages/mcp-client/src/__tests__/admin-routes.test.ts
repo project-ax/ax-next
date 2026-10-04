@@ -636,6 +636,28 @@ describe('@ax/mcp-client admin routes', () => {
     expect(cfg.ownerId).not.toBeNull();
   });
 
+  it('PATCH an http config to transport stdio → 400 "no longer supported", row unchanged', async () => {
+    const cookie = await signIn(stack);
+    const create = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: makeBody({ id: 'stay-remote' }),
+    });
+    expect(create.status).toBe(201);
+    const r = await http(stack.port, 'PATCH', '/admin/mcp-servers/stay-remote', {
+      cookie,
+      body: { transport: 'stdio', command: 'npx', args: ['-y', 'x'] },
+    });
+    expect(r.status).toBeGreaterThanOrEqual(400);
+    expect(r.status).toBeLessThan(500);
+    expect((r.body as { error: string }).error).toMatch(/no longer supported/);
+    const got = await http(stack.port, 'GET', '/admin/mcp-servers/stay-remote', { cookie });
+    expect(got.status).toBe(200);
+    const cfg = (got.body as { config: SerializedConfig }).config;
+    expect(cfg.transport).toBe('streamable-http');
+    expect((cfg as { url?: string }).url).toBe('https://mcp.example.com/fs');
+    expect(cfg).not.toHaveProperty('command');
+  });
+
   it('PATCH of a legacy row whose id is now reserved → 400, not 500 (TASK-752)', async () => {
     const cookie = await signIn(stack);
     // Learn the caller's user id from a normal create.
