@@ -1238,8 +1238,9 @@ describe('agent connector routes', () => {
       expect((await list()).body).toMatchObject({ connectorsSupported: true });
       agentRow.runner = 'claude-sdk';
       expect((await list()).body).toMatchObject({ connectorsSupported: true });
+      // TASK-826 — the aisdk runner loads connectors too.
       agentRow.runner = 'aisdk';
-      expect((await list()).body).toMatchObject({ connectorsSupported: false });
+      expect((await list()).body).toMatchObject({ connectorsSupported: true });
       // A runner nobody wired for connectors is not assumed to load them.
       agentRow.runner = 'something-new';
       expect((await list()).body).toMatchObject({ connectorsSupported: false });
