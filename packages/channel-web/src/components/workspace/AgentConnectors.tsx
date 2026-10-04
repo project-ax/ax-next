@@ -234,7 +234,8 @@ export function AgentConnectors({
     retry,
     refresh,
   } = useAgentConnectors(agentId);
-  // TASK-761 — an agent whose model gets no connector tools (aisdk) is not
+  // TASK-761 — an agent whose model gets no connector tools (a runner that
+  // doesn't load connectors — an allow-list in `runnerLoadsConnectors`) is not
   // offered Add: setting up access it can't use would only mislead.
   // TASK-798 — nor is anyone who may not add to this agent.
   const addable = connectorsSupported && manageable ? onAdd : undefined;

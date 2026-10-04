@@ -98,7 +98,10 @@ interface Props {
   onBack: () => void;
   onEdit: () => void;
   onRemove: () => void;
-  /** TASK-761 — this agent's model gets no connector tools (aisdk). */
+  /**
+   * TASK-761 — this agent's model gets no connector tools (a runner that
+   * doesn't load connectors — an allow-list in `runnerLoadsConnectors`).
+   */
   unsupported?: boolean;
   /**
    * TASK-795 — Sign in / Add key for a `needs-sign-in` row: the same dialogs
@@ -115,8 +118,9 @@ interface Props {
 }
 
 /**
- * TASK-761 — this agent's model gets no connector tools (the aisdk runner
- * doesn't load them, by design). Said plainly, once, above whatever is
+ * TASK-761 — this agent's model gets no connector tools (a runner that
+ * doesn't load connectors — an allow-list in `runnerLoadsConnectors`). Said
+ * plainly, once, above whatever is
  * listed, so nobody sets permissions that can't apply.
  */
 export function ConnectorsUnsupported({ name }: { name: string }) {
