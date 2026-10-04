@@ -825,7 +825,9 @@ describe('ConnectorEditDialog', () => {
           service: 'my-oauth-svc',
           slot: 'OAUTH_CLIENT_SECRET', // TASK-762 — the route's SCREAMING_SNAKE slot grammar
         },
-        scope: { scope: 'user', ownerId: null }, // personal keyMode → user scope
+        // TASK-797 — a shared connector an admin writes keeps its secret at the
+        // workspace (global), so people other than the admin can sign in.
+        scope: { scope: 'global', ownerId: null },
         payload: 'super-secret-value',
       }),
     );
@@ -843,6 +845,53 @@ describe('ConnectorEditDialog', () => {
     // The raw secret must NOT appear anywhere in the connector body.
     expect(JSON.stringify(body)).not.toContain('super-secret-value');
   });
+
+  // TASK-797 — the other two answers to "where does the secret go". Only a
+  // shared connector written by an admin may keep it at the workspace.
+  it.each([
+    ['an admin makes the connector private', true, true],
+    ['a non-admin writes it', false, false],
+  ])(
+    'keeps the client secret with its author when %s',
+    async (_who, isAdmin, makePrivate) => {
+      render(
+        <ConnectorEditDialog
+          target="new"
+          open
+          isAdmin={isAdmin}
+          onOpenChange={() => {}}
+          onSaved={() => {}}
+        />,
+      );
+      fireEvent.change(await screen.findByLabelText(/service name/i), {
+        target: { value: 'My OAuth Svc' },
+      });
+      if (makePrivate) {
+        fireEvent.click(screen.getByRole('combobox', { name: /sharing/i }));
+        fireEvent.click(await screen.findByRole('option', { name: /^private/i }));
+      }
+      fireEvent.click(screen.getByRole('button', { name: /add (key|secret)/i }));
+      fireEvent.click(screen.getByRole('radio', { name: /^oauth$/i }));
+      await waitFor(() => expect(screen.getByLabelText(/scopes/i)).toBeInTheDocument());
+      const machineNames = screen.getAllByLabelText(/machine name/i);
+      fireEvent.change(machineNames[machineNames.length - 1]!, {
+        target: { value: 'MY_OAUTH' },
+      });
+      fireEvent.click(screen.getByRole('combobox', { name: /mcp server/i }));
+      fireEvent.click(await screen.findByRole('option', { name: 'my-oauth-svc' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: /advanced — custom oauth client/i }),
+      );
+      fireEvent.change(await screen.findByLabelText(/client secret/i), {
+        target: { value: 'super-secret-value' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+      await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+      expect(credentialsLib.setDestinationCredential).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: { scope: 'user', ownerId: null } }),
+      );
+    },
+  );
 });
 
 // TASK-700 — the launch disclosure (TASK-328) on the authoring form. Defining a

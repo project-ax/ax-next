@@ -235,6 +235,39 @@ export async function setDestinationCredential(args: {
 }
 
 /**
+ * Delete one destination's stored secret at the given scope. Mirrors
+ * `setDestinationCredential`'s routing: `user` scope goes to the settings route
+ * (the server pins the owner to the signed-in person), anything else to the
+ * admin-only route. A secret was never in this request, and the failure copy
+ * never carries one either.
+ */
+export async function deleteDestinationCredential(args: {
+  destination: Destination;
+  scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
+}): Promise<void> {
+  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
+  const url = `${base}/destinations/${args.destination.kind}/credential`;
+  let res: Response;
+  try {
+    res = await httpFetch(url, {
+      method: 'DELETE',
+      headers: writeHeaders,
+      body: JSON.stringify({
+        destination: args.destination,
+        scope: args.scope.scope,
+        ownerId: args.scope.ownerId,
+      }),
+    });
+  } catch {
+    throw new HttpError(url, 0);
+  }
+  if (!res.ok) {
+    console.warn(`[credentials] ${url} → ${res.status}`);
+    throw new HttpError(url, res.status);
+  }
+}
+
+/**
  * Reactive-wall host grant (TASK-37). POSTs the blocked host + its opaque
  * sessionId to the user-scoped, CSRF-gated `/api/chat/allow-host` route, which
  * calls the host-internal `proxy:add-host` service hook to widen the LIVE

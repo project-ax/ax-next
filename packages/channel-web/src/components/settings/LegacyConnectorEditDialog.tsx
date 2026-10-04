@@ -95,7 +95,10 @@ import {
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { discoverOAuthHosts } from '@/lib/connectors-oauth';
-import { OAUTH_CLIENT_SECRET_SLOT } from '@/lib/connector-credential-slots';
+import {
+  OAUTH_CLIENT_SECRET_SLOT,
+  clientSecretScope,
+} from '@/lib/connector-credential-slots';
 import {
   Select,
   SelectContent,
@@ -601,11 +604,12 @@ export function LegacyConnectorEditDialog({
     // self-healing on re-save; the reverse order would leave the connector
     // pointing at a missing ref.
     //
-    // NOTE: A pinned client_secret stored at user-scope (personal keyMode) is
-    // only resolvable by the connector owner. A team member connecting a team
-    // agent with a pinned client needs the connector at workspace keyMode (global
-    // secret). DCR (blank client) avoids this entirely. This is a documented
-    // follow-up; not handled here.
+    // NOTE: where the secret is stored decides who can sign in (see
+    // `clientSecretScope`): a workspace-key connector and a shared connector an
+    // admin writes keep it at the workspace, so anyone can; any other connector
+    // keeps it at its author's own scope, where only the author can sign in. DCR
+    // (blank client) avoids this entirely. There is no migration here for an
+    // admin's older copy at their own scope; the remote-server form offers that.
     let updatedSlots = form.credentialSlots;
     try {
       const slotPatches: Record<number, { clientSecretRef: string }> = {};
@@ -618,14 +622,17 @@ export function LegacyConnectorEditDialog({
           service: connectorId,
           slot: OAUTH_CLIENT_SECRET_SLOT,
         };
-        const scope =
-          form.keyMode === 'workspace'
-            ? ({ scope: 'global' as const, ownerId: null })
-            : ({ scope: 'user' as const, ownerId: null });
         await setDestinationCredential({
           destination,
           slot: { kind: 'api-key' },
-          scope,
+          scope: {
+            scope: clientSecretScope({
+              isAdmin,
+              keyMode: form.keyMode,
+              visibility,
+            }),
+            ownerId: null,
+          },
           payload: secret,
         });
         slotPatches[idx] = {

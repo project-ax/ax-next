@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -45,6 +46,14 @@ const fixture: Connector = {
   },
 };
 let writes: { url: string; body: Record<string, unknown> }[];
+// Every state-changing request in the order it was sent, so a test can say
+// "the new secret was stored BEFORE the old copy was removed".
+let calls: string[];
+let deletes: { url: string; body: Record<string, unknown> }[];
+let deleteStatus: number;
+// What `GET /settings/credentials` (the signed-in person's own secrets) says.
+let myCredentialsGets: number;
+let myCredentialsResponse: () => Response;
 let failLoad = false;
 let failDiscovery = false;
 let discovery: Record<string, unknown>;
@@ -58,8 +67,14 @@ let toolPermsPut: () => Response;
 const initialCapabilities = structuredClone(fixture.capabilities);
 beforeEach(() => {
   fixture.keyMode = 'personal';
+  fixture.visibility = 'shared';
   fixture.capabilities = structuredClone(initialCapabilities);
   writes = [];
+  calls = [];
+  deletes = [];
+  deleteStatus = 204;
+  myCredentialsGets = 0;
+  myCredentialsResponse = () => new Response(JSON.stringify({ credentials: [] }));
   failLoad = false;
   failDiscovery = false;
   discovery = {
@@ -104,7 +119,20 @@ beforeEach(() => {
         return failDiscovery
           ? new Response('', { status: 503 })
           : new Response(JSON.stringify(discovery));
+      if (input === '/settings/credentials') {
+        myCredentialsGets++;
+        return myCredentialsResponse();
+      }
+      if (init?.method === 'DELETE') {
+        calls.push(`DELETE ${input}`);
+        deletes.push({
+          url: input,
+          body: JSON.parse(String(init.body)) as Record<string, unknown>,
+        });
+        return new Response(null, { status: deleteStatus });
+      }
       if (init?.method === 'POST' || init?.method === 'PATCH') {
+        calls.push(`${init.method} ${input}`);
         writes.push({
           url: input,
           body: JSON.parse(String(init.body)) as Record<string, unknown>,
@@ -126,8 +154,8 @@ const props = () => ({
   onOpenChange: vi.fn(),
   onSaved: vi.fn(),
 });
-async function openEditor() {
-  const options = props();
+async function openEditor(isAdmin = false) {
+  const options = { ...props(), isAdmin };
   render(<ConnectorEditDialog {...options} />);
   await screen.findByLabelText('Name');
   await waitFor(() =>
@@ -1068,5 +1096,245 @@ describe('tool permissions (TASK-737)', () => {
     const section = (await screen.findByText('Tool permissions')).closest('fieldset')!;
     await within(section).findByText('Search issues');
     expect(section.textContent).not.toMatch(/\bMCP\b|\bscope|\bverdict|\bhold\b/i);
+  });
+});
+
+// TASK-797 — where the custom OAuth client secret lives decides who can sign
+// in. An admin's shared connector keeps it at the workspace, so everyone can;
+// anyone else's stays with its author, so only they can.
+const ONLY_YOU =
+  'Only you can sign in to this connector because it uses your OAuth app.';
+const RE_ENTER = 'Re-enter the client secret so others can sign in';
+const ownSecretRow = {
+  scope: 'user',
+  ownerId: 'me',
+  ref: 'account:linear:client',
+  kind: 'api-key',
+  createdAt: '',
+};
+const secretDestination = {
+  kind: 'account',
+  service: 'linear',
+  slot: 'OAUTH_CLIENT_SECRET',
+};
+const SAVE_FAILED = 'We couldn’t save this connector. Check the settings and try again.';
+// Let the open-time lookup of the person's own secrets finish before looking
+// for a notice that should NOT be there.
+const settle = () => act(() => new Promise<void>((done) => setTimeout(done, 50)));
+function replaceClientSecret(value: string) {
+  fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+  fireEvent.change(screen.getByLabelText(/Client secret/), {
+    target: { value },
+  });
+}
+
+describe('custom client secret scope', () => {
+  it('stores an admin’s secret for a shared connector at the workspace, so others can sign in', async () => {
+    const options = await openEditor(true);
+    replaceClientSecret('admin-client-secret');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(writes).toHaveLength(2);
+    // The admin route, at global scope: the settings route would pin it to the
+    // admin's own scope, where nobody else could ever read it.
+    expect(writes[0]!.url).toBe('/admin/destinations/account/credential');
+    expect(writes[0]!.body).toMatchObject({
+      scope: 'global',
+      ownerId: null,
+      destination: secretDestination,
+      payloadB64: btoa('admin-client-secret'),
+    });
+    // TASK-762 — the connector still names the slot the route accepts.
+    expect(writes[1]!.body.capabilities).toMatchObject({
+      credentials: [{ clientSecretRef: 'account:linear:OAUTH_CLIENT_SECRET' }],
+    });
+    expect(deletes).toEqual([]);
+  });
+
+  it('stores a new admin connector’s secret at the workspace too', async () => {
+    const options = await openNew(true);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Use my own OAuth client instead' }),
+    );
+    fireEvent.change(screen.getByLabelText('Client ID'), {
+      target: { value: 'admin-client' },
+    });
+    fireEvent.change(screen.getByLabelText(/Client secret/), {
+      target: { value: 'admin-client-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(writes[0]!.url).toBe('/admin/destinations/account/credential');
+    expect(writes[0]!.body).toMatchObject({ scope: 'global', ownerId: null });
+    expect(writes[1]!.url).toBe('/admin/connectors');
+    expect(writes[1]!.body).toMatchObject({ visibility: 'shared' });
+    expect(myCredentialsGets).toBe(0);
+  });
+
+  it('keeps a private admin connector’s secret with its author, where only they could read it anyway', async () => {
+    fixture.visibility = 'private';
+    const options = await openEditor(true);
+    replaceClientSecret('private-secret');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(writes[0]!.url).toBe('/settings/destinations/account/credential');
+    expect(writes[0]!.body).toMatchObject({ scope: 'user' });
+    // An admin can see for themselves who a private connector is for.
+    expect(screen.queryByText(ONLY_YOU)).not.toBeInTheDocument();
+    expect(myCredentialsGets).toBe(0);
+  });
+
+  it('keeps a non-admin’s secret with them, and says only they can sign in', async () => {
+    const options = await openEditor();
+    expect(screen.getByText(ONLY_YOU)).toBeVisible();
+    replaceClientSecret('my-secret');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(writes[0]!.url).toBe('/settings/destinations/account/credential');
+    expect(writes[0]!.body).toMatchObject({ scope: 'user' });
+  });
+
+  it('says nothing about who can sign in when the admin’s secret is at the workspace', async () => {
+    await openEditor(true);
+    expect(screen.getByLabelText('Client ID')).toBeVisible();
+    expect(screen.queryByText(ONLY_YOU)).not.toBeInTheDocument();
+  });
+
+  it('says nothing about who can sign in when the connector uses automatic setup', async () => {
+    withoutClientId();
+    await openEditor();
+    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
+    expect(screen.queryByText(ONLY_YOU)).not.toBeInTheDocument();
+  });
+});
+
+describe('moving an admin’s own copy of the client secret to the workspace', () => {
+  it('asks the admin to re-enter the secret, then stores it at the workspace before removing their own copy', async () => {
+    myCredentialsResponse = () =>
+      new Response(JSON.stringify({ credentials: [ownSecretRow] }));
+    const options = await openEditor(true);
+    expect(await screen.findByText(RE_ENTER)).toBeVisible();
+    // The secret can't be moved without being typed again, so the box is open
+    // without a Replace click.
+    expect(screen.queryByText('Saved securely')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Replace' }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Client secret/), {
+      target: { value: 'moved-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(calls).toEqual([
+      'POST /admin/destinations/account/credential',
+      'DELETE /settings/destinations/account/credential',
+      'PATCH /admin/connectors/linear',
+    ]);
+    expect(writes[0]!.body).toMatchObject({
+      scope: 'global',
+      destination: secretDestination,
+      payloadB64: btoa('moved-secret'),
+    });
+    expect(deletes).toEqual([
+      {
+        url: '/settings/destinations/account/credential',
+        body: { destination: secretDestination, scope: 'user', ownerId: null },
+      },
+    ]);
+    expect(screen.queryByText(RE_ENTER)).not.toBeInTheDocument();
+  });
+
+  it('does not look for the admin’s own copy when someone else is editing', async () => {
+    myCredentialsResponse = () =>
+      new Response(JSON.stringify({ credentials: [ownSecretRow] }));
+    // A non-admin's secret lives in their own scope, and that is where it stays.
+    await openEditor(false);
+    await settle();
+    expect(myCredentialsGets).toBe(0);
+    expect(screen.queryByText(RE_ENTER)).not.toBeInTheDocument();
+  });
+
+  it('looks once on open for an admin editing a shared connector', async () => {
+    await openEditor(true);
+    await settle();
+    expect(myCredentialsGets).toBe(1);
+  });
+
+  it('does not ask when the admin has no copy of this connector’s secret', async () => {
+    myCredentialsResponse = () =>
+      new Response(
+        JSON.stringify({
+          credentials: [
+            { ...ownSecretRow, ref: 'account:other:client' },
+            { ...ownSecretRow, scope: 'global', ownerId: null },
+          ],
+        }),
+      );
+    const options = await openEditor(true);
+    await settle();
+    expect(screen.queryByText(RE_ENTER)).not.toBeInTheDocument();
+    expect(screen.getByText('Saved securely')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(deletes).toEqual([]);
+  });
+
+  it.each([
+    ['the lookup is unavailable', () => new Response('', { status: 503 })],
+    [
+      'the lookup answers with something unexpected',
+      () => new Response(JSON.stringify({ credentials: 'nope' })),
+    ],
+    [
+      'the lookup cannot be reached',
+      (): Response => {
+        throw new Error('offline');
+      },
+    ],
+  ])('stays out of the way when %s', async (_name, respond) => {
+    myCredentialsResponse = respond;
+    const options = await openEditor(true);
+    await settle();
+    expect(screen.queryByText(RE_ENTER)).not.toBeInTheDocument();
+    // No error for a lookup that is only a convenience (other alerts, such as
+    // the tool list's, are unrelated).
+    expect(
+      screen
+        .queryAllByRole('alert')
+        .filter((alert) => /secret|couldn’t|can’t/i.test(alert.textContent ?? '')),
+    ).toEqual([]);
+    expect(screen.getByText('Saved securely')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(deletes).toEqual([]);
+  });
+
+  it('fails the save if the old copy can’t be removed, and a retry finishes the move', async () => {
+    myCredentialsResponse = () =>
+      new Response(JSON.stringify({ credentials: [ownSecretRow] }));
+    deleteStatus = 500;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const options = await openEditor(true);
+    await screen.findByText(RE_ENTER);
+    fireEvent.change(screen.getByLabelText(/Client secret/), {
+      target: { value: 'moved-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText(SAVE_FAILED)).toBeVisible();
+    expect(options.onSaved).not.toHaveBeenCalled();
+    // The connector was not pointed at the new copy before the old one was gone.
+    expect(calls).toEqual([
+      'POST /admin/destinations/account/credential',
+      'DELETE /settings/destinations/account/credential',
+    ]);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('moved-secret');
+    deleteStatus = 204;
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(calls.slice(2)).toEqual([
+      'POST /admin/destinations/account/credential',
+      'DELETE /settings/destinations/account/credential',
+      'PATCH /admin/connectors/linear',
+    ]);
   });
 });
