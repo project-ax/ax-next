@@ -71,6 +71,12 @@ describe('@ax/branding manifest', () => {
   it('subscribes to blob:collect-refs (it stores logo shas in its record)', () => {
     expect(createBrandingPlugin().manifest.subscribes).toEqual(['blob:collect-refs']);
   });
+
+  it('has nothing in reach that could free a blob (TASK-778: the GC frees replaced logos)', () => {
+    const m = createBrandingPlugin().manifest;
+    const reach = [...m.calls, ...(m.optionalCalls ?? []).map((c) => c.hook)];
+    for (const hook of ['blob:delete', 'blob:retire', 'blob:purge']) expect(reach).not.toContain(hook);
+  });
 });
 
 describe('@ax/branding as a blob:collect-refs holder', () => {

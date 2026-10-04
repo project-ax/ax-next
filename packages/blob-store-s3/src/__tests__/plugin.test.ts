@@ -3,15 +3,19 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { S3Client } from '@aws-sdk/client-s3';
 import { reject } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
-import { blobKey } from '../store.js';
+import { blobKey, retiredBlobKey } from '../store.js';
 import {
   createBlobStoreS3PluginWithClient,
-  type BlobDeleteOutput,
   type BlobGetOutput,
   type BlobListInput,
   type BlobListOutput,
+  type BlobPurgeInput,
+  type BlobPurgeOutput,
   type BlobPutInput,
   type BlobPutOutput,
+  type BlobRetireInput,
+  type BlobRetireOutput,
+  type BlobStatInput,
   type BlobStatOutput,
 } from '../plugin.js';
 import { FakeS3Client } from './fake-s3.js';
@@ -36,13 +40,15 @@ describe('@ax/blob-store-s3 plugin', () => {
     await h.close();
   });
 
-  it('registers all five blob:* hooks (plus the internal put the facade wraps)', () => {
+  it('registers the blob:* hooks (plus the internal put the facade wraps), and no blob:delete', () => {
     expect(h.bus.hasService('blob:put')).toBe(true);
     expect(h.bus.hasService('blob:put-internal')).toBe(true);
     expect(h.bus.hasService('blob:get')).toBe(true);
     expect(h.bus.hasService('blob:stat')).toBe(true);
-    expect(h.bus.hasService('blob:delete')).toBe(true);
     expect(h.bus.hasService('blob:list')).toBe(true);
+    expect(h.bus.hasService('blob:retire')).toBe(true);
+    expect(h.bus.hasService('blob:purge')).toBe(true);
+    expect(h.bus.hasService('blob:delete')).toBe(false);
   });
 
   it('manifest advertises the blob:* hooks and nothing else', () => {
@@ -53,8 +59,9 @@ describe('@ax/blob-store-s3 plugin', () => {
       'blob:put-internal',
       'blob:get',
       'blob:stat',
-      'blob:delete',
       'blob:list',
+      'blob:retire',
+      'blob:purge',
     ]);
     expect(p.manifest.calls).toEqual([]);
     expect(p.manifest.subscribes).toEqual([]);
@@ -160,27 +167,77 @@ describe('@ax/blob-store-s3 plugin', () => {
     ).toEqual({ found: false });
   });
 
-  it('blob:delete removes an object (idempotent)', async () => {
-    const bytes = new TextEncoder().encode('gc me');
-    const { sha256 } = await h.bus.call<BlobPutInput, BlobPutOutput>(
-      'blob:put',
-      h.ctx(),
-      { bytes },
-    );
-    await h.bus.call<{ sha256: string }, BlobDeleteOutput>('blob:delete', h.ctx(), {
+  it('blob:retire moves a blob aside; blob:get restores it; both return {}', async () => {
+    const bytes = new TextEncoder().encode('retire via the bus');
+    const { sha256 } = await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), {
+      bytes,
+    });
+
+    await expect(
+      h.bus.call<BlobRetireInput, BlobRetireOutput>('blob:retire', h.ctx(), { sha256 }),
+    ).resolves.toEqual({});
+    expect(fake._get(BUCKET, blobKey('', sha256))).toBeUndefined();
+    expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toEqual(bytes);
+    // Idempotent.
+    await expect(
+      h.bus.call<BlobRetireInput, BlobRetireOutput>('blob:retire', h.ctx(), { sha256 }),
+    ).resolves.toEqual({});
+
+    const got = await h.bus.call<{ sha256: string }, BlobGetOutput>('blob:get', h.ctx(), {
       sha256,
     });
+    expect('bytes' in got && got.bytes).toEqual(bytes);
+    expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toBeUndefined();
+  });
+
+  it('blob:stat with restore: false reports a retired blob without restoring it', async () => {
+    const bytes = new TextEncoder().encode('probe only');
+    const { sha256 } = await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), {
+      bytes,
+    });
+    await h.bus.call<BlobRetireInput, BlobRetireOutput>('blob:retire', h.ctx(), { sha256 });
+
     expect(
-      await h.bus.call<{ sha256: string }, BlobStatOutput>('blob:stat', h.ctx(), {
+      await h.bus.call<BlobStatInput, BlobStatOutput>('blob:stat', h.ctx(), {
         sha256,
+        restore: false,
       }),
-    ).toEqual({ found: false });
-    // Deleting again is a no-op, not an error.
+    ).toEqual({ size: bytes.length });
+    expect(fake._get(BUCKET, blobKey('', sha256))).toBeUndefined();
+
     await expect(
-      h.bus.call<{ sha256: string }, BlobDeleteOutput>('blob:delete', h.ctx(), {
+      h.bus.call<BlobStatInput, BlobStatOutput>('blob:stat', h.ctx(), {
         sha256,
+        restore: 'no' as unknown as boolean,
       }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('blob:purge deletes the retired copy and returns {} (idempotent)', async () => {
+    const bytes = new TextEncoder().encode('purge via the bus');
+    const { sha256 } = await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), {
+      bytes,
+    });
+    await h.bus.call<BlobRetireInput, BlobRetireOutput>('blob:retire', h.ctx(), { sha256 });
+
+    await expect(
+      h.bus.call<BlobPurgeInput, BlobPurgeOutput>('blob:purge', h.ctx(), { sha256 }),
     ).resolves.toEqual({});
+    await expect(
+      h.bus.call<BlobPurgeInput, BlobPurgeOutput>('blob:purge', h.ctx(), { sha256 }),
+    ).resolves.toEqual({});
+    expect(
+      await h.bus.call<{ sha256: string }, BlobGetOutput>('blob:get', h.ctx(), { sha256 }),
+    ).toEqual({ found: false });
+  });
+
+  it('blob:purge leaves a live blob of the same sha alone', async () => {
+    const bytes = new TextEncoder().encode('still referenced');
+    const { sha256 } = await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), {
+      bytes,
+    });
+    await h.bus.call<BlobPurgeInput, BlobPurgeOutput>('blob:purge', h.ctx(), { sha256 });
+    expect(fake._get(BUCKET, blobKey('', sha256))).toEqual(bytes);
   });
 
   it('blob:get rejects a corrupted/tampered object instead of returning it', async () => {
@@ -240,15 +297,21 @@ describe('@ax/blob-store-s3 plugin', () => {
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
-  it("blob:list for state 'retired' is empty for now", async () => {
+  it("blob:list for state 'retired' lists retired blobs only", async () => {
     await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), {
       bytes: new TextEncoder().encode('still live'),
     });
-    expect(
-      await h.bus.call<BlobListInput, BlobListOutput>('blob:list', h.ctx(), {
-        state: 'retired',
-        limit: 10,
-      }),
-    ).toEqual({ items: [] });
+    const gone = new TextEncoder().encode('retired one');
+    const { sha256 } = await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), {
+      bytes: gone,
+    });
+    await h.bus.call<BlobRetireInput, BlobRetireOutput>('blob:retire', h.ctx(), { sha256 });
+
+    const page = await h.bus.call<BlobListInput, BlobListOutput>('blob:list', h.ctx(), {
+      state: 'retired',
+      limit: 10,
+    });
+    expect(page).toEqual({ items: [{ sha256, size: gone.length }] });
+    expect('next' in page).toBe(false);
   });
 });

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BlobDeleteOutputSchema,
   BlobGetOutputSchema,
   BlobListOutputSchema,
+  BlobPurgeOutputSchema,
   BlobPutOutputSchema,
+  BlobRetireOutputSchema,
   BlobStatOutputSchema,
 } from '../plugin.js';
 
@@ -46,8 +47,9 @@ describe('@ax/blob-store-s3 return schemas', () => {
     expect(BlobStatOutputSchema.parse({ found: false })).toEqual({ found: false });
   });
 
-  it('blob:delete round-trips an empty object', () => {
-    expect(BlobDeleteOutputSchema.parse({})).toEqual({});
+  it('blob:retire and blob:purge round-trip an empty object', () => {
+    expect(BlobRetireOutputSchema.parse({})).toEqual({});
+    expect(BlobPurgeOutputSchema.parse({})).toEqual({});
   });
 
   it('blob:list round-trips a full page with a cursor', () => {

@@ -7,20 +7,26 @@ import type { AgentContext, HookBus } from '@ax/core';
 // pattern). No env var: an operator changes it from the admin API, and every
 // replica reads the same value.
 //
-//   mode         'report' only, in this card. The sweep runs the whole
-//                pipeline and REPORTS what it would free; it deletes nothing.
-//                'enforce' arrives with retire/purge (TASK-778).
+//   mode         'report' (the DEFAULT) or 'enforce'.
+//                report:  the sweep runs the whole pipeline and REPORTS what
+//                         it would free. It retires nothing and purges
+//                         nothing, even rows already retired.
+//                enforce: unheld candidates are RETIRED (moved aside, still
+//                         recoverable: any read restores them), and retired
+//                         blobs past `retentionMs` that a second ask finds
+//                         unheld are PURGED (gone for good). Switching back
+//                         to report stops both at the next sweep.
+//                Only an admin can switch it (PUT /admin/storage/cleanup). A
+//                missing or corrupt stored value reads as 'report'.
 //   graceMs      a blob put more recently than this is never a candidate.
-//   retentionMs  how long a retired blob is kept before purge (read by
-//                TASK-778; stored and validated now so the setting's shape
-//                does not change under an admin later).
+//   retentionMs  how long a retired blob is kept before purge.
 //
 // Reading NEVER throws on a bad VALUE: a missing, corrupt or out-of-bounds
 // field falls back to its default (with a warn). A failure to read at all
 // throws; the sweep logs it and tries again next time.
 // ---------------------------------------------------------------------------
 
-export const BLOB_GC_MODES = ['report'] as const;
+export const BLOB_GC_MODES = ['report', 'enforce'] as const;
 export type BlobGcMode = (typeof BLOB_GC_MODES)[number];
 
 export interface BlobGcSettings {

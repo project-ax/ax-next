@@ -76,15 +76,31 @@ export interface BlobGetInput {
 }
 export type BlobGetOutput = { bytes: Uint8Array } | { found: false };
 
+/**
+ * `restore` (default true): on a live miss, a retired copy is moved back and
+ * its size reported. `restore: false` reports the retired copy's size WITHOUT
+ * moving it — for probes (e.g. a quota release check) that must not undo a
+ * retire. A non-boolean `restore` is rejected with `invalid-payload`.
+ */
 export interface BlobStatInput {
   sha256: string;
+  restore?: boolean;
 }
 export type BlobStatOutput = { size: number } | { found: false };
 
-export interface BlobDeleteInput {
+/** Move a blob out of the live namespace (two-phase delete, step 1). A missing
+ *  blob is a no-op; idempotent. Any later get/stat restores it. */
+export interface BlobRetireInput {
   sha256: string;
 }
-export type BlobDeleteOutput = Record<string, never>;
+export type BlobRetireOutput = Record<string, never>;
+
+/** Delete a blob's RETIRED copy for good (step 2). Never touches a live blob
+ *  of the same sha. Missing is a no-op; idempotent. */
+export interface BlobPurgeInput {
+  sha256: string;
+}
+export type BlobPurgeOutput = Record<string, never>;
 
 /**
  * One page of blobs, ascending by sha256 — the GC's enumeration seam.
@@ -92,8 +108,7 @@ export type BlobDeleteOutput = Record<string, never>;
  * integer 1..1000. `next` is present iff the page holds exactly `limit` items,
  * and then it is the last item's sha256 — so a final page can be empty, and
  * callers loop until `next` is absent. `state: 'retired'` lists blobs that were
- * retired but not yet deleted; no backend has that namespace yet, so it is
- * empty for now (TASK-778).
+ * retired but not yet purged, with the same contract.
  */
 export interface BlobListInput {
   state: 'live' | 'retired';
@@ -130,7 +145,9 @@ export const BlobStatOutputSchema = z.union([
   z.object({ found: z.literal(false) }),
 ]) as unknown as ZodType<BlobStatOutput>;
 
-export const BlobDeleteOutputSchema = z.object({}) as unknown as ZodType<BlobDeleteOutput>;
+export const BlobRetireOutputSchema = z.object({}) as unknown as ZodType<BlobRetireOutput>;
+
+export const BlobPurgeOutputSchema = z.object({}) as unknown as ZodType<BlobPurgeOutput>;
 
 // `next` is `.optional()` so a final page parses without growing the key. The
 // cast is the same one the other schemas use: under exactOptionalPropertyTypes
@@ -195,8 +212,9 @@ function blobStoreS3Plugin(store: S3BlobStore): Plugin {
         'blob:put-internal',
         'blob:get',
         'blob:stat',
-        'blob:delete',
         'blob:list',
+        'blob:retire',
+        'blob:purge',
       ],
       calls: [],
       subscribes: [],
@@ -222,18 +240,8 @@ function blobStoreS3Plugin(store: S3BlobStore): Plugin {
       bus.registerService<BlobStatInput, BlobStatOutput>(
         'blob:stat',
         PLUGIN_NAME,
-        async (_ctx, { sha256 }) => store.stat(sha256),
+        async (_ctx, { sha256, restore }) => store.stat(sha256, { restore }),
         { returns: BlobStatOutputSchema },
-      );
-
-      bus.registerService<BlobDeleteInput, BlobDeleteOutput>(
-        'blob:delete',
-        PLUGIN_NAME,
-        async (_ctx, { sha256 }) => {
-          await store.delete(sha256);
-          return {};
-        },
-        { returns: BlobDeleteOutputSchema },
       );
 
       bus.registerService<BlobListInput, BlobListOutput>(
@@ -241,6 +249,26 @@ function blobStoreS3Plugin(store: S3BlobStore): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => store.list(input),
         { returns: BlobListOutputSchema },
+      );
+
+      bus.registerService<BlobRetireInput, BlobRetireOutput>(
+        'blob:retire',
+        PLUGIN_NAME,
+        async (_ctx, { sha256 }) => {
+          await store.retire(sha256);
+          return {};
+        },
+        { returns: BlobRetireOutputSchema },
+      );
+
+      bus.registerService<BlobPurgeInput, BlobPurgeOutput>(
+        'blob:purge',
+        PLUGIN_NAME,
+        async (_ctx, { sha256 }) => {
+          await store.purge(sha256);
+          return {};
+        },
+        { returns: BlobPurgeOutputSchema },
       );
     },
   };

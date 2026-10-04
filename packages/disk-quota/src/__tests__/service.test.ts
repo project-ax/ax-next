@@ -1242,6 +1242,27 @@ describe('the blob pass (reconcile releases blob charges nobody holds)', () => {
     expect(await rows()).toEqual(['alice blob:b']);
   });
 
+  it('asks blob:stat with restore: false, so probing a retired blob never moves it back to live (TASK-778)', async () => {
+    // The byte GC retires exactly the shas this pass probes (nobody holds
+    // them). A restoring stat would revive every one of them each reconcile:
+    // the bytes would never be purged and the charge never released.
+    const inputs: unknown[] = [];
+    const w = blobWorld({
+      blobStat: false,
+      services: {
+        'blob:stat': async (_c: unknown, input: unknown) => {
+          inputs.push(input);
+          return { found: false };
+        },
+      },
+    });
+    holder(w, '@ax/attachments', () => []);
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(inputs).toEqual([{ sha256: S, restore: false }]);
+  });
+
   it('FAIL CLOSED: blob:stat throwing, or answering anything but { found: false }, keeps the charge; the pass goes on', async () => {
     const U = 'c'.repeat(64);
     const V = 'd'.repeat(64);

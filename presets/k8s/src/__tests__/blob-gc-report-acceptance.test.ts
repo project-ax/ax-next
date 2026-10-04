@@ -37,8 +37,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // step past the 24 h grace window instead of sleeping through it.
 //
 // The blob backend is wrapped so every service call it answers is recorded:
-// report mode must never ask it to delete anything, and the bytes on disk must
-// be exactly what they were.
+// report mode (the default) must never ask it to retire or purge anything, and
+// the bytes on disk must be exactly what they were. Enforce mode has its own
+// canary (blob-gc-enforce-acceptance.test.ts).
 //
 // Stubbed: `conversations:get` (attachments hard-calls it for downloads, never
 // used here), `http:register-route` and `auth:require-user` (the GC's admin
@@ -279,7 +280,7 @@ describe('@ax/preset-k8s blob GC report-mode canary (TASK-777)', () => {
     if (tmp) await fs.rm(tmp, { recursive: true, force: true });
   });
 
-  it('reports what nobody holds, keeps what a holder holds, and deletes NOTHING', async () => {
+  it('reports what nobody holds, keeps what a holder holds, and retires or purges NOTHING', async () => {
     const held = await attach(USER_A, 'conv-a', randomBytes(5000));
     const orphan = await putBlob(USER_A, randomBytes(3000));
     const before = await filesUnder(blobRoot);
@@ -306,11 +307,10 @@ describe('@ax/preset-k8s blob GC report-mode canary (TASK-777)', () => {
       },
     });
 
-    // Report mode: the backend was asked to list, never to delete, and every
-    // byte is still where it was.
+    // Report mode: the backend was asked to list, never to retire or purge,
+    // and every byte is still where it was.
     expect(backendCalls).toContain('blob:list');
-    expect(backendCalls).not.toContain('blob:delete');
-    expect(backendCalls.filter((h) => /retire|purge|delete/.test(h))).toEqual([]);
+    expect(backendCalls.filter((h) => /retire|purge/.test(h))).toEqual([]);
     expect(await filesUnder(blobRoot)).toEqual(before);
     for (const sha of [held, orphan]) {
       expect(await live().bus.call('blob:stat', ctxFor('system'), { sha256: sha })).not.toEqual({
@@ -370,6 +370,6 @@ describe('@ax/preset-k8s blob GC report-mode canary (TASK-777)', () => {
       outcome: 'reported',
       report: { wouldRetire: 1 },
     });
-    expect(backendCalls.filter((h) => /retire|purge|delete/.test(h))).toEqual([]);
+    expect(backendCalls.filter((h) => /retire|purge/.test(h))).toEqual([]);
   });
 });

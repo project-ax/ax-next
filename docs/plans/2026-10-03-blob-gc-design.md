@@ -147,6 +147,11 @@ it is provably safe:
    retired one. If it is there, they move it back (fs `rename`; s3 copy then
    delete) and serve it. A restore that loses a race with another restore and
    sees `ENOENT` / `NoSuchKey` re-reads the live key once.
+   (TASK-778 addition: `blob:stat` takes an optional `restore: false`, which
+   reports a retired blob's size without moving it. `@ax/disk-quota`'s D6
+   release probe uses it. That probe asks about exactly the unheld shas the GC
+   retires, so a restoring stat would revive every one of them on each
+   reconcile, and nothing would ever be purged or released.)
 3. **Purge** happens no sooner than `retentionMs` (default **7 days**) after
    retire, and only after a **second** collector pass over that sha says nobody
    holds it. If someone does hold it now, the GC restores it instead.
@@ -348,7 +353,7 @@ idempotent, and the next sweep starts over.
 | `blob:list` | service (backends) | fs (directory walk) and s3 (`ListObjectsV2`). Both ship in this card. | None. `after` is a sha, not an S3 continuation token or a path. | A caller cannot key off a backend field. There is none. | No |
 | `blob:retire` / `blob:purge` | service (backends) | fs (`rename` / `unlink`) and s3 (copy+delete / delete) | None. "Retired" is a state, not a directory or prefix. | n/a | No |
 | `blob:collect-refs` | subscriber (transform) | Any plugin that stores a sha: attachments, skills and branding today, and a future Drive-style file plugin. | `userIds` is the bus's own user identity, not storage vocabulary. | A holder that keys off another holder's answer would break. Holders must only append. Stated in the hook's doc comment. | No |
-| `blob:get` / `blob:stat` | unchanged signature; restore-on-miss is internal | — | — | — | already IPC (`blob.get`), unchanged wire |
+| `blob:get` / `blob:stat` | restore-on-miss is internal; `blob:stat` gains optional `restore?: boolean` (TASK-778) | fs and s3 both implement it | None. "Restore" is the lifecycle state, not a path or prefix. | A caller passing `restore: false` sees a retired blob as present, which is the safe direction for a release check | already IPC (`blob.get`), unchanged wire |
 | `blob:delete` | **removed** | — | — | Its one caller (branding) is removed in the same PR. | No |
 
 ## Security note (three threat models)

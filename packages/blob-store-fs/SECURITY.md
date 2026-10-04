@@ -9,14 +9,21 @@ paranoid about up front, not after it ships.
 
 ## Design recap (what we're reviewing)
 
-The plugin exposes four service hooks:
+The plugin exposes these service hooks:
 
 - `blob:put(ctx, { bytes: Uint8Array }) → { sha256, size }` — content-addressed; idempotent on identical bytes. Since TASK-690 this is the `@ax/core` facade (`registerBlobPutFacade`) over the backend's own `blob:put-internal`: it fires the veto `blob:pre-put { size }` first (the per-person storage limit can refuse; nothing is written), then the backend, then the observe-only `blob:stored { sha256, size }`. The backend itself still has no size cap and no notion of an owner.
-- `blob:get(ctx, { sha256: string }) → { bytes: Uint8Array } | { found: false }` — digest re-verified on read
-- `blob:stat(ctx, { sha256: string }) → { size } | { found: false }`
-- `blob:delete(ctx, { sha256: string }) → {}` — GC; safe only when unreferenced (caller's responsibility)
+- `blob:get(ctx, { sha256: string }) → { bytes: Uint8Array } | { found: false }` — digest re-verified on read; restores a retired copy on a live miss
+- `blob:stat(ctx, { sha256: string, restore?: boolean }) → { size } | { found: false }` — restores on a live miss unless `restore: false`
+- `blob:list(ctx, { state: 'live' | 'retired', after?, limit }) → { items, next? }` — the GC's enumeration seam
+- `blob:retire(ctx, { sha256: string }) → {}` — GC step 1: move live → retired (reversible; any read restores it)
+- `blob:purge(ctx, { sha256: string }) → {}` — GC step 2: delete the retired copy only
 
-Backed by content-addressed files at `<root>/<sha[0:2]>/<sha[2:4]>/<sha>`. This
+There is no hard delete (`blob:delete` was removed in TASK-778). Removing bytes
+is always two steps — retire, then purge after a grace period — so a wrong GC
+guess is undone by the next read instead of losing data.
+
+Backed by content-addressed files at `<root>/<sha[0:2]>/<sha[2:4]>/<sha>`;
+retired copies live at `<root>/.retired/<sha[0:2]>/<sha[2:4]>/<sha>`. This
 is the content-addressed store from `workspace-git-server/src/server/lfs.ts`
 with the git/LFS HTTP protocol framing removed — it already did sha256
 addressing, streamed I/O, atomic temp-then-rename, and digest verification.
@@ -34,7 +41,7 @@ only.
 
 ```markdown
 ## Security review
-- Sandbox: New plugin opens files under one operator-supplied `root` dir and registers blob:put/get/stat/delete. The ONLY caller-influenced part of any path is the sha256, which is regex-gated to `^[a-f0-9]{64}$` BEFORE a path is built — it can't contain `/`, `..`, NUL, or any path metacharacter, so no traversal. No spawn, no network, no env reads, no handles across the hook bus (payloads carry plain Uint8Array). Atomic temp-then-rename on write; a unique `.tmp.<pid>.<uuid>` suffix so concurrent puts of the same content can't corrupt each other.
+- Sandbox: New plugin opens files under one operator-supplied `root` dir and registers blob:put/get/stat/list/retire/purge. The ONLY caller-influenced part of any path is the sha256, which is regex-gated to `^[a-f0-9]{64}$` BEFORE a path is built — it can't contain `/`, `..`, NUL, or any path metacharacter, so no traversal. No spawn, no network, no env reads, no handles across the hook bus (payloads carry plain Uint8Array). Atomic temp-then-rename on write; a unique `.tmp.<pid>.<uuid>` suffix so concurrent puts of the same content can't corrupt each other.
 - Injection: Stores untrusted content (attachments / artifacts / skill bundles) as OPAQUE bytes — never parsed, rendered, shell-interpolated, or executed by this plugin. blob:get RE-VERIFIES the sha256 digest on read and REJECTS (throws `corrupt`) a tampered/corrupted object rather than returning it, so an on-disk swap or bitrot can't serve bad bytes under a valid-looking hash. Callers that store untrusted bytes must still treat them as untrusted on read — the store doesn't launder trust.
 - Supply chain: N/A — zero new dependencies. Uses only Node built-ins (`node:crypto`, `node:fs`); `@ax/core` + `zod` are already repo deps.
 ```
@@ -49,7 +56,8 @@ Capability surface introduced by this plugin:
 |---|---|---|
 | Filesystem write | Files under one `root` dir, operator-supplied at registration; leaf name is a validated sha256 | Yes — root is fixed per instance; the only caller-influenced path component is a 64-char lowercase-hex string that can't escape the shard |
 | Filesystem read | Same dir | Yes — same bound |
-| Filesystem delete | Same dir | Yes — same bound (`unlink` of one validated path) |
+| Filesystem delete | Same dir, retired tree only | Yes — `purge` unlinks one validated path built only by the retired-path helper |
+| Filesystem rename | Between `<root>/<aa>/<bb>/<sha>` and `<root>/.retired/<aa>/<bb>/<sha>` | Yes — both ends derived from the same validated sha, same volume |
 | Process spawn | None | N/A |
 | Network | None | N/A |
 | Env access | None | N/A |
@@ -58,7 +66,8 @@ Capability surface introduced by this plugin:
 Failure-pattern check:
 
 - **Path traversal:** The blob key is a content hash, NOT a caller path. Every
-  caller-supplied sha (`blob:get` / `blob:stat` / `blob:delete`) is validated
+  caller-supplied sha (`blob:get` / `blob:stat` / `blob:retire` / `blob:purge`,
+  and `blob:list`'s `after` cursor) is validated
   against `^[a-f0-9]{64}$` BEFORE any path is built. A 64-char lowercase-hex
   string can't contain `/`, `..`, NUL, a drive root, or any other path
   metacharacter — so `<root>/<sha[0:2]>/<sha[2:4]>/<sha>` always resolves
@@ -66,6 +75,15 @@ Failure-pattern check:
   the caller never names a path there at all. The regression test feeds
   `../`-laden, NUL-bearing, wrong-length, and uppercase keys and asserts they're
   rejected. Status: not reachable.
+- **Retire / purge / restore:** `blob:purge` only ever builds the RETIRED path
+  (`retiredPath`), so it is structurally unable to remove a live object — a
+  test purges the sha of a live blob and asserts the live file survives.
+  Retire and restore are each one `rename` between two paths under the same
+  `root` (same volume), so they are atomic: an object is always wholly live or
+  wholly retired, never half-copied. Every sha is validated before either path
+  is built. Restore-on-miss in `get` / `stat` is what makes a `put` racing a
+  `retire` safe (a 1000-round race test pins it); `get` still digest-verifies
+  restored bytes, so a file tampered while retired is rejected as `corrupt`.
 - **Argv injection:** No process spawn. Status: N/A.
 - **Env exfiltration:** No env reads. Status: N/A.
 - **Handle leak:** Hook payloads are plain data (`string`, `Uint8Array`). No

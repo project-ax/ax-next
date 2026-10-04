@@ -9,21 +9,25 @@ export {
   type BlobGetOutput,
   type BlobStatInput,
   type BlobStatOutput,
-  type BlobDeleteInput,
-  type BlobDeleteOutput,
+  type BlobRetireInput,
+  type BlobRetireOutput,
+  type BlobPurgeInput,
+  type BlobPurgeOutput,
   type BlobListInput,
   type BlobListOutput,
   BlobPutOutputSchema,
   BlobGetOutputSchema,
   BlobStatOutputSchema,
-  BlobDeleteOutputSchema,
+  BlobRetireOutputSchema,
+  BlobPurgeOutputSchema,
   BlobListOutputSchema,
 } from './plugin.js';
-export { S3BlobStore, blobKey } from './store.js';
+export { S3BlobStore, blobKey, retiredBlobKey } from './store.js';
 export type {
   BlobPutResult,
   BlobGetResult,
   BlobStatResult,
+  BlobStatOptions,
   BlobListQuery,
   BlobListResult,
 } from './store.js';

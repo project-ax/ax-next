@@ -278,12 +278,20 @@ async function makePluginRig(): Promise<PluginRig> {
       'blob:put': async () => ({ sha256: 'a'.repeat(64), size: 0 }),
       'blob:get': async () => ({ found: false }) as const,
       'blob:stat': async () => ({ found: false }) as const,
-      // A spy, not a behavior: attachments must never reach for blob deletion
-      // from this subscriber (blobs are content-addressed and shared).
-      'blob:delete': async (_ctx: unknown, input: unknown) => {
-        blobDeleteCalls.push(input);
-        return { deleted: true };
-      },
+      // Spies, not behavior: attachments must never reach for freeing a blob
+      // from this subscriber (blobs are content-addressed and shared; only
+      // @ax/blob-gc frees bytes, after asking every holder). `blob:delete` no
+      // longer exists on any backend (TASK-778); its spy stays so a regression
+      // that calls it is seen rather than thrown away.
+      ...Object.fromEntries(
+        ['blob:delete', 'blob:retire', 'blob:purge'].map((hook) => [
+          hook,
+          async (_ctx: unknown, input: unknown) => {
+            blobDeleteCalls.push({ hook, input });
+            return {};
+          },
+        ]),
+      ),
       'conversations:get': async () => ({
         conversation: { conversationId: 'mock-conv', userId: 'test-user', agentId: 'test-agent' },
         turns: [],
@@ -342,7 +350,7 @@ describe('@ax/attachments subscribes to conversations:purged', () => {
     expect(info?.bindings).toMatchObject({ conversations: 2, files: 3, artifacts: 2 });
   });
 
-  it('never calls blob:delete (blobs are shared by sha256; bytes stay in place)', async () => {
+  it('never calls blob:delete, blob:retire or blob:purge (blobs are shared by sha256; bytes stay in place)', async () => {
     const rig = await makePluginRig();
     await seed(rig.store);
 
