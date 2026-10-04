@@ -131,6 +131,7 @@ import type {
   AgentConnectorRemoved,
   AgentConnectorRetried,
   AgentConnectorRow,
+  AgentConnectorSetup,
   AgentConnectorSource,
   AgentConnectorTool,
   AgentConnectorToolsRead,
@@ -176,7 +177,11 @@ import { MAX_DETAIL_CHARS } from '../lib/turn-error-labels.js';
 // vault refs a connector spends with the SAME function the browser's connect
 // flow writes them with (pure, no DOM), so the two cannot disagree about
 // which row "has a key" means.
-import { deriveCredentialPlan, type Connector } from '../lib/connectors.js';
+import {
+  deriveCredentialPlan,
+  type Connector,
+  type ConnectorCredentialSlot,
+} from '../lib/connectors.js';
 // The closed-code check and the one builder of a save-refused row's id
 // (TASK-731), shared with the browser, which matches its live copy against
 // that same id.
@@ -1389,8 +1394,14 @@ interface ConnectorsListEffectiveOutput {
     };
     source: AgentConnectorSource;
     toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
-    /** Only the server names are read here (TASK-745). */
-    capabilities?: { mcpServers?: Array<{ name: string }> };
+    /**
+     * Only the server names (TASK-745) and the credential slots (TASK-795,
+     * for the presence read) are read here.
+     */
+    capabilities?: {
+      mcpServers?: Array<{ name: string }>;
+      credentials?: Array<{ slot: string; kind: string }>;
+    };
   }>;
 }
 interface AgentsAttachConnectorInput {
@@ -1464,6 +1475,48 @@ type AttachGate =
   | { ok: true }
   | { ok: false; status: number; error: string; message?: string };
 
+/** One credential a connector needs: the vault ref, and whether it is a sign-in. */
+interface ConnectorCredentialCheck {
+  ref: string;
+  /** An OAuth slot (fix: Sign in), not a key (fix: Add key). */
+  signIn: boolean;
+}
+
+/**
+ * The connector's credential slots → the vault refs a run would resolve
+ * (`deriveCredentialPlan`, the connect flow's own derivation) plus each slot's
+ * kind. The ONE place that mapping lives on the server: the attach gate
+ * (TASK-761, a resolving `credentials:get`) and the rail's presence read
+ * (TASK-795, `credentials:has`) both ask about exactly these refs.
+ *
+ * Takes the minimal shape both callers have — a full `connectors:get` record,
+ * or a `connectors:list-effective` entry's id / keyMode / slots. A slot that
+ * is not `{slot: string, kind: 'oauth' | 'api-key'}` is not one anything here
+ * wrote, and is skipped rather than guessed at.
+ */
+function credentialChecks(connector: {
+  id: string;
+  keyMode?: 'personal' | 'workspace' | undefined;
+  capabilities?: { credentials?: ReadonlyArray<{ slot: string; kind: string }> } | undefined;
+}): ConnectorCredentialCheck[] {
+  const raw = connector?.capabilities?.credentials;
+  const slots = (Array.isArray(raw) ? raw : []).filter(
+    (s): s is ConnectorCredentialSlot =>
+      typeof s?.slot === 'string' && (s.kind === 'oauth' || s.kind === 'api-key'),
+  );
+  if (slots.length === 0) return [];
+  // deriveCredentialPlan reads only id, keyMode and capabilities.credentials.
+  const plan = deriveCredentialPlan({
+    id: connector.id,
+    keyMode: connector.keyMode === 'workspace' ? 'workspace' : 'personal',
+    capabilities: { credentials: slots },
+  } as Connector);
+  return plan.map((entry) => ({
+    ref: entry.ref,
+    signIn: slots.find((s) => s.slot === entry.slot)?.kind === 'oauth',
+  }));
+}
+
 async function attachCredentialGate(
   bus: HookBus,
   ctx: AgentContext,
@@ -1507,17 +1560,13 @@ async function attachCredentialGate(
   if (!actor.isAdmin && connector?.keyMode === 'workspace') {
     return { ok: false, status: 403, error: 'forbidden' };
   }
-  const slots = Array.isArray(connector?.capabilities?.credentials)
-    ? connector.capabilities.credentials
-    : [];
-  if (slots.length === 0) return { ok: true };
+  const checks = credentialChecks(connector);
+  if (checks.length === 0) return { ok: true };
   if (!bus.hasService('credentials:get')) {
     return failed('vault-missing', undefined);
   }
-  const plan = deriveCredentialPlan(connector);
-  for (const entry of plan) {
-    const slot = slots.find((s) => s.slot === entry.slot);
-    const signIn = slot?.kind === 'oauth';
+  for (const entry of checks) {
+    const signIn = entry.signIn;
     try {
       await bus.call<{ ref: string; userId: string }, unknown>('credentials:get', ctx, {
         ref: entry.ref,
@@ -1599,6 +1648,20 @@ interface McpOAuthStatusBatchOutput {
   needsReconnect: string[];
   /** TASK-756 — the subset whose rejected sign-in is the agent's shared one. */
   shared?: string[];
+}
+
+/**
+ * Structural mirror of @ax/credentials' `credentials:has` (TASK-795) — no
+ * import (invariant 2). Walks the same user → agent (ctx.agentId) → global
+ * lookup and authz as `credentials:get`, but only answers whether a value is
+ * there: it never resolves or refreshes one.
+ */
+interface CredentialsHasInput {
+  ref: string;
+  userId: string;
+}
+interface CredentialsHasOutput {
+  present: boolean;
 }
 
 /**
@@ -1699,15 +1762,24 @@ function connectorsNotLoaded(out: ConnectorsListEffectiveOutput): Set<string> {
  * NOT read as "sign-in expired" — it is also what a connector nobody has signed
  * in to yet reports, and telling that person their sign-in expired would be
  * wrong; only the marker the token resolver writes on a rejected refresh says so.
+ *
+ * TASK-795 — `needs-sign-in` (no credential present along the vault's lookup
+ * order) sits between the two: below a rejected sign-in, which is the more
+ * specific story about the same connector (Reconnect, not first-time setup),
+ * and above unreachable, because a server nobody has signed in to often
+ * cannot be reached either and Sign in / Add key is the fix a person can act
+ * on. Full order: not-loaded > needs-reconnect > needs-sign-in > unreachable > ok.
  */
 function healthOf(
   notLoaded: ReadonlySet<string>,
   needsReconnect: ReadonlySet<string>,
+  needsSignIn: ReadonlySet<string>,
   inventory: ReadonlyMap<string, ConnectorInventoryStatus>,
   connectorId: string,
 ): AgentConnectorHealth {
   if (notLoaded.has(connectorId)) return 'not-loaded';
   if (needsReconnect.has(connectorId)) return 'needs-reconnect';
+  if (needsSignIn.has(connectorId)) return 'needs-sign-in';
   if (inventory.get(connectorId) === 'unreachable') return 'unreachable';
   return 'ok';
 }
@@ -3698,18 +3770,30 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * what it would have said, logged: a missing error icon is the cheaper way
    * to be wrong than a list that will not load. `notLoaded` (TASK-745) comes
    * from the list itself, not a stored read, so it never degrades.
+   *
+   * TASK-795 — `needs-sign-in` comes from a vault PRESENCE read
+   * (`credentials:has`, never `credentials:get`: an OAuth get refreshes) for
+   * every ref the connector's credential slots derive, under (caller, agent).
+   * Its `setup` says what fixes it for THIS caller.
    */
   async function connectorHealth(
     agentId: string,
-    callerUserId: string,
+    caller: { id: string; isAdmin: boolean },
     connectorIds: string[],
+    effective: ConnectorsListEffectiveOutput,
     notLoaded: ReadonlySet<string>,
-  ): Promise<{ health: Map<string, AgentConnectorHealth>; sharedSignIn: Set<string> }> {
+  ): Promise<{
+    health: Map<string, AgentConnectorHealth>;
+    sharedSignIn: Set<string>;
+    setup: Map<string, AgentConnectorSetup>;
+  }> {
+    const callerUserId = caller.id;
     const out = new Map<string, AgentConnectorHealth>();
     const sharedSignIn = new Set<string>();
-    if (connectorIds.length === 0) return { health: out, sharedSignIn };
+    const setup = new Map<string, AgentConnectorSetup>();
+    if (connectorIds.length === 0) return { health: out, sharedSignIn, setup };
     const ctx = agentWorkspaceCtx(agentId, callerUserId);
-    const [signIn, inventory] = await Promise.all([
+    const [signIn, inventory, missing] = await Promise.all([
       (async (): Promise<{ marked: Set<string>; shared: Set<string> }> => {
         const none = { marked: new Set<string>(), shared: new Set<string>() };
         if (!bus.hasService('mcp-oauth:status-batch')) return none;
@@ -3750,13 +3834,69 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           return new Map();
         }
       })(),
+      // TASK-795 — connector id → the setup it is missing. A connector is
+      // absent here unless the vault said some ref is NOT present; a failed
+      // read counts as present (no icon), logged once.
+      (async (): Promise<Map<string, AgentConnectorSetup>> => {
+        const missingSetup = new Map<string, AgentConnectorSetup>();
+        if (!bus.hasService('credentials:has')) return missingSetup;
+        const entries = new Map(
+          (Array.isArray(effective?.connectors) ? effective.connectors : []).map(
+            (e) => [e?.summary?.id, e] as const,
+          ),
+        );
+        let failure: unknown;
+        const isPresent = async (ref: string): Promise<boolean> => {
+          try {
+            const r = await bus.call<CredentialsHasInput, CredentialsHasOutput>(
+              'credentials:has',
+              ctx,
+              { ref, userId: callerUserId },
+            );
+            return r?.present !== false;
+          } catch (err) {
+            failure ??= err;
+            return true;
+          }
+        };
+        await Promise.all(
+          connectorIds.map(async (id) => {
+            const entry = entries.get(id);
+            if (entry === undefined) return;
+            const keyMode = entry.summary?.keyMode;
+            const checks = credentialChecks({ id, keyMode, capabilities: entry.capabilities });
+            if (checks.length === 0) return;
+            const present = await Promise.all(checks.map((c) => isPresent(c.ref)));
+            const absent = checks.filter((_, i) => !present[i]);
+            if (absent.length === 0) return;
+            missingSetup.set(
+              id,
+              absent.some((c) => c.signIn)
+                ? 'sign-in'
+                : keyMode === 'workspace' && !caller.isAdmin
+                  ? 'ask-admin'
+                  : 'add-key',
+            );
+          }),
+        );
+        if (failure !== undefined) {
+          initCtx.logger.warn('workspace_connector_health_presence_read_failed', {
+            agentId,
+            name: failure instanceof Error ? failure.name : 'unknown',
+          });
+        }
+        return missingSetup;
+      })(),
     ]);
+    const needsSignIn = new Set(missing.keys());
     for (const id of connectorIds) {
-      const h = healthOf(notLoaded, signIn.marked, inventory, id);
+      const h = healthOf(notLoaded, signIn.marked, needsSignIn, inventory, id);
       out.set(id, h);
       if (h === 'needs-reconnect' && signIn.shared.has(id)) sharedSignIn.add(id);
+      const s = missing.get(id);
+      if (h === 'needs-sign-in' && s !== undefined) setup.set(id, s);
     }
-    return { health: out, sharedSignIn };
+    return { health: out, sharedSignIn, setup };
   }
 
   /**
@@ -6414,18 +6554,22 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const out = await listEffectiveConnectors(agent, userId);
       const rows = toConnectorRows(out);
       const [health, canExclude] = await Promise.all([
-        connectorHealth(agentId, userId, rows.map((r) => r.id), connectorsNotLoaded(out)),
+        connectorHealth(agentId, actor, rows.map((r) => r.id), out, connectorsNotLoaded(out)),
         rows.some((r) => r.source !== 'attached')
           ? connectorExclusionAllowed(agentId, actor)
           : Promise.resolve(false),
       ]);
       res.status(200).json({
-        connectors: rows.map((r) => ({
-          ...r,
-          health: health.health.get(r.id) ?? 'ok',
-          ...(health.sharedSignIn.has(r.id) ? { sharedSignIn: true as const } : {}),
-          removable: r.source === 'attached' ? true : canExclude,
-        })),
+        connectors: rows.map((r) => {
+          const setup = health.setup.get(r.id);
+          return {
+            ...r,
+            health: health.health.get(r.id) ?? 'ok',
+            ...(health.sharedSignIn.has(r.id) ? { sharedSignIn: true as const } : {}),
+            ...(setup !== undefined ? { setup } : {}),
+            removable: r.source === 'attached' ? true : canExclude,
+          };
+        }),
         shared: agent.visibility === 'team',
         connectorsSupported: runnerLoadsConnectors(agent.runner),
       } satisfies AgentConnectorsRead);
@@ -6443,8 +6587,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * — a check that hit a rejected sign-in comes back `needs-reconnect`.
      */
     async retryConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
+      // TASK-795 — the admin bit picks a needs-sign-in row's setup.
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const userId = actor.id;
       const agentId = req.params.agentId ?? '';
       if (agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -6526,7 +6672,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // rejected comes from the marker that check's token resolve would have
       // written — the same rule the list applies.
       const notLoaded = connectorsNotLoaded(out);
-      const stored = await connectorHealth(agentId, userId, [connectorId], notLoaded);
+      // A missing credential (TASK-795) comes from the same stored read.
+      const stored = await connectorHealth(agentId, actor, [connectorId], out, notLoaded);
       const storedHealth = stored.health.get(connectorId) ?? 'ok';
       const health =
         checked === 'stored'
@@ -6534,14 +6681,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           : healthOf(
               notLoaded,
               new Set(storedHealth === 'needs-reconnect' ? [connectorId] : []),
+              new Set(storedHealth === 'needs-sign-in' ? [connectorId] : []),
               new Map([[connectorId, checked]]),
               connectorId,
             );
+      const setup = health === 'needs-sign-in' ? stored.setup.get(connectorId) : undefined;
       res.status(200).json({
         health,
         ...(health === 'needs-reconnect' && stored.sharedSignIn.has(connectorId)
           ? { sharedSignIn: true as const }
           : {}),
+        ...(setup !== undefined ? { setup } : {}),
       } satisfies AgentConnectorRetried);
     },
 

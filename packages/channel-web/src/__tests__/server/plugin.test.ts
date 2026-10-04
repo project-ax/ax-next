@@ -758,6 +758,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'connector rows never show "Can\'t reach it"; an unreachable connector looks healthy until it is used',
         },
         {
+          hook: 'credentials:has',
+          degradation:
+            'connector rows never show "Not signed in yet"; a connector nobody signed in to looks healthy until it is used',
+        },
+        {
           hook: 'connectors:describe-tools',
           degradation:
             'POST …/connectors/:connectorId/retry answers 503 (the list never offers Retry without an unreachable row, which needs the inventory), and a connector\'s details view (TASK-742) cannot list the server\'s tools: it shows only the choices this agent already holds and says the list is unknown',

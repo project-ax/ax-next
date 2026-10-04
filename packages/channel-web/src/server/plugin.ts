@@ -316,6 +316,14 @@ export function createChannelWebServerPlugin(
             'connector rows never show "Can\'t reach it"; an unreachable connector looks healthy until it is used',
         },
         {
+          // TASK-795 — the Connectors tab's "Not signed in yet" icon. A vault
+          // presence read (the same lookup order and authz as
+          // credentials:get), never a token refresh.
+          hook: 'credentials:has',
+          degradation:
+            'connector rows never show "Not signed in yet"; a connector nobody signed in to looks healthy until it is used',
+        },
+        {
           // TASK-741 — the row menu's Retry: one forced check of one connector.
           hook: 'connectors:describe-tools',
           degradation:
