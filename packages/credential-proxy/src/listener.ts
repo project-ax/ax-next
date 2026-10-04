@@ -230,6 +230,15 @@ export interface ProxyListenerOptions {
    * longer than a model provider's own request timeout; tests shorten it.
    */
   meteredTunnelIdleMs?: number;
+  /**
+   * How long a bypassMITM raw tunnel may spend waiting for the upstream TCP
+   * connect to complete before the proxy gives up, answers the client 502 and
+   * tears the half-open upstream socket down. Defaults to 30 seconds — far
+   * longer than any healthy handshake, far shorter than the OS's own SYN-retry
+   * timeout (~2 minutes on Linux). Applies only until the tunnel is
+   * established; an open tunnel is never timed out by it. Tests shorten it.
+   */
+  bypassConnectTimeoutMs?: number;
 }
 
 export interface ProxyListener {
@@ -279,6 +288,13 @@ function allowlistMissBody(hostname: string): string {
  * up well inside this; it exists only for a peer that disappears without a word.
  */
 const METERED_TUNNEL_IDLE_MS = 15 * 60_000;
+
+/**
+ * How long a bypassMITM raw tunnel waits for its upstream TCP connect (TASK-786).
+ * Without it, an allowlisted host that black-holes SYNs holds the client and the
+ * upstream socket until the OS gives up.
+ */
+const BYPASS_CONNECT_TIMEOUT_MS = 30_000;
 
 /**
  * The response a metered tunnel gives when it refuses a request (TASK-715): a
@@ -524,6 +540,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   const maxHttpRequestBodyBytes =
     opts.maxHttpRequestBodyBytes ?? DEFAULT_MAX_HTTP_REQUEST_BODY_BYTES;
   const meteredTunnelIdleMs = opts.meteredTunnelIdleMs ?? METERED_TUNNEL_IDLE_MS;
+  const bypassConnectTimeoutMs = opts.bypassConnectTimeoutMs ?? BYPASS_CONNECT_TIMEOUT_MS;
   const activeSockets = new Set<net.Socket>();
 
   function audit(entry: ProxyAuditEntry): void {
@@ -1193,6 +1210,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
 
       // Open the raw TCP tunnel against the resolved IP.
       const targetSocket = net.connect(port, resolvedIP, () => {
+        clearTimeout(connectTimer);
         established = true;
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         activeSockets.add(targetSocket);
@@ -1224,6 +1242,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       const cleanup = () => {
         if (cleaned) return;
         cleaned = true;
+        clearTimeout(connectTimer);
         activeSockets.delete(targetSocket);
         targetSocket.destroy();
 
@@ -1275,6 +1294,22 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       clientSocket.once('end', () => {
         if (!established) cleanup();
       });
+      // Bound the connect phase itself (TASK-786): an allowlisted host that
+      // black-holes SYNs would otherwise hold both sockets until the OS connect
+      // timeout. Firing tears down through the same not-established branch of
+      // cleanup() — 502 to the client, one 502 audit, upstream destroyed. The
+      // connect callback and cleanup() both clear it, so it never touches an
+      // established tunnel and never outlives this exchange.
+      //
+      // Armed LAST, after the dial and every handler: `net.connect` throws
+      // synchronously on a bad port (ERR_SOCKET_BAD_PORT, e.g. CONNECT
+      // host:99999), and a timer armed before that throw would fire into a
+      // `cleanup` that was never initialized — an uncaught ReferenceError on
+      // the host. The connect callback and cleanup() only ever run from socket
+      // events, which Node never emits synchronously, so both see it assigned.
+      const connectTimer = setTimeout(() => {
+        if (!established) cleanup();
+      }, bypassConnectTimeoutMs);
     } catch (err) {
       // BlockedIPError → 403 (policy block); anything else → 502 (network/DNS).
       // Reviewer M3 from Task 5: typed instanceof, not string match.
