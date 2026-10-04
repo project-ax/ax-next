@@ -130,6 +130,10 @@ describe('connector details routes (mock bus)', () => {
   let setCalls: Array<Record<string, unknown>>;
   let setAnswer: (input: { toolKey: string; verdict: string }) => unknown;
   let listEffectiveCalls: number;
+  /** TASK-809 — the agent's visibility and the TASK-798 manage answer. */
+  let visibility: 'personal' | 'team' | undefined;
+  let canManage: boolean;
+  let canManageCalls: number;
 
   function registerAll(omit: string[] = []) {
     const reg = (hook: string, fn: (i: unknown) => Promise<unknown>) => {
@@ -141,7 +145,18 @@ describe('connector details routes (mock bus)', () => {
       if (owners.get(agentId) !== userId) {
         throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
       }
-      return { agent: { id: agentId, connectorAttachments: ['linear'], connectorExclusions: [] } };
+      return {
+        agent: {
+          id: agentId,
+          connectorAttachments: ['linear'],
+          connectorExclusions: [],
+          ...(visibility !== undefined && { visibility }),
+        },
+      };
+    });
+    reg('agents:can-manage-connectors', async () => {
+      canManageCalls++;
+      return { allowed: canManage };
     });
     reg('connectors:list-effective', async () => {
       listEffectiveCalls++;
@@ -228,6 +243,9 @@ describe('connector details routes (mock bus)', () => {
       return { ok: true };
     };
     listEffectiveCalls = 0;
+    visibility = undefined;
+    canManage = false;
+    canManageCalls = 0;
     registerAll();
   });
 
@@ -386,6 +404,60 @@ describe('connector details routes (mock bus)', () => {
         expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
           ceiling: 'hold',
           verdict: 'hold',
+        });
+      });
+
+      describe('on a TEAM agent, lifting above Ask first takes manage authority (TASK-798)', () => {
+        beforeEach(() => {
+          agentSourced = [NS_GMAIL];
+          visibility = 'team';
+          // Like @ax/tool-policy for an agent-sourced namespace: no ceiling.
+          setAnswer = ({ toolKey, verdict }) => {
+            overrides.set(toolKey, { verdict, ceiling: 'allow' });
+            return { ok: true };
+          };
+        });
+
+        it('a plain member sees Allow capped at Ask first', async () => {
+          canManage = false;
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'hold',
+            verdict: 'hold',
+          });
+        });
+
+        it('a plain member cannot store Allow: 409 with the hold ceiling, store untouched', async () => {
+          canManage = false;
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r.statusCode).toBe(409);
+          expect(r.body).toEqual({ error: 'ceiling-violation', ceiling: 'hold' });
+          expect(setCalls).toEqual([]);
+        });
+
+        it('a plain member may still tighten (Deny)', async () => {
+          canManage = false;
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'deny' }, 'gmail');
+          expect(r.statusCode).toBe(200);
+          expect(setCalls).toHaveLength(1);
+        });
+
+        it('the team’s manager may pick Allow, and sees it offered', async () => {
+          canManage = true;
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'allow',
+          });
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r.statusCode).toBe(200);
+          expect(setCalls).toEqual([{ agentId: 'a1', toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }]);
+        });
+
+        it('a personal agent never asks the manage check', async () => {
+          visibility = 'personal';
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r.statusCode).toBe(200);
+          expect(canManageCalls).toBe(0);
         });
       });
 

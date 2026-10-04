@@ -6976,8 +6976,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * fenced and clamped here, at the boundary, so no renderer has to remember.
      */
     async connectorTools(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const userId = actor.id;
       const agentId = req.params.agentId ?? '';
       if (agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -7091,6 +7092,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         ),
       );
 
+      // TASK-809 — on a TEAM agent, only whoever may manage its connectors
+      // (TASK-798: a workspace admin or the team's admins) may lift an
+      // agent-sourced tool above Ask first. Everyone else keeps the cap they
+      // had before these namespaces lost their admin ceiling. Display only:
+      // a failing check reads as "may not" here, and the PUT asks again.
+      const memberCapped =
+        agentSourced.size > 0 &&
+        agent.visibility === 'team' &&
+        !actor.isAdmin &&
+        !(await connectorsManageable(agentId, actor));
+
       const row = (
         toolKey: string,
         ns: string,
@@ -7102,9 +7114,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // may pick anything (ceiling `allow`; only static rules cap it, and a
         // row that exists reports its own ceiling). Connector-sourced
         // namespaces keep the admin default as the ceiling.
-        const ceiling =
+        const open =
           override?.ceiling ??
           (agentSourced.has(ns) ? 'allow' : (defaults.get(toolKey) ?? 'hold'));
+        const ceiling = memberCapped && agentSourced.has(ns) ? strictestVerdict(open, 'hold') : open;
         const held: AgentToolVerdict | undefined =
           override === undefined && (copied.has(ns) || agentSourced.has(ns)) ? 'hold' : undefined;
         return {
@@ -7176,8 +7189,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * is the store's re-read state, not an echo of the request.
      */
     async setConnectorToolVerdict(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const userId = actor.id;
       const agentId = req.params.agentId ?? '';
       if (agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -7239,6 +7253,34 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
 
       const ctx = agentWorkspaceCtx(agentId, userId);
+      // TASK-809 — an agent-sourced namespace (an OAuth connector) has no
+      // admin ceiling, so tool-policy would accept Allow from anyone who can
+      // see the agent. On a TEAM agent that choice applies to every member's
+      // runs, so lifting a tool above Ask first there takes the TASK-798
+      // authority (workspace admin, or the team's admins). Ask first and Deny
+      // stay open to members, as before. A fault in the check is a 5xx, never
+      // a quiet yes; a missing check is a no.
+      if (verdict === 'allow' && agent.visibility === 'team' && !actor.isAdmin) {
+        let sourced = false;
+        if (bus.hasService('tool-policy:get-connector-defaults')) {
+          const out = await bus.call<GetConnectorDefaultsInput, GetConnectorDefaultsOutput>(
+            'tool-policy:get-connector-defaults',
+            ctx,
+            { connectorId, toolNamespaces: [keyNamespace] },
+          );
+          const list: unknown = out?.agentSourcedNamespaces;
+          sourced = Array.isArray(list) && (list as unknown[]).includes(keyNamespace);
+        }
+        if (sourced) {
+          const mayManage =
+            bus.hasService('agents:can-manage-connectors') &&
+            (await askCanManageConnectors(agentId, actor));
+          if (!mayManage) {
+            res.status(409).json({ error: 'ceiling-violation', ceiling: 'hold' });
+            return;
+          }
+        }
+      }
       const wrote = await bus.call<
         ToolPolicySetAgentOverrideInput,
         ToolPolicySetAgentOverrideOutput
