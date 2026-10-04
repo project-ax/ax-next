@@ -1419,17 +1419,17 @@ interface AgentsConnectorChangeOutput {
   changed: boolean;
 }
 /**
- * Structural mirror of @ax/agents' `agents:can-exclude-connector` (TASK-765)
- * — no import (invariant 2). Since TASK-798 it answers whether the actor may
+ * Structural mirror of @ax/agents' `agents:can-manage-connectors` (TASK-765,
+ * renamed TASK-803) — no import (invariant 2). Since TASK-798 it answers whether the actor may
  * change this agent's connectors at all — add, remove, or sign in ON the
  * agent: the agent's owner (a team admin, on a team agent) or a workspace
  * admin. The same rule guards `agents:attach-connector` / `detach-connector`.
  */
-interface AgentsCanExcludeConnectorInput {
+interface AgentsCanManageConnectorsInput {
   actor: { userId: string; isAdmin: boolean };
   agentId: string;
 }
-interface AgentsCanExcludeConnectorOutput {
+interface AgentsCanManageConnectorsOutput {
   allowed: boolean;
 }
 
@@ -3912,16 +3912,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     agentId: string,
     actor: { id: string; isAdmin: boolean },
   ): Promise<boolean> {
-    if (!bus.hasService('agents:can-exclude-connector')) return false;
+    if (!bus.hasService('agents:can-manage-connectors')) return false;
     try {
-      const r = await bus.call<AgentsCanExcludeConnectorInput, AgentsCanExcludeConnectorOutput>(
-        'agents:can-exclude-connector',
+      const r = await bus.call<AgentsCanManageConnectorsInput, AgentsCanManageConnectorsOutput>(
+        'agents:can-manage-connectors',
         agentWorkspaceCtx(agentId, actor.id),
         { actor: { userId: actor.id, isAdmin: actor.isAdmin }, agentId },
       );
       return r?.allowed === true;
     } catch (err) {
-      initCtx.logger.warn('workspace_connector_can_exclude_failed', {
+      initCtx.logger.warn('workspace_connector_can_manage_failed', {
         agentId,
         name: err instanceof Error ? err.name : 'unknown',
       });

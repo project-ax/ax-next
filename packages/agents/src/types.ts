@@ -302,7 +302,7 @@ export interface ListPersonalOwnersOutput {
 // the ONLY write path for `connectorAttachments` (TASK-799). ACL (TASK-765,
 // widened by TASK-798): the agent's owner (a personal agent) / a team admin (a
 // team agent) / a workspace admin — the same answer
-// agents:can-exclude-connector gives. A plain team member may not attach
+// agents:can-manage-connectors gives. A plain team member may not attach
 // or detach anything: whatever a team agent reaches, every member's runs reach.
 // Attach additionally runs the non-admin workspace-connector guard (attaching a
 // shared/company-keyed connector is admin-only).
@@ -344,22 +344,25 @@ export interface DetachConnectorOutput {
   changed: boolean;
 }
 
-// --- agents:can-exclude-connector (TASK-765) ---------------------------------
+// --- agents:can-manage-connectors (TASK-765, renamed TASK-803) ---------------
 //
 // Can `actor` change this agent's connectors — attach, detach, exclude a
 // default, or (TASK-798, asked by @ax/mcp-oauth) sign in ON the agent? The
 // same predicate `agents:attach-connector` / `agents:detach-connector`
-// enforce, exposed so a caller can show the
-// affordance only to someone it will work for. (Named for its first use,
-// TASK-765's exclusions; the question is wider now.) `allowed` is `false` — not an error — for an actor
-// who cannot reach the agent at all. `not-found` when the agent does not exist.
+// enforce, exposed so a caller can show the affordance only to someone it
+// will work for. (TASK-803: renamed from its TASK-765 name, which was about
+// exclusions only, once the question grew to this.) `allowed` is `false` —
+// not an error — for an actor who cannot reach the agent at all, and that is
+// the ONLY way this hook says no. A rejection is a fault, not a denial: a
+// caller fails closed on it but must not report it to the person as
+// "forbidden". `not-found` when the agent does not exist.
 
-export interface CanExcludeConnectorInput {
+export interface CanManageConnectorsInput {
   actor: Actor;
   agentId: string;
 }
 
-export interface CanExcludeConnectorOutput {
+export interface CanManageConnectorsOutput {
   allowed: boolean;
 }
 

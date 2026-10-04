@@ -879,7 +879,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'Remove on a connector answers 503 connectors-unavailable',
         },
         {
-          hook: 'agents:can-exclude-connector',
+          hook: 'agents:can-manage-connectors',
           degradation:
             'the Connectors tab offers no Add, Remove or team Sign in, and a team agent refuses Add to anyone but a workspace admin',
         },

@@ -30,8 +30,8 @@ import type {
   AttachConnectorOutput,
   DetachConnectorInput,
   DetachConnectorOutput,
-  CanExcludeConnectorInput,
-  CanExcludeConnectorOutput,
+  CanManageConnectorsInput,
+  CanManageConnectorsOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -137,7 +137,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:set-skill-attachments',
         'agents:attach-connector',
         'agents:detach-connector',
-        'agents:can-exclude-connector',
+        'agents:can-manage-connectors',
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
@@ -1205,7 +1205,7 @@ describe('agents:attach-connector / agents:detach-connector (TASK-739)', () => {
 // plain member may not change a team agent's connectors at all: attach, detach
 // (with or without `exclude`). Only the agent's owner
 // (personal) / a team admin (team) / a workspace admin may.
-// `agents:can-exclude-connector` exposes the same answer to the route and to
+// `agents:can-manage-connectors` exposes the same answer to the route and to
 // @ax/mcp-oauth, so nobody is offered a button the server would refuse.
 describe('agents: only the owner or an admin may change a team agent connectors (TASK-765, TASK-798)', () => {
   const connectorsResolve = {
@@ -1290,9 +1290,9 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       input,
     );
   }
-  function canExclude(h: TestHarness, input: CanExcludeConnectorInput) {
-    return h.bus.call<CanExcludeConnectorInput, CanExcludeConnectorOutput>(
-      'agents:can-exclude-connector',
+  function canManage(h: TestHarness, input: CanManageConnectorsInput) {
+    return h.bus.call<CanManageConnectorsInput, CanManageConnectorsOutput>(
+      'agents:can-manage-connectors',
       h.ctx(),
       input,
     );
@@ -1477,55 +1477,55 @@ describe('agents: only the owner or an admin may change a team agent connectors 
   });
 
   // UNFIXED: the hook is not registered -> every case fails with no-service.
-  describe('agents:can-exclude-connector', () => {
+  describe('agents:can-manage-connectors', () => {
     it('a plain team member: allowed:false', async () => {
       const { h, agentId } = await seedTeamAgent();
-      expect(await canExclude(h, { actor: member, agentId })).toEqual({ allowed: false });
+      expect(await canManage(h, { actor: member, agentId })).toEqual({ allowed: false });
     });
 
     it('a team admin: allowed:true', async () => {
       const { h, agentId } = await seedTeamAgent();
-      expect(await canExclude(h, { actor: teamAdmin, agentId })).toEqual({ allowed: true });
+      expect(await canManage(h, { actor: teamAdmin, agentId })).toEqual({ allowed: true });
     });
 
     it('a workspace admin: allowed:true', async () => {
       const { h, agentId } = await seedTeamAgent();
-      expect(await canExclude(h, { actor: workspaceAdmin, agentId })).toEqual({ allowed: true });
+      expect(await canManage(h, { actor: workspaceAdmin, agentId })).toEqual({ allowed: true });
     });
 
     it('a personal agent: the owner is allowed, a stranger is not', async () => {
       const { h, agentId } = await seedPersonalAgent();
-      expect(await canExclude(h, { actor: owner, agentId })).toEqual({ allowed: true });
-      expect(await canExclude(h, { actor: outsider, agentId })).toEqual({ allowed: false });
+      expect(await canManage(h, { actor: owner, agentId })).toEqual({ allowed: true });
+      expect(await canManage(h, { actor: outsider, agentId })).toEqual({ allowed: false });
     });
 
     it('a user who cannot reach the team agent at all: allowed:false, not an error', async () => {
       const { h, agentId } = await seedTeamAgent();
-      expect(await canExclude(h, { actor: outsider, agentId })).toEqual({ allowed: false });
+      expect(await canManage(h, { actor: outsider, agentId })).toEqual({ allowed: false });
     });
 
     it('no teams plugin: a team member is not provably an admin -> allowed:false', async () => {
       const { h, agentId } = await seedTeamAgent();
       // Membership resolves once (ownership ACL), then the role check finds no service.
       teamsFailsAfter(1, 'no-service');
-      expect(await canExclude(h, { actor: teamAdmin, agentId })).toEqual({ allowed: false });
+      expect(await canManage(h, { actor: teamAdmin, agentId })).toEqual({ allowed: false });
       // And with the service gone for good, the ownership ACL refuses first.
       teamsFailsAfter(0, 'no-service');
-      expect(await canExclude(h, { actor: teamAdmin, agentId })).toEqual({ allowed: false });
+      expect(await canManage(h, { actor: teamAdmin, agentId })).toEqual({ allowed: false });
       // A workspace admin needs no team lookup at all.
-      expect(await canExclude(h, { actor: workspaceAdmin, agentId })).toEqual({ allowed: true });
+      expect(await canManage(h, { actor: workspaceAdmin, agentId })).toEqual({ allowed: true });
     });
 
     it('a teams failure other than no-service propagates', async () => {
       const { h, agentId } = await seedTeamAgent();
       teamsFailsAfter(1, 'broken');
-      await expect(canExclude(h, { actor: member, agentId })).rejects.toThrow('teams db is down');
+      await expect(canManage(h, { actor: member, agentId })).rejects.toThrow('teams db is down');
     });
 
     it('not-found for a missing agent', async () => {
       const { h } = await seedTeamAgent();
       await expect(
-        canExclude(h, { actor: workspaceAdmin, agentId: 'agt_missing' }),
+        canManage(h, { actor: workspaceAdmin, agentId: 'agt_missing' }),
       ).rejects.toMatchObject({ code: 'not-found' });
     });
   });

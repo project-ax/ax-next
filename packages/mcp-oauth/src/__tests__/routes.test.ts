@@ -39,7 +39,7 @@ it('names the CIMD client after the branding and lets authorization servers cach
 interface BusStubs {
   'auth:require-user'?: (input: unknown) => unknown;
   'agents:resolve'?: (input: unknown) => unknown;
-  'agents:can-exclude-connector'?: (input: unknown) => unknown;
+  'agents:can-manage-connectors'?: (input: unknown) => unknown;
   'connectors:get'?: (input: unknown) => unknown;
   'credentials:get'?: (input: unknown) => unknown;
   'credentials:set'?: (input: unknown) => unknown;
@@ -455,7 +455,7 @@ describe('mcp-oauth begin route', () => {
 
     expect(state.status).toBe(200);
     expect(store.putPending).toHaveBeenCalledTimes(1);
-    expect(calls.map((c) => c.hook)).not.toContain('agents:can-exclude-connector');
+    expect(calls.map((c) => c.hook)).not.toContain('agents:can-manage-connectors');
   });
 
   // TASK-798 — `agents:resolve` admits every MEMBER of a team agent, but a
@@ -475,7 +475,7 @@ describe('mcp-oauth begin route', () => {
       const { deps, store, flow, calls } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-exclude-connector': canManage,
+        'agents:can-manage-connectors': canManage,
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -499,7 +499,7 @@ describe('mcp-oauth begin route', () => {
       const { deps, store } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-exclude-connector': () => ({ allowed: true }),
+        'agents:can-manage-connectors': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -515,7 +515,7 @@ describe('mcp-oauth begin route', () => {
       const { deps, store } = makeDeps({
         'auth:require-user': () => ({ user: { id: 'admin-1', isAdmin: true } }),
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-exclude-connector': canManage,
+        'agents:can-manage-connectors': canManage,
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -544,7 +544,7 @@ describe('mcp-oauth begin route', () => {
       const { deps, store } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-exclude-connector': () => rejectThrow('nope'),
+        'agents:can-manage-connectors': () => rejectThrow('nope'),
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -558,7 +558,7 @@ describe('mcp-oauth begin route', () => {
       const { deps, store } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-exclude-connector': () => ({ allowed: 'yes' }),
+        'agents:can-manage-connectors': () => ({ allowed: 'yes' }),
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -573,7 +573,7 @@ describe('mcp-oauth begin route', () => {
       const canManage = vi.fn(() => ({ allowed: false }));
       const { deps, store } = makeDeps({
         'auth:require-user': () => OK_USER,
-        'agents:can-exclude-connector': canManage,
+        'agents:can-manage-connectors': canManage,
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -1017,7 +1017,7 @@ describe('mcp-oauth begin route', () => {
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
         // TASK-798 — the signer is the agent's owner.
-        'agents:can-exclude-connector': () => ({ allowed: true }),
+        'agents:can-manage-connectors': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
         'credentials:authorize-agent:account': authz,
       },
@@ -1057,7 +1057,7 @@ describe('mcp-oauth begin route', () => {
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
         // TASK-798 — the signer is the agent's owner.
-        'agents:can-exclude-connector': () => ({ allowed: true }),
+        'agents:can-manage-connectors': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
         ...extra,
       },

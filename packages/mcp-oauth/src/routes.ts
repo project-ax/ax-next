@@ -77,7 +77,7 @@ const AUTHORIZE_AGENT_ACCOUNT_HOOK = 'credentials:authorize-agent:account';
  * TASK-798 — @ax/agents' "may this actor change this agent's connectors?"
  * (owner / team admin / workspace admin). Named here, not imported (I2).
  */
-const CAN_MANAGE_AGENT_CONNECTORS_HOOK = 'agents:can-exclude-connector';
+const CAN_MANAGE_AGENT_CONNECTORS_HOOK = 'agents:can-manage-connectors';
 
 export interface McpOAuthRouteConfig {
   /** Public origin we serve under; the OAuth redirect_uri is derived from it. */

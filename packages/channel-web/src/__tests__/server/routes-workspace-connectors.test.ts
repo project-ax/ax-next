@@ -111,7 +111,7 @@ describe('agent connector routes', () => {
   let vault: Set<string>;
   let credentialReads: Array<{ ref: string; userId: string; agentId: string }>;
   let credentialError: unknown;
-  /** TASK-765 / TASK-798 — what `agents:can-exclude-connector` answers. */
+  /** TASK-765 / TASK-798 — what `agents:can-manage-connectors` answers. */
   let canManage: 'allow' | 'deny' | 'throw';
   let canManageCalls: Array<Record<string, unknown>>;
 
@@ -221,7 +221,7 @@ describe('agent connector routes', () => {
     });
     canManage = 'allow';
     canManageCalls = [];
-    bus.registerService('agents:can-exclude-connector', 'agents', async (_c, i: unknown) => {
+    bus.registerService('agents:can-manage-connectors', 'agents', async (_c, i: unknown) => {
       canManageCalls.push(i as Record<string, unknown>);
       if (canManage === 'throw') throw new Error('teams store row 9 is corrupt');
       return { allowed: canManage === 'allow' };
@@ -1047,7 +1047,7 @@ describe('agent connector routes', () => {
         canManage = 'throw';
         const warn = vi.spyOn(initCtx.logger, 'warn');
         const r = await list();
-        const call = warn.mock.calls.find((c) => c[0] === 'workspace_connector_can_exclude_failed');
+        const call = warn.mock.calls.find((c) => c[0] === 'workspace_connector_can_manage_failed');
         warn.mockRestore();
         expect(r.statusCode).toBe(200);
         expect(r.body).toMatchObject({ manageable: false });

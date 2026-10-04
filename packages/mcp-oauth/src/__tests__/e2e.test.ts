@@ -362,7 +362,7 @@ function captureRouteServices(routes: CapturedRoute[]): Record<string, ServiceHa
     // matching the sharee-resolves design this canary exercises.
     'agents:resolve': (async () => ({ agent: { id: 'agent-A', visibility: 'team', ownerId: 'team-1' } })) as ServiceHandler,
     // TASK-798 — bob is agent-A's owner (a team admin), so he may sign in for it.
-    'agents:can-exclude-connector': (async () => ({ allowed: true })) as ServiceHandler,
+    'agents:can-manage-connectors': (async () => ({ allowed: true })) as ServiceHandler,
     // TASK-711 — @ax/connectors' answer to "is conn-1 the one shared connector
     // every member of agent-A sees?". Yes here, so the sign-in is stored on the
     // agent AND the vault lets the sharee read it back there.
