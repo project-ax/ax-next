@@ -107,8 +107,15 @@ describe('turnErrorText — a connector sign-in expired (TASK-713)', () => {
   });
 });
 
-describe('turnErrorText — a connector nobody signed in to yet (TASK-796)', () => {
-  it('says "sign in", not "reconnect", and points at Connectors', () => {
+/*
+  TASK-806 — the host no longer emits `connector-needs-sign-in` or
+  `provider-key-missing-connector-needs-sign-in` on a live turn (a never-signed-in
+  connector is skipped instead). The LABELS stay because turn-error rows already
+  persisted on prod replay those codes on reload; the live "Open Connectors"
+  button does not, because the live wire cannot carry them any more.
+*/
+describe('turnErrorText — a connector nobody signed in to yet (TASK-796, replay-only since TASK-806)', () => {
+  it('still says "sign in", not "reconnect", and points at Connectors, for a replayed row', () => {
     const text = turnErrorText('connector-needs-sign-in');
     expect(text).not.toBe(DEFAULT_TURN_ERROR);
     expect(text).toBe(
@@ -117,17 +124,30 @@ describe('turnErrorText — a connector nobody signed in to yet (TASK-796)', () 
     expect(text.toLowerCase()).not.toContain('reconnect');
   });
 
-  it('marks exactly the connector reasons as fixed on the Connectors tab', () => {
-    expect(turnErrorOpensConnectors('connector-needs-sign-in')).toBe(true);
+  it('marks only the reconnect reason as fixed on the Connectors tab', () => {
     expect(turnErrorOpensConnectors('connector-needs-reconnect')).toBe(true);
-    expect(turnErrorOpensConnectors('provider-key-missing-connector-needs-sign-in')).toBe(true);
     for (const other of ['proxy-open-failed', 'chat-run-timeout', 'toString', '', null, undefined]) {
       expect(turnErrorOpensConnectors(other)).toBe(false);
     }
   });
+
+  it('no longer offers the live button for the two sign-in reasons the host cannot emit (TASK-806)', () => {
+    expect(turnErrorOpensConnectors('connector-needs-sign-in')).toBe(false);
+    expect(turnErrorOpensConnectors('provider-key-missing-connector-needs-sign-in')).toBe(false);
+  });
+
+  it('keeps a label for both, so a reloaded conversation never reads as the generic stop line', () => {
+    for (const code of [
+      'connector-needs-sign-in',
+      'provider-key-missing-connector-needs-sign-in',
+    ]) {
+      expect(ERROR_LABELS[code]).toBeTruthy();
+      expect(turnErrorText(code)).not.toBe(DEFAULT_TURN_ERROR);
+    }
+  });
 });
 
-describe('turnErrorText — the provider key AND a connector are both missing (TASK-802)', () => {
+describe('turnErrorText — the provider key AND a connector are both missing (TASK-802, replay-only since TASK-806)', () => {
   const text = turnErrorText('provider-key-missing-connector-needs-sign-in');
 
   it('names the AI service, not only the connector, and says who fixes it', () => {

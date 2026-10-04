@@ -81,6 +81,7 @@ import { saveRefusedRowId, type SaveRefusedCode } from '@/lib/save-refused';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
+import { SkippedConnectorsNotice } from './SkippedConnectorsNotice';
 import { MemorySurface } from './FactsMemory';
 import { AgentRail, AgentRailContent } from './AgentRail';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
@@ -597,6 +598,14 @@ export function AgentView({
      */
     opensConnectors?: true;
   } | null>(null);
+  /**
+   * How many turns have ended (done OR failed) in this view (TASK-806). Not
+   * drawn — it is the "something may have changed" signal the connectors-off
+   * notice re-reads on: the person may have signed in to a connector (here or
+   * in another tab) while the turn ran, and that turn is what the notice
+   * said was running without it.
+   */
+  const [turnsEnded, setTurnsEnded] = useState(0);
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -904,6 +913,7 @@ export function AgentView({
           // "Couldn’t stop it — may still be running" is no longer true.
           setTurnError((prev) => (prev?.source === 'stop' ? null : prev));
           resetLiveTurn();
+          setTurnsEnded((n) => n + 1);
           if (stoppedIn !== null) setStopNotice(stoppedIn);
           // TASK-720 — the reply finished but its files were not kept.
           // `streamReply` has already checked the code is one of the three.
@@ -924,6 +934,7 @@ export function AgentView({
           // render; an absence is not (design H7).
           cancelStop();
           setStreaming(false);
+          setTurnsEnded((n) => n + 1);
           /*
             ALWAYS `failed`, and the stream's own sentence is KEPT.
 
@@ -1621,6 +1632,23 @@ export function AgentView({
                   </Button>
                 </div>
               )}
+              {/*
+                TASK-806 — "Gmail isn’t signed in yet, so it’s off for this
+                chat." A connector never signed in to is skipped for the turn,
+                not a reason to refuse it; this says so, on every tab (the
+                thread is beside the rail), never blocks the composer, and
+                reads the SAME list the Connectors tab draws. It is about the
+                CURRENT chat, so it steps aside (staying mounted, so a
+                dismissal survives) while a past conversation is open. It
+                re-reads when a turn ends and when the tab changes — signing in
+                on Connectors clears it on the way back.
+              */}
+              <SkippedConnectorsNotice
+                agentId={agentId}
+                refreshKey={`${turnsEnded}:${tab}`}
+                onOpenConnectors={() => onTab('connectors')}
+                suppressed={past !== null}
+              />
               {turnError !== null && !past && (
                 /*
                   One sentence about one event, then the way out — and no
