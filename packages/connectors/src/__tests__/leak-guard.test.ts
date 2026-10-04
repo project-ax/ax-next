@@ -17,7 +17,7 @@ import {
 // ---------------------------------------------------------------------------
 // Boundary-review-as-a-test (Invariant I1 + the design's boundary review).
 //
-// The connector's BACKING mechanism (MCP over http/stdio, a CLI package, a
+// The connector's BACKING mechanism (MCP over http, a CLI package, a
 // direct API) must live ONLY inside the `capabilities` spec object — never as a
 // FIRST-CLASS field on a hook payload. This test pins that: a regression that
 // hoisted `transport` / `command` / `stdio` / `url` / `mcp` (or `mcpServers`)

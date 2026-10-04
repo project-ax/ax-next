@@ -191,11 +191,11 @@ describe('connectors:describe-tools', () => {
     expect(t.list).not.toHaveBeenCalled();
   });
 
-  it('returns unknown for a stdio-only connector without any network call', async () => {
+  it('returns unknown for a connector with no MCP servers, without any network call', async () => {
     const t = setup({
       resolve: () =>
         connector({
-          capabilities: { credentials: [], mcpServers: [{ name: 'main', transport: 'stdio' }] },
+          capabilities: { credentials: [], mcpServers: [] },
           credentialPlan: [],
         }),
     });

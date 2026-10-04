@@ -29,7 +29,7 @@ export const CONNECTOR_PROPOSE_DESCRIPTOR: ToolDescriptor = {
   description: [
     'Propose a new connector — authenticated access to a service or data source —',
     'so it can be connected for the user. A connector hides its mechanism: it may',
-    'be backed by an MCP server (http or stdio), a CLI tool fetched from a package',
+    'be backed by a remote MCP server (an http URL), a CLI tool fetched from a package',
     'registry, or direct API calls over an allowed host. Pass the access surface as',
     'arguments; the user approves ONE card listing the hosts it reaches, the',
     'credential slots (keys) it needs, and the package registries it pulls from.',
@@ -42,7 +42,7 @@ export const CONNECTOR_PROPOSE_DESCRIPTOR: ToolDescriptor = {
     '  slots:       credential slots it needs — [{ slot: "SF_API_KEY", kind: "api-key" }].',
     '               Slot names are SCREAMING_SNAKE_CASE; the only kind is "api-key".',
     '  packages:    { npm: [...], pypi: [...] } — registries it fetches binaries from. Optional.',
-    '  mcpServers:  MCP backing (transport/command/url live INSIDE each spec). Optional.',
+    '  mcpServers:  remote MCP backing — [{ name, transport: "http", url, allowedHosts, credentials }]. Optional.',
     '  usageNote:   a short "how to use me" blurb so connecting it yields a working capability.',
     '  keyMode:     "personal" — prompt EACH user for their own key (per-user data like a',
     '               personal Gmail/Drive); or "workspace" — an admin provides ONE shared key',

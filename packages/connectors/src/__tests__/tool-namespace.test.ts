@@ -185,7 +185,7 @@ describe('diffToolNamespaces (TASK-752)', () => {
         'linear',
         [at('a', 'https://one.example/mcp')],
         [
-          { ...at('a', 'https://one.example/mcp'), allowedHosts: ['x.example'], env: { K: 'v' } },
+          { ...at('a', 'https://one.example/mcp'), allowedHosts: ['x.example'] },
           at('new', 'https://three.example/mcp'),
         ],
       ),
@@ -201,42 +201,6 @@ describe('diffToolNamespaces (TASK-752)', () => {
         [at('a', 'https://two.example/mcp'), at('b', 'https://keep.example/mcp')],
       ),
     ).toEqual({ renamed: [], removed: [{ server: 'a', toolNamespace: ns('a') }] });
-  });
-
-  it('TASK-755: any part of the endpoint counts — transport, command or args', () => {
-    const stdio = (args: string[]): Capabilities['mcpServers'][number] => ({
-      name: 'a',
-      transport: 'stdio',
-      command: 'npx',
-      args,
-      allowedHosts: [],
-      credentials: [],
-    });
-    const reset = { renamed: [], removed: [{ server: 'a', toolNamespace: ns('a') }] };
-    expect(diffToolNamespaces('userA', 'linear', [stdio(['pkg-a'])], [stdio(['pkg-b'])])).toEqual(reset);
-    expect(
-      diffToolNamespaces('userA', 'linear', [stdio(['pkg-a'])], [{ ...stdio(['pkg-a']), command: 'uvx' }]),
-    ).toEqual(reset);
-    expect(
-      diffToolNamespaces('userA', 'linear', [stdio(['pkg-a'])], [at('a', 'https://one.example/mcp')]),
-    ).toEqual(reset);
-  });
-
-  it('TASK-758: no args and an empty arg list are the same endpoint', () => {
-    const stdio: Capabilities['mcpServers'][number] = {
-      name: 'a',
-      transport: 'stdio',
-      command: 'npx',
-      allowedHosts: [],
-      credentials: [],
-    };
-    expect(diffToolNamespaces('userA', 'linear', [stdio], [{ ...stdio, args: [] }])).toEqual({
-      renamed: [],
-      removed: [],
-    });
-    expect(
-      diffToolNamespaces('userA', 'linear', [stdio], [{ ...stdio, args: ['pkg'] }]).removed,
-    ).toEqual([{ server: 'a', toolNamespace: ns('a') }]);
   });
 
   it('TASK-755: a kept-name endpoint change and a rename in one edit are both reported', () => {

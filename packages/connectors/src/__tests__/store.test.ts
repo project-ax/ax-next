@@ -454,3 +454,33 @@ describe('boundary validators', () => {
     ).toThrow();
   });
 });
+
+describe('validateCapabilities — stdio removed', () => {
+  const base = { allowedHosts: [], credentials: [], packages: { npm: [], pypi: [] } };
+  it('rejects a stdio MCP server with the remote-URL hint', () => {
+    expect(() =>
+      validateCapabilities({
+        ...base,
+        mcpServers: [
+          { name: 'local', transport: 'stdio', command: 'npx', allowedHosts: [], credentials: [] },
+        ],
+      }),
+    ).toThrow('Local (stdio) MCP servers are no longer supported. Use a remote MCP server URL.');
+  });
+  it('still accepts an http MCP server', () => {
+    expect(() =>
+      validateCapabilities({
+        ...base,
+        mcpServers: [
+          {
+            name: 'remote',
+            transport: 'http',
+            url: 'https://mcp.example.com',
+            allowedHosts: [],
+            credentials: [],
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+});

@@ -470,10 +470,7 @@ interface SkillsResolveInput {
 // boundary re-validation downstream.
 interface McpServerSpecForOrch {
   name: string;
-  transport: 'stdio' | 'http';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
+  transport: 'http';
   url?: string;
   allowedHosts: string[];
   credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;

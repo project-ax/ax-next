@@ -119,7 +119,7 @@ describe('buildAuthoredConnectorCard', () => {
   });
 
   it('returns null for an mcp-only proposal (mcp deferred — the wall rejects kind:mcp)', () => {
-    const proposal = { ...EMPTY, mcpServers: [{ name: 'm', transport: 'stdio' as const, allowedHosts: [], credentials: [] }] };
+    const proposal = { ...EMPTY, mcpServers: [{ name: 'm', transport: 'http' as const, url: 'https://mcp.example.com', allowedHosts: [], credentials: [] }] };
     expect(buildAuthoredConnectorCard({ connectorId: 'x', name: 'X', proposal }, new Set())).toBeNull();
   });
 

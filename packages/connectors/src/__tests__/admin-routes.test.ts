@@ -636,7 +636,7 @@ describe('admin connector routes', () => {
     expect((captured.body as { status: string }).status).toBe('reachable');
   });
 
-  it('test: unreachable when an MCP-backed connector has neither url nor command', async () => {
+  it('test: unreachable when an MCP-backed connector has no url', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'userA', isAdmin: true };
@@ -651,7 +651,7 @@ describe('admin connector routes', () => {
         mcpServers: [
           {
             name: 'broken',
-            transport: 'stdio',
+            transport: 'http',
             allowedHosts: [],
             credentials: [],
           },
