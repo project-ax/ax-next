@@ -60,10 +60,16 @@ interface World {
   bus: HookBus;
   svc: BlobGcService;
   storage: Map<string, Uint8Array>;
-  /** The blobs the fake backend lists, by sha. */
+  /** The fake backend's LIVE blobs, by sha (what `blob:list { state: 'live' }` lists). */
   backend: Map<string, number>;
+  /** The fake backend's RETIRED blobs, by sha. */
+  retired: Map<string, number>;
   /** Every service hook the GC called, in order. */
   called: string[];
+  /** Every backend write/stat call, with its input, in order. */
+  blobCalls: Array<{ hook: string; input: Record<string, unknown> }>;
+  /** Make the next `blob:retire` calls throw. */
+  failRetire: { on: boolean };
   lines: Line[];
   clock: { now: () => Date; advance(ms: number): void };
   put(sha: string, size?: number): Promise<void>;
@@ -73,7 +79,10 @@ function world(opts: { store?: BlobGcStore } = {}): World {
   const bus = new HookBus();
   const storage = new Map<string, Uint8Array>();
   const backend = new Map<string, number>();
+  const retired = new Map<string, number>();
   const called: string[] = [];
+  const blobCalls: Array<{ hook: string; input: Record<string, unknown> }> = [];
+  const failRetire = { on: false };
   const track =
     <I, O>(hook: string, fn: (input: I) => Promise<O>) =>
     async (_ctx: unknown, input: I): Promise<O> => {
@@ -100,8 +109,8 @@ function world(opts: { store?: BlobGcStore } = {}): World {
     track(
       'blob:list',
       async ({ after, limit, state }: { after?: string; limit: number; state: string }) => {
-        if (state !== 'live') return { items: [] };
-        const items = [...backend]
+        const ns = state === 'live' ? backend : state === 'retired' ? retired : new Map<string, number>();
+        const items = [...ns]
           .filter(([sha]) => after === undefined || sha > after)
           .sort(([a], [b]) => (a < b ? -1 : 1))
           .slice(0, limit)
@@ -110,8 +119,54 @@ function world(opts: { store?: BlobGcStore } = {}): World {
       },
     ),
   );
-  // Every hook that could free a byte. Report mode must never reach any.
-  for (const hook of ['blob:delete', 'blob:retire', 'blob:purge', 'blob:put', 'blob:put-internal']) {
+  // A fake backend with the D3 semantics: retire moves live -> retired
+  // (missing = no-op), purge deletes the RETIRED copy only, stat restores a
+  // retired blob on a live miss. Every call is recorded with its input.
+  const backendHook = <O>(hook: string, fn: (input: Record<string, unknown>) => O) =>
+    track(hook, async (input: Record<string, unknown>) => {
+      blobCalls.push({ hook, input });
+      return fn(input);
+    });
+  bus.registerService(
+    'blob:retire',
+    'test',
+    backendHook('blob:retire', ({ sha256 }) => {
+      if (failRetire.on) throw new Error('disk on fire');
+      const sha = sha256 as string;
+      const size = backend.get(sha);
+      if (size !== undefined) {
+        backend.delete(sha);
+        retired.set(sha, size);
+      }
+      return {};
+    }),
+  );
+  bus.registerService(
+    'blob:purge',
+    'test',
+    backendHook('blob:purge', ({ sha256 }) => {
+      retired.delete(sha256 as string);
+      return {};
+    }),
+  );
+  bus.registerService(
+    'blob:stat',
+    'test',
+    backendHook('blob:stat', ({ sha256, restore }) => {
+      const sha = sha256 as string;
+      const live = backend.get(sha);
+      if (live !== undefined) return { size: live };
+      const ret = retired.get(sha);
+      if (ret === undefined) return { found: false };
+      if (restore !== false) {
+        retired.delete(sha);
+        backend.set(sha, ret);
+      }
+      return { size: ret };
+    }),
+  );
+  // Hooks the GC must never call at all.
+  for (const hook of ['blob:delete', 'blob:put', 'blob:put-internal']) {
     bus.registerService(hook, 'test', track(hook, async () => ({})));
   }
 
@@ -147,7 +202,10 @@ function world(opts: { store?: BlobGcStore } = {}): World {
     svc,
     storage,
     backend,
+    retired,
     called,
+    blobCalls,
+    failRetire,
     lines,
     clock,
     async put(sha, size = 100) {
@@ -176,7 +234,8 @@ async function row(sha: string) {
 
 const aborted = (w: World) => w.lines.find((l) => l.msg === 'blob_gc_sweep_aborted');
 const reportLine = (w: World) => w.lines.find((l) => l.msg === 'blob_gc_report');
-const FREEING = ['blob:delete', 'blob:retire', 'blob:purge', 'blob:put', 'blob:put-internal'];
+/** Every hook that could move, restore or free a byte. Report mode must never reach any. */
+const FREEING = ['blob:delete', 'blob:retire', 'blob:purge', 'blob:stat', 'blob:put', 'blob:put-internal'];
 
 describe('blob:stored', () => {
   it('records last_put_at = now on every put, and a re-put moves it forward', async () => {
@@ -264,7 +323,8 @@ describe('sweep (report mode)', () => {
     holder(w, '@ax/attachments', () => []);
     for (let i = 1; i <= 2500; i++) w.backend.set(shaN(i), 1);
     expect(await w.svc.sweep()).toMatchObject({ report: { discovered: 2500 } });
-    expect(w.called.filter((h) => h === 'blob:list')).toHaveLength(3);
+    // Three live pages, plus one (empty) page of the retired namespace.
+    expect(w.called.filter((h) => h === 'blob:list')).toHaveLength(4);
     const n = await sql<{ n: string }>`SELECT count(*)::text AS n FROM blob_gc_v1_blobs`.execute(db);
     expect(n.rows[0]!.n).toBe('2500');
   });
@@ -305,6 +365,10 @@ describe('sweep (report mode)', () => {
       held: 2,
       wouldRetire: 1,
       wouldRetireBytes: 300,
+      retired: 0,
+      restored: 0,
+      purged: 0,
+      bytesPurged: 0,
       perHolder: { '@ax/attachments': 1, '@ax/branding': 2, '@ax/skills': 0 },
     };
     expect(res).toEqual({
@@ -484,5 +548,373 @@ describe('sweep lock', () => {
     } finally {
       c.release();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Enforce mode (TASK-778): retire, restore, purge. This is the code that
+// deletes user data, so most of these tests assert what it does NOT touch.
+// ---------------------------------------------------------------------------
+
+const DAY = 24 * HOUR;
+const R = 'd'.repeat(64);
+
+function setSettings(w: World, settings: Record<string, unknown>) {
+  w.storage.set(SETTINGS_STORAGE_KEY, new TextEncoder().encode(JSON.stringify(settings)));
+}
+const enforce = (w: World) => setSettings(w, { mode: 'enforce' });
+const blobHooks = (w: World, hook: string) =>
+  w.blobCalls.filter((c) => c.hook === hook).map((c) => c.input.sha256);
+const sweepLine = (w: World) => w.lines.filter((l) => l.msg === 'blob_gc_sweep').at(-1);
+
+describe('sweep: the DEFAULT is safe', () => {
+  it('with no settings row at all, unheld blobs past grace and retired rows past retention are never touched', async () => {
+    const w = world();
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 10);
+    await w.put(T, 20);
+    w.retired.set(U, 30); // a retired blob the table has never seen
+    expect(w.storage.has(SETTINGS_STORAGE_KEY)).toBe(false);
+    for (let i = 0; i < 3; i++) {
+      w.clock.advance(10 * DAY);
+      expect(await w.svc.sweep()).toMatchObject({
+        outcome: 'reported',
+        report: { mode: 'report', retired: 0, restored: 0, purged: 0, bytesPurged: 0 },
+      });
+    }
+    expect(w.called.filter((h) => FREEING.includes(h))).toEqual([]);
+    expect(await row(S)).toMatchObject({ state: 'live' });
+    expect(await row(T)).toMatchObject({ state: 'live' });
+    expect(await row(U)).toMatchObject({ state: 'retired' });
+    expect([...w.backend.keys()].sort()).toEqual([S, T]);
+    expect([...w.retired.keys()]).toEqual([U]);
+  });
+
+  it('a corrupt stored mode reads as report', async () => {
+    const w = world();
+    holder(w, '@ax/attachments', () => []);
+    setSettings(w, { mode: 'ENFORCE' });
+    await w.put(S);
+    w.clock.advance(2 * DAY);
+    expect(await w.svc.sweep()).toMatchObject({ report: { mode: 'report', wouldRetire: 1, retired: 0 } });
+    expect(w.called.filter((h) => FREEING.includes(h))).toEqual([]);
+  });
+});
+
+describe('sweep (enforce): retire pass', () => {
+  it('retires an unheld blob past grace, leaves a held one, and skips one re-put after the ask', async () => {
+    const w = world();
+    enforce(w);
+    let asks = 0;
+    w.bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, '@ax/attachments', async (_c, payload) => {
+      asks++;
+      // The re-put of R lands AFTER the holders were asked, BEFORE the retire.
+      if ((payload as { candidates: string[] }).candidates.includes(R)) await w.put(R, 40);
+      return answerBlobCollectRefs(payload, '@ax/attachments', async () => [{ sha256: T, userIds: ['alice'] }]);
+    });
+    await w.put(S, 100);
+    await w.put(T, 200);
+    await w.put(R, 40);
+    w.clock.advance(25 * HOUR);
+    const res = await w.svc.sweep();
+    expect(res).toMatchObject({
+      outcome: 'reported',
+      report: { mode: 'enforce', candidates: 3, held: 1, wouldRetire: 2, wouldRetireBytes: 140, retired: 1 },
+    });
+    expect(asks).toBe(1);
+    expect(blobHooks(w, 'blob:retire')).toEqual([S]);
+    expect(blobHooks(w, 'blob:purge')).toEqual([]);
+    const s = await row(S);
+    expect(s).toMatchObject({ state: 'retired' });
+    expect(s!.retired_at!.toISOString()).toBe(w.clock.now().toISOString());
+    expect(await row(T)).toMatchObject({ state: 'live', retired_at: null });
+    expect(await row(R)).toMatchObject({ state: 'live', retired_at: null });
+    expect([...w.backend.keys()].sort()).toEqual([T, R].sort());
+    expect([...w.retired.keys()]).toEqual([S]);
+  });
+
+  it('a blob:retire that throws reverts the row to live and fails the sweep, with no purge', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S);
+    w.clock.advance(25 * HOUR);
+    w.failRetire.on = true;
+    expect(await w.svc.sweep()).toEqual({ outcome: 'failed' });
+    expect(w.lines.map((l) => l.msg)).toContain('blob_gc_sweep_failed');
+    expect(await row(S)).toMatchObject({ state: 'live', retired_at: null });
+    expect(blobHooks(w, 'blob:purge')).toEqual([]);
+    expect(w.storage.has(LAST_REPORT_STORAGE_KEY)).toBe(false);
+    // Next sweep, with the backend healthy, retires it normally.
+    w.failRetire.on = false;
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+  });
+
+  it('an ask about real candidates that NO holder answers retires nothing (empty roster)', async () => {
+    const w = world();
+    enforce(w);
+    await w.put(S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toEqual({ outcome: 'aborted' });
+    expect(aborted(w)).toMatchObject({ level: 'error', bindings: { noHolders: true } });
+    expect(w.called.filter((h) => FREEING.includes(h))).toEqual([]);
+    expect(await row(S)).toMatchObject({ state: 'live' });
+  });
+});
+
+describe('sweep (enforce) FAILS CLOSED', () => {
+  async function primed() {
+    let mode: 'answer' | 'throw' | 'not-ok' = 'answer';
+    let failOnlyFor: string | undefined;
+    let asks = 0;
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    holder(w, '@ax/skills', (c) => {
+      asks++;
+      if (mode === 'answer') return [];
+      if (failOnlyFor !== undefined && !c.includes(failOnlyFor)) return [];
+      return mode;
+    });
+    await w.put(S);
+    // A first sweep inside the grace window puts both holders on the roster.
+    expect(await w.svc.sweep()).toMatchObject({ outcome: 'reported', report: { candidates: 0 } });
+    w.lines.length = 0;
+    w.clock.advance(25 * HOUR);
+    return {
+      w,
+      setMode: (m: typeof mode, only?: string) => {
+        mode = m;
+        failOnlyFor = only;
+        asks = 0;
+      },
+      asks: () => asks,
+    };
+  }
+
+  for (const m of ['throw', 'not-ok'] as const) {
+    it(`retire pass: a roster member that answers '${m}' means zero retire and zero purge`, async () => {
+      const { w, setMode } = await primed();
+      setMode(m);
+      expect(await w.svc.sweep()).toEqual({ outcome: 'aborted' });
+      expect(w.called.filter((h) => FREEING.includes(h))).toEqual([]);
+      expect(await row(S)).toMatchObject({ state: 'live' });
+      expect(sweepLine(w)).toMatchObject({ level: 'info', bindings: { mode: 'enforce', aborted: true, retired: 0 } });
+    });
+
+    it(`purge pass: a roster member that answers '${m}' means zero purge, rows unchanged`, async () => {
+      const { w, setMode, asks } = await primed();
+      expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+      const before = (await row(S))!;
+      w.clock.advance(8 * DAY);
+      // Answers the (empty) retire-pass ask, fails the purge-pass ask about S.
+      setMode(m, S);
+      w.lines.length = 0;
+      const reportBefore = w.storage.get(LAST_REPORT_STORAGE_KEY);
+      expect(await w.svc.sweep()).toEqual({ outcome: 'aborted' });
+      expect(asks()).toBe(2); // both passes asked
+      expect(blobHooks(w, 'blob:purge')).toEqual([]);
+      expect(blobHooks(w, 'blob:stat')).toEqual([]);
+      const after = (await row(S))!;
+      expect(after).toMatchObject({ state: 'retired' });
+      expect(after.retired_at!.toISOString()).toBe(before.retired_at!.toISOString());
+      expect([...w.retired.keys()]).toEqual([S]);
+      expect(sweepLine(w)).toMatchObject({ bindings: { aborted: true, purged: 0 } });
+      // No report for the aborted sweep: the stored one is the earlier sweep's.
+      expect(w.storage.get(LAST_REPORT_STORAGE_KEY)).toBe(reportBefore);
+    });
+  }
+});
+
+describe('sweep (enforce): purge pass', () => {
+  it('PURGE RE-CHECK: retired, then a holder references it again, then past retention -> restored, not purged', async () => {
+    const w = world();
+    enforce(w);
+    let referenced = false;
+    holder(w, '@ax/attachments', (c) =>
+      referenced ? c.filter((s) => s === S).map((sha256) => ({ sha256, userIds: ['alice'] })) : [],
+    );
+    await w.put(S, 500);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+    referenced = true;
+    w.clock.advance(8 * DAY);
+    expect(await w.svc.sweep()).toMatchObject({ report: { restored: 1, purged: 0, bytesPurged: 0 } });
+    expect(w.blobCalls.filter((c) => c.hook === 'blob:stat')).toEqual([
+      { hook: 'blob:stat', input: { sha256: S, restore: true } },
+    ]);
+    expect(blobHooks(w, 'blob:purge')).toEqual([]);
+    const r = (await row(S))!;
+    expect(r).toMatchObject({ state: 'live', retired_at: null });
+    expect(r.last_put_at.toISOString()).toBe(w.clock.now().toISOString());
+    expect(w.backend.get(S)).toBe(500);
+    expect(w.retired.has(S)).toBe(false);
+  });
+
+  it('purges an unheld retired blob past retention, but not one retired more recently', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 300);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } }); // S retired at t1
+    await w.put(T, 50);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1, purged: 0 } }); // T retired at t1 + 25 h
+    // t1 + 7 days + 1 hour: S is past retention, T is not.
+    w.clock.advance(7 * DAY + HOUR - 25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { purged: 1, bytesPurged: 300, restored: 0 } });
+    expect(blobHooks(w, 'blob:purge')).toEqual([S]);
+    expect(await row(S)).toBeUndefined();
+    expect(w.retired.has(S)).toBe(false);
+    expect(await row(T)).toMatchObject({ state: 'retired' });
+    expect(w.retired.has(T)).toBe(true);
+  });
+
+  it('a put landing between the purge-pass ask and the purge keeps its live copy AND its row', async () => {
+    const w = world();
+    enforce(w);
+    let rePut = false;
+    w.bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, '@ax/attachments', async (_c, payload) => {
+      if (rePut && (payload as { candidates: string[] }).candidates.includes(S)) await w.put(S, 9);
+      return answerBlobCollectRefs(payload, '@ax/attachments', async () => []);
+    });
+    await w.put(S, 9);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+    w.clock.advance(8 * DAY);
+    rePut = true;
+    expect(await w.svc.sweep()).toMatchObject({ report: { purged: 0, bytesPurged: 0 } });
+    expect(blobHooks(w, 'blob:purge')).toEqual([S]); // the retired copy only
+    expect(w.backend.get(S)).toBe(9);
+    expect(await row(S)).toMatchObject({ state: 'live' });
+  });
+
+  it('a held blob whose bytes are gone logs blob_gc_held_blob_missing and goes live anyway', async () => {
+    const w = world();
+    enforce(w);
+    let referenced = false;
+    holder(w, '@ax/attachments', (c) => (referenced ? c.map((sha256) => ({ sha256, userIds: [] })) : []));
+    await w.put(S);
+    w.clock.advance(25 * HOUR);
+    await w.svc.sweep();
+    w.retired.delete(S); // lost behind the GC's back
+    referenced = true;
+    w.clock.advance(8 * DAY);
+    expect(await w.svc.sweep()).toMatchObject({ report: { restored: 1 } });
+    expect(w.lines.find((l) => l.msg === 'blob_gc_held_blob_missing')).toEqual({
+      level: 'error',
+      msg: 'blob_gc_held_blob_missing',
+      bindings: { sha256: S },
+    });
+    expect(await row(S)).toMatchObject({ state: 'live' });
+  });
+
+  it('REVERSIBLE: enforce retires, an admin flips back to report, nothing is ever purged, and a read restores', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 77);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+    setSettings(w, { mode: 'report' });
+    const callsBefore = w.blobCalls.length;
+    for (let i = 0; i < 4; i++) {
+      w.clock.advance(10 * DAY);
+      expect(await w.svc.sweep()).toMatchObject({ report: { mode: 'report', purged: 0, restored: 0 } });
+    }
+    expect(w.blobCalls.length).toBe(callsBefore);
+    expect(await row(S)).toMatchObject({ state: 'retired' });
+    expect(w.retired.get(S)).toBe(77);
+    // The backend's read path (not the GC) brings it back.
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+    expect(await w.bus.call('blob:stat', ctx, { sha256: S })).toEqual({ size: 77 });
+    expect(w.backend.get(S)).toBe(77);
+  });
+
+  it('DISCOVERY of the retired namespace: an unknown retired sha is recorded retired now, then purged after retention', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    w.retired.set(U, 64);
+    expect(await w.svc.sweep()).toMatchObject({ report: { discovered: 1, purged: 0 } });
+    const r = (await row(U))!;
+    expect(r).toMatchObject({ state: 'retired' });
+    expect(r.retired_at!.toISOString()).toBe(w.clock.now().toISOString());
+    w.clock.advance(6 * DAY);
+    expect(await w.svc.sweep()).toMatchObject({ report: { discovered: 0, purged: 0 } });
+    w.clock.advance(2 * DAY);
+    expect(await w.svc.sweep()).toMatchObject({ report: { purged: 1, bytesPurged: 64 } });
+    expect(blobHooks(w, 'blob:purge')).toEqual([U]);
+    expect(await row(U)).toBeUndefined();
+  });
+
+  it('a sha in BOTH listings is recorded live (the live listing goes first)', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', (c) => c.map((sha256) => ({ sha256, userIds: ['a'] })));
+    w.backend.set(S, 5);
+    w.retired.set(S, 5);
+    expect(await w.svc.sweep()).toMatchObject({ report: { discovered: 1 } });
+    expect(await row(S)).toMatchObject({ state: 'live' });
+  });
+});
+
+describe('blob_gc_sweep line', () => {
+  it('report mode: the documented fields, all-zero free counts', async () => {
+    const w = world();
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S);
+    w.clock.advance(25 * HOUR);
+    await w.svc.sweep();
+    expect(sweepLine(w)).toEqual({
+      level: 'info',
+      msg: 'blob_gc_sweep',
+      bindings: {
+        mode: 'report',
+        discovered: 0,
+        candidates: 1,
+        held: 0,
+        retired: 0,
+        restored: 0,
+        purged: 0,
+        bytesPurged: 0,
+      },
+    });
+    expect(reportLine(w)).toBeDefined();
+  });
+
+  it('enforce mode: the documented fields', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', (c) => c.filter((s) => s === T).map((sha256) => ({ sha256, userIds: [] })));
+    await w.put(S, 10);
+    await w.put(T, 20);
+    w.retired.set(U, 30);
+    w.clock.advance(8 * DAY);
+    await w.svc.sweep();
+    expect(sweepLine(w)).toEqual({
+      level: 'info',
+      msg: 'blob_gc_sweep',
+      bindings: {
+        mode: 'enforce',
+        discovered: 1,
+        candidates: 2,
+        held: 1,
+        retired: 1,
+        restored: 0,
+        purged: 0,
+        bytesPurged: 0,
+      },
+    });
+  });
+});
+
+describe('roster forget (store)', () => {
+  it('drops one holder and says whether it was there', async () => {
+    await realStore.touchRoster(['@ax/a', '@ax/b']);
+    expect(await realStore.forgetHolder('@ax/a')).toBe(true);
+    expect(await realStore.forgetHolder('@ax/a')).toBe(false);
+    expect(await realStore.listRoster()).toEqual(['@ax/b']);
   });
 });

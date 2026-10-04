@@ -13,10 +13,12 @@ const DEFAULT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const SUBSCRIBED = ['blob:stored'] as const;
 
 // ---------------------------------------------------------------------------
-// @ax/blob-gc — finds blobs nobody references any more (TASK-723 design,
-// docs/plans/2026-10-03-blob-gc-design.md). THIS CARD (TASK-777) IS REPORT
-// MODE ONLY: it finds them, counts them and says so. It frees nothing, and
-// it has no hook it could free anything with.
+// @ax/blob-gc — finds blobs nobody references any more and, once an admin
+// switches `settings:blob-gc` to `mode: 'enforce'`, frees them (TASK-723
+// design, docs/plans/2026-10-03-blob-gc-design.md). The DEFAULT is report
+// mode: it finds them, counts them and says so, and never calls a hook that
+// moves or deletes a byte. Enforce retires (recoverable: any read restores)
+// and, after `retentionMs` and a second ask of every holder, purges.
 //
 //   - RECORDS when each blob was last put (`blob:stored`, which the `blob:put`
 //     facade fires after every put, fast path included) in its own
@@ -25,13 +27,16 @@ const SUBSCRIBED = ['blob:stored'] as const;
 //     Postgres advisory lock (another replica sweeping = skip): lists the
 //     backend (`blob:list`, D5) to find blobs it has never seen, takes the
 //     live ones last put before the grace window (`graceMs`, default 24 h),
-//     asks every holder about them through `blob:collect-refs`, and reports
-//     `blob_gc_report { mode: 'report', discovered, candidates, held,
-//     wouldRetire, wouldRetireBytes, perHolder }`. FAILS CLOSED against its own
-//     persisted roster of holders: a holder that failed, threw or is no longer
-//     loaded aborts the sweep (`blob_gc_sweep_aborted`) with no report.
+//     asks every holder about them through `blob:collect-refs`. Enforce only:
+//     retires the unheld ones (`blob:retire`), then purges retired blobs past
+//     retention that a second ask finds unheld (`blob:purge`), restoring the
+//     ones held again (`blob:stat`). Logs `blob_gc_report` and
+//     `blob_gc_sweep`. FAILS CLOSED against its own persisted roster of
+//     holders: a holder that failed, threw or is no longer loaded aborts the
+//     sweep (`blob_gc_sweep_aborted`): nothing further moves, no report.
 //   - SERVES the last report and the settings (`settings:blob-gc`, D8) on
-//     GET/PUT /admin/storage/cleanup, for the admin Storage tab's line.
+//     GET/PUT /admin/storage/cleanup, for the admin Storage tab's line, and
+//     POST /admin/storage/blob-gc/roster/forget to drop a retired holder.
 //
 // It only FIRES `blob:collect-refs`, so that hook is not in `subscribes`;
 // firing needs no manifest entry. Registers no service hooks.
@@ -101,6 +106,9 @@ export function createBlobGcPlugin(config: BlobGcPluginConfig = {}): BlobGcPlugi
         'storage:set',
         'http:register-route',
         'auth:require-user',
+        'blob:stat',
+        'blob:retire',
+        'blob:purge',
       ],
       subscribes: [...SUBSCRIBED],
     },

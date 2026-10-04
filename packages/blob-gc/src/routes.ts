@@ -1,4 +1,5 @@
 import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
+import { z } from 'zod';
 import {
   BlobGcSettingsSchema,
   DEFAULT_SETTINGS,
@@ -26,20 +27,33 @@ import {
 //                                 no longer used by anyone: N (X). Not
 //                                 removed yet."
 //   PUT /admin/storage/cleanup  — admin: change the settings (any subset of
-//                                 `mode`, `graceMs`, `retentionMs`). Only
-//                                 `mode: 'report'` exists in this card.
+//                                 `mode`, `graceMs`, `retentionMs`). `mode`
+//                                 is 'report' or 'enforce'; 'enforce' is
+//                                 what lets the sweep retire and purge.
+//   POST /admin/storage/blob-gc/roster/forget  { holder }
+//                               — admin: drop one holder from the sweep's
+//                                 roster (its plugin was retired on purpose;
+//                                 design D2). The only way the roster
+//                                 shrinks. A holder that is still loaded just
+//                                 rejoins at the next sweep. Logged.
 //
-// Nothing here takes a sha, a user or a path. CSRF on the PUT is enforced by
-// http-server before a handler runs; auth is enforced here, per handler.
+// Nothing here takes a sha, a user or a path. CSRF on the mutating verbs is
+// enforced by http-server before a handler runs; auth is enforced here, per
+// handler.
 // ---------------------------------------------------------------------------
 
 export const CLEANUP_ROUTE_PATH = '/admin/storage/cleanup';
 
+export const ROSTER_FORGET_ROUTE_PATH = '/admin/storage/blob-gc/roster/forget';
+
 const PutSettingsSchema = BlobGcSettingsSchema.partial();
+
+const ForgetHolderSchema = z.object({ holder: z.string().min(1).max(200) }).strict();
 
 export interface CleanupRouteHandlers {
   get(req: RouteRequest, res: RouteResponse): Promise<void>;
   put(req: RouteRequest, res: RouteResponse): Promise<void>;
+  forgetHolder(req: RouteRequest, res: RouteResponse): Promise<void>;
 }
 
 export function createCleanupRouteHandlers(deps: {
@@ -101,11 +115,29 @@ export function createCleanupRouteHandlers(deps: {
         throw err;
       }
     },
+
+    async forgetHolder(req, res) {
+      const actor = await requireAdmin(bus, ctx, req, res);
+      if (actor === null) return;
+      const parsed = parseRequestBody(req.body);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      const body = ForgetHolderSchema.safeParse(parsed.value);
+      if (!body.success) {
+        res.status(400).json({ error: 'invalid-holder' });
+        return;
+      }
+      const forgotten = await service.forgetHolder(body.data.holder);
+      ctx.logger.info('blob_gc_roster_forgotten', { by: actor.id, holder: body.data.holder, forgotten });
+      res.status(200).json({ forgotten });
+    },
   };
 }
 
 interface RouteSpec {
-  method: 'GET' | 'PUT';
+  method: 'GET' | 'PUT' | 'POST';
   path: string;
   handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   maxBodyBytes?: number;
@@ -123,6 +155,12 @@ export async function registerCleanupRoutes(
   const routes: RouteSpec[] = [
     { method: 'GET', path: CLEANUP_ROUTE_PATH, handler: handlers.get },
     { method: 'PUT', path: CLEANUP_ROUTE_PATH, handler: handlers.put, maxBodyBytes: BODY_MAX_BYTES },
+    {
+      method: 'POST',
+      path: ROSTER_FORGET_ROUTE_PATH,
+      handler: handlers.forgetHolder,
+      maxBodyBytes: BODY_MAX_BYTES,
+    },
   ];
   const unregisters: Array<() => void> = [];
   try {
