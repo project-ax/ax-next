@@ -202,10 +202,9 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
                   "a team agent's sign-in is stored for the person who signed in, not shared with the agent's other members",
               },
               {
-                // TASK-798 — provided by @ax/agents.
-                hook: 'agents:can-manage-connectors',
-                degradation:
-                  "only a workspace admin may start a sign-in on a team agent (its owner is not recognised)",
+                // TASK-798 / TASK-813 — provided by @ax/agents.
+                hook: 'agents:can-set-shared-credential',
+                degradation: 'nobody may start a sign-in on a team agent',
               },
             ],
           }

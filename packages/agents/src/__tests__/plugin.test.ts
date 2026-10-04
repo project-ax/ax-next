@@ -32,6 +32,8 @@ import type {
   DetachConnectorOutput,
   CanManageConnectorsInput,
   CanManageConnectorsOutput,
+  CanSetSharedCredentialInput,
+  CanSetSharedCredentialOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -138,6 +140,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:attach-connector',
         'agents:detach-connector',
         'agents:can-manage-connectors',
+        'agents:can-set-shared-credential',
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
@@ -1310,6 +1313,13 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       input,
     );
   }
+  function canSetShared(h: TestHarness, input: CanSetSharedCredentialInput) {
+    return h.bus.call<CanSetSharedCredentialInput, CanSetSharedCredentialOutput>(
+      'agents:can-set-shared-credential',
+      h.ctx(),
+      input,
+    );
+  }
   async function stored(h: TestHarness, agentId: string) {
     const out = await h.bus.call<ResolveInput, ResolveOutput>('agents:resolve', h.ctx(), {
       agentId,
@@ -1539,6 +1549,90 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       const { h } = await seedTeamAgent();
       await expect(
         canManage(h, { actor: workspaceAdmin, agentId: 'agt_missing' }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+    });
+  });
+
+  // TASK-813 — the sign-in or key stored ON a team agent is the account every
+  // member's runs act as. Choosing it is the team's admins' call; a workspace
+  // admin who is not a team admin gets no bypass here (unlike
+  // agents:can-manage-connectors). A personal agent has no shared credential.
+  describe('agents:can-set-shared-credential (TASK-813)', () => {
+    const wsAdminPlainMember = { userId: 'tmember', isAdmin: true };
+
+    it('a team admin: allowed:true', async () => {
+      const { h, agentId } = await seedTeamAgent();
+      expect(await canSetShared(h, { actor: teamAdmin, agentId })).toEqual({ allowed: true });
+    });
+
+    it('SECURITY: a workspace admin who is not on the team: allowed:false', async () => {
+      const { h, agentId } = await seedTeamAgent();
+      expect(await canSetShared(h, { actor: workspaceAdmin, agentId })).toEqual({
+        allowed: false,
+      });
+    });
+
+    it('SECURITY: a workspace admin who is a plain team member: allowed:false', async () => {
+      const { h, agentId } = await seedTeamAgent();
+      expect(await canSetShared(h, { actor: wsAdminPlainMember, agentId })).toEqual({
+        allowed: false,
+      });
+    });
+
+    it('a plain team member: allowed:false', async () => {
+      const { h, agentId } = await seedTeamAgent();
+      expect(await canSetShared(h, { actor: member, agentId })).toEqual({ allowed: false });
+    });
+
+    it('a user who cannot reach the team agent: allowed:false, not an error', async () => {
+      const { h, agentId } = await seedTeamAgent();
+      expect(await canSetShared(h, { actor: outsider, agentId })).toEqual({ allowed: false });
+    });
+
+    it('a personal agent: allowed:false for everyone, its owner and a workspace admin too', async () => {
+      const { h, agentId } = await seedPersonalAgent();
+      expect(await canSetShared(h, { actor: owner, agentId })).toEqual({ allowed: false });
+      expect(await canSetShared(h, { actor: { userId: 'u1', isAdmin: true }, agentId })).toEqual({
+        allowed: false,
+      });
+      expect(await canSetShared(h, { actor: workspaceAdmin, agentId })).toEqual({
+        allowed: false,
+      });
+      expect(await canSetShared(h, { actor: outsider, agentId })).toEqual({ allowed: false });
+    });
+
+    it('no teams plugin: allowed:false', async () => {
+      const { h, agentId } = await seedTeamAgent();
+      // Membership resolves once (reach check), then the role check finds no service.
+      teamsFailsAfter(1, 'no-service');
+      expect(await canSetShared(h, { actor: teamAdmin, agentId })).toEqual({ allowed: false });
+      // Gone for good: the reach check refuses first.
+      teamsFailsAfter(0, 'no-service');
+      expect(await canSetShared(h, { actor: teamAdmin, agentId })).toEqual({ allowed: false });
+      // A workspace admin gets no free pass when the role cannot be read.
+      teamsFailsAfter(0, 'no-service');
+      expect(await canSetShared(h, { actor: workspaceAdmin, agentId })).toEqual({
+        allowed: false,
+      });
+    });
+
+    it('a teams failure other than no-service propagates', async () => {
+      const { h, agentId } = await seedTeamAgent();
+      teamsFailsAfter(1, 'broken');
+      await expect(canSetShared(h, { actor: teamAdmin, agentId })).rejects.toThrow(
+        'teams db is down',
+      );
+      // A workspace admin skips the reach lookup, so the role lookup is the one that fails.
+      teamsFailsAfter(0, 'broken');
+      await expect(canSetShared(h, { actor: workspaceAdmin, agentId })).rejects.toThrow(
+        'teams db is down',
+      );
+    });
+
+    it('not-found for a missing agent', async () => {
+      const { h } = await seedTeamAgent();
+      await expect(
+        canSetShared(h, { actor: teamAdmin, agentId: 'agt_missing' }),
       ).rejects.toMatchObject({ code: 'not-found' });
     });
   });

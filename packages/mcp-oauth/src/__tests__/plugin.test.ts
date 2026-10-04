@@ -109,11 +109,12 @@ describe('@ax/mcp-oauth plugin manifest', () => {
       'credentials:get',
       'credentials:set',
     ]);
-    // TASK-798 — the team-agent owner-or-admin check is declared (optional:
-    // without @ax/agents only a workspace admin may sign in on a team agent).
-    expect(on.manifest.optionalCalls?.map((c) => c.hook)).toContain(
-      'agents:can-manage-connectors',
-    );
+    // TASK-813 — the team-admin check is declared (optional: without
+    // @ax/agents nobody may start a sign-in on a team agent), and the wider
+    // manage-connectors question (workspace-admin bypass) is no longer asked.
+    const optional = on.manifest.optionalCalls?.map((c) => c.hook);
+    expect(optional).toContain('agents:can-set-shared-credential');
+    expect(optional).not.toContain('agents:can-manage-connectors');
   });
 });
 

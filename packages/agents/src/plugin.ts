@@ -45,6 +45,8 @@ import type {
   AuthoredResolvedSkill,
   CanManageConnectorsInput,
   CanManageConnectorsOutput,
+  CanSetSharedCredentialInput,
+  CanSetSharedCredentialOutput,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -130,6 +132,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:attach-connector',
         'agents:detach-connector',
         'agents:can-manage-connectors',
+        'agents:can-set-shared-credential',
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
@@ -475,8 +478,9 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       );
 
       // TASK-765 / TASK-798 — may this actor change this agent's connectors
-      // (attach, detach, exclude, and — asked by @ax/mcp-oauth — sign in ON
-      // the agent)? The predicate the hooks above enforce, exposed so a caller
+      // (attach, detach, exclude)? Signing in ON the agent is a narrower
+      // question since TASK-813 — agents:can-set-shared-credential, below.
+      // The predicate the hooks above enforce, exposed so a caller
       // shows the affordance only to someone it will work for. An actor who
       // can't reach the agent at all gets `false`, not an error; a missing
       // agent is `not-found`. (TASK-803: renamed from its TASK-765 name,
@@ -499,6 +503,35 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             throw err;
           }
           return { allowed: await connectorsManageAllowed(existing, bus, ctx, input.actor) };
+        },
+      );
+
+      // TASK-813 — may this actor choose the SHARED credential on this agent:
+      // start an OAuth sign-in ON it (@ax/mcp-oauth) or save an agent-scope
+      // ("team") key? The sign-in or key stored on a team agent is the account
+      // every member's runs act as, so choosing it belongs to the team's
+      // admins — not to a workspace admin, who may still add or remove the
+      // agent's connectors (agents:can-manage-connectors) but does not get to
+      // decide whose account the whole team acts as. `false` (not an error) for
+      // an actor who can't reach the agent; `not-found` for a missing agent.
+      bus.registerService<CanSetSharedCredentialInput, CanSetSharedCredentialOutput>(
+        'agents:can-set-shared-credential',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const existing = await getForConnectorEdit(
+            localStore,
+            input.agentId,
+            'agents:can-set-shared-credential',
+          );
+          try {
+            await assertWriteAllowed(existing, bus, ctx, input.actor);
+          } catch (err) {
+            if (err instanceof PluginError && err.code === 'forbidden') {
+              return { allowed: false };
+            }
+            throw err;
+          }
+          return { allowed: await sharedCredentialSetAllowed(existing, bus, ctx, input.actor) };
         },
       );
 
@@ -960,10 +993,10 @@ async function isTeamMember(
 
 /**
  * TASK-765 / TASK-798 — may `actor` change which connectors `agent` reaches
- * (attach, detach, exclude a legacy-owned connector, sign in ON the agent)? On a team agent
- * that changes what every member's runs reach — and a sign-in on it decides
- * whose account they all act as — so it is a decision about the whole team,
- * not about the actor's own use of the agent:
+ * (attach, detach, exclude a legacy-owned connector)? On a team agent that
+ * changes what every member's runs reach, so it is a decision about the whole
+ * team, not about the actor's own use of the agent. (Choosing the sign-in or
+ * key on it is narrower still — {@link sharedCredentialSetAllowed}, TASK-813.)
  *
  *   - a workspace admin: always;
  *   - a personal agent: its owner;
@@ -988,6 +1021,39 @@ async function connectorsManageAllowed(
     return agent.ownerType === 'user' && agent.ownerId === actor.userId;
   }
   if (agent.ownerType !== 'team') return false;
+  try {
+    const result = await bus.call<
+      { teamId: string; userId: string },
+      { member: boolean; role?: 'admin' | 'member' }
+    >('teams:is-member', ctx, { teamId: agent.ownerId, userId: actor.userId });
+    return result.member === true && result.role === 'admin';
+  } catch (err) {
+    if (err instanceof PluginError && err.code === 'no-service') return false;
+    throw err;
+  }
+}
+
+/**
+ * TASK-813 — may `actor` choose the shared credential stored ON `agent` (the
+ * OAuth sign-in or agent-scope key every member's runs act as)?
+ *
+ *   - a personal agent: never — it has no shared credential; its sign-in or
+ *     key is stored on the person, outside this question;
+ *   - a team agent: a member whose team role is `admin`.
+ *
+ * `actor.isAdmin` is deliberately IGNORED: whose account a team's runs act as
+ * is the team's admins' decision, not a workspace admin's. Anything we can't
+ * prove is a refusal: a missing teams plugin (`no-service`) and malformed
+ * ownership are `false`; every OTHER lookup failure propagates (5xx, not a
+ * quiet denial).
+ */
+async function sharedCredentialSetAllowed(
+  agent: Agent,
+  bus: HookBus,
+  ctx: AgentContext,
+  actor: Actor,
+): Promise<boolean> {
+  if (agent.visibility !== 'team' || agent.ownerType !== 'team') return false;
   try {
     const result = await bus.call<
       { teamId: string; userId: string },

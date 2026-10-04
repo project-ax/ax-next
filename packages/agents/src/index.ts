@@ -27,6 +27,8 @@ export type {
   AttachConnectorOutput,
   CanManageConnectorsInput,
   CanManageConnectorsOutput,
+  CanSetSharedCredentialInput,
+  CanSetSharedCredentialOutput,
   DetachConnectorInput,
   DetachConnectorOutput,
   CreateInput,

@@ -39,7 +39,7 @@ it('names the CIMD client after the branding and lets authorization servers cach
 interface BusStubs {
   'auth:require-user'?: (input: unknown) => unknown;
   'agents:resolve'?: (input: unknown) => unknown;
-  'agents:can-manage-connectors'?: (input: unknown) => unknown;
+  'agents:can-set-shared-credential'?: (input: unknown) => unknown;
   'connectors:get'?: (input: unknown) => unknown;
   'credentials:get'?: (input: unknown) => unknown;
   'credentials:set'?: (input: unknown) => unknown;
@@ -440,7 +440,7 @@ describe('mcp-oauth begin route', () => {
 
   // A personal agent: a successful `agents:resolve` (the owner, or an admin) is
   // the whole gate — unchanged by TASK-798.
-  it('2b. personal agent: agents:resolve accepts → 200; pending written; no owner-or-admin lookup', async () => {
+  it('2b. personal agent: agents:resolve accepts → 200; pending written; no team-admin lookup', async () => {
     const { deps, store, calls } = makeDeps({
       'auth:require-user': () => OK_USER,
       'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
@@ -455,16 +455,16 @@ describe('mcp-oauth begin route', () => {
 
     expect(state.status).toBe(200);
     expect(store.putPending).toHaveBeenCalledTimes(1);
-    expect(calls.map((c) => c.hook)).not.toContain('agents:can-manage-connectors');
+    expect(calls.map((c) => c.hook)).not.toContain('agents:can-set-shared-credential');
   });
 
   // TASK-798 — `agents:resolve` admits every MEMBER of a team agent, but a
   // sign-in started with the agent decides whose account every member's runs
-  // act as. So on a team agent only its owner (a team admin) or a workspace
-  // admin may begin one. These are the tests that would have caught the
-  // member-swap hole: before TASK-798 any member got 200 and replaced the
-  // team's sign-in.
-  describe('team agent: only the owner or a workspace admin may begin (TASK-798)', () => {
+  // act as. So on a team agent only a team admin may begin one — since
+  // TASK-813 a workspace admin who is not a team admin is refused too. These
+  // are the tests that would have caught the member-swap hole: before TASK-798
+  // any member got 200 and replaced the team's sign-in.
+  describe('team agent: only a team admin may begin (TASK-798, TASK-813)', () => {
     const TEAM_AGENT = { agent: { id: 'agent-T', visibility: 'team', ownerId: 'team-1' } };
     const body = () =>
       fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-T' })) });
@@ -475,7 +475,7 @@ describe('mcp-oauth begin route', () => {
       const { deps, store, flow, calls } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-manage-connectors': canManage,
+        'agents:can-set-shared-credential': canManage,
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -495,11 +495,11 @@ describe('mcp-oauth begin route', () => {
       expect(flow.buildAuthorization).not.toHaveBeenCalled();
     });
 
-    it('the owner (a team admin — @ax/agents says allowed) → 200; pending written', async () => {
+    it('a team admin (@ax/agents says allowed) → 200; pending written', async () => {
       const { deps, store } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-manage-connectors': () => ({ allowed: true }),
+        'agents:can-set-shared-credential': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -510,12 +510,40 @@ describe('mcp-oauth begin route', () => {
       expect((store.putPending.mock.calls[0]![0] as PendingAuthorization).agentId).toBe('agent-T');
     });
 
-    it('a workspace admin → 200 without asking @ax/agents', async () => {
-      const canManage = vi.fn(() => ({ allowed: false }));
+    // TASK-813 — whose account a team's runs act as is the team's admins'
+    // decision. A workspace admin who is not a team admin is refused like any
+    // member: no bypass in the route, and the hook is asked with the real
+    // isAdmin (it ignores it).
+    it('SECURITY: a workspace admin who is not a team admin → 403; no connector read, no state write, no redirect', async () => {
+      const canSet = vi.fn(() => ({ allowed: false }));
+      const { deps, store, flow, calls } = makeDeps({
+        'auth:require-user': () => ({ user: { id: 'admin-1', isAdmin: true } }),
+        'agents:resolve': () => TEAM_AGENT,
+        'agents:can-set-shared-credential': canSet,
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(body(), res);
+
+      expect(state.status).toBe(403);
+      expect(state.json).toEqual({ error: 'forbidden' });
+      expect(canSet).toHaveBeenCalledWith({
+        actor: { userId: 'admin-1', isAdmin: true },
+        agentId: 'agent-T',
+      });
+      expect(calls.map((c) => c.hook)).not.toContain('connectors:get');
+      expect(calls.map((c) => c.hook)).not.toContain('credentials:get');
+      expect(store.putPending).not.toHaveBeenCalled();
+      expect(store.purgeExpiredPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+      expect(flow.buildAuthorization).not.toHaveBeenCalled();
+    });
+
+    it('a workspace admin who IS a team admin (@ax/agents says allowed) → 200', async () => {
       const { deps, store } = makeDeps({
         'auth:require-user': () => ({ user: { id: 'admin-1', isAdmin: true } }),
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-manage-connectors': canManage,
+        'agents:can-set-shared-credential': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -523,12 +551,29 @@ describe('mcp-oauth begin route', () => {
 
       expect(state.status).toBe(200);
       expect(store.putPending).toHaveBeenCalledTimes(1);
-      expect(canManage).not.toHaveBeenCalled();
     });
 
-    it('SECURITY: fail-closed — no @ax/agents answer at all → 403 for a non-admin', async () => {
-      const { deps, store, flow } = makeDeps({
+    it('SECURITY: a non-member (agents:resolve rejects) → 403 before the team-admin question', async () => {
+      const canSet = vi.fn(() => ({ allowed: true }));
+      const { deps, store, flow, calls } = makeDeps({
         'auth:require-user': () => OK_USER,
+        'agents:resolve': () => rejectThrow('not a member'),
+        'agents:can-set-shared-credential': canSet,
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(body(), res);
+
+      expect(state.status).toBe(403);
+      expect(canSet).not.toHaveBeenCalled();
+      expect(calls.map((c) => c.hook)).not.toContain('connectors:get');
+      expect(store.putPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: fail-closed — no @ax/agents answer at all → 403, even for a workspace admin', async () => {
+      const { deps, store, flow } = makeDeps({
+        'auth:require-user': () => ({ user: { id: 'admin-1', isAdmin: true } }),
         'agents:resolve': () => TEAM_AGENT,
         'connectors:get': () => connectorFixture(),
       });
@@ -540,11 +585,11 @@ describe('mcp-oauth begin route', () => {
       expect(flow.discover).not.toHaveBeenCalled();
     });
 
-    it('SECURITY: fail-closed — the owner-or-admin hook refusing → 403', async () => {
+    it('SECURITY: fail-closed — the team-admin hook refusing → 403', async () => {
       const { deps, store } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-manage-connectors': () => rejectThrow('nope'),
+        'agents:can-set-shared-credential': () => rejectThrow('nope'),
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -558,7 +603,7 @@ describe('mcp-oauth begin route', () => {
       const { deps, store } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => TEAM_AGENT,
-        'agents:can-manage-connectors': () => ({ allowed: 'yes' }),
+        'agents:can-set-shared-credential': () => ({ allowed: 'yes' }),
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -573,7 +618,7 @@ describe('mcp-oauth begin route', () => {
       const canManage = vi.fn(() => ({ allowed: false }));
       const { deps, store } = makeDeps({
         'auth:require-user': () => OK_USER,
-        'agents:can-manage-connectors': canManage,
+        'agents:can-set-shared-credential': canManage,
         'connectors:get': () => connectorFixture(),
       });
       const { res, state } = fakeRes();
@@ -1052,8 +1097,8 @@ describe('mcp-oauth begin route', () => {
       {
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
-        // TASK-798 — the signer is the agent's owner.
-        'agents:can-manage-connectors': () => ({ allowed: true }),
+        // TASK-798/813 — the signer is a team admin.
+        'agents:can-set-shared-credential': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
         'credentials:authorize-agent:account': authz,
       },
@@ -1095,8 +1140,8 @@ describe('mcp-oauth begin route', () => {
       {
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
-        // TASK-798 — the signer is the agent's owner.
-        'agents:can-manage-connectors': () => ({ allowed: true }),
+        // TASK-798/813 — the signer is a team admin.
+        'agents:can-set-shared-credential': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
         ...extra,
       },

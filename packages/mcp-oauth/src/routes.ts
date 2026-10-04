@@ -74,10 +74,11 @@ const OAUTH_BODY_MAX_BYTES = 64 * 1024;
  */
 const AUTHORIZE_AGENT_ACCOUNT_HOOK = 'credentials:authorize-agent:account';
 /**
- * TASK-798 — @ax/agents' "may this actor change this agent's connectors?"
- * (owner / team admin / workspace admin). Named here, not imported (I2).
+ * TASK-813 — @ax/agents' "may this actor choose the shared credential on this
+ * agent?" (a team admin of a team agent; no workspace-admin bypass). Named
+ * here, not imported (I2).
  */
-const CAN_MANAGE_AGENT_CONNECTORS_HOOK = 'agents:can-manage-connectors';
+const CAN_SET_SHARED_CREDENTIAL_HOOK = 'agents:can-set-shared-credential';
 
 export interface McpOAuthRouteConfig {
   /** Public origin we serve under; the OAuth redirect_uri is derived from it. */
@@ -216,29 +217,30 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
   }
   /**
-   * TASK-798 — may this user change (and so sign in ON) a team agent's
-   * connectors? @ax/agents owns the answer (the agent's owner — a team admin —
-   * or a workspace admin); a workspace admin needs no lookup. Fails closed: no
-   * provider, `allowed` not exactly `true`, or a refusal from the hook is "no".
+   * TASK-798 / TASK-813 — may this user sign in ON a team agent? The sign-in
+   * stored on a team agent is the account every member's runs act as, so
+   * choosing it is the team's admins' call. @ax/agents owns the answer; there
+   * is NO workspace-admin shortcut here (the real `isAdmin` is passed and the
+   * hook ignores it). Fails closed: no provider, `allowed` not exactly `true`,
+   * or a refusal from the hook is "no".
    */
-  async function mayManageAgentConnectors(
+  async function maySetSharedCredential(
     user: { id: string; isAdmin: boolean },
     agentId: string,
   ): Promise<boolean> {
-    if (user.isAdmin) return true;
-    if (bus.hasService?.(CAN_MANAGE_AGENT_CONNECTORS_HOOK) !== true) return false;
+    if (bus.hasService?.(CAN_SET_SHARED_CREDENTIAL_HOOK) !== true) return false;
     try {
       const out = await bus.call<
         { actor: { userId: string; isAdmin: boolean }; agentId: string },
         { allowed: boolean }
-      >(CAN_MANAGE_AGENT_CONNECTORS_HOOK, ctxFor(user.id), {
-        actor: { userId: user.id, isAdmin: false },
+      >(CAN_SET_SHARED_CREDENTIAL_HOOK, ctxFor(user.id), {
+        actor: { userId: user.id, isAdmin: user.isAdmin },
         agentId,
       });
       return out?.allowed === true;
     } catch (err) {
       if (isReject(err)) {
-        logger.warn('mcp_oauth_agent_manage_check_refused', errFields(err));
+        logger.warn('mcp_oauth_shared_credential_check_refused', errFields(err));
         return false;
       }
       throw err;
@@ -372,7 +374,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
     // Authz gate + credScope selection. When agentId is present, a successful
     // agents:resolve is the "may use this agent" check, and on a team agent the
-    // owner-or-admin check below (TASK-798) is the "may sign in for everyone"
+    // team-admin check below (TASK-798, TASK-813) is the "may sign in for everyone"
     // one; the agent's visibility
     // determines which scope the token is stored under. When absent, the flow is
     // user-scoped and gated only by connector ownership (connectors:get below).
@@ -395,12 +397,14 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       }
       // TASK-798 — on a TEAM agent, `agents:resolve` admits every member, but
       // a sign-in started with the agent decides whose account EVERY member's
-      // runs act as. So only the agent's owner (a team admin) or a workspace
-      // admin may begin one; anyone else is refused here, before any connector
-      // read, vault read, state write or provider redirect. A member's own
-      // sign-in (no agentId — Settings › Connectors) is untouched. Fails
-      // closed: no @ax/agents answer, `allowed: false` or a rejection is a 403.
-      if (agent.visibility === 'team' && !(await mayManageAgentConnectors(user, agentId))) {
+      // runs act as. So only a team admin may begin one — TASK-813: a workspace
+      // admin who is not a team admin is refused too; whose account the team
+      // acts as is the team's call. Anyone else is refused here, before any
+      // connector read, vault read, state write or provider redirect. A
+      // member's own sign-in (no agentId — Settings › Connectors) is
+      // untouched. Fails closed: no @ax/agents answer, `allowed: false` or a
+      // rejection is a 403.
+      if (agent.visibility === 'team' && !(await maySetSharedCredential(user, agentId))) {
         res.status(403).json({ error: 'forbidden' });
         return;
       }

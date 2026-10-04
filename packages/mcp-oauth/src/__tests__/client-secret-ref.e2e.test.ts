@@ -266,9 +266,9 @@ async function boot() {
       const { agentId } = input as { agentId: string };
       return { agent: { id: agentId, visibility: 'team', ownerId: 'someone-else' } };
     }) as ServiceHandler,
-    // TASK-798 — let her past the owner-or-admin gate, so these cases still
+    // TASK-798/813 — let her past the team-admin gate, so these cases still
     // exercise the client-secret-ref checks behind it.
-    'agents:can-manage-connectors': (async () => ({ allowed: true })) as ServiceHandler,
+    'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
     'connectors:get': (async (_c, input) => {
       const { connectorId } = input as { connectorId: string };
       if (!refs.has(connectorId)) throw new Error(`unexpected connector ${connectorId}`);
@@ -362,11 +362,11 @@ async function unaccidentalHandlers(s: Stack, agentIdForVault: string) {
         input,
       );
     },
-    // TASK-798 — begin's team-agent owner-or-admin check fails closed when the
+    // TASK-798/813 — begin's team-agent team-admin check fails closed when the
     // hook is absent, so show it the real answer for THAT hook. Every other
     // optional hook stays invisible, exactly as before this wrapper knew of it.
     hasService: (hook: string) =>
-      hook === 'agents:can-manage-connectors' && s.h.bus.hasService(hook),
+      hook === 'agents:can-set-shared-credential' && s.h.bus.hasService(hook),
   };
   const handlers = createMcpOAuthRouteHandlers({
     bus: wrapped as never,
