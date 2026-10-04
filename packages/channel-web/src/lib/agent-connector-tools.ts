@@ -41,14 +41,35 @@ export function isLooserThan(verdict: AgentToolVerdict, ceiling: AgentToolVerdic
   return VERDICT_ORDER.indexOf(verdict) < VERDICT_ORDER.indexOf(ceiling);
 }
 
-/** Why a segment is off-limits, or null when the person may pick it. */
+/**
+ * Why a segment is off-limits, or null when the person may pick it.
+ *
+ * Two different people can put a segment out of reach, and the reason names
+ * the right one (TASK-819):
+ *
+ *   - An admin's ceiling. The server reports `verdict` as the strictest of the
+ *     agent's choice and that ceiling, so it is never looser than it.
+ *   - TASK-809's member cap on a team agent. Only whoever manages the agent's
+ *     connectors may choose Allow for an OAuth tool, so the server lowers a
+ *     plain member's `ceiling` to Ask first — but keeps reporting the real
+ *     verdict. A `verdict` LOOSER than the `ceiling` therefore only happens
+ *     here: someone with that authority chose it, not an admin's limit. The
+ *     rail calls that authority "the agent’s owner" everywhere else, and so
+ *     does this. The warning matters: a member who tightens it cannot undo it.
+ *
+ * A member-capped tool still at Ask first (nobody chose Allow) looks exactly
+ * like an admin's Ask-first ceiling from here, so it keeps the admin wording.
+ */
 export function ceilingReason(
   option: AgentToolVerdict,
   ceiling: AgentToolVerdict,
+  verdict: AgentToolVerdict,
 ): string | null {
-  return isLooserThan(option, ceiling)
-    ? `Your admin set this to ${VERDICT_LABEL[ceiling]}.`
-    : null;
+  if (!isLooserThan(option, ceiling)) return null;
+  if (isLooserThan(verdict, ceiling)) {
+    return `The agent’s owner set this to ${VERDICT_LABEL[verdict]}. If you change it, only they can set it back.`;
+  }
+  return `Your admin set this to ${VERDICT_LABEL[ceiling]}.`;
 }
 
 export interface ToolGroups {

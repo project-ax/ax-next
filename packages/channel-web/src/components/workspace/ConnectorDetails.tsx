@@ -8,8 +8,10 @@
  *
  * WHAT THE CONTROL CAN DO. It writes this agent's own choice through
  * `PUT …/tool-verdicts`, and the store refuses anything looser than the
- * admin's default for that tool (the ceiling). Those segments are drawn
- * disabled with the reason in a tooltip — focusable rather than `disabled`, so
+ * admin's default for that tool (the ceiling) — or, for a plain member of a
+ * team agent, anything above Ask first on an OAuth tool (TASK-809). Those
+ * segments are drawn disabled with the reason in a tooltip, which names who
+ * put it out of reach (`ceilingReason`, TASK-819) — focusable rather than `disabled`, so
  * the reason reaches a keyboard and a screen reader too. Never optimistic: the
  * selected segment is what the server re-read.
  *
@@ -584,15 +586,15 @@ function ToolRow({
         onValueChange={(value) => {
           // A single toggle group lets you press the selected item off; a tool
           // always has exactly one choice, so an empty value is ignored. So is
-          // a segment the admin's ceiling rules out, and a press mid-write.
+          // a segment the ceiling rules out, and a press mid-write.
           if (!value || busy || value === tool.verdict) return;
           const verdict = value as AgentToolVerdict;
-          if (ceilingReason(verdict, tool.ceiling) !== null) return;
+          if (ceilingReason(verdict, tool.ceiling, tool.verdict) !== null) return;
           onChange(verdict);
         }}
       >
         {TOOL_VERDICT_OPTIONS.map(({ value, label, Icon, on }) => {
-          const reason = ceilingReason(value, tool.ceiling);
+          const reason = ceilingReason(value, tool.ceiling, tool.verdict);
           const item = (
             <ToggleGroupItem
               key={value}

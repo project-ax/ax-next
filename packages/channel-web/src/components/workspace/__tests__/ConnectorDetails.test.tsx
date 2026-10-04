@@ -286,6 +286,32 @@ describe('segments and the admin ceiling', () => {
     expect(tip.textContent).toContain('Your admin set this to Ask first.');
   });
 
+  it('a member sees the agent’s owner — not "your admin" — behind an Allow the owner set (TASK-819)', async () => {
+    // TASK-809's member cap on a team agent: the store holds Allow (the owner,
+    // or anyone else who manages its connectors, chose it), but this member's
+    // own ceiling is Ask first. No admin ceiling is involved.
+    toolsMock.mockResolvedValue(
+      read({ tools: [tool('Close issue', { readOnly: false, verdict: 'allow', ceiling: 'hold' })] }),
+    );
+    renderTab();
+    await openDetails();
+    await screen.findByText('Close issue');
+    const row = rowGroup('Close issue');
+    const allow = within(row).getByRole('radio', { name: 'Allow' });
+    expect(allow.getAttribute('aria-checked')).toBe('true');
+    expect(allow.getAttribute('aria-disabled')).toBe('true');
+    // The member can still tighten it.
+    expect(within(row).getByRole('radio', { name: 'Ask first' }).getAttribute('aria-disabled')).toBeNull();
+    expect(within(row).getByRole('radio', { name: 'Deny' }).getAttribute('aria-disabled')).toBeNull();
+
+    act(() => allow.focus());
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toContain(
+      'The agent’s owner set this to Allow. If you change it, only they can set it back.',
+    );
+    expect(tip.textContent).not.toContain('admin');
+  });
+
   it('an Ask-first tool under an Allow ceiling (no admin cap, TASK-809) can be set to Allow', async () => {
     setMock.mockResolvedValue({
       tool: { toolKey: `mcp.${NS}.Create issue`, verdict: 'allow', ceiling: 'allow' },
