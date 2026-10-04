@@ -283,7 +283,7 @@ export function createChatOrchestratorPlugin(
         },
       );
 
-      bus.subscribe<{ reason?: string; reqId?: string }>(
+      bus.subscribe<{ reason?: string; reqId?: string; foldedReqIds?: unknown }>(
         'chat:turn-end',
         PLUGIN_NAME,
         async (ctx, payload) => {

@@ -330,6 +330,50 @@ describe('@ax/conversations active_session_id lifecycle (J6)', () => {
     expect(got.conversation.activeReqId).toBeNull();
   });
 
+  // TASK-785 — r2 was sent while r1's reply ran and the model folded it into
+  // r1's turn. r2 is the bound active_req_id, but no turn-end will ever name
+  // it: r1's turn-end lists it in `foldedReqIds`. Left set, a reload would
+  // reattach to r2's stream, which never ends.
+  it('chat:turn-end clears an active_req_id it lists in foldedReqIds', async () => {
+    const h = await makeHarness();
+    const created = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    for (const reqId of ['r1', 'r2']) {
+      await h.bus.call<BindSessionInput, void>(
+        'conversations:bind-session',
+        h.ctx({ userId: 'userA' }),
+        { conversationId: created.conversationId, sessionId: 's1', reqId },
+      );
+    }
+    const ctx = h.ctx({ userId: 'userA', agentId: 'agt_a', conversationId: created.conversationId });
+    const get = () =>
+      h.bus.call<GetInput, GetOutput>(
+        'conversations:get',
+        h.ctx({ userId: 'userA' }),
+        { conversationId: created.conversationId, userId: 'userA' },
+      );
+
+    // A list that does not name the bound id, or is malformed (runner-written,
+    // so untrusted), clears nothing — compare-and-clear holds.
+    await h.bus.fire('chat:turn-end', ctx, {
+      reason: 'user-message-wait', reqId: 'r1', role: 'tool', foldedReqIds: ['r9'],
+    });
+    await h.bus.fire('chat:turn-end', ctx, {
+      reason: 'user-message-wait', reqId: 'r1', role: 'tool', foldedReqIds: 'r2',
+    });
+    expect((await get()).conversation.activeReqId).toBe('r2');
+
+    await h.bus.fire('chat:turn-end', ctx, {
+      reason: 'user-message-wait', reqId: 'r1', role: 'assistant', foldedReqIds: ['r2'],
+    });
+    const got = await get();
+    expect(got.conversation.activeReqId).toBeNull();
+    expect(got.conversation.activeSessionId).toBe('s1');
+  });
+
   it('chat:turn-end with a stale reqId is a no-op (compare-and-clear)', async () => {
     // The flow we're protecting against: turn-end for r1 fires AFTER a
     // fresh r2 has been bound. The subscriber sees r1, but the row's

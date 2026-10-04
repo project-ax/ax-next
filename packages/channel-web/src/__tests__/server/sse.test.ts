@@ -606,6 +606,66 @@ describe('@ax/channel-web SSE handler', () => {
     }
   });
 
+  // TASK-785 — a message sent while a reply is still running can be FOLDED into
+  // that running turn by the model's CLI. The reply that answers it streams and
+  // ends under the RUNNING turn's reqId, so the folded message's own stream
+  // never sees a turn-end naming it. The runner lists it in `foldedReqIds` on
+  // the turn-ends of the turn that answered it; that is this stream's end.
+  // (Absorbs TASK-577: a stream whose own reqId never gets a turn-end still
+  // terminates.)
+  it('a turn-end that lists this stream in foldedReqIds closes it, though its own reqId never ends', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      // The running turn (r-running) answered r-test inside itself.
+      await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_test'), {
+        reqId: 'r-running',
+        reason: 'user-message-wait',
+        role: 'tool',
+        foldedReqIds: ['r-other-fold', 'r-test'],
+      });
+
+      expect(dataFrames(captured.streamWrites).at(-1)).toEqual({ reqId: 'r-test', done: true });
+      expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('a folded turn-end that does not list this stream, or lists it on another conversation, leaves it open', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      // Someone else's fold on this conversation.
+      await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_test'), {
+        reqId: 'r-running',
+        reason: 'user-message-wait',
+        foldedReqIds: ['r-elsewhere'],
+      });
+      // This stream's id, but on another conversation: the conversation scope holds.
+      await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_other'), {
+        reqId: 'r-running',
+        reason: 'user-message-wait',
+        foldedReqIds: ['r-test'],
+      });
+      // A malformed list (the payload is runner-written, so untrusted) is not a match.
+      await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_test'), {
+        reqId: 'r-running',
+        reason: 'user-message-wait',
+        foldedReqIds: 'r-test',
+      });
+
+      expect(captured.streamClosed).toBe(false);
+      expect(dataFrames(captured.streamWrites).some((f) => f.done === true)).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
   // TASK-720 — the host refused the end-of-turn save and the runner undid the
   // turn's file changes. The runner says so on its turn-end; the done frame is
   // the only place the person's browser can hear it. The code is re-checked
