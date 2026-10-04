@@ -63,7 +63,8 @@ export interface AgentConnectorsState {
   sharedCredentials: boolean;
   /**
    * TASK-761 — false when this agent's runner gets no connector tools at all
-   * (aisdk), so the tab says so instead of offering setup that can't apply.
+   * (a runner that doesn't load connectors: an allow-list in
+   * `runnerLoadsConnectors`), so the tab says so instead of offering setup that can't apply.
    */
   connectorsSupported: boolean;
   /** Connector ids with a Retry in flight (TASK-741). */

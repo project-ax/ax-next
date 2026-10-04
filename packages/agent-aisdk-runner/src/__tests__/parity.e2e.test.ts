@@ -5,6 +5,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type { InboxLoopEntry } from '@ax/agent-runner-core';
+import { startMcpTestServer, type McpTestServer } from './helpers/mcp-test-server.js';
+import { MAX_TOOLS_PER_SESSION } from '../tools/connector-tools.js';
+import { MCP_NOT_LOADED_NOTE } from '../tools/skill-tool.js';
 
 // ---------------------------------------------------------------------------
 // Runner-side parity suite (design §8).
@@ -157,13 +160,16 @@ const toolStep = (
 
 /** Every prompt the model was handed, so a test can assert what it saw. */
 let sentPrompts: unknown[];
+/** The tool list the model was offered on each call, parallel to `sentPrompts`. */
+let sentTools: unknown[];
 
 /** Build a model that replays `steps` in order, one per provider call. */
 function modelReplaying(steps: Chunk[][]): unknown {
   let i = 0;
   return new MockLanguageModelV4({
-    doStream: async ({ prompt }) => {
+    doStream: async ({ prompt, tools }) => {
       sentPrompts.push(prompt);
+      sentTools.push(tools);
       const chunks = steps[i++];
       if (chunks === undefined) throw new Error('model script exhausted');
       return { stream: simulateReadableStream({ chunks: chunks as never }) };
@@ -187,8 +193,9 @@ function modelReplayingWithSummarizer(
 ): unknown {
   let i = 0;
   return new MockLanguageModelV4({
-    doStream: async ({ prompt }) => {
+    doStream: async ({ prompt, tools }) => {
       sentPrompts.push(prompt);
+      sentTools.push(tools);
       const chunks = steps[i++];
       if (chunks === undefined) throw new Error('model script exhausted');
       return { stream: simulateReadableStream({ chunks: chunks as never }) };
@@ -227,8 +234,9 @@ function modelThatFails(message: string): unknown {
 function modelFailingAfter(steps: Chunk[][], message: string): unknown {
   let i = 0;
   return new MockLanguageModelV4({
-    doStream: async ({ prompt }) => {
+    doStream: async ({ prompt, tools }) => {
       sentPrompts.push(prompt);
+      sentTools.push(tools);
       const chunks = steps[i++];
       if (chunks === undefined) throw new Error(message);
       return { stream: simulateReadableStream({ chunks: chunks as never }) };
@@ -271,6 +279,7 @@ beforeEach(async () => {
   uploadedFiles = [];
   blobBytes = new Map();
   sentPrompts = [];
+  sentTools = [];
   summarizerPrompts = [];
   sessionConfig = {
     userId: 'u-1',
@@ -389,7 +398,7 @@ async function installSkill(
   id: string,
   frontmatter: string,
   body: string,
-  opts: { mcp?: boolean } = {},
+  opts: { mcp?: boolean; mcpJson?: unknown } = {},
 ): Promise<void> {
   const dir = path.join(configDir, 'skills', id);
   await fs.mkdir(dir, { recursive: true });
@@ -397,7 +406,9 @@ async function installSkill(
     path.join(dir, 'SKILL.md'),
     `---\n${frontmatter}\n---\n\n${body}\n`,
   );
-  if (opts.mcp === true) {
+  if (opts.mcpJson !== undefined) {
+    await fs.writeFile(path.join(dir, '.mcp.json'), JSON.stringify(opts.mcpJson));
+  } else if (opts.mcp === true) {
     await fs.writeFile(
       path.join(dir, '.mcp.json'),
       JSON.stringify({ mcpServers: { demo: { command: 'demo', args: [] } } }),
@@ -845,27 +856,111 @@ describe('aisdk runner — parity', () => {
     expect(JSON.stringify(toolResult)).toContain('Step 1. Write the note.');
   });
 
-  // Design §8: "The acceptance suite asserts the DEGRADATION, not the
-  // capability." A skill declaring MCP servers must still load, and must warn.
-  it('loads a skill declaring mcpServers but tells the model its servers are unavailable', async () => {
-    await installSkill(
-      'mcp-skill',
-      'name: mcp-skill\ndescription: A skill that ships its own MCP server.',
-      'Call the demo server.',
-      { mcp: true },
-    );
-    scriptedModel.mockReturnValue(
-      modelReplaying([toolStep('Skill', { name: 'mcp-skill' }), textStep('ok')]),
-    );
-    inboxEntries = [userMessage('use the mcp skill')];
+  // TASK-826 — connectors on this runner. The real main(): projection →
+  // MCP client → tool set → tool.pre-call → the connector → tool result.
+  describe('connectors (TASK-826)', () => {
+    const NS = 'c0123456789';
+    let mcp: McpTestServer;
+    beforeEach(async () => {
+      mcp = await startMcpTestServer({
+        tools: [{ name: 'ping', handler: () => ({ content: [{ type: 'text', text: 'pong-from-connector' }] }) }],
+      });
+    });
+    afterEach(async () => {
+      await mcp.close();
+    });
 
-    await expect(main()).resolves.toBe(0);
+    it('offers mcp__<ns>__<tool>, gates it as mcp.<ns>.<tool>, and returns the connector result', async () => {
+      await installSkill(
+        'connector-probe',
+        'name: connector-probe\ndescription: A connector bundle.',
+        'Use the ping tool.',
+        { mcpJson: { mcpServers: { [NS]: { type: 'http', url: mcp.url } } } },
+      );
+      scriptedModel.mockReturnValue(
+        modelReplaying([
+          toolStep('Skill', { name: 'connector-probe' }, 'c0'),
+          toolStep(`mcp__${NS}__ping`, {}, 'c1'),
+          textStep('done'),
+        ]),
+      );
+      inboxEntries = [userMessage('ping it')];
 
-    const toolResult = JSON.stringify(shippedEntries().find((e) => e.role === 'tool'));
-    // It loaded...
-    expect(toolResult).toContain('Call the demo server.');
-    // ...and it warned.
-    expect(toolResult).toMatch(/not available on this runner/i);
+      await expect(main()).resolves.toBe(0);
+
+      // The connector loaded, so main() handed its bundle to the Skill tool:
+      // the skill body arrives WITHOUT the could-not-load note.
+      const toolEntries = shippedEntries().filter((e) => e.role === 'tool').map((e) => JSON.stringify(e));
+      const skillResult = toolEntries.find((e) => e.includes('Use the ping tool.'));
+      expect(skillResult).toBeDefined();
+      expect(skillResult).not.toContain(MCP_NOT_LOADED_NOTE);
+
+      // Offered to the model under the SDK-parity name.
+      const offered = (sentTools[0] as Array<{ name: string }>).map((t) => t.name);
+      expect(offered).toContain(`mcp__${NS}__ping`);
+      // Gated under the canonical policy name.
+      const preCall = calls.find(
+        (c) => c.action === 'tool.pre-call' &&
+          (c.payload as { call: { name: string } }).call.name === `mcp.${NS}.ping`,
+      );
+      expect(preCall).toBeDefined();
+      // The connector actually answered, and the model saw it.
+      expect(toolEntries.some((e) => e.includes('pong-from-connector'))).toBe(true);
+      // The live chunk and the persisted block carry the model-facing name —
+      // the string channel-web's connectorToolLabel keys on.
+      expect(JSON.stringify(chunks())).toContain(`mcp__${NS}__ping`);
+      expect(JSON.stringify(turnEnds())).toContain(`mcp__${NS}__ping`);
+    });
+
+    it('a dead connector costs only its tools: the session still boots and answers', async () => {
+      await installSkill(
+        'connector-dead',
+        'name: connector-dead\ndescription: A connector bundle whose server is down.',
+        'Use the ping tool.',
+        { mcpJson: { mcpServers: { [NS]: { type: 'http', url: 'http://127.0.0.1:1/mcp' } } } },
+      );
+      scriptedModel.mockReturnValue(
+        modelReplaying([toolStep('Skill', { name: 'connector-dead' }), textStep('could not ping')]),
+      );
+      inboxEntries = [userMessage('ping it')];
+
+      await expect(main()).resolves.toBe(0);
+
+      const offered = (sentTools[0] as Array<{ name: string }>).map((t) => t.name);
+      expect(offered).not.toContain(`mcp__${NS}__ping`);
+      const toolResult = JSON.stringify(shippedEntries().find((e) => e.role === 'tool'));
+      expect(toolResult).toContain('Use the ping tool.');
+      expect(toolResult).toMatch(/could not be loaded this session/);
+    });
+
+    it('a connector that would push the session past MAX_TOOLS_PER_SESSION is not offered at all', async () => {
+      const big = await startMcpTestServer({
+        tools: Array.from({ length: MAX_TOOLS_PER_SESSION }, (_, i) => ({ name: `t${i}` })),
+      });
+      try {
+        await installSkill(
+          'connector-big',
+          'name: connector-big\ndescription: A connector with as many tools as the whole session budget.',
+          'Use the t0 tool.',
+          { mcpJson: { mcpServers: { [NS]: { type: 'http', url: big.url } } } },
+        );
+        scriptedModel.mockReturnValue(
+          modelReplaying([toolStep('Skill', { name: 'connector-big' }), textStep('too big')]),
+        );
+        inboxEntries = [userMessage('use it')];
+
+        await expect(main()).resolves.toBe(0);
+
+        const offered = (sentTools[0] as Array<{ name: string }>).map((t) => t.name);
+        expect(offered.length).toBeLessThanOrEqual(MAX_TOOLS_PER_SESSION);
+        expect(offered.filter((n) => n.startsWith('mcp__'))).toEqual([]);
+        // Dropped whole: its bundle is not "loaded", so the Skill tool says so.
+        const toolResult = JSON.stringify(shippedEntries().find((e) => e.role === 'tool'));
+        expect(toolResult).toMatch(/could not be loaded this session/);
+      } finally {
+        await big.close();
+      }
+    });
   });
 
   // The agent-writable `.claude/skills/` in the workspace is NOT a discovery

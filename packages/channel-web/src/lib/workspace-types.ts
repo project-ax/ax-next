@@ -1152,8 +1152,9 @@ export interface AgentConnectorsRead {
   sharedCredentials: boolean;
   /**
    * TASK-761 — false when this agent's runner is not given connector tools
-   * at all (the aisdk runner does not load connectors). The tab then says so
-   * and offers no Add, so nobody sets up access that can't apply.
+   * at all (a runner that doesn't load connectors: an allow-list in
+   * `runnerLoadsConnectors`). The tab then says so and offers no Add, so
+   * nobody sets up access that can't apply.
    */
   connectorsSupported: boolean;
 }

@@ -46,7 +46,11 @@ export interface DiscoveredSkill {
   dir: string;
   /** The SKILL.md body, frontmatter stripped. Loaded on demand, not at boot. */
   body: string;
-  /** True when this skill's MCP servers were materialized but cannot be run. */
+  /**
+   * True when the bundle ships MCP servers (a `.mcp.json`, or `mcpServers` in
+   * its manifest). The Skill tool warns only when those servers did not load
+   * this session (TASK-826).
+   */
   hasMcpServers: boolean;
 }
 
@@ -60,9 +64,9 @@ const SKILL_MANIFEST_FILE = 'SKILL.md';
 
 /**
  * The Anthropic-SDK-shaped MCP config `materializeInstalledSkillsFromEnv`
- * writes when a skill's connectors resolved to servers. On this runner it is a
- * TOMBSTONE, not a config: nothing reads it, and its presence is how we know to
- * warn (see {@link DiscoveredSkill.hasMcpServers}).
+ * writes when a skill's connectors resolved to servers. This module only
+ * checks that it exists (see {@link DiscoveredSkill.hasMcpServers}); the
+ * servers themselves are read and connected by `tools/connector-tools.ts`.
  */
 const MCP_CONFIG_FILE = '.mcp.json';
 
@@ -174,17 +178,6 @@ async function loadSkill(
   const hasMcpServers =
     (await fileExists(path.join(dir, MCP_CONFIG_FILE))) ||
     manifestDeclaresMcpServers(parsed.value);
-
-  if (hasMcpServers) {
-    // Logged ONCE here, at discovery, and repeated to the model in the `Skill`
-    // response (design §3: "degradation must be visible, not silent"). The
-    // operator sees it in the runner log; the model sees it at the moment it
-    // matters. Neither audience has to infer it from tools that never appear.
-    log(
-      `'${id}' declares MCP servers; this runner has no MCP client, so its ` +
-        'server-provided tools will not exist (design §3 — not supported, by decision)',
-    );
-  }
 
   return {
     id,

@@ -47,6 +47,11 @@ export { waitForAssignment } from './standby.js';
 export { createInboxLoop } from './inbox-loop.js';
 export type { InboxLoop, InboxLoopEntry, InboxLoopOptions } from './inbox-loop.js';
 export { materializeInstalledSkillsFromEnv, validateMcpEntry } from './installed-skills.js';
+export {
+  CONNECTOR_TOOL_NAMESPACE_RE,
+  loadProjectedMcpServers,
+} from './projected-mcp-servers.js';
+export type { ProjectedMcpServer, ProjectedMcpServers } from './projected-mcp-servers.js';
 export { buildSystemPrompt } from './prompt-engine.js';
 export { createSkillProposeExecutor } from './skill-propose-executor.js';
 export { createArtifactPublishExecutor } from './artifact-publish-executor.js';

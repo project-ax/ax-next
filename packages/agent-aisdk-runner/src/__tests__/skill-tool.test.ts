@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import { POLICY_WRAPPED } from '../tools/policy-wrap.js';
 import {
-  MCP_UNAVAILABLE_NOTE,
+  MCP_NOT_LOADED_NOTE,
   SKILL_TOOL_NAME,
   buildSkillTool,
 } from '../tools/skill-tool.js';
@@ -55,7 +55,7 @@ function executeOf(tools: Record<string, { execute?: unknown }>): (
 
 describe('buildSkillTool', () => {
   it('registers exactly one tool, named Skill, with a required `name` input', () => {
-    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
+    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {}, loadedMcpBundles: new Set() });
 
     expect(Object.keys(tools)).toEqual([SKILL_TOOL_NAME]);
     const schema = (
@@ -74,7 +74,7 @@ describe('buildSkillTool', () => {
   // not special-cased just because it executes in-process.
   it('wraps execute in the policy gate', async () => {
     const policy = fakePolicy();
-    const tools = buildSkillTool({ policy, skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
+    const tools = buildSkillTool({ policy, skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {}, loadedMcpBundles: new Set() });
     const execute = executeOf(tools);
 
     expect(
@@ -91,7 +91,7 @@ describe('buildSkillTool', () => {
   });
 
   it('returns the body and the bundle directory', async () => {
-    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
+    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {}, loadedMcpBundles: new Set() });
 
     const out = await executeOf(tools)({ name: 'pdf-filler' }, OPTS);
 
@@ -99,7 +99,7 @@ describe('buildSkillTool', () => {
     // The dir is what makes the rest of the bundle reachable — the model
     // Read/Bash-es inside it for scripts and references.
     expect(out).toContain('/home/agent/.claude/skills/pdf-filler');
-    expect(out).not.toContain(MCP_UNAVAILABLE_NOTE);
+    expect(out).not.toContain(MCP_NOT_LOADED_NOTE);
   });
 
   it('accepts the bundle directory id when it differs from the manifest name', async () => {
@@ -107,6 +107,7 @@ describe('buildSkillTool', () => {
       policy: fakePolicy(),
       skills: [skill({ id: 'pdf-filler-v2', name: 'pdf-filler' })],
       holdLatch, onHold: () => {}, onToolFailure: () => {},
+      loadedMcpBundles: new Set(),
     });
 
     await expect(
@@ -122,6 +123,7 @@ describe('buildSkillTool', () => {
       policy: fakePolicy(),
       skills: [skill(), skill({ id: 'csv-wrangler', name: 'csv-wrangler' })],
       holdLatch, onHold: () => {}, onToolFailure: () => {},
+      loadedMcpBundles: new Set(),
     });
 
     const settled = await executeOf(tools)({ name: 'pdf-fillr' }, OPTS).then(
@@ -137,7 +139,7 @@ describe('buildSkillTool', () => {
   });
 
   it('returns a helpful result for a missing or non-string name', async () => {
-    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
+    const tools = buildSkillTool({ policy: fakePolicy(), skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {}, loadedMcpBundles: new Set() });
     const execute = executeOf(tools);
 
     await expect(execute({}, OPTS)).resolves.toContain('pdf-filler');
@@ -145,7 +147,7 @@ describe('buildSkillTool', () => {
   });
 
   it('registers nothing when no skills are installed', () => {
-    expect(buildSkillTool({ policy: fakePolicy(), skills: [], holdLatch, onHold: () => {}, onToolFailure: () => {} })).toEqual({});
+    expect(buildSkillTool({ policy: fakePolicy(), skills: [], holdLatch, onHold: () => {}, onToolFailure: () => {}, loadedMcpBundles: new Set() })).toEqual({});
   });
 
   it('surfaces a policy denial as the tool result (inherited from the wrapper)', async () => {
@@ -156,7 +158,7 @@ describe('buildSkillTool', () => {
         cause: 'policy' as const,
       })),
     } as never);
-    const tools = buildSkillTool({ policy, skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {} });
+    const tools = buildSkillTool({ policy, skills: [skill()], holdLatch, onHold: () => {}, onToolFailure: () => {}, loadedMcpBundles: new Set() });
 
     const out = await executeOf(tools)({ name: 'pdf-filler' }, OPTS);
 
@@ -166,13 +168,13 @@ describe('buildSkillTool', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Design §8: "The acceptance suite asserts the DEGRADATION, not the capability."
-// `ai@7` exports no MCP client and we deliberately did not build one. The bar is
-// therefore: a skill whose MCP servers were materialized still loads, still
-// appears in the index, and its `Skill` response tells the model the servers are
-// gone — so it adapts instead of hallucinating tools that will never resolve.
+// TASK-826: connector (HTTP MCP) tools now load on this runner. The `Skill`
+// response therefore warns ONLY when a skill's bundle ships MCP servers that did
+// NOT load this session — a skill whose servers loaded gets no note, because its
+// tools are simply in the tool list. `loadedMcpBundles` holds bundle dir names,
+// which are `DiscoveredSkill.id`.
 // ---------------------------------------------------------------------------
-describe('skills declaring mcpServers — the documented degradation', () => {
+describe('skills declaring mcpServers — the connector note', () => {
   let tmpRoot: string;
   let configDir: string;
 
@@ -201,20 +203,58 @@ describe('skills declaring mcpServers — the documented degradation', () => {
     await fs.rm(tmpRoot, { recursive: true, force: true });
   });
 
-  it('loads, indexes, and carries the unavailability note', async () => {
+  /** Build the tool for `skills` + `loadedMcpBundles`, call `Skill({ name })`. */
+  async function run(
+    skills: DiscoveredSkill[],
+    loadedMcpBundles: ReadonlySet<string>,
+    name: string,
+  ): Promise<string> {
+    const tools = buildSkillTool({
+      policy: fakePolicy(),
+      skills,
+      holdLatch,
+      onHold: () => {},
+      onToolFailure: () => {},
+      loadedMcpBundles,
+    });
+    return executeOf(tools)({ name }, OPTS);
+  }
+
+  it('notes plainly when a skill’s connector tools did not load this session', async () => {
+    const out = await run(
+      [skill({ id: 'conn-a', name: 'conn-a', hasMcpServers: true })],
+      new Set(),
+      'conn-a',
+    );
+    expect(out).toContain(MCP_NOT_LOADED_NOTE);
+  });
+
+  it('adds no note when the skill’s connector tools loaded', async () => {
+    const out = await run(
+      [skill({ id: 'conn-a', name: 'conn-a', hasMcpServers: true })],
+      new Set(['conn-a']),
+      'conn-a',
+    );
+    expect(out).not.toContain(MCP_NOT_LOADED_NOTE);
+    expect(out).not.toMatch(/not available on this runner/i);
+  });
+
+  // `loadedMcpBundles` is keyed by the bundle DIRECTORY name; discovery's `id`
+  // is that same directory name. Prove the two meet end to end, with a skill
+  // discovered from a real projection rather than a hand-built fixture.
+  it('matches loadedMcpBundles against the discovered bundle directory id', async () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     const skills = await discoverInstalledSkills({ configDir });
     expect(skills.map((s) => s.id)).toEqual(['linear-helper']);
     expect(skills[0]?.hasMcpServers).toBe(true);
 
-    const tools = buildSkillTool({ policy: fakePolicy(), skills, holdLatch, onHold: () => {}, onToolFailure: () => {} });
-    const out = await executeOf(tools)({ name: 'linear-helper' }, OPTS);
+    const loaded = await run(skills, new Set(['linear-helper']), 'linear-helper');
+    expect(loaded).toContain('Use the linear MCP tools to triage.');
+    expect(loaded).not.toContain(MCP_NOT_LOADED_NOTE);
 
-    // Still loads — degradation, not removal.
-    expect(out).toContain('Use the linear MCP tools to triage.');
-    // ...and says so at the moment it matters.
-    expect(out).toContain(MCP_UNAVAILABLE_NOTE);
-    expect(MCP_UNAVAILABLE_NOTE).toMatch(/not available/i);
+    const notLoaded = await run(skills, new Set(), 'linear-helper');
+    expect(notLoaded).toContain('Use the linear MCP tools to triage.');
+    expect(notLoaded).toContain(MCP_NOT_LOADED_NOTE);
   });
 });
