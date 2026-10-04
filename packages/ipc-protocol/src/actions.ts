@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { asWorkspaceVersion, type WorkspaceVersion } from '@ax/core';
+import { asWorkspaceVersion, HOLD_NOTE_MAX, type WorkspaceVersion } from '@ax/core';
 import { ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
 import { SaveRefusedCodeSchema } from './save-refused.js';
 
@@ -111,7 +111,7 @@ export type ToolPreCallRequest = z.infer<typeof ToolPreCallRequestSchema>;
  * that only threw here would turn it into a 500 and then the runner's
  * generic gate-failed deny — still closed, but carrying the wrong message.
  */
-export const PRE_CALL_REJECT_REASON_MAX = 2000;
+export const PRE_CALL_REJECT_REASON_MAX = HOLD_NOTE_MAX;
 
 export const ToolPreCallResponseSchema = z.discriminatedUnion('verdict', [
   z.object({
@@ -131,7 +131,7 @@ export const ToolPreCallResponseSchema = z.discriminatedUnion('verdict', [
   z.object({
     verdict: z.literal('hold'),
     decisionId: z.string().min(1),
-    note: z.string().min(1).max(2000),
+    note: z.string().min(1).max(HOLD_NOTE_MAX),
   }),
 ]);
 export type ToolPreCallResponse = z.infer<typeof ToolPreCallResponseSchema>;
@@ -216,6 +216,9 @@ const BundleBytesSchema = z
 // trips it). `reason` is a free-text label for the commit ("turn", or a
 // future user-supplied tag); it surfaces as the `reason` field on the
 // `workspace:pre-apply` payload so subscribers can shape their decision.
+// Capped at WORKSPACE_COMMIT_REASON_MAX and NOT clamped by the host: an
+// over-long label is a 400. A future producer of free-text tags must clamp
+// on its own side (`clampCodeUnits` in @ax/core).
 //
 // Empty bundle: a turn that wrote nothing. `bundleBytes === ''` short-
 // circuits the handler (no apply, returns `accepted: true` against the
@@ -232,9 +235,27 @@ const BundleBytesSchema = z
 // `WorkspaceCommitNotifyResponseSchema`.
 // ---------------------------------------------------------------------------
 
+/**
+ * Ceiling on the commit label (`reason`) a runner sends with a save, on both
+ * carriers (this JSON request and `workspace.commit-bundle`'s query). The
+ * runner only ever sends short fixed labels (`turn`, `user-message-wait`); the
+ * cap is there because the label is echoed into logs and into the
+ * `workspace:pre-apply` payload.
+ */
+export const WORKSPACE_COMMIT_REASON_MAX = 200;
+
+/**
+ * Ceiling on the host's `accepted: false` rejection `reason`, in UTF-16 code
+ * units. Same budget as a hold note: it is prose the agent reads. The host
+ * handler clamps to this before it parses its own response (a
+ * `workspace:pre-apply` subscriber is plugin code and can put any string in
+ * its reason), so an over-long veto still arrives as that veto, not as a 500.
+ */
+export const WORKSPACE_COMMIT_REJECT_REASON_MAX = HOLD_NOTE_MAX;
+
 export const WorkspaceCommitNotifyRequestSchema = z.object({
   parentVersion: z.string().nullable(),
-  reason: z.string(),
+  reason: z.string().max(WORKSPACE_COMMIT_REASON_MAX),
   // base64-encoded git bundle bytes from the runner's
   // `git bundle create - baseline..HEAD`. Empty string => no commits this
   // turn (handler short-circuits; no apply called).
@@ -257,7 +278,7 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
     }),
     z.object({
       accepted: z.literal(false),
-      reason: z.string(),
+      reason: z.string().max(WORKSPACE_COMMIT_REJECT_REASON_MAX),
       // Re-sync signal (optional; present only on a parent-mismatch rejection):
       // the storage tier's current head. When set, the runner fetches the
       // baseline bundle AT this head out-of-band via the binary
@@ -362,7 +383,7 @@ export const WORKSPACE_COMMIT_BUNDLE_MAX_BYTES = 100 * 1024 * 1024;
 //     would make `?parentVersion=` mean something different from absent.
 export const WorkspaceCommitBundleQuerySchema = z
   .object({
-    reason: z.string().min(1).max(200),
+    reason: z.string().min(1).max(WORKSPACE_COMMIT_REASON_MAX),
     parentVersion: z.string().min(1).max(512).nullable(),
   })
   .strict();
@@ -1076,6 +1097,14 @@ export const SkillProposeRequestSchema = z
   .strict();
 export type SkillProposeRequest = z.infer<typeof SkillProposeRequestSchema>;
 
+/**
+ * Ceiling on `skill.propose`'s `reason`, in UTF-16 code units. The reason
+ * comes from the skill safety scan (plugin/validator text), so the host
+ * handler clamps to this before it parses its response; the schema cap is the
+ * wire boundary for anything that does not go through that handler.
+ */
+export const SKILL_PROPOSE_REASON_MAX = HOLD_NOTE_MAX;
+
 export const SkillProposeResponseSchema = z.object({
   skillId: z.string(),
   // The gate verdict (design §D3). `active` = materializes next spawn; `pending`
@@ -1085,7 +1114,7 @@ export const SkillProposeResponseSchema = z.object({
   // On a quarantine (or a structural/scan reason worth surfacing) the host
   // returns a short, model-safe reason so the agent can tell the user what to
   // fix. Absent on a clean active/pending.
-  reason: z.string().optional(),
+  reason: z.string().max(SKILL_PROPOSE_REASON_MAX).optional(),
 });
 export type SkillProposeResponse = z.infer<typeof SkillProposeResponseSchema>;
 
@@ -1140,7 +1169,7 @@ export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
     type: z.literal('decision-resolved'),
     decisionId: z.string().min(1),
     outcome: z.enum(['approved', 'dismissed']),
-    note: z.string().min(1).max(2000),
+    note: z.string().min(1).max(HOLD_NOTE_MAX),
     // TASK-278 — the continuation turn's chat correlation, minted by the
     // approve route and echoed from `decisions:approve`. Optional: entries
     // queued before this field existed (or for a turn with no live watcher)

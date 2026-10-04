@@ -8,6 +8,10 @@ import {
   type Plugin,
   type WorkspaceVersion,
 } from '@ax/core';
+import {
+  WORKSPACE_COMMIT_REASON_MAX,
+  WORKSPACE_COMMIT_REJECT_REASON_MAX,
+} from '@ax/ipc-protocol';
 import { createMockWorkspacePlugin } from '@ax/test-harness';
 import { workspaceCommitNotifyHandler } from '../workspace-commit-notify.js';
 
@@ -932,5 +936,114 @@ describe('workspace.commit-notify handler — runner-immutable paths (TASK-486)'
 
     expect(result.body).toMatchObject({ accepted: true });
     expect(applyBundle).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-781 — the rejection `reason` is capped on the wire, and the handler
+// clamps every reason it did not write itself BEFORE its own response parse.
+// A `workspace:pre-apply` subscriber is plugin code and a PluginError message
+// is backend text; neither length is ours to promise, and an over-long one
+// must still arrive as that refusal — not as a 500 that the runner reads as a
+// host fault. The astral character straddles the cut on purpose: a plain
+// slice would leave a lone surrogate.
+// ---------------------------------------------------------------------------
+
+describe('workspace.commit-notify handler — reason caps (TASK-781)', () => {
+  const longReason =
+    'x'.repeat(WORKSPACE_COMMIT_REJECT_REASON_MAX - 1) + '\u{1F6AB}' + 'tail';
+
+  it('clamps an over-long pre-apply veto reason instead of 500ing', async () => {
+    prepareScratchRepoMock.mockResolvedValueOnce({
+      ...DEFAULT_SCRATCH,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([]);
+
+    const probe = makePhase3Probe('@ax/test-long-veto-probe');
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    bus.subscribe('workspace:pre-apply', '@ax/test-long-veto-subscriber', async () =>
+      reject({ reason: longReason }),
+    );
+    const ctx = makeAgentContext({
+      sessionId: 'wcn-test-long-veto',
+      agentId: 'wcn-agent-long-veto',
+      userId: 'wcn-user-long-veto',
+    });
+
+    const result = await workspaceCommitNotifyHandler(
+      { parentVersion: null, reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
+      ctx,
+      bus,
+    );
+    expect(result.status).toBe(200);
+    const body = result.body as { accepted: false; reason: string; recoverable: false };
+    expect(body).toMatchObject({ accepted: false, recoverable: false });
+    expect(body.reason).toBe('x'.repeat(WORKSPACE_COMMIT_REJECT_REASON_MAX - 1));
+  });
+
+  it('clamps an over-long parent-mismatch message instead of 500ing', async () => {
+    const { PluginError: PE } = await import('@ax/core');
+    const probe: Plugin = {
+      manifest: {
+        name: '@ax/test-long-mismatch-probe',
+        version: '0.0.0',
+        registers: ['workspace:apply-bundle', 'workspace:export-baseline-bundle'],
+        calls: [],
+        subscribes: [],
+      },
+      init({ bus: pluginBus }) {
+        pluginBus.registerService(
+          'workspace:export-baseline-bundle',
+          '@ax/test-long-mismatch-probe',
+          async () => {
+            throw new PE({
+              code: 'parent-mismatch',
+              plugin: '@ax/test-long-mismatch-probe',
+              message: longReason,
+              cause: { actualParent: 'newhead' },
+            });
+          },
+        );
+        pluginBus.registerService(
+          'workspace:apply-bundle',
+          '@ax/test-long-mismatch-probe',
+          async () => ({
+            version: 'v-probe' as WorkspaceVersion,
+            delta: { before: null, after: 'v-probe' as WorkspaceVersion, changes: [] },
+          }),
+        );
+      },
+    };
+    const { bus, ctx } = await makeEnv([probe]);
+    const result = await workspaceCommitNotifyHandler(
+      { parentVersion: 'oldhead', reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
+      ctx,
+      bus,
+    );
+    expect(result.status).toBe(200);
+    const body = result.body as { accepted: false; reason: string; actualParent: string };
+    expect(body.accepted).toBe(false);
+    expect(body.actualParent).toBe('newhead');
+    expect(body.reason.length).toBeLessThanOrEqual(WORKSPACE_COMMIT_REJECT_REASON_MAX);
+    expect(body.reason.startsWith('parent-mismatch: xxx')).toBe(true);
+    // No lone high surrogate left dangling at the cut.
+    expect(/[\uD800-\uDBFF]$/.test(body.reason)).toBe(false);
+  });
+
+  it('refuses a commit label past the cap at the wire (400, not a passthrough)', async () => {
+    const { bus, ctx } = await makeEnv();
+    const result = await workspaceCommitNotifyHandler(
+      {
+        parentVersion: null,
+        reason: 'x'.repeat(WORKSPACE_COMMIT_REASON_MAX + 1),
+        bundleBytes: '',
+      },
+      ctx,
+      bus,
+    );
+    expect(result.status).toBe(400);
   });
 });
