@@ -682,6 +682,108 @@ describe('@ax/credential-proxy plugin', () => {
     expect((caught as PluginError).message).toMatch(/not open/);
   });
 
+  // ── TASK-783: a failed resolve names the credential it failed on ─────
+  //
+  // open/rotate resolve a whole SET of refs (provider key + connector slots).
+  // A bare resolver error lost which one failed, so the orchestrator could not
+  // tell a missing provider key from a dead connector sign-in. The proxy now
+  // rethrows as `credential-resolve-failed` with `diagnosis.envName` (the
+  // caller's own key) and the original error on `.cause`. Its message is fixed
+  // text: a resolver message can carry provider-authored OAuth error text.
+
+  const UPSTREAM_TEXT = 'error_description=provider-says-something-long';
+
+  function assertNamesCredential(caught: unknown, envName: string, causeName: string): void {
+    expect(caught).toBeInstanceOf(PluginError);
+    const pe = caught as PluginError;
+    expect(pe.code).toBe('credential-resolve-failed');
+    expect(pe.plugin).toBe('@ax/credential-proxy');
+    expect(pe.diagnosis).toEqual({ envName });
+    // The original resolver error survives on .cause (wrapped once by the bus).
+    const cause = pe.cause as { name?: string; cause?: { name?: string } } | undefined;
+    expect(cause?.name === causeName || cause?.cause?.name === causeName).toBe(true);
+    // No upstream text in the message, and no env name in prose either.
+    expect(pe.message).not.toContain(UPSTREAM_TEXT);
+    expect(pe.message).not.toContain(envName);
+  }
+
+  it('proxy:open-session: a failed credentials:get names the failing env key (TASK-783)', async () => {
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin((ref) => {
+          if (ref === 'account:gmail') {
+            const e = new Error(`refresh rejected: ${UPSTREAM_TEXT}`);
+            e.name = 'NeedsReconnectError';
+            throw e;
+          }
+        }),
+        createCredentialProxyPlugin({ listen: { kind: 'tcp', host: '127.0.0.1', port: 0 }, caDir }),
+      ],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), { ref: 'provider:anthropic', userId: 'u1', value: 'sk-1' });
+
+    let caught: unknown;
+    try {
+      await bus.call('proxy:open-session', ctx(), {
+        sessionId: 's-name',
+        userId: 'u1',
+        agentId: 'a1',
+        allowlist: [],
+        credentials: {
+          ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          'connector:gmail:GMAIL': { ref: 'account:gmail', kind: 'mcp-oauth' },
+        },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    assertNamesCredential(caught, 'connector:gmail:GMAIL', 'NeedsReconnectError');
+  });
+
+  it('proxy:rotate-session: a failed credentials:get names the failing env key (TASK-783)', async () => {
+    let failGmail = false;
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin((ref) => {
+          if (failGmail && ref === 'account:gmail') {
+            throw new PluginError({
+              code: 'credential-not-found',
+              plugin: '@test/mem-credentials',
+              message: `no credential: ${UPSTREAM_TEXT}`,
+            });
+          }
+        }),
+        createCredentialProxyPlugin({ listen: { kind: 'tcp', host: '127.0.0.1', port: 0 }, caDir }),
+      ],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), { ref: 'provider:anthropic', userId: 'u1', value: 'sk-1' });
+    await bus.call('credentials:set', ctx(), { ref: 'account:gmail', userId: 'u1', value: 'tok-1' });
+    await bus.call('proxy:open-session', ctx(), {
+      sessionId: 's-rot-name',
+      userId: 'u1',
+      agentId: 'a1',
+      allowlist: [],
+      credentials: {
+        ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+        'connector:gmail:GMAIL': { ref: 'account:gmail', kind: 'mcp-oauth' },
+      },
+    });
+
+    failGmail = true;
+    let caught: unknown;
+    try {
+      await bus.call('proxy:rotate-session', ctx(), { sessionId: 's-rot-name' });
+    } catch (err) {
+      caught = err;
+    }
+    assertNamesCredential(caught, 'connector:gmail:GMAIL', 'PluginError');
+    expect(((caught as PluginError).cause as PluginError).code).toBe('credential-not-found');
+  });
+
   // ── proxy:add-host (TASK-37 — reactive egress wall) ──────────────────
   //
   // Widens a LIVE session's allowlist with no re-spawn. Host-internal,
