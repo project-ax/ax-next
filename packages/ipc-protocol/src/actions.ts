@@ -216,6 +216,9 @@ const BundleBytesSchema = z
 // trips it). `reason` is a free-text label for the commit ("turn", or a
 // future user-supplied tag); it surfaces as the `reason` field on the
 // `workspace:pre-apply` payload so subscribers can shape their decision.
+// Capped at WORKSPACE_COMMIT_REASON_MAX and NOT clamped by the host: an
+// over-long label is a 400. A future producer of free-text tags must clamp
+// on its own side (`clampCodeUnits` in @ax/core).
 //
 // Empty bundle: a turn that wrote nothing. `bundleBytes === ''` short-
 // circuits the handler (no apply, returns `accepted: true` against the
