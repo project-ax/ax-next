@@ -30,6 +30,7 @@
     "@ax/attachments": "workspace:*",
     "@ax/audit-log": "workspace:*",
     "@ax/auth-better": "workspace:*",
+    "@ax/blob-gc": "workspace:*",
     "@ax/blob-store-fs": "workspace:*",
     "@ax/blob-store-s3": "workspace:*",
     "@ax/branding": "workspace:*",

@@ -251,6 +251,9 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     // gated). The boot test below proves its migration ran on the shared
     // database next to everyone else's.
     '@ax/disk-quota',
+    // TASK-777 — blob GC, report mode. The boot test below proves its
+    // migration ran on the shared database next to everyone else's.
+    '@ax/blob-gc',
   ] as const;
 
   it(
@@ -334,6 +337,14 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
             "SELECT to_regclass('public.disk_quota_v1_usage')::text AS t",
           );
           expect(quota.rows[0]?.t).toBe('disk_quota_v1_usage');
+          // TASK-777: @ax/blob-gc's init ran against the shared database in
+          // the full production graph (both of its tables exist).
+          const gc = await probe.query<{ b: string | null; r: string | null }>(
+            "SELECT to_regclass('public.blob_gc_v1_blobs')::text AS b, " +
+              "to_regclass('public.blob_gc_v1_roster')::text AS r",
+          );
+          expect(gc.rows[0]?.b).toBe('blob_gc_v1_blobs');
+          expect(gc.rows[0]?.r).toBe('blob_gc_v1_roster');
           // TASK-735: @ax/mcp-client's connector tool-inventory cache table.
           const inventory = await probe.query<{ t: string | null }>(
             "SELECT to_regclass('public.mcp_client_v1_tool_inventory')::text AS t",

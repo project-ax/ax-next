@@ -29,6 +29,7 @@ import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentActivityPlugin } from '@ax/agent-activity';
 import { createUsageLimitsPlugin } from '@ax/usage-limits';
 import { createDiskQuotaPlugin } from '@ax/disk-quota';
+import { createBlobGcPlugin } from '@ax/blob-gc';
 import { createAgentsPlugin, resolveAllowedModels } from '@ax/agents';
 import { createModelPolicyPlugin } from '@ax/model-policy';
 import { createSkillsPlugin } from '@ax/skills';
@@ -1065,6 +1066,19 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // own numbers) and GET /admin/storage + PUT /admin/storage/limits, so it
   // hard-depends on http:register-route + auth:require-user.
   plugins.push(createDiskQuotaPlugin());
+
+  // ----- 7e. blob GC, REPORT MODE (TASK-777; blob GC design D4/D5/D8) -----
+  // Finds stored files nobody references any more and REPORTS them: it frees
+  // nothing (no retire/purge/delete in its reach; enforce mode is TASK-778).
+  // Records `blob:stored` (last put time per sha, in its own `blob_gc_v1_*`
+  // tables on the shared postgres pool), and hourly, under a postgres
+  // advisory lock, lists the blob backend (`blob:list`) to find blobs it has
+  // never seen, asks every holder about the ones past the grace window through
+  // `blob:collect-refs` (fails closed on its own holder roster), and logs
+  // `blob_gc_report`. Mounts GET/PUT /admin/storage/cleanup (the admin Storage
+  // tab's "Files no longer used by anyone" line and `settings:blob-gc`), so it
+  // hard-depends on http:register-route + auth:require-user.
+  plugins.push(createBlobGcPlugin());
 
   // ----- 8. agents -------------------------------------------------------
   // Registers `agents:resolve` (the ACL gate the chat-orchestrator hard-
