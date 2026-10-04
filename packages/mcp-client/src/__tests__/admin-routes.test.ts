@@ -587,7 +587,7 @@ describe('@ax/mcp-client admin routes', () => {
   // GET /admin/mcp-servers (list)
   // -------------------------------------------------------------------------
 
-  it('GET /admin/mcp-servers returns own configs only (cross-tenant)', async () => {
+  it('GET /admin/mcp-servers: a non-admin sees only own rows, an admin sees all (cross-tenant)', async () => {
     // Acceptance test 6 — cross-tenant pin.
     const cookieA = await signIn(stack);
     const aCreate = await http(stack.port, 'POST', '/admin/mcp-servers', {
