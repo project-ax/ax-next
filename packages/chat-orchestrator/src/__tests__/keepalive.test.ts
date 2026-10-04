@@ -401,3 +401,146 @@ it('preserves the new stream binding while retiring the previous host session', 
   expect(reqIdDuringTermination).toBe('restart-request');
   expect(reqIdDuringOpen).toBe('restart-request');
 });
+
+// TASK-811 — a connector attached to (or detached from) the agent mid-chat must
+// reach that chat's WARM session on its next turn. The runner loads its MCP
+// servers once, at spawn, so routing the next message into the old session
+// would keep offering the old tool set. The orchestrator compares the agent
+// row's connector selection (resolved fresh every turn) with the one the
+// session spawned from, and retires the session at the turn boundary when
+// they differ.
+describe('TASK-811: connector attach/detach mid-chat reaches the warm session next turn', () => {
+  type Selection = { connectorAttachments: string[]; connectorExclusions: string[] };
+
+  async function twoTurns(before: Selection, after: Selection) {
+    let agentRow: typeof TEST_AGENT & Selection = { ...TEST_AGENT, ...before };
+    const conv = { activeSessionId: null as string | null };
+    const live = new Set<string>();
+    const handles = [makeHandle(), makeHandle()];
+    let opens = 0;
+    const queued: Array<{ sessionId: string; type: string }> = [];
+    const terminated: string[] = [];
+    const logs: Array<Record<string, unknown>> = [];
+
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({ agent: { ...agentRow } }),
+      'session:queue-work': async (_c, input: unknown) => {
+        const i = input as { sessionId: string; entry: { type: string } };
+        queued.push({ sessionId: i.sessionId, type: i.entry.type });
+        return { cursor: 0 };
+      },
+      'session:terminate': async (_c, input: unknown) => {
+        const sid = (input as { sessionId: string }).sessionId;
+        terminated.push(sid);
+        live.delete(sid);
+        return {};
+      },
+      'session:is-alive': async (_c, input: unknown) => ({
+        alive: live.has((input as { sessionId: string }).sessionId),
+      }),
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return { conversation: {
+          conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent',
+          activeSessionId: conv.activeSessionId, activeReqId: null,
+        } };
+      },
+      'conversations:bind-session': async (_c, input: unknown) => {
+        const i = input as { sessionId: string };
+        conv.activeSessionId = i.sessionId;
+        live.add(i.sessionId);
+        return undefined;
+      },
+      'sandbox:open-session': async () => {
+        const hk = handles[opens]!;
+        opens += 1;
+        return { runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle };
+      },
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+      'proxy:close-session': async () => ({}),
+    };
+
+    const h = await createTestHarness({
+      services,
+      plugins: [createChatOrchestratorPlugin({
+        runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
+        keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+      })],
+    });
+
+    const mkCtx = (sessionId: string, reqId: string) =>
+      makeAgentContext({
+        sessionId, agentId: 'test-agent', userId: 'test-user',
+        conversationId: 'conv-1', reqId,
+        logger: createLogger({
+          reqId,
+          writer: (line: string) => { logs.push(JSON.parse(line) as Record<string, unknown>); },
+        }),
+      });
+
+    // Turn 1 — fresh spawn from the `before` selection.
+    fireTurnEnd(h.bus, 's-1', 'req-1');
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke', mkCtx('s-1', 'req-1'),
+      { message: { role: 'user', content: 'hi' } });
+    expect(opens).toBe(1);
+
+    // Between turns the person attaches / detaches a connector.
+    agentRow = { ...TEST_AGENT, ...after };
+
+    // Turn 2 — same conversation, new request session id (as the channel
+    // stamps it). The orchestrator either routes into the warm s-1 or retires
+    // it and spawns s-2; the turn-end lands for whichever serves the turn.
+    fireTurnEnd(h.bus, 's-2', 'req-2');
+    const out2 = await h.bus.call<unknown, AgentOutcome>('agent:invoke', mkCtx('s-2', 'req-2'),
+      { message: { role: 'user', content: 'use it' } });
+    for (const hk of handles) hk.forceExit();
+    return { out2, opens, queued, terminated, logs };
+  }
+
+  it('attaching a connector mid-chat retires the warm session; the next turn spawns fresh', async () => {
+    const r = await twoTurns(
+      { connectorAttachments: [], connectorExclusions: [] },
+      { connectorAttachments: ['linear'], connectorExclusions: [] },
+    );
+    expect(r.out2).toEqual({ kind: 'complete', messages: [] });
+    expect(r.opens).toBe(2);
+    expect(r.terminated).toContain('s-1');
+    expect(r.queued.filter((q) => q.sessionId === 's-1' && q.type === 'user-message')).toHaveLength(1); // turn 1 only
+    expect(r.logs.find((l) => l.msg === 'stale_session_respawn'))
+      .toMatchObject({ sessionId: 's-1', reason: 'connectors-changed' });
+  });
+
+  it('detaching a connector mid-chat retires the warm session too', async () => {
+    const r = await twoTurns(
+      { connectorAttachments: ['linear', 'github'], connectorExclusions: [] },
+      { connectorAttachments: ['github'], connectorExclusions: [] },
+    );
+    expect(r.opens).toBe(2);
+    expect(r.terminated).toContain('s-1');
+    expect(r.logs.find((l) => l.msg === 'stale_session_respawn'))
+      .toMatchObject({ sessionId: 's-1', reason: 'connectors-changed' });
+  });
+
+  it('a new exclusion (removing a legacy-owned connector) retires the warm session', async () => {
+    const r = await twoTurns(
+      { connectorAttachments: [], connectorExclusions: [] },
+      { connectorAttachments: [], connectorExclusions: ['legacy-one'] },
+    );
+    expect(r.opens).toBe(2);
+    expect(r.terminated).toContain('s-1');
+    expect(r.logs.find((l) => l.msg === 'stale_session_respawn'))
+      .toMatchObject({ sessionId: 's-1', reason: 'connectors-changed' });
+  });
+
+  it('an unchanged selection (even reordered) keeps routing into the warm session', async () => {
+    const r = await twoTurns(
+      { connectorAttachments: ['linear', 'github'], connectorExclusions: ['x'] },
+      { connectorAttachments: ['github', 'linear'], connectorExclusions: ['x'] },
+    );
+    expect(r.out2).toEqual({ kind: 'complete', messages: [] });
+    expect(r.opens).toBe(1);
+    expect(r.terminated).not.toContain('s-1');
+    expect(r.queued.filter((q) => q.sessionId === 's-1' && q.type === 'user-message')).toHaveLength(2); // both turns
+    expect(r.logs.find((l) => l.msg === 'stale_session_respawn')).toBeUndefined();
+  });
+});
