@@ -106,6 +106,13 @@ export const ERROR_LABELS: Record<string, string> = {
   // never "reconnect": there was never a connection to restore. The rail marks
   // that row "Not signed in yet" with Sign in / Add key on it (TASK-795), so
   // "sign in" covers both and the sentence points there.
+  //
+  // TASK-806: no longer emitted live — the host now SKIPS a never-signed-in
+  // connector for the turn instead of failing it (the chat says so with
+  // `SkippedConnectorsNotice`). Kept for persisted rows replayed on reload:
+  // turn-error rows already stored on prod still carry this code, and without
+  // the label an old conversation would replay as "The agent stopped
+  // unexpectedly".
   'connector-needs-sign-in':
     'One of this agent’s connectors isn’t signed in yet. Open Connectors, sign in, then retry.',
   // TASK-802 — two failures at once: the model-provider key is missing AND a
@@ -115,22 +122,32 @@ export const ERROR_LABELS: Record<string, string> = {
   // provider-unknown line uses; and since it is an ADMIN's to fix (see that
   // line), the sentence says so and separates it from the half the reader can
   // do now. The button on the live strip is for that second half.
+  //
+  // TASK-806: no longer emitted live (the connector half is skipped now, so a
+  // missing provider key reads as an ordinary open failure). Kept for persisted
+  // rows replayed on reload — see `connector-needs-sign-in` above.
   'provider-key-missing-connector-needs-sign-in':
     'This agent can’t run right now. The AI service it uses isn’t set up on this server, and one of its connectors isn’t signed in yet. An admin can fix the first one in Settings. Open Connectors to sign in to the second, then retry.',
 };
 
 /**
- * The reason codes a person fixes on the agent's Connectors tab (TASK-796).
- * The LIVE failure strip offers an "Open Connectors" button for these, so the
- * sentence's "Open Connectors" is one click rather than a hunt. The reloaded
- * error row stays text-only by design (see `AgentConversation`).
+ * The reason codes a LIVE turn can still fail with that a person fixes on the
+ * agent's Connectors tab (TASK-796). The live failure strip offers an "Open
+ * Connectors" button for these, so the sentence's "Open Connectors" is one
+ * click rather than a hunt. The reloaded error row stays text-only by design
+ * (see `AgentConversation`).
+ *
+ * Only `connector-needs-reconnect` is left (TASK-806): a connector never
+ * signed in to is skipped for the turn rather than failing it, so
+ * `connector-needs-sign-in` and `provider-key-missing-connector-needs-sign-in`
+ * can no longer arrive on a live stream. Their LABELS stay in `ERROR_LABELS`
+ * for persisted rows replayed on reload, but a replayed row has no button, so
+ * they have no business here — and a stale set would offer one for a failure
+ * this build never produces. A never-signed-in connector is told to the person
+ * by the chat notice instead, which has its own Open Connectors button.
  */
 const CONNECTORS_TAB_REASONS: ReadonlySet<string> = new Set([
   'connector-needs-reconnect',
-  'connector-needs-sign-in',
-  // TASK-802 — the connector half of "key AND connector"; the key half is an
-  // admin's, but the strip's button is the part this reader can act on.
-  'provider-key-missing-connector-needs-sign-in',
 ]);
 
 /** True when the turn failed for a reason the Connectors tab fixes. */

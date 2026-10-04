@@ -132,21 +132,36 @@ describe('streamReply — where the person fixes it (TASK-796)', () => {
     return { message, fix };
   }
 
-  it('a connector that needs a sign-in says so AND names the Connectors tab', async () => {
-    const { message, fix } = await fixFrom([{ error: 'connector-needs-sign-in' }]);
-    expect(message).toBe(ERROR_LABELS['connector-needs-sign-in']);
-    expect(message).not.toContain('connector-needs-sign-in');
+  it('an expired connector sign-in says so AND names the Connectors tab', async () => {
+    const { message, fix } = await fixFrom([{ error: 'connector-needs-reconnect' }]);
+    expect(message).toBe(ERROR_LABELS['connector-needs-reconnect']);
+    expect(message).toContain('Open Connectors');
+    expect(message).not.toContain('connector-needs-reconnect');
     expect(fix).toEqual({ opensConnectors: true });
   });
 
-  it('a missing provider key AND an un-signed-in connector says both and still names Connectors', async () => {
+  /*
+    TASK-806 — a connector nobody signed in to is skipped for the turn, so the
+    host cannot put these two codes on a live stream any more. If a stale build
+    (or a replayed buffer) did, the sentence is still the authored one — never a
+    raw code — but there is no live "Open Connectors" button for it: the chat's
+    own notice is where that is offered now.
+  */
+  it('a connector that was never signed in to still reads as its sentence, with no live button', async () => {
+    const { message, fix } = await fixFrom([{ error: 'connector-needs-sign-in' }]);
+    expect(message).toBe(ERROR_LABELS['connector-needs-sign-in']);
+    expect(message).not.toContain('connector-needs-sign-in');
+    expect(fix).toBeUndefined();
+  });
+
+  it('a missing provider key AND an un-signed-in connector reads as its sentence, with no live button', async () => {
     const { message, fix } = await fixFrom([
       { error: 'provider-key-missing-connector-needs-sign-in' },
     ]);
     expect(message).toBe(ERROR_LABELS['provider-key-missing-connector-needs-sign-in']);
     expect(message).toContain('AI service');
     expect(message).not.toContain('provider-key-missing');
-    expect(fix).toEqual({ opensConnectors: true });
+    expect(fix).toBeUndefined();
   });
 
   it('an ordinary failure carries no fix hint', async () => {

@@ -23,6 +23,7 @@ import {
   type AgentDetail,
   type WorkspaceAgent,
 } from '@/lib/workspace-api';
+import type { AgentConnectorRow, AgentConnectorsRead } from '@/lib/workspace-types';
 import { AgentView } from '../AgentView';
 import {
   DECISION_SESSION_EXPIRED,
@@ -58,6 +59,10 @@ vi.mock('@/lib/workspace-api', async () => {
       // The rail reads its own route (AW-14). Without it in the mock, mounting
       // the chat tab throws before this file's subject renders at all.
       rail: vi.fn(async () => railFixture()),
+      // TASK-806 — the chat's "connectors off for this chat" notice reads the
+      // agent's Connectors list. Each test that cares sets its own answer;
+      // `beforeEach` resets it to "nothing is unsigned".
+      connectors: vi.fn(),
       revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
       streamReply: vi.fn(),
@@ -80,6 +85,23 @@ const agentMock = vi.mocked(workspaceApi.agent);
 const uploadMock = vi.mocked(uploadAttachment);
 const sendMock = vi.mocked(workspaceApi.sendMessage);
 const streamMock = vi.mocked(workspaceApi.streamReply);
+const connectorsMock = vi.mocked(workspaceApi.connectors);
+
+function connectorRow(over: Partial<AgentConnectorRow>): AgentConnectorRow {
+  return {
+    id: 'gmail',
+    name: 'Gmail',
+    source: 'attached',
+    editable: false,
+    health: 'ok',
+    removable: true,
+    ...over,
+  };
+}
+
+function connectorsRead(connectors: AgentConnectorRow[]): AgentConnectorsRead {
+  return { connectors, shared: false, manageable: true, connectorsSupported: true };
+}
 
 const quill: WorkspaceAgent = {
   id: 'a-quill',
@@ -144,6 +166,8 @@ beforeEach(() => {
   sendMock.mockReset();
   streamMock.mockReset();
   uploadMock.mockReset();
+  connectorsMock.mockReset();
+  connectorsMock.mockResolvedValue(connectorsRead([]));
 });
 
 describe('past conversations', () => {
@@ -1363,7 +1387,7 @@ describe('a first message whose committed turn is already in the re-read (TASK-6
   });
 });
 
-describe('a reply that could not start because a connector needs a sign-in (TASK-796)', () => {
+describe('a reply that could not start because a connector sign-in expired (TASK-796)', () => {
   it('offers Open Connectors, which routes to the Connectors tab', async () => {
     agentMock.mockResolvedValue(detail());
     sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
@@ -1373,7 +1397,7 @@ describe('a reply that could not start because a connector needs a sign-in (TASK
         h: { onError: (m: string, fix?: { opensConnectors: true }) => void },
       ) => {
         h.onError(
-          'One of this agent’s connectors isn’t signed in yet. Open Connectors, sign in, then retry.',
+          'One of this agent’s connectors needs you to sign in again. Open Connectors, reconnect it, then retry.',
           { opensConnectors: true },
         );
       },
@@ -1384,7 +1408,7 @@ describe('a reply that could not start because a connector needs a sign-in (TASK
     fireEvent.change(box, { target: { value: 'check my inbox' } });
     fireEvent.keyDown(box, { key: 'Enter' });
 
-    expect(await screen.findByText(/isn’t signed in yet/)).toBeTruthy();
+    expect(await screen.findByText(/needs you to sign in again/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
     expect(onTab).toHaveBeenCalledWith('connectors');
     // The strip stays, so Resend is still there once they are signed in.
@@ -1459,30 +1483,44 @@ describe('an SSE error frame, through to the Open Connectors action (TASK-802)',
     return { fetchMock, onTab };
   }
 
-  it('connector-needs-sign-in: the sentence renders and Open Connectors routes to the tab', async () => {
+  it('connector-needs-reconnect: the sentence renders and Open Connectors routes to the tab', async () => {
     const { fetchMock, onTab } = await sendWithStreamedFrames([
-      { reqId: 'r1', error: 'connector-needs-sign-in' },
+      { reqId: 'r1', error: 'connector-needs-reconnect' },
     ]);
 
-    expect(await screen.findByText(/isn’t signed in yet/)).toBeTruthy();
+    expect(await screen.findByText(/needs you to sign in again/)).toBeTruthy();
     expect(fetchMock.mock.calls.map(([u]) => String(u))).toContain('/api/chat/stream/r1');
     // The reason code is an internal identifier; it never reaches the page.
-    expect(screen.queryByText(/connector-needs-sign-in/)).toBeNull();
+    expect(screen.queryByText(/connector-needs-reconnect/)).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
     expect(onTab).toHaveBeenCalledWith('connectors');
   });
 
-  it('provider key AND connector missing: names the AI service and still offers Open Connectors', async () => {
-    const { onTab } = await sendWithStreamedFrames([
+  /*
+    TASK-806 — the host skips a never-signed-in connector instead of failing the
+    turn, so these two codes cannot arrive live any more. Should one anyway (a
+    stale build), the person reads the authored sentence, never the code — and
+    the strip does NOT grow an "Open Connectors" button for a failure this
+    build never produces. (A never-signed-in connector gets the chat's own
+    notice, with its own button, instead.)
+  */
+  it('connector-needs-sign-in: still the sentence, but no longer an Open Connectors hint', async () => {
+    await sendWithStreamedFrames([{ reqId: 'r1', error: 'connector-needs-sign-in' }]);
+
+    expect(await screen.findByText(/isn’t signed in yet/)).toBeTruthy();
+    expect(screen.queryByText(/connector-needs-sign-in/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
+  });
+
+  it('provider key AND connector missing: names the AI service, with no Open Connectors hint', async () => {
+    await sendWithStreamedFrames([
       { reqId: 'r1', error: 'provider-key-missing-connector-needs-sign-in' },
     ]);
 
     expect(await screen.findByText(/AI service it uses isn’t set up/)).toBeTruthy();
     expect(screen.queryByText(/provider-key-missing/)).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
-    expect(onTab).toHaveBeenCalledWith('connectors');
+    expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
   });
 
   it('an ordinary error frame renders no Open Connectors', async () => {
@@ -1490,5 +1528,235 @@ describe('an SSE error frame, through to the Open Connectors action (TASK-802)',
 
     await screen.findByText(/didn’t finish/);
     expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
+  });
+});
+
+/*
+  TASK-806 — a connector the person has never signed in to is skipped for the
+  turn, not a reason to refuse it. The chat says so, in a notice that is NOT an
+  error and NEVER blocks sending, read from the agent's Connectors list.
+*/
+describe('the connectors-off notice in the chat (TASK-806)', () => {
+  const GMAIL = connectorRow({
+    id: 'gmail',
+    name: 'Gmail',
+    health: 'needs-sign-in',
+    setup: 'sign-in',
+  });
+  const NOTION = connectorRow({ id: 'notion', name: 'Notion', health: 'ok' });
+  const LINEAR = connectorRow({
+    id: 'linear',
+    name: 'Linear',
+    health: 'needs-sign-in',
+    setup: 'sign-in',
+  });
+  const SENTENCE = 'Gmail isn’t signed in yet, so it’s off for this chat.';
+
+  it('names only the connector that is not signed in', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL, NOTION]));
+    renderView();
+
+    expect(await screen.findByText(SENTENCE)).toBeTruthy();
+    expect(screen.queryByText(/Notion/)).toBeNull();
+    expect(connectorsMock).toHaveBeenCalledWith('a-quill');
+  });
+
+  it('is a note, not an error: no alert role, no failure copy', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    renderView();
+
+    await screen.findByText(SENTENCE);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/didn’t finish/)).toBeNull();
+  });
+
+  it('Open Connectors routes to the Connectors tab', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    const onTab = vi.fn();
+    renderView({ onTab });
+
+    await screen.findByText(SENTENCE);
+    fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
+    expect(onTab).toHaveBeenCalledWith('connectors');
+  });
+
+  it('Dismiss hides it', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    renderView();
+
+    await screen.findByText(SENTENCE);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(SENTENCE)).toBeNull();
+  });
+
+  it('shows nothing when every connector is signed in', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([NOTION]));
+    renderView();
+
+    await screen.findByPlaceholderText('Message Quill');
+    await waitFor(() => expect(connectorsMock).toHaveBeenCalled());
+    expect(screen.queryByText(/signed in yet/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
+  });
+
+  it('shows nothing, and no error, when the connectors read fails', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockRejectedValue(new WorkspaceApiError('/x', 500));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    renderView();
+
+    await screen.findByPlaceholderText('Message Quill');
+    await waitFor(() => expect(connectorsMock).toHaveBeenCalled());
+    expect(screen.queryByText(/signed in yet/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
+  });
+
+  it('never blocks sending: the composer stays enabled while the notice shows, and a send goes out', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(async () => undefined);
+    renderView();
+
+    await screen.findByText(SENTENCE);
+    const box = await screen.findByPlaceholderText('Message Quill');
+    expect((box as HTMLTextAreaElement).disabled).toBe(false);
+    fireEvent.change(box, { target: { value: 'check my inbox' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await waitFor(() => expect(sendMock).toHaveBeenCalled());
+  });
+
+  it('hides it while a past conversation is open, without dismissing it', async () => {
+    withPast();
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    renderView();
+
+    await screen.findByText(SENTENCE);
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+    await screen.findByText('the March question');
+    expect(screen.queryByText(SENTENCE)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Back to current/ }));
+    expect(await screen.findByText(SENTENCE)).toBeTruthy();
+  });
+
+  it('a dismissal survives a trip to a past conversation and back', async () => {
+    withPast();
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    renderView();
+
+    await screen.findByText(SENTENCE);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+    await screen.findByText('the March question');
+
+    fireEvent.click(screen.getByRole('button', { name: /Back to current/ }));
+    await screen.findByPlaceholderText('Message Quill');
+    expect(screen.queryByText(SENTENCE)).toBeNull();
+  });
+
+  it('reads the list again when a reply finishes, so a sign-in made meanwhile clears it', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (_reqId: string, h: { onDone: () => void }) => {
+        // They signed in (in another tab) while the reply ran.
+        connectorsMock.mockResolvedValue(connectorsRead([]));
+        h.onDone();
+      },
+    );
+    renderView();
+
+    await screen.findByText(SENTENCE);
+    const before = connectorsMock.mock.calls.length;
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'hello' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await waitFor(() => expect(screen.queryByText(SENTENCE)).toBeNull());
+    expect(connectorsMock.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it('reads the list again when a reply fails, too', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([]));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (_reqId: string, h: { onError: (m: string) => void }) => {
+        connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+        h.onError('The agent stopped unexpectedly. Retry to continue.');
+      },
+    );
+    renderView();
+
+    await waitFor(() => expect(connectorsMock).toHaveBeenCalled());
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'hello' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect(await screen.findByText(SENTENCE)).toBeTruthy();
+  });
+
+  it('reads the list again when the person comes back from another tab', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    const props = {
+      agentId: 'a-quill',
+      onTab: vi.fn(),
+      decisions: [],
+      threadGrants: [],
+      onGrantResolved: vi.fn(),
+      onGranted: vi.fn(async () => true),
+      onApprove: vi.fn(),
+      onDismiss: vi.fn(),
+      onUndo: vi.fn(),
+      activity: [],
+      agents: [quill],
+      onBack: vi.fn(),
+      decisionsError: null,
+      version: 0,
+      onChanged: vi.fn(),
+    };
+    const view = render(<AgentView {...props} tab="connectors" />);
+    await screen.findByText(SENTENCE);
+
+    // They sign in on the Connectors tab, then go back to the chat.
+    connectorsMock.mockResolvedValue(connectorsRead([]));
+    view.rerender(<AgentView {...props} tab="chat" />);
+
+    await waitFor(() => expect(screen.queryByText(SENTENCE)).toBeNull());
+  });
+
+  it('comes back for a different set after a dismissal', async () => {
+    agentMock.mockResolvedValue(detail());
+    connectorsMock.mockResolvedValue(connectorsRead([GMAIL]));
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (_reqId: string, h: { onDone: () => void }) => {
+        connectorsMock.mockResolvedValue(connectorsRead([GMAIL, LINEAR]));
+        h.onDone();
+      },
+    );
+    renderView();
+
+    await screen.findByText(SENTENCE);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'hello' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect(
+      await screen.findByText(
+        'Gmail and Linear aren’t signed in yet, so they’re off for this chat.',
+      ),
+    ).toBeTruthy();
   });
 });
