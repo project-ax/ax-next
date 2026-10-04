@@ -65,6 +65,34 @@ it('carries OAuth and custom headers through session placeholders bound only to 
   expect(connector.capabilities.mcpServers[0]).not.toHaveProperty('headers');
 });
 
+// TASK-797 — a connector's OAuth CLIENT secret (`account:<id>:OAUTH_CLIENT_SECRET`)
+// is readable at global scope for an admin's shared connector, so it must never
+// reach the credential proxy: the proxy-injection plan (`baseCreds`) never lists it,
+// whatever slots the connector declares. Against the unfixed fold the colliding
+// api-key slot below folds to exactly that ref.
+it('never puts an OAUTH_CLIENT_SECRET ref into the proxy-injection plan', () => {
+  const connector: ResolvedConnectorForOrch = {
+    id: 'gmail',
+    usageNote: '',
+    capabilities: CAPS({
+      allowedHosts: ['mcp.example.com'],
+      credentials: [
+        { kind: 'oauth', slot: 'TOKEN', server: 'gmail', clientId: 'admin-client', clientSecretRef: 'account:gmail:OAUTH_CLIENT_SECRET' },
+        { kind: 'api-key', slot: 'OAUTH_CLIENT_SECRET' },
+        { kind: 'api-key', slot: 'HEADER_ONE', headerName: 'X-Key', server: 'gmail' },
+      ] as ResolvedConnectorForOrch['capabilities']['credentials'],
+      mcpServers: [{ name: 'gmail', transport: 'http', url: 'https://mcp.example.com/mcp', allowedHosts: [], credentials: [] }],
+    }),
+    toolNamespaces: [{ server: 'gmail', toolNamespace: 'c0123456789' }],
+  };
+  const creds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }> = {};
+  foldConnectorCaps([connector], new Set(), creds, new Map());
+  const refs = Object.values(creds).map((c) => c.ref);
+  expect(refs.some((r) => r.endsWith(':OAUTH_CLIENT_SECRET'))).toBe(false);
+  // The connector's real slots still fold (positive control).
+  expect(refs).toEqual(expect.arrayContaining(['account:gmail:TOKEN', 'account:gmail:HEADER_ONE']));
+});
+
 // TASK-153 — a well-formed dev SERVICE descriptor (digest-pinned image, the
 // canonical @ax/sandbox-protocol shape). `writablePaths` defaults to [] on parse
 // but a literal must set it (the orchestrator forwards the PARSED descriptor).

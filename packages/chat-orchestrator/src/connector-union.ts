@@ -121,6 +121,9 @@ export interface ConnectorToolNamespace {
 /** The only namespace shape the fold will materialize as a `.mcp.json` key. */
 export const CONNECTOR_TOOL_NAMESPACE_RE = /^c[0-9a-f]{10}$/;
 
+/** TASK-797 — the slot a connector's OAuth CLIENT secret is stored under; never proxy-injected. */
+const OAUTH_CLIENT_SECRET_SLOT = 'OAUTH_CLIENT_SECRET';
+
 // Structural mirror of @ax/connectors' ResolveOutput / list-effective connector
 // (I2 — no @ax/connectors import). Only the fields the union folds.
 export interface ResolvedConnectorForOrch {
@@ -491,6 +494,13 @@ export function foldConnectorCaps(
           ? slotDef.account
           : c.id;
       const ref = isMulti || (slotDef.kind === 'api-key' && slotDef.headerName) ? `account:${service}:${slotDef.slot}` : `account:${service}`;
+      // TASK-797 — `account:<id>:OAUTH_CLIENT_SECRET` is where a connector's OAuth
+      // CLIENT secret lives, and an admin's shared connector stores it at global
+      // scope for every signer. It is used host-side only, by @ax/mcp-oauth, against
+      // the provider's token endpoint; it never enters the credential proxy, so a
+      // slot that would resolve to that ref is not folded. (@ax/connectors'
+      // global-read rule also refuses a ref that is a plan slot — two locks.)
+      if (ref.endsWith(`:${OAUTH_CLIENT_SECRET_SLOT}`)) continue;
       // An `oauth` connector slot folds to the `mcp-oauth` credential kind —
       // the vault envelope kind the OAuth callback STORES (so resolve/refresh
       // dispatches to `credentials:resolve:mcp-oauth`) AND the kind the proxy

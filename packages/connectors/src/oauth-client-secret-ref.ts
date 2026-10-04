@@ -112,3 +112,32 @@ export function assertOwnClientSecretRefs(
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// TASK-797 — the client-secret ref the editors write, and the one an admin's
+// shared connector may expose at global scope (see credential-authz.ts).
+// ---------------------------------------------------------------------------
+
+/** The slot the connector editors store an OAuth client secret under (TASK-762). */
+export const OAUTH_CLIENT_SECRET_SLOT = 'OAUTH_CLIENT_SECRET';
+
+/** `account:<connectorId>:OAUTH_CLIENT_SECRET`. */
+export function oauthClientSecretRefFor(connectorId: string): string {
+  return `${ACCOUNT_PREFIX}${connectorId}:${OAUTH_CLIENT_SECRET_SLOT}`;
+}
+
+/**
+ * Does a top-level OAuth slot of `capabilities` name exactly `ref` as its
+ * `clientSecretRef`? Top-level only: that is the list @ax/mcp-oauth's `begin`
+ * reads its slot from, so it is the only place a client secret is used.
+ */
+export function namesOAuthClientSecretRef(
+  capabilities: { credentials?: unknown },
+  ref: string,
+): boolean {
+  const list = capabilities.credentials;
+  if (!Array.isArray(list)) return false;
+  return (list as SlotLike[]).some(
+    (slot) => slot?.kind === 'oauth' && slot.clientSecretRef === ref,
+  );
+}

@@ -627,6 +627,98 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
     ]);
   });
 
+  // TASK-797 — a custom-client OAuth connector's client secret is the
+  // connector's own key too: user copy always, global copy (an admin's shared
+  // connector) only under purgeGlobal, and only for a SHARED connector.
+  function customClientCaps(id: string) {
+    return {
+      allowedHosts: ['mcp.example.com'],
+      credentials: [
+        {
+          slot: 'TOKEN',
+          kind: 'oauth' as const,
+          server: id,
+          clientId: 'pinned-client',
+          clientRegistration: 'custom' as const,
+          clientSecretRef: `account:${id}:OAUTH_CLIENT_SECRET`,
+        },
+      ],
+      mcpServers: [
+        { name: id, transport: 'http' as const, url: 'https://mcp.example.com/mcp', allowedHosts: [], credentials: [] },
+      ],
+      packages: { npm: [], pypi: [] },
+    };
+  }
+
+  it('an admin deleting a shared custom-client connector purges its client secret at user AND global scope', async () => {
+    const { h, calls } = await makeHarnessWithCredSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'admin' }),
+      upsertInput({
+        userId: 'admin',
+        connectorId: 'gmail',
+        visibility: 'shared',
+        capabilities: customClientCaps('gmail') as unknown as UpsertInput['capabilities'],
+      }),
+    );
+    await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'gmail', purgeGlobal: true },
+    );
+    expect(calls).toEqual([
+      { scope: 'user', ownerId: 'admin', ref: 'account:gmail' },
+      { scope: 'user', ownerId: 'admin', ref: 'account:gmail:OAUTH_CLIENT_SECRET' },
+      { scope: 'global', ownerId: null, ref: 'account:gmail:OAUTH_CLIENT_SECRET' },
+    ]);
+  });
+
+  it('SECURITY: without purgeGlobal, or for a PRIVATE connector, the global client secret is left intact', async () => {
+    const { h, calls } = await makeHarnessWithCredSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'mallory' }),
+      upsertInput({
+        userId: 'mallory',
+        connectorId: 'gmail',
+        visibility: 'shared',
+        capabilities: customClientCaps('gmail') as unknown as UpsertInput['capabilities'],
+      }),
+    );
+    await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'mallory' }),
+      { userId: 'mallory', connectorId: 'gmail' },
+    );
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'admin2' }),
+      upsertInput({
+        userId: 'admin2',
+        connectorId: 'gmail',
+        visibility: 'private',
+        capabilities: customClientCaps('gmail') as unknown as UpsertInput['capabilities'],
+      }),
+    );
+    await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'admin2' }),
+      { userId: 'admin2', connectorId: 'gmail', purgeGlobal: true },
+    );
+    expect(calls.filter((c) => c.scope === 'global')).toEqual([]);
+    expect(calls).toContainEqual({
+      scope: 'user',
+      ownerId: 'mallory',
+      ref: 'account:gmail:OAUTH_CLIENT_SECRET',
+    });
+    expect(calls).toContainEqual({
+      scope: 'user',
+      ownerId: 'admin2',
+      ref: 'account:gmail:OAUTH_CLIENT_SECRET',
+    });
+  });
+
   it('deleting an absent connector purges nothing', async () => {
     const { h, calls } = await makeHarnessWithCredSpy();
     const del = await h.bus.call<DeleteInput, DeleteOutput>(

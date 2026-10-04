@@ -64,14 +64,18 @@ agent rail and signs in with their own Google account.** Instead:
 - When the author of a custom-client OAuth connector is a **workspace admin**, the editor writes
   `account:<connectorId>:OAUTH_CLIENT_SECRET` at **`global`** scope (admin destination route), not
   user scope.
-- Credential plan (`connectors/src/credential-plan.ts:127-141`) lists that ref at `global` for such
-  connectors.
+- ~~Credential plan (`connectors/src/credential-plan.ts:127-141`) lists that ref at `global` for such
+  connectors.~~ **Superseded by TASK-797:** the plan must NOT list the client secret. It is also the
+  connect-flow prompt list, the attach credential gate and mcp-client's describe-tools slot resolver,
+  so listing it there would prompt every user for it and put it on paths that send slot values to MCP
+  servers. The secret has its own global-read rule in `credential-authz.ts` instead.
 - Read authz (`connectors/src/credential-authz.ts`, extending the TASK-697 global-read rule): a
   global read of an `…:OAUTH_CLIENT_SECRET` ref is allowed only if **all** hold:
   the connector is `visibility: 'shared'`, its owner is an admin, and the ref equals that connector's
-  slot `clientSecretRef`. Everything else denies. (Whether the bus ctx can also pin the *calling
-  plugin* to `mcp-oauth` is unverified; the plan step checks. If it can't, the guarantee rests on
-  the next bullet.)
+  slot `clientSecretRef`. Everything else denies. (TASK-797 checked: the bus ctx can NOT pin the
+  calling plugin — `AgentContext` has no caller identity and `HookBus.call` records none — so the
+  guarantee rests on the next bullet: the rule also denies a ref that is a plan slot, and the proxy
+  fold drops an `OAUTH_CLIENT_SECRET` slot.)
 - The secret is used only host-side to talk to the provider's token endpoint. It is never placed in
   the credential proxy, the sandbox, a runner, a hook payload, or a log: the proxy-injection plan
   must never list `OAUTH_CLIENT_SECRET` refs (add a test pinning that).

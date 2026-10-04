@@ -37,7 +37,11 @@ import {
   registerUserConnectorRoutes,
 } from './admin-routes.js';
 import { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
-import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
+import {
+  assertOwnClientSecretRefs,
+  namesOAuthClientSecretRef,
+  oauthClientSecretRefFor,
+} from './oauth-client-secret-ref.js';
 import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
 import {
   TOOL_PERMISSIONS_RESET_FAILED,
@@ -898,7 +902,24 @@ async function deleteConnector(
   // failure is logged + swallowed so a credential hiccup never wedges the delete.
   if (connector !== null && bus.hasService('credentials:delete')) {
     const purgeGlobal = input.purgeGlobal === true;
-    for (const entry of deriveCredentialPlan(connector)) {
+    // TASK-797 — the connector's OAuth client secret is not a plan slot, but it
+    // is the connector's own key too: the editor stores it at the author's user
+    // scope, or at global for an admin's shared connector. Purge it from both
+    // (global under the same purgeGlobal gate), or a later connector with the
+    // same id would silently inherit it.
+    const clientSecretRef = oauthClientSecretRefFor(connectorId);
+    const ownsClientSecret = namesOAuthClientSecretRef(connector.capabilities, clientSecretRef);
+    // Only a SHARED connector's secret is ever read at global (credential-authz),
+    // so only a shared connector's delete may purge it there: a private
+    // connector that happens to share the id must not wipe the shared one's.
+    const purgeEntries: Array<{ scope: 'user' | 'global'; ref: string }> = [
+      ...deriveCredentialPlan(connector),
+      ...(ownsClientSecret ? [{ scope: 'user' as const, ref: clientSecretRef }] : []),
+      ...(ownsClientSecret && connector.visibility === 'shared'
+        ? [{ scope: 'global' as const, ref: clientSecretRef }]
+        : []),
+    ];
+    for (const entry of purgeEntries) {
       if (entry.scope === 'global' && !purgeGlobal) {
         // Unauthorized to purge a shared/company key — leave it intact. (An admin
         // delete passes purgeGlobal:true; a non-admin's never does.)

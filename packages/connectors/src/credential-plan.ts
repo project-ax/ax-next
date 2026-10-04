@@ -32,6 +32,11 @@ import type { CapabilitySlot, Connector, KeyMode } from './types.js';
 // plan) before an `account:` ref may fall through to global scope. A personal
 // connector therefore never reads a company key, whatever its id.
 //
+// NOT IN THE PLAN: a connector's OAuth CLIENT secret (`account:<id>:OAUTH_CLIENT_SECRET`,
+// TASK-797). This plan is also the connect-flow prompt list, the attach credential
+// gate and the describe-tools slot resolver; the client secret must reach none of
+// them. Its global read has its own rule in credential-authz.ts.
+//
 // I2 — no @ax/credentials runtime import. The credential-scope vocabulary
 // (`global | user | agent`) is the stable inter-plugin contract, re-declared
 // LOCALLY here (same posture as the local zod re-declaration of Capabilities in
