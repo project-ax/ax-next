@@ -492,6 +492,68 @@ describe('connectors:describe-tools', () => {
       expect(t.list).toHaveBeenCalledTimes(1);
     });
 
+    // TASK-812 — open the details view (a check: nobody signed in, so no
+    // server is asked), sign in a few seconds later, and the forced re-read
+    // must really check. Had the credential-only check kept its window, the
+    // re-read would be answered "needs-auth" from the row it just wrote.
+    it('a check that asked no server (nobody signed in) does not use up the window', async () => {
+      let signedIn = false;
+      const t = setup({
+        credential: () => {
+          if (!signedIn) throw new PluginError({ code: 'credential-not-found', plugin: 'credentials', message: 'x' });
+          return 'tok-123';
+        },
+      });
+      expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('needs-auth');
+      expect(t.list).not.toHaveBeenCalled();
+      signedIn = true;
+      t.advance(5_000);
+      const out = await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(out.status).toBe('ok');
+      expect(t.list).toHaveBeenCalledTimes(1);
+      // A check that DID ask a server holds the window as before.
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(1);
+    });
+
+    it('a multi-server check that asked ANY server keeps the window', async () => {
+      const t = setup({
+        resolve: () =>
+          connector({
+            capabilities: {
+              credentials: [
+                { slot: 'a', kind: 'oauth', server: 'main' },
+                { slot: 'b', kind: 'oauth', server: 'second' },
+              ],
+              mcpServers: [
+                { name: 'main', transport: 'http', url: 'https://a.example/mcp' },
+                { name: 'second', transport: 'http', url: 'https://b.example/mcp' },
+              ],
+            },
+            credentialPlan: [
+              { slot: 'a', ref: 'account:linear', scope: 'user', service: 'linear' },
+              { slot: 'b', ref: 'account:other', scope: 'user', service: 'other' },
+            ],
+            toolNamespaces: [
+              { server: 'main', toolNamespace: NS },
+              { server: 'second', toolNamespace: NS2 },
+            ],
+          }),
+        credential: (i) => {
+          if (i.ref === 'account:other') {
+            throw new PluginError({ code: 'credential-not-found', plugin: 'credentials', message: 'x' });
+          }
+          return 'tok-123';
+        },
+      });
+      expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('needs-auth');
+      expect(t.list).toHaveBeenCalledTimes(1);
+      expect(t.list.mock.calls[0]?.[0].url).toBe('https://a.example/mcp');
+      // Server A was probed: a second force inside the window must not probe it again.
+      await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(t.list).toHaveBeenCalledTimes(1);
+    });
+
     it('a blip on one server of a multi-server connector happens before ANY server is listed', async () => {
       const t = setup({
         resolve: () =>
