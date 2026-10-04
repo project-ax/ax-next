@@ -137,15 +137,19 @@ function harness(opts?: { auth?: { id: string; isAdmin: boolean } | 'throw' }) {
     const got = blobs.get(input.sha256);
     return got === undefined ? { found: false } : { bytes: got };
   });
-  bus.registerService<{ sha256: string }, Record<string, never>>(
-    'blob:delete',
-    'test',
-    async (_ctx, input) => {
+  // Every hook that could free a byte. Branding must call none of them: a
+  // logo's bytes are content-addressed and may be shared with someone's
+  // attachment, so only the blob GC (which asks every holder) frees them.
+  // `blob:delete` no longer exists on any backend; it is stubbed here only so
+  // a regression that calls it again is recorded instead of throwing into
+  // the old best-effort catch and passing unseen.
+  for (const hook of ['blob:delete', 'blob:retire', 'blob:purge']) {
+    bus.registerService<{ sha256: string }, Record<string, never>>(hook, 'test', async (_ctx, input) => {
       deleted.push(input.sha256);
       blobs.delete(input.sha256);
       return {};
-    },
-  );
+    });
+  }
   bus.registerService<CapturedRoute, { unregister: () => void }>(
     'http:register-route',
     'test',
@@ -302,7 +306,7 @@ describe('PUT /admin/branding — happy paths', () => {
 });
 
 describe('PUT /admin/branding — blob lifecycle', () => {
-  it('deletes the previous blob when a logo is replaced', async () => {
+  it('a replaced logo is never deleted by branding: its bytes stay for the blob GC (TASK-778)', async () => {
     const h = harness();
     const call = await bootRoutes(h);
     await call('PUT', '/admin/branding', {
@@ -311,11 +315,12 @@ describe('PUT /admin/branding — blob lifecycle', () => {
     await call('PUT', '/admin/branding', {
       body: { light: { contentType: 'image/png', dataBase64: b64(PNG_B) } },
     });
-    expect(h.deleted).toContain(sha256(PNG_A));
-    expect(h.deleted).not.toContain(sha256(PNG_B));
+    expect(h.deleted).toEqual([]);
+    // The old bytes may be someone's attachment too (same sha): still there.
+    expect(h.blobs.has(sha256(PNG_A))).toBe(true);
   });
 
-  it('deletes the blob when a logo is cleared with null', async () => {
+  it('a logo cleared with null is never deleted by branding either', async () => {
     const h = harness();
     const call = await bootRoutes(h);
     await call('PUT', '/admin/branding', {
@@ -324,7 +329,8 @@ describe('PUT /admin/branding — blob lifecycle', () => {
     await call('PUT', '/admin/branding', { body: { light: null } });
     const get = await call('GET', '/api/branding');
     expect((get.jsonOf() as { light: boolean }).light).toBe(false);
-    expect(h.deleted).toContain(sha256(PNG_A));
+    expect(h.deleted).toEqual([]);
+    expect(h.blobs.has(sha256(PNG_A))).toBe(true);
   });
 
   it('does NOT delete a blob still referenced by the other variant', async () => {

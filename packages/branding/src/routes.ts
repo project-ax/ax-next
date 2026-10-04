@@ -200,11 +200,8 @@ export function createBrandingHandlers(deps: {
       if (body.name !== undefined) next.name = body.name;
       if (body.logoType !== undefined) next.logoType = body.logoType;
 
-      const replacedShas: string[] = [];
       for (const variant of VARIANTS) {
         if (!supplied.has(variant)) continue; // omitted → unchanged
-        const cur = current[variant];
-        if (cur !== null) replacedShas.push(cur.sha256);
         const d = supplied.get(variant);
         if (d === undefined || d === null) {
           next[variant] = null;
@@ -223,20 +220,11 @@ export function createBrandingHandlers(deps: {
         value: serializeRecord(next),
       });
 
-      // Phase 3 — delete orphaned blobs. Content-addressed storage may share a
-      // sha across variants, so only delete shas the surviving record no
-      // longer references. Best-effort: a delete failure must not fail the PUT.
-      const stillReferenced = new Set<string>();
-      if (next.light !== null) stillReferenced.add(next.light.sha256);
-      if (next.dark !== null) stillReferenced.add(next.dark.sha256);
-      for (const sha of replacedShas) {
-        if (stillReferenced.has(sha)) continue;
-        try {
-          await bus.call('blob:delete', ctx, { sha256: sha });
-        } catch {
-          // best-effort GC; the orphan is harmless
-        }
-      }
+      // No delete here (TASK-778). A replaced or cleared logo's bytes are
+      // content-addressed and may be the very same bytes as someone's
+      // attachment, so branding cannot know they are free. The blob GC asks
+      // every holder (branding answers for the logos it still points at) and
+      // frees them once nobody holds them.
 
       res.status(204).end();
     },

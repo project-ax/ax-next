@@ -46,8 +46,8 @@ export function createBrandingPlugin(): Plugin {
       version: '0.0.0',
       registers: ['branding:get'],
       // Hard deps. http:register-route ← @ax/http-server; auth:require-user ←
-      // the auth plugin; storage:get/set ← a storage plugin; blob:put/get/
-      // delete ← a blob store. The topo-sort in bootstrap() wires these before
+      // the auth plugin; storage:get/set ← a storage plugin; blob:put/get ← a
+      // blob store. The topo-sort in bootstrap() wires these before
       // init runs.
       calls: [
         'http:register-route',
@@ -56,7 +56,6 @@ export function createBrandingPlugin(): Plugin {
         'storage:set',
         'blob:put',
         'blob:get',
-        'blob:delete',
       ],
       // `blob:collect-refs`: the logo pointers are blob shas. If we did not
       // answer, a sweep would read the silence as "no one holds these logos".
