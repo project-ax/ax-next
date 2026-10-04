@@ -196,6 +196,37 @@ describe('TASK-797: global read of an OAuth client secret', () => {
     ).toEqual({ allowed: false });
   });
 
+  it('matches the ref EXACTLY: near-miss refs are never granted by the client-secret rule', async () => {
+    // A connector whose secret ref uses a longer tag the TASK-712 grammar allows.
+    const longer = connector({}, [
+      { slot: 'GMAIL', kind: 'oauth', server: 'gmail', clientId: 'c', clientSecretRef: 'account:gmail:OAUTH_CLIENT_SECRET_X' },
+    ]);
+    const nearMisses = [
+      'account:gmail:OAUTH_CLIENT_SECRET_X', // suffix — the connector even names it
+      'account:gmail:oauth_client_secret', // case
+      'account:gmail:XOAUTH_CLIENT_SECRET', // prefix
+      'account:gmail', // the token ref
+    ];
+    for (const ref of nearMisses) {
+      const { store, calls } = fakeStore(ADMIN_OWNED(longer), ADMIN_OWNED(longer));
+      expect(
+        await authorizeGlobalAccountRead(store, fakeBus({ admin: { isAdmin: true } }), ctx(), {
+          userId: 'signer',
+          ref,
+        }),
+      ).toEqual({ allowed: false });
+      expect(calls.sole).toEqual([]);
+    }
+    // And a connector that names the exact ref does not open a near miss of it.
+    const { store } = fakeStore(ADMIN_OWNED(), ADMIN_OWNED());
+    expect(
+      await authorizeGlobalAccountRead(store, fakeBus({ admin: { isAdmin: true } }), ctx(), {
+        userId: 'signer',
+        ref: 'account:gmail:OAUTH_CLIENT_SECRET_X',
+      }),
+    ).toEqual({ allowed: false });
+  });
+
   it('leaves other refs on the TASK-697 workspace-key rule', async () => {
     // A differently tagged ref is not a client secret: the shared-connector
     // predicate is not asked, the owned-or-shared pick is.
