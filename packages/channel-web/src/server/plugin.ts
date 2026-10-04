@@ -505,7 +505,7 @@ export function createChannelWebServerPlugin(
           // agent's connectors (add, remove, sign in on it).
           hook: 'agents:can-manage-connectors',
           degradation:
-            'the Connectors tab offers no Add, Remove or team Sign in, and a team agent refuses Add to anyone but a workspace admin',
+            'the Connectors tab offers no Add, Remove or team Sign in, and Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin',
         },
         {
           // TASK-761 — the attach gate reads the connector's credential slots

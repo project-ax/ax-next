@@ -112,7 +112,7 @@ describe('agent connector routes', () => {
   let credentialReads: Array<{ ref: string; userId: string; agentId: string }>;
   let credentialError: unknown;
   /** TASK-765 / TASK-798 — what `agents:can-manage-connectors` answers. */
-  let canManage: 'allow' | 'deny' | 'throw';
+  let canManage: 'allow' | 'deny' | 'throw' | 'malformed' | 'not-found';
   let canManageCalls: Array<Record<string, unknown>>;
 
   function handlers() {
@@ -224,6 +224,10 @@ describe('agent connector routes', () => {
     bus.registerService('agents:can-manage-connectors', 'agents', async (_c, i: unknown) => {
       canManageCalls.push(i as Record<string, unknown>);
       if (canManage === 'throw') throw new Error('teams store row 9 is corrupt');
+      if (canManage === 'not-found') {
+        throw new PluginError({ code: 'not-found', plugin: 'agents', message: "agent 'a1' not found" });
+      }
+      if (canManage === 'malformed') return {};
       return { allowed: canManage === 'allow' };
     });
     bus.registerService('tool-policy:list-agent-overrides', 'policy', async () => ({
@@ -1252,12 +1256,75 @@ describe('agent connector routes', () => {
       expect(canManageCalls).toEqual([{ actor: { userId: 'u1', isAdmin: false }, agentId: 'a1' }]);
     });
 
-    it('SECURITY: a team-agent member is refused when the may-manage answer cannot be read', async () => {
+    // TASK-803 — a hook FAULT is not a denial. The hook's only "no" is
+    // `{ allowed: false }`; a rejection means the answer could not be read, so
+    // the member is told nothing about permissions: the error propagates (the
+    // router answers 5xx and logs it) instead of being dressed up as
+    // "forbidden". Still fail-closed — nothing downstream runs.
+    // UNFIXED: the fault was swallowed into `false` -> a 403 -> fails.
+    it('SECURITY: a may-manage hook FAULT propagates (5xx), never a 403, and nothing downstream runs', async () => {
       agentRow = { ...agentRow, visibility: 'team' };
       canManage = 'throw';
-      const r = await attach({ connectorId: 'linear' });
-      expect(r.statusCode).toBe(403);
+      const { res, captured } = mkRes();
+      await expect(
+        handlers().attachConnector(mkReq({ agentId: 'a1' }, { connectorId: 'linear' }), res),
+      ).rejects.toThrow('teams store row 9 is corrupt');
+      expect(captured.statusCode).not.toBe(403);
+      expect(captured.body).toBeUndefined();
+      expect(credentialReads).toHaveLength(0);
       expect(attachCalls).toHaveLength(0);
+    });
+
+    // A reply that is neither `true` nor `false` is a broken hook, not a "no".
+    it('SECURITY: a may-manage answer with no boolean verdict is a fault (5xx), not a 403, and not an allow', async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      canManage = 'malformed';
+      const { res, captured } = mkRes();
+      await expect(
+        handlers().attachConnector(mkReq({ agentId: 'a1' }, { connectorId: 'linear' }), res),
+      ).rejects.toThrow(/allowed/);
+      expect(captured.statusCode).not.toBe(403);
+      expect(credentialReads).toHaveLength(0);
+      expect(attachCalls).toHaveLength(0);
+    });
+
+    // The agent can vanish between the route's resolve and the hook's read.
+    it('a may-manage hook that finds the agent gone answers 404 agent-not-found', async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      canManage = 'not-found';
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(404);
+      expect(r.body).toEqual({ error: 'agent-not-found' });
+      expect(attachCalls).toHaveLength(0);
+    });
+
+    // No hook registered = the question cannot be asked. Not "forbidden": the
+    // feature is unavailable (503, like every other missing connector hook),
+    // and the member's request still never reaches the credential gate.
+    it('SECURITY: no may-manage hook on a team agent is 503 connectors-unavailable, not a 403, and not an allow', async () => {
+      bus = new HookBus();
+      bus.registerService('auth:require-user', 'auth', async () => ({ user: caller }));
+      bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => ({
+        agent: { id: (i as { agentId: string }).agentId, displayName: 'Quill', visibility: 'team' },
+      }));
+      bus.registerService('agents:attach-connector', 'agents', async (_c, i: unknown) => {
+        attachCalls.push(i as Record<string, unknown>);
+        return { agent: {}, changed: true };
+      });
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(503);
+      expect(r.body).toEqual({ error: 'connectors-unavailable' });
+      expect(attachCalls).toHaveLength(0);
+    });
+
+    // A plain `false` answer is still the one and only 403 (see the SECURITY
+    // test above), and an `isAdmin` caller never asks. Personal agents never
+    // ask either: the attach hook is the sole judge there.
+    it('a personal agent never asks the may-manage hook, so a broken hook cannot block its owner', async () => {
+      canManage = 'throw';
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(200);
+      expect(canManageCalls).toHaveLength(0);
     });
 
     it("the team agent's owner (a team admin) attaches: 200", async () => {
