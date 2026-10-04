@@ -180,6 +180,35 @@ describe('credentials:get {rejected} (TASK-817)', () => {
     expect(renewedFrom).toEqual(['blob-v2']);
   });
 
+  it('a rejected read whose row was deleted while it waited answers not-found, never renewing the stale snapshot', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let renewals = 0;
+    const bus = await setup(async (input) => {
+      if (input.rejected === true) {
+        renewals++;
+        return { value: 'fresh' };
+      }
+      await gate;
+      return { value: 'old' };
+    });
+    const ordinary = bus.call<unknown, string>('credentials:get', ctx(), { ref: 'oauth1', userId: 'u' });
+    await new Promise((r) => setTimeout(r, 10));
+    const rejected = bus.call<unknown, string>('credentials:get', ctx(), {
+      ref: 'oauth1',
+      userId: 'u',
+      rejected: true,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    await bus.call('credentials:delete', ctx(), { scope: 'user', ownerId: 'u', ref: 'oauth1' });
+    release();
+    expect(await ordinary).toBe('old');
+    await expect(rejected).rejects.toMatchObject({ code: 'credential-not-found' });
+    expect(renewals).toBe(0);
+  });
+
   it('an ordinary read arriving while a rejected read renews shares the renewed value', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => {
