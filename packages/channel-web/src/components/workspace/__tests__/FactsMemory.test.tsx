@@ -5,6 +5,7 @@ import {
   type AgentMemoryRead,
   type FactMemoryStatement,
 } from '@/lib/workspace-api';
+import type { FactMemoryPage } from '@/lib/workspace-types';
 import { StorageFullError } from '@/lib/storage-full';
 import { MemorySurface } from '../FactsMemory';
 import { memoryForgetLabel, memoryStatementText } from '../memory-copy';
@@ -872,22 +873,38 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     await forgetBoston();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull());
 
-    let finish: () => void = () => {};
-    recallMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finish = () => resolve({ statements: [fact({ id: 'm1' })], degraded: [] });
-        }),
-    );
+    /*
+      The re-read is held open by a promise built HERE, not inside the mock
+      (TASK-845). Focus lands on the heading in the commit's layout effect,
+      but the list asks for its re-read from a passive effect, which React may
+      run a macrotask later — after the `waitFor` below has already returned.
+      A resolver assigned inside the mock was then still the no-op default
+      when `finish()` ran, so the list never finished loading (seen twice in
+      CI on 2026-10-04). So: wait for the re-read to actually go out, and
+      check the list really is mid-read, before letting it finish.
+    */
+    let finish: () => void = () => {
+      throw new Error('the deferred re-read was never built');
+    };
+    const reRead = new Promise<FactMemoryPage>((resolve) => {
+      finish = () => resolve({ statements: [fact({ id: 'm1' })], degraded: [] });
+    });
+    recallMock.mockImplementationOnce(() => reRead);
     unforgetMock.mockImplementation(() => {
       current = [fact({ id: 'm1' })];
       return Promise.resolve({ restored: ['m1'] });
     });
+    const readsBeforeUndo = recallMock.mock.calls.length;
     press(screen.getByRole('button', { name: /^Undo/ }));
 
     const heading = screen.getByText('Memories');
     await waitFor(() => expect(document.activeElement).toBe(heading));
-    act(() => finish());
+    await waitFor(() => expect(recallMock).toHaveBeenCalledTimes(readsBeforeUndo + 1));
+    expect(screen.getByRole('status', { name: 'Loading memories' })).toBeInTheDocument();
+    expect(document.activeElement).toBe(heading);
+    await act(async () => {
+      finish();
+    });
     await screen.findByRole('button', { name: 'Fix: Boston' });
     await waitFor(() => expect(document.activeElement).toBe(rowLine('Fix: Boston')));
     expect(document.activeElement?.textContent).toBe('You — lives in: Boston');
