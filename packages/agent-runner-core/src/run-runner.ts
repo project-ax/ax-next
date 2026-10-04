@@ -91,9 +91,11 @@ import {
 //
 // Boot-failure paths (return 2 before the IPC client is built, or before the
 // loop starts) exit WITHOUT firing `event.chat-end`. That's fine — the
-// orchestrator's `handle.exited` watcher synthesizes a terminated outcome with
-// reason `sandbox-exit-before-chat-end`, so chat:end still fires exactly once
-// per agent:invoke from a subscriber's perspective.
+// orchestrator's `handle.exited` watcher synthesizes a terminated outcome, so
+// chat:end still fires exactly once per agent:invoke from a subscriber's
+// perspective. The reason is `runner-boot-failed` for exit 2 (TASK-784 — the
+// orchestrator reads the exit code; keep 2 meaning "fatal before the loop") and
+// `sandbox-exit-before-chat-end` for any other early exit.
 //
 // This module must never import a provider SDK. If a step below needs one,
 // the boundary is in the wrong place.

@@ -5,6 +5,9 @@ export const BOOTSTRAP_ROOT = '/ax/late/bootstrap';
 export const BOOTSTRAP_FILE = 'session.json';
 export const BOOTSTRAP_ACK = 'accepted.json';
 
+/** Per-session proxy token: 32 lowercase hex (mirrors ProxyConfigSchema). */
+const PROXY_TOKEN_FORMAT = /^[0-9a-f]{32}$/;
+
 const controlNames = new Set([
   'AX_SESSION_ID', 'AX_AUTH_TOKEN', 'AX_RUNNER_ENDPOINT', 'AX_REQUEST_ID',
   'AX_PROXY_ENDPOINT', 'AX_PROXY_TOKEN', 'AX_PROXY_CA_PEM', 'AX_INSTALLED_SKILLS_JSON',
@@ -48,8 +51,15 @@ export const BootstrapAssignmentSchema = z.object({
     if (Object.keys(env).length > 160 || Object.entries(env).some(([k, v]) => !allowedBootstrapEnv(k, v))) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid bootstrap environment' });
     }
-    for (const k of ['AX_SESSION_ID', 'AX_AUTH_TOKEN', 'AX_RUNNER_ENDPOINT', 'AX_PROXY_ENDPOINT']) {
+    for (const k of ['AX_SESSION_ID', 'AX_AUTH_TOKEN', 'AX_RUNNER_ENDPOINT', 'AX_PROXY_ENDPOINT', 'AX_PROXY_TOKEN']) {
       if (!env[k]) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'missing bootstrap environment' });
+    }
+    // TASK-784 — the per-session proxy token is the proxy's caller credential
+    // (TASK-158); the runner refuses to boot without a well-formed one
+    // (TASK-704). Refuse it here too, host-side, so a bad assignment never
+    // reaches a warm container. The message never echoes the value.
+    if (env.AX_PROXY_TOKEN !== undefined && !PROXY_TOKEN_FORMAT.test(env.AX_PROXY_TOKEN)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid bootstrap proxy token' });
     }
     for (const [name, value] of Object.entries(env)) {
       if (/^GIT_CONFIG_KEY_/.test(name) && value !== 'safe.directory' &&

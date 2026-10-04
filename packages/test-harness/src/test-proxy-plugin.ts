@@ -12,10 +12,18 @@ const DUMMY_CA_PEM =
   'MIIBkTCB+wIJAJtest-only-never-validated\n' +
   '-----END CERTIFICATE-----\n';
 
+/**
+ * Dummy per-session proxy token (TASK-784). The token is required end to end
+ * (ProxyConfigSchema, the orchestrator, the runner), so the stub mints one even
+ * though no real listener ever checks it. Never a real credential.
+ */
+export const TEST_PROXY_AUTH_TOKEN = '0'.repeat(32);
+
 interface OpenSessionOutput {
   proxyEndpoint: string;
   caCertPem: string;
   envMap: Record<string, string>;
+  proxyAuthToken: string;
 }
 
 export interface TestProxyPluginOpts {
@@ -69,6 +77,7 @@ export function createTestProxyPlugin(opts: TestProxyPluginOpts): Plugin {
           return {
             proxyEndpoint: 'tcp://127.0.0.1:1',
             caCertPem: DUMMY_CA_PEM,
+            proxyAuthToken: TEST_PROXY_AUTH_TOKEN,
             envMap: {
               AX_TEST_STUB_SCRIPT: encoded,
               ...(opts.envExtra ?? {}),

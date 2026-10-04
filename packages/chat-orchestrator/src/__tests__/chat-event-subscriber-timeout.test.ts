@@ -205,6 +205,7 @@ describe('chat-orchestrator — chat event subscriber bound (TASK-551)', () => {
         proxyEndpoint: 'tcp://127.0.0.1:1',
         caCertPem: '',
         envMap: {},
+        proxyAuthToken: 'a'.repeat(32),
       }),
       'proxy:close-session': async () => ({}),
       'sandbox:open-session': async () => ({

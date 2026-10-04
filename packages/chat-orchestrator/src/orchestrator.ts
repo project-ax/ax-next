@@ -45,6 +45,11 @@ import {
   failedCredentialEnvName,
   errorLogFields,
 } from './proxy-errors.js';
+import {
+  classifyRunnerExit,
+  runnerExitLogFields,
+  type RunnerExitInfo,
+} from './runner-exit.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -596,10 +601,11 @@ interface ProxyOpenSessionOutput {
    * Per-session proxy token (TASK-52; the proxy's caller-authentication
    * credential since TASK-158). Threaded onto `proxyConfig` so the sandbox
    * carries it as Proxy-Authorization; the proxy refuses a request without it.
-   * Optional in the type only for stub proxy plugins (test harness) that never
-   * front a real listener — the real `proxy:open-session` always returns one.
+   * Required (TASK-784): a missing or malformed token fails the turn at
+   * session-open (`proxy-open-failed`) instead of spawning a runner that then
+   * dies at boot. Stub proxies (test harness) mint a dummy 32-hex token.
    */
-  proxyAuthToken?: string;
+  proxyAuthToken: string;
 }
 interface ProxyCloseSessionInput {
   sessionId: string;
@@ -852,7 +858,7 @@ interface OpenSessionInput {
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
-  exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  exited: Promise<RunnerExitInfo>;
 }
 interface OpenSessionResult {
   // Opaque URI describing how the runner reaches the host. The orchestrator
@@ -3504,14 +3510,25 @@ export function createOrchestrator(
     // Sandbox exit before chat:end is a terminated outcome. Do NOT reject
     // the deferred — resolve it with a structured outcome so the downstream
     // code path (which expects AgentOutcome, not an error) stays uniform.
+    //
+    // TASK-784 — the exit info says WHY. A runner that exits with the runner
+    // shell's fatal code (2) before chat:end never booted far enough to talk
+    // to us (a bad env, a refused IPC connect…), so the user gets
+    // `runner-boot-failed` instead of the generic `sandbox-exit-before-chat-end`.
+    // Only the fixed reason code crosses to the (untrusted) client; the exit
+    // code/signal/backend reason go to the host log, clamped. The runner's own
+    // stderr is logged by the sandbox (subprocess: `runner_exited_nonzero`;
+    // k8s: pod logs) and never reaches the browser.
     handle.exited
-      .then(() => {
+      .then((info) => {
         if (!deferred.settled) {
           resolvedByChatEndSubscriber = false;
-          deferred.resolve({
-            kind: 'terminated',
-            reason: 'sandbox-exit-before-chat-end',
+          const reason = classifyRunnerExit(info);
+          ctx.logger.warn('runner_exit_before_chat_end', {
+            reason,
+            ...runnerExitLogFields(info),
           });
+          deferred.resolve({ kind: 'terminated', reason });
         }
       })
       .catch(() => {
@@ -4237,17 +4254,30 @@ class ConnectorServicesInvalidError extends Error {
  * path so the runner-side bridge can convert it to a local TCP port inside
  * the sandbox (where the runner has no other network reach).
  */
+/** Per-session proxy token: 32 lowercase hex (mirrors ProxyConfigSchema). */
+const PROXY_AUTH_TOKEN_FORMAT = /^[0-9a-f]{32}$/;
+
 function endpointToProxyConfig(
   rawEndpoint: string,
   caCertPem: string,
   envMap: Record<string, string>,
-  proxyAuthToken?: string,
+  proxyAuthToken: unknown,
 ): ProxyConfig {
-  // Spread the token in conditionally so `exactOptionalPropertyTypes` doesn't
-  // reject `proxyAuthToken: undefined` (TASK-52). The real proxy plugin always
-  // supplies it (it is the egress-authentication credential, TASK-158); a stub
-  // that omits it simply leaves proxyConfig without one.
-  const token = proxyAuthToken !== undefined ? { proxyAuthToken } : {};
+  // TASK-784 — the token is the proxy's caller credential (TASK-158) and the
+  // runner refuses to boot without one (TASK-704). Fail closed HERE, before a
+  // sandbox is spawned, rather than letting the sandbox schema (or the runner)
+  // refuse it later. The value is never echoed into the error. (This covers a
+  // proxy config built here — the only one the orchestrator produces. The
+  // sandbox input schema still treats `proxyConfig` itself as optional; a
+  // session opened without one is refused only by the runner, at boot.)
+  if (typeof proxyAuthToken !== 'string' || !PROXY_AUTH_TOKEN_FORMAT.test(proxyAuthToken)) {
+    throw new PluginError({
+      code: 'invalid-proxy-auth-token',
+      plugin: PLUGIN_NAME,
+      message: 'proxy:open-session returned no well-formed proxyAuthToken',
+    });
+  }
+  const token = { proxyAuthToken };
   if (rawEndpoint.startsWith('unix://')) {
     return {
       unixSocketPath: rawEndpoint.slice('unix://'.length),

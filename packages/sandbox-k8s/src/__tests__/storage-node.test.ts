@@ -16,7 +16,7 @@ function input(): StorageAssignment {
   return { podUid, podName: 'standby', claimUid: randomUUID(), claimName: 'claim', sandboxUid: randomUUID(),
     sandboxName: 'sandbox', agentId: 'agent-a', backingProfile: 'a'.repeat(64), roles: ['user-files'], bootstrap: { version: 1,
       instanceId: podUid, assignmentId: randomUUID(), expiresAt: Date.now() + 60_000,
-      env: { AX_SESSION_ID: 'session', AX_AUTH_TOKEN: 'secret-token', AX_RUNNER_ENDPOINT: 'http://host:80', AX_PROXY_ENDPOINT: 'http://proxy:8888' } } };
+      env: { AX_SESSION_ID: 'session', AX_AUTH_TOKEN: 'secret-token', AX_RUNNER_ENDPOINT: 'http://host:80', AX_PROXY_ENDPOINT: 'http://proxy:8888', AX_PROXY_TOKEN: 'd'.repeat(32) } } };
 }
 const identity = ({ podUid, podName, claimUid, claimName, sandboxUid, sandboxName }: StorageIdentity) => ({ podUid, podName, claimUid, claimName, sandboxUid, sandboxName });
 

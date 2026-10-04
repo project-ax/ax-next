@@ -16,7 +16,8 @@ async function fixture() {
   const env: NodeJS.ProcessEnv = { AX_STANDBY: '1', AX_INSTANCE_ID: randomUUID() };
   const assignment = { version: 1, assignmentId: randomUUID(), instanceId: env.AX_INSTANCE_ID,
     expiresAt: Date.now() + 60_000, env: { AX_SESSION_ID: 'session', AX_AUTH_TOKEN: 'private-token',
-      AX_RUNNER_ENDPOINT: 'http://host:8080', AX_PROXY_ENDPOINT: 'http://proxy:8888' } };
+      AX_RUNNER_ENDPOINT: 'http://host:8080', AX_PROXY_ENDPOINT: 'http://proxy:8888',
+      AX_PROXY_TOKEN: 'a'.repeat(32) } };
   // Publish the way the storage node does (storage-node/engine.ts): write a temp file, then
   // rename it into place. A plain writeFile creates session.json empty before the bytes land,
   // and a reader polling every 1ms can open it in that window — which the reader correctly

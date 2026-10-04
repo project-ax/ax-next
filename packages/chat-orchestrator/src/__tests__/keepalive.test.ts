@@ -87,7 +87,7 @@ describe('chat-orchestrator keepalive', () => {
         opens += 1;
         return { runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle };
       },
-      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
       'proxy:close-session': async () => ({}),
     };
 
@@ -134,7 +134,7 @@ describe('chat-orchestrator keepalive', () => {
         },
         'conversations:bind-session': async () => undefined,
         'sandbox:open-session': async () => ({ runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle }),
-        'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+        'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
         'proxy:close-session': async () => ({}),
       };
       const h = await createTestHarness({
@@ -200,7 +200,7 @@ describe('chat-orchestrator keepalive', () => {
         return undefined;
       },
       'sandbox:open-session': async () => ({ runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle }),
-      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
       'proxy:close-session': async () => ({}),
       'proxy:rotate-session': async (c: unknown) => {
         rotates.push((c as { sessionId: string }).sessionId);
@@ -255,7 +255,7 @@ describe('chat-orchestrator keepalive', () => {
       },
       'conversations:bind-session': async () => undefined,
       'sandbox:open-session': async () => ({ runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle }),
-      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
       'proxy:close-session': async () => {
         throw new Error(SECRET_TEXT);
       },
@@ -312,7 +312,7 @@ describe('chat-orchestrator keepalive', () => {
         },
         'conversations:bind-session': async () => undefined,
         'sandbox:open-session': async () => ({ runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle }),
-        'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+        'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
         'proxy:close-session': async () => ({}),
       };
       const h = await createTestHarness({
@@ -358,7 +358,7 @@ it('reopens a persisted conversation after host restart instead of routing into 
     'session:terminate':async(_c,input)=>{terminated.push((input as {sessionId:string}).sessionId);return {};},
     'session:queue-work':async(_c,input)=>{queued.push((input as {sessionId:string}).sessionId);return {cursor:0};},
     'sandbox:open-session':async()=>{opens++;return {runnerEndpoint:'unix:///tmp/restart.sock',handle:hdl.handle};},
-    'proxy:open-session':async()=>({proxyEndpoint:'tcp://127.0.0.1:1',caCertPem:'CA',envMap:{}}),
+    'proxy:open-session':async()=>({proxyEndpoint:'tcp://127.0.0.1:1',caCertPem:'CA',envMap:{},proxyAuthToken:'a'.repeat(32)}),
     'proxy:close-session':async()=>({}),
   },plugins:[createChatOrchestratorPlugin({runnerBinaries:{'claude-sdk':'/runner'},keepAlive:true,chatTimeoutMs:100,idleWindowMs:60000})]});
   fireTurnEnd(h.bus,'new-host-session','restart-request');
@@ -392,7 +392,7 @@ it('preserves the new stream binding while retiring the previous host session', 
       reqIdDuringOpen = conversation.activeReqId;
       return { runnerEndpoint: 'unix:///tmp/restart.sock', handle: hdl.handle };
     },
-    'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+    'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
     'proxy:close-session': async () => ({}),
   }, plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/runner' }, keepAlive: true, chatTimeoutMs: 100, idleWindowMs: 60000 })] });
   fireTurnEnd(h.bus, 'new-host-session', 'restart-request');

@@ -252,20 +252,18 @@ export const ProxyConfigSchema = z
     /** env-var name → `ax-cred:<hex>` placeholder map the proxy recognizes. */
     envMap: z.record(z.string(), z.string()),
     /**
-     * Per-session proxy token (TASK-52; Proxy-Authorization Basic). Optional +
-     * backend-agnostic (I1) — an opaque secret, no transport/storage
-     * vocabulary. The sandbox bootstrap embeds it into the proxy URL userinfo
-     * so every egress client sends it automatically. Since TASK-158 it is the
-     * credential the proxy AUTHENTICATES the caller with: a request without it
-     * is refused, and the request is gated on the allowlist of the session it
-     * belongs to. Optional in the schema only for stub proxies (test harness)
-     * that never front a real listener; the real `proxy:open-session` always
-     * mints one.
+     * Per-session proxy token (TASK-52; Proxy-Authorization Basic). REQUIRED
+     * since TASK-784, and backend-agnostic (I1) — an opaque secret, no
+     * transport/storage vocabulary. The sandbox bootstrap embeds it into the
+     * proxy URL userinfo so every egress client sends it automatically. Since
+     * TASK-158 it is the credential the proxy AUTHENTICATES the caller with: a
+     * request without it is refused, and the request is gated on the allowlist
+     * of the session it belongs to. The runner refuses to boot without one
+     * (TASK-704), so a config that omits it is rejected here — host-side,
+     * before a sandbox is spawned — rather than surfacing as a runner exit 2.
+     * Stub proxies (test harness) mint a dummy 32-hex token.
      */
-    proxyAuthToken: z
-      .string()
-      .regex(/^[0-9a-f]{32}$/)
-      .optional(),
+    proxyAuthToken: z.string().regex(/^[0-9a-f]{32}$/),
   })
   .refine((v) => (v.endpoint !== undefined) !== (v.unixSocketPath !== undefined), {
     message: 'proxyConfig must set exactly one of endpoint or unixSocketPath',

@@ -39,6 +39,8 @@ describe('createTestProxyPlugin', () => {
       expect(result.proxyEndpoint).toBe('tcp://127.0.0.1:1');
       expect(typeof result.caCertPem).toBe('string');
       expect(result.caCertPem).toMatch(/BEGIN CERTIFICATE/);
+      // TASK-784 — the token is required end to end; the stub mints a dummy.
+      expect((result as { proxyAuthToken?: unknown }).proxyAuthToken).toMatch(/^[0-9a-f]{32}$/);
       expect(result.envMap.AX_TEST_STUB_SCRIPT).toBeDefined();
       expect(typeof result.envMap.AX_TEST_STUB_SCRIPT).toBe('string');
     } finally {

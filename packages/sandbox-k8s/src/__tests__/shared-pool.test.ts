@@ -51,7 +51,7 @@ function fixture() {
 function sessionPod(agent = 'agent-a', memory = false) {
   const pod = buildPodSpec('session', { sessionId: 'session-a', workspaceRoot: '/agent', runnerBinary: '/runner.js',
     authToken: 'secret-session-token', runnerEndpoint: config.hostIpcUrl,
-    proxyConfig: { endpoint: 'http://proxy:8888', caCertPem: 'public-ca', envMap: { API_KEY: 'ax-cred:test' } },
+    proxyConfig: { endpoint: 'http://proxy:8888', caCertPem: 'public-ca', envMap: { API_KEY: 'ax-cred:test' }, proxyAuthToken: 'e'.repeat(32) },
     mounts: [{ kind: 'nfs', role: 'user-files', server: '10.0.0.9', exportPath: '/files', subPath: agent,
       mountPath: '/files', readOnly: false }, ...(memory ? [{ kind: 'nfs' as const, role: 'memory' as const,
       server: '10.0.0.10', exportPath: '/memory', subPath: memoryPath(agent), mountPath: '/memory', readOnly: true }] : [])],
@@ -252,7 +252,7 @@ describe('shared Agent Sandbox pool', () => {
     try {
       const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
         sessionId: 's', workspaceRoot: '/agent', runnerBinary: '/runner.js',
-        proxyConfig: { endpoint: config.proxyEndpoint, caCertPem: 'public-ca', envMap: {} }, owner: {
+        proxyConfig: { endpoint: config.proxyEndpoint, caCertPem: 'public-ca', envMap: {}, proxyAuthToken: 'e'.repeat(32) }, owner: {
           userId: 'user-a', agentId: 'agent-a', agentConfig: { displayName: 'A', systemPromptAugment: '',
             allowedTools: [], mcpConfigIds: [], model: 'model', runner: 'claude-sdk' },
         },

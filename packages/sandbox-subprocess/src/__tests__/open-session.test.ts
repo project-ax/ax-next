@@ -37,6 +37,7 @@ function endpointToSocketPath(uri: string): string {
 
 const ECHO_STUB = fileURLToPath(new URL('./fixtures/echo-stub.mjs', import.meta.url));
 const EXIT_STUB = fileURLToPath(new URL('./fixtures/exit-stub.mjs', import.meta.url));
+const BOOT_FAIL_STUB = fileURLToPath(new URL('./fixtures/boot-fail-stub.mjs', import.meta.url));
 
 async function mkWorkspace(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'ax-ws-'));
@@ -442,6 +443,7 @@ describe('sandbox:open-session', () => {
           endpoint: 'http://127.0.0.1:54321',
           caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
           envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+          proxyAuthToken: 'a'.repeat(32),
         },
       },
     );
@@ -498,14 +500,12 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
-  it('does NOT set AX_PROXY_TOKEN when proxyConfig has no token (back-compat)', async () => {
+  it('refuses a proxyConfig without a proxyAuthToken (TASK-784 — fail closed)', async () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();
     const ctx = h.ctx();
-    const result = await h.bus.call<unknown, OpenSessionResult>(
-      'sandbox:open-session',
-      ctx,
-      {
+    await expect(
+      h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx, {
         sessionId: 'proxy-notoken-1',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
@@ -514,13 +514,78 @@ describe('sandbox:open-session', () => {
           caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
           envMap: {},
         },
+      }),
+    ).rejects.toThrow();
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('logs a capped, redacted stderr tail at warn when the runner exits non-zero (TASK-784)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const warns: Array<{ msg: string; fields: Record<string, unknown> | undefined }> = [];
+    const debugs: Array<{ msg: string; fields: Record<string, unknown> | undefined }> = [];
+    const base = h.ctx().logger;
+    const logger = {
+      ...base,
+      warn: (msg: string, fields?: Record<string, unknown>) => {
+        warns.push({ msg, fields });
       },
-    );
-    const line = await readFirstStdoutLine(result);
-    const parsed = JSON.parse(line) as Record<string, string | null>;
-    expect(parsed.AX_PROXY_TOKEN).toBeNull();
-    await result.handle.kill();
-    await result.handle.exited;
+      debug: (msg: string, fields?: Record<string, unknown>) => {
+        debugs.push({ msg, fields });
+      },
+      child: () => logger,
+    } as typeof base;
+    const ctx = h.ctx({ logger });
+    const token = 'c'.repeat(32);
+    const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx, {
+      sessionId: 'boot-fail-1',
+      workspaceRoot: ws,
+      runnerBinary: BOOT_FAIL_STUB,
+      proxyConfig: {
+        endpoint: 'http://127.0.0.1:54321',
+        caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+        envMap: {},
+        proxyAuthToken: token,
+      },
+    });
+    const info = await result.handle.exited;
+    expect(info.code).toBe(2);
+    const line = warns.find((w) => w.msg === 'runner_exited_nonzero');
+    expect(line).toBeDefined();
+    expect(line!.fields).toMatchObject({ sessionId: 'boot-fail-1', code: 2 });
+    const tail = String(line!.fields!.stderrTail);
+    expect(tail).toContain('runner: invalid env: AX_PROXY_TOKEN');
+    expect(tail).toContain('[redacted]');
+    expect(tail).not.toContain(token);
+    // The per-chunk debug line is redacted too: debug is what an operator
+    // turns on to diagnose exactly this boot failure.
+    const chunks = debugs.filter((d) => d.msg === 'runner_stderr');
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.map((d) => String(d.fields?.chunk)).join('')).toContain('[redacted]');
+    expect(JSON.stringify(debugs)).not.toContain(token);
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('does NOT log runner_exited_nonzero when the runner exits 0', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const warns: string[] = [];
+    const base = h.ctx().logger;
+    const logger = {
+      ...base,
+      warn: (msg: string) => {
+        warns.push(msg);
+      },
+      child: () => logger,
+    } as typeof base;
+    const ctx = h.ctx({ logger });
+    const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx, {
+      sessionId: 'exit-zero-1',
+      workspaceRoot: ws,
+      runnerBinary: EXIT_STUB,
+    });
+    expect((await result.handle.exited).code).toBe(0);
+    expect(warns).not.toContain('runner_exited_nonzero');
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -543,6 +608,7 @@ describe('sandbox:open-session', () => {
           unixSocketPath: '/var/run/ax/proxy.sock',
           caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
           envMap: {},
+          proxyAuthToken: 'a'.repeat(32),
         },
       },
     );
@@ -596,6 +662,7 @@ describe('sandbox:open-session', () => {
           endpoint: 'http://127.0.0.1:54321',
           caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
           envMap: { GIT_TOKEN: PH },
+          proxyAuthToken: 'a'.repeat(32),
         },
         installedSkills: [
           {
@@ -680,6 +747,7 @@ describe('sandbox:open-session', () => {
             endpoint: 'http://127.0.0.1:54321',
             caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
             envMap: { HOME: '/session/home/wins' },
+            proxyAuthToken: 'a'.repeat(32),
           },
         },
       );
@@ -733,6 +801,7 @@ describe('sandbox:open-session', () => {
             endpoint: 'http://127.0.0.1:54321',
             caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
             envMap: {},
+            proxyAuthToken: 'a'.repeat(32),
           },
         },
       );
@@ -775,6 +844,7 @@ describe('sandbox:open-session', () => {
             unixSocketPath: '/var/run/ax/proxy.sock',
             caCertPem: 'x',
             envMap: {},
+            proxyAuthToken: 'a'.repeat(32),
           },
         },
       );

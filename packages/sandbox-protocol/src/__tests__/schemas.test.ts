@@ -248,11 +248,14 @@ describe('InstalledSkillSchema', () => {
 
 // --- ProxyConfigSchema (the strict, converged variant) ----------------------
 
+const PROXY_TOKEN = 'a'.repeat(32);
+
 describe('ProxyConfigSchema', () => {
   it('accepts an endpoint-only config', () => {
     const result = ProxyConfigSchema.safeParse({
       endpoint: 'http://127.0.0.1:54321',
       caCertPem: 'PEM',
+      proxyAuthToken: PROXY_TOKEN,
       envMap: {},
     });
     expect(result.success).toBe(true);
@@ -262,6 +265,7 @@ describe('ProxyConfigSchema', () => {
     const result = ProxyConfigSchema.safeParse({
       unixSocketPath: '/var/run/ax/proxy.sock',
       caCertPem: 'PEM',
+      proxyAuthToken: PROXY_TOKEN,
       envMap: {},
     });
     expect(result.success).toBe(true);
@@ -277,6 +281,7 @@ describe('ProxyConfigSchema', () => {
       endpoint: 'http://127.0.0.1:54321',
       unixSocketPath: '/var/run/ax/proxy.sock',
       caCertPem: 'PEM',
+      proxyAuthToken: PROXY_TOKEN,
       envMap: {},
     });
     expect(result.success).toBe(false);
@@ -286,26 +291,34 @@ describe('ProxyConfigSchema', () => {
     const result = ProxyConfigSchema.safeParse({
       endpoint: '',
       caCertPem: 'PEM',
+      proxyAuthToken: PROXY_TOKEN,
       envMap: {},
     });
     expect(result.success).toBe(false);
   });
 
-  it('accepts an optional 32-hex proxyAuthToken (TASK-52)', () => {
-    const result = ProxyConfigSchema.safeParse({
+  it('REQUIRES a 32-hex proxyAuthToken (TASK-784 — fail closed, no stub-proxy exemption)', () => {
+    const withToken = ProxyConfigSchema.safeParse({
       endpoint: 'http://127.0.0.1:54321',
       caCertPem: 'PEM',
       envMap: {},
-      proxyAuthToken: 'a'.repeat(32),
+      proxyAuthToken: PROXY_TOKEN,
     });
-    expect(result.success).toBe(true);
-    // Back-compat: still valid without it.
-    const legacy = ProxyConfigSchema.safeParse({
+    expect(withToken.success).toBe(true);
+    // No token → rejected. Before TASK-784 this parsed, and the runner then
+    // died at boot with MissingEnvError (exit 2) instead of the host refusing.
+    const missing = ProxyConfigSchema.safeParse({
       endpoint: 'http://127.0.0.1:54321',
       caCertPem: 'PEM',
       envMap: {},
     });
-    expect(legacy.success).toBe(true);
+    expect(missing.success).toBe(false);
+    const unix = ProxyConfigSchema.safeParse({
+      unixSocketPath: '/var/run/ax/proxy.sock',
+      caCertPem: 'PEM',
+      envMap: {},
+    });
+    expect(unix.success).toBe(false);
   });
 
   it('rejects a malformed proxyAuthToken (not 32-hex)', () => {
@@ -321,6 +334,7 @@ describe('ProxyConfigSchema', () => {
   it('rejects a missing caCertPem', () => {
     const result = ProxyConfigSchema.safeParse({
       endpoint: 'http://127.0.0.1:54321',
+      proxyAuthToken: PROXY_TOKEN,
       envMap: {},
     });
     expect(result.success).toBe(false);
@@ -330,6 +344,7 @@ describe('ProxyConfigSchema', () => {
     const result = ProxyConfigSchema.safeParse({
       endpoint: 'http://127.0.0.1:54321',
       caCertPem: 'PEM',
+      proxyAuthToken: PROXY_TOKEN,
       envMap: { ANTHROPIC_API_KEY: 42 },
     });
     expect(result.success).toBe(false);
@@ -530,9 +545,26 @@ describe('OpenSessionInputSchema', () => {
         unixSocketPath: '/var/run/ax/proxy.sock',
         caCertPem: 'PEM',
         envMap: {},
+        proxyAuthToken: PROXY_TOKEN,
       },
     });
     expect(result.success).toBe(false);
+  });
+
+  it('rejects a proxyConfig without a proxyAuthToken at the open-session envelope (TASK-784)', () => {
+    const base = {
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+    };
+    const proxyConfig = { endpoint: 'http://127.0.0.1:1', caCertPem: 'PEM', envMap: {} };
+    expect(OpenSessionInputSchema.safeParse({ ...base, proxyConfig }).success).toBe(false);
+    expect(
+      OpenSessionInputSchema.safeParse({
+        ...base,
+        proxyConfig: { ...proxyConfig, proxyAuthToken: PROXY_TOKEN },
+      }).success,
+    ).toBe(true);
   });
 
   // --- TASK-150 services (wire re-validation) -------------------------------

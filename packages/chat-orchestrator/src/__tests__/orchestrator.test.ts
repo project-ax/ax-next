@@ -171,6 +171,7 @@ function buildMocks(opts: {
       proxyEndpoint: 'tcp://127.0.0.1:54321',
       caCertPem: 'TEST-CA-PEM',
       envMap: {},
+      proxyAuthToken: 'a'.repeat(32),
     });
     services['proxy:close-session'] = async () => ({});
   }
@@ -550,6 +551,70 @@ describe('chat-orchestrator', () => {
     expect(turnErrors).toEqual([
       { reqId: 'r-exit', reason: 'sandbox-exit-before-chat-end' },
     ]);
+  });
+
+  it('runner exits 2 before chat:end → runner-boot-failed outcome, turn-error and a warn log (TASK-784)', async () => {
+    const mocks = buildMocks({
+      openSession: async () => ({
+        runnerEndpoint: 'unix:///tmp/short.sock',
+        handle: {
+          kill: async () => undefined,
+          // The runner shell's fatal exit (e.g. a bad AX_PROXY_TOKEN), with a
+          // backend reason as the k8s sandbox reports it.
+          exited: Promise.resolve({ code: 2, signal: null, reason: 'Error' }),
+        },
+      }),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+
+    const turnErrors: Array<{ reqId?: string; reason?: string; detail?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string; detail?: string });
+      return undefined;
+    });
+    const endFires: AgentOutcome[] = [];
+    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+    const lines: Array<Record<string, unknown>> = [];
+    const ctx = makeAgentContext({
+      sessionId: 'boot-fail',
+      agentId: 'test-agent',
+      userId: 'test-user',
+      reqId: 'r-boot',
+      logger: createLogger({
+        reqId: 'r-boot',
+        writer: (line: string) => {
+          lines.push(JSON.parse(line) as Record<string, unknown>);
+        },
+      }),
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctx, {
+      message: { role: 'user', content: 'hi' },
+    });
+
+    expect(outcome).toEqual({ kind: 'terminated', reason: 'runner-boot-failed' });
+    expect(endFires).toEqual([outcome]);
+    // Only the fixed reason code reaches the client — no detail line.
+    expect(turnErrors).toEqual([{ reqId: 'r-boot', reason: 'runner-boot-failed' }]);
+    const warn = lines.find((l) => l.msg === 'runner_exit_before_chat_end');
+    expect(warn).toMatchObject({
+      level: 'warn',
+      reason: 'runner-boot-failed',
+      exitCode: 2,
+      exitSignal: null,
+      exitReason: 'Error',
+    });
   });
 
   it('wedged-runner timeout fires chat:turn-error(chat-run-timeout)', async () => {
@@ -1608,7 +1673,7 @@ describe('chat-orchestrator', () => {
       proxyEndpoint: string;
       caCertPem: string;
       envMap: Record<string, string>;
-      proxyAuthToken?: string;
+      proxyAuthToken: string;
     };
     openThrows?: Error;
     /** When true, `proxy:rotate-session` is also registered (Phase 3 I10). */
@@ -1633,6 +1698,7 @@ describe('chat-orchestrator', () => {
             proxyEndpoint: 'tcp://127.0.0.1:54321',
             caCertPem: 'TEST-CA-PEM',
             envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+            proxyAuthToken: 'a'.repeat(32),
           }
         );
       },
@@ -1738,6 +1804,7 @@ describe('chat-orchestrator', () => {
       endpoint: 'http://127.0.0.1:54321',
       caCertPem: 'TEST-CA-PEM',
       envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+      proxyAuthToken: 'a'.repeat(32),
     });
   });
 
@@ -2126,6 +2193,7 @@ describe('chat-orchestrator', () => {
         proxyEndpoint: 'unix:///var/run/ax/proxy.sock',
         caCertPem: 'CA',
         envMap: {},
+        proxyAuthToken: 'a'.repeat(32),
       },
     });
     let busRef: HookBus | null = null;
@@ -2176,6 +2244,7 @@ describe('chat-orchestrator', () => {
       unixSocketPath: '/var/run/ax/proxy.sock',
       caCertPem: 'CA',
       envMap: {},
+      proxyAuthToken: 'a'.repeat(32),
     });
   });
 
@@ -2270,6 +2339,7 @@ describe('chat-orchestrator', () => {
         proxyEndpoint: 'http://oops:54321',
         caCertPem: 'CA',
         envMap: {},
+        proxyAuthToken: 'a'.repeat(32),
       },
     });
     const mocks = buildMocks();
@@ -2299,6 +2369,54 @@ describe('chat-orchestrator', () => {
     // Sandbox MUST NOT be opened on a proxy-open failure path.
     expect(mocks.calls.sandboxOpen).toBe(0);
   });
+
+  it.each([
+    ['missing', undefined],
+    ['malformed', 'not-a-token'],
+    ['upper-case hex', 'A'.repeat(32)],
+  ])(
+    'fails closed when proxy:open-session returns a %s proxyAuthToken (TASK-784)',
+    async (_label, token) => {
+      // The token is the proxy's caller credential and the runner refuses to
+      // boot without it, so the host refuses BEFORE spawning a sandbox, closes
+      // the proxy session it opened, and surfaces proxy-open-failed.
+      const openOutput = {
+        proxyEndpoint: 'tcp://127.0.0.1:54321',
+        caCertPem: 'CA',
+        envMap: {},
+        ...(token !== undefined ? { proxyAuthToken: token } : {}),
+      } as unknown as NonNullable<Parameters<typeof buildProxyHooks>[0]>['openOutput'];
+      const proxy = buildProxyHooks({ openOutput });
+      const mocks = buildMocks();
+      Object.assign(mocks.services, proxy.services);
+      const h = await createTestHarness({
+        services: mocks.services,
+        plugins: [
+          createChatOrchestratorPlugin({
+            runnerBinaries: { 'claude-sdk': '/irrelevant' },
+            chatTimeoutMs: 1_000,
+          }),
+        ],
+      });
+      const turnErrors: Array<{ reason?: string }> = [];
+      h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+        turnErrors.push(p as { reason?: string });
+        return undefined;
+      });
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        silentCtx('proxy-no-token'),
+        { message: { role: 'user', content: 'hi' } },
+      );
+      expect(outcome.kind).toBe('terminated');
+      if (outcome.kind === 'terminated') {
+        expect(outcome.reason).toBe('proxy-open-failed');
+      }
+      expect(turnErrors.map((t) => t.reason)).toEqual(['proxy-open-failed']);
+      expect(proxy.state.closeCalls).toBe(1);
+      expect(mocks.calls.sandboxOpen).toBe(0);
+    },
+  );
 
   // TASK-22 — credential resolution failure at session-open must SURFACE a
   // turn error to the client, not hang it. When `proxy:open-session` throws
@@ -2485,6 +2603,7 @@ describe('chat-orchestrator', () => {
             proxyEndpoint: 'tcp://127.0.0.1:54321',
             caCertPem: 'TEST-CA-PEM',
             envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+            proxyAuthToken: 'a'.repeat(32),
           };
         },
         'proxy:close-session': async () => ({}),
@@ -2717,6 +2836,7 @@ describe('chat-orchestrator', () => {
       proxyEndpoint: 'tcp://127.0.0.1:1',
       caCertPem: '',
       envMap: {},
+      proxyAuthToken: 'a'.repeat(32),
     });
     const h = await createTestHarness({
       services: mocks.services,
@@ -2791,6 +2911,7 @@ describe('chat-orchestrator', () => {
       proxyEndpoint: 'tcp://127.0.0.1:1',
       caCertPem: '',
       envMap: {},
+      proxyAuthToken: 'a'.repeat(32),
     });
     const h = await createTestHarness({
       services: mocks.services,
@@ -3005,7 +3126,7 @@ describe('chat-orchestrator', () => {
   ] as const)('proxy_close_session_failed logs name/code, never the message — %s', async (_label, endpoint, kind) => {
     const SECRET_TEXT = 'error_description=provider-text-that-must-not-be-logged';
     const proxy = buildProxyHooks({
-      openOutput: { proxyEndpoint: endpoint, caCertPem: 'CA', envMap: {} },
+      openOutput: { proxyEndpoint: endpoint, caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) },
     });
     proxy.services['proxy:close-session'] = async () => {
       const e = new Error(SECRET_TEXT) as Error & { code?: string };
@@ -4727,6 +4848,7 @@ describe('chat-orchestrator', () => {
     const proxy = buildProxyHooks({ openOutput: {
       proxyEndpoint: 'tcp://127.0.0.1:54321', caCertPem: 'TEST-CA-PEM',
       envMap: { 'connector:remote:TOKEN': token, 'connector:remote:HEADER': key },
+      proxyAuthToken: 'a'.repeat(32),
     } });
     const busRef: { current: HookBus | null } = { current: null };
     const mocks = buildMocks({ openSession: makeChatEndOpenSession(busRef) });
@@ -6508,6 +6630,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         proxyEndpoint: 'tcp://127.0.0.1:1',
         caCertPem: 'CA',
         envMap: {},
+        proxyAuthToken: 'a'.repeat(32),
       }),
       'proxy:close-session': async () => ({}),
       ...extraServices,
@@ -6628,7 +6751,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         'proxy:open-session': async () => {
           proxyOpens += 1;
           if (proxyOpens > 1) throw namedFailure('connector:gmail:GMAIL');
-          return { proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} };
+          return { proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) };
         },
         'proxy:rotate-session': async () => {
           if (opts.rotateThrows) throw namedFailure('connector:gmail:GMAIL');
@@ -6939,6 +7062,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         proxyEndpoint: 'tcp://127.0.0.1:1',
         caCertPem: 'CA',
         envMap: {},
+        proxyAuthToken: 'a'.repeat(32),
       }),
       'proxy:close-session': async () => ({}),
     };
