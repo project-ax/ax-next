@@ -59,6 +59,8 @@ export async function sweepStdioConnectors(
         if (shared) {
           ctx.logger.info('connectors_stdio_sweep_skipped_global_purge', {
             connectorId: row.connector_id,
+            // The owner's own (user-scope) key is still purged below.
+            ownKeyPurged: true,
           });
         }
         await purgeConnectorState(bus, ctx, row.owner_user_id, connector, { purgeGlobal: !shared });

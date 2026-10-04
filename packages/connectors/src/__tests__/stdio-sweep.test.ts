@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Plugin } from '@ax/core';
 import {
@@ -10,7 +10,7 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConnectorsPlugin } from '../plugin.js';
 import { deriveToolNamespaces } from '../tool-namespace.js';
-import type { ConnectorDeletedEvent, ListOutput } from '../types.js';
+import type { ConnectorDeletedEvent, ListEffectiveInput, ListEffectiveOutput, ListOutput } from '../types.js';
 
 // The sweep runs inside connectors' init, so the capture plugin must init
 // BEFORE it. Registering `credentials:delete` (an optionalCall of
@@ -57,6 +57,30 @@ const httpServer = { name: 'remote', transport: 'http', url: 'https://mcp.exampl
 const stdioServer = { name: 'local', transport: 'stdio', command: 'npx', args: ['-y', 'pkg'], allowedHosts: [], credentials: [] };
 const caps = (servers: unknown[], credentials: unknown[] = []) =>
   JSON.stringify({ allowedHosts: [], credentials, mcpServers: servers, packages: { npm: [], pypi: [] } });
+
+// The connectors plugin logs through its own init ctx, whose default logger
+// writes one JSON line per entry to stdout. Capture those lines while `fn` runs.
+async function captureLogs<T>(fn: () => Promise<T>): Promise<{ result: T; logs: Array<Record<string, unknown>> }> {
+  const logs: Array<Record<string, unknown>> = [];
+  const original = process.stdout.write.bind(process.stdout);
+  const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown, ...rest: unknown[]) => {
+    const text = typeof chunk === 'string' ? chunk : String(chunk);
+    for (const line of text.split('\n')) {
+      if (!line.startsWith('{')) continue;
+      try {
+        logs.push(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        // not a log line
+      }
+    }
+    return (original as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stdout.write);
+  try {
+    return { result: await fn(), logs };
+  } finally {
+    spy.mockRestore();
+  }
+}
 
 async function insertConnector(owner: string, id: string, capsJson: string, opts: { keyMode?: string; visibility?: string; deleted?: boolean } = {}) {
   await sql(
@@ -155,14 +179,51 @@ describe('@ax/connectors stdio sweep', () => {
     expect(rows.map((r) => r['connector_id'])).toEqual(['gdrive']);
   });
 
-  it('is idempotent: a second boot sweeps nothing', async () => {
+  it('is idempotent: the first boot sweeps once, a second boot sweeps nothing and logs count 0', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
     await insertConnector('userA', 'localtool', caps([stdioServer]));
+
+    const firstEvents: ConnectorDeletedEvent[] = [];
+    await (await boot([capturePlugin(firstEvents, [])])).close({ onError: () => {} });
+    harnesses.pop();
+    expect(firstEvents.map((e) => e.connectorId)).toEqual(['localtool']);
+
+    const events: ConnectorDeletedEvent[] = [];
+    const { logs } = await captureLogs(() => boot([capturePlugin(events, [])]));
+    expect(events).toEqual([]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_stdio_swept')).toEqual([
+      expect.objectContaining({ msg: 'connectors_stdio_swept', count: 0 }),
+    ]);
+  });
+
+  it('list-effective works for a user when an admin\'s SHARED stdio connector was stored', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
-    const events: ConnectorDeletedEvent[] = [];
-    await boot([capturePlugin(events, [])]);
-    expect(events).toEqual([]);
+    await insertConnector('admin1', 'teamtool', caps([stdioServer]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('userA', 'gdrive', caps([httpServer]));
+
+    const h = await boot();
+    const out = await h.bus.call<ListEffectiveInput, ListEffectiveOutput>(
+      'connectors:list-effective',
+      h.ctx({ userId: 'userA' }),
+      // Attach the (now swept) shared id too: it must resolve to nothing, not throw.
+      { userId: 'userA', attachmentIds: ['teamtool', 'gdrive'] },
+    );
+    expect(out.connectors.map((c) => c.summary.id)).toEqual(['gdrive']);
+    for (const c of out.connectors) {
+      expect(c.capabilities.mcpServers.every((m) => (m as { transport: string }).transport !== 'stdio')).toBe(true);
+    }
+  });
+
+  it('logs ownKeyPurged when the global purge is skipped for a same-id survivor', async () => {
+    await (await boot()).close({ onError: () => {} });
+    harnesses.pop();
+    await insertConnector('admin1', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('userB', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
+    const { logs } = await captureLogs(() => boot([capturePlugin([], [])]));
+    expect(logs.filter((l) => l['msg'] === 'connectors_stdio_sweep_skipped_global_purge')).toEqual([
+      expect.objectContaining({ connectorId: 'teamtool', ownKeyPurged: true }),
+    ]);
   });
 });
