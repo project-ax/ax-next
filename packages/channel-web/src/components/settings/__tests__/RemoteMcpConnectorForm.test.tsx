@@ -1108,7 +1108,9 @@ const RE_ENTER = 'Re-enter the client secret so others can sign in';
 const ownSecretRow = {
   scope: 'user',
   ownerId: 'me',
-  ref: 'account:linear:client',
+  // The editors only ever stored the canonical ref (TASK-762), so that is the
+  // copy an admin's old secret sits at — and the one the migration deletes.
+  ref: 'account:linear:OAUTH_CLIENT_SECRET',
   kind: 'api-key',
   createdAt: '',
 };
@@ -1209,6 +1211,10 @@ describe('custom client secret scope', () => {
 });
 
 describe('moving an admin’s own copy of the client secret to the workspace', () => {
+  beforeEach(() => {
+    const slot = fixture.capabilities.credentials[0] as { clientSecretRef?: string };
+    slot.clientSecretRef = 'account:linear:OAUTH_CLIENT_SECRET';
+  });
   it('asks the admin to re-enter the secret, then stores it at the workspace before removing their own copy', async () => {
     myCredentialsResponse = () =>
       new Response(JSON.stringify({ credentials: [ownSecretRow] }));
