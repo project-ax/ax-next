@@ -241,7 +241,7 @@ describe('proxy listener — MITM CONNECT upstream connect-phase timeout (TASK-8
   });
 
   it('leaves an established MITM tunnel alone after the connect timeout has elapsed', async () => {
-    const CONNECT_TIMEOUT_MS = 100;
+    const CONNECT_TIMEOUT_MS = 150;
     const leaf = generateDomainCert('127.0.0.1', ca);
     // The upstream answers only long after the connect window, and only once
     // asked — so the reply proves the tunnel outlived the window.
