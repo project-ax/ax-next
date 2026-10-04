@@ -16,19 +16,36 @@ front, not after it ships.
 
 ## Design recap (what we're reviewing)
 
-The plugin registers the same four service hooks the fs backend does (identical
-payloads — that's the point of the abstraction):
+The plugin registers the same service hooks the fs backend does (identical
+payloads — that's the point of the abstraction): `blob:put`, `blob:put-internal`,
+`blob:get`, `blob:stat`, `blob:list`, `blob:retire`, `blob:purge`. There is no
+`blob:delete` any more (TASK-778): deleting is two-phase, and only the retired
+copy can ever be deleted.
 
 - `blob:put(ctx, { bytes: Uint8Array }) → { sha256, size }` — content-addressed; idempotent on identical bytes. Since TASK-690 this is the `@ax/core` facade (`registerBlobPutFacade`) over the backend's own `blob:put-internal`: it fires the veto `blob:pre-put { size }` first (the per-person storage limit can refuse; nothing is written), then the backend, then the observe-only `blob:stored { sha256, size }`. The backend itself still has no size cap and no notion of an owner.
 - `blob:get(ctx, { sha256: string }) → { bytes: Uint8Array } | { found: false }` — digest re-verified on read
-- `blob:stat(ctx, { sha256: string }) → { size } | { found: false }`
-- `blob:delete(ctx, { sha256: string }) → {}` — GC; safe only when unreferenced (caller's responsibility)
+- `blob:stat(ctx, { sha256: string, restore?: boolean }) → { size } | { found: false }` — `restore: false` reports a retired copy's size without moving it; a non-boolean `restore` is `invalid-payload`
+- `blob:list(ctx, { state: 'live' | 'retired', after?, limit }) → { items, next? }` — the GC's enumeration seam, over either namespace
+- `blob:retire(ctx, { sha256: string }) → {}` — move live → retired (CopyObject, then DeleteObject of the live key). Missing = no-op. Nothing is gone yet: `blob:get` / `blob:stat` that miss the live key move a retired copy back (restore on miss) and serve it.
+- `blob:purge(ctx, { sha256: string }) → {}` — delete the RETIRED copy for good. Its key is built only by `retiredBlobKey`, so it cannot address a live blob, even one of the same sha. Whether anyone still holds the sha is the caller's (the GC's) call.
 
 Backed by content-addressed objects at `<keyPrefix><sha[0:2]>/<sha[2:4]>/<sha>`
-inside a single S3 bucket. Each operation is a single idempotent object op
-(HeadObject / PutObject / GetObject / DeleteObject), so it's multi-replica-safe:
-concurrent hosts pointed at the same bucket don't race, because the content
-address guarantees identical bytes land at identical keys.
+inside a single S3 bucket; retired copies live at
+`<keyPrefix>retired/<sha[0:2]>/<sha[2:4]>/<sha>`. put/get/stat are single
+idempotent object ops (HeadObject / PutObject / GetObject), and the content
+address guarantees identical bytes land at identical keys, so concurrent hosts
+pointed at the same bucket converge.
+
+**Retire and restore are not atomic on S3.** S3 has no rename, so each move is
+CopyObject then DeleteObject — two requests. Most interleavings are harmless and
+tested (a put racing a retire, two readers restoring at once, a restore losing
+to a purge: 1000-round randomized race test, plus targeted cases). The residual
+we know about: a SECOND retire of the same sha racing a restore could in
+principle drop both copies (restore copies retired → live; the retire copies
+live → retired; the restore deletes retired; the retire deletes live). The GC is
+the only retire caller and holds a sweep-wide advisory lock, so this needs two
+GC sweeps working the same sha at the same moment. We state it rather than
+pretend it can't happen.
 
 Configured by: `bucket`, optional `endpoint` / `region` / `forcePathStyle` /
 `keyPrefix`, and optional `accessKeyId` / `secretAccessKey`. The bucket /
@@ -40,7 +57,7 @@ plugin never parses, renders, or executes them.
 
 ```markdown
 ## Security review
-- Sandbox: New plugin reaches exactly ONE S3 bucket at ONE operator-supplied endpoint over HTTPS, registering blob:put/get/stat/delete. The only caller-influenced part of any object key is the sha256, regex-gated to `^[a-f0-9]{64}$` BEFORE a key is built — it can't contain `/`, `..`, NUL, or any key metacharacter, so no key injection / cross-prefix escape. No spawn, no filesystem writes, no caller-supplied env reads. Credentials come from the SDK's default provider chain (Workload Identity / IRSA / GKE metadata) when static keys are unset — the prod posture is NO static keys in the tree; MinIO dev keys live in a k8s Secret, injected at runtime, never committed.
+- Sandbox: New plugin reaches exactly ONE S3 bucket at ONE operator-supplied endpoint over HTTPS, registering blob:put/get/stat/list/retire/purge (no blob:delete). The only caller-influenced part of any object key is the sha256, regex-gated to `^[a-f0-9]{64}$` BEFORE a key is built — it can't contain `/`, `..`, NUL, or any key metacharacter, so no key injection / cross-prefix escape. No spawn, no filesystem writes, no caller-supplied env reads. Credentials come from the SDK's default provider chain (Workload Identity / IRSA / GKE metadata) when static keys are unset — the prod posture is NO static keys in the tree; MinIO dev keys live in a k8s Secret, injected at runtime, never committed.
 - Injection: Stores untrusted content (attachments / artifacts / skill bundles) as OPAQUE bytes — never parsed, rendered, shell-interpolated, executed, or concatenated into a prompt by this plugin. blob:get RE-VERIFIES the sha256 digest on read and REJECTS (throws `corrupt`) a tampered/swapped object rather than returning it, so a bucket-side object swap or bitrot can't serve bad bytes under a valid-looking hash. Callers that store untrusted bytes must still treat them as untrusted on read — the store doesn't launder trust.
 - Supply chain: ONE new dependency, `@aws-sdk/client-s3`, EXACT-pinned to `3.1057.0` (no `^`/`~`). Official AWS package (maintainers amzn-oss / aws-sdk-bot, published since 2020). Zero install lifecycle scripts across its entire @aws-sdk/@smithy transitive tree (verified: 0 postinstall/preinstall/install/prepare hooks in 32 packages). `pnpm audit --audit-level moderate` is clean on the pinned range. The fs backend adds nothing here.
 ```
@@ -56,7 +73,8 @@ Capability surface introduced by this plugin:
 | Network | HTTPS to ONE bucket at ONE operator-supplied endpoint (MinIO Service URL / GCS / AWS / R2) | Yes — endpoint + bucket are fixed plugin config, never a payload field; the only caller-influenced bit of a request is the object key, which is a validated sha256 |
 | Object write | PutObject under `<keyPrefix><sha[0:2]>/<sha[2:4]>/<sha>` | Yes — key leaf is a validated 64-char lowercase-hex string that can't escape the prefix |
 | Object read | GetObject of the same addressed key | Yes — same bound |
-| Object delete | DeleteObject of the same addressed key | Yes — same bound (one validated key) |
+| Object copy | CopyObject live ↔ retired key of the same validated sha, within the same bucket (`CopySource` = `<bucket>/<key>`, URL-encoded per segment) | Yes — both keys derive from one validated sha; the source bucket is the configured one |
+| Object delete | DeleteObject of the live key (only inside `retire`, after its copy succeeded) or the retired key (`purge`, and a restore's cleanup) | Yes — `purge` builds its key only via `retiredBlobKey`, so it cannot address the live key |
 | Process spawn | None | N/A |
 | Filesystem | None — this backend writes no local files | N/A |
 | Env access | None *by this plugin* — the SDK's credential provider chain may read AWS env / metadata, but the plugin code reads no caller-supplied env name | Yes — no `process.env[userInput]` anywhere |
@@ -66,7 +84,7 @@ Capability surface introduced by this plugin:
 Failure-pattern check:
 
 - **Key / path traversal:** The blob key is a content hash, NOT a caller path.
-  Every caller-supplied sha (`blob:get` / `blob:stat` / `blob:delete`) is
+  Every caller-supplied sha (`blob:get` / `blob:stat` / `blob:retire` / `blob:purge` / `blob:list`'s `after`) is
   validated against `^[a-f0-9]{64}$` BEFORE any key is built. A 64-char
   lowercase-hex string can't contain `/`, `..`, NUL, or any key metacharacter —
   so `<keyPrefix><sha[0:2]>/<sha[2:4]>/<sha>` always resolves strictly inside
@@ -157,8 +175,9 @@ One new third-party dependency: **`@aws-sdk/client-s3`**.
 
 For tests, we hand-roll an in-memory `FakeS3Client` rather than pulling in
 `aws-sdk-client-mock` — adding a mocking dev dep would be new supply-chain
-surface for zero behavioral gain, and the fake models exactly the four-command
-contract the store exercises.
+surface for zero behavioral gain, and the fake models exactly the six-command
+contract the store exercises (now including CopyObject, plus an optional async
+jitter so the race tests genuinely interleave).
 
 Dev deps (`@ax/test-harness`, `@types/node`, `typescript`, `vitest`) match the
 repo's standard ranges and are not loaded at runtime.

@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -10,7 +11,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // In-memory fake of the AWS SDK v3 S3Client `send()` dispatch surface, scoped
-// to exactly the five commands S3BlobStore issues. We hand-roll this instead
+// to exactly the six commands S3BlobStore issues. We hand-roll this instead
 // of pulling in `aws-sdk-client-mock` so the package adds ONE third-party
 // dependency total (@aws-sdk/client-s3) and `pnpm audit` stays minimal — a new
 // dev dep is new supply-chain surface for zero behavioral gain here.
@@ -22,6 +23,16 @@ import {
 // `transformToByteArray()` on the GetObject body matches the real streaming
 // payload helper the store relies on.
 //
+// CopyObject reads `CopySource` (`<bucket>/<key>`, each path segment
+// URL-encoded, the way the real SDK expects it), copies the bytes to `Key`, and
+// throws `NoSuchKey` (404) when the source is missing — the error a real S3
+// returns for a copy whose source is gone.
+//
+// `jitter`, when set, is awaited at the start of EVERY `send` before the command
+// touches the map. Tests that race operations set it to a random microtask /
+// macrotask yield so concurrent store calls genuinely interleave between S3
+// round-trips, the way they do against a real server.
+//
 // ListObjectsV2 is modelled as faithfully as the store needs: keys come back in
 // lexicographic order, narrowed by `Prefix`, then by `StartAfter` (exclusive)
 // or — once a page has been taken — by the opaque `ContinuationToken`. A page
@@ -32,6 +43,7 @@ import {
 // ---------------------------------------------------------------------------
 
 type AnyCommand =
+  | CopyObjectCommand
   | PutObjectCommand
   | GetObjectCommand
   | HeadObjectCommand
@@ -51,6 +63,8 @@ export interface FakeS3Call {
   StartAfter?: string;
   MaxKeys?: number;
   ContinuationToken?: string;
+  /** CopyObject only: the raw `CopySource` the store sent (still URL-encoded). */
+  CopySource?: string;
 }
 
 export class FakeS3Client {
@@ -59,6 +73,13 @@ export class FakeS3Client {
 
   /** Every command the store sent, in order — lets tests assert call shape. */
   readonly calls: FakeS3Call[] = [];
+
+  /** Optional async yield awaited at the start of every `send` (see header). */
+  jitter: (() => Promise<void>) | undefined;
+
+  constructor(opts: { jitter?: () => Promise<void> } = {}) {
+    this.jitter = opts.jitter;
+  }
 
   private bucket(name: string): Map<string, Uint8Array> {
     let b = this.buckets.get(name);
@@ -80,6 +101,7 @@ export class FakeS3Client {
   }
 
   async send(command: AnyCommand): Promise<unknown> {
+    if (this.jitter !== undefined) await this.jitter();
     const input = (command as { input: { Bucket?: string; Key?: string; Body?: unknown } })
       .input;
     const Bucket = input.Bucket ?? '';
@@ -87,6 +109,27 @@ export class FakeS3Client {
 
     if (command instanceof ListObjectsV2Command) {
       return this.listObjectsV2(command.input);
+    }
+
+    if (command instanceof CopyObjectCommand) {
+      const CopySource = command.input.CopySource ?? '';
+      this.calls.push({ name: 'CopyObject', Bucket, Key, CopySource });
+      const slash = CopySource.indexOf('/');
+      if (slash <= 0) throw new Error('FakeS3Client: malformed CopySource');
+      const srcBucket = decodeURIComponent(CopySource.slice(0, slash));
+      const srcKey = CopySource.slice(slash + 1)
+        .split('/')
+        .map((seg) => decodeURIComponent(seg))
+        .join('/');
+      const bytes = this.buckets.get(srcBucket)?.get(srcKey);
+      if (bytes === undefined) {
+        throw new NoSuchKey({
+          message: 'The specified key does not exist.',
+          $metadata: { httpStatusCode: 404 },
+        });
+      }
+      this.bucket(Bucket).set(Key, new Uint8Array(bytes));
+      return { CopyObjectResult: {}, $metadata: { httpStatusCode: 200 } };
     }
 
     if (command instanceof PutObjectCommand) {

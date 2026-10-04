@@ -1,14 +1,25 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { S3Client } from '@aws-sdk/client-s3';
 import { PluginError } from '@ax/core';
-import { S3BlobStore, blobKey, type BlobListResult } from '../store.js';
+import { S3BlobStore, blobKey, retiredBlobKey, type BlobListResult } from '../store.js';
 import { FakeS3Client, type FakeS3Call } from './fake-s3.js';
 
 const sha256Hex = (bytes: Uint8Array): string =>
   createHash('sha256').update(Buffer.from(bytes)).digest('hex');
 
 const BUCKET = 'ax-blobs';
+
+/** Fake-S3 jitter: no yield, a microtask, or a macrotask, at random. */
+const randomYield = async (): Promise<void> => {
+  const r = Math.random();
+  if (r < 0.33) return;
+  if (r < 0.66) {
+    await Promise.resolve();
+    return;
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+};
 
 describe('S3BlobStore (content-addressed S3 store)', () => {
   let fake: FakeS3Client;
@@ -43,6 +54,22 @@ describe('S3BlobStore (content-addressed S3 store)', () => {
       const t0 = Date.now();
       expect(blobKey('/'.repeat(100_000), sha)).toBe(`/cc/cc/${sha}`);
       expect(Date.now() - t0).toBeLessThan(1000);
+    });
+  });
+
+  describe('retiredBlobKey', () => {
+    it('files a retired blob under retired/ with the same shard', () => {
+      const sha = 'a'.repeat(64);
+      expect(retiredBlobKey('', sha)).toBe(`retired/aa/aa/${sha}`);
+      expect(retiredBlobKey('blobs', sha)).toBe(`blobs/retired/aa/aa/${sha}`);
+      expect(retiredBlobKey('blobs//', sha)).toBe(`blobs/retired/aa/aa/${sha}`);
+    });
+
+    it('never equals the live key for the same sha and prefix', () => {
+      for (const p of ['', 'blobs', 'blobs/', 'team-a/x']) {
+        const sha = 'd'.repeat(64);
+        expect(retiredBlobKey(p, sha)).not.toBe(blobKey(p, sha));
+      }
     });
   });
 
@@ -149,23 +176,294 @@ describe('S3BlobStore (content-addressed S3 store)', () => {
     });
   });
 
-  describe('delete', () => {
-    it('removes a stored object', async () => {
-      const bytes = new TextEncoder().encode('delete me');
+  it('has no delete method (blob:delete is gone; retire + purge replace it)', () => {
+    expect('delete' in store).toBe(false);
+  });
+
+  describe('retire', () => {
+    it('copies live -> retired, then deletes the live key', async () => {
+      const bytes = new TextEncoder().encode('retire me');
       const { sha256 } = await store.put(bytes);
-      await store.delete(sha256);
-      expect(await store.stat(sha256)).toEqual({ found: false });
+      fake.calls.length = 0;
+
+      await expect(store.retire(sha256)).resolves.toBeUndefined();
+
+      expect(fake.calls).toEqual([
+        {
+          name: 'CopyObject',
+          Bucket: BUCKET,
+          Key: retiredBlobKey('', sha256),
+          CopySource: `${BUCKET}/${blobKey('', sha256)}`,
+        },
+        { name: 'DeleteObject', Bucket: BUCKET, Key: blobKey('', sha256) },
+      ]);
+      expect(fake._get(BUCKET, blobKey('', sha256))).toBeUndefined();
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toEqual(bytes);
+    });
+
+    it('URL-encodes the bucket and every key segment of CopySource', async () => {
+      const odd = new S3BlobStore(fake as unknown as S3Client, 'my bucket', 'a b/c+d');
+      const bytes = new TextEncoder().encode('odd names');
+      const { sha256 } = await odd.put(bytes);
+      fake.calls.length = 0;
+
+      await odd.retire(sha256);
+
+      const copy = fake.calls.find((c) => c.name === 'CopyObject')!;
+      expect(copy.CopySource).toBe(
+        `my%20bucket/a%20b/c%2Bd/${sha256.slice(0, 2)}/${sha256.slice(2, 4)}/${sha256}`,
+      );
+      expect(fake._get('my bucket', retiredBlobKey('a b/c+d', sha256))).toEqual(bytes);
+    });
+
+    it('a missing live blob is a no-op: nothing is deleted', async () => {
+      const sha = '3'.repeat(64);
+      await expect(store.retire(sha)).resolves.toBeUndefined();
+      expect(fake.calls.map((c) => c.name)).toEqual(['CopyObject']);
+    });
+
+    it('is idempotent: retiring twice keeps the retired copy', async () => {
+      const bytes = new TextEncoder().encode('retire twice');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      await store.retire(sha256);
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toEqual(bytes);
+      expect(fake._get(BUCKET, blobKey('', sha256))).toBeUndefined();
+    });
+
+    it('rethrows a non-404 copy failure without deleting the live key', async () => {
+      const bytes = new TextEncoder().encode('copy blows up');
+      const { sha256 } = await store.put(bytes);
+      const send = fake.send.bind(fake);
+      fake.send = async (cmd) => {
+        if (cmd.constructor.name === 'CopyObjectCommand') throw new Error('AccessDenied');
+        return send(cmd);
+      };
+      await expect(store.retire(sha256)).rejects.toThrow('AccessDenied');
+      expect(fake._get(BUCKET, blobKey('', sha256))).toEqual(bytes);
+    });
+
+    it('rejects an invalid sha before touching S3', async () => {
+      await expect(store.retire('../'.repeat(21) + 'a')).rejects.toMatchObject({
+        code: 'invalid-payload',
+      });
+      expect(fake.calls).toEqual([]);
+    });
+  });
+
+  describe('purge', () => {
+    it('deletes the retired key only', async () => {
+      const bytes = new TextEncoder().encode('purge me');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      fake.calls.length = 0;
+
+      await expect(store.purge(sha256)).resolves.toBeUndefined();
+
+      expect(fake.calls).toEqual([
+        { name: 'DeleteObject', Bucket: BUCKET, Key: retiredBlobKey('', sha256) },
+      ]);
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toBeUndefined();
       expect(await store.get(sha256)).toEqual({ found: false });
     });
 
-    it('is idempotent — deleting a missing object is a no-op', async () => {
-      await expect(store.delete('2'.repeat(64))).resolves.toBeUndefined();
+    it.each([
+      ['no prefix', ''],
+      ['a prefix', 'team-a/'],
+    ])('never touches a LIVE blob of the same sha (%s)', async (_label, prefix) => {
+      const s = new S3BlobStore(fake as unknown as S3Client, BUCKET, prefix);
+      const bytes = new TextEncoder().encode('i am live, leave me alone');
+      const { sha256 } = await s.put(bytes);
+      fake.calls.length = 0;
+
+      await s.purge(sha256);
+      await s.purge(sha256);
+
+      expect(fake._get(BUCKET, blobKey(prefix, sha256))).toEqual(bytes);
+      const live = blobKey(prefix, sha256);
+      for (const c of fake.calls) {
+        expect(c.Key).not.toBe(live);
+        expect(c.CopySource ?? '').not.toContain(live);
+      }
+      const got = await s.get(sha256);
+      expect('bytes' in got && got.bytes).toEqual(bytes);
     });
 
-    it('rejects an invalid sha', async () => {
-      await expect(store.delete('x')).rejects.toMatchObject({
+    it('is idempotent: purging a missing sha is a no-op', async () => {
+      await expect(store.purge('4'.repeat(64))).resolves.toBeUndefined();
+      await expect(store.purge('4'.repeat(64))).resolves.toBeUndefined();
+    });
+
+    it('rejects an invalid sha before touching S3', async () => {
+      await expect(store.purge('A'.repeat(64))).rejects.toMatchObject({
         code: 'invalid-payload',
       });
+      expect(fake.calls).toEqual([]);
+    });
+  });
+
+  describe('restore on miss', () => {
+    async function putAndRetire(text: string): Promise<{ sha256: string; bytes: Uint8Array }> {
+      const bytes = new TextEncoder().encode(text);
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      fake.calls.length = 0;
+      return { sha256, bytes };
+    }
+
+    it('get restores a retired blob (copy back, retired key deleted) and serves it', async () => {
+      const { sha256, bytes } = await putAndRetire('bring me back');
+
+      const got = await store.get(sha256);
+
+      expect('bytes' in got && got.bytes).toEqual(bytes);
+      expect(fake._get(BUCKET, blobKey('', sha256))).toEqual(bytes);
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toBeUndefined();
+      expect(fake.calls.map((c) => c.name)).toEqual([
+        'GetObject',
+        'CopyObject',
+        'DeleteObject',
+        'GetObject',
+      ]);
+      expect(fake.calls[1]).toMatchObject({
+        Key: blobKey('', sha256),
+        CopySource: `${BUCKET}/${retiredBlobKey('', sha256)}`,
+      });
+      expect(fake.calls[2]).toMatchObject({ Key: retiredBlobKey('', sha256) });
+    });
+
+    it('get still digest-verifies a tampered retired object (corrupt, never served)', async () => {
+      const { sha256 } = await putAndRetire('honest bytes');
+      fake._put(BUCKET, retiredBlobKey('', sha256), new TextEncoder().encode('evil swap'));
+
+      await expect(store.get(sha256)).rejects.toMatchObject({ code: 'corrupt' });
+    });
+
+    it('stat restores a retired blob and reports its size', async () => {
+      const { sha256, bytes } = await putAndRetire('stat me back');
+
+      expect(await store.stat(sha256)).toEqual({ size: bytes.length });
+
+      expect(fake._get(BUCKET, blobKey('', sha256))).toEqual(bytes);
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toBeUndefined();
+    });
+
+    it('stat({ restore: false }) reports a retired size without moving it', async () => {
+      const { sha256, bytes } = await putAndRetire('leave me retired');
+
+      expect(await store.stat(sha256, { restore: false })).toEqual({ size: bytes.length });
+
+      expect(fake.calls.map((c) => c.name)).toEqual(['HeadObject', 'HeadObject']);
+      expect(fake.calls[1]!.Key).toBe(retiredBlobKey('', sha256));
+      expect(fake._get(BUCKET, blobKey('', sha256))).toBeUndefined();
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toEqual(bytes);
+    });
+
+    it('stat({ restore: false }) on a live blob is a single HeadObject', async () => {
+      const bytes = new TextEncoder().encode('just live');
+      const { sha256 } = await store.put(bytes);
+      fake.calls.length = 0;
+      expect(await store.stat(sha256, { restore: false })).toEqual({ size: bytes.length });
+      expect(fake.calls.map((c) => c.name)).toEqual(['HeadObject']);
+    });
+
+    it('stat({ restore: false }) of a sha missing everywhere is { found: false }', async () => {
+      expect(await store.stat('5'.repeat(64), { restore: false })).toEqual({ found: false });
+      expect(fake.calls.some((c) => c.name === 'CopyObject' || c.name === 'DeleteObject')).toBe(
+        false,
+      );
+    });
+
+    it.each([['yes'], [1], [null], [{}]])(
+      'stat rejects a non-boolean restore (%j) with invalid-payload, before touching S3',
+      async (restore) => {
+        await expect(
+          store.stat('6'.repeat(64), { restore } as unknown as { restore: boolean }),
+        ).rejects.toMatchObject({ code: 'invalid-payload' });
+        expect(fake.calls).toEqual([]);
+      },
+    );
+
+    it('get and stat of a sha missing everywhere are { found: false } and write nothing', async () => {
+      expect(await store.get('7'.repeat(64))).toEqual({ found: false });
+      expect(await store.stat('7'.repeat(64))).toEqual({ found: false });
+      expect(fake.buckets.get(BUCKET)?.size ?? 0).toBe(0);
+    });
+
+    it('a restore that loses the race re-reads live once (the winner already restored)', async () => {
+      const { sha256, bytes } = await putAndRetire('lost the race');
+      // Simulate another reader finishing its restore between our live miss and
+      // our copy: when our CopyObject arrives the retired copy is already gone.
+      const send = fake.send.bind(fake);
+      let raced = false;
+      fake.send = async (cmd) => {
+        if (!raced && cmd.constructor.name === 'CopyObjectCommand') {
+          raced = true;
+          fake._put(BUCKET, blobKey('', sha256), fake._get(BUCKET, retiredBlobKey('', sha256))!);
+          fake.buckets.get(BUCKET)!.delete(retiredBlobKey('', sha256));
+        }
+        return send(cmd);
+      };
+
+      const got = await store.get(sha256);
+
+      expect('bytes' in got && got.bytes).toEqual(bytes);
+      expect(fake.calls.map((c) => c.name)).toEqual(['GetObject', 'CopyObject', 'GetObject']);
+    });
+
+    it('a restore that loses the race to a purge reports { found: false }', async () => {
+      const { sha256 } = await putAndRetire('purged under me');
+      const send = fake.send.bind(fake);
+      fake.send = async (cmd) => {
+        if (cmd.constructor.name === 'CopyObjectCommand') {
+          fake.buckets.get(BUCKET)!.delete(retiredBlobKey('', sha256));
+        }
+        return send(cmd);
+      };
+      expect(await store.get(sha256)).toEqual({ found: false });
+      expect(await store.stat(sha256)).toEqual({ found: false });
+    });
+
+    it('two concurrent gets of a retired blob both get the bytes (jitter on)', async () => {
+      fake.jitter = randomYield;
+      for (let round = 0; round < 50; round += 1) {
+        const bytes = new TextEncoder().encode(`concurrent-restore-${round}`);
+        const { sha256 } = await store.put(bytes);
+        await store.retire(sha256);
+        const [a, b, c] = await Promise.all([
+          store.get(sha256),
+          store.get(sha256),
+          store.stat(sha256),
+        ]);
+        expect('bytes' in a && a.bytes).toEqual(bytes);
+        expect('bytes' in b && b.bytes).toEqual(bytes);
+        expect(c).toEqual({ size: bytes.length });
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // THE RACE (design D3). A put whose HeadObject fast path sees the live key
+  // can return success while a concurrent retire moves that key away. Nothing
+  // may be lost: the following get must restore and serve the bytes. With the
+  // jitter on, each S3 round-trip yields at random so the two operations
+  // genuinely interleave at every command boundary.
+  // -------------------------------------------------------------------------
+  it('put racing retire never loses the blob (1000 rounds, jitter on)', async () => {
+    fake.jitter = randomYield;
+    const failures: number[] = [];
+    for (let round = 0; round < 1000; round += 1) {
+      const bytes = new Uint8Array(randomBytes(8 + (round % 24)));
+      const { sha256 } = await store.put(bytes);
+      await Promise.all([store.put(bytes), store.retire(sha256)]);
+      const got = await store.get(sha256);
+      if (!('bytes' in got) || !Buffer.from(got.bytes).equals(Buffer.from(bytes))) {
+        failures.push(round);
+      }
+    }
+    expect({ failed: failures.length, first: failures.slice(0, 5) }).toEqual({
+      failed: 0,
+      first: [],
     });
   });
 
@@ -289,7 +587,7 @@ describe.each([
   it('`after` need not name a stored blob', async () => {
     const shas = await seedBlobs(store, 20, 'ghost-cursor');
     const ghost = shas[9]!;
-    await store.delete(ghost);
+    fake.buckets.get(BUCKET)!.delete(blobKey(prefix, ghost));
 
     const page = await store.list({ state: 'live', limit: 100, after: ghost });
 
@@ -384,17 +682,114 @@ describe.each([
     for (const c of calls.slice(1)) expect(c.ContinuationToken).toBeDefined();
   });
 
-  it("`state: 'retired'` is empty for now, even when live blobs exist — and asks S3 nothing", async () => {
-    // A later card (TASK-778) adds the retired namespace; until then there is
-    // nothing retired to list.
-    await seedBlobs(store, 5, 'retired');
-    fake.calls.length = 0;
+  describe("state: 'retired'", () => {
+    /** Put + retire `count` blobs; returns their shas, sorted. */
+    async function seedRetired(count: number, tag: string): Promise<string[]> {
+      const shas = await seedBlobs(store, count, tag);
+      for (const sha of shas) await store.retire(sha);
+      return shas;
+    }
+    const listRetired = (limit: number, after?: string): Promise<BlobListResult> =>
+      store.list(
+        after === undefined ? { state: 'retired', limit } : { state: 'retired', limit, after },
+      );
 
-    const page = await store.list({ state: 'retired', limit: 10 });
+    it('is empty when nothing is retired, even with live blobs', async () => {
+      await seedBlobs(store, 5, 'live-only');
+      const page = await listRetired(10);
+      expect(page).toEqual({ items: [] });
+      expect('next' in page).toBe(false);
+    });
 
-    expect(page).toEqual({ items: [] });
-    expect('next' in page).toBe(false);
-    expect(fake.calls).toEqual([]);
+    it('lists retired blobs ascending by sha with their sizes, and live listing excludes them', async () => {
+      const payloads = ['r-one', 'r-two-two', ''].map((t) => new TextEncoder().encode(t));
+      for (const p of payloads) await store.retire((await store.put(p)).sha256);
+      const stillLive = await store.put(new TextEncoder().encode('stays live'));
+      const expected = payloads
+        .map((p) => ({ sha256: sha256Hex(p), size: p.length }))
+        .sort((a, b) => (a.sha256 < b.sha256 ? -1 : 1));
+
+      expect((await listRetired(100)).items).toEqual(expected);
+      expect((await store.list({ state: 'live', limit: 100 })).items).toEqual([
+        { sha256: stillLive.sha256, size: stillLive.size },
+      ]);
+    });
+
+    it('asks S3 for the retired prefix, with StartAfter = the retired key of `after`', async () => {
+      const shas = await seedRetired(6, 'retired-request-shape');
+      fake.calls.length = 0;
+
+      await listRetired(4);
+      await listRetired(3, shas[1]!);
+
+      const retiredPrefix = prefix === '' ? 'retired/' : 'team-a/retired/';
+      expect(listCalls()).toEqual([
+        { name: 'ListObjectsV2', Bucket: BUCKET, MaxKeys: 4, Prefix: retiredPrefix },
+        {
+          name: 'ListObjectsV2',
+          Bucket: BUCKET,
+          MaxKeys: 3,
+          Prefix: retiredPrefix,
+          StartAfter: retiredBlobKey(prefix, shas[1]!),
+        },
+      ]);
+    });
+
+    it('`after` is exclusive and `next` is set iff the page is full', async () => {
+      const shas = await seedRetired(7, 'retired-paging');
+
+      const after = await listRetired(100, shas[2]!);
+      expect(after.items.map((i) => i.sha256)).toEqual(shas.slice(3));
+      expect('next' in after).toBe(false);
+
+      const full = await listRetired(3);
+      expect(full.items.map((i) => i.sha256)).toEqual(shas.slice(0, 3));
+      expect(full.next).toBe(shas[2]);
+
+      const exact = await listRetired(7);
+      expect(exact.next).toBe(shas[6]);
+      const empty = await listRetired(7, exact.next);
+      expect(empty).toEqual({ items: [] });
+    });
+
+    it('pages 2,500 retired blobs 1000 / 1000 / 500 with no duplicates', async () => {
+      const all: string[] = [];
+      for (let i = 0; i < 2500; i += 1) {
+        const sha = sha256Hex(new TextEncoder().encode(`retired-big-${i}`));
+        fake._put(BUCKET, retiredBlobKey(prefix, sha), new Uint8Array(2));
+        all.push(sha);
+      }
+      all.sort();
+      const pages: BlobListResult[] = [];
+      let after: string | undefined;
+      for (;;) {
+        const page = await listRetired(1000, after);
+        pages.push(page);
+        if (page.next === undefined) break;
+        after = page.next;
+      }
+      expect(pages.map((p) => p.items.length)).toEqual([1000, 1000, 500]);
+      expect(pages.flatMap((p) => p.items.map((i) => i.sha256))).toEqual(all);
+    });
+
+    it('only well-formed keys count: no temp keys, wrong shards, live keys or other prefixes', async () => {
+      const [sha] = await seedRetired(1, 'the-retired-one');
+      const seed = (k: string): void => fake._put(BUCKET, k, new Uint8Array([1, 2, 3]));
+      seed(`${retiredBlobKey(prefix, sha!)}.tmp.x`);
+      seed(key(`retired/ab/ab/${shaIn('cd', 'cd')}`));
+      seed(key(`retired/AA/BB/${shaIn('AA', 'BB')}`));
+      seed(key(`retired/ab/cd/${shaIn('ab', 'cd')}/extra`));
+      seed(key(`retired/ab/${shaIn('ab', 'cd')}`));
+      seed(key('retired/README'));
+      seed(key(`retired2/ee/ee/${shaIn('ee', 'ee')}`));
+      seed(key(`ee/ee/${shaIn('ee', 'ee')}`));
+      seed(`team-b/retired/ee/ee/${shaIn('ee', 'ee')}`);
+      if (prefix !== '') seed(`retired/ee/ee/${shaIn('ee', 'ee')}`);
+
+      expect((await listRetired(100)).items).toEqual([
+        { sha256: sha!, size: new TextEncoder().encode('the-retired-one-0').length },
+      ]);
+    });
   });
 
   describe('input validation (before touching S3)', () => {
@@ -426,7 +821,7 @@ describe.each([
       expect((await store.list({ state: 'live', limit: 1000 })).items).toHaveLength(3);
     });
 
-    it("validates a 'retired' request too (the stub gets no free pass)", async () => {
+    it("validates a 'retired' request too", async () => {
       await expect(store.list({ state: 'retired', limit: 0 })).rejects.toMatchObject({
         code: 'invalid-payload',
       });
