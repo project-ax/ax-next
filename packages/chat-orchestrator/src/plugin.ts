@@ -88,6 +88,14 @@ export function createChatOrchestratorPlugin(
           degradation:
             "a connector that reaches the agent without an attach (a workspace default) is not copied, so the agent follows the connector's live per-tool defaults — a later loosening by its editor applies to it too",
         },
+        {
+          // TASK-796 — after proxy:open-session fails, a presence read over the
+          // connector refs tells "you haven't signed in to a connector" apart
+          // from a generic open failure. Never called on a successful open.
+          hook: 'credentials:has',
+          degradation:
+            'a session that cannot open because a connector was never signed in reads as the generic proxy-open-failed instead of connector-needs-sign-in',
+        },
       ],
       // ----- conditionally-called peers (NOT in `calls`) -----
       //

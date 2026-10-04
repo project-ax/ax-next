@@ -2406,6 +2406,175 @@ describe('chat-orchestrator', () => {
     expect(mocks.calls.sandboxOpen).toBe(0);
   });
 
+  // TASK-796 — a session whose effective connector was never signed in. The
+  // proxy resolves every ref with credentials:get, so the missing row fails
+  // the whole open with credential-not-found. The orchestrator then asks
+  // credentials:has about the CONNECTOR refs only: a missing one means the
+  // person can fix it by signing in (`connector-needs-sign-in`); a missing
+  // provider key, or a presence read that fails, stays `proxy-open-failed`;
+  // a rejected refresh stays `connector-needs-reconnect` and never both.
+  describe('TASK-796: connector-needs-sign-in at session open', () => {
+    const GMAIL_REF = 'account:gmail';
+    const PROVIDER_REF = 'provider:anthropic';
+
+    /** A tiny vault both proxy:open-session and credentials:has read, so
+     *  "has a credential" means the same thing to the open and to the check. */
+    function buildVaultHooks(opts: {
+      rows: string[];
+      rejected?: string[];
+      hasThrows?: Error;
+      noHas?: boolean;
+    }) {
+      const rows = new Set(opts.rows);
+      const rejected = new Set(opts.rejected ?? []);
+      const state = { openCalls: 0, hasRefs: [] as string[], hasUserIds: [] as string[] };
+      const services: Record<string, ServiceHandler> = {
+        'proxy:open-session': async (_ctx, input) => {
+          state.openCalls += 1;
+          const creds = (input as { credentials: Record<string, { ref: string }> }).credentials;
+          for (const { ref } of Object.values(creds)) {
+            if (rejected.has(ref)) {
+              const cause = new Error('refresh token rejected; reconnect required');
+              cause.name = 'NeedsReconnectError';
+              throw new PluginError({
+                code: 'unknown',
+                plugin: '@ax/mcp-oauth',
+                message: "service hook 'credentials:resolve:mcp-oauth' threw: x",
+                cause,
+              });
+            }
+            if (!rows.has(ref)) {
+              throw new PluginError({
+                code: 'credential-not-found',
+                plugin: '@ax/credentials',
+                message: `no credential for ref='${ref}'`,
+              });
+            }
+          }
+          return {
+            proxyEndpoint: 'tcp://127.0.0.1:54321',
+            caCertPem: 'TEST-CA-PEM',
+            envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+          };
+        },
+        'proxy:close-session': async () => ({}),
+      };
+      if (opts.noHas !== true) {
+        services['credentials:has'] = async (_ctx, input) => {
+          const { ref, userId } = input as { ref: string; userId: string };
+          state.hasRefs.push(ref);
+          state.hasUserIds.push(userId);
+          if (opts.hasThrows !== undefined) throw opts.hasThrows;
+          // A rejected-refresh token row still EXISTS — presence says yes.
+          return { present: rows.has(ref) || rejected.has(ref) };
+        };
+      }
+      return { state, services };
+    }
+
+    const gmailConnector = buildConnectorHooks({
+      defaults: {
+        gmail: {
+          toolNamespaces: [{ server: 'gmail', toolNamespace: 'c0123abcdef' }],
+          capabilities: {
+            allowedHosts: [],
+            credentials: [{ slot: 'GMAIL', kind: 'oauth', server: 'gmail' }],
+            mcpServers: [
+              {
+                name: 'gmail',
+                transport: 'http',
+                url: 'https://gmail.mcp.example.com/mcp',
+                allowedHosts: ['gmail.mcp.example.com'],
+                credentials: [],
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    async function invoke(vault: ReturnType<typeof buildVaultHooks>, sessionId: string) {
+      const busRef: { current: HookBus | null } = { current: null };
+      const mocks = buildMocks({
+        agentsResolve: async () => ({
+          agent: {
+            ...TEST_AGENT,
+            allowedHosts: ['api.anthropic.com'],
+            requiredCredentials: { ANTHROPIC_API_KEY: { ref: PROVIDER_REF, kind: 'api-key' } },
+          },
+        }),
+        openSession: makeChatEndOpenSession(busRef),
+      });
+      Object.assign(mocks.services, vault.services, gmailConnector);
+      const h = await createTestHarness({
+        services: mocks.services,
+        plugins: [
+          createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
+        ],
+      });
+      busRef.current = h.bus;
+      const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+      h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+        turnErrors.push(p as { reqId?: string; reason?: string });
+        return undefined;
+      });
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        turnErrorCtx(sessionId, `r-${sessionId}`),
+        { message: { role: 'user', content: 'hi' } },
+      );
+      return { outcome, turnErrors, mocks };
+    }
+
+    it('no credential for the connector → exactly one connector-needs-sign-in, sandbox never opens', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF] });
+      const { outcome, turnErrors, mocks } = await invoke(vault, 'signin-missing');
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-sign-in' });
+      expect(turnErrors).toEqual([{ reqId: 'r-signin-missing', reason: 'connector-needs-sign-in' }]);
+      expect(mocks.calls.sandboxOpen).toBe(0);
+      // Only the CONNECTOR ref is asked about, as the caller — never the provider key.
+      expect(vault.state.hasRefs).toEqual([GMAIL_REF]);
+      expect(vault.state.hasUserIds).toEqual(['test-user']);
+    });
+
+    it('with a credential → the session opens; no turn error and no presence read', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF, GMAIL_REF] });
+      const { outcome, turnErrors } = await invoke(vault, 'signin-present');
+      expect(outcome.kind).toBe('complete');
+      expect(turnErrors).toEqual([]);
+      expect(vault.state.hasRefs).toEqual([]);
+    });
+
+    it('rejected-refresh marker → connector-needs-reconnect, not both', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
+      const { outcome, turnErrors } = await invoke(vault, 'signin-rejected');
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+      expect(turnErrors).toEqual([{ reqId: 'r-signin-rejected', reason: 'connector-needs-reconnect' }]);
+      expect(vault.state.hasRefs).toEqual([]);
+    });
+
+    it('a missing PROVIDER key with the connector signed in stays proxy-open-failed', async () => {
+      const vault = buildVaultHooks({ rows: [GMAIL_REF] });
+      const { outcome, turnErrors } = await invoke(vault, 'signin-provider');
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'proxy-open-failed' });
+      expect(turnErrors).toEqual([{ reqId: 'r-signin-provider', reason: 'proxy-open-failed' }]);
+      expect(vault.state.hasRefs).toEqual([GMAIL_REF]);
+    });
+
+    it('a presence read that throws falls back to proxy-open-failed (never a wrong sign-in prompt)', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF], hasThrows: new Error('vault blip') });
+      const { outcome, turnErrors } = await invoke(vault, 'signin-throws');
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'proxy-open-failed' });
+      expect(turnErrors).toEqual([{ reqId: 'r-signin-throws', reason: 'proxy-open-failed' }]);
+    });
+
+    it('no credentials:has loaded → proxy-open-failed (soft-coupled peer)', async () => {
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF], noHas: true });
+      const { outcome } = await invoke(vault, 'signin-nohas');
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'proxy-open-failed' });
+    });
+  });
+
   // TASK-22 — sibling pre-waiter early-return: same swallow-the-error class.
   // A skewed/missing proxy config (proxy-hooks-misconfigured) must also surface
   // a turn error rather than hang. Locks the whole class, not just the
