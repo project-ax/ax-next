@@ -47,6 +47,7 @@ import { registerAdminMcpRoutes } from './admin-routes.js';
 import {
   createDescribeTools,
   createInventoryStatusBatch,
+  createUnstoredInventory,
   createInventoryToolTitles,
 } from './connector-inventory/describe-tools.js';
 import type { ListOutcome, ListServerToolsOptions } from './connector-inventory/list-tools.js';
@@ -181,6 +182,10 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
         const typed = db as Kysely<McpClientDatabase>;
         await runMcpClientMigration(typed);
         const store = createInventoryStore(typed);
+        // TASK-787 — answers the store refused to keep: filled by
+        // describe-tools, overlaid by the status batch. One holder, so the
+        // rail and describe-tools agree during an inventory-write outage.
+        const unstored = createUnstoredInventory();
         // Purge the agent's cached inventories. Payload declared locally (no
         // cross-plugin import); only `agentId` matters. A subscriber must never
         // throw — a failed purge is logged and swallowed.
@@ -192,6 +197,7 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
             });
             return undefined;
           }
+          unstored.dropAgent(agentId);
           try {
             const { deleted } = await store.deleteForAgent(agentId);
             ctx.logger.info('connector_inventory_purged_for_deleted_agent', { agentId, deleted });
@@ -203,6 +209,7 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
         const describeTools = createDescribeTools({
           bus,
           store,
+          unstored,
           ...(opts.connectorInventoryListTools !== undefined
             ? { listTools: opts.connectorInventoryListTools }
             : {}),
@@ -211,7 +218,7 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
         bus.registerService(
           'connectors:inventory-status-batch',
           PLUGIN_NAME,
-          createInventoryStatusBatch(store),
+          createInventoryStatusBatch(store, unstored),
         );
         // TASK-753 — cached server tool titles for `connectors:tool-labels`.
         bus.registerService(

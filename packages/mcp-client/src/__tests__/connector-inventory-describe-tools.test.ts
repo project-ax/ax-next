@@ -5,6 +5,8 @@ import {
   CHECK_COOLDOWN_MS,
   OK_TTL_MS,
   createDescribeTools,
+  createInventoryStatusBatch,
+  createUnstoredInventory,
   type BusLike,
 } from '../connector-inventory/describe-tools.js';
 import type { ListOutcome, ListServerToolsOptions } from '../connector-inventory/list-tools.js';
@@ -42,6 +44,17 @@ function memoryStore(): InventoryStore & { rows: Map<string, InventoryRow> } {
     },
     async put(key, row) {
       rows.set(k(key), row);
+    },
+    async statuses(userId, agentId, connectorIds) {
+      const out: Array<{ connectorId: string; status: InventoryRow['status']; checkedAt: Date }> = [];
+      for (const connectorId of connectorIds) {
+        const row = rows.get(k({ userId, agentId, connectorId }));
+        if (row !== undefined) out.push({ connectorId, status: row.status, checkedAt: row.checkedAt });
+      }
+      return out;
+    },
+    async okInventories() {
+      return [];
     },
     async deleteForAgent() {
       return { deleted: 0 };
@@ -96,7 +109,11 @@ function setup(s: Setup = {}) {
     return realPut(key, row);
   };
   const logLines: string[] = [];
-  const describeTools = createDescribeTools({ bus, store, listTools: list, now: () => clock });
+  // TASK-787 — one holder for answers the store refused, shared the way
+  // plugin.ts shares it between describe-tools and the status batch.
+  const unstored = createUnstoredInventory();
+  const describeTools = createDescribeTools({ bus, store, unstored, listTools: list, now: () => clock });
+  const statusBatch = createInventoryStatusBatch(store, unstored);
   const ctx = makeAgentContext({
     sessionId: 's',
     agentId: 'a',
@@ -105,6 +122,8 @@ function setup(s: Setup = {}) {
   });
   return {
     run: (input: unknown) => describeTools(ctx, input),
+    batch: (input: unknown) => statusBatch(ctx, input),
+    unstored,
     list,
     calls,
     fired,
@@ -846,6 +865,97 @@ describe('connectors:describe-tools', () => {
     await expect(t.run({ userId: '', connectorId: 'linear' })).rejects.toMatchObject({ code: 'invalid-payload' });
     await expect(t.run({ userId: 'u', connectorId: 'x', extra: 1 })).rejects.toMatchObject({
       code: 'invalid-payload',
+    });
+  });
+
+  // TASK-787 — the rail reads `connectors:inventory-status-batch`, not
+  // describe-tools. While the store refuses writes, the batch must still see
+  // the answer describe-tools holds in memory; once a write lands, the stored
+  // row is the answer again.
+  describe('inventory-status-batch during a store write outage (TASK-787)', () => {
+    it('a describe-tools refresh updates the batch answer; once the store recovers the stored row wins', async () => {
+      let fail = false;
+      let outcome: ListOutcome = { kind: 'ok', dropped: 0, tools: [] };
+      const t = setup({ putFails: () => fail, list: async () => outcome });
+      const input = { userId: 'u1', agentId: 'a1', connectorIds: ['linear'] };
+
+      await t.run({ userId: 'u1', agentId: 'a1', connectorId: 'linear' });
+      expect(await t.batch(input)).toEqual({
+        statuses: [{ connectorId: 'linear', status: 'ok', checkedAt: '2026-10-02T12:00:00.000Z' }],
+      });
+
+      // Outage: the refresh's answer is not stored, but the batch shows it.
+      fail = true;
+      outcome = { kind: 'needs-auth' };
+      t.advance(CHECK_COOLDOWN_MS);
+      await t.run({ userId: 'u1', agentId: 'a1', connectorId: 'linear', force: true });
+      expect(t.store.rows.get(JSON.stringify(['u1', 'a1', 'linear']))?.status).toBe('ok');
+      expect(await t.batch(input)).toEqual({
+        statuses: [{ connectorId: 'linear', status: 'needs-auth', checkedAt: '2026-10-02T12:00:30.000Z' }],
+      });
+
+      // Recovered: the next write lands and the stored row is the answer.
+      fail = false;
+      outcome = { kind: 'unreachable', reason: 'timeout' };
+      t.advance(CHECK_COOLDOWN_MS);
+      await t.run({ userId: 'u1', agentId: 'a1', connectorId: 'linear', force: true });
+      expect(await t.batch(input)).toEqual({
+        statuses: [{ connectorId: 'linear', status: 'unreachable', checkedAt: '2026-10-02T12:01:00.000Z' }],
+      });
+      expect(t.unstored.get({ userId: 'u1', agentId: 'a1', connectorId: 'linear' })).toBeUndefined();
+    });
+
+    it('a connector never stored at all appears once describe-tools has an answer for it', async () => {
+      const t = setup({ putFails: () => true, list: async () => ({ kind: 'unreachable', reason: 'timeout' }) });
+      const input = { userId: 'u1', connectorIds: ['linear', 'other'] };
+      expect(await t.batch(input)).toEqual({ statuses: [] });
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(await t.batch(input)).toEqual({
+        statuses: [{ connectorId: 'linear', status: 'unreachable', checkedAt: '2026-10-02T12:00:00.000Z' }],
+      });
+    });
+
+    it('a held answer OLDER than the stored row does not mask it', async () => {
+      const t = setup();
+      const key = { userId: 'u1', agentId: '', connectorId: 'linear' };
+      t.unstored.keep(key, { status: 'needs-auth', tools: [], fingerprint: '', checkedAt: new Date('2026-10-02T11:00:00Z') });
+      await t.store.put(key, { status: 'ok', tools: [], fingerprint: '', checkedAt: new Date('2026-10-02T11:30:00Z') });
+      expect(await t.batch({ userId: 'u1', connectorIds: ['linear'] })).toEqual({
+        statuses: [{ connectorId: 'linear', status: 'ok', checkedAt: '2026-10-02T11:30:00.000Z' }],
+      });
+    });
+
+    it('is scoped to the exact (user, agent, connector)', async () => {
+      const t = setup({ putFails: () => true });
+      await t.run({ userId: 'u1', agentId: 'a1', connectorId: 'linear' });
+      expect(await t.batch({ userId: 'u2', agentId: 'a1', connectorIds: ['linear'] })).toEqual({ statuses: [] });
+      expect(await t.batch({ userId: 'u1', connectorIds: ['linear'] })).toEqual({ statuses: [] });
+      expect(await t.batch({ userId: 'u1', agentId: 'a2', connectorIds: ['linear'] })).toEqual({ statuses: [] });
+      expect(await t.batch({ userId: 'u1', agentId: 'a1', connectorIds: ['gmail'] })).toEqual({ statuses: [] });
+      // A duplicated id answers once.
+      const dup = await t.batch({ userId: 'u1', agentId: 'a1', connectorIds: ['linear', 'linear'] });
+      expect(dup.statuses).toHaveLength(1);
+    });
+
+    it("dropAgent forgets that agent's held answers only", async () => {
+      const t = setup({ putFails: () => true });
+      await t.run({ userId: 'u1', agentId: 'a1', connectorId: 'linear' });
+      await t.run({ userId: 'u1', agentId: 'a2', connectorId: 'linear' });
+      t.unstored.dropAgent('a1');
+      expect(await t.batch({ userId: 'u1', agentId: 'a1', connectorIds: ['linear'] })).toEqual({ statuses: [] });
+      expect((await t.batch({ userId: 'u1', agentId: 'a2', connectorIds: ['linear'] })).statuses).toHaveLength(1);
+    });
+
+    it('holds at most a bounded number of answers, oldest dropped first', () => {
+      const u = createUnstoredInventory(2);
+      const row: InventoryRow = { status: 'ok', tools: [], fingerprint: '', checkedAt: new Date(0) };
+      const key = (c: string) => ({ userId: 'u', agentId: '', connectorId: c });
+      u.keep(key('a'), row);
+      u.keep(key('b'), row);
+      u.keep(key('c'), row);
+      expect(u.get(key('a'))).toBeUndefined();
+      expect(u.get(key('b'))).toBe(row);
+      expect(u.get(key('c'))).toBe(row);
     });
   });
 });
