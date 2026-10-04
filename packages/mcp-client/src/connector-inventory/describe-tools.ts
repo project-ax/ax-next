@@ -206,7 +206,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     flightKey: string,
     previous: InventoryRow | null,
     connector: ResolvedConnector,
-  ): Promise<DescribeToolsOutput> {
+  ): Promise<{ out: DescribeToolsOutput; asked: boolean }> {
     const nsByServer = new Map((connector.toolNamespaces ?? []).map((t) => [t.server, t.toolNamespace]));
 
     let status: InventoryStatus = 'unknown';
@@ -256,6 +256,10 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
           : { server, ns, url: server.url, headers },
       );
     }
+    // TASK-812 — whether pass 2 sends anything anywhere. A check where every
+    // server stopped at pass 1 (nobody signed in, no url, no namespace) asked
+    // no third-party server, so the caller releases the cooldown window.
+    const asked = planned.some((p) => !('outcome' in p));
     // Pass 2 — the listings.
     for (const p of planned) {
       const ns = p.ns;
@@ -299,7 +303,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       const event: ToolsDiscoveredEvent = { connectorId: input.connectorId, tools };
       await deps.bus.fire('connectors:tools-discovered', ctx, event);
     }
-    return { status, tools, checkedAt: checkedAt.toISOString() };
+    return { out: { status, tools, checkedAt: checkedAt.toISOString() }, asked };
   }
 
   return async function describeTools(
@@ -371,6 +375,16 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     if (pending !== undefined) return pending;
     noteChecked(coolKey, at);
     const run = check(input, ctx, key, flightKey, previous, connector)
+      .then(({ out, asked }) => {
+        // TASK-812 — same rule as the credential blip below: a check that
+        // asked no server must not use up the window. Otherwise a sign-in
+        // finished inside it is answered "needs-auth" from the row this
+        // credential-only check just wrote, Retry and `?refresh=1` included.
+        // Probes stay bounded: the window still holds after any check that
+        // listed even one server.
+        if (!asked && lastChecked.get(coolKey) === at) lastChecked.delete(coolKey);
+        return out;
+      })
       .catch((err: unknown) => {
         // A credential blip throws before any server was asked (pass 1), so
         // it must not use up the window — "try again" has to mean it.

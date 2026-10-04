@@ -345,6 +345,51 @@ describe('the details view', () => {
     expect(screen.queryByText(/sign in to this connector again/i)).toBeNull();
   });
 
+  // TASK-812 — found twice by the TASK-800 walk: right after a sign-in the
+  // list said the connector was fine, but the details view still said
+  // "Sign-in needed" (and "sign in again to see its tools") until a reload.
+  // Its tool read was the one from BEFORE the sign-in, and an unforced
+  // re-read is answered from the server's cache of that same old check —
+  // which is exactly what this mock does.
+  it('shows the signed-in state right after a sign-in, with no reload', async () => {
+    const toolsMock = vi.mocked(workspaceApi.connectorTools);
+    toolsMock.mockImplementation(async (_a, id, refresh) =>
+      refresh === true
+        ? { ...toolsRead(id, 'Linear'), status: 'ok', tools: [] }
+        : toolsRead(id, 'Linear'),
+    );
+    renderTab();
+    await openDetails('Linear');
+    await screen.findByText('Not signed in yet');
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    const dialog = await screen.findByRole('dialog');
+    list([row({ id: 'linear', name: 'Linear', health: 'ok' }), ADD_KEY, ASK_ADMIN, OK]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Finish sign-in' }));
+    expect(await screen.findByText('Connected · signed in as you')).toBeTruthy();
+    expect(screen.queryByText('Sign-in needed')).toBeNull();
+    expect(screen.queryByText(/sign in to this connector again/i)).toBeNull();
+    expect(screen.queryByText('Not signed in yet')).toBeNull();
+    expect(toolsMock).toHaveBeenLastCalledWith('a-quill', 'linear', true);
+  });
+
+  it('shows the key as set up right after adding it, with no reload', async () => {
+    const toolsMock = vi.mocked(workspaceApi.connectorTools);
+    toolsMock.mockImplementation(async (_a, id, refresh) =>
+      refresh === true
+        ? { ...toolsRead(id, 'Brave'), status: 'ok', tools: [] }
+        : toolsRead(id, 'Brave'),
+    );
+    renderTab();
+    await openDetails('Brave');
+    await screen.findByText('No key added yet');
+    fireEvent.click(screen.getByRole('button', { name: 'Add key' }));
+    const dialog = await screen.findByTestId('key-dialog');
+    list([SIGN_IN, row({ id: 'brave', name: 'Brave', health: 'ok' }), ASK_ADMIN, OK]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Finish key' }));
+    expect(await screen.findByText('Connected · signed in as you')).toBeTruthy();
+    expect(screen.queryByText('Sign-in needed')).toBeNull();
+  });
+
   it('offers no button when only an admin can set it up', async () => {
     renderTab();
     await openDetails('Acme');

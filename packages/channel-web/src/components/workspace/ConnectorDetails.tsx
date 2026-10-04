@@ -19,7 +19,7 @@
  * description is deliberately not drawn here (the editor in Settings shows it,
  * fenced); the rail is too narrow to set it apart as "their words".
  */
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import {
   ChevronLeft,
   CircleAlert,
@@ -139,6 +139,19 @@ export function ConnectorDetails({
 }: Props) {
   const state = useConnectorTools(agentId, row.id);
   const { data, status } = state;
+  // TASK-812 — the list's health word is the source of truth for sign-in;
+  // this view's tool read is only as fresh as when it was taken. When the
+  // list's word changes (a sign-in or key just finished, a Retry or
+  // Reconnect landed), that read is stale by definition: take a new one.
+  // Forced, because an unforced read is answered from the server's cache of
+  // the very check that said "needs sign-in" a moment ago.
+  const { reload } = state;
+  const seenHealth = useRef(row.health);
+  useEffect(() => {
+    if (seenHealth.current === row.health) return;
+    seenHealth.current = row.health;
+    reload(true);
+  }, [row.health, reload]);
   return (
     <div className="flex min-h-full flex-col">
       <div className="-ml-2 mb-3 flex items-center justify-between gap-2">
