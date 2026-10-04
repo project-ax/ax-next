@@ -682,6 +682,60 @@ describe('runRunner', () => {
       ]);
     });
 
+    // TASK-785 (absorbs TASK-578). The mirror image of the fold above: ONE
+    // pulled message answered across SEVERAL `endTurn`s (a loop that reports
+    // each model step as its own turn, pulling only when it is done). The id
+    // belongs to the message, not to the endTurn — so a hand-over that consumed
+    // one id per endTurn (a FIFO shift, which hands over `undefined` once the
+    // queue is empty) would run every step after the first dark, and the SSE
+    // stream keyed on req-a would never hear the rest of its reply.
+    it('keeps one message\'s reqId on every chunk and turn-end across several endTurns (TASK-785)', async () => {
+      scriptInbox([
+        { type: 'user-message', payload: { role: 'user', content: 'a' }, reqId: 'req-a', cursor: 1 },
+        { type: 'user-message', payload: { role: 'user', content: 'b' }, reqId: 'req-b', cursor: 2 },
+      ]);
+      const endTurnInput = {
+        contentBlocks: [],
+        toolResultBlocks: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }],
+        readTurnId: async () => undefined,
+        usage: null,
+      } as unknown as Parameters<LoopContext['endTurn']>[0];
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage(); // req-a
+          for (const step of ['a-1', 'a-2', 'a-3']) {
+            await ctx.emitChunk({ kind: 'text', text: step });
+            await ctx.endTurn(endTurnInput);
+          }
+          await ctx.nextMessage(); // req-b, only once req-a is fully answered
+          await ctx.emitChunk({ kind: 'text', text: 'b-1' });
+          await ctx.endTurn(endTurnInput);
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      const frames = fakeClient.event.mock.calls
+        .filter((c) => c[0] === 'event.stream-chunk' || c[0] === 'event.turn-end')
+        .map((c) => {
+          const p = c[1] as { reqId?: string; text?: string; role?: string };
+          return `${c[0] === 'event.stream-chunk' ? `chunk:${p.text}` : `turn-end:${p.role}`}@${p.reqId}`;
+        });
+      expect(frames).toEqual([
+        'chunk:a-1@req-a',
+        'turn-end:tool@req-a',
+        'turn-end:assistant@req-a',
+        'chunk:a-2@req-a',
+        'turn-end:tool@req-a',
+        'turn-end:assistant@req-a',
+        'chunk:a-3@req-a',
+        'turn-end:tool@req-a',
+        'turn-end:assistant@req-a',
+        'chunk:b-1@req-b',
+        'turn-end:tool@req-b',
+        'turn-end:assistant@req-b',
+      ]);
+    });
+
     // TASK-708. The fold above answered req-b inside req-a's turn, so req-b
     // never gets a turn-end of its own — and a host subscriber that waits for
     // one (agent-activity's "working" record) waited until chat:end. The loop
