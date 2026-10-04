@@ -42,6 +42,21 @@ export { registerWorkspaceApplyFacade } from './workspace-apply-facade.js';
 export type { WorkspacePreApplyPayload } from './workspace-apply-facade.js';
 export { registerBlobPutFacade } from './blob-put-facade.js';
 export type { BlobPrePutPayload, BlobStoredPayload } from './blob-put-facade.js';
+export {
+  BLOB_COLLECT_REFS_HOOK,
+  BLOB_COLLECT_REFS_MAX_CANDIDATES,
+  answerBlobCollectRefs,
+  isBlobSha256,
+  parseBlobCandidates,
+  readBlobCollectRefsAnswers,
+} from './blob-collect-refs.js';
+export type {
+  BlobCollectRefsAnswer,
+  BlobCollectRefsOutcome,
+  BlobCollectRefsPayload,
+  BlobHolding,
+  BlobRef,
+} from './blob-collect-refs.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
 export type {
   Bytes,
