@@ -618,22 +618,17 @@ describe('@ax/mcp-client admin routes', () => {
     expect(bIds.sort()).toEqual(['beta']);
   });
 
-  it('GET admin-global config (ownerId=null) is visible to non-owner users', async () => {
-    // Pre-seed an admin-global row directly via saveConfig — this is the
-    // "legacy / global" shape (ownerId null).
-    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
-    await saveConfig(stack.harness.bus, ctx, {
-      id: 'global-shared',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://mcp.example.com/shared',
-      ownerId: null,
-    });
-    const cookie = await signIn(stack);
+  it('GET admin-global config (ownerId=null) is visible to a non-admin non-owner', async () => {
+    // Pre-seed an admin-global row (ownerId null) and a row someone else
+    // owns. The caller is a NON-admin on purpose: an admin sees every row,
+    // so only a non-admin exercises canRead's `ownerId === null` branch.
+    await seedOwnedConfig(stack, 'global-shared', null);
+    await seedOwnedConfig(stack, 'someone-elses', 'usr_someone_else');
+    const { cookie } = await mintSecondUserCookie();
     const r = await http(stack.port, 'GET', '/admin/mcp-servers', { cookie });
     expect(r.status).toBe(200);
     const ids = (r.body as { configs: SerializedConfig[] }).configs.map((c) => c.id);
-    expect(ids).toContain('global-shared');
+    expect(ids).toEqual(['global-shared']);
   });
 
   // -------------------------------------------------------------------------
