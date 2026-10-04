@@ -110,7 +110,7 @@ const STARTS_CONTAINER = /new\s+[A-Za-z]*Container\s*\(|\bstartPostgresContainer
  * `child_process`, or it constructs an MCP stdio transport (which owns and
  * spawns the child itself, so a file can be subprocess-heavy without naming
  * `child_process` once — `test-harness/src/__tests__/mcp-server-stub.test.ts`
- * (the stdio MCP stub test, since replaced) was exactly that shape).
+ * (the stdio MCP stub test, since removed in TASK-792) was exactly that shape).
  *
  * Why an IMPORT rather than a call. The obvious pattern is `\bspawn\s*\(`, and
  * it was measured before being discarded: across the tree it pulls in

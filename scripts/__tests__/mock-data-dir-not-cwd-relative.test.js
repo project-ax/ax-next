@@ -1,6 +1,6 @@
 // Guard: channel-web's vite mock backend must resolve its scratch data
-// directory (`.mock-data/`, 6 seed JSONs: users/agents/teams/mcp-servers/
-// sessions/messages) relative to the PACKAGE, never to `process.cwd()`.
+// directory (`.mock-data/`, 6 seed JSONs: users/agents/teams/
+// team-memberships/sessions/messages) relative to the PACKAGE, never to `process.cwd()`.
 //
 // Why this exists. `vite.config.ts` used to call
 // `mockMiddleware(resolve(process.cwd(), '.mock-data'))`, and
@@ -61,7 +61,7 @@ describe('channel-web mock-data dir is never resolved against process.cwd()', ()
       offenders,
       'These files resolve the channel-web mock backend\'s `.mock-data` ' +
         'scratch dir against process.cwd(), which writes 6 untracked seed ' +
-        'JSONs (users/agents/teams/mcp-servers/sessions/messages) wherever ' +
+        'JSONs (users/agents/teams/team-memberships/sessions/messages) wherever ' +
         'the process happens to be launched from — including the repo root. ' +
         'Anchor the path to the package directory instead (__dirname / ' +
         'import.meta.url), as vite.config.ts already does for its `@` alias.',

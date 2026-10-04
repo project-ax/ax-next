@@ -66,8 +66,8 @@ function testFiles(dir, out = []) {
  */
 function spawnsAWorkspaceBuild(src) {
   // Comments are stripped FIRST. Without this the guard fired on
-  // `test-harness/src/__tests__/mcp-server-stub.test.ts` (since replaced by
-  // `mcp-http-server-stub.test.ts`), which spawned `node`
+  // `test-harness/src/__tests__/mcp-server-stub.test.ts` (an MCP stub test
+  // since removed in TASK-792), which spawned `node`
   // and merely MENTIONS `pnpm --filter @ax/test-harness build` in a hint
   // comment — a false positive that would have taught the next person to
   // distrust this guard, which is how tripwires die.
