@@ -1488,10 +1488,18 @@ interface ConnectorCredentialCheck {
 
 /**
  * The connector's credential slots → the vault refs a run would resolve
- * (`deriveCredentialPlan`, the connect flow's own derivation) plus each slot's
+ * (`deriveCredentialPlan` from `../lib/connectors.js` — this package's LOCAL
+ * copy of @ax/connectors' connect-flow derivation, not the @ax/connectors
+ * function itself, which invariant 2 keeps out of here) plus each slot's
  * kind. The ONE place that mapping lives on the server: the attach gate
  * (TASK-761, a resolving `credentials:get`) and the rail's presence read
  * (TASK-795, `credentials:has`) both ask about exactly these refs.
+ *
+ * TASK-807 — the host's connector skip (@ax/chat-orchestrator's
+ * `connectorCredentialSlots`) derives the same refs a third time. Exported so
+ * `connector-credential-refs-contract.test.ts` can pin all three to one
+ * fixture table: if they drift, the rail says "signed in" while the turn
+ * skips the connector (or the reverse).
  *
  * Takes the minimal shape both callers have — a full `connectors:get` record,
  * or a `connectors:list-effective` entry's id / keyMode / slots. The bus is
@@ -1499,7 +1507,7 @@ interface ConnectorCredentialCheck {
  * (a `slot` string and an `oauth` / `api-key` kind) is not one anything here
  * wrote, and is skipped rather than guessed at.
  */
-function credentialChecks(connector: {
+export function credentialChecks(connector: {
   id: string;
   keyMode?: 'personal' | 'workspace' | undefined;
   capabilities?: { credentials?: ReadonlyArray<ConnectorCredentialSlot> } | undefined;

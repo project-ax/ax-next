@@ -580,6 +580,12 @@ importers:
       '@ax/attachments':
         specifier: workspace:*
         version: link:../attachments
+      '@ax/chat-orchestrator':
+        specifier: workspace:*
+        version: link:../chat-orchestrator
+      '@ax/connectors':
+        specifier: workspace:*
+        version: link:../connectors
       '@ax/credentials-admin-routes':
         specifier: workspace:*
         version: link:../credentials-admin-routes
