@@ -448,7 +448,11 @@ export interface FoldConnectorResult {
  * scope for every signer. It is used host-side only, by @ax/mcp-oauth, against
  * the provider's token endpoint; it never enters the credential proxy, so a
  * slot that would resolve to that ref is not returned. (@ax/connectors'
- * global-read rule also refuses a ref that is a plan slot — two locks.)
+ * global-read rule also refuses a ref that is a plan slot — two locks.) That
+ * exclusion is the ONE place this differs from @ax/connectors' `deriveCredentialPlan`
+ * and the rail's copy, which keep the slot; the contract test in @ax/channel-web
+ * (`connector-credential-refs-contract.test.ts`, TASK-807) pins every other
+ * shape to be identical.
  */
 export function connectorCredentialSlots(
   c: ResolvedConnectorForOrch,
@@ -636,7 +640,11 @@ export function foldConnectorCaps(
     // `c.id` here — but it's retained because a SKILL slot (foldAuthoredSkillCaps,
     // which DOES carry `account`) flows through the same shape elsewhere. Re-derived
     // locally (I2 — no @ax/connectors runtime import). `connector-union.test.ts`
-    // pins the shape; a drift here would silently address an empty/colliding row.
+    // pins the shape, and @ax/channel-web's `connector-credential-refs-contract.test.ts`
+    // runs this derivation against @ax/connectors' plan and the rail's copy over
+    // one fixture table (TASK-807); a drift here would silently address an
+    // empty/colliding row, or leave the rail saying "signed in" for a connector
+    // the turn skips.
     // The ref derivation (and the TASK-797 client-secret exclusion) lives in
     // `connectorCredentialSlots`, shared with the TASK-806 presence check.
     for (const { slotDef, ref } of connectorCredentialSlots(c)) {

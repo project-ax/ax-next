@@ -488,6 +488,12 @@ function scopeForKeyMode(keyMode: ConnectorKeyMode): ConnectorCredentialScope {
  * connector to the single company key (`scope:'global'`). A connector with no
  * credential slots yields an empty plan (nothing to prompt — e.g. an MCP server
  * that needs no key); the connect flow treats that as "connected, needs no key".
+ *
+ * Also what the server-side rail presence read runs (`credentialChecks` in
+ * `server/routes-workspace.ts`), so it is one of THREE copies of the ref rule —
+ * with @ax/connectors and the host's `connectorCredentialSlots`.
+ * `__tests__/connector-credential-refs-contract.test.ts` runs all three over one
+ * fixture table (TASK-807).
  */
 export function deriveCredentialPlan(
   connector: Connector,

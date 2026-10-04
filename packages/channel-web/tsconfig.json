@@ -22,6 +22,8 @@
     { "path": "../conversations" },
     { "path": "../ipc-protocol" },
     { "path": "../attachments" },
+    { "path": "../chat-orchestrator" },
+    { "path": "../connectors" },
     { "path": "../credentials-admin-routes" },
     { "path": "../skills" },
     { "path": "../skills-parser" },
