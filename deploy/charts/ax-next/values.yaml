@@ -656,8 +656,11 @@ onboarding:
 # you edit the one obvious spot than wire up an indirection that silently
 # no-ops if you typo it.
 auth:
-  # Leave empty to auto-generate (the normal case). Set ONLY to carry an
-  # existing AX_AUTH_SECRET onto a fresh cluster (decoded value).
+  # Leave empty to auto-generate. Set it (decoded value) to pin a secret you
+  # keep backed up elsewhere — e.g. to carry an existing AX_AUTH_SECRET onto a
+  # fresh cluster. Ignored once the in-cluster Secret already has one (see
+  # templates/hook-secret.yaml), so passing it on every upgrade is harmless;
+  # deploy/GKE.md Step 4b does exactly that.
   secret: ""
   # How long a signed-in session lasts, in seconds. Empty keeps
   # @ax/auth-better's 7-day default. Positive integer; the host refuses to
