@@ -147,6 +147,39 @@ describe('credentials:get {rejected} (TASK-817)', () => {
     expect(log).toEqual(['ordinary-start', 'ordinary-end', 'rejected-start']);
   });
 
+  // Review finding: a renewal that waited must renew from the row as it is
+  // NOW. If the read it waited for rotated the refresh token, renewing from
+  // the pre-wait snapshot presents the old one, which a rotating authorization
+  // server refuses as reuse — a false "sign-in expired".
+  it('a rejected read that waited renews from the row the ordinary read just re-stored, not its pre-wait snapshot', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const renewedFrom: string[] = [];
+    const bus = await setup(async (input) => {
+      const payload = new TextDecoder().decode(input.payload as Uint8Array);
+      if (input.rejected === true) {
+        renewedFrom.push(payload);
+        return { value: 'fresh' };
+      }
+      await gate;
+      return { value: 'rotated', refreshed: { payload: bytes('blob-v2') } } as { value: string };
+    });
+    const ordinary = bus.call<unknown, string>('credentials:get', ctx(), { ref: 'oauth1', userId: 'u' });
+    await new Promise((r) => setTimeout(r, 10));
+    const rejected = bus.call<unknown, string>('credentials:get', ctx(), {
+      ref: 'oauth1',
+      userId: 'u',
+      rejected: true,
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    release();
+    expect(await ordinary).toBe('rotated');
+    expect(await rejected).toBe('fresh');
+    expect(renewedFrom).toEqual(['blob-v2']);
+  });
+
   it('an ordinary read arriving while a rejected read renews shares the renewed value', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => {

@@ -756,6 +756,53 @@ describe('connectors:describe-tools', () => {
       expect(t.list).toHaveBeenCalledTimes(1);
     });
 
+    it('renews only the token that was sent: two OAuth slots on one server renew the one in Authorization', async () => {
+      const t = setup({
+        resolve: () =>
+          connector({
+            capabilities: {
+              credentials: [
+                { slot: 'a', kind: 'oauth', server: 'main' },
+                { slot: 'b', kind: 'oauth', server: 'main' },
+              ],
+              mcpServers: [{ name: 'main', transport: 'http', url: 'https://a.example.com/mcp' }],
+            },
+            credentialPlan: [
+              { slot: 'a', ref: 'account:linear:a' },
+              { slot: 'b', ref: 'account:linear:b' },
+            ],
+          }),
+        list: async () => refused,
+      });
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(credGets(t).filter((c) => (c as { rejected?: boolean }).rejected === true)).toEqual([
+        { ref: 'account:linear:b', userId: 'u1', rejected: true },
+      ]);
+    });
+
+    it('a key slot that writes its own Authorization over the bearer renews nothing', async () => {
+      const t = setup({
+        resolve: () =>
+          connector({
+            capabilities: {
+              credentials: [
+                { slot: 'a', kind: 'oauth', server: 'main' },
+                { slot: 'k', kind: 'api-key', headerName: 'Authorization', server: 'main' },
+              ],
+              mcpServers: [{ name: 'main', transport: 'http', url: 'https://a.example.com/mcp' }],
+            },
+            credentialPlan: [
+              { slot: 'a', ref: 'account:linear:a' },
+              { slot: 'k', ref: 'account:linear:k' },
+            ],
+          }),
+        list: async () => refused,
+      });
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(credGets(t)).toHaveLength(2);
+      expect(t.list).toHaveBeenCalledTimes(1);
+    });
+
     it('renews only the refused server: an OK sibling server is listed once', async () => {
       const t = setup({
         resolve: () =>

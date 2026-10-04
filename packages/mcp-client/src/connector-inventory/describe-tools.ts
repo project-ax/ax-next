@@ -170,9 +170,10 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     server: ResolvedServer,
     ctx: AgentContext,
     userId: string,
-  ): Promise<{ headers: Record<string, string>; oauthRefs: string[] } | 'needs-auth' | 'unavailable'> {
+  ): Promise<{ headers: Record<string, string>; bearerRef?: string } | 'needs-auth' | 'unavailable'> {
     const headers: Record<string, string> = {};
-    const oauthRefs: string[] = [];
+    // The ref whose token is in `Authorization` (the last OAuth slot wins).
+    let bearerRef: string | undefined;
     for (const slot of connector.capabilities.credentials) {
       if (slot.server !== server.name) continue;
       const header = slot.kind === 'oauth' ? 'Authorization' : slot.headerName;
@@ -196,9 +197,11 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       }
       if (typeof value !== 'string' || value.length === 0) return 'needs-auth';
       headers[header] = slot.kind === 'oauth' ? `Bearer ${value}` : value;
-      if (slot.kind === 'oauth') oauthRefs.push(ref);
+      if (slot.kind === 'oauth') bearerRef = ref;
+      // A key slot that writes its own `Authorization` replaced the bearer.
+      else if (header.toLowerCase() === 'authorization') bearerRef = undefined;
     }
-    return { headers, oauthRefs };
+    return { headers, ...(bearerRef !== undefined ? { bearerRef } : {}) };
   }
 
   /**
@@ -214,33 +217,27 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
    */
   async function renewRefused(
     connectorId: string,
-    oauthRefs: readonly string[],
+    bearerRef: string,
     headers: Readonly<Record<string, string>>,
     ctx: AgentContext,
     userId: string,
   ): Promise<Record<string, string> | null> {
-    let renewed: string | undefined;
-    for (const ref of oauthRefs) {
-      try {
-        const value = await deps.bus.call<{ ref: string; userId: string; rejected: true }, string>(
-          'credentials:get',
-          ctx,
-          { ref, userId, rejected: true },
-        );
-        if (typeof value !== 'string' || value.length === 0) return null;
-        renewed = value;
-      } catch (err) {
-        const missing = noUsableCredential(err);
-        ctx.logger.info('connector_inventory_token_renew_failed', {
-          connectorId,
-          code: err instanceof PluginError ? err.code : 'error',
-          reconnect: missing,
-        });
-        return null;
-      }
+    let renewed: string;
+    try {
+      renewed = await deps.bus.call<{ ref: string; userId: string; rejected: true }, string>(
+        'credentials:get',
+        ctx,
+        { ref: bearerRef, userId, rejected: true },
+      );
+    } catch (err) {
+      ctx.logger.info('connector_inventory_token_renew_failed', {
+        connectorId,
+        code: err instanceof PluginError ? err.code : 'error',
+        reconnect: noUsableCredential(err),
+      });
+      return null;
     }
-    if (renewed === undefined) return null;
-    // One Authorization header per server: the last OAuth slot's, as headersFor sets it.
+    if (typeof renewed !== 'string' || renewed.length === 0) return null;
     return { ...headers, Authorization: `Bearer ${renewed}` };
   }
 
@@ -272,7 +269,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
           ns: string;
           url: string;
           headers: Record<string, string>;
-          oauthRefs: string[];
+          bearerRef?: string;
         };
     const planned: Planned[] = [];
     for (const server of connector.capabilities.mcpServers) {
@@ -304,7 +301,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       planned.push(
         headers === 'needs-auth'
           ? { server, ns, outcome: { kind: 'needs-auth' } }
-          : { server, ns, url: server.url, headers: headers.headers, oauthRefs: headers.oauthRefs },
+          : { server, ns, url: server.url, headers: headers.headers, ...(headers.bearerRef !== undefined ? { bearerRef: headers.bearerRef } : {}) },
       );
     }
     // TASK-812 — whether pass 2 sends anything anywhere. A check where every
@@ -319,10 +316,10 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
         !('outcome' in p) &&
         outcome.kind === 'needs-auth' &&
         outcome.rejected === true &&
-        p.oauthRefs.length > 0
+        p.bearerRef !== undefined
       ) {
         // TASK-817 — one renewal, one more listing; never a loop.
-        const renewed = await renewRefused(connector.id, p.oauthRefs, p.headers, ctx, input.userId);
+        const renewed = await renewRefused(connector.id, p.bearerRef, p.headers, ctx, input.userId);
         ctx.logger.info('connector_inventory_token_refused', {
           connectorId: connector.id,
           renewed: renewed !== null,

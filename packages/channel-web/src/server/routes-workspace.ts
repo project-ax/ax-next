@@ -1783,7 +1783,9 @@ function connectorsNotLoaded(out: ConnectorsListEffectiveOutput): Set<string> {
  * wrong; only the marker the token resolver writes on a rejected refresh says so.
  * (TASK-817: that includes the renewal a tool check asks for when the provider
  * answers 401 to a stored, unexpired token — so a provider-side revocation
- * lands here too, as needs-reconnect, never as a parallel state.)
+ * lands here too, as needs-reconnect, never as a parallel state. Keyed like
+ * every marker: on the token's owner, and for a workspace-wide sign-in on the
+ * person whose check saw the 401; others see it when their own check does.)
  *
  * TASK-795 — `needs-sign-in` (no credential present along the vault's lookup
  * order) sits between the two: below a rejected sign-in, which is the more

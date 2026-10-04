@@ -840,11 +840,11 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       ): Promise<string> {
         // user -> agent -> global -> envFallback -> not-found. The walk (and
         // its `account:` gates) is findRow; it runs OUTSIDE the inflight mutex.
-        const found = await findRow(ctx, userId, ref);
+        let found = await findRow(ctx, userId, ref);
         if (found !== undefined) {
           // Found the row. Mutex on the RESOLVED tuple so concurrent
           // callers landing here share one resolver Promise.
-          const key = mutexKey(found.scope, found.ownerId, ref);
+          let key = mutexKey(found.scope, found.ownerId, ref);
           let existing = inflight.get(key);
           if (rejected) {
             // TASK-817 — a caller whose value was just refused must not be
@@ -854,8 +854,10 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
             // authorization server reject the second as reuse. So: wait for
             // it to settle, then renew. Another rejected read in flight is
             // exactly what this caller wants, so share that one.
+            let waited = false;
             while (existing !== undefined && !renewing.has(existing)) {
               const settled = existing;
+              waited = true;
               await settled.then(
                 () => undefined,
                 () => undefined,
@@ -863,6 +865,21 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
               existing = inflight.get(key);
               // Its owner has not cleared the slot yet: it is done all the same.
               if (existing === settled) existing = undefined;
+            }
+            if (waited && existing === undefined) {
+              // The read we waited for may have re-stored the row (a refresh
+              // that rotated the refresh token). Renewing from the pre-wait
+              // snapshot would present the old one, which a rotating
+              // authorization server refuses as reuse: a false "sign-in
+              // expired". Renew from the row as it is now.
+              found = await findRow(ctx, userId, ref);
+              if (found === undefined) return doResolve(ctx, userId, ref, false);
+              key = mutexKey(found.scope, found.ownerId, ref);
+              existing = inflight.get(key);
+              if (existing !== undefined && !renewing.has(existing)) {
+                // Yet another ordinary read started meanwhile: wait for it too.
+                return doResolve(ctx, userId, ref, true);
+              }
             }
           }
           if (existing !== undefined) return existing;
