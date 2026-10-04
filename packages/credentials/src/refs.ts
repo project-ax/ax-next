@@ -5,7 +5,6 @@ const PLUGIN_NAME = '@ax/credentials';
 export type Destination =
   | { kind: 'provider'; provider: string }
   | { kind: 'skill-slot'; skillId: string; slot: string }
-  | { kind: 'mcp-env'; serverId: string; envName: string }
   | { kind: 'mcp-header'; serverId: string; headerName: string }
   | { kind: 'routine-hmac'; agentId: string; routinePath: string }
   // JIT P2 — service-keyed user vault. `slot` (TASK-124, per-slot credential
@@ -40,10 +39,6 @@ export function refForDestination(dest: Destination): string {
       assertNoColon('skillId', dest.skillId);
       assertNoColon('slot', dest.slot);
       return `skill:${dest.skillId}:${dest.slot}`;
-    case 'mcp-env':
-      assertNoColon('serverId', dest.serverId);
-      assertNoColon('envName', dest.envName);
-      return `mcp:${dest.serverId}:env:${dest.envName}`;
     case 'mcp-header':
       assertNoColon('serverId', dest.serverId);
       assertNoColon('headerName', dest.headerName);

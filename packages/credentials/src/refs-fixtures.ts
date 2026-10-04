@@ -41,10 +41,6 @@ export const KNOWN_DESTINATION_FIXTURES: ReadonlyArray<DestinationFixture> = [
     expectedRef: 'skill:linear-tracker:LINEAR_TOKEN',
   },
   {
-    destination: { kind: 'mcp-env', serverId: 'gh', envName: 'GH_TOKEN' },
-    expectedRef: 'mcp:gh:env:GH_TOKEN',
-  },
-  {
     destination: {
       kind: 'mcp-header',
       serverId: 'gh',
