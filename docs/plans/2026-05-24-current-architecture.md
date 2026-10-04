@@ -113,7 +113,7 @@ model output directly.
 | Per-chat orchestration (`agent:invoke`) | **Host** — `@ax/chat-orchestrator` | route-vs-fresh, lifecycle |
 | Sandbox spawn / pod lifecycle | **Host** — `@ax/sandbox-subprocess` / `@ax/sandbox-k8s` | registers `sandbox:open-session` |
 | IPC wire (runner ↔ host) | **Host** — `@ax/ipc-server` (unix) / `@ax/ipc-http` (tcp); dispatcher in `@ax/ipc-core` | auth + per-action handlers |
-| Host tool execution | **Host** — `@ax/mcp-client`, `@ax/web-tools`, `@ax/tool-artifact-publish` | `tool:execute:<name>` |
+| Host tool execution | **Host** — `@ax/web-tools`, `@ax/tool-artifact-publish`, `@ax/memory`, `@ax/skill-broker` (catalog: `@ax/mcp-client`'s tool-dispatcher plugin) | `tool:execute:<name>`. Host MCP servers (`/admin/mcp-servers`, `ax-next mcp`) were retired in TASK-792; MCP reaches agents only through connectors. |
 | Workspace versioning | **Host** — `@ax/workspace-git` (local) / `@ax/workspace-git-server` (git-protocol) | opaque `WorkspaceVersion` |
 | Conversation/transcript metadata | **Host** — `@ax/conversations` | reads committed jsonl |
 | Credentials / egress proxy | **Host** — `@ax/credentials*`, `@ax/credential-proxy` | runner sees only `ax-cred:<hex>` placeholders; the proxy swaps one in only for the session that owns it, on egress to that credential's bound `allowedHosts` (TASK-687) — being on the session allowlist is not enough |
