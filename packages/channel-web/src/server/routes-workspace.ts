@@ -1396,11 +1396,14 @@ interface ConnectorsListEffectiveOutput {
     toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
     /**
      * Only the server names (TASK-745) and the credential slots (TASK-795,
-     * for the presence read) are read here.
+     * for the presence read) are read here. A slot is the connector's own
+     * {@link ConnectorCredentialSlot} — not a hand-copied `{slot, kind}`
+     * subset — so a field it grows (`headerName`, an OAuth slot's `server`)
+     * is visible to every reader of this list instead of silently absent.
      */
     capabilities?: {
       mcpServers?: Array<{ name: string }>;
-      credentials?: Array<{ slot: string; kind: string }>;
+      credentials?: ConnectorCredentialSlot[];
     };
   }>;
 }
@@ -1490,14 +1493,15 @@ interface ConnectorCredentialCheck {
  * (TASK-795, `credentials:has`) both ask about exactly these refs.
  *
  * Takes the minimal shape both callers have — a full `connectors:get` record,
- * or a `connectors:list-effective` entry's id / keyMode / slots. A slot that
- * is not `{slot: string, kind: 'oauth' | 'api-key'}` is not one anything here
+ * or a `connectors:list-effective` entry's id / keyMode / slots. The bus is
+ * not type-checked, so a slot that is not a {@link ConnectorCredentialSlot}
+ * (a `slot` string and an `oauth` / `api-key` kind) is not one anything here
  * wrote, and is skipped rather than guessed at.
  */
 function credentialChecks(connector: {
   id: string;
   keyMode?: 'personal' | 'workspace' | undefined;
-  capabilities?: { credentials?: ReadonlyArray<{ slot: string; kind: string }> } | undefined;
+  capabilities?: { credentials?: ReadonlyArray<ConnectorCredentialSlot> } | undefined;
 }): ConnectorCredentialCheck[] {
   const raw = connector?.capabilities?.credentials;
   const slots = (Array.isArray(raw) ? raw : []).filter(
