@@ -552,6 +552,70 @@ describe('chat-orchestrator', () => {
     ]);
   });
 
+  it('runner exits 2 before chat:end → runner-boot-failed outcome, turn-error and a warn log (TASK-784)', async () => {
+    const mocks = buildMocks({
+      openSession: async () => ({
+        runnerEndpoint: 'unix:///tmp/short.sock',
+        handle: {
+          kill: async () => undefined,
+          // The runner shell's fatal exit (e.g. a bad AX_PROXY_TOKEN), with a
+          // backend reason as the k8s sandbox reports it.
+          exited: Promise.resolve({ code: 2, signal: null, reason: 'Error' }),
+        },
+      }),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+
+    const turnErrors: Array<{ reqId?: string; reason?: string; detail?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string; detail?: string });
+      return undefined;
+    });
+    const endFires: AgentOutcome[] = [];
+    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+    const lines: Array<Record<string, unknown>> = [];
+    const ctx = makeAgentContext({
+      sessionId: 'boot-fail',
+      agentId: 'test-agent',
+      userId: 'test-user',
+      reqId: 'r-boot',
+      logger: createLogger({
+        reqId: 'r-boot',
+        writer: (line: string) => {
+          lines.push(JSON.parse(line) as Record<string, unknown>);
+        },
+      }),
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctx, {
+      message: { role: 'user', content: 'hi' },
+    });
+
+    expect(outcome).toEqual({ kind: 'terminated', reason: 'runner-boot-failed' });
+    expect(endFires).toEqual([outcome]);
+    // Only the fixed reason code reaches the client — no detail line.
+    expect(turnErrors).toEqual([{ reqId: 'r-boot', reason: 'runner-boot-failed' }]);
+    const warn = lines.find((l) => l.msg === 'runner_exit_before_chat_end');
+    expect(warn).toMatchObject({
+      level: 'warn',
+      reason: 'runner-boot-failed',
+      exitCode: 2,
+      exitSignal: null,
+      exitReason: 'Error',
+    });
+  });
+
   it('wedged-runner timeout fires chat:turn-error(chat-run-timeout)', async () => {
     // Default mock: exited never resolves, no chat:end → the bounded
     // chatTimeoutMs path synthesizes the terminated outcome.
