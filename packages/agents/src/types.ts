@@ -313,7 +313,8 @@ export interface ListPersonalOwnersOutput {
 // can't be verified) — is refused with a PluginError of code `forbidden` and
 // `diagnosis.reason === 'workspace-connector'`. That tag tells it apart from the
 // ACL's `forbidden`; its message names only the connector id the caller sent,
-// so a transport may surface it verbatim. Admins bypass the guard.
+// so a transport may surface it verbatim (none does today: the workspace rail
+// maps every `forbidden` to an opaque 403). Admins bypass the guard.
 //
 // `changed` is false when the call was a no-op (already attached / already
 // absent and not newly excluded). `exclude` records the id in

@@ -437,9 +437,6 @@ describe('AdminSettings — agents tab', () => {
       if (/\/admin\/connectors(\?|$)/.test(url)) {
         return Promise.resolve(jsonOk({ connectors: [] }));
       }
-      if (/connector-attachments/.test(url)) {
-        return Promise.resolve(jsonOk({ agent: teamAgent }));
-      }
       if (/\/identity$/.test(url)) {
         return Promise.resolve(
           method === 'PUT'
