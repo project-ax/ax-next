@@ -286,6 +286,19 @@ describe('segments and the admin ceiling', () => {
     expect(tip.textContent).toContain('Your admin set this to Ask first.');
   });
 
+  it('an Ask-first tool under an Allow ceiling (no admin cap, TASK-809) can be set to Allow', async () => {
+    setMock.mockResolvedValue({
+      tool: { toolKey: `mcp.${NS}.Create issue`, verdict: 'allow', ceiling: 'allow' },
+    });
+    renderTab();
+    await openDetails();
+    await screen.findByText('Create issue');
+    const allow = within(rowGroup('Create issue')).getByRole('radio', { name: 'Allow' });
+    expect(allow.getAttribute('aria-disabled')).toBeNull();
+    fireEvent.click(allow);
+    expect(setMock).toHaveBeenCalledWith('a-quill', 'linear', `mcp.${NS}.Create issue`, 'allow');
+  });
+
   it('writes one tool at a time and shows what the server re-read', async () => {
     // The server answers Ask first even though Deny was asked for: the control
     // must follow the store, not the click.

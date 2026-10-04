@@ -1835,6 +1835,12 @@ interface GetConnectorDefaultsInput {
 }
 interface GetConnectorDefaultsOutput {
   defaults: Array<{ toolKey: string; verdict: AbilityVerdict }>;
+  /**
+   * TASK-809 — the asked namespaces whose tools carry NO connector ceiling
+   * (OAuth servers: people choose per agent). Read defensively: a missing or
+   * malformed field reads as none, i.e. today's capped behaviour.
+   */
+  agentSourcedNamespaces?: unknown;
 }
 
 /** Rows one details view carries — tool-policy's own per-write cap. */
@@ -6970,8 +6976,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * fenced and clamped here, at the boundary, so no renderer has to remember.
      */
     async connectorTools(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const userId = actor.id;
       const agentId = req.params.agentId ?? '';
       if (agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -7039,6 +7046,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
 
       const defaults = new Map<string, AgentToolVerdict>();
+      const agentSourced = new Set<string>();
       if (namespaces.length > 0) {
         const out = await bus.call<GetConnectorDefaultsInput, GetConnectorDefaultsOutput>(
           'tool-policy:get-connector-defaults',
@@ -7049,6 +7057,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           if (typeof d?.toolKey !== 'string') continue;
           // An unreadable verdict fails closed: Ask first, never Allow.
           defaults.set(d.toolKey, isToolVerdict(d.verdict) ? d.verdict : 'hold');
+        }
+        // Only this connector's own namespaces can be agent-sourced here; a
+        // stray or malformed entry is ignored (fails closed to the capped read).
+        const sourced: unknown = out?.agentSourcedNamespaces;
+        if (Array.isArray(sourced)) {
+          for (const ns of sourced as unknown[]) {
+            if (typeof ns === 'string' && own.has(ns)) agentSourced.add(ns);
+          }
         }
       }
       const overrides = new Map<string, { verdict: AgentToolVerdict; ceiling?: AgentToolVerdict }>();
@@ -7076,22 +7092,44 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         ),
       );
 
+      // TASK-809 — on a TEAM agent, only whoever may manage its connectors
+      // (TASK-798: a workspace admin or the team's admins) may lift an
+      // agent-sourced tool above Ask first. Everyone else keeps the cap they
+      // had before these namespaces lost their admin ceiling. Display only:
+      // a failing check reads as "may not" here, and the PUT asks again.
+      const memberCapped =
+        agentSourced.size > 0 &&
+        agent.visibility === 'team' &&
+        !actor.isAdmin &&
+        !(await connectorsManageable(agentId, actor));
+
       const row = (
         toolKey: string,
         ns: string,
         fields: Partial<DescribeToolsInventoryOutput['tools'][number]>,
       ): AgentConnectorTool => {
         const override = overrides.get(toolKey);
-        const ceiling = override?.ceiling ?? defaults.get(toolKey) ?? 'hold';
+        // TASK-809 — an agent-sourced namespace (OAuth connector) has no admin
+        // ceiling: with no row of its own a tool is Ask first, but the person
+        // may pick anything (ceiling `allow`; only static rules cap it, and a
+        // row that exists reports its own ceiling). Connector-sourced
+        // namespaces keep the admin default as the ceiling.
+        const open =
+          override?.ceiling ??
+          (agentSourced.has(ns) ? 'allow' : (defaults.get(toolKey) ?? 'hold'));
+        // The cap limits what a member may CHOOSE, never what is reported as
+        // happening: `verdict` below uses the real ceiling, so a tool a manager
+        // set to Allow reads Allow for a member too (it does run unasked).
+        const ceiling = memberCapped && agentSourced.has(ns) ? strictestVerdict(open, 'hold') : open;
         const held: AgentToolVerdict | undefined =
-          override === undefined && copied.has(ns) ? 'hold' : undefined;
+          override === undefined && (copied.has(ns) || agentSourced.has(ns)) ? 'hold' : undefined;
         return {
           toolKey,
           title: connectorToolTitle(toolKey, ns, fields.title, fields.name),
           description: fenceToolDescription(fields.description),
           readOnly: typeof fields.readOnly === 'boolean' ? fields.readOnly : null,
           outward: typeof fields.outward === 'boolean' ? fields.outward : null,
-          verdict: strictestVerdict(override?.verdict ?? held, ceiling),
+          verdict: strictestVerdict(override?.verdict ?? held, open),
           ceiling,
         };
       };
@@ -7154,8 +7192,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * is the store's re-read state, not an echo of the request.
      */
     async setConnectorToolVerdict(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const userId = actor.id;
       const agentId = req.params.agentId ?? '';
       if (agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -7217,6 +7256,36 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
 
       const ctx = agentWorkspaceCtx(agentId, userId);
+      // TASK-809 — an agent-sourced namespace (an OAuth connector) has no
+      // admin ceiling, so tool-policy would accept Allow from anyone who can
+      // see the agent. On a TEAM agent that choice applies to every member's
+      // runs, so lifting a tool above Ask first there takes the TASK-798
+      // authority (workspace admin, or the team's admins). Ask first and Deny
+      // stay open to members, as before. A fault in the check is a 5xx, never
+      // a quiet yes; a missing check is a no.
+      if (verdict === 'allow' && agent.visibility === 'team' && !actor.isAdmin) {
+        let sourced = false;
+        if (bus.hasService('tool-policy:get-connector-defaults')) {
+          const out = await bus.call<GetConnectorDefaultsInput, GetConnectorDefaultsOutput>(
+            'tool-policy:get-connector-defaults',
+            ctx,
+            { connectorId, toolNamespaces: [keyNamespace] },
+          );
+          // An answer we can't read counts as agent-sourced: the manage check
+          // then runs, which is the closed direction (the GET caps the same way).
+          const list: unknown = out?.agentSourcedNamespaces;
+          sourced = !Array.isArray(list) || (list as unknown[]).includes(keyNamespace);
+        }
+        if (sourced) {
+          const mayManage =
+            bus.hasService('agents:can-manage-connectors') &&
+            (await askCanManageConnectors(agentId, actor));
+          if (!mayManage) {
+            res.status(409).json({ error: 'ceiling-violation', ceiling: 'hold' });
+            return;
+          }
+        }
+      }
       const wrote = await bus.call<
         ToolPolicySetAgentOverrideInput,
         ToolPolicySetAgentOverrideOutput

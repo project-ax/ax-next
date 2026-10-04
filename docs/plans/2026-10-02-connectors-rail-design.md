@@ -81,6 +81,16 @@ Ask `warning-soft`/`warning`, Deny `destructive-soft`/`destructive`.
   Ask first, with a fixed `hold` ceiling (`implicitMcpCeiling`). There is no default slot for those,
   so an agent can tighten them to Deny but nobody can set them to Allow yet. The approval card now
   shows the held call's tool and its input (`Decision.request`, fenced, open rows only).
+- **Superseded for OAuth MCP connectors by TASK-809 (owner decision 2026-10-04).** The "admin
+  connector default" layer above now applies only to API-key and no-auth MCP servers. Each connector
+  tool namespace has a *ceiling source* in tool-policy (`tool_policy_v1_agent_sourced_namespaces`),
+  written by @ax/connectors from the server's auth type (`tool-policy:set-ceiling-sources`, on every
+  upsert and once per boot): an OAuth server's namespace is `agent`-sourced — no connector ceiling, its
+  admin defaults deleted and ignored, the agent's own row decides (static rules still apply), and a tool
+  with no row is Ask first. Starting rows come from the MCP server's hints at attach
+  (`readOnly → Allow`, else Ask first), seeded by @ax/agents through `startingVerdicts` on
+  `tool-policy:snapshot-connector-for-agent`. The admin editor shows no tool permissions for OAuth
+  servers. See `docs/plans/2026-10-03-user-added-connectors-design.md` § E.
 - **Ability toggles** are agent-level tighten-only overrides on `web_search`, `web_extract`, `Bash`.
   Off = `deny`. They can never loosen a static rule (e.g. SDK `WebFetch` stays denied).
 - **Workspace-keyed connectors are hidden from non-admins in Add** (attach is admin-only for them today).

@@ -135,6 +135,24 @@ workspace-key connectors from the rail (non-admins still don't see them in Add).
 - Members' own Settings → Connectors sign-ins (no `agentId`, user scope) are unaffected; per the
   HYBRID lookup they shadow the team token for that member's own runs, as today.
 
+### E. Tool permissions by auth type (TASK-809, owner decision 2026-10-04)
+
+Found on the TASK-800 walk: a new connector never saved per-tool defaults (the editor showed the
+section only after a first save), so every tool had no admin default and the rail capped it at Ask
+first — Allow greyed out on Gmail's read tools.
+
+- **API-key / no-auth MCP servers:** the create dialog saves the connector, lists its tools and shows
+  the tool-permissions section in the same dialog; Save writes every row shown, suggestions included.
+  Listing failure still saves (tools stay Ask first). The admin default stays a ceiling, as before.
+- **OAuth MCP servers:** no tool-permissions section in the admin editor (create or edit). No admin
+  ceiling: the namespace is `agent`-sourced in tool-policy, its old admin defaults are deleted (once,
+  idempotently, at boot and on save) and ignored. Attach seeds each tool's starting per-agent verdict
+  from the server's hints (`readOnly → Allow`, else Ask first); a tool with no row is Ask first. People
+  change them in the rail; team agents follow D.
+- **Trust note (accepted by the owner):** for OAuth servers the starting verdicts come from the MCP
+  server's own hints without admin review. Hints are untrusted connector text; the person who signs in
+  decides. Static deny rules and the implicit-MCP ceiling for non-connector tools are unchanged.
+
 ## Boundary review
 
 - **`mcp-oauth:status-batch` gains presence.** Alternate impl: an API-key or vault-backed credential
@@ -172,6 +190,8 @@ workspace-key connectors from the rail (non-admins still don't see them in Add).
 
 Shipping to production also ships the rail epic's Add flow (symptom 1). The rail handoff's warning
 applies: with no admin per-tool defaults saved, every connector tool is "Ask first" (routines pause).
+(Since TASK-809 this is true only for API-key / no-auth connectors created before the create dialog
+learned to save defaults; OAuth connectors start from the server's hints per agent — see E.)
 OAuth on kind needs helm `onboarding.publicBaseUrl`.
 
 ## Out of scope

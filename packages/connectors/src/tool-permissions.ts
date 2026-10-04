@@ -57,6 +57,19 @@ export interface ResetToolNamespacesInputLike {
 }
 
 /**
+ * `tool-policy:set-ceiling-sources` (TASK-809). Throws on malformed input or a
+ * store failure. `agent` = no connector ceiling for that namespace (and its
+ * admin defaults are dropped); `connector` = the admin ceiling applies.
+ */
+export interface SetCeilingSourcesInputLike {
+  connectorId: string;
+  namespaces: Array<{ toolNamespace: string; source: 'connector' | 'agent' }>;
+}
+export interface SetCeilingSourcesOutputLike {
+  toolNamespaces: string[];
+}
+
+/**
  * The `PluginError` code `connectors:upsert` throws when an edit points a
  * kept-name server at a new endpoint and its tool permissions could not be
  * reset first (TASK-758). Nothing was saved. The routes answer it as a 503

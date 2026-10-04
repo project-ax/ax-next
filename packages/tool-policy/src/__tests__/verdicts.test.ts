@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { evaluate } from '../evaluate.js';
 import { BUILTIN_RULES } from '../rules.js';
-import type { PolicyVerdict } from '../types.js';
+import type { PolicyRule, PolicyVerdict } from '../types.js';
 import {
   ceilingFor,
   implicitMcpCeiling,
@@ -51,7 +51,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
         const expected = max(staticVerdict, connectorDefault ?? 'hold', override ?? 'allow');
         it(`connector key: static=${staticVerdict} default=${connectorDefault ?? '∅'} override=${override ?? '∅'} → ${expected}`, () => {
           expect(
-            layeredVerdict({ toolName: CONNECTOR_KEY, staticVerdict, connectorDefault, override }),
+            layeredVerdict({ toolName: CONNECTOR_KEY, staticVerdict, connectorDefault, override, agentSourced: false }),
           ).toBe(expected);
         });
       }
@@ -66,6 +66,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
           staticVerdict,
           connectorDefault: undefined,
           override,
+          agentSourced: false,
         });
         expect(RANK[out]).toBeGreaterThanOrEqual(RANK[staticVerdict]);
       }
@@ -79,6 +80,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
         staticVerdict: 'allow',
         connectorDefault: undefined,
         override: undefined,
+        agentSourced: false,
       }),
     ).toBe('hold');
   });
@@ -90,6 +92,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
         staticVerdict: 'allow',
         connectorDefault: undefined,
         override: undefined,
+        agentSourced: false,
       }),
     ).toBe('hold');
   });
@@ -100,11 +103,11 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
         // A connector default is meaningless for these keys and must not be
         // honoured even if a caller passes one.
         expect(
-          layeredVerdict({ toolName, staticVerdict: 'allow', connectorDefault: 'allow', override }),
+          layeredVerdict({ toolName, staticVerdict: 'allow', connectorDefault: 'allow', override, agentSourced: false }),
         ).toBe('hold');
       }
       expect(
-        layeredVerdict({ toolName, staticVerdict: 'allow', connectorDefault: undefined, override: 'deny' }),
+        layeredVerdict({ toolName, staticVerdict: 'allow', connectorDefault: undefined, override: 'deny', agentSourced: false }),
       ).toBe('deny');
     }
   });
@@ -116,6 +119,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
         staticVerdict: 'allow',
         connectorDefault: 'allow',
         override: 'allow',
+        agentSourced: false,
       }),
     ).toBe('allow');
     expect(
@@ -124,6 +128,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
         staticVerdict: 'allow',
         connectorDefault: 'deny',
         override: 'allow',
+        agentSourced: false,
       }),
     ).toBe('deny');
   });
@@ -135,6 +140,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
         staticVerdict: 'allow',
         connectorDefault: 'allow',
         override: 'hold',
+        agentSourced: false,
       }),
     ).toBe('hold');
   });
@@ -142,7 +148,7 @@ describe('layeredVerdict — the full static × ceiling × override matrix', () 
 
 describe('ceilingFor — what set-agent-override accepts', () => {
   it('admin Ask → the agent may pick Ask or Deny, never Allow', () => {
-    const ceiling = ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, 'hold');
+    const ceiling = ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, 'hold', false);
     expect(ceiling).toBe('hold');
     expect(isLooserThan('allow', ceiling)).toBe(true);
     expect(isLooserThan('hold', ceiling)).toBe(false);
@@ -150,25 +156,25 @@ describe('ceilingFor — what set-agent-override accepts', () => {
   });
 
   it('admin Deny → nothing but Deny', () => {
-    const ceiling = ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, 'deny');
+    const ceiling = ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, 'deny', false);
     expect(isLooserThan('allow', ceiling)).toBe(true);
     expect(isLooserThan('hold', ceiling)).toBe(true);
     expect(isLooserThan('deny', ceiling)).toBe(false);
   });
 
   it('admin Allow → anything', () => {
-    const ceiling = ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, 'allow');
+    const ceiling = ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, 'allow', false);
     for (const v of V) expect(isLooserThan(v, ceiling)).toBe(false);
   });
 
   it('no admin default → capped at Ask first', () => {
-    expect(ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, undefined)).toBe('hold');
+    expect(ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, undefined, false)).toBe('hold');
   });
 
   it('abilities are capped by their static rule: web_extract cannot be set to allow', () => {
-    expect(ceilingFor(BUILTIN_RULES, 'web_extract', undefined)).toBe('hold');
-    expect(ceilingFor(BUILTIN_RULES, 'web_search', undefined)).toBe('allow');
-    expect(ceilingFor(BUILTIN_RULES, 'Bash', undefined)).toBe('allow');
+    expect(ceilingFor(BUILTIN_RULES, 'web_extract', undefined, false)).toBe('hold');
+    expect(ceilingFor(BUILTIN_RULES, 'web_search', undefined, false)).toBe('allow');
+    expect(ceilingFor(BUILTIN_RULES, 'Bash', undefined, false)).toBe('allow');
   });
 
   it('staticCeiling reads the first UNCONDITIONAL rule', () => {
@@ -211,7 +217,7 @@ describe('which keys an override may name', () => {
     const base = evaluate(BUILTIN_RULES, { name: 'WebFetch', input: {} });
     expect(base.verdict).toBe('deny');
     expect(
-      layeredVerdict({ toolName: 'WebFetch', staticVerdict: base.verdict, connectorDefault: undefined, override: 'allow' }),
+      layeredVerdict({ toolName: 'WebFetch', staticVerdict: base.verdict, connectorDefault: undefined, override: 'allow', agentSourced: false }),
     ).toBe('deny');
   });
 
@@ -249,28 +255,87 @@ describe('implicitMcpCeiling — the MCP "Ask first" floor (TASK-699)', () => {
       'mcp.x.has space',
     ]) {
       expect(isMcpSpelled(k)).toBe(true);
-      expect(implicitMcpCeiling(k, undefined)).toBe('hold');
+      expect(implicitMcpCeiling(k, undefined, false)).toBe('hold');
     }
   });
 
   it('only a well-formed connector key can be loosened, and only by its connector default', () => {
-    expect(implicitMcpCeiling(CONNECTOR_KEY, 'allow')).toBe('allow');
-    expect(implicitMcpCeiling(CONNECTOR_KEY, 'deny')).toBe('deny');
-    expect(implicitMcpCeiling('mcp.github.list_issues', 'allow')).toBe('hold');
-    expect(implicitMcpCeiling(`mcp.${NS}.${'a'.repeat(300)}`, 'allow')).toBe('hold');
+    expect(implicitMcpCeiling(CONNECTOR_KEY, 'allow', false)).toBe('allow');
+    expect(implicitMcpCeiling(CONNECTOR_KEY, 'deny', false)).toBe('deny');
+    expect(implicitMcpCeiling('mcp.github.list_issues', 'allow', false)).toBe('hold');
+    expect(implicitMcpCeiling(`mcp.${NS}.${'a'.repeat(300)}`, 'allow', false)).toBe('hold');
   });
 
   it('a non-MCP tool is not newly held — the floor says nothing about it', () => {
     for (const k of ['Read', 'Bash', 'web_search', 'gmail_send', 'MCP.github.x', 'xmcp.github.x', 'mcp_github_x', '']) {
       expect(isMcpSpelled(k)).toBe(false);
-      expect(implicitMcpCeiling(k, undefined)).toBeUndefined();
+      expect(implicitMcpCeiling(k, undefined, false)).toBeUndefined();
     }
     expect(isMcpSpelled(42)).toBe(false);
     expect(isMcpSpelled(null)).toBe(false);
   });
 
   it('ceilingFor caps a host MCP tool at hold, so an agent cannot pick Allow for it', () => {
-    expect(ceilingFor(BUILTIN_RULES, 'mcp.github.list_issues', undefined)).toBe('hold');
-    expect(ceilingFor(BUILTIN_RULES, 'Bash', undefined)).toBe(staticCeiling(BUILTIN_RULES, 'Bash'));
+    expect(ceilingFor(BUILTIN_RULES, 'mcp.github.list_issues', undefined, false)).toBe('hold');
+    expect(ceilingFor(BUILTIN_RULES, 'Bash', undefined, false)).toBe(staticCeiling(BUILTIN_RULES, 'Bash'));
+  });
+});
+
+// TASK-809 — a connector tool namespace whose ceiling source is the AGENT: no
+// admin ceiling, a person chooses per agent, and a tool nobody chose is held.
+describe('agent-sourced namespaces (TASK-809)', () => {
+  const lv = (
+    override: PolicyVerdict | undefined,
+    connectorDefault?: PolicyVerdict,
+    staticVerdict: PolicyVerdict = 'allow',
+  ) =>
+    layeredVerdict({ toolName: CONNECTOR_KEY, staticVerdict, connectorDefault, override, agentSourced: true });
+
+  it('ceilingFor is the static ceiling only — no implicit connector floor, default ignored', () => {
+    expect(ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, undefined, true)).toBe('allow');
+    expect(ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, 'deny', true)).toBe('allow');
+    expect(implicitMcpCeiling(CONNECTOR_KEY, 'deny', true)).toBeUndefined();
+    // A static rule naming the tool still caps it.
+    const rules: PolicyRule[] = [
+      { id: 'x.y', match: { tool: CONNECTOR_KEY }, verdict: 'deny', capability: 'do x', subject: 'agent' },
+    ];
+    expect(ceilingFor(rules, CONNECTOR_KEY, undefined, true)).toBe('deny');
+  });
+
+  it('no override → hold; override allow → allow; the connector default is ignored', () => {
+    expect(lv(undefined)).toBe('hold');
+    expect(lv(undefined, 'allow')).toBe('hold');
+    expect(lv('allow')).toBe('allow');
+    expect(lv('allow', 'deny')).toBe('allow');
+    expect(lv('allow', 'hold')).toBe('allow');
+    expect(lv('deny', 'allow')).toBe('deny');
+  });
+
+  it('a static verdict still wins over an agent Allow', () => {
+    expect(lv('allow', undefined, 'deny')).toBe('deny');
+    expect(lv('allow', undefined, 'hold')).toBe('hold');
+  });
+
+  it('the agent-sourced flag means nothing for a non-connector key', () => {
+    for (const toolName of ['mcp.github.create_issue', 'mcp__linear__create_issue']) {
+      expect(
+        layeredVerdict({
+          toolName,
+          staticVerdict: 'allow',
+          connectorDefault: undefined,
+          override: 'allow',
+          agentSourced: true,
+        }),
+      ).toBe('hold');
+      expect(ceilingFor(BUILTIN_RULES, toolName, undefined, true)).toBe('hold');
+    }
+    expect(ceilingFor(BUILTIN_RULES, 'web_extract', undefined, true)).toBe('hold');
+  });
+
+  it('connector-sourced is unchanged: default allow + override allow = allow; no default + override allow = hold', () => {
+    const base = { toolName: CONNECTOR_KEY, staticVerdict: 'allow' as const, override: 'allow' as const, agentSourced: false };
+    expect(layeredVerdict({ ...base, connectorDefault: 'allow' })).toBe('allow');
+    expect(layeredVerdict({ ...base, connectorDefault: undefined })).toBe('hold');
+    expect(ceilingFor(BUILTIN_RULES, CONNECTOR_KEY, undefined, false)).toBe('hold');
   });
 });

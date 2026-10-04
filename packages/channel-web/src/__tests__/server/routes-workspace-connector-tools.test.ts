@@ -122,24 +122,42 @@ describe('connector details routes (mock bus)', () => {
   /** toolKey → admin default. */
   let defaults: Map<string, string>;
   let defaultsCalls: unknown[];
+  /** What get-connector-defaults answers as `agentSourcedNamespaces` (TASK-809). */
+  let agentSourced: unknown;
   /** toolKey → stored override. */
   let overrides: Map<string, { verdict: string; ceiling?: string }>;
   let listOverridesCalls: number;
   let setCalls: Array<Record<string, unknown>>;
   let setAnswer: (input: { toolKey: string; verdict: string }) => unknown;
   let listEffectiveCalls: number;
+  /** TASK-809 — the agent's visibility and the TASK-798 manage answer. */
+  let visibility: 'personal' | 'team' | undefined;
+  let canManage: boolean;
+  let canManageCalls: number;
+  let isAdmin: boolean;
 
   function registerAll(omit: string[] = []) {
     const reg = (hook: string, fn: (i: unknown) => Promise<unknown>) => {
       if (!omit.includes(hook)) bus.registerService(hook, 'mock', async (_c, i) => fn(i));
     };
-    reg('auth:require-user', async () => ({ user: { id: 'u1', isAdmin: false } }));
+    reg('auth:require-user', async () => ({ user: { id: 'u1', isAdmin } }));
     reg('agents:resolve', async (i) => {
       const { agentId, userId } = i as { agentId: string; userId: string };
       if (owners.get(agentId) !== userId) {
         throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
       }
-      return { agent: { id: agentId, connectorAttachments: ['linear'], connectorExclusions: [] } };
+      return {
+        agent: {
+          id: agentId,
+          connectorAttachments: ['linear'],
+          connectorExclusions: [],
+          ...(visibility !== undefined && { visibility }),
+        },
+      };
+    });
+    reg('agents:can-manage-connectors', async () => {
+      canManageCalls++;
+      return { allowed: canManage };
     });
     reg('connectors:list-effective', async () => {
       listEffectiveCalls++;
@@ -154,6 +172,7 @@ describe('connector details routes (mock bus)', () => {
       defaultsCalls.push(i);
       return {
         defaults: [...defaults.entries()].map(([toolKey, verdict]) => ({ toolKey, verdict })),
+        ...(agentSourced !== undefined && { agentSourcedNamespaces: agentSourced }),
       };
     });
     reg('tool-policy:list-agent-overrides', async () => {
@@ -210,6 +229,7 @@ describe('connector details routes (mock bus)', () => {
       [k(NS_LINEAR, 'delete_issue'), 'deny'],
     ]);
     defaultsCalls = [];
+    agentSourced = undefined;
     overrides = new Map([
       [k(NS_LINEAR, 'create_issue'), { verdict: 'hold', ceiling: 'allow' }],
       [k(NS_GMAIL, 'send'), { verdict: 'deny', ceiling: 'allow' }],
@@ -224,6 +244,10 @@ describe('connector details routes (mock bus)', () => {
       return { ok: true };
     };
     listEffectiveCalls = 0;
+    visibility = undefined;
+    canManage = false;
+    canManageCalls = 0;
+    isAdmin = false;
     registerAll();
   });
 
@@ -338,6 +362,149 @@ describe('connector details routes (mock bus)', () => {
       expect(rows.find((t) => t.toolKey === k(NS_LINEAR, 'search'))).toMatchObject({
         verdict: 'hold',
         ceiling: 'hold',
+      });
+    });
+
+    describe('agent-sourced namespaces (TASK-809: OAuth connectors have no admin ceiling)', () => {
+      beforeEach(() => {
+        inventory = {
+          ...inventory,
+          tools: [tool(NS_GMAIL, 'read_message', { readOnly: true }), tool(NS_GMAIL, 'send')],
+        };
+        // Gmail's `send` row holds Deny under its own reported ceiling; the
+        // read tool has no row at all.
+        overrides.set(k(NS_GMAIL, 'send'), { verdict: 'deny', ceiling: 'allow' });
+      });
+
+      it('a tool with no override row answers ceiling allow, verdict hold (Allow is pickable)', async () => {
+        agentSourced = [NS_GMAIL];
+        const rows = toolsOf(await get('gmail'));
+        expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+          ceiling: 'allow',
+          verdict: 'hold',
+        });
+        // A row that exists keeps its own ceiling and the strictest verdict.
+        expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'send'))).toMatchObject({
+          ceiling: 'allow',
+          verdict: 'deny',
+        });
+      });
+
+      it('an override row under a tighter ceiling is still capped by it', async () => {
+        agentSourced = [NS_GMAIL];
+        overrides.set(k(NS_GMAIL, 'read_message'), { verdict: 'allow', ceiling: 'hold' });
+        const rows = toolsOf(await get('gmail'));
+        expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+          ceiling: 'hold',
+          verdict: 'hold',
+        });
+      });
+
+      it('a connector-sourced tool with no default still answers ceiling hold', async () => {
+        agentSourced = [];
+        const rows = toolsOf(await get('gmail'));
+        expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+          ceiling: 'hold',
+          verdict: 'hold',
+        });
+      });
+
+      describe('on a TEAM agent, lifting above Ask first takes manage authority (TASK-798)', () => {
+        beforeEach(() => {
+          agentSourced = [NS_GMAIL];
+          visibility = 'team';
+          // Like @ax/tool-policy for an agent-sourced namespace: no ceiling.
+          setAnswer = ({ toolKey, verdict }) => {
+            overrides.set(toolKey, { verdict, ceiling: 'allow' });
+            return { ok: true };
+          };
+        });
+
+        it('a plain member sees Allow capped at Ask first', async () => {
+          canManage = false;
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'hold',
+            verdict: 'hold',
+          });
+        });
+
+        it('a plain member cannot store Allow: 409 with the hold ceiling, store untouched', async () => {
+          canManage = false;
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r.statusCode).toBe(409);
+          expect(r.body).toEqual({ error: 'ceiling-violation', ceiling: 'hold' });
+          expect(setCalls).toEqual([]);
+        });
+
+        it('a plain member may still tighten (Deny)', async () => {
+          canManage = false;
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'deny' }, 'gmail');
+          expect(r.statusCode).toBe(200);
+          expect(setCalls).toHaveLength(1);
+        });
+
+        it('the team’s manager may pick Allow, and sees it offered', async () => {
+          canManage = true;
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'allow',
+          });
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r.statusCode).toBe(200);
+          expect(setCalls).toEqual([{ agentId: 'a1', toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }]);
+        });
+
+        it('a member still SEES Allow when a manager chose it (the cap limits choice, not the report)', async () => {
+          canManage = false;
+          overrides.set(k(NS_GMAIL, 'read_message'), { verdict: 'allow', ceiling: 'allow' });
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'hold',
+            verdict: 'allow',
+          });
+        });
+
+        it('an unreadable agentSourcedNamespaces answer still requires manage authority for Allow', async () => {
+          canManage = false;
+          for (const bad of [undefined, NS_GMAIL, { 0: NS_GMAIL }]) {
+            agentSourced = bad;
+            setCalls = [];
+            const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+            expect(r.statusCode).toBe(409);
+            expect(setCalls).toEqual([]);
+          }
+        });
+
+        it('a workspace admin may pick Allow without the manage check', async () => {
+          isAdmin = true;
+          canManage = false;
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'allow',
+          });
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r.statusCode).toBe(200);
+          expect(canManageCalls).toBe(0);
+        });
+
+        it('a personal agent never asks the manage check', async () => {
+          visibility = 'personal';
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r.statusCode).toBe(200);
+          expect(canManageCalls).toBe(0);
+        });
+      });
+
+      it('fails closed on a missing, malformed, or foreign agentSourcedNamespaces', async () => {
+        for (const bad of [undefined, NS_GMAIL, { 0: NS_GMAIL }, [NS_LINEAR, 42, null]]) {
+          agentSourced = bad;
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'hold',
+            verdict: 'hold',
+          });
+        }
       });
     });
 

@@ -58,6 +58,7 @@ afterEach(async () => {
     await c.query('DROP TABLE IF EXISTS tool_policy_v1_connector_defaults');
     await c.query('DROP TABLE IF EXISTS tool_policy_v1_agent_overrides');
     await c.query('DROP TABLE IF EXISTS tool_policy_v1_agent_copied_namespaces');
+    await c.query('DROP TABLE IF EXISTS tool_policy_v1_agent_sourced_namespaces');
   } finally {
     await c.end().catch(() => {});
   }
@@ -398,6 +399,105 @@ describe('verdict store canary (Postgres)', () => {
       ).rejects.toThrow(/malformed tool namespace/);
       // The table may not exist yet if nothing wrote; read through the store.
       expect(await store.copiedNamespacesFor('agent-1')).toEqual([]);
+    });
+  });
+
+  // TASK-809 — ceiling-source markers against the real SQL.
+  describe('agent-sourced namespaces (TASK-809)', () => {
+    const NEW = 'cabcdef0123';
+    const markers = () =>
+      rawRows(
+        'SELECT tool_namespace, connector_id, updated_by FROM tool_policy_v1_agent_sourced_namespaces ORDER BY tool_namespace',
+      );
+
+    it('marker set deletes that namespace’s defaults in the same write; clear removes it; both idempotent', async () => {
+      const h = await boot();
+      await h.bus.call('tool-policy:set-connector-defaults', ctx(h), {
+        connectorId: 'gmail',
+        verdicts: [
+          { toolKey: SEND, verdict: 'allow' },
+          { toolKey: OTHER, verdict: 'allow' },
+        ],
+      });
+      await h.bus.call('tool-policy:set-agent-override', ctx(h), { agentId: 'agent-1', toolKey: SEND, verdict: 'deny' });
+      for (let i = 0; i < 2; i += 1) {
+        await h.bus.call('tool-policy:set-ceiling-sources', ctx(h), {
+          connectorId: 'gmail',
+          namespaces: [{ toolNamespace: NS, source: 'agent' }],
+        });
+      }
+      expect(await markers()).toEqual([{ tool_namespace: NS, connector_id: 'gmail', updated_by: 'admin-1' }]);
+      expect(
+        await rawRows('SELECT tool_namespace, tool_name FROM tool_policy_v1_connector_defaults'),
+      ).toEqual([{ tool_namespace: NS2, tool_name: 'create_issue' }]);
+      expect(
+        await rawRows('SELECT agent_id, tool_key, verdict FROM tool_policy_v1_agent_overrides'),
+      ).toEqual([{ agent_id: 'agent-1', tool_key: SEND, verdict: 'deny' }]);
+      const got = await h.bus.call<unknown, GetConnectorDefaultsOutput>(
+        'tool-policy:get-connector-defaults',
+        ctx(h),
+        { connectorId: 'gmail', toolNamespaces: [NS, NS2] },
+      );
+      expect(got.agentSourcedNamespaces).toEqual([NS]);
+      // A second process reads the marker: an agent Allow is honoured, no default needed.
+      await h.bus.call('tool-policy:set-agent-override', ctx(h), { agentId: 'agent-2', toolKey: SEND, verdict: 'allow' });
+      const h2 = await boot();
+      expect(await verdictOf(h2, SEND, 'agent-2')).toBe('allow');
+      expect(await verdictOf(h2, LIST, 'agent-2')).toBe('hold');
+      for (let i = 0; i < 2; i += 1) {
+        await h.bus.call('tool-policy:set-ceiling-sources', ctx(h), {
+          connectorId: 'gmail',
+          namespaces: [{ toolNamespace: NS, source: 'connector' }],
+        });
+      }
+      expect(await markers()).toEqual([]);
+    });
+
+    it('purge clears markers; rename deletes the from marker and leaves to unmarked', async () => {
+      const h = await boot();
+      const store = await dbStore(h);
+      await store.setCeilingSources(
+        'gmail',
+        [
+          { toolNamespace: NS, source: 'agent' },
+          { toolNamespace: NS2, source: 'agent' },
+        ],
+        'u',
+      );
+      await store.purgeNamespaces([NS2]);
+      expect((await markers()).map((r) => (r as { tool_namespace: string }).tool_namespace)).toEqual([NS]);
+      await store.renameNamespaces([{ from: NS, to: NEW }]);
+      expect(await markers()).toEqual([]);
+      expect([...(await store.agentSourcedNamespaces([NS, NEW, NS2]))]).toEqual([]);
+      await expect(store.agentSourcedNamespaces([NS, '%'])).rejects.toThrow(/malformed tool namespace/);
+      await expect(
+        store.setCeilingSources('gmail', [{ toolNamespace: '%', source: 'agent' }], 'u'),
+      ).rejects.toThrow(/malformed tool namespace/);
+    });
+
+    it('seedOverrides inserts only where no row exists, of any origin', async () => {
+      const h = await boot();
+      const store = await dbStore(h);
+      await store.setOverride('agent-1', SEND, 'deny', 'u');
+      expect(
+        await store.seedOverrides(
+          'agent-1',
+          [
+            { toolKey: SEND, verdict: 'allow' },
+            { toolKey: LIST, verdict: 'allow' },
+          ],
+          'seeder',
+        ),
+      ).toBe(1);
+      expect(await store.seedOverrides('agent-1', [{ toolKey: LIST, verdict: 'deny' }], 'seeder')).toBe(0);
+      expect(
+        await rawRows(
+          'SELECT tool_key, verdict, origin, updated_by FROM tool_policy_v1_agent_overrides ORDER BY tool_key',
+        ),
+      ).toEqual([
+        { tool_key: LIST, verdict: 'allow', origin: 'snapshot', updated_by: 'seeder' },
+        { tool_key: SEND, verdict: 'deny', origin: 'user', updated_by: 'u' },
+      ]);
     });
   });
 });

@@ -830,6 +830,46 @@ export interface GetConnectorDefaultsInput {
 
 export interface GetConnectorDefaultsOutput {
   defaults: Array<{ toolKey: string; verdict: PolicyVerdict }>;
+  /**
+   * TASK-809 — the subset of the asked `toolNamespaces` whose ceiling source is
+   * `agent` (see `SetCeilingSourcesInput`): they have no connector defaults, and
+   * an editor should not offer any. Input order.
+   */
+  agentSourcedNamespaces: string[];
+}
+
+/**
+ * Who sets the ceiling for a connector tool namespace (TASK-809).
+ *
+ *   - `connector` (the default, for any namespace never marked): the per-tool
+ *     defaults whoever can edit the connector set. A tool with no default is
+ *     capped at Ask first, for every agent.
+ *   - `agent`: no connector ceiling. Each agent's own choice decides, capped
+ *     only by the static rule table; a tool nobody chose for an agent is Ask
+ *     first. Connector defaults under the namespace are deleted when it is
+ *     marked and refused afterwards.
+ */
+export type CeilingSource = 'connector' | 'agent';
+
+/**
+ * `tool-policy:set-ceiling-sources` (TASK-809). Record the ceiling source of
+ * each listed connector tool namespace. Marking `agent` also deletes every
+ * connector default under that namespace, in the same write (idempotent);
+ * marking `connector` removes the mark. Agent overrides are never touched.
+ *
+ * Host-internal: authz is the caller's (`@ax/connectors`, which derives the
+ * namespaces from the connector row it owns). Malformed input and a store
+ * failure both THROW, writing nothing — the caller refuses its own edit.
+ */
+export interface SetCeilingSourcesInput {
+  connectorId: string;
+  /** At most 64 entries; each a host-minted `c` + 10 hex namespace. */
+  namespaces: Array<{ toolNamespace: string; source: CeilingSource }>;
+}
+
+export interface SetCeilingSourcesOutput {
+  /** The namespaces written (deduplicated, input order). */
+  toolNamespaces: string[];
 }
 
 /**
@@ -910,10 +950,24 @@ export interface SnapshotConnectorForAgentInput {
    * a person's own choice).
    */
   onlyIfNotCopied?: boolean;
+  /**
+   * TASK-809 — verdicts to START this agent from (e.g. the MCP server's own
+   * hints), for tools under an `agent`-sourced namespace only. An entry is
+   * honoured only when its key is a connector tool key under one of
+   * `toolNamespaces` that is `agent`-sourced, with a valid verdict; anything
+   * else is silently dropped, and at most 500 entries are considered. Written
+   * insert-if-absent (`origin: 'snapshot'`): an existing row of any origin —
+   * a person's choice above all — is never overwritten. A non-array value
+   * throws.
+   */
+  startingVerdicts?: Array<{ toolKey: string; verdict: PolicyVerdict }>;
 }
 
 export interface SnapshotConnectorForAgentOutput {
-  /** Rows written. A row a person already chose (`origin: 'user'`) is never overwritten. */
+  /**
+   * Rows written: copied defaults plus seeded `startingVerdicts`. A row a
+   * person already chose (`origin: 'user'`) is never overwritten.
+   */
   copied: number;
 }
 
@@ -930,6 +984,15 @@ export const SetConnectorDefaultsOutputSchema = z.discriminatedUnion('ok', [
 
 export const GetConnectorDefaultsOutputSchema = z.object({
   defaults: z.array(z.object({ toolKey: z.string(), verdict: PolicyVerdictSchema })),
+  // Declared, or the bus's `returns` re-parse strips it (a z.object drops
+  // undeclared keys) and every caller reads "no namespace is agent-sourced".
+  agentSourcedNamespaces: z.array(z.string()),
+});
+
+export const CeilingSourceSchema = z.enum(['connector', 'agent']);
+
+export const SetCeilingSourcesOutputSchema = z.object({
+  toolNamespaces: z.array(z.string()),
 });
 
 export const ResetToolNamespacesOutputSchema = z.object({

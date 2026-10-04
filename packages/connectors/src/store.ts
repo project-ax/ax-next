@@ -230,6 +230,13 @@ export interface AvailableConnector {
   ownerUserId: string;
 }
 
+/** TASK-809 — one live connector row, any owner, for the boot reconcile. */
+export interface LiveConnectorRow {
+  ownerUserId: string;
+  connectorId: string;
+  capabilities: Capabilities;
+}
+
 // ---------------------------------------------------------------------------
 // Store.
 // ---------------------------------------------------------------------------
@@ -252,6 +259,13 @@ export interface UpsertArgs {
 }
 
 export interface ConnectorStore {
+  /**
+   * TASK-809 — every live (not soft-deleted) row across ALL owners. Internal:
+   * no owner scoping, so it backs the boot reconcile only and is never reachable
+   * from a hook. A row whose capabilities fail the read schema is skipped and
+   * reported through `onSkip` rather than failing the whole listing.
+   */
+  listAllLive(onSkip: (connectorId: string, err: unknown) => void): Promise<LiveConnectorRow[]>;
   /** Owned and unambiguous shared definitions, newest-updated first. */
   listForUser(userId: string): Promise<ConnectorSummary[]>;
   /**
@@ -298,6 +312,29 @@ export function createConnectorStore(
   db: Kysely<ConnectorDatabase>,
 ): ConnectorStore {
   return {
+    async listAllLive(onSkip) {
+      const rows = await db
+        .selectFrom('connectors_v1_connectors')
+        .select(['owner_user_id', 'connector_id', 'capabilities'])
+        .where('deleted_at', 'is', null)
+        .orderBy('owner_user_id', 'asc')
+        .orderBy('connector_id', 'asc')
+        .execute();
+      const out: LiveConnectorRow[] = [];
+      for (const row of rows) {
+        try {
+          out.push({
+            ownerUserId: row.owner_user_id,
+            connectorId: row.connector_id,
+            capabilities: validateCapabilities(row.capabilities),
+          });
+        } catch (err) {
+          onSkip(row.connector_id, err);
+        }
+      }
+      return out;
+    },
+
     async listForUser(userId) {
       return (await selectAvailableRows(db, userId))
         .map((row) => ({ ...rowToSummary(row), canEdit: row.owner_user_id === userId }));

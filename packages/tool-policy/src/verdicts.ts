@@ -7,12 +7,20 @@ import type { PolicyRule, PolicyVerdict } from './types.js';
  *
  *   1. the STATIC rule table (`rules.ts`, reviewed in a diff) — evaluated per
  *      call, egress relaxation included;
- *   2. the CONNECTOR CEILING — the per-tool default whoever can edit the
- *      connector set (an admin for a shared one). A connector tool nobody set
- *      a default for has an implicit `hold` ceiling: "Ask first". Every other
- *      MCP tool — an admin host MCP server's, an unlifted `mcp__x__y` — has a
- *      fixed `hold` ceiling, because no default slot exists for it
- *      (`implicitMcpCeiling`, TASK-699);
+ *   2. the CONNECTOR CEILING — chosen per tool NAMESPACE by its CEILING SOURCE
+ *      (TASK-809, `tool-policy:set-ceiling-sources`; `@ax/connectors` decides
+ *      which, and this plugin never learns why):
+ *        - source `connector` (the default — every namespace nobody marked):
+ *          the per-tool default whoever can edit the connector set (an admin
+ *          for a shared one). A connector tool nobody set a default for has an
+ *          implicit `hold` ceiling: "Ask first".
+ *        - source `agent`: NO connector ceiling. Connector defaults are
+ *          ignored (and refused on write); the ceiling is the static table
+ *          alone, so a person may choose any verdict per agent — and a tool
+ *          nobody chose for this agent is held, never allowed.
+ *      Every other MCP tool — an admin host MCP server's, an unlifted
+ *      `mcp__x__y` — has a fixed `hold` ceiling, because no default slot
+ *      exists for it (`implicitMcpCeiling`, TASK-699);
  *   3. the AGENT OVERRIDE — the agent's own choice, copied from the ceiling on
  *      attach (`origin: 'snapshot'`) or picked by a person (`origin: 'user'`).
  *
@@ -178,53 +186,77 @@ export function isMcpSpelled(toolName: unknown): toolName is string {
  * "Ask first" floor (TASK-736 for connectors, TASK-699 for the rest) — or
  * `undefined` for a tool that is not MCP-spelled at all.
  *
- *   - a CONNECTOR tool (`mcp.c<10 hex>.<tool>`): its connector default, or
- *     `hold` when there is none. The default can loosen this floor because
- *     whoever can edit the connector chose it per tool.
+ *   - a CONNECTOR tool (`mcp.c<10 hex>.<tool>`) under a `connector`-sourced
+ *     namespace: its connector default, or `hold` when there is none. The
+ *     default can loosen this floor because whoever can edit the connector
+ *     chose it per tool.
+ *   - a CONNECTOR tool under an `agent`-sourced namespace (TASK-809):
+ *     `undefined` — there is no connector ceiling, and `connectorDefault` is
+ *     ignored. The "nobody chose → hold" rule for these lives in
+ *     `layeredVerdict` (a MISSING OVERRIDE is held), because putting it here
+ *     would also cap what a person may choose.
  *   - every OTHER MCP-spelled name — an admin-configured host MCP server's
  *     `mcp.<serverId>.<tool>`, an unlifted `mcp__<server>__<tool>`, a
- *     malformed or over-long key: `hold`, always. None of these has a
- *     per-tool default anybody could have set, so there is nothing that could
- *     have reviewed what the tool does, and a person is asked each time.
- *     (The static table can still say MORE — `strictest` keeps a rule's
- *     `deny` a deny.)
+ *     malformed or over-long key: `hold`, always, whatever `agentSourced`
+ *     says. None of these has a per-tool default anybody could have set, so
+ *     there is nothing that could have reviewed what the tool does, and a
+ *     person is asked each time. (The static table can still say MORE —
+ *     `strictest` keeps a rule's `deny` a deny.)
  */
 export function implicitMcpCeiling(
   toolName: string,
   connectorDefault: PolicyVerdict | undefined,
+  agentSourced: boolean,
 ): PolicyVerdict | undefined {
-  if (parseConnectorToolKey(toolName) !== null) return connectorDefault ?? 'hold';
+  if (parseConnectorToolKey(toolName) !== null) {
+    return agentSourced ? undefined : (connectorDefault ?? 'hold');
+  }
   return isMcpSpelled(toolName) ? 'hold' : undefined;
 }
 
 /**
  * The most an agent may choose for `toolKey`: the static ceiling, tightened by
- * the implicit MCP floor — a connector tool is capped at its connector default
- * (`hold` with NO default: design "no admin default and never inventoried →
- * Ask first"), and any other MCP tool is capped at `hold` (TASK-699).
+ * the implicit MCP floor — a connector tool under a `connector`-sourced
+ * namespace is capped at its connector default (`hold` with NO default: design
+ * "no admin default and never inventoried → Ask first"), and any other MCP
+ * tool is capped at `hold` (TASK-699). A connector tool under an
+ * `agent`-sourced namespace (TASK-809) is capped by the static table only.
  */
 export function ceilingFor(
   rules: readonly PolicyRule[],
   toolKey: string,
   connectorDefault: PolicyVerdict | undefined,
+  agentSourced: boolean,
 ): PolicyVerdict {
-  return strictest(staticCeiling(rules, toolKey), implicitMcpCeiling(toolKey, connectorDefault));
+  return strictest(
+    staticCeiling(rules, toolKey),
+    implicitMcpCeiling(toolKey, connectorDefault, agentSourced),
+  );
 }
 
 /**
  * The verdict a call actually gets, given what the static table said about
  * THIS call (`staticVerdict`, egress relaxation already applied) and the two
  * stored layers. See the module comment: strictest wins, always.
+ *
+ * For a connector tool under an `agent`-sourced namespace (TASK-809) the
+ * connector layer is absent and a MISSING override reads as `hold`: a tool
+ * nobody chose for this agent is Ask first, never allow. `agentSourced` means
+ * nothing for any other key.
  */
 export function layeredVerdict(args: {
   toolName: string;
   staticVerdict: PolicyVerdict;
   connectorDefault: PolicyVerdict | undefined;
   override: PolicyVerdict | undefined;
+  agentSourced: boolean;
 }): PolicyVerdict {
+  if (args.agentSourced && parseConnectorToolKey(args.toolName) !== null) {
+    return strictest(args.staticVerdict, args.override ?? 'hold');
+  }
   return strictest(
     args.staticVerdict,
-    implicitMcpCeiling(args.toolName, args.connectorDefault),
+    implicitMcpCeiling(args.toolName, args.connectorDefault, false),
     args.override,
   );
 }

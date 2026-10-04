@@ -176,6 +176,12 @@ async function openNew(isAdmin = false) {
   );
   return options;
 }
+// TASK-809 — step two of adding a no-OAuth connector: Save, once its tools load.
+async function finishAdding() {
+  const save = await screen.findByRole('button', { name: 'Save' });
+  await waitFor(() => expect(save).toBeEnabled());
+  fireEvent.click(save);
+}
 const withoutClientId = () => {
   fixture.capabilities.credentials = [
     { kind: 'oauth', slot: 'TOKEN', server: 'linear' },
@@ -374,6 +380,8 @@ describe('remote connector editor', () => {
     const options = await openNew();
     expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    // TASK-809 — step two (its tools); Save there finishes.
+    await finishAdding();
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes).toHaveLength(1);
     expect(writes[0]!.url).toBe('/settings/connectors');
@@ -395,7 +403,9 @@ describe('remote connector editor', () => {
     const options = await openNew(true);
     expect(screen.queryByRole('button', { name: /Workspace settings/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
-    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    // TASK-809 — a no-sign-in connector is created, then asks about its tools.
+    await screen.findByRole('button', { name: 'Save' });
+    expect(options.onSaved).not.toHaveBeenCalled();
     expect(writes[0]!.url).toBe('/admin/connectors');
     expect(writes[0]!.body).toMatchObject({ visibility: 'shared', keyMode: 'personal' });
     expect(writes[0]!.body).not.toHaveProperty('defaultAttached');
@@ -596,6 +606,8 @@ describe('remote connector editor', () => {
         target: { value: 'Bearer secret-key' },
       });
       fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      // TASK-809 — an API-key connector goes on to its tools; Save finishes.
+      await finishAdding();
       await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
       expect(screen.queryByText(/OAuth supplies Authorization/)).toBeNull();
       expect(writes).toHaveLength(2);
@@ -725,6 +737,158 @@ describe('tool permissions (TASK-737)', () => {
       .getAllByRole('radio')
       .filter((item) => item.getAttribute('aria-checked') === 'true')
       .map((item) => item.getAttribute('aria-label'));
+
+  // TASK-809 — admin tool permissions exist only for a connector that does
+  // NOT sign in with OAuth. These tests edit a no-sign-in server.
+  beforeEach(() => {
+    fixture.capabilities.credentials = [];
+    discovery = { hosts: ['mcp.example.com'], auth: 'none' };
+  });
+
+  describe('by sign-in type (TASK-809)', () => {
+    const addFirst = async (options: { onSaved: ReturnType<typeof vi.fn> }) => {
+      fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      await waitFor(() => expect(writes).toHaveLength(1));
+      // The dialog stays open on the new connector, now asking about its tools.
+      await screen.findByRole('button', { name: 'Save' });
+      expect(options.onSaved).not.toHaveBeenCalled();
+    };
+
+    it('a new no-sign-in connector asks for its tools after Add, and Save writes every tool shown', async () => {
+      discovery = { hosts: ['public.example.com'], auth: 'none' };
+      serve(inventory({ defaults: [] }));
+      const options = await openNew(true);
+      await addFirst(options);
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      expect(toolPermsGets).toEqual(['/admin/connectors/linear/tool-permissions']);
+      expect(screen.getAllByTestId('tool-permission-suggested')).toHaveLength(4);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalledTimes(1));
+      expect(toolPermsPuts).toHaveLength(1);
+      expect(toolPermsPuts[0]!.url).toBe('/admin/connectors/linear/tool-permissions');
+      expect(toolPermsPuts[0]!.body.verdicts).toEqual([
+        { toolKey: 'mcp.linear.search_issues', verdict: 'allow' },
+        { toolKey: 'mcp.linear.get_issue', verdict: 'allow' },
+        { toolKey: 'mcp.linear.create_issue', verdict: 'hold' },
+        { toolKey: 'mcp.linear.update_issue', verdict: 'hold' },
+      ]);
+      // The connector is not written again.
+      expect(writes).toHaveLength(1);
+    });
+
+    const OAUTH_DISCOVERY = {
+      hosts: ['auth.example.com'],
+      auth: 'oauth',
+      clientRegistration: { cimd: true, dcr: true },
+    };
+
+    it('a new API-key connector on an OAuth-capable server gets the same second step', async () => {
+      discovery = OAUTH_DISCOVERY;
+      serve(inventory({ defaults: [] }));
+      const options = await openNew(true);
+      fireEvent.click(screen.getByRole('radio', { name: 'API key in a request header' }));
+      fireEvent.change(screen.getByLabelText('Value'), {
+        target: { value: 'Bearer secret-key' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      await waitFor(() => expect(writes).toHaveLength(2));
+      await screen.findByRole('group', { name: 'Permission for Create issue' });
+      expect(options.onSaved).not.toHaveBeenCalled();
+      fireEvent.click(within(group('Create issue')).getByRole('radio', { name: 'Deny' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalledTimes(1));
+      expect(toolPermsPuts[0]!.body.verdicts).toContainEqual({
+        toolKey: 'mcp.linear.create_issue',
+        verdict: 'deny',
+      });
+      expect(toolPermsPuts[0]!.body.verdicts).toHaveLength(4);
+    });
+
+    it('closing the second step still refreshes the list, and writes no tools', async () => {
+      discovery = { hosts: ['public.example.com'], auth: 'none' };
+      serve(inventory({ defaults: [] }));
+      const options = await openNew(true);
+      await addFirst(options);
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }));
+      expect(options.onSaved).toHaveBeenCalledTimes(1);
+      expect(toolPermsPuts).toEqual([]);
+    });
+
+    it('keeps the second step open, with the reason, when the tool write fails', async () => {
+      discovery = { hosts: ['public.example.com'], auth: 'none' };
+      serve(inventory({ defaults: [] }));
+      toolPermsPut = () => new Response(JSON.stringify({ error: 'x' }), { status: 503 });
+      const options = await openNew(true);
+      await addFirst(options);
+      await screen.findByRole('group', { name: 'Permission for Search issues' });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      expect(
+        await screen.findByText(
+          'We saved the connector, but tool permissions can’t be saved right now. Try again in a little while.',
+        ),
+      ).toBeVisible();
+      expect(options.onSaved).not.toHaveBeenCalled();
+      expect(writes).toHaveLength(1);
+    });
+
+    it.each([
+      ['the listing fails', () => serve({ error: 'unavailable' }, 503), 'We couldn’t load tool permissions.'],
+      [
+        'the server cannot be reached',
+        () => serve({ status: 'unreachable', checkedAt: null, tools: [], defaults: [] }),
+        'We couldn’t reach this connector to list its tools.',
+      ],
+    ])('Save still finishes when %s', async (_label, arrange, copy) => {
+      discovery = { hosts: ['public.example.com'], auth: 'none' };
+      arrange();
+      const options = await openNew(true);
+      await addFirst(options);
+      expect(await screen.findByText((text) => text.startsWith(copy))).toBeVisible();
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalledTimes(1));
+      expect(toolPermsPuts).toEqual([]);
+    });
+
+    it('waits for the tools before Save is pressable', async () => {
+      discovery = { hosts: ['public.example.com'], auth: 'none' };
+      toolPermsGet = () => new Promise<Response>(() => {}) as unknown as Response;
+      const options = await openNew(true);
+      await addFirst(options);
+      expect(screen.getByText('Looking up this connector’s tools…')).toBeVisible();
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    });
+
+    it('a new OAuth connector has no tool permissions at all, and Add closes as before', async () => {
+      discovery = OAUTH_DISCOVERY;
+      serve(inventory({ defaults: [] }));
+      const options = await openNew(true);
+      expect(screen.getByText('Sign-in: OAuth')).toBeVisible();
+      expect(screen.queryByText('Tool permissions')).toBeNull();
+      expect(screen.queryByText(/Once it’s saved/)).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalledTimes(1));
+      expect(options.onOpenChange).toHaveBeenCalledWith(false);
+      expect(toolPermsGets).toEqual([]);
+      expect(toolPermsPuts).toEqual([]);
+    });
+
+    it('editing an OAuth connector shows no tool permissions and writes none', async () => {
+      fixture.capabilities = structuredClone(initialCapabilities);
+      discovery = OAUTH_DISCOVERY;
+      serve(inventory({ defaults: [] }));
+      const options = await openEditor(true);
+      expect(screen.getByText('Sign-in: OAuth')).toBeVisible();
+      expect(screen.queryByText('Tool permissions')).toBeNull();
+      expect(screen.queryByText(/Looking up this connector/)).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+      await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+      expect(toolPermsGets).toEqual([]);
+      expect(toolPermsPuts).toEqual([]);
+    });
+  });
 
   it('groups tools by what they do and flags the ones others may see', async () => {
     serve(inventory());
@@ -1065,6 +1229,7 @@ describe('tool permissions (TASK-737)', () => {
   });
 
   it('for a new connector, shows a hint and never asks for tools', async () => {
+    discovery = { hosts: ['public.example.com'], auth: 'none' };
     await openNew();
     expect(
       screen.getByText(

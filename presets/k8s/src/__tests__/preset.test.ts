@@ -332,6 +332,9 @@ describe('@ax/preset-k8s wiring', () => {
       // TASK-758 — called by @ax/connectors before it commits an edit that
       // points a kept-name server at a new endpoint.
       'tool-policy:reset-tool-namespaces',
+      // TASK-809 — called by @ax/connectors on every upsert and once at boot:
+      // an OAuth server's namespace has no connector ceiling (`agent`).
+      'tool-policy:set-ceiling-sources',
     ]);
     // The rule table is still in-repo and still consulted with no I/O. What
     // needs storage is the per-person egress allowlist, and a deployment
