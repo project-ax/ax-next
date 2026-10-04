@@ -147,8 +147,10 @@ describe('Other abilities', () => {
     expect(await sw('Read web pages')).toHaveAttribute('aria-checked', 'false');
     const run = await sw('Run code');
     expect(run).toHaveAttribute('aria-checked', 'false');
-    // The caveat travels with the switch while it is off — no visible subtitle.
+    // The caveat travels with the switch while it is off — a short hint on the
+    // label's own row (never a subtitle line) and the sentence as its description.
     expectDescribedBy(run, "Some skills won't work.");
+    expect(screen.getByText('· skills limited')).toBeInTheDocument();
     // The accessible name is unchanged by the description wiring.
     expect(run).toHaveAccessibleName('Run code');
     expect(abilitiesMock).toHaveBeenCalledWith('a-quill');
@@ -162,7 +164,7 @@ describe('Other abilities', () => {
 
     const read = await sw('Read web pages');
     // The built-in rule is Ask first; the switch can only turn it off.
-    expectDescribedBy(read, 'On: asks you before opening a new site');
+    expectDescribedBy(read, 'Asks you before opening a new site');
     // The visible "· asks first" stays out of the name (aria-hidden).
     expect(read).toHaveAccessibleName('Read web pages');
     const hint = screen.getByText('· asks first');
@@ -215,9 +217,52 @@ describe('Other abilities', () => {
     expect(screen.getByText('· asks first')).toBeInTheDocument();
     expectDescribedBy(
       await sw('Read web pages'),
-      'On: asks you before opening a new site',
+      'Asks you before opening a new site',
     );
   });
+
+  // TASK-789 — one per-row rule: what a sighted user sees muted on the row, a
+  // screen-reader user hears as the switch's description, and a row with
+  // nothing on screen says nothing to a screen reader either. The hint is the
+  // short form of the description (the full sentence does not fit the row).
+  const NOTES: Record<
+    string,
+    Record<'on' | 'off', readonly [hint: string, description: string] | null>
+  > = {
+    'Web search': { on: null, off: null },
+    'Read web pages': {
+      on: ['· asks first', 'Asks you before opening a new site'],
+      off: null,
+    },
+    'Run code': { on: null, off: ['· skills limited', "Some skills won't work."] },
+  };
+  for (const state of ['on', 'off'] as const) {
+    it(`gives each row the same note on screen and to a screen reader (all ${state})`, async () => {
+      const v = state === 'on';
+      abilitiesMock.mockResolvedValue({
+        abilities: { webSearch: v, readPages: v, runCode: v },
+      });
+      renderTab();
+      for (const [label, notes] of Object.entries(NOTES)) {
+        const s = await sw(label);
+        expect(s).toHaveAttribute('aria-checked', String(v));
+        // The hint never leaks into the switch's name.
+        expect(s).toHaveAccessibleName(label);
+        const hint = document
+          .querySelector(`label[for="${s.id}"]`)!
+          .querySelector('[aria-hidden="true"]');
+        const want = notes[state];
+        if (want === null) {
+          expect(hint).toBeNull();
+          expectNoDescription(s);
+        } else {
+          expect(hint?.textContent).toBe(want[0]);
+          expect(hint).toHaveClass('text-muted-foreground');
+          expectDescribedBy(s, want[1]);
+        }
+      }
+    });
+  }
 
   it('writes one switch and draws what the server answered', async () => {
     setAbilityMock.mockResolvedValue({

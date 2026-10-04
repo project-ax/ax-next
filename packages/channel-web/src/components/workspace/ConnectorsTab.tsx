@@ -67,44 +67,61 @@ function Note({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * What ON means for Read web pages (TASK-763, owner decision 2026-10-03).
+ * Its built-in rule is Ask first (`web_extract` holds for a site nobody has
+ * cleared yet), and this switch can only turn that OFF. ON never means
+ * "reads without asking", so the row says so — only while it is ON
+ * (TASK-769): an off switch reads no pages, so it claims nothing about
+ * asking. No "On:" prefix (TASK-789, owner decision 2026-10-03): the note
+ * only ever shows while the switch is on, so the prefix said nothing.
+ */
+export const READ_PAGES_ASKS_FIRST = 'Asks you before opening a new site';
+
+/**
+ * Run code's one caveat. The design gave it a help line; the product owner
+ * removed every ability subtitle (a same-row hint is not a subtitle), so it
+ * lives where it is needed instead: in the confirmation before switching it
+ * off, and as the row's note while it IS off.
+ */
+export const RUN_CODE_OFF_WARNING = "Some skills won't work.";
+
+/**
+ * A row's note (TASK-789): ONE rule per row and state, so a sighted user and
+ * a screen-reader user always get the same claim. `hint` is the few muted
+ * words on the label's own row (never a subtitle line — the rail is too
+ * narrow for the full sentence); `description` is that same claim as a
+ * sentence, read as the switch's description. Both or neither, never one.
+ */
+interface RowNote {
+  hint: string;
+  description: string;
+}
+
 /** Product words in, in the order the Figma frame draws them. */
 const ABILITY_ROWS: ReadonlyArray<{
   ability: AgentAbility;
   label: string;
   Icon: typeof Globe;
-  /** A few muted words on the label's own row — never a subtitle line.
-   *  Shown only while the switch is on (TASK-769). */
-  hint?: string;
+  /** The row's note for the switch's current state, or none. */
+  note: (on: boolean) => RowNote | undefined;
 }> = [
-  { ability: 'webSearch', label: 'Web search', Icon: Globe },
+  { ability: 'webSearch', label: 'Web search', Icon: Globe, note: () => undefined },
   {
     ability: 'readPages',
     label: 'Read web pages',
     Icon: LinkIcon,
-    hint: '· asks first',
+    note: (on) =>
+      on ? { hint: '· asks first', description: READ_PAGES_ASKS_FIRST } : undefined,
   },
-  { ability: 'runCode', label: 'Run code', Icon: Terminal },
+  {
+    ability: 'runCode',
+    label: 'Run code',
+    Icon: Terminal,
+    note: (on) =>
+      on ? undefined : { hint: '· skills limited', description: RUN_CODE_OFF_WARNING },
+  },
 ];
-
-/**
- * What ON means for Read web pages (TASK-763, owner decision 2026-10-03).
- * Its built-in rule is Ask first (`web_extract` holds for a site nobody has
- * cleared yet), and this switch can only turn that OFF. ON never means
- * "reads without asking", so the row says so: "· asks first" on screen, and
- * this as the switch's description for a screen reader. Both only while the
- * switch is ON (TASK-769, owner decision 2026-10-03): an off switch reads no
- * pages, so it claims nothing about asking — on screen or to a screen reader.
- */
-export const READ_PAGES_ASKS_FIRST = 'On: asks you before opening a new site';
-
-/**
- * Run code's one caveat. The design gave it a help line; the product owner
- * removed every ability subtitle (a same-row hint, like Read web pages'
- * "asks first", is not a subtitle), so it lives where it is needed instead: in
- * the confirmation before switching it off, and as the switch's description
- * for a screen reader while it IS off.
- */
-export const RUN_CODE_OFF_WARNING = "Some skills won't work.";
 
 interface Props {
   agentId: string;
@@ -285,18 +302,13 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
   return (
     <>
       <Card className="shadow-none">
-        {ABILITY_ROWS.map(({ ability, label, Icon, hint }, i) => {
+        {ABILITY_ROWS.map(({ ability, label, Icon, note }, i) => {
           const id = `ability-${ability}`;
           const on = abilities[ability];
-          const description =
-            ability === 'runCode' && !on
-              ? RUN_CODE_OFF_WARNING
-              : ability === 'readPages' && on
-                ? READ_PAGES_ASKS_FIRST
-                : undefined;
-          // The visible hint follows the same rule as the description, so a
-          // sighted user and a screen-reader user hear the same claim.
-          const shownHint = on ? hint : undefined;
+          // One rule feeds both, so the row never shows what it doesn't say.
+          const rowNote = note(on);
+          const shownHint = rowNote?.hint;
+          const description = rowNote?.description;
           const descriptionId = description ? `${id}-description` : undefined;
           return (
             <Fragment key={ability}>
@@ -313,7 +325,7 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
                   {label}
                   {shownHint && (
                     // Hidden from the accessible NAME on purpose: the switch
-                    // stays "Read web pages", and a screen reader hears the
+                    // keeps its plain label, and a screen reader hears the
                     // fuller sentence as its description instead (below).
                     <span aria-hidden="true" className="ml-1 text-muted-foreground">
                       {shownHint}
