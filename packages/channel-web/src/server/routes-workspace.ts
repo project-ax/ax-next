@@ -6613,7 +6613,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * on this agent (a connector outside the agent's list is a 404, so this
      * cannot be used to make the host reach arbitrary connectors). Answers the
      * connector's health afterwards, from the same stored state the list reads
-     * — a check that hit a rejected sign-in comes back `needs-reconnect`.
+     * — a check that hit a rejected sign-in comes back `needs-reconnect`. A
+     * check that could not run at all is a 502, unless nobody has signed in to
+     * the connector (TASK-805): that is `needs-sign-in` with its setup, a 200,
+     * because the vault already said what the person must do.
      */
     async retryConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
       // TASK-795 — the admin bit picks a needs-sign-in row's setup.
@@ -6693,10 +6696,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           retryCooldown.delete(cooldownKey);
         }
       }
-      if (checked === 'failed' || checked === 'unavailable') {
-        res.status(502).json({ error: 'retry-failed' });
-        return;
-      }
       // Reachability comes from the check just made; whether its sign-in was
       // rejected comes from the marker that check's token resolve would have
       // written — the same rule the list applies.
@@ -6704,16 +6703,37 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // A missing credential (TASK-795) comes from the same stored read.
       const stored = await connectorHealth(agentId, actor, [connectorId], out, notLoaded);
       const storedHealth = stored.health.get(connectorId) ?? 'ok';
-      const health =
-        checked === 'stored'
-          ? storedHealth
-          : healthOf(
-              notLoaded,
-              new Set(storedHealth === 'needs-reconnect' ? [connectorId] : []),
-              new Set(storedHealth === 'needs-sign-in' ? [connectorId] : []),
-              new Map([[connectorId, checked]]),
-              connectorId,
-            );
+      let health: AgentConnectorHealth;
+      if (checked === 'failed' || checked === 'unavailable') {
+        // TASK-805 — a check that could not run is a 502 ("we couldn't check")
+        // EXCEPT for a connector the vault's presence read says nobody has
+        // signed in to (or added a key for): that is `needs-sign-in` whatever
+        // the check did — no check result outranks it (`healthOf`) and Sign in
+        // / Add key is the fix a person can act on. The stored word is
+        // `needs-sign-in` only when neither not-loaded nor a rejected sign-in
+        // outranks it, and only when the presence read answered "absent": a
+        // failed or missing presence read counts as present, so "unknown"
+        // never becomes "never signed in". The failure was logged above.
+        if (storedHealth !== 'needs-sign-in') {
+          res.status(502).json({ error: 'retry-failed' });
+          return;
+        }
+        initCtx.logger.info('workspace_connector_retry_answered_needs_sign_in', {
+          agentId,
+          connectorId,
+        });
+        health = storedHealth;
+      } else if (checked === 'stored') {
+        health = storedHealth;
+      } else {
+        health = healthOf(
+          notLoaded,
+          new Set(storedHealth === 'needs-reconnect' ? [connectorId] : []),
+          new Set(storedHealth === 'needs-sign-in' ? [connectorId] : []),
+          new Map([[connectorId, checked]]),
+          connectorId,
+        );
+      }
       const storedSetup = health === 'needs-sign-in' ? stored.setup.get(connectorId) : undefined;
       // TASK-798 — the same "ask the owner" rewrite the list applies; only
       // asked when it could change the answer.
