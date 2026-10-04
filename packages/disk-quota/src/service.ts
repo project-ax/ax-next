@@ -530,6 +530,13 @@ export function createDiskQuotaService(deps: {
    * GONE (`blob:stat` answered exactly `{ found: false }`). Anything else (a
    * size, an odd answer, a throw, no `blob:stat` at all) means "maybe still
    * there", and that sha keeps its charge. Never throws.
+   *
+   * Asks with `restore: false` (TASK-778). The byte GC retires exactly the
+   * shas this pass probes, and a plain `blob:stat` moves a retired blob back
+   * to live. Probing with a restoring stat would revive every retired blob on
+   * each reconcile, so its bytes would never be purged and its charge never
+   * released. A retired blob still answers `{ size }`: its bytes exist until
+   * the GC's purge, and until then someone keeps paying for them.
    */
   async function bytesGone(ctx: AgentContext, shas: readonly string[]): Promise<Set<string>> {
     const gone = new Set<string>();
@@ -541,7 +548,10 @@ export function createDiskQuotaService(deps: {
     let failed = 0;
     await mapBounded(shas, BLOB_STAT_CONCURRENCY, async (sha256) => {
       try {
-        const out = await bus.call<{ sha256: string }, unknown>('blob:stat', ctx, { sha256 });
+        const out = await bus.call<{ sha256: string; restore: false }, unknown>('blob:stat', ctx, {
+          sha256,
+          restore: false,
+        });
         if (
           out !== null &&
           typeof out === 'object' &&

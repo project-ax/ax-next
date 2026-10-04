@@ -1,4 +1,10 @@
-import { ListObjectsV2Command, type S3Client } from '@aws-sdk/client-s3';
+import {
+  CopyObjectCommand,
+  ListObjectsV2Command,
+  NoSuchKey,
+  PutObjectCommand,
+  type S3Client,
+} from '@aws-sdk/client-s3';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { FakeS3Client } from './fake-s3.js';
 
@@ -96,5 +102,107 @@ describe('FakeS3Client ListObjectsV2', () => {
     expect(fake.calls).toEqual([
       { name: 'ListObjectsV2', Bucket: 'other', Prefix: 'a/', MaxKeys: 7 },
     ]);
+  });
+});
+
+describe('FakeS3Client CopyObject', () => {
+  let fake: FakeS3Client;
+  const client = (): S3Client => fake as unknown as S3Client;
+  const copy = (Key: string, CopySource: string): Promise<unknown> =>
+    client().send(new CopyObjectCommand({ Bucket: BUCKET, Key, CopySource }));
+
+  beforeEach(() => {
+    fake = new FakeS3Client();
+  });
+
+  it('copies the source bytes to the destination key and records the call', async () => {
+    fake._put(BUCKET, 'p/aa/bb/src', new Uint8Array([1, 2, 3]));
+
+    await copy('p/dst', `${BUCKET}/p/aa/bb/src`);
+
+    expect(fake._get(BUCKET, 'p/dst')).toEqual(new Uint8Array([1, 2, 3]));
+    // The source stays put: a copy is not a move.
+    expect(fake._get(BUCKET, 'p/aa/bb/src')).toEqual(new Uint8Array([1, 2, 3]));
+    expect(fake.calls).toEqual([
+      { name: 'CopyObject', Bucket: BUCKET, Key: 'p/dst', CopySource: `${BUCKET}/p/aa/bb/src` },
+    ]);
+  });
+
+  it('the copy does not alias the source bytes', async () => {
+    const src = new Uint8Array([9]);
+    fake._put(BUCKET, 'src', src);
+    await copy('dst', `${BUCKET}/src`);
+    src[0] = 0;
+    expect(fake._get(BUCKET, 'dst')).toEqual(new Uint8Array([9]));
+  });
+
+  it('decodes a per-segment URL-encoded CopySource', async () => {
+    fake._put(BUCKET, 'a b/c+d', new Uint8Array([4]));
+    await copy('dst', `${BUCKET}/a%20b/c%2Bd`);
+    expect(fake._get(BUCKET, 'dst')).toEqual(new Uint8Array([4]));
+  });
+
+  it('throws NoSuchKey with a 404 when the source is missing, writing nothing', async () => {
+    const err = await copy('dst', `${BUCKET}/gone`).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NoSuchKey);
+    expect(err).toMatchObject({ name: 'NoSuchKey', $metadata: { httpStatusCode: 404 } });
+    expect(fake._get(BUCKET, 'dst')).toBeUndefined();
+  });
+
+  it('reads the source from the bucket CopySource names', async () => {
+    fake._put('other', 'k', new Uint8Array([7]));
+    await expect(copy('dst', `${BUCKET}/k`)).rejects.toBeInstanceOf(NoSuchKey);
+    await copy('dst', 'other/k');
+    expect(fake._get(BUCKET, 'dst')).toEqual(new Uint8Array([7]));
+  });
+});
+
+describe('FakeS3Client jitter', () => {
+  it('is off by default', () => {
+    expect(new FakeS3Client().jitter).toBeUndefined();
+  });
+
+  it('awaits the jitter before a command touches the bucket or is recorded', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let entered = 0;
+    const fake = new FakeS3Client({
+      jitter: async () => {
+        entered += 1;
+        await gate;
+      },
+    });
+    const pending = (fake as unknown as S3Client).send(
+      new PutObjectCommand({ Bucket: BUCKET, Key: 'k', Body: new Uint8Array([1]) }),
+    );
+    await new Promise((r) => setImmediate(r));
+    // Held at the jitter: nothing written, nothing recorded yet.
+    expect(entered).toBe(1);
+    expect(fake._get(BUCKET, 'k')).toBeUndefined();
+    expect(fake.calls).toEqual([]);
+
+    release();
+    await pending;
+    expect(fake._get(BUCKET, 'k')).toEqual(new Uint8Array([1]));
+  });
+
+  it('lets a later command overtake an earlier one that is still yielding', async () => {
+    const fake = new FakeS3Client();
+    let first = true;
+    // The first command yields a macrotask; the second does not, so it overtakes.
+    fake.jitter = async () => {
+      if (first) {
+        first = false;
+        await new Promise((r) => setImmediate(r));
+      }
+    };
+    const c = fake as unknown as S3Client;
+    await Promise.all([
+      c.send(new PutObjectCommand({ Bucket: BUCKET, Key: 'slow', Body: new Uint8Array([1]) })),
+      c.send(new PutObjectCommand({ Bucket: BUCKET, Key: 'fast', Body: new Uint8Array([2]) })),
+    ]);
+    expect(fake.calls.map((x) => x.Key)).toEqual(['fast', 'slow']);
   });
 });

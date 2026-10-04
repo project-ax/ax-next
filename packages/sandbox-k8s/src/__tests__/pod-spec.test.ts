@@ -324,6 +324,7 @@ describe('buildPodSpec', () => {
       ...baseInput,
       proxyConfig: {
         unixSocketPath: '/var/run/ax/proxy.sock',
+        proxyAuthToken: 'f'.repeat(32),
         caCertPem: '-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n',
         envMap: {
           ANTHROPIC_API_KEY: 'ax-cred:00000000000000000000000000000000',
@@ -362,14 +363,6 @@ describe('buildPodSpec', () => {
       ).containers[0]!.env;
       const byName = (n: string) => env.find((e) => e.name === n)?.value;
       expect(byName('AX_PROXY_TOKEN')).toBe('b'.repeat(32));
-    });
-
-    it('does NOT stamp AX_PROXY_TOKEN when proxyConfig has no token (back-compat)', () => {
-      const spec = buildPodSpec('p', proxyInput, baseResolved());
-      const env = (
-        spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
-      ).containers[0]!.env;
-      expect(env.find((e) => e.name === 'AX_PROXY_TOKEN')).toBeUndefined();
     });
 
     it('stamps GIT_SSL_CAINFO at the proxy CA path so git trusts the MITM cert (TASK-12)', () => {
@@ -488,6 +481,7 @@ describe('buildPodSpec', () => {
         ...baseInput,
         proxyConfig: {
           endpoint: 'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+          proxyAuthToken: 'f'.repeat(32),
           caCertPem:
             '-----BEGIN CERTIFICATE-----\ntcp-ca\n-----END CERTIFICATE-----\n',
           envMap: {

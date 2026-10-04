@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PluginError } from '@ax/core';
-import { BlobStore, blobPath, type BlobListResult } from '../store.js';
+import { BlobStore, blobPath, retiredPath, type BlobListResult } from '../store.js';
 
 const sha256Hex = (bytes: Uint8Array): string =>
   createHash('sha256').update(Buffer.from(bytes)).digest('hex');
@@ -159,24 +159,197 @@ describe('BlobStore (content-addressed fs store)', () => {
     });
   });
 
-  describe('delete', () => {
-    it('removes a stored object', async () => {
-      const bytes = new TextEncoder().encode('delete me');
+  describe('retire', () => {
+    it('moves the live file to <root>/.retired/<aa>/<bb>/<sha>', async () => {
+      const bytes = new TextEncoder().encode('retire me');
       const { sha256 } = await store.put(bytes);
-      await store.delete(sha256);
-      expect(await store.stat(sha256)).toEqual({ found: false });
-      expect(await store.get(sha256)).toEqual({ found: false });
+      await store.retire(sha256);
+      expect(retiredPath(root, sha256)).toBe(
+        join(root, '.retired', sha256.slice(0, 2), sha256.slice(2, 4), sha256),
+      );
+      await expect(fs.stat(blobPath(root, sha256))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(new Uint8Array(await fs.readFile(retiredPath(root, sha256)))).toEqual(bytes);
     });
 
-    it('is idempotent — deleting a missing object is a no-op', async () => {
-      await expect(store.delete('2'.repeat(64))).resolves.toBeUndefined();
+    it('is a no-op for a missing blob (creates nothing retired)', async () => {
+      const missing = '2'.repeat(64);
+      await expect(store.retire(missing)).resolves.toBeUndefined();
+      await expect(fs.stat(retiredPath(root, missing))).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('is idempotent — retiring twice leaves one retired copy', async () => {
+      const bytes = new TextEncoder().encode('retire twice');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      await store.retire(sha256);
+      expect(new Uint8Array(await fs.readFile(retiredPath(root, sha256)))).toEqual(bytes);
+      await expect(fs.stat(blobPath(root, sha256))).rejects.toMatchObject({ code: 'ENOENT' });
     });
 
     it('rejects an invalid sha', async () => {
-      await expect(store.delete('x')).rejects.toMatchObject({
+      await expect(store.retire('../'.repeat(21) + 'a')).rejects.toMatchObject({
         code: 'invalid-payload',
       });
     });
+  });
+
+  describe('purge', () => {
+    it('deletes the retired copy', async () => {
+      const { sha256 } = await store.put(new TextEncoder().encode('purge me'));
+      await store.retire(sha256);
+      await store.purge(sha256);
+      await expect(fs.stat(retiredPath(root, sha256))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await store.get(sha256)).toEqual({ found: false });
+      expect(await store.stat(sha256)).toEqual({ found: false });
+    });
+
+    it('can never touch a LIVE blob — purge of a live sha leaves the live file intact', async () => {
+      const bytes = new TextEncoder().encode('i am live, leave me be');
+      const { sha256 } = await store.put(bytes);
+      await store.purge(sha256);
+      expect(new Uint8Array(await fs.readFile(blobPath(root, sha256)))).toEqual(bytes);
+      const got = await store.get(sha256);
+      expect('bytes' in got && got.bytes).toEqual(bytes);
+    });
+
+    it('is idempotent — purging twice / purging a missing sha is a no-op', async () => {
+      const { sha256 } = await store.put(new TextEncoder().encode('purge twice'));
+      await store.retire(sha256);
+      await store.purge(sha256);
+      await expect(store.purge(sha256)).resolves.toBeUndefined();
+      await expect(store.purge('3'.repeat(64))).resolves.toBeUndefined();
+    });
+
+    it('rejects an invalid sha', async () => {
+      await expect(store.purge('x')).rejects.toMatchObject({ code: 'invalid-payload' });
+    });
+  });
+
+  describe('restore-on-miss', () => {
+    const expectLiveAgain = async (sha256: string): Promise<void> => {
+      await expect(fs.stat(blobPath(root, sha256))).resolves.toBeTruthy();
+      await expect(fs.stat(retiredPath(root, sha256))).rejects.toMatchObject({ code: 'ENOENT' });
+    };
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('get of a retired blob restores it to the live path and serves it', async () => {
+      const bytes = new TextEncoder().encode('come back');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      const got = await store.get(sha256);
+      expect('bytes' in got && got.bytes).toEqual(bytes);
+      await expectLiveAgain(sha256);
+    });
+
+    it('stat of a retired blob restores it by default', async () => {
+      const bytes = new TextEncoder().encode('stat brings me back');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      expect(await store.stat(sha256)).toEqual({ size: bytes.length });
+      await expectLiveAgain(sha256);
+    });
+
+    it('stat({ restore: true }) restores too', async () => {
+      const bytes = new TextEncoder().encode('explicit restore');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      expect(await store.stat(sha256, { restore: true })).toEqual({ size: bytes.length });
+      await expectLiveAgain(sha256);
+    });
+
+    it('stat({ restore: false }) reports a retired blob size and leaves it retired', async () => {
+      const bytes = new TextEncoder().encode('just looking');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      expect(await store.stat(sha256, { restore: false })).toEqual({ size: bytes.length });
+      await expect(fs.stat(blobPath(root, sha256))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fs.stat(retiredPath(root, sha256))).resolves.toBeTruthy();
+    });
+
+    it('stat({ restore: false }) of a live blob still reports it', async () => {
+      const bytes = new TextEncoder().encode('live probe');
+      const { sha256 } = await store.put(bytes);
+      expect(await store.stat(sha256, { restore: false })).toEqual({ size: bytes.length });
+    });
+
+    it('stat({ restore: false }) of a blob missing everywhere is { found: false }', async () => {
+      expect(await store.stat('4'.repeat(64), { restore: false })).toEqual({ found: false });
+    });
+
+    it.each([['string', 'false'], ['number', 0], ['null', null], ['object', {}]])(
+      'stat rejects a non-boolean restore (%s) with invalid-payload',
+      async (_name, restore) => {
+        await expect(
+          store.stat('5'.repeat(64), { restore } as unknown as { restore: boolean }),
+        ).rejects.toMatchObject({ code: 'invalid-payload', plugin: '@ax/blob-store-fs' });
+      },
+    );
+
+    it('get still digest-verifies a restored blob — a tampered retired file is corrupt, not served', async () => {
+      const { sha256 } = await store.put(new TextEncoder().encode('honest bytes'));
+      await store.retire(sha256);
+      await fs.writeFile(retiredPath(root, sha256), Buffer.from('swapped while retired'));
+      await expect(store.get(sha256)).rejects.toMatchObject({ code: 'corrupt' });
+    });
+
+    it('two concurrent gets of a retired blob both return the bytes', async () => {
+      const bytes = new TextEncoder().encode('two readers, one restore');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      const [a, b] = await Promise.all([store.get(sha256), store.get(sha256)]);
+      expect('bytes' in a && a.bytes).toEqual(bytes);
+      expect('bytes' in b && b.bytes).toEqual(bytes);
+      await expectLiveAgain(sha256);
+    });
+
+    it('a restore that loses the race to another restore re-reads live and serves', async () => {
+      // Deterministic: the moment our restore renames, another restorer has
+      // already moved the retired copy live, so our rename misses (ENOENT).
+      const bytes = new TextEncoder().encode('lost the restore race');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      const realRename = fs.rename.bind(fs);
+      vi.spyOn(fs, 'rename').mockImplementationOnce(async (from, to) => {
+        await realRename(from, to); // the other restorer wins
+        throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      });
+      const got = await store.get(sha256);
+      expect('bytes' in got && got.bytes).toEqual(bytes);
+    });
+
+    it('a restore that loses the race to a purge is { found: false }', async () => {
+      const { sha256 } = await store.put(new TextEncoder().encode('purged under me'));
+      await store.retire(sha256);
+      vi.spyOn(fs, 'rename').mockImplementationOnce(async (from) => {
+        await fs.unlink(from); // a purge wins
+        throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      });
+      expect(await store.get(sha256)).toEqual({ found: false });
+    });
+  });
+
+  describe('THE RACE: concurrent put + retire never loses a blob', () => {
+    it('1000 rounds of Promise.all([put, retire]) then get returns the bytes every round', async () => {
+      const ROUNDS = 1000;
+      const lost: number[] = [];
+      for (let round = 0; round < ROUNDS; round++) {
+        const bytes = new Uint8Array(randomBytes(32 + (round % 64)));
+        const { sha256 } = await store.put(bytes);
+        if (round % 2 === 0) {
+          await Promise.all([store.put(bytes), store.retire(sha256)]);
+        } else {
+          await Promise.all([store.retire(sha256), store.put(bytes)]);
+        }
+        const got = await store.get(sha256);
+        if (!('bytes' in got) || Buffer.compare(Buffer.from(got.bytes), Buffer.from(bytes)) !== 0) {
+          lost.push(round);
+        }
+      }
+      expect(lost.length, `${lost.length} of ${ROUNDS} rounds lost the blob`).toBe(0);
+    }, 30_000);
   });
 });
 
@@ -210,12 +383,13 @@ async function drain(
   store: BlobStore,
   limit: number,
   start?: string,
+  state: 'live' | 'retired' = 'live',
 ): Promise<BlobListResult[]> {
   const pages: BlobListResult[] = [];
   let after = start;
   for (;;) {
     const page: BlobListResult = await store.list(
-      after === undefined ? { state: 'live', limit } : { state: 'live', limit, after },
+      after === undefined ? { state, limit } : { state, limit, after },
     );
     pages.push(page);
     if (page.next === undefined) return pages;
@@ -275,10 +449,10 @@ describe('BlobStore.list', () => {
     expect(page.items.every((i) => i.sha256 > pivot)).toBe(true);
   });
 
-  it('`after` need not name a stored blob (a cursor from a since-deleted blob still pages)', async () => {
+  it('`after` need not name a stored blob (a cursor from a since-retired blob still pages)', async () => {
     const shas = await seedBlobs(store, 20, 'ghost-cursor');
     const ghost = shas[9]!;
-    await store.delete(ghost);
+    await store.retire(ghost);
 
     const page = await store.list({ state: 'live', limit: 100, after: ghost });
 
@@ -312,7 +486,7 @@ describe('BlobStore.list', () => {
     const lonely = 'ab'.repeat(32);
     await fs.mkdir(join(root, 'ab', 'ab'), { recursive: true });
     await fs.writeFile(join(root, 'ab', 'ab', `${lonely}.tmp.9.uuid`), 'x');
-    // The retired namespace (a later card fills it) lives under the same root.
+    // The retired namespace lives under the same root but is not live.
     const gone = 'cd'.repeat(32);
     await fs.mkdir(join(root, '.retired', 'cd', 'cd'), { recursive: true });
     await fs.writeFile(join(root, '.retired', 'cd', 'cd', gone), 'x');
@@ -336,13 +510,68 @@ describe('BlobStore.list', () => {
     expect(page.items).toEqual([{ sha256: sha, size: real.size }]);
   });
 
-  it("`state: 'retired'` is empty for now, even when live blobs exist", async () => {
-    // A later card (TASK-778) adds the retired namespace; until then there is
-    // nothing retired to list.
-    await seedBlobs(store, 5, 'retired');
-    const page = await store.list({ state: 'retired', limit: 10 });
-    expect(page).toEqual({ items: [] });
-    expect('next' in page).toBe(false);
+  describe("state: 'retired'", () => {
+    it('lists exactly the retired blobs, ascending, with sizes — and live listing excludes them', async () => {
+      const shas = await seedBlobs(store, 30, 'retired-list');
+      const retired = shas.filter((_, i) => i % 3 === 0);
+      for (const sha of retired) await store.retire(sha);
+      const live = shas.filter((s) => !retired.includes(s));
+
+      const r = await store.list({ state: 'retired', limit: 1000 });
+      expect(r.items.map((i) => i.sha256)).toEqual(retired);
+      for (const item of r.items) {
+        expect(item.size).toBe((await fs.stat(retiredPath(root, item.sha256))).size);
+      }
+      expect('next' in r).toBe(false);
+
+      const l = await store.list({ state: 'live', limit: 1000 });
+      expect(l.items.map((i) => i.sha256)).toEqual(live);
+    });
+
+    it('empty retired namespace (no .retired dir yet) is { items: [] }', async () => {
+      await seedBlobs(store, 5, 'none-retired');
+      const page = await store.list({ state: 'retired', limit: 10 });
+      expect(page).toEqual({ items: [] });
+      expect('next' in page).toBe(false);
+    });
+
+    it('pages with the live contract: `next` iff full, `after` exclusive, no duplicates', async () => {
+      const shas = await seedBlobs(store, 23, 'retired-page');
+      for (const sha of shas) await store.retire(sha);
+
+      const pages = await drain(store, 5, undefined, 'retired');
+      expect(pages.map((p) => p.items.length)).toEqual([5, 5, 5, 5, 3]);
+      for (const p of pages.slice(0, 4)) expect(p.next).toBe(p.items[4]!.sha256);
+      expect('next' in pages[4]!).toBe(false);
+      expect(pages.flatMap((p) => p.items.map((i) => i.sha256))).toEqual(shas);
+
+      const after = await store.list({ state: 'retired', limit: 100, after: shas[10]! });
+      expect(after.items.map((i) => i.sha256)).toEqual(shas.slice(11));
+
+      // Exact multiple: full pages then an empty one.
+      const exact = await drain(store, 5, shas[2]!, 'retired');
+      expect(exact.map((p) => p.items.length)).toEqual([5, 5, 5, 5, 0]);
+    });
+
+    it('skips temp files, malformed names, misplaced shas, and non-shard dirs', async () => {
+      const real = await store.put(new TextEncoder().encode('the one retired blob'));
+      await store.retire(real.sha256);
+      const sha = real.sha256;
+      const rroot = join(root, '.retired');
+      const shard = join(rroot, sha.slice(0, 2), sha.slice(2, 4));
+      await fs.writeFile(join(shard, `${sha}.tmp.1.uuid`), 'x');
+      await fs.writeFile(join(shard, 'not-a-sha'), 'x');
+      await fs.writeFile(join(shard, 'F'.repeat(64)), 'x');
+      await fs.mkdir(join(rroot, 'ff', 'ff'), { recursive: true });
+      await fs.writeFile(join(rroot, 'ff', 'ff', 'ab'.repeat(32)), 'x');
+      await fs.mkdir(join(rroot, 'ZZ', 'zz'), { recursive: true });
+      await fs.writeFile(join(rroot, 'README'), 'x');
+      // A live blob is never listed as retired.
+      await store.put(new TextEncoder().encode('live neighbour'));
+
+      const page = await store.list({ state: 'retired', limit: 100 });
+      expect(page.items).toEqual([{ sha256: sha, size: real.size }]);
+    });
   });
 
   it('skips an entry that vanishes between readdir and stat (ENOENT)', async () => {
@@ -457,7 +686,7 @@ describe('BlobStore.list', () => {
       expect((await store.list({ state: 'live', limit: 1000 })).items).toHaveLength(3);
     });
 
-    it("validates a 'retired' request too (the stub gets no free pass)", async () => {
+    it("validates a 'retired' request too", async () => {
       await expect(store.list({ state: 'retired', limit: 0 })).rejects.toMatchObject({
         code: 'invalid-payload',
       });

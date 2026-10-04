@@ -116,6 +116,7 @@ function inFlightServices(onQueued: () => void): Record<string, ServiceHandler> 
       proxyEndpoint: 'tcp://127.0.0.1:1',
       caCertPem: '',
       envMap: {},
+      proxyAuthToken: 'a'.repeat(32),
     }),
     'proxy:close-session': async () => ({}),
     'sandbox:open-session': async () => ({

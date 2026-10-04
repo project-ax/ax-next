@@ -80,8 +80,9 @@ export interface PodProxyConfig {
    * as Proxy-Authorization Basic userinfo, and the credential-proxy gates every
    * request on the allowlist of the session this token belongs to. A bearer
    * secret for this session's egress reach — treat it like AX_AUTH_TOKEN.
+   * Required (TASK-784): the runner refuses to boot without it (TASK-704).
    */
-  proxyAuthToken?: string;
+  proxyAuthToken: string;
 }
 
 export interface BuildPodSpecInput {
@@ -748,14 +749,12 @@ export function buildPodSpec(
         value: pc.unixSocketPath,
       });
     }
-    if (pc.proxyAuthToken !== undefined) {
-      // TASK-52/158: per-session proxy token. The runner reads AX_PROXY_TOKEN
-      // and embeds it as Proxy-Authorization Basic userinfo on the proxy URL;
-      // the host listener AUTHENTICATES the caller with it and gates the
-      // request on this session's own allowlist. Without it every request is
-      // refused (407).
-      proxyEnv.push({ name: 'AX_PROXY_TOKEN', value: pc.proxyAuthToken });
-    }
+    // TASK-52/158: per-session proxy token. The runner reads AX_PROXY_TOKEN
+    // and embeds it as Proxy-Authorization Basic userinfo on the proxy URL;
+    // the host listener AUTHENTICATES the caller with it and gates the
+    // request on this session's own allowlist. Without it every request is
+    // refused (407). Always stamped (TASK-784 — the token is required).
+    proxyEnv.push({ name: 'AX_PROXY_TOKEN', value: pc.proxyAuthToken });
     // Proxy CONTROL env wins over credential slots (TASK-149, codex P2). The
     // placeholder envMap is appended last so per-session credentials win over
     // ordinary env — but a skill/connector could declare a credential slot

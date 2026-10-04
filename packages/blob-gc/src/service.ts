@@ -8,38 +8,57 @@ import {
   type HookBus,
   type Logger,
 } from '@ax/core';
-import type { SettingsStore } from './config.js';
+import type { BlobGcMode, SettingsStore } from './config.js';
 import { PLUGIN_NAME } from './shared.js';
 import type { BlobGcStore, BlobRowSummary } from './store.js';
 
 // ---------------------------------------------------------------------------
-// The blob GC sweep, REPORT MODE (design D4/D5/D8, "The sweep, end to end"
-// steps 1, 2 and 4 in docs/plans/2026-10-03-blob-gc-design.md).
+// The blob GC sweep (design D2/D3/D4/D5/D8, "The sweep, end to end" in
+// docs/plans/2026-10-03-blob-gc-design.md).
+//
+// THIS FILE CAN DELETE USER DATA, in enforce mode only. Report mode (the
+// default, and what a missing or corrupt setting reads as) never calls
+// `blob:retire`, `blob:purge` or `blob:stat`.
 //
 //   recordStored — `blob:stored`: refresh that sha's `last_put_at`. Fires on
 //                  every put, the backends' fast path included. Never throws.
-//   sweep        — under the advisory lock:
+//   sweep        — under the advisory lock, with the settings read ONCE:
 //                    1. DISCOVER: page `blob:list { state: 'live' }` and insert
-//                       every sha the table has never seen, `last_put_at = now`.
-//                    2. CANDIDATES: live rows last put before `now - graceMs`,
+//                       every sha the table has never seen as live,
+//                       `last_put_at = now`; then `{ state: 'retired' }`, and
+//                       insert unseen ones as retired, `retired_at = now`.
+//                    2. RETIRE PASS: live rows last put before `now - graceMs`,
 //                       in batches of at most 1000, each offered to every
-//                       holder through `blob:collect-refs`.
-//                    4. REPORT: count the candidates nobody holds and their
-//                       bytes, log `blob_gc_report`, and keep it for the admin
-//                       Storage tab.
-//                  Step 3 (purge) and any retiring belong to TASK-778.
+//                       holder through `blob:collect-refs`. Each one nobody
+//                       holds is counted (`wouldRetire`). Enforce only: its
+//                       row flips to retired ONLY IF it is still live and still
+//                       older than the cutoff (a re-put after the ask refreshed
+//                       it: skip), and then `blob:retire` moves the bytes
+//                       aside. A retire that throws reverts the row and fails
+//                       the sweep. Retired bytes are still recoverable: any
+//                       `blob:get` / `blob:stat` restores them (D3).
+//                    3. PURGE PASS, enforce only: rows retired before
+//                       `now - retentionMs`, asked about AGAIN under the same
+//                       abort rules. Held now -> `blob:stat` (which restores)
+//                       and the row goes live. Still unheld -> `blob:purge`
+//                       (the RETIRED copy only; a live copy is never touched)
+//                       and the row is dropped if it is still retired.
+//                    4. REPORT: log `blob_gc_report` and `blob_gc_sweep`, and
+//                       keep the report for the admin Storage tab.
 //
-// THIS FILE DELETES NOTHING. It never calls a backend write or delete hook; the
-// only rows it writes are its own (`blob_gc_v1_*`), plus the report and the
+// The only rows it writes are its own (`blob_gc_v1_*`), plus the report and the
 // roster.
 //
 // FAILS CLOSED, exactly as disk-quota's ledger release does (design D2): a
 // vetoed fire, a holder answering `ok: false`, an answer that cannot be read,
 // or a ROSTER member that did not answer (it threw, or its plugin is no longer
-// loaded) aborts the whole sweep with `blob_gc_sweep_aborted`, and no report
-// is written for it. The roster is this plugin's own table; every sweep asks
-// at least once (with no candidates if none are old enough), so the roster is
-// filled long before anything could ever be deleted.
+// loaded) aborts the whole sweep with `blob_gc_sweep_aborted`: nothing further
+// is retired or purged, and no report is written for it. In enforce mode an
+// ask about real candidates that NO holder answered aborts too (an empty
+// roster must never read as "nobody holds anything"). The roster is this
+// plugin's own table; every sweep asks at least once (with no candidates if
+// none are old enough), so the roster fills during report mode, long before
+// enforce is switched on.
 // ---------------------------------------------------------------------------
 
 /** Where the last complete sweep's report is kept, so every replica serves it. */
@@ -51,16 +70,27 @@ const LIST_PAGE_LIMIT = 1000;
 export interface BlobGcReport {
   /** When the sweep finished (ISO 8601). */
   at: string;
-  mode: 'report';
-  /** Blobs found by listing that the table had never seen. */
+  /** The mode this sweep ran in (read once, at its start). */
+  mode: BlobGcMode;
+  /** Blobs found by listing (live or retired) that the table had never seen. */
   discovered: number;
   /** Live blobs past the grace window, offered to the holders. */
   candidates: number;
   /** Candidates some holder still references. */
   held: number;
-  /** Candidates nobody references: what enforce mode would retire. */
+  /**
+   * Candidates nobody references, counted in BOTH modes. In enforce mode this
+   * can exceed `retired` (a re-put refreshed one between the ask and the retire).
+   */
   wouldRetire: number;
   wouldRetireBytes: number;
+  /** Blobs this sweep moved aside (enforce only; always 0 in report mode). */
+  retired: number;
+  /** Retired blobs a holder referenced again, moved back (enforce only). */
+  restored: number;
+  /** Retired blobs gone for good, and their bytes (enforce only). */
+  purged: number;
+  bytesPurged: number;
   /** Holder name -> how many candidates it said it holds. */
   perHolder: Record<string, number>;
 }
@@ -77,6 +107,8 @@ export interface BlobGcService {
   sweep(): Promise<SweepResult>;
   /** The last complete sweep's report, or null if none has finished yet. */
   lastReport(): Promise<BlobGcReport | null>;
+  /** Drop a holder from the roster (operator action). Resolves whether it was there. */
+  forgetHolder(holder: string): Promise<boolean>;
 }
 
 function log(
@@ -142,17 +174,21 @@ export function createBlobGcService(deps: {
     });
   }
 
-  async function discover(ctx: AgentContext): Promise<number> {
+  /** Page one backend namespace and insert the shas the table has never seen. */
+  async function discover(ctx: AgentContext, state: 'live' | 'retired'): Promise<number> {
     let discovered = 0;
     let after: string | undefined;
     for (;;) {
       const raw = await bus.call('blob:list', ctx, {
-        state: 'live',
+        state,
         ...(after !== undefined ? { after } : {}),
         limit: LIST_PAGE_LIMIT,
       });
       const page = readListPage(raw, after);
-      discovered += await store.discover(page.items, now());
+      discovered +=
+        state === 'live'
+          ? await store.discover(page.items, now())
+          : await store.discoverRetired(page.items, now());
       if (page.next === undefined) return discovered;
       after = page.next;
     }
@@ -166,6 +202,7 @@ export function createBlobGcService(deps: {
   async function askHolders(
     ctx: AgentContext,
     candidates: readonly string[],
+    opts: { requireAnswer: boolean },
   ): Promise<{ held: Set<string>; perHolder: Map<string, number> } | undefined> {
     const roster = await store.listRoster();
     const fired = await bus.fire(BLOB_COLLECT_REFS_HOOK, ctx, {
@@ -200,6 +237,20 @@ export function createBlobGcService(deps: {
       return undefined;
     }
 
+    if (opts.requireAnswer && outcome.answered.size === 0) {
+      // Enforce mode: an empty roster plus no answers would read as "nobody
+      // holds anything". That is never evidence enough to move a byte.
+      log(ctx, 'error', 'blob_gc_sweep_aborted', {
+        candidates: candidates.length,
+        rejected: false,
+        missing: [],
+        failed: [],
+        malformed: 0,
+        noHolders: true,
+      });
+      return undefined;
+    }
+
     // Every answer is readable here (none failed, none malformed), so a
     // per-holder count can be taken straight from the payload.
     const wanted = new Set(candidates);
@@ -213,15 +264,82 @@ export function createBlobGcService(deps: {
     return { held: new Set(outcome.held.keys()), perHolder };
   }
 
-  async function runSweep(ctx: AgentContext): Promise<SweepResult> {
-    const discovered = await discover(ctx);
+  interface Counts {
+    discovered: number;
+    candidates: number;
+    held: number;
+    wouldRetire: number;
+    wouldRetireBytes: number;
+    retired: number;
+    restored: number;
+    purged: number;
+    bytesPurged: number;
+  }
 
-    const { graceMs } = await settings.get();
-    const cutoff = new Date(now().getTime() - graceMs);
-    let candidates = 0;
-    let held = 0;
-    let wouldRetire = 0;
-    let wouldRetireBytes = 0;
+  function sweepLine(mode: BlobGcMode, c: Counts): Record<string, unknown> {
+    return {
+      mode,
+      discovered: c.discovered,
+      candidates: c.candidates,
+      held: c.held,
+      retired: c.retired,
+      restored: c.restored,
+      purged: c.purged,
+      bytesPurged: c.bytesPurged,
+    };
+  }
+
+  /**
+   * Enforce: retire one candidate nobody held. The row flips FIRST, and only
+   * if it is still live and still older than `cutoff`; a re-put that landed
+   * after the ask refreshed `last_put_at`, so it is skipped and its bytes are
+   * never moved. Resolves whether the blob was retired.
+   */
+  async function retireOne(ctx: AgentContext, sha256: string, cutoff: Date): Promise<boolean> {
+    const at = now();
+    if (!(await store.markRetired(sha256, cutoff, at))) return false;
+    try {
+      await bus.call('blob:retire', ctx, { sha256 });
+    } catch (err) {
+      try {
+        await store.unmarkRetired(sha256, at);
+      } catch (undoErr) {
+        // The row stays retired while the bytes may still be live. Harmless:
+        // purge only ever deletes the retired copy.
+        log(ctx, 'error', 'blob_gc_unretire_failed', { sha256, err: undoErr });
+      }
+      throw err;
+    }
+    return true;
+  }
+
+  async function runSweep(ctx: AgentContext): Promise<SweepResult> {
+    // Read ONCE: an admin flipping the mode mid-sweep takes effect next sweep.
+    const { mode, graceMs, retentionMs } = await settings.get();
+    const enforce = mode === 'enforce';
+    const start = now().getTime();
+    const c: Counts = {
+      discovered: 0,
+      candidates: 0,
+      held: 0,
+      wouldRetire: 0,
+      wouldRetireBytes: 0,
+      retired: 0,
+      restored: 0,
+      purged: 0,
+      bytesPurged: 0,
+    };
+    const abort = (): SweepResult => {
+      log(ctx, 'info', 'blob_gc_sweep', { ...sweepLine(mode, c), aborted: true });
+      return { outcome: 'aborted' };
+    };
+
+    // 1. DISCOVER.
+    c.discovered += await discover(ctx, 'live');
+    c.discovered += await discover(ctx, 'retired');
+
+    // 2. RETIRE PASS.
+    const cutoff = new Date(start - graceMs);
     const perHolder = new Map<string, number>();
     let after: string | undefined;
     for (;;) {
@@ -231,35 +349,101 @@ export function createBlobGcService(deps: {
       const answer = await askHolders(
         ctx,
         batch.map((b) => b.sha256),
+        { requireAnswer: enforce && batch.length > 0 },
       );
-      if (answer === undefined) return { outcome: 'aborted' };
+      if (answer === undefined) return abort();
       for (const [holder, n] of answer.perHolder) perHolder.set(holder, (perHolder.get(holder) ?? 0) + n);
-      candidates += batch.length;
+      c.candidates += batch.length;
       for (const b of batch) {
         if (answer.held.has(b.sha256)) {
-          held++;
-        } else {
-          // Report mode: counted, never retired.
-          wouldRetire++;
-          wouldRetireBytes += b.size;
+          c.held++;
+          continue;
         }
+        c.wouldRetire++;
+        c.wouldRetireBytes += b.size;
+        if (enforce && (await retireOne(ctx, b.sha256, cutoff))) c.retired++;
       }
       if (batch.length < BLOB_COLLECT_REFS_MAX_CANDIDATES) break;
       after = batch[batch.length - 1]!.sha256;
     }
 
+    // 3. PURGE PASS (enforce only). Report mode never reaches a byte here,
+    // not even one retired by an earlier enforce sweep.
+    if (enforce) {
+      const purgeCutoff = new Date(start - retentionMs);
+      let purgeAfter: string | undefined;
+      for (;;) {
+        const batch = await store.purgeDue(purgeCutoff, purgeAfter, BLOB_COLLECT_REFS_MAX_CANDIDATES);
+        if (batch.length === 0) break;
+        // Asked AGAIN: a holder may have started referencing it since retire.
+        const answer = await askHolders(
+          ctx,
+          batch.map((b) => b.sha256),
+          { requireAnswer: true },
+        );
+        if (answer === undefined) return abort();
+        for (const b of batch) {
+          if (answer.held.has(b.sha256)) {
+            // `blob:stat` restores a retired blob on a live miss (D3). Asked
+            // for explicitly, so a change of the backends' default cannot
+            // silently turn this into a probe.
+            const stat = await bus.call<{ sha256: string; restore: boolean }, unknown>('blob:stat', ctx, {
+              sha256: b.sha256,
+              restore: true,
+            });
+            if (stat !== null && typeof stat === 'object' && (stat as Record<string, unknown>).found === false) {
+              // Someone references bytes that are gone. Nothing the GC can
+              // bring back; say so loudly, and stop treating it as retired.
+              log(ctx, 'error', 'blob_gc_held_blob_missing', { sha256: b.sha256 });
+            }
+            await store.markRestored(b.sha256, now());
+            c.restored++;
+          } else {
+            // Deletes the RETIRED copy only. A live copy (a re-put, or a read
+            // that restored it) survives, and then so does its row.
+            await bus.call('blob:purge', ctx, { sha256: b.sha256 });
+            // A READ may have restored it since the retire (blob:get / stat
+            // restore on a live miss and record nothing here), so the row
+            // can say 'retired' while the bytes are live. Probe without
+            // restoring: anything still there means nothing was freed, and
+            // the row goes back to live with a fresh grace window.
+            const left = await bus.call<{ sha256: string; restore: boolean }, unknown>('blob:stat', ctx, {
+              sha256: b.sha256,
+              restore: false,
+            });
+            if (!(left !== null && typeof left === 'object' && (left as Record<string, unknown>).found === false)) {
+              await store.markRestored(b.sha256, now());
+              continue;
+            }
+            if (await store.deletePurged(b.sha256, purgeCutoff)) {
+              c.purged++;
+              c.bytesPurged += b.size;
+            }
+          }
+        }
+        if (batch.length < BLOB_COLLECT_REFS_MAX_CANDIDATES) break;
+        purgeAfter = batch[batch.length - 1]!.sha256;
+      }
+    }
+
+    // 4. REPORT.
     const report: BlobGcReport = {
       at: now().toISOString(),
-      mode: 'report',
-      discovered,
-      candidates,
-      held,
-      wouldRetire,
-      wouldRetireBytes,
+      mode,
+      discovered: c.discovered,
+      candidates: c.candidates,
+      held: c.held,
+      wouldRetire: c.wouldRetire,
+      wouldRetireBytes: c.wouldRetireBytes,
+      retired: c.retired,
+      restored: c.restored,
+      purged: c.purged,
+      bytesPurged: c.bytesPurged,
       perHolder: Object.fromEntries([...perHolder].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
     };
     const { at: _at, ...fields } = report;
     log(ctx, 'info', 'blob_gc_report', fields);
+    log(ctx, 'info', 'blob_gc_sweep', sweepLine(mode, c));
     await bus.call('storage:set', ctx, {
       key: LAST_REPORT_STORAGE_KEY,
       value: new TextEncoder().encode(JSON.stringify(report)),
@@ -296,6 +480,10 @@ export function createBlobGcService(deps: {
         log(ctx, 'error', 'blob_gc_sweep_failed', { err });
         return { outcome: 'failed' };
       }
+    },
+
+    forgetHolder(holder) {
+      return store.forgetHolder(holder);
     },
 
     async lastReport() {

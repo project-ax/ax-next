@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -23,6 +24,12 @@ import { PluginError } from '@ax/core';
 // parity with fs (a migration / dual-read tool can map one to the other) and
 // it costs nothing.
 //
+// Deleting is two-phase (blob GC design D3): `retire` moves a blob out of the
+// live namespace into `<prefix>/retired/<aa>/<bb>/<sha>`, a read (`get` /
+// `stat`) that misses the live key moves it back, and `purge` deletes the
+// retired copy for good. S3 has no rename, so each move is CopyObject then
+// DeleteObject — two requests, not one atomic step (see SECURITY.md).
+//
 // The sha is a CONTENT hash, never a caller-supplied path. The strict regex
 // below defends against any key-injection: a caller can only ever name a
 // 64-char lowercase-hex string, which can't contain `/`, `..`, NUL, or any
@@ -33,12 +40,16 @@ import { PluginError } from '@ax/core';
 const SHA256_REGEX = /^[a-f0-9]{64}$/;
 
 /**
- * What a LIVE blob's key looks like once the store prefix is stripped:
- * `<aa>/<bb>/<sha>`, with the sha filed under its own shard. Anything else under
- * the prefix (`retired/...`, `<sha>.tmp.<x>` leftovers, stray objects) is not a
- * live blob.
+ * What a blob's key looks like once its namespace prefix (the store prefix for
+ * live blobs, `<prefix>/retired/` for retired ones) is stripped:
+ * `<aa>/<bb>/<sha>`, with the sha filed under its own shard. Anything else
+ * (`retired/...` seen from the live side, `<sha>.tmp.<x>` leftovers, stray
+ * objects) is not a blob.
  */
-const LIVE_KEY_REGEX = /^([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
+const SHARD_KEY_REGEX = /^([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
+
+/** The sub-namespace retired blobs live under, inside the store prefix. */
+const RETIRED_DIR = 'retired';
 
 /** The most blobs one `list` page may carry. */
 const LIST_MAX_LIMIT = 1000;
@@ -80,6 +91,28 @@ export function blobKey(prefix: string, sha256: string): string {
   return `${stripTrailingSlashes(prefix)}/${shard}`;
 }
 
+/**
+ * Resolve the RETIRED object key for a content hash:
+ * `<prefix>/retired/<aa>/<bb>/<sha>`, or `retired/<aa>/<bb>/<sha>` with an empty
+ * prefix. `purge` builds its key ONLY through this helper, so it can never
+ * address a live blob. `sha256` MUST already be validated by `assertValidSha`.
+ */
+export function retiredBlobKey(prefix: string, sha256: string): string {
+  const shard = `${sha256.slice(0, 2)}/${sha256.slice(2, 4)}/${sha256}`;
+  if (prefix === '') return `${RETIRED_DIR}/${shard}`;
+  return `${stripTrailingSlashes(prefix)}/${RETIRED_DIR}/${shard}`;
+}
+
+/**
+ * CopyObject's `CopySource`: `<bucket>/<key>`, each path segment URL-encoded
+ * (the SDK sends it as a header verbatim). Our keys are hex + `/` + the
+ * operator's prefix, so this only matters for an unusual bucket / prefix, but
+ * an unencoded one would copy the wrong object or fail to sign.
+ */
+function copySource(bucket: string, key: string): string {
+  return [bucket, ...key.split('/')].map((seg) => encodeURIComponent(seg)).join('/');
+}
+
 export interface BlobPutResult {
   sha256: string;
   size: number;
@@ -87,6 +120,12 @@ export interface BlobPutResult {
 
 export type BlobGetResult = { bytes: Uint8Array } | { found: false };
 export type BlobStatResult = { size: number } | { found: false };
+
+/** `stat` options. `restore` defaults to true; `false` reports a retired blob's
+ *  size without moving it back (for probes that must not undo a retire). */
+export interface BlobStatOptions {
+  restore?: boolean | undefined;
+}
 
 /** One page request for `list`. `after` is the cursor from the previous page. */
 export interface BlobListQuery {
@@ -141,16 +180,17 @@ function isNotFound(err: unknown): boolean {
 
 /**
  * An S3-backed content-addressed blob store rooted at a single bucket
- * (+ optional key prefix). Multi-replica-safe: every operation is a single
- * idempotent object op, so concurrent hosts pointed at the same bucket don't
- * race (the content address guarantees identical bytes land at identical keys).
+ * (+ optional key prefix). Every operation is idempotent, and identical bytes
+ * always land at identical keys, so concurrent hosts pointed at the same bucket
+ * converge.
  *
  *   - `put` is idempotent (HeadObject fast-path skips the re-upload when the
  *     content-addressed object already exists; identical bytes → identical key).
  *   - `get` re-verifies the digest and refuses to return tampered bytes.
- *   - `stat` is a HeadObject; `delete` is a DeleteObject (idempotent — S3
- *     returns success whether or not the key existed).
- *   - `list` is a ListObjectsV2 scan of the live keys, a page at a time.
+ *   - `stat` is a HeadObject.
+ *   - `get` and `stat` restore a retired blob on a live miss (design D3).
+ *   - `retire` moves live → retired; `purge` deletes the retired copy only.
+ *   - `list` is a ListObjectsV2 scan of the live or retired keys, a page at a time.
  */
 export class S3BlobStore {
   private readonly prefix: string;
@@ -206,22 +246,14 @@ export class S3BlobStore {
    */
   async get(sha256: string): Promise<BlobGetResult> {
     assertValidSha(sha256);
-    const Key = blobKey(this.prefix, sha256);
-    let buf: Buffer;
-    try {
-      const res = await this.client.send(
-        new GetObjectCommand({ Bucket: this.bucket, Key }),
-      );
-      if (res.Body === undefined) {
-        // A GetObject with no body for an existing key shouldn't happen, but
-        // treat it as missing rather than crash.
-        return { found: false };
-      }
-      const arr = await res.Body.transformToByteArray();
-      buf = Buffer.from(arr);
-    } catch (err) {
-      if (isNotFound(err)) return { found: false };
-      throw err;
+    let buf = await this.readLive(sha256);
+    if (buf === undefined) {
+      // Live miss: the blob may be retired (D3). Move it back, then read live
+      // again. If the restore found nothing (another reader restored it first,
+      // a purge won, or it was never there) this is the single re-read.
+      await this.restore(sha256);
+      buf = await this.readLive(sha256);
+      if (buf === undefined) return { found: false };
     }
     // Re-verify: the content MUST hash to the key it was stored under. If it
     // doesn't, the object is corrupt or tampered — refuse to serve it.
@@ -236,24 +268,133 @@ export class S3BlobStore {
     return { bytes: new Uint8Array(buf) };
   }
 
-  /** Size of the addressed blob, or `{ found: false }`. A cheap HeadObject
-   *  metadata probe — no digest check, no body transfer. */
-  async stat(sha256: string): Promise<BlobStatResult> {
+  /**
+   * Size of the addressed blob, or `{ found: false }`. A cheap HeadObject
+   * metadata probe — no digest check, no body transfer. On a live miss it
+   * restores a retired copy (like `get`) unless `restore: false`, in which case
+   * it reports the retired copy's size and leaves it where it is.
+   */
+  async stat(sha256: string, options: BlobStatOptions = {}): Promise<BlobStatResult> {
     assertValidSha(sha256);
-    const Key = blobKey(this.prefix, sha256);
+    const { restore } = options;
+    if (restore !== undefined && typeof restore !== 'boolean') {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: 'restore must be a boolean',
+      });
+    }
+    const live = blobKey(this.prefix, sha256);
+    let size = await this.headSize(live);
+    if (size !== undefined) return { size };
+    if (restore === false) {
+      size = await this.headSize(retiredBlobKey(this.prefix, sha256));
+      return size === undefined ? { found: false } : { size };
+    }
+    await this.restore(sha256);
+    size = await this.headSize(live);
+    return size === undefined ? { found: false } : { size };
+  }
+
+  /**
+   * Move a blob out of the live namespace: CopyObject live → retired, then
+   * DeleteObject live. A missing live key is a no-op (nothing to retire, and we
+   * must not delete anything). Idempotent: a second retire finds no live key.
+   *
+   * Not atomic. Between the copy and the delete both copies exist, which is
+   * harmless: a put in that window sees the live key, returns, and the delete
+   * then leaves its blob only in `retired/`, where the next read restores it (D3).
+   */
+  async retire(sha256: string): Promise<void> {
+    assertValidSha(sha256);
+    const live = blobKey(this.prefix, sha256);
+    const copied = await this.copy(live, retiredBlobKey(this.prefix, sha256));
+    if (!copied) return;
+    await this.deleteKey(live);
+  }
+
+  /**
+   * Delete the RETIRED copy of a blob, for good. Missing is a no-op. The key is
+   * built only through `retiredBlobKey`, so a purge can never touch the live
+   * blob of the same sha (one that was restored, or put again, since the
+   * retire). Whether nobody holds the sha any more is the caller's (the GC's)
+   * call — this layer has no reference graph.
+   */
+  async purge(sha256: string): Promise<void> {
+    assertValidSha(sha256);
+    await this.deleteKey(retiredBlobKey(this.prefix, sha256));
+  }
+
+  /** The live object's bytes, or undefined when the key is missing. */
+  private async readLive(sha256: string): Promise<Buffer | undefined> {
     try {
       const res = await this.client.send(
-        new HeadObjectCommand({ Bucket: this.bucket, Key }),
+        new GetObjectCommand({ Bucket: this.bucket, Key: blobKey(this.prefix, sha256) }),
       );
-      return { size: res.ContentLength ?? 0 };
+      // A GetObject with no body for an existing key shouldn't happen, but
+      // treat it as missing rather than crash.
+      if (res.Body === undefined) return undefined;
+      return Buffer.from(await res.Body.transformToByteArray());
     } catch (err) {
-      if (isNotFound(err)) return { found: false };
+      if (isNotFound(err)) return undefined;
+      throw err;
+    }
+  }
+
+  /** HeadObject size of `Key`, or undefined when it is missing. */
+  private async headSize(Key: string): Promise<number | undefined> {
+    try {
+      const res = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key }));
+      return res.ContentLength ?? 0;
+    } catch (err) {
+      if (isNotFound(err)) return undefined;
       throw err;
     }
   }
 
   /**
-   * One page of live blobs, ascending by sha256. This is the GC's enumeration
+   * Move retired → live: CopyObject retired → live, then DeleteObject retired.
+   * Returns quietly when the retired copy is gone (lost a race with another
+   * restore or a purge, or nothing was ever retired); the caller re-reads live
+   * once either way. Overwriting a live key that a concurrent put just wrote is
+   * harmless: same key, same bytes.
+   */
+  private async restore(sha256: string): Promise<void> {
+    const retired = retiredBlobKey(this.prefix, sha256);
+    const copied = await this.copy(retired, blobKey(this.prefix, sha256));
+    if (copied) await this.deleteKey(retired);
+  }
+
+  /** CopyObject `from` → `to` in this bucket. False when `from` is missing. */
+  private async copy(from: string, to: string): Promise<boolean> {
+    try {
+      await this.client.send(
+        new CopyObjectCommand({
+          Bucket: this.bucket,
+          Key: to,
+          CopySource: copySource(this.bucket, from),
+        }),
+      );
+      return true;
+    } catch (err) {
+      if (isNotFound(err)) return false;
+      throw err;
+    }
+  }
+
+  /** DeleteObject, idempotent: S3 returns success for a missing key, and we
+   *  also swallow the not-found a stricter S3-compatible server might raise. */
+  private async deleteKey(Key: string): Promise<void> {
+    try {
+      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key }));
+    } catch (err) {
+      if (isNotFound(err)) return;
+      throw err;
+    }
+  }
+
+  /**
+   * One page of live (or retired) blobs, ascending by sha256. This is the GC's enumeration
    * seam (`blob:list`): it finds blobs no ledger row has ever seen.
    *
    * `after` is exclusive — pass the previous page's `next`. `next` is present
@@ -271,16 +412,18 @@ export class S3BlobStore {
    * key whose remainder starts past 'f' ends the live region and we stop there
    * instead of paging through everything retired.
    *
-   * `state: 'retired'` is empty for now: the retired namespace lands with a
-   * later card (TASK-778), and nothing is retired until then.
+   * `state: 'retired'` is the same scan with the same contract over
+   * `<prefix>/retired/`, resuming at `StartAfter = retiredBlobKey(after)`.
    */
   async list(query: BlobListQuery): Promise<BlobListResult> {
     assertValidListQuery(query);
     const { state, after, limit } = query;
-    if (state === 'retired') return { items: [] };
+    const retired = state === 'retired';
 
     // The empty prefix means "the whole bucket"; don't send `Prefix: ''`.
-    const listPrefix = this.prefix === '' ? '' : `${this.prefix}/`;
+    const base = this.prefix === '' ? '' : `${this.prefix}/`;
+    const listPrefix = retired ? `${base}${RETIRED_DIR}/` : base;
+    const keyOf = retired ? retiredBlobKey : blobKey;
     const items: BlobListResult['items'] = [];
     let ContinuationToken: string | undefined;
 
@@ -289,7 +432,7 @@ export class S3BlobStore {
         new ListObjectsV2Command({
           Bucket: this.bucket,
           ...(listPrefix === '' ? {} : { Prefix: listPrefix }),
-          ...(after === undefined ? {} : { StartAfter: blobKey(this.prefix, after) }),
+          ...(after === undefined ? {} : { StartAfter: keyOf(this.prefix, after) }),
           MaxKeys: limit,
           ...(ContinuationToken === undefined ? {} : { ContinuationToken }),
         }),
@@ -299,9 +442,10 @@ export class S3BlobStore {
         const key = obj.Key;
         if (key === undefined || !key.startsWith(listPrefix)) continue;
         const rest = key.slice(listPrefix.length);
-        // Past the hex shards (`retired/...`): nothing live sorts after this.
-        if (rest.charAt(0) > 'f') return { items };
-        const m = LIVE_KEY_REGEX.exec(rest);
+        // Live scan, past the hex shards (`retired/...`): nothing live sorts
+        // after this. (The retired scan's Prefix already confines it.)
+        if (!retired && rest.charAt(0) > 'f') return { items };
+        const m = SHARD_KEY_REGEX.exec(rest);
         if (m === null) continue;
         const sha256 = m[3]!;
         if (!sha256.startsWith(m[1]! + m[2]!)) continue;
@@ -313,26 +457,6 @@ export class S3BlobStore {
         return { items };
       }
       ContinuationToken = res.NextContinuationToken;
-    }
-  }
-
-  /**
-   * Remove the addressed blob. Idempotent: deleting a missing object is a
-   * no-op (S3 DeleteObject returns success regardless; we also swallow any
-   * not-found exception a stricter S3-compatible server might raise). GC
-   * safety (deleting only unreferenced objects) is the CALLER's responsibility
-   * — the reference graph lives with the consumers, not this substrate.
-   */
-  async delete(sha256: string): Promise<void> {
-    assertValidSha(sha256);
-    const Key = blobKey(this.prefix, sha256);
-    try {
-      await this.client.send(
-        new DeleteObjectCommand({ Bucket: this.bucket, Key }),
-      );
-    } catch (err) {
-      if (isNotFound(err)) return;
-      throw err;
     }
   }
 }

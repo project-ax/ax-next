@@ -162,6 +162,7 @@ function buildMocks(
       proxyEndpoint: 'tcp://127.0.0.1:54321',
       caCertPem: 'CA',
       envMap: {},
+      proxyAuthToken: 'a'.repeat(32),
     }),
     'proxy:close-session': async () => ({}),
     'sandbox:open-session': async (ctx, input: unknown) => {

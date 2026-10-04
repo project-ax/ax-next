@@ -19,6 +19,7 @@ import {
   type OpenSessionParsed,
 } from '@ax/sandbox-protocol';
 import { allowlistFromParent } from './env.js';
+import { createStderrTail } from './stderr-tail.js';
 import { resolveUserFilesMount } from './resolve-user-files-mount.js';
 import {
   composeAvailable,
@@ -633,15 +634,14 @@ export async function openSessionImpl(
       // this to a local TCP port and rewrites HTTP(S)_PROXY in-process.
       sessionEnv.AX_PROXY_UNIX_SOCKET = input.proxyConfig.unixSocketPath;
     }
-    if (input.proxyConfig.proxyAuthToken !== undefined) {
-      // TASK-52: per-session proxy token for egress attribution. The runner
-      // (proxy-startup.ts) reads AX_PROXY_TOKEN and embeds it as Basic
-      // userinfo on the proxy URL the SDK subprocess uses, so every egress
-      // client sends `Proxy-Authorization: Basic ax:<token>` automatically.
-      // We leave HTTPS_PROXY/HTTP_PROXY unchanged here — the token is the
-      // single source the runner reads; it owns the URL embedding.
-      sessionEnv.AX_PROXY_TOKEN = input.proxyConfig.proxyAuthToken;
-    }
+    // TASK-52: per-session proxy token for egress attribution. The runner
+    // (proxy-startup.ts) reads AX_PROXY_TOKEN and embeds it as Basic
+    // userinfo on the proxy URL the SDK subprocess uses, so every egress
+    // client sends `Proxy-Authorization: Basic ax:<token>` automatically.
+    // We leave HTTPS_PROXY/HTTP_PROXY unchanged here — the token is the
+    // single source the runner reads; it owns the URL embedding. Always set
+    // (TASK-784 — required by ProxyConfigSchema).
+    sessionEnv.AX_PROXY_TOKEN = input.proxyConfig.proxyAuthToken;
     // Merge envMap LAST so per-session credential placeholders win over
     // anything we set above. (They shouldn't collide with HTTPS_PROXY etc.,
     // but be explicit so a future field collision doesn't silently do the
@@ -857,11 +857,31 @@ export async function openSessionImpl(
     ctx.logger.debug('runner_child_error', { err: err.message });
   });
 
-  // 10. Stderr → debug. reqId is already bound on ctx.logger so per-request
-  //     correlation is automatic; no token anywhere.
+  // 10. Stderr → debug, plus a capped, redacted tail we log ONCE at warn when
+  //     the runner exits non-zero (TASK-784). A runner that dies at boot
+  //     (exit 2, e.g. a bad env) has said nothing over IPC; its stderr is the
+  //     only place the reason lives, and debug alone hid it at the default
+  //     level. The tail is untrusted runner text: capped, host-minted secrets
+  //     redacted, host log only — never sent to the browser (the orchestrator
+  //     maps the exit to a fixed reason code). reqId is already bound on
+  //     ctx.logger so per-request correlation is automatic.
+  const stderrTail = createStderrTail([
+    created.token,
+    ...(input.proxyConfig !== undefined ? [input.proxyConfig.proxyAuthToken] : []),
+  ]);
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
-    ctx.logger.debug('runner_stderr', { chunk });
+    stderrTail.append(chunk);
+    ctx.logger.debug('runner_stderr', { chunk: stderrTail.redact(chunk) });
+  });
+  child.once('close', (code, signal) => {
+    if (code === null || code === 0) return;
+    ctx.logger.warn('runner_exited_nonzero', {
+      sessionId: created.sessionId,
+      code,
+      signal,
+      stderrTail: stderrTail.text(),
+    });
   });
 
   // 11. kill(): SIGTERM, escalate to SIGKILL after 5s if still alive. A no-op
