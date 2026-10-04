@@ -30,8 +30,8 @@
 //     `mcp.<ns>.<tool>`, so every loaded tool reaches tool.pre-call under a
 //     canonical, policy-addressable name. Anything else is skipped and logged.
 //   - Every entry is re-validated with the same `validateMcpEntry` the writer
-//     used (no command/url cross-contamination, header values must be
-//     credential placeholders). Credentials keep flowing only through the
+//     used (http only — a stdio entry is skipped by name; header values must
+//     be credential placeholders). Credentials keep flowing only through the
 //     credential proxy; nothing here sees a real secret.
 //   - A duplicate namespace across two bundles is ambiguous; the first (in
 //     sorted dir order) wins and the second is logged. The host never mints
@@ -48,7 +48,7 @@ import { validateMcpEntry } from '@ax/agent-runner-core';
 import { CONNECTOR_TOOL_NAMESPACE_RE } from './tool-names.js';
 
 const MCP_CONFIG_FILE = '.mcp.json';
-/** The writer's caps (≤32 args × 256 chars, ≤32 env, ≤5 headers) fit easily. */
+/** The writer's cap (≤5 headers per server) fits easily. */
 const MAX_MCP_JSON_BYTES = 256 * 1024;
 
 export interface ProjectedMcpServers {
@@ -71,16 +71,14 @@ function toEntry(name: string, value: unknown): unknown {
   const v = value as Record<string, unknown>;
   const { type, ...rest } = v;
   if (type === 'http') return { name, transport: 'http', ...rest };
+  // A missing type is the SDK's stdio default; stdio is not supported, so
+  // hand validateMcpEntry the stdio transport and let it refuse by name.
   if (type === undefined || type === 'stdio') return { name, transport: 'stdio', ...rest };
-  // sse / sdk / anything else: the materializer never writes it.
   return { name, transport: String(type) };
 }
 
 function toSdkConfig(e: ReturnType<typeof validateMcpEntry>): McpServerConfig {
-  if (e.transport === 'http') {
-    return { type: 'http', url: e.url as string, ...(e.headers ? { headers: e.headers } : {}) };
-  }
-  return { type: 'stdio', command: e.command as string, args: e.args ?? [], env: e.env ?? {} };
+  return { type: 'http', url: e.url, ...(e.headers ? { headers: e.headers } : {}) };
 }
 
 export async function loadProjectedMcpServers(

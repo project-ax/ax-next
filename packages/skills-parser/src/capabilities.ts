@@ -26,10 +26,7 @@ export interface CapabilitySlot {
 
 export interface McpServerSpec {
   name: string;
-  transport: 'stdio' | 'http';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
+  transport: 'http';
   url?: string;
   /** Session-only credential placeholders, never persisted secret values. */
   headers?: Record<string, string>;
@@ -105,10 +102,7 @@ const CapabilitySlotSchema = z.object({
 
 const McpServerSpecSchema = z.object({
   name: z.string(),
-  transport: z.union([z.literal('stdio'), z.literal('http')]),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
+  transport: z.literal('http'),
   url: z.string().optional(),
   allowedHosts: z.array(z.string()),
   credentials: z.array(CapabilitySlotSchema),

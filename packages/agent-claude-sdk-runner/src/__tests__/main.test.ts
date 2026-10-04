@@ -4698,7 +4698,7 @@ describe('main()', () => {
             id: 'connector-linear',
             files: [{ path: 'SKILL.md', contents: '---\nname: connector-linear\ndescription: Linear\n---\nbody' }],
             mcpServers: [
-              { name: 'c0123456789', transport: 'stdio', command: 'linear-mcp', args: ['--stdio'], env: { TOKEN: 'ax-cred:' + 'a'.repeat(32) } },
+              { name: 'c0123456789', transport: 'http', url: 'https://linear.example.com/mcp', headers: { 'X-Api-Key': 'ax-cred:' + 'a'.repeat(32) } },
               { name: 'cabcdef0123', transport: 'http', url: 'https://mcp.example.com/mcp', headers: { Authorization: 'Bearer ax-cred:' + 'b'.repeat(32) } },
             ],
           },
@@ -4745,10 +4745,9 @@ describe('main()', () => {
         options: { mcpServers: Record<string, unknown>; settingSources: string[] };
       }).options;
       expect(opts.mcpServers['c0123456789']).toEqual({
-        type: 'stdio',
-        command: 'linear-mcp',
-        args: ['--stdio'],
-        env: { TOKEN: 'ax-cred:' + 'a'.repeat(32) },
+        type: 'http',
+        url: 'https://linear.example.com/mcp',
+        headers: { 'X-Api-Key': 'ax-cred:' + 'a'.repeat(32) },
       });
       expect(opts.mcpServers['cabcdef0123']).toEqual({
         type: 'http',

@@ -8,7 +8,7 @@ import { McpServerSchema } from '../schemas.js';
 // ARCH-11 — MCP-server-entry drift guard (schema side).
 //
 // `McpServerSchema` (this package, the host contract) and the runner's
-// hand-rolled `validateMcpEntry` (@ax/agent-claude-sdk-runner — sandbox-side
+// hand-rolled `validateMcpEntry` (@ax/agent-runner-core — sandbox-side
 // defense-in-depth that intentionally does NOT import this package) are both
 // asserted against ONE shared fixture of golden vectors. This suite pins the
 // SCHEMA side; the runner package's `mcp-server-drift.test.ts` pins the runner
@@ -19,10 +19,10 @@ import { McpServerSchema } from '../schemas.js';
 //
 // Each vector declares an expected verdict per side (`schema`, `runner`). The
 // `core: true` vectors are the security-critical shape rules that MUST stay
-// identical on both sides (name regex, transport enum, transport refine /
-// cross-contamination, command presence, url validity, args caps); we assert
-// schema === runner for those here too. The `core: false` vectors encode the
-// two KNOWN, intentional asymmetries documented on `validateMcpEntry`.
+// identical on both sides (name regex, http-only transport, stdio rejection,
+// removed command/args/env fields, url validity, header placeholders); we
+// assert schema === runner for those here too. The `core: false` vector
+// encodes the KNOWN, intentional asymmetry documented on `validateMcpEntry`.
 // ---------------------------------------------------------------------------
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

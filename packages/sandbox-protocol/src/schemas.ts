@@ -28,16 +28,6 @@ import { z } from 'zod';
 /** Skill / MCP-server id shape — lowercase, digit/hyphen, ≤64 chars. */
 const ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
-// TASK-18 — env caps, identical to the runner's `validateMcpEntry`
-// (MCP_ENV_MAX / MCP_ENV_LEN_MAX in @ax/agent-claude-sdk-runner's
-// installed-skills.ts) AND to the upstream manifest parser
-// (@ax/skills-parser's manifest.ts). The env map of an stdio MCP server flows
-// into the spawned process's environment, so an unbounded record is a
-// resource/abuse vector. Capping here lets the HOST reject oversize env at the
-// wire boundary instead of leaning on the runner (the last gate) to catch it.
-const MCP_ENV_MAX = 32;
-const MCP_ENV_LEN_MAX = 256;
-
 // Owner triple's agentConfig — forwarded into `session:create` so the v2
 // session row is written atomically. The session-postgres / session-inmemory
 // plugins declare the same shape; the orchestrator constructs it.
@@ -69,73 +59,43 @@ export const AgentConfigSchema = z.object({
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 
-// A single bundled MCP server spec declared by a skill's manifest
-// (capabilities.mcpServers). This is the trust-boundary re-validation: the
-// host orchestrator built it from the parsed manifest, but the sandbox
-// re-checks it at the wire because a drifted/compromised host must not be
-// able to smuggle a malformed spec into the runner's `.mcp.json`.
-export const McpServerSchema = z
-  .object({
-    name: z.string().regex(ID_RE),
-    transport: z.enum(['stdio', 'http']),
-    command: z.string().optional(),
-    args: z.array(z.string().max(256)).max(32).optional(),
-    // env keys + values are length-capped via the record's key/value schemas;
-    // the entry-count cap (z.record has no `.max`) is enforced by the
-    // `.superRefine` below so the failure carries a clear, field-pathed issue.
-    env: z
-      .record(z.string().max(MCP_ENV_LEN_MAX), z.string().max(MCP_ENV_LEN_MAX))
-      .superRefine((rec, ctx) => {
-        const count = Object.keys(rec).length;
-        if (count > MCP_ENV_MAX) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `env may declare at most ${MCP_ENV_MAX} entries, got ${count}`,
-          });
-        }
-      })
-      .optional(),
-    url: z.string().url().optional(),
-    headers: z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/), z.string().regex(/^(Bearer )?ax-cred:[a-f0-9]{32}$/))
-      .refine((headers) => Object.keys(headers).length <= 5, 'At most five credential headers')
-      .refine((headers) => {
-        const names = Object.keys(headers).map(name => name.toLowerCase());
-        return new Set(names).size === names.length && names.every(name => !['host', 'content-length', 'transfer-encoding', 'connection', 'cookie', 'set-cookie', 'proxy-authorization', 'proxy-connection', 'upgrade', 'trailer', 'te', 'content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'].includes(name));
-      }, 'Headers must be unique and must not override the transport').optional(),
-    allowedHosts: z.array(z.string()).default([]),
-    credentials: z
-      .array(z.object({ slot: z.string(), kind: z.literal('api-key') }))
-      .default([]),
-  })
-  // Transport-specific field invariants: stdio entries carry a non-empty
-  // command and no url; http entries carry a url and none of the stdio-only
-  // fields. Without this the schema accepts cross-contaminated shapes (e.g.
-  // transport=stdio with a url) that the manifest parser already rejects
-  // upstream — re-validating here keeps a drifted host from smuggling one
-  // through to the runner's `.mcp.json`.
-  .refine(
-    (v) => {
-      if (v.transport === 'stdio') {
-        return (
-          typeof v.command === 'string' &&
-          v.command.length > 0 &&
-          v.url === undefined && v.headers === undefined
-        );
+// A single MCP server spec (http only — stdio was removed 2026-10-04, see
+// docs/plans/2026-10-04-drop-stdio-mcp-design.md). This is the trust-boundary
+// re-validation: the host built it, the sandbox re-checks it so a drifted or
+// compromised host cannot smuggle a malformed spec into the runner's `.mcp.json`.
+const McpServerObject = z.object({
+  name: z.string().regex(ID_RE),
+  transport: z.literal('http'),
+  url: z.string().url(),
+  headers: z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/), z.string().regex(/^(Bearer )?ax-cred:[a-f0-9]{32}$/))
+    .refine((headers) => Object.keys(headers).length <= 5, 'At most five credential headers')
+    .refine((headers) => {
+      const names = Object.keys(headers).map(name => name.toLowerCase());
+      return new Set(names).size === names.length && names.every(name => !['host', 'content-length', 'transfer-encoding', 'connection', 'cookie', 'set-cookie', 'proxy-authorization', 'proxy-connection', 'upgrade', 'trailer', 'te', 'content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'].includes(name));
+    }, 'Headers must be unique and must not override the transport').optional(),
+  allowedHosts: z.array(z.string()).default([]),
+  credentials: z
+    .array(z.object({ slot: z.string(), kind: z.literal('api-key') }))
+    .default([]),
+});
+
+// The removed stdio-only fields must not ride along on an http entry: a host
+// that still sends them is drifted, and the runner must never see them.
+export const McpServerSchema = z.preprocess((raw, ctx) => {
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const key of ['command', 'args', 'env'] as const) {
+      if (key in raw) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `mcpServers entry must not set '${key}' (stdio MCP servers are not supported)`,
+        });
       }
-      // transport === 'http'
-      return (
-        typeof v.url === 'string' &&
-        v.command === undefined &&
-        v.args === undefined &&
-        v.env === undefined
-      );
-    },
-    {
-      message:
-        'mcpServers entry must match its transport: stdio requires command (no url); http requires url (no command/args/env)',
-    },
-  );
-export type McpServerSpec = z.infer<typeof McpServerSchema>;
+    }
+  }
+  return raw;
+}, McpServerObject);
+export type McpServerSpec = z.infer<typeof McpServerObject>;
 
 // JIT Phase 1a — a skill bundle is a FILE TREE, not a single SKILL.md string.
 // `files` carries SKILL.md (the root file at THIS hop — it's a legitimate
