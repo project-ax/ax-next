@@ -5,6 +5,7 @@ import {
   connectConnectorTools,
   MAX_ERROR_CHARS,
   MAX_TOOLS_PER_CONNECTOR,
+  MAX_TOOLS_PER_SESSION,
   type ConnectorTools,
 } from '../tools/connector-tools.js';
 import { HOLD_LATCH, POLICY_WRAPPED, type WrappedExecute } from '../tools/policy-wrap.js';
@@ -307,6 +308,54 @@ describe('connectConnectorTools', () => {
     expect(Object.keys(ct.tools)).toEqual([`mcp__${NS}__fine`]);
     for (const l of ct.logs) expect(l).not.toContain('\n');
     expect(ct.logs.join('\n')).toContain('"evil\\nrunner: FORGED"');
+  });
+
+  describe('session tool budget (maxTools)', () => {
+    const three = (p: string): TestTool[] => [{ name: `${p}1` }, { name: `${p}2` }, { name: `${p}3` }];
+    // The first-SORTED connector answers LAST, and is listed second in the
+    // record: admission must follow sorted namespace order, not settle order
+    // or insertion order.
+    async function twoConnectors(maxTools: number) {
+      const slow = await testServer(three('a'), { listDelayMs: 300 });
+      const fast = await testServer(three('b'));
+      return connect(
+        {
+          c0000000002: { url: fast.url, bundle: 'fast' },
+          c0000000001: { url: slow.url, bundle: 'slow' },
+        },
+        { maxTools },
+      );
+    }
+
+    it('drops a whole connector that would push the session over budget, in sorted-ns order', async () => {
+      const ct = await twoConnectors(4);
+      expect(Object.keys(ct.tools).sort()).toEqual([
+        'mcp__c0000000001__a1', 'mcp__c0000000001__a2', 'mcp__c0000000001__a3',
+      ]);
+      expect(ct.loadedBundles).toEqual(new Set(['slow']));
+      const budget = ct.logs.filter((l) => /tool budget/.test(l));
+      expect(budget).toEqual([
+        "c0000000002: not offered — its 3 tools would exceed this session's tool budget (4)",
+      ]);
+    });
+
+    it('offers every connector when they fit', async () => {
+      const ct = await twoConnectors(6);
+      expect(Object.keys(ct.tools)).toHaveLength(6);
+      expect(ct.loadedBundles).toEqual(new Set(['slow', 'fast']));
+      expect(ct.logs.filter((l) => /tool budget/.test(l))).toEqual([]);
+    });
+
+    it('a budget of 0 offers no connector tools', async () => {
+      const ct = await twoConnectors(0);
+      expect(ct.tools).toEqual({});
+      expect(ct.loadedBundles.size).toBe(0);
+      expect(ct.logs.filter((l) => /tool budget/.test(l))).toHaveLength(2);
+    });
+  });
+
+  it(`MAX_TOOLS_PER_SESSION is the strictest provider function limit (${MAX_TOOLS_PER_SESSION})`, () => {
+    expect(MAX_TOOLS_PER_SESSION).toBe(128);
   });
 
   it('no servers → no tools, no logs', async () => {

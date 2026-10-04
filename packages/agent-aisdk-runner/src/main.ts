@@ -41,7 +41,7 @@ import {
 } from './provider.js';
 import { discoverInstalledSkills, buildSkillsPromptSection } from './skills-index.js';
 import { buildBuiltinTools } from './tools/builtins.js';
-import { connectConnectorTools } from './tools/connector-tools.js';
+import { connectConnectorTools, MAX_TOOLS_PER_SESSION } from './tools/connector-tools.js';
 import { createFailedCallRegistry } from './tools/failed-calls.js';
 import { buildHostTools } from './tools/host-tools.js';
 import { assertAllToolsWrapped, mergeToolSets } from './tools/policy-wrap.js';
@@ -266,6 +266,55 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       const projectedMcp = await loadProjectedMcpServers(
         proxyStartup.providerEnv['CLAUDE_CONFIG_DIR'] ?? process.env['CLAUDE_CONFIG_DIR'],
       );
+      // Session tool budget (MAX_TOOLS_PER_SESSION, the strictest provider
+      // function cap). The non-connector groups are built FIRST so their
+      // size is known; connectors get what is left. The Skill tool is built
+      // AFTER connecting (it reads `connectors.loadedBundles`), so it is
+      // counted here by the same rule buildSkillTool uses: one tool iff any
+      // skill is installed.
+      const baseGroups: Array<{ label: string; tools: Record<string, unknown> }> = [
+        {
+          label: 'built-ins',
+          tools: buildBuiltinTools({
+            policy,
+            homeDir,
+            env: bashEnv,
+            holdLatch,
+            onHold,
+            onToolFailure,
+            // The agent's per-tool DENY verdicts: a denied built-in (e.g.
+            // Bash) is never offered to the model. Host-catalog denies were
+            // already dropped from `catalog` by runner-core.
+            disallowed: agentConfig.disallowedTools,
+          }),
+        },
+        {
+          label: 'host catalog tools',
+          tools: buildHostTools({
+            policy,
+            client,
+            tools: catalog,
+            flushWorkspace: flushWorkspaceForHostTool,
+            holdLatch,
+            onHold,
+            onToolFailure,
+          }),
+        },
+        {
+          label: 'sandbox catalog tools',
+          tools: buildSandboxTools({
+            policy,
+            dispatcher: localDispatcher,
+            tools: catalog,
+            holdLatch,
+            onHold,
+            onToolFailure,
+          }),
+        },
+      ];
+      const nonConnectorCount =
+        baseGroups.reduce((n, g) => n + Object.keys(g.tools).length, 0) +
+        (skills.length > 0 ? 1 : 0);
       const connectors = await connectConnectorTools({
         servers: projectedMcp.servers,
         fetch: proxyFetch,
@@ -274,6 +323,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         onHold,
         onToolFailure,
         disallowed: agentConfig.disallowedTools ?? [],
+        maxTools: Math.max(0, MAX_TOOLS_PER_SESSION - nonConnectorCount),
       });
 
       // Every exit below — `return 0`, a thrown model error, a throw in
@@ -282,44 +332,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         // Merged rather than spread: one flat namespace means a collision must be
         // an error, not a last-write-wins coin flip. See mergeToolSets.
         const tools = mergeToolSets([
-          {
-            label: 'built-ins',
-            tools: buildBuiltinTools({
-              policy,
-              homeDir,
-              env: bashEnv,
-              holdLatch,
-              onHold,
-              onToolFailure,
-              // The agent's per-tool DENY verdicts: a denied built-in (e.g.
-              // Bash) is never offered to the model. Host-catalog denies were
-              // already dropped from `catalog` by runner-core.
-              disallowed: agentConfig.disallowedTools,
-            }),
-          },
-          {
-            label: 'host catalog tools',
-            tools: buildHostTools({
-              policy,
-              client,
-              tools: catalog,
-              flushWorkspace: flushWorkspaceForHostTool,
-              holdLatch,
-              onHold,
-              onToolFailure,
-            }),
-          },
-          {
-            label: 'sandbox catalog tools',
-            tools: buildSandboxTools({
-              policy,
-              dispatcher: localDispatcher,
-              tools: catalog,
-              holdLatch,
-              onHold,
-              onToolFailure,
-            }),
-          },
+          ...baseGroups,
           {
             label: 'the Skill tool',
             tools: buildSkillTool({

@@ -48,6 +48,8 @@ export async function startMcpTestServer(opts: {
    * and attacker-authored.
    */
   methodError?: { method: string; status: number; body: string };
+  /** Delay every `tools/list` answer by this long — a slow-to-list server. */
+  listDelayMs?: number;
 }): Promise<McpTestServer> {
   const seenHeaders: IncomingHttpHeaders[] = [];
   const listed = opts.tools.map((t) => ({
@@ -59,6 +61,7 @@ export async function startMcpTestServer(opts: {
   const makeServer = (): Server => {
     const server = new Server({ name: 'ax-aisdk-test-mcp', version: '0.0.0' }, { capabilities: { tools: {} } });
     server.setRequestHandler(ListToolsRequestSchema, async (req) => {
+      if (opts.listDelayMs !== undefined) await new Promise((r) => setTimeout(r, opts.listDelayMs));
       if (opts.pageSize === undefined) return { tools: listed as never };
       const start = Number(req.params?.cursor ?? '0');
       const end = start + opts.pageSize;

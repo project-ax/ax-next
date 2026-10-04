@@ -25,7 +25,9 @@
 // wedged, 401, malformed list) loses only its own tools, with one stderr
 // line. It never fails the session boot. A tool name the provider would
 // reject is SKIPPED with a log line, never mangled — a renamed tool would
-// silently miss its policy key and its UI label.
+// silently miss its policy key and its UI label. A connector that would push
+// the session past its tool budget (`maxTools`, from MAX_TOOLS_PER_SESSION)
+// is dropped whole, in sorted-namespace order, with one log line.
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type JSONSchema7, type Tool } from 'ai';
@@ -41,6 +43,14 @@ export const CALL_TIMEOUT_MS = 300_000;
 /** Hard ceiling so a server can't hold a call open forever by streaming progress; Stop still aborts sooner. */
 export const MAX_CALL_TOTAL_MS = 1_800_000;
 export const MAX_TOOLS_PER_CONNECTOR = 256;
+/**
+ * The whole session's tool ceiling: the strictest provider limit this runner
+ * drives (OpenAI-compatible endpoints reject more than 128 functions).
+ * Anthropic has no such cap, but one fixed ceiling keeps an agent's behaviour
+ * identical whichever provider its model is on. main.ts subtracts the
+ * non-connector tools and passes the remainder as `maxTools`.
+ */
+export const MAX_TOOLS_PER_SESSION = 128;
 const MAX_LIST_PAGES = 16;
 const CLOSE_TIMEOUT_MS = 5_000;
 /**
@@ -72,6 +82,13 @@ export interface ConnectConnectorToolsOptions {
   connectTimeoutMs?: number;
   /** Per-call timeout (default `CALL_TIMEOUT_MS`). A test seam only — production never sets it. */
   callTimeoutMs?: number;
+  /**
+   * Connector-tool budget for this session (default: unlimited). Connectors
+   * are admitted in sorted-namespace order; one whose tools would push the
+   * total over this is dropped WHOLE (no tools, bundle not loaded, client
+   * closed) — never half-offered.
+   */
+  maxTools?: number;
 }
 
 export interface ConnectorTools {
@@ -168,6 +185,52 @@ export async function connectConnectorTools(
   const loadedBundles = new Set<string>();
   const clients: Client[] = [];
 
+  const buildTool = (client: Client, t: ListedTool, policyName: string): Tool => {
+    const toolName = t.name;
+    return tool({
+      description: t.description ?? '',
+      inputSchema: jsonSchema(t.inputSchema as JSONSchema7),
+      execute: wrapWithPolicy(
+        {
+          policy: opts.policy,
+          name: policyName,
+          isBuiltin: false,
+          holdLatch: opts.holdLatch,
+          onHold: opts.onHold,
+          onToolFailure: opts.onToolFailure,
+        },
+        async (input, ctx) => {
+          let res: unknown;
+          try {
+            res = await client.callTool({ name: toolName, arguments: input }, undefined, {
+              ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}),
+              timeout: callTimeoutMs,
+              resetTimeoutOnProgress: true,
+              maxTotalTimeout: MAX_CALL_TOTAL_MS,
+              // The SDK only sends a progressToken — and only resets the
+              // timeout on progress — when a handler is registered. Without
+              // this no-op, `resetTimeoutOnProgress` is inert.
+              onprogress: () => {},
+            });
+          } catch (err) {
+            // Stop: rethrow untouched so the abort is recognised as one.
+            if (ctx.abortSignal?.aborted === true) throw err;
+            // Otherwise the SDK's message may carry a whole upstream HTTP
+            // body (measured: 1 MB). Bound it before it leaves this process.
+            throw new Error(`connector tool '${toolName}' failed: ${clip(errText(err), MAX_ERROR_CHARS)}`);
+          }
+          const text = renderMcpResult(res as { content?: unknown; structuredContent?: unknown });
+          // Parity with host-tools / the claude-sdk runner: a tool that
+          // reported its own failure is a FAILED tool call (is_error on the
+          // persisted result), not a success whose text complains. ai@7 turns
+          // the throw into a tool-error and the turn continues.
+          if ((res as { isError?: unknown }).isError === true) throw new Error(text);
+          return text;
+        },
+      ),
+    });
+  };
+
   const results = await Promise.allSettled(
     Object.entries(opts.servers).map(async ([ns, server]) => ({
       ns,
@@ -176,18 +239,24 @@ export async function connectConnectorTools(
     })),
   );
 
+  // Admission runs after every connection settled, in sorted namespace
+  // order, so which connectors fit the budget never depends on who answered
+  // first.
+  const maxTools = opts.maxTools ?? Number.POSITIVE_INFINITY;
   const entries = Object.keys(opts.servers);
-  results.forEach((r, i) => {
+  const order = results
+    .map((r, i) => ({ r, ns: entries[i]! }))
+    .sort((a, b) => (a.ns < b.ns ? -1 : a.ns > b.ns ? 1 : 0));
+  for (const { r, ns: settledNs } of order) {
     if (r.status === 'rejected') {
-      log(`${entries[i]}: could not load this connector's tools: ${quoteUntrusted(errText(r.reason))}`);
-      return;
+      log(`${settledNs}: could not load this connector's tools: ${quoteUntrusted(errText(r.reason))}`);
+      continue;
     }
     const { ns, server, client, tools: listed, truncated } = r.value;
-    clients.push(client);
-    loadedBundles.add(server.bundle);
     if (truncated) {
       log(`${ns}: lists more than ${MAX_TOOLS_PER_CONNECTOR} tools; only the first ${MAX_TOOLS_PER_CONNECTOR} are offered`);
     }
+    const own: Record<string, Tool> = {};
     const seen = new Set<string>();
     for (const t of listed) {
       const modelName = `mcp__${ns}__${t.name}`;
@@ -205,51 +274,18 @@ export async function connectConnectorTools(
         log(`${ns}: tool ${quoteUntrusted(t.name)} not offered — denied for this agent`);
         continue;
       }
-      const toolName = t.name;
-      tools[modelName] = tool({
-        description: t.description ?? '',
-        inputSchema: jsonSchema(t.inputSchema as JSONSchema7),
-        execute: wrapWithPolicy(
-          {
-            policy: opts.policy,
-            name: policyName,
-            isBuiltin: false,
-            holdLatch: opts.holdLatch,
-            onHold: opts.onHold,
-            onToolFailure: opts.onToolFailure,
-          },
-          async (input, ctx) => {
-            let res: unknown;
-            try {
-              res = await client.callTool({ name: toolName, arguments: input }, undefined, {
-                ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}),
-                timeout: callTimeoutMs,
-                resetTimeoutOnProgress: true,
-                maxTotalTimeout: MAX_CALL_TOTAL_MS,
-                // The SDK only sends a progressToken — and only resets the
-                // timeout on progress — when a handler is registered. Without
-                // this no-op, `resetTimeoutOnProgress` is inert.
-                onprogress: () => {},
-              });
-            } catch (err) {
-              // Stop: rethrow untouched so the abort is recognised as one.
-              if (ctx.abortSignal?.aborted === true) throw err;
-              // Otherwise the SDK's message may carry a whole upstream HTTP
-              // body (measured: 1 MB). Bound it before it leaves this process.
-              throw new Error(`connector tool '${toolName}' failed: ${clip(errText(err), MAX_ERROR_CHARS)}`);
-            }
-            const text = renderMcpResult(res as { content?: unknown; structuredContent?: unknown });
-            // Parity with host-tools / the claude-sdk runner: a tool that
-            // reported its own failure is a FAILED tool call (is_error on the
-            // persisted result), not a success whose text complains. ai@7 turns
-            // the throw into a tool-error and the turn continues.
-            if ((res as { isError?: unknown }).isError === true) throw new Error(text);
-            return text;
-          },
-        ),
-      });
+      own[modelName] = buildTool(client, t, policyName);
     }
-  });
+    const count = Object.keys(own).length;
+    if (Object.keys(tools).length + count > maxTools) {
+      log(`${ns}: not offered — its ${count} tools would exceed this session's tool budget (${maxTools})`);
+      void client.close().catch(() => {});
+      continue;
+    }
+    Object.assign(tools, own);
+    clients.push(client);
+    loadedBundles.add(server.bundle);
+  }
 
   let closed = false;
   return {

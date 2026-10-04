@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type { InboxLoopEntry } from '@ax/agent-runner-core';
 import { startMcpTestServer, type McpTestServer } from './helpers/mcp-test-server.js';
+import { MAX_TOOLS_PER_SESSION } from '../tools/connector-tools.js';
 
 // ---------------------------------------------------------------------------
 // Runner-side parity suite (design §8).
@@ -917,6 +918,35 @@ describe('aisdk runner — parity', () => {
       const toolResult = JSON.stringify(shippedEntries().find((e) => e.role === 'tool'));
       expect(toolResult).toContain('Use the ping tool.');
       expect(toolResult).toMatch(/could not be loaded this session/);
+    });
+
+    it('a connector that would push the session past MAX_TOOLS_PER_SESSION is not offered at all', async () => {
+      const big = await startMcpTestServer({
+        tools: Array.from({ length: MAX_TOOLS_PER_SESSION }, (_, i) => ({ name: `t${i}` })),
+      });
+      try {
+        await installSkill(
+          'connector-big',
+          'name: connector-big\ndescription: A connector with as many tools as the whole session budget.',
+          'Use the t0 tool.',
+          { mcpJson: { mcpServers: { [NS]: { type: 'http', url: big.url } } } },
+        );
+        scriptedModel.mockReturnValue(
+          modelReplaying([toolStep('Skill', { name: 'connector-big' }), textStep('too big')]),
+        );
+        inboxEntries = [userMessage('use it')];
+
+        await expect(main()).resolves.toBe(0);
+
+        const offered = (sentTools[0] as Array<{ name: string }>).map((t) => t.name);
+        expect(offered.length).toBeLessThanOrEqual(MAX_TOOLS_PER_SESSION);
+        expect(offered.filter((n) => n.startsWith('mcp__'))).toEqual([]);
+        // Dropped whole: its bundle is not "loaded", so the Skill tool says so.
+        const toolResult = JSON.stringify(shippedEntries().find((e) => e.role === 'tool'));
+        expect(toolResult).toMatch(/could not be loaded this session/);
+      } finally {
+        await big.close();
+      }
     });
   });
 
