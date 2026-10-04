@@ -490,10 +490,12 @@ function scopeForKeyMode(keyMode: ConnectorKeyMode): ConnectorCredentialScope {
  * that needs no key); the connect flow treats that as "connected, needs no key".
  *
  * Also what the server-side rail presence read runs (`credentialChecks` in
- * `server/routes-workspace.ts`), so it is one of THREE copies of the ref rule —
- * with @ax/connectors and the host's `connectorCredentialSlots`.
- * `__tests__/connector-credential-refs-contract.test.ts` runs all three over one
- * fixture table (TASK-807).
+ * `server/routes-workspace.ts`, which drops the OAuth client-secret ref the way
+ * the host does — TASK-810), so it is one of THREE copies of the ref rule —
+ * with @ax/connectors and @ax/chat-orchestrator's `connectorSlotRefs` (the
+ * host's `connectorCredentialSlots` and the authored-connector approval card
+ * both run that one). `__tests__/connector-credential-refs-contract.test.ts`
+ * runs every derivation over one fixture table (TASK-807, TASK-810).
  */
 export function deriveCredentialPlan(
   connector: Connector,

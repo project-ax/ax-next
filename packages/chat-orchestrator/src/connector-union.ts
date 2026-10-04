@@ -448,27 +448,63 @@ export interface FoldConnectorResult {
  * scope for every signer. It is used host-side only, by @ax/mcp-oauth, against
  * the provider's token endpoint; it never enters the credential proxy, so a
  * slot that would resolve to that ref is not returned. (@ax/connectors'
- * global-read rule also refuses a ref that is a plan slot — two locks.) That
- * exclusion is the ONE place this differs from @ax/connectors' `deriveCredentialPlan`
- * and the rail's copy, which keep the slot; the contract test in @ax/channel-web
- * (`connector-credential-refs-contract.test.ts`, TASK-807) pins every other
- * shape to be identical.
+ * global-read rule also refuses a ref that is a plan slot — two locks.) The
+ * rail's `credentialChecks` drops the same ref (TASK-810), so host and rail
+ * agree exactly; @ax/connectors' `deriveCredentialPlan` and the approval card
+ * keep the slot (they WRITE it). The contract test in @ax/channel-web
+ * (`connector-credential-refs-contract.test.ts`, TASK-807) pins all of them.
  */
 export function connectorCredentialSlots(
   c: ResolvedConnectorForOrch,
 ): Array<{ slotDef: ConnectorCredentialSlot; ref: string }> {
-  const isMulti = c.capabilities.credentials.filter((slot) => slot.kind !== 'api-key' || !slot.headerName).length >= 2;
-  const out: Array<{ slotDef: ConnectorCredentialSlot; ref: string }> = [];
-  for (const slotDef of c.capabilities.credentials) {
+  return connectorSlotRefs(c.id, c.capabilities.credentials).filter(
+    ({ ref }) => !ref.endsWith(`:${OAUTH_CLIENT_SECRET_SLOT}`),
+  );
+}
+
+/** The slot fields the ref rule reads — nothing else. */
+export interface SlotRefInput {
+  slot: string;
+  kind: string;
+  account?: string | undefined;
+  headerName?: string | undefined;
+}
+
+/**
+ * TASK-810 — this package's ONE slot → vault-ref rule, UNFILTERED: one entry
+ * per slot, in slot order, each with the `account:<service>[:<slot>]` row it
+ * addresses and the parts that build it (`service`, plus `slotTag` when the
+ * ref is per-slot). Two readers:
+ *
+ *   - {@link connectorCredentialSlots}, the host's skip and the proxy plan,
+ *     which drops the OAuth client-secret ref (TASK-797);
+ *   - the authored-connector approval card (`connector-card.ts`), which needs
+ *     every slot, because it shows each one and writes the key to exactly this
+ *     row.
+ *
+ * Mirrors @ax/connectors' `deriveCredentialPlan` (invariant 2 keeps that
+ * import out): the per-slot form is used when there are ≥2 non-header slots,
+ * or for a header key on its own. `service` is the slot's `account` tag, else
+ * the connector id; the connectors store strips `account` from connector slots
+ * on read, so for a stored connector it is always the id (skill-slot cards can
+ * still carry one). `@ax/channel-web`'s `connector-credential-refs-contract`
+ * test runs this, through both readers, against the other copies.
+ */
+export function connectorSlotRefs<S extends SlotRefInput>(
+  connectorId: string,
+  credentials: readonly S[],
+): Array<{ slotDef: S; ref: string; service: string; slotTag?: string }> {
+  const isMulti = credentials.filter((slot) => slot.kind !== 'api-key' || !slot.headerName).length >= 2;
+  return credentials.map((slotDef) => {
     const service =
       slotDef.account !== undefined && slotDef.account.length > 0
         ? slotDef.account
-        : c.id;
-    const ref = isMulti || (slotDef.kind === 'api-key' && slotDef.headerName) ? `account:${service}:${slotDef.slot}` : `account:${service}`;
-    if (ref.endsWith(`:${OAUTH_CLIENT_SECRET_SLOT}`)) continue;
-    out.push({ slotDef, ref });
-  }
-  return out;
+        : connectorId;
+    const perSlot = isMulti || (slotDef.kind === 'api-key' && Boolean(slotDef.headerName));
+    return perSlot
+      ? { slotDef, ref: `account:${service}:${slotDef.slot}`, service, slotTag: slotDef.slot }
+      : { slotDef, ref: `account:${service}`, service };
+  });
 }
 
 /** What {@link partitionConnectorsBySignIn} splits the connector set into. */

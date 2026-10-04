@@ -182,6 +182,7 @@ import {
   type Connector,
   type ConnectorCredentialSlot,
 } from '../lib/connectors.js';
+import { OAUTH_CLIENT_SECRET_SLOT } from '../lib/connector-credential-slots.js';
 // The closed-code check and the one builder of a save-refused row's id
 // (TASK-731), shared with the browser, which matches its live copy against
 // that same id.
@@ -1501,6 +1502,15 @@ interface ConnectorCredentialCheck {
  * fixture table: if they drift, the rail says "signed in" while the turn
  * skips the connector (or the reverse).
  *
+ * TASK-810 — the one row the plan names that is NOT asked about:
+ * `account:<id>:OAUTH_CLIENT_SECRET`, the admin's OAuth client secret. Nobody
+ * signs in with it, so a missing one must never make the rail say "Not signed
+ * in yet" (or the attach gate refuse), and the host's skip drops the same ref
+ * (TASK-797), so the contract test can now pin rail == host exactly. The test
+ * is the REF's suffix, not the slot's name, exactly as the host does it: a
+ * lone slot named `OAUTH_CLIENT_SECRET` collapses to `account:<id>`, which is
+ * that slot's own key and is still checked.
+ *
  * Takes the minimal shape both callers have — a full `connectors:get` record,
  * or a `connectors:list-effective` entry's id / keyMode / slots. The bus is
  * not type-checked, so a slot that is not a {@link ConnectorCredentialSlot}
@@ -1524,10 +1534,12 @@ export function credentialChecks(connector: {
     keyMode: connector.keyMode === 'workspace' ? 'workspace' : 'personal',
     capabilities: { credentials: slots },
   } as Connector);
-  return plan.map((entry) => ({
-    ref: entry.ref,
-    signIn: slots.find((s) => s.slot === entry.slot)?.kind === 'oauth',
-  }));
+  return plan
+    .filter((entry) => !entry.ref.endsWith(`:${OAUTH_CLIENT_SECRET_SLOT}`))
+    .map((entry) => ({
+      ref: entry.ref,
+      signIn: slots.find((s) => s.slot === entry.slot)?.kind === 'oauth',
+    }));
 }
 
 async function attachCredentialGate(
