@@ -55,9 +55,15 @@ agent rail and signs in with their own Google account.** Instead:
   - Team agent viewed by a member (not owner/admin): no action; tooltip/caption
     "Ask <owner> to sign in".
 - This is what makes default-on connectors usable: each person sees Sign in on the row.
-- Chat: alongside TASK-713's `connector-needs-reconnect`, the orchestrator reports
+- Chat: ~~alongside TASK-713's `connector-needs-reconnect`, the orchestrator reports
   `connector-needs-sign-in` when a session opens with an effective connector that has no credential,
-  and chat points at the Connectors tab with "sign in" wording.
+  and chat points at the Connectors tab with "sign in" wording.~~ **Superseded by TASK-806 (owner
+  decision A, 2026-10-04):** a connector this person never signed in to / added a key for is
+  SKIPPED for the session (presence read via `credentials:has` before `proxy:open-session`); the
+  turn runs without its tools, the agent's prompt names it, and chat shows a non-blocking,
+  dismissible "isn't signed in yet, so it's off for this chat" notice (from the rail's
+  `needs-sign-in` rows) with **Open Connectors**. Signing in re-spawns the warm session on the next
+  message. A rejected refresh still blocks with `connector-needs-reconnect`.
 
 ### B. Admin OAuth client secret readable by any signer (fixes 4)
 

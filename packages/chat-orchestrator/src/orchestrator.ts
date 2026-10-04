@@ -30,6 +30,8 @@ import {
   resolveEffectiveConnectors,
   resolveSkillReferencedConnectors,
   copyConnectorDefaultsForSession,
+  partitionConnectorsBySignIn,
+  skippedConnectorsPromptLine,
   foldConnectorCaps,
   stampConnectorHeaders,
   connectorCredentialEnvName,
@@ -876,8 +878,12 @@ interface OpenSessionResult {
 // keys included — and its error does not say which ref failed, so a bare
 // `credential-not-found` here may be a missing model-provider key, and telling
 // that person to reconnect a connector would send them the wrong way. A
-// connector whose account row is simply absent therefore still reads as
-// `proxy-open-failed` until the open carries the failing ref.
+// connector whose account row is simply absent never gets here at all since
+// TASK-806: it is skipped for the session BEFORE the open
+// (`partitionConnectorsBySignIn`), so the turn runs without it. (TASK-796/802's
+// after-the-fact `connector-needs-sign-in` classification was removed with
+// that; an open that still fails on a missing row — a race, or a presence read
+// that faulted and kept the connector — reads as `proxy-open-failed`.)
 // ---------------------------------------------------------------------------
 
 /** Turn-error reason: a connector's sign-in expired; reconnect it, then retry. */
@@ -888,120 +894,8 @@ function isNeedsReconnect(err: unknown): boolean {
   return named(err) || named((err as { cause?: unknown } | null)?.cause);
 }
 
-// ---------------------------------------------------------------------------
-// TASK-796 — the other way a connector stops a session opening: nobody ever
-// signed in to it (or added its key) for this caller. A default-on connector
-// reaches every agent this way. `proxy:open-session` resolves every ref with
-// `credentials:get`, so the missing row fails the whole open with
-// `credential-not-found` — and that error does not say WHICH ref was missing
-// (see the TASK-713 note above: it may be a model-provider key).
-//
-// So, only AFTER an open has failed, ask the vault about the CONNECTOR refs
-// alone, with `credentials:has` (TASK-795): the SAME user → agent → global
-// walk and authz gates `credentials:get` uses (one shared `findRow`), but it
-// never resolves, refreshes or touches the network. If any connector ref has
-// no row for this caller, the person can fix it: sign in on the Connectors
-// tab. A missing provider key with every connector signed in is never asked
-// about, so it still reads as `proxy-open-failed`.
-//
-// TASK-802 — when a connector IS missing, the agent's own refs (the model
-// provider key) get the same one-shot question, because that failure was
-// being hidden: the person signed in, retried, and met the key failure on the
-// second turn. Both missing is its own reason, so the sentence can name both.
-// The key is asked about only AFTER a connector came back missing, so a
-// provider-only failure costs no extra read and a successful open costs none.
-//
-// Order matters: a rejected-refresh (`NeedsReconnectError`) is checked FIRST
-// and wins — its token row still exists, but the caller learns "reconnect",
-// never both. A presence read that throws, or no `credentials:has` at all,
-// counts as present (logged by error NAME only — never a message, which can
-// carry provider text), so a failed connector read falls back to
-// `proxy-open-failed` and a failed key read to plain `connector-needs-sign-in`:
-// the cheaper wrong answer than sending someone to sign in to a connector that
-// is fine, or telling them a key is missing that is not. Nothing here runs on
-// a successful open.
-// ---------------------------------------------------------------------------
-
-/** Turn-error reason: a connector was never signed in; sign in, then retry. */
-const CONNECTOR_NEEDS_SIGN_IN = 'connector-needs-sign-in';
-
-/**
- * Turn-error reason (TASK-802): the model-provider key is missing AND a
- * connector was never signed in. Different people fix the two (an admin owns
- * the key), so the client says both rather than only the half checked first.
- */
-const PROVIDER_KEY_AND_CONNECTOR_SIGN_IN = 'provider-key-missing-connector-needs-sign-in';
-
-/** Owner tag `foldConnectorCaps` stamps on a connector's credential slots. */
-const CONNECTOR_SLOT_OWNER_PREFIX = 'connector:';
-
 /** Owner tag for the agent's own credential slots — the model-provider key. */
 const AGENT_SLOT_OWNER = '<agent.requiredCredentials>';
-
-/** The distinct refs of the slots whose owner tag `owned` accepts. */
-function refsOwnedBy(
-  creds: Readonly<Record<string, { ref: string }>>,
-  slotOwners: ReadonlyMap<string, string>,
-  owned: (owner: string) => boolean,
-): Set<string> {
-  const refs = new Set<string>();
-  for (const [envName, cred] of Object.entries(creds)) {
-    const owner = slotOwners.get(envName);
-    if (owner !== undefined && owned(owner)) refs.add(cred.ref);
-  }
-  return refs;
-}
-
-/**
- * True when `credentials:has` says at least one of `refs` has no row for this
- * caller. A read that throws counts as present (see the block above); only the
- * error NAME is logged, under `failureEvent`.
- */
-async function anyRefAbsent(
-  bus: HookBus,
-  ctx: AgentContext,
-  refs: ReadonlySet<string>,
-  failureEvent: string,
-): Promise<boolean> {
-  if (refs.size === 0) return false;
-  const answers = await Promise.all(
-    [...refs].map(async (ref) => {
-      try {
-        const r = await bus.call<{ ref: string; userId: string }, { present: boolean }>(
-          'credentials:has',
-          ctx,
-          { ref, userId: ctx.userId },
-        );
-        return r?.present === false;
-      } catch (err) {
-        ctx.logger.warn(failureEvent, {
-          name: err instanceof Error ? err.name : 'unknown',
-        });
-        return false;
-      }
-    }),
-  );
-  return answers.some((missing) => missing);
-}
-
-/**
- * The reason a failed open reads as when a connector is the person's to sign
- * in to; `undefined` when it is not (the caller keeps `proxy-open-failed`).
- */
-async function signInReason(
-  bus: HookBus,
-  ctx: AgentContext,
-  creds: Readonly<Record<string, { ref: string }>>,
-  slotOwners: ReadonlyMap<string, string>,
-): Promise<string | undefined> {
-  if (!bus.hasService('credentials:has')) return undefined;
-  const connectorRefs = refsOwnedBy(creds, slotOwners, (o) => o.startsWith(CONNECTOR_SLOT_OWNER_PREFIX));
-  if (!(await anyRefAbsent(bus, ctx, connectorRefs, 'connector_sign_in_check_failed'))) return undefined;
-  const keyRefs = refsOwnedBy(creds, slotOwners, (o) => o === AGENT_SLOT_OWNER);
-  return (await anyRefAbsent(bus, ctx, keyRefs, 'provider_key_check_failed'))
-    ? PROVIDER_KEY_AND_CONNECTOR_SIGN_IN
-    : CONNECTOR_NEEDS_SIGN_IN;
-}
 
 // ---------------------------------------------------------------------------
 // Deferred — a Promise we can resolve/reject externally, with an idempotent
@@ -1629,6 +1523,7 @@ export function createOrchestrator(
     // be consumed and would leak indefinitely.
     respawnSessions.delete(sessionId);
     augmentGenBySession.delete(sessionId);
+    skippedConnectorRefsBySession.delete(sessionId);
   }
 
   // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the
@@ -1860,6 +1755,40 @@ export function createOrchestrator(
   // bounded by the agent population.
   const augmentGenByAgent = new Map<string, number>();
   const augmentGenBySession = new Map<string, number>();
+
+  // TASK-806 — the third reason a warm session is retired at its next turn: it
+  // spawned with a connector SKIPPED because this caller had never signed in to
+  // it, and they have signed in since. The skip is frozen at spawn (the runner
+  // never reloads its MCP servers), so without this the person signs in, sends
+  // the next message, and the agent still says the connector is off until the
+  // warm session idles out. Holds the skipped connector refs per session; only
+  // sessions that skipped something have an entry. Same lifetime + single-
+  // replica posture as `augmentGenBySession`.
+  const skippedConnectorRefsBySession = new Map<string, string[]>();
+
+  /** True when a ref skipped at spawn now answers present. Any fault → false. */
+  async function skippedConnectorSignedIn(ctx: AgentContext, sessionId: string): Promise<boolean> {
+    const refs = skippedConnectorRefsBySession.get(sessionId);
+    if (refs === undefined || refs.length === 0 || !bus.hasService('credentials:has')) return false;
+    const answers = await Promise.all(
+      refs.map(async (ref) => {
+        try {
+          const r = await bus.call<{ ref: string; userId: string }, { present?: unknown }>(
+            'credentials:has',
+            ctx,
+            { ref, userId: ctx.userId },
+          );
+          return r?.present === true;
+        } catch (err) {
+          ctx.logger.warn('connector_sign_in_check_failed', {
+            name: err instanceof Error ? err.name : 'unknown',
+          });
+          return false;
+        }
+      }),
+    );
+    return answers.some((present) => present);
+  }
 
   function isAugmentStale(sessionId: string, agentId: string): boolean {
     const agentGen = augmentGenByAgent.get(agentId) ?? 0;
@@ -2151,7 +2080,12 @@ export function createOrchestrator(
             // registration. Reopen the durable conversation after restart;
             // never send a turn through an unowned credential-proxy session.
             const hostSessionMissing = keepAlive && !warmSessions.has(candidate);
-            if (skillsDirty || augmentStale || hostSessionMissing) {
+            // TASK-806 — asked only when nothing else already retires it, and
+            // only for a session that skipped a connector at spawn.
+            const connectorSignedIn =
+              !(skillsDirty || augmentStale || hostSessionMissing) &&
+              (await skippedConnectorSignedIn(ctx, candidate));
+            if (skillsDirty || augmentStale || hostSessionMissing || connectorSignedIn) {
               // B3: this session's agent's draft-skills changed since it
               // spawned (the runner freezes the projection at spawn). Retire it
               // and fall through to a fresh spawn that re-derives the
@@ -2161,9 +2095,18 @@ export function createOrchestrator(
               // TASK-612: same treatment when the session's system prompt
               // predates a change to the agent's augment (a person edited
               // Rules). The fresh spawn re-runs `system-prompt:augment`.
+              //
+              // TASK-806: and when a connector skipped at spawn (never signed
+              // in) has been signed in since. The fresh spawn folds it.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
-                reason: hostSessionMissing ? 'host-session-lost' : skillsDirty ? 'skills-proposed' : 'system-prompt-augment-changed',
+                reason: hostSessionMissing
+                  ? 'host-session-lost'
+                  : skillsDirty
+                    ? 'skills-proposed'
+                    : augmentStale
+                      ? 'system-prompt-augment-changed'
+                      : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -2179,6 +2122,7 @@ export function createOrchestrator(
               );
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
+              skippedConnectorRefsBySession.delete(candidate);
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
               } catch (err) {
@@ -2873,8 +2817,33 @@ export function createOrchestrator(
     // TASK-754 — a connector that reached this agent without an attach (a
     // workspace default) copies its per-tool defaults now, on first sight;
     // attached ones were copied at attach and are a cached no-op here.
-    // NON-FATAL (see the helper).
+    // NON-FATAL (see the helper). Runs over EVERY connector, skipped ones
+    // included: the copy is about the agent getting the connector, not about
+    // this caller's sign-in.
     await copyConnectorDefaultsForSession(bus, ctx, allConnectors);
+
+    // TASK-806 (owner decision A) — a connector this caller has never signed
+    // in to / added a key for is SKIPPED for this session instead of failing
+    // the whole turn at proxy:open-session. Skipped connectors never reach the
+    // fold below, so they add no hosts, credential slots or MCP servers. Only
+    // an explicit "no row" skips; a presence-read fault keeps the connector
+    // (see partitionConnectorsBySignIn). A rejected refresh still has a row,
+    // so it is kept and surfaces as connector-needs-reconnect below.
+    const connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
+    if (connectorSignIn.skipped.length > 0) {
+      ctx.logger.info('connectors_skipped_not_signed_in', {
+        connectorIds: connectorSignIn.skipped.map((s) => s.connector.id),
+      });
+      // Tell the agent, so it can say "sign in to Gmail first" instead of
+      // acting as if the tool never existed. Normal mode only: the bootstrap
+      // augment admits person-authored content alone (TASK-524), and this line
+      // carries connector names, which are not.
+      const line = skippedConnectorsPromptLine(connectorSignIn.skipped);
+      agentConfig.systemPromptAugment =
+        agentConfig.systemPromptAugment.length > 0
+          ? `${agentConfig.systemPromptAugment}\n\n${line}`
+          : line;
+    }
 
     // TASK-153 — fold the connectors' Capabilities, including their dev SERVICES.
     // The fold THROWS `ConnectorServiceCollisionError` if two connectors declare
@@ -2892,7 +2861,7 @@ export function createOrchestrator(
     let connectorFold: FoldConnectorResult;
     let foldedServices: ServiceDescriptorParsed[];
     try {
-      connectorFold = foldConnectorCaps(allConnectors, baseAllowSet, baseCreds, slotOwners);
+      connectorFold = foldConnectorCaps(connectorSignIn.kept, baseAllowSet, baseCreds, slotOwners);
       // TASK-734 — a server the fold refused to key (no/invalid/duplicate tool
       // namespace) is absent from the sandbox; say so instead of silently losing it.
       // This log is for operators; the PERSON sees it on the agent's connectors
@@ -3134,9 +3103,7 @@ export function createOrchestrator(
       }
       const outcome: AgentOutcome = {
         kind: 'terminated',
-        reason: isNeedsReconnect(err)
-          ? CONNECTOR_NEEDS_RECONNECT
-          : ((await signInReason(bus, ctx, unionedCreds, slotOwners)) ?? 'proxy-open-failed'),
+        reason: isNeedsReconnect(err) ? CONNECTOR_NEEDS_RECONNECT : 'proxy-open-failed',
         error: err,
       };
       // TASK-22 — credential resolution failure at session-open. This is the
@@ -3239,6 +3206,12 @@ export function createOrchestrator(
       );
       handle = opened.handle;
       augmentGenBySession.set(sessionId, augmentGenAtSpawn);
+      if (connectorSignIn.skipped.length > 0) {
+        skippedConnectorRefsBySession.set(
+          sessionId,
+          [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))],
+        );
+      }
       if (keepAlive) {
         // Warm the session: the runner outlives this request. One handle.exited
         // cleanup covers every reap path (graceful cancel, force kill, runner
@@ -3265,6 +3238,7 @@ export function createOrchestrator(
             // rotating credentials; we drop it only once the runner exits.
             sessionsNeedingRotation.delete(sessionId);
             augmentGenBySession.delete(sessionId);
+            skippedConnectorRefsBySession.delete(sessionId);
             if (proxyOpened) {
               void bus
                 .call<ProxyCloseSessionInput, Record<string, never>>(
@@ -3537,6 +3511,7 @@ export function createOrchestrator(
         // Same lifetime rule for the augment generation (TASK-612): a warm
         // session drops it in handle.exited; a one-shot session is done now.
         augmentGenBySession.delete(ctx.sessionId);
+        skippedConnectorRefsBySession.delete(ctx.sessionId);
       }
     }
   }

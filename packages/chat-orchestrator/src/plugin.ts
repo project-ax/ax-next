@@ -89,14 +89,13 @@ export function createChatOrchestratorPlugin(
             "a connector that reaches the agent without an attach (a workspace default) is not copied, so the agent follows the connector's live per-tool defaults — a later loosening by its editor applies to it too",
         },
         {
-          // TASK-796 — after proxy:open-session fails, a presence read over the
-          // connector refs tells "you haven't signed in to a connector" apart
-          // from a generic open failure. TASK-802: when a connector is missing,
-          // the agent's own (model-provider) key is checked the same way, so a
-          // turn missing both says both. Never called on a successful open.
+          // TASK-806 — before proxy:open-session, a presence read over each
+          // connector's refs skips a connector this caller never signed in to
+          // (the turn runs without it). On a routed turn the skipped refs are
+          // asked again, so a sign-in re-spawns the warm session.
           hook: 'credentials:has',
           degradation:
-            'a session that cannot open because a connector was never signed in reads as the generic proxy-open-failed instead of connector-needs-sign-in, and one that is also missing its model-provider key reads as connector-needs-sign-in alone',
+            'never-signed-in connectors are not skipped: the session open fails on the missing credential and the turn ends with the generic proxy-open-failed (the pre-TASK-806 blocking behaviour)',
         },
       ],
       // ----- conditionally-called peers (NOT in `calls`) -----
