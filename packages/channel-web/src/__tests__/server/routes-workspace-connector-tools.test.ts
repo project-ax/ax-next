@@ -453,6 +453,27 @@ describe('connector details routes (mock bus)', () => {
           expect(setCalls).toEqual([{ agentId: 'a1', toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }]);
         });
 
+        it('a member still SEES Allow when a manager chose it (the cap limits choice, not the report)', async () => {
+          canManage = false;
+          overrides.set(k(NS_GMAIL, 'read_message'), { verdict: 'allow', ceiling: 'allow' });
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'hold',
+            verdict: 'allow',
+          });
+        });
+
+        it('an unreadable agentSourcedNamespaces answer still requires manage authority for Allow', async () => {
+          canManage = false;
+          for (const bad of [undefined, NS_GMAIL, { 0: NS_GMAIL }]) {
+            agentSourced = bad;
+            setCalls = [];
+            const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+            expect(r.statusCode).toBe(409);
+            expect(setCalls).toEqual([]);
+          }
+        });
+
         it('a personal agent never asks the manage check', async () => {
           visibility = 'personal';
           const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');

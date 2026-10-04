@@ -7117,6 +7117,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         const open =
           override?.ceiling ??
           (agentSourced.has(ns) ? 'allow' : (defaults.get(toolKey) ?? 'hold'));
+        // The cap limits what a member may CHOOSE, never what is reported as
+        // happening: `verdict` below uses the real ceiling, so a tool a manager
+        // set to Allow reads Allow for a member too (it does run unasked).
         const ceiling = memberCapped && agentSourced.has(ns) ? strictestVerdict(open, 'hold') : open;
         const held: AgentToolVerdict | undefined =
           override === undefined && (copied.has(ns) || agentSourced.has(ns)) ? 'hold' : undefined;
@@ -7126,7 +7129,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           description: fenceToolDescription(fields.description),
           readOnly: typeof fields.readOnly === 'boolean' ? fields.readOnly : null,
           outward: typeof fields.outward === 'boolean' ? fields.outward : null,
-          verdict: strictestVerdict(override?.verdict ?? held, ceiling),
+          verdict: strictestVerdict(override?.verdict ?? held, open),
           ceiling,
         };
       };
@@ -7268,8 +7271,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             ctx,
             { connectorId, toolNamespaces: [keyNamespace] },
           );
+          // An answer we can't read counts as agent-sourced: the manage check
+          // then runs, which is the closed direction (the GET caps the same way).
           const list: unknown = out?.agentSourcedNamespaces;
-          sourced = Array.isArray(list) && (list as unknown[]).includes(keyNamespace);
+          sourced = !Array.isArray(list) || (list as unknown[]).includes(keyNamespace);
         }
         if (sourced) {
           const mayManage =
