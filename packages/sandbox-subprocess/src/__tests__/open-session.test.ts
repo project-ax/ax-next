@@ -523,11 +523,15 @@ describe('sandbox:open-session', () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();
     const warns: Array<{ msg: string; fields: Record<string, unknown> | undefined }> = [];
+    const debugs: Array<{ msg: string; fields: Record<string, unknown> | undefined }> = [];
     const base = h.ctx().logger;
     const logger = {
       ...base,
       warn: (msg: string, fields?: Record<string, unknown>) => {
         warns.push({ msg, fields });
+      },
+      debug: (msg: string, fields?: Record<string, unknown>) => {
+        debugs.push({ msg, fields });
       },
       child: () => logger,
     } as typeof base;
@@ -553,6 +557,12 @@ describe('sandbox:open-session', () => {
     expect(tail).toContain('runner: invalid env: AX_PROXY_TOKEN');
     expect(tail).toContain('[redacted]');
     expect(tail).not.toContain(token);
+    // The per-chunk debug line is redacted too: debug is what an operator
+    // turns on to diagnose exactly this boot failure.
+    const chunks = debugs.filter((d) => d.msg === 'runner_stderr');
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.map((d) => String(d.fields?.chunk)).join('')).toContain('[redacted]');
+    expect(JSON.stringify(debugs)).not.toContain(token);
     await fs.rm(ws, { recursive: true, force: true });
   });
 

@@ -872,7 +872,7 @@ export async function openSessionImpl(
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
     stderrTail.append(chunk);
-    ctx.logger.debug('runner_stderr', { chunk });
+    ctx.logger.debug('runner_stderr', { chunk: stderrTail.redact(chunk) });
   });
   child.once('close', (code, signal) => {
     if (code === null || code === 0) return;

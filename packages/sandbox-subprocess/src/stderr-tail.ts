@@ -36,6 +36,18 @@ export interface StderrTail {
   append(chunk: string): void;
   /** The capped, redacted tail. Empty string when the runner wrote nothing. */
   text(): string;
+  /**
+   * Redact this session's secrets from one chunk, for the per-chunk debug
+   * line. Best-effort only: a secret split across two chunks is not matched
+   * there (each half is logged on its own line). The warn tail has no such gap.
+   */
+  redact(chunk: string): string;
+}
+
+function redactAll(text: string, secrets: readonly string[]): string {
+  let out = text;
+  for (const secret of secrets) out = out.split(secret).join(STDERR_REDACTED);
+  return out;
 }
 
 /** Drop a leading lone low surrogate so a cut never splits a pair. */
@@ -68,7 +80,7 @@ export function createStderrTail(
         window = window.slice(window.length - keep);
         trimmed = true;
       }
-      for (const secret of live) window = window.split(secret).join(STDERR_REDACTED);
+      window = redactAll(window, live);
       // Once anything was dropped, the first `slack` units may hold the tail
       // end of a secret we could not match. Drop at least that much.
       if (trimmed) {
@@ -76,6 +88,9 @@ export function createStderrTail(
       }
       if (window.length > max) window = window.slice(window.length - max);
       return startOnCharBoundary(window);
+    },
+    redact(chunk: string): string {
+      return redactAll(chunk, live);
     },
   };
 }

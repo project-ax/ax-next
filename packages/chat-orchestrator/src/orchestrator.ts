@@ -4221,7 +4221,10 @@ function endpointToProxyConfig(
   // TASK-784 — the token is the proxy's caller credential (TASK-158) and the
   // runner refuses to boot without one (TASK-704). Fail closed HERE, before a
   // sandbox is spawned, rather than letting the sandbox schema (or the runner)
-  // refuse it later. The value is never echoed into the error.
+  // refuse it later. The value is never echoed into the error. (This covers a
+  // proxy config built here — the only one the orchestrator produces. The
+  // sandbox input schema still treats `proxyConfig` itself as optional; a
+  // session opened without one is refused only by the runner, at boot.)
   if (typeof proxyAuthToken !== 'string' || !PROXY_AUTH_TOKEN_FORMAT.test(proxyAuthToken)) {
     throw new PluginError({
       code: 'invalid-proxy-auth-token',
