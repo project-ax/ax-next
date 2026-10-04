@@ -33,6 +33,9 @@ import { credentialChecks } from '../server/routes-workspace.js';
  * and the host's `slotDef.account ?? c.id` fallback never fires because of it.
  * A fixture that skipped the parse would "find" a drift no real connector can
  * have; one that parses will fail loudly if the schema ever starts keeping it.
+ * The contract therefore holds for store-parsed input only. A host path that
+ * folded connector capabilities WITHOUT that parse could reach the `account`
+ * fallback, and this file would not see it (it always parses).
  *
  * THE ONE DOCUMENTED DIFFERENCE (TASK-797). The host drops a slot whose ref is
  * `account:<id>:OAUTH_CLIENT_SECRET`: that ref is where an OAuth client secret
@@ -171,6 +174,16 @@ const FIXTURES: Fixture[] = [
     ],
     refs: ['account:gmail:OAUTH_CLIENT_SECRET', 'account:gmail:TOKEN'],
     hostRefs: ['account:gmail:TOKEN'],
+  },
+  {
+    // The host's exclusion tests the REF's suffix, not the slot's name. A lone
+    // slot with that name collapses to `account:<id>` (no suffix), which is that
+    // slot's own key and not the client secret, so the host keeps it and every
+    // copy agrees. A name-based exclusion would drop it from the host only.
+    name: 'a lone slot named OAUTH_CLIENT_SECRET collapses to account:<id> and is kept',
+    id: 'lonesecret',
+    credentials: [{ slot: 'OAUTH_CLIENT_SECRET', kind: 'api-key' }],
+    refs: ['account:lonesecret'],
   },
 ];
 
