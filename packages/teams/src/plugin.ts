@@ -43,8 +43,7 @@ export interface CreateTeamsPluginOptions {
    * If true, mount the /admin/teams* routes. Default: false. The teams
    * plugin must function in single-process / sandbox-side contexts that
    * don't load @ax/http-server or @ax/auth — gating on this flag keeps
-   * those boots clean. The multi-tenant preset (Task 16) sets it. Mirrors
-   * @ax/mcp-client's `mountAdminRoutes` opt from Task 10.
+   * those boots clean. The multi-tenant preset (Task 16) sets it.
    */
   mountAdminRoutes?: boolean;
 }

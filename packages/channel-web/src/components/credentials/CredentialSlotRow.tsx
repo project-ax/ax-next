@@ -43,9 +43,9 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
    * deciding whether to hand us a secret.
    *
    * It earns its place for every other kind, because those add a noun the title
-   * does not have: "the Linear skill", "the Linear server", "the daily-digest
-   * routine". So the test is overlap, not destination kind — the same test
-   * `humanizeSlotLabel` itself uses to avoid "Linear tracker Linear token".
+   * does not have: "the Linear skill", "the daily-digest routine". So the test
+   * is overlap, not destination kind — the same test `humanizeSlotLabel`
+   * itself uses to avoid "Linear tracker Linear token".
    */
   const destinationLabel = humanDestination(destination);
   const destinationAddsInfo =
@@ -138,8 +138,6 @@ function destinationService(d: Destination): string | undefined {
       return d.service;
     case 'skill-slot':
       return d.skillId;
-    case 'mcp-header':
-      return d.serverId;
     case 'routine-hmac':
       // A routine path is a file path, not a name; `humanizeId` on
       // `.ax/routines/daily-digest.md` would produce "Ax routines daily digest
@@ -162,8 +160,6 @@ function humanDestination(d: Destination): string {
       return label;
     case 'skill-slot':
       return `the ${label} skill`;
-    case 'mcp-header':
-      return `the ${label} server`;
     case 'routine-hmac':
       return `the ${label} routine`;
   }

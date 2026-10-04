@@ -36,7 +36,6 @@ import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
 import { runCredentialsCommand } from './commands/credentials.js';
-import { runMcpCommand } from './commands/mcp.js';
 import { runServeCommand } from './commands/serve.js';
 import { runAdminCommand } from './commands/admin.js';
 
@@ -365,8 +364,8 @@ export async function main(opts: MainOptions): Promise<number> {
 
   // Tool dispatcher is the single entry point for `tool:execute`, fanning
   // out to whatever tool plugins register descriptors. The dispatcher's
-  // tool surface is populated entirely by MCP-registered host tools (see
-  // the `createMcpClientPlugin()` push below); built-in bash/file-io
+  // tool surface is populated by first-party host tool plugins
+  // (artifact_publish, web-tools, …); built-in bash/file-io
   // descriptors are gone (Phase 6 Task 6 deleted their host-side packages
   // — the SDK runner's sandboxed Bash/Read/Write replace them).
   plugins.push(createToolDispatcherPlugin());
@@ -375,13 +374,10 @@ export async function main(opts: MainOptions): Promise<number> {
   // surface the dispatcher exposes). Must come AFTER createToolDispatcherPlugin().
   plugins.push(createToolArtifactPublishPlugin());
 
-  // MCP-sourced tools register through the same `tool:register` surface
-  // the dispatcher exposes. Push unconditionally: when no MCP configs are
-  // stored, `loadConfigs` returns an empty array and init is a no-op. Ordering
-  // note: must come AFTER tool-dispatcher (which registers `tool:register`)
-  // and AFTER credentials + storage-sqlite (which it calls during init).
-  // Bootstrap's topological sort handles this either way, but keeping the
-  // push order aligned with the call graph keeps readers grounded.
+  // Host MCP servers (the old `ax-next mcp add`) were retired in TASK-792.
+  // The plugin stays loaded for its boot sweep: it hard-deletes any
+  // `mcp-server:*` row a local sqlite store still holds, plus that row's
+  // `mcp:<id>:` credentials. With nothing stored, init is a quiet no-op.
   plugins.push(createMcpClientPlugin());
 
   // Host-side LLM capabilities behind the ANTHROPIC_API_KEY env gate. CLI
@@ -438,7 +434,7 @@ export async function main(opts: MainOptions): Promise<number> {
     logger,
     sessionId: 'cli-session',
     agentId: 'cli-agent',
-    // `cli` matches what every other CLI subcommand (credentials, mcp,
+    // `cli` matches what every other CLI subcommand (credentials,
     // admin) writes against — without alignment, `credentials set
     // provider:anthropic` stores under userId=`cli` and the chat path's
     // `credentials:get` looks under `cli-user`, finds nothing, and
@@ -486,21 +482,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
         process.exit(2);
       });
-  } else if (argv[0] === 'mcp') {
-    runMcpCommand({
-      argv: argv.slice(1),
-      stdin: process.stdin,
-      sqlitePath,
-    })
-      .then((code) => process.exit(code))
-      .catch((e) => {
-        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
-        process.exit(2);
-      });
   } else if (argv[0] === 'admin') {
     // One-shot admin tooling. Today: `reset-bootstrap` (operator escape
     // hatch — re-mints the bootstrap token used by the @ax/onboarding
-    // wizard). Like credentials/mcp this intercepts BEFORE the chat path
+    // wizard). Like credentials this intercepts BEFORE the chat path
     // so we don't bootstrap the LLM/sandbox/orchestrator plugin set.
     runAdminCommand({ argv: argv.slice(1) })
       .then((code) => process.exit(code))

@@ -69,10 +69,6 @@ export function refForDestination(dest: Destination): string {
       assertNoColon('skillId', dest.skillId);
       assertNoColon('slot', dest.slot);
       return `skill:${dest.skillId}:${dest.slot}`;
-    case 'mcp-header':
-      assertNoColon('serverId', dest.serverId);
-      assertNoColon('headerName', dest.headerName);
-      return `mcp:${dest.serverId}:header:${dest.headerName}`;
     case 'routine-hmac':
       assertNoColon('agentId', dest.agentId);
       assertNoColon('routinePath', dest.routinePath);
@@ -121,13 +117,6 @@ const DestinationSchema = z.discriminatedUnion('kind', [
       kind: z.literal('skill-slot'),
       skillId: z.string().min(1).max(128),
       slot: z.string().min(1).max(64),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('mcp-header'),
-      serverId: z.string().min(1).max(64),
-      headerName: z.string().min(1).max(128),
     })
     .strict(),
   z

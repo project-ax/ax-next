@@ -47,10 +47,10 @@ afterAll(async () => {
 });
 
 const baseServices = {
-  'storage:get': async () => ({ value: undefined }),
-  'storage:set': async () => undefined,
+  // The boot sweep of retired host MCP server rows (TASK-792): nothing stored.
+  'storage:list-prefix': async () => ({ entries: [] }),
+  'storage:delete': async () => ({ deleted: 0 }),
   'credentials:get': async () => 'tok',
-  'tool:register': async () => undefined,
   'agents:resolve': async () => ({ agent: {} }),
   'connectors:resolve': async () => ({
     id: 'linear',

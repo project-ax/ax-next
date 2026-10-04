@@ -6,7 +6,7 @@ import { z, type ZodType } from 'zod';
 
 const PLUGIN_NAME = '@ax/credentials';
 // `:` is the separator for deterministic destination refs
-// (provider:anthropic, skill:<id>:<slot>, mcp:<id>:header:<name>, etc.).
+// (provider:anthropic, skill:<id>:<slot>, account:<service>:<slot>, etc.).
 // The full ref including separators is one opaque string from the
 // store's POV — refs are never parsed back out. See refs.ts.
 const REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,191}$/;
@@ -193,7 +193,8 @@ export const CredentialsResolveOutputSchema = z.object({
  * this `(userId, ref)`. No provider, any other answer, or a throw = skip the
  * global step (fail closed). The agent step is gated by the twin hook below
  * (TASK-711); the user scope is not gated, and refs in
- * any other namespace (`provider:`, `mcp:`, `skill:`, `routine:`) never call it.
+ * any other namespace (`provider:`, `skill:`, `routine:`, or a retired `mcp:`
+ * row left in the store) never call it.
  *
  * Deliberately NOT declared in the manifest at all: the provider
  * (@ax/connectors) already depends on this plugin, so a declared edge back
@@ -769,7 +770,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // unique only per owner — so a bare fall-through would hand a team
       // agent's shared sign-in, or a company-wide key, to anyone who names
       // their own connector after it. Only the user scope stays ungated (a
-      // user row is the caller's own), and `provider:` / `mcp:` / `skill:` /
+      // user row is the caller's own), and `provider:` / `skill:` /
       // `routine:` refs are minted by the platform, not chosen by a user, so
       // they walk the chain unchanged.
       //

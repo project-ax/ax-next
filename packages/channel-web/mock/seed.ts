@@ -62,7 +62,6 @@ export const defaultSeeds: Record<string, unknown[]> = {
     { id: 't1:u1', teamId: 't1', userId: 'u1' },
     { id: 't1:u2', teamId: 't1', userId: 'u2' },
   ],
-  'mcp-servers': [],
   sessions: [],
   messages: [],
 };

@@ -180,10 +180,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // ipc-http binds a TCP listener. Replaced by ipc-server (unix socket)
   // because sandbox-subprocess + ipc-server is the wired CLI pair.
   '@ax/ipc-http',
-  // The preset configures mcp-client with `mountAdminRoutes: true`, which
-  // expands its manifest.calls to require http:register-route +
-  // auth:require-user. We just dropped both — replace with a non-admin
-  // version below so the chat-path coverage stays.
+  // The preset configures mcp-client with `connectorToolInventory: true`,
+  // which expands its manifest.calls to require database:get-instance +
+  // connectors:resolve. Replace it with a plain version below (catalog-free
+  // boot sweep only) so the chat-path plugin set stays complete.
   '@ax/mcp-client',
   // First-run wizard: postgres-backed (database:get-instance) and http-server
   // dependent (http:register-route). Both are dropped above. The static hook
@@ -568,10 +568,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         createTestProxyPlugin({ script }),
         // agents:resolve — permissive mock (one source of truth replaced).
         createPermissiveAgentsStubPlugin(),
-        // mcp-client without admin routes: keeps chat-path coverage (it
-        // registers tool descriptors via tool:register on init when the
-        // configured set is non-empty; here we boot it empty, which is the
-        // no-op path) without depending on the http-server we dropped.
+        // mcp-client without the connector inventory: its only init work is
+        // the TASK-792 host-server boot sweep, a no-op on an empty store.
         createMcpClientPlugin(),
         // Records the reqId so the I1 witness assertion below can confirm
         // chat:end fired at all. Audit-log used to consume this event;
@@ -2925,13 +2923,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   //     VERIFIED BELOW: global skill-slot credential is deleted.
   //
   //   Task 15 (@ax/mcp-client):
-  //     Credential purge lives inside the HTTP DELETE /admin/mcp-servers/:id
-  //     handler (purgeMcpCredentials). That route requires the full
-  //     http-server stack and is independently covered by
-  //     mcp-client/__tests__/admin-routes.test.ts. Here we use
-  //     credentials:delete directly for an `mcp:<id>:env:<name>` row so the final
-  //     list assertion still holds.
-  //     CONSTRAINT: not exercisable via bus.call alone.
+  //     Host MCP servers were retired in TASK-792; their `mcp:<id>:` refs are
+  //     purged by mcp-client's boot sweep (covered by
+  //     mcp-client/__tests__/host-server-sweep.test.ts), not by a route.
+  //     Here we use credentials:delete directly for an `mcp:<id>:env:<name>`
+  //     row so the final list assertion still holds.
   //
   //   Task 16 (@ax/routines):
   //     bus.fire('workspace:applied', ...) with a deleted .ax/routines/*.md
@@ -3173,9 +3169,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         ).toBe(true);
 
         // ── Task 15 (direct delete, HTTP path separately tested) ─────────────
-        // Task 15 wires purge inside the HTTP DELETE /admin/mcp-servers/:id
-        // handler; that requires the full http-server stack and is covered by
-        // mcp-client/__tests__/admin-routes.test.ts. Here we call
+        // Host MCP servers are retired (TASK-792); mcp-client's boot sweep
+        // purges `mcp:<id>:` refs (host-server-sweep.test.ts). Here we call
         // credentials:delete directly to clear an `mcp:<id>:env:<name>` row.
         await bus.call<CredentialsDeleteInput, void>('credentials:delete', ctx, {
           scope: 'global', ownerId: null, ref: 'mcp:task21-srv:env:API-KEY',

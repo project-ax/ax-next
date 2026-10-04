@@ -42,14 +42,6 @@ export const KNOWN_DESTINATION_FIXTURES: ReadonlyArray<DestinationFixture> = [
   },
   {
     destination: {
-      kind: 'mcp-header',
-      serverId: 'gh',
-      headerName: 'Authorization',
-    },
-    expectedRef: 'mcp:gh:header:Authorization',
-  },
-  {
-    destination: {
       kind: 'routine-hmac',
       agentId: 'agt-1',
       routinePath: '.ax/routines/cron.md',
