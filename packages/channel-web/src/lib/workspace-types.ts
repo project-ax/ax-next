@@ -1081,8 +1081,13 @@ export type AgentConnectorHealth =
  *   - `ask-admin` — only the company key of a workspace connector is missing,
  *     and this caller is not a workspace admin: nothing to click, the tooltip
  *     says who can fix it.
+ *   - `ask-owner` (TASK-798) — a sign-in is missing on a TEAM agent and this
+ *     caller may not sign in for it (not the agent's owner — a team admin —
+ *     nor a workspace admin): nothing to click, "Ask the agent’s owner to
+ *     sign in". A missing key stays `add-key` for them: the rail's Add key
+ *     writes the caller's OWN key, which a member may always do.
  */
-export type AgentConnectorSetup = 'sign-in' | 'add-key' | 'ask-admin';
+export type AgentConnectorSetup = 'sign-in' | 'add-key' | 'ask-admin' | 'ask-owner';
 
 export interface AgentConnectorRow {
   id: string;
@@ -1101,10 +1106,9 @@ export interface AgentConnectorRow {
   /** TASK-795 — present iff `health` is `needs-sign-in`. */
   setup?: AgentConnectorSetup;
   /**
-   * The caller may remove it from this agent. A workspace default on a team
-   * agent: only the agent's owner (a team admin) or a workspace admin
-   * (TASK-765). An attached connector is always removable here; the server
-   * still decides on the DELETE.
+   * The caller may remove it from this agent. Since TASK-798 this is the
+   * agent-wide {@link AgentConnectorsRead.manageable} answer for every row
+   * (attached or default alike); the server still decides on the DELETE.
    */
   removable: boolean;
 }
@@ -1117,6 +1121,14 @@ export interface AgentConnectorsRead {
    * everyone who uses the agent act as the signer, so Reconnect asks first.
    */
   shared: boolean;
+  /**
+   * TASK-798 — the caller may change this agent's connectors: add, remove,
+   * and sign in ON the agent (first sign-in or Reconnect of a shared one).
+   * Always true for a personal agent's owner and for a workspace admin; on a
+   * team agent only for its owner (a team admin). False also when the answer
+   * could not be read — the server decides again on every write.
+   */
+  manageable: boolean;
   /**
    * TASK-761 — false when this agent's runner is not given connector tools
    * at all (the aisdk runner does not load connectors). The tab then says so

@@ -73,6 +73,11 @@ const OAUTH_BODY_MAX_BYTES = 64 * 1024;
  * provided by @ax/connectors. Named here, not imported (I2).
  */
 const AUTHORIZE_AGENT_ACCOUNT_HOOK = 'credentials:authorize-agent:account';
+/**
+ * TASK-798 — @ax/agents' "may this actor change this agent's connectors?"
+ * (owner / team admin / workspace admin). Named here, not imported (I2).
+ */
+const CAN_MANAGE_AGENT_CONNECTORS_HOOK = 'agents:can-exclude-connector';
 
 export interface McpOAuthRouteConfig {
   /** Public origin we serve under; the OAuth redirect_uri is derived from it. */
@@ -192,6 +197,35 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     } catch (err) {
       logger.warn('mcp_oauth_agent_scope_check_failed', { connectorId, ...errFields(err) });
       return false;
+    }
+  }
+  /**
+   * TASK-798 — may this user change (and so sign in ON) a team agent's
+   * connectors? @ax/agents owns the answer (the agent's owner — a team admin —
+   * or a workspace admin); a workspace admin needs no lookup. Fails closed: no
+   * provider, `allowed` not exactly `true`, or a refusal from the hook is "no".
+   */
+  async function mayManageAgentConnectors(
+    user: { id: string; isAdmin: boolean },
+    agentId: string,
+  ): Promise<boolean> {
+    if (user.isAdmin) return true;
+    if (bus.hasService?.(CAN_MANAGE_AGENT_CONNECTORS_HOOK) !== true) return false;
+    try {
+      const out = await bus.call<
+        { actor: { userId: string; isAdmin: boolean }; agentId: string },
+        { allowed: boolean }
+      >(CAN_MANAGE_AGENT_CONNECTORS_HOOK, ctxFor(user.id), {
+        actor: { userId: user.id, isAdmin: false },
+        agentId,
+      });
+      return out?.allowed === true;
+    } catch (err) {
+      if (isReject(err)) {
+        logger.warn('mcp_oauth_agent_manage_check_refused', errFields(err));
+        return false;
+      }
+      throw err;
     }
   }
   const initCtx = ctxFor('init');
@@ -321,7 +355,9 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const agentId = rawAgentId as string | undefined;
 
     // Authz gate + credScope selection. When agentId is present, a successful
-    // agents:resolve IS the owner/member binding check; the agent's visibility
+    // agents:resolve is the "may use this agent" check, and on a team agent the
+    // owner-or-admin check below (TASK-798) is the "may sign in for everyone"
+    // one; the agent's visibility
     // determines which scope the token is stored under. When absent, the flow is
     // user-scoped and gated only by connector ownership (connectors:get below).
     let credScope: 'user' | 'agent' = 'user';
@@ -340,6 +376,17 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
           return;
         }
         throw err;
+      }
+      // TASK-798 — on a TEAM agent, `agents:resolve` admits every member, but
+      // a sign-in started with the agent decides whose account EVERY member's
+      // runs act as. So only the agent's owner (a team admin) or a workspace
+      // admin may begin one; anyone else is refused here, before any connector
+      // read, vault read, state write or provider redirect. A member's own
+      // sign-in (no agentId — Settings › Connectors) is untouched. Fails
+      // closed: no @ax/agents answer, `allowed: false` or a rejection is a 403.
+      if (agent.visibility === 'team' && !(await mayManageAgentConnectors(user, agentId))) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
       }
       credScope = agent.visibility === 'team' ? 'agent' : 'user';
       pendingAgentId = agentId;

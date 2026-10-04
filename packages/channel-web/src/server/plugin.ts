@@ -501,11 +501,11 @@ export function createChannelWebServerPlugin(
             'Remove on a connector answers 503 connectors-unavailable',
         },
         {
-          // TASK-765 — whether a default-on connector may be turned off for
-          // this agent by this person.
+          // TASK-765 / TASK-798 — whether this person may change this
+          // agent's connectors (add, remove, sign in on it).
           hook: 'agents:can-exclude-connector',
           degradation:
-            'connectors this agent gets by default are shown as not removable',
+            'the Connectors tab offers no Add, Remove or team Sign in, and a team agent refuses Add to anyone but a workspace admin',
         },
         {
           // TASK-761 — the attach gate reads the connector's credential slots

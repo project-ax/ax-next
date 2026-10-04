@@ -39,6 +39,7 @@ it('names the CIMD client after the branding and lets authorization servers cach
 interface BusStubs {
   'auth:require-user'?: (input: unknown) => unknown;
   'agents:resolve'?: (input: unknown) => unknown;
+  'agents:can-exclude-connector'?: (input: unknown) => unknown;
   'connectors:get'?: (input: unknown) => unknown;
   'credentials:get'?: (input: unknown) => unknown;
   'credentials:set'?: (input: unknown) => unknown;
@@ -437,20 +438,12 @@ describe('mcp-oauth begin route', () => {
     expect(flow.discover).not.toHaveBeenCalled();
   });
 
-  // The flip side of the gate: ANYONE `agents:resolve` admits may begin a bind —
-  // and `agents:resolve` admits a team agent's MEMBERS, not just an owner (a team
-  // agent has `ownerId = teamId` and no single user-owner; team membership IS
-  // ax-next's sharing mechanism — see @ax/agents `checkAccess`). So a permitted
-  // member, here a user who is NOT the agent's sole owner but whom `agents:resolve`
-  // accepts, is INTENTIONALLY allowed to authorize. Every member then rides on the
-  // bound identity (the shared-key consent moment is surfaced in the Phase-2
-  // connect UI). The hard boundary above (a non-member → 403) is what's enforced.
-  it('2b. agents:resolve accepts a team member (non-owner) → 200; pending written (team-member binding is allowed by design)', async () => {
-    const { deps, store } = makeDeps({
+  // A personal agent: a successful `agents:resolve` (the owner, or an admin) is
+  // the whole gate — unchanged by TASK-798.
+  it('2b. personal agent: agents:resolve accepts → 200; pending written; no owner-or-admin lookup', async () => {
+    const { deps, store, calls } = makeDeps({
       'auth:require-user': () => OK_USER,
-      // A team member's resolve SUCCEEDS even though OK_USER is not the agent's
-      // sole owner — the route does not distinguish owner from member, by design.
-      'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
       'connectors:get': () => connectorFixture(),
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
@@ -462,6 +455,137 @@ describe('mcp-oauth begin route', () => {
 
     expect(state.status).toBe(200);
     expect(store.putPending).toHaveBeenCalledTimes(1);
+    expect(calls.map((c) => c.hook)).not.toContain('agents:can-exclude-connector');
+  });
+
+  // TASK-798 — `agents:resolve` admits every MEMBER of a team agent, but a
+  // sign-in started with the agent decides whose account every member's runs
+  // act as. So on a team agent only its owner (a team admin) or a workspace
+  // admin may begin one. These are the tests that would have caught the
+  // member-swap hole: before TASK-798 any member got 200 and replaced the
+  // team's sign-in.
+  describe('team agent: only the owner or a workspace admin may begin (TASK-798)', () => {
+    const TEAM_AGENT = { agent: { id: 'agent-T', visibility: 'team', ownerId: 'team-1' } };
+    const body = () =>
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-T' })) });
+
+    // UNFIXED: 200, a pending row written and the provider asked -> fails.
+    it('SECURITY: a plain member → 403; no connector read, no state write, no provider redirect', async () => {
+      const canManage = vi.fn(() => ({ allowed: false }));
+      const { deps, store, flow, calls } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => TEAM_AGENT,
+        'agents:can-exclude-connector': canManage,
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(body(), res);
+
+      expect(state.status).toBe(403);
+      expect(state.json).toEqual({ error: 'forbidden' });
+      expect(canManage).toHaveBeenCalledWith({
+        actor: { userId: 'user-1', isAdmin: false },
+        agentId: 'agent-T',
+      });
+      expect(calls.map((c) => c.hook)).not.toContain('connectors:get');
+      expect(calls.map((c) => c.hook)).not.toContain('credentials:get');
+      expect(store.putPending).not.toHaveBeenCalled();
+      expect(store.purgeExpiredPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+      expect(flow.buildAuthorization).not.toHaveBeenCalled();
+    });
+
+    it('the owner (a team admin — @ax/agents says allowed) → 200; pending written', async () => {
+      const { deps, store } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => TEAM_AGENT,
+        'agents:can-exclude-connector': () => ({ allowed: true }),
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(body(), res);
+
+      expect(state.status).toBe(200);
+      expect(store.putPending).toHaveBeenCalledTimes(1);
+      expect((store.putPending.mock.calls[0]![0] as PendingAuthorization).agentId).toBe('agent-T');
+    });
+
+    it('a workspace admin → 200 without asking @ax/agents', async () => {
+      const canManage = vi.fn(() => ({ allowed: false }));
+      const { deps, store } = makeDeps({
+        'auth:require-user': () => ({ user: { id: 'admin-1', isAdmin: true } }),
+        'agents:resolve': () => TEAM_AGENT,
+        'agents:can-exclude-connector': canManage,
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(body(), res);
+
+      expect(state.status).toBe(200);
+      expect(store.putPending).toHaveBeenCalledTimes(1);
+      expect(canManage).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: fail-closed — no @ax/agents answer at all → 403 for a non-admin', async () => {
+      const { deps, store, flow } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => TEAM_AGENT,
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(body(), res);
+
+      expect(state.status).toBe(403);
+      expect(store.putPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: fail-closed — the owner-or-admin hook refusing → 403', async () => {
+      const { deps, store } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => TEAM_AGENT,
+        'agents:can-exclude-connector': () => rejectThrow('nope'),
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(body(), res);
+
+      expect(state.status).toBe(403);
+      expect(store.putPending).not.toHaveBeenCalled();
+    });
+
+    it('SECURITY: an answer that is not exactly allowed:true → 403', async () => {
+      const { deps, store } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => TEAM_AGENT,
+        'agents:can-exclude-connector': () => ({ allowed: 'yes' }),
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(body(), res);
+
+      expect(state.status).toBe(403);
+      expect(store.putPending).not.toHaveBeenCalled();
+    });
+
+    // A member's OWN sign-in (Settings › Connectors) names no agent: untouched.
+    it('a member beginning WITHOUT an agentId is unaffected → 200', async () => {
+      const canManage = vi.fn(() => ({ allowed: false }));
+      const { deps, store } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:can-exclude-connector': canManage,
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }),
+        res,
+      );
+
+      expect(state.status).toBe(200);
+      expect(store.putPending).toHaveBeenCalledTimes(1);
+      expect(canManage).not.toHaveBeenCalled();
+    });
   });
 
   it('3. connector lacks oauth slot → 400; no discovery', async () => {
@@ -892,6 +1016,8 @@ describe('mcp-oauth begin route', () => {
       {
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
+        // TASK-798 — the signer is the agent's owner.
+        'agents:can-exclude-connector': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
         'credentials:authorize-agent:account': authz,
       },
@@ -930,6 +1056,8 @@ describe('mcp-oauth begin route', () => {
       {
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
+        // TASK-798 — the signer is the agent's owner.
+        'agents:can-exclude-connector': () => ({ allowed: true }),
         'connectors:get': () => connectorFixture(),
         ...extra,
       },

@@ -97,7 +97,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.abilities).mockResolvedValue({
     abilities: { webSearch: true, readPages: true, runCode: true },
   });
-  connectorsMock.mockResolvedValue({ connectors: ROWS, shared: false, connectorsSupported: true });
+  connectorsMock.mockResolvedValue({ connectors: ROWS, shared: false, connectorsSupported: true, manageable: true });
 });
 
 describe('connector list', () => {
@@ -175,7 +175,7 @@ describe('remove', () => {
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from Quill' }));
     const dialog = await screen.findByRole('dialog');
     const railReads = railMock.mock.calls.length;
-    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false, connectorsSupported: true, manageable: true });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     await waitFor(() => expect(screen.queryByText('Linear')).toBeNull());
     expect(removeMock).toHaveBeenCalledWith('a-quill', 'linear');
@@ -199,86 +199,168 @@ describe('remove', () => {
     renderTab();
     const menu = await openMenu('Linear');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from Quill' }));
-    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false, connectorsSupported: true, manageable: true });
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(await screen.findByText(/Removed Linear\. Some of what you’d approved/)).toBeTruthy();
   });
 });
 
-// TASK-765 — removing a workspace default from a team agent takes it away
-// from every member, so only the agent's owner or an admin may. The server
-// says which rows this caller may remove; the item for any other row stays in
-// the menu (so the reason can be found) but is disabled and says why.
-describe('a connector this person may not remove (TASK-765)', () => {
-  const REASON = "Only the agent’s owner or an admin can remove this.";
-  const MIXED: AgentConnectorRow[] = [
-    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
-    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok', removable: false },
+// TASK-798 — on a team agent only the agent's owner (a team admin) or a
+// workspace admin may add connectors, sign in ON the agent, or remove them.
+// The server answers `manageable` (and `removable` per row, the same answer);
+// for everyone else the rail does not offer those actions at all — not drawn
+// and refused.
+describe('a member on a team agent (TASK-798)', () => {
+  const MEMBER_ROWS: AgentConnectorRow[] = [
+    { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: false },
+    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-sign-in', setup: 'ask-owner', removable: false },
+    { id: 'notion', name: 'Notion', source: 'attached', editable: false, health: 'needs-sign-in', setup: 'add-key', removable: false },
   ];
+  const ASK_OWNER = 'Ask the agent’s owner to sign in';
+  const retryMock = vi.mocked(workspaceApi.retryConnector);
 
-  beforeEach(() => {
-    connectorsMock.mockResolvedValue({ connectors: MIXED, shared: true, connectorsSupported: true });
-  });
+  function asMember(connectors: AgentConnectorRow[] = MEMBER_ROWS) {
+    connectorsMock.mockResolvedValue({ connectors, shared: true, connectorsSupported: true, manageable: false });
+  }
 
-  it('keeps the item, same name, announced as disabled with the reason as its description', async () => {
+  it('offers no "+ Add"', async () => {
+    asMember();
     renderTab();
-    const menu = await openMenu('Gmail');
-    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
-    expect(item.getAttribute('aria-disabled')).toBe('true');
-    // TASK-768 — via aria-describedby (jest-dom honours aria-description
-    // too, so assert the attribute shape, not just the computed text).
-    expect(item).not.toHaveAttribute('aria-description');
-    expect(document.getElementById(item.getAttribute('aria-describedby') ?? '')).not.toBeNull();
-    expect(item).toHaveAccessibleDescription(REASON);
-    // Muted, not destructive red: it is not an action this person has.
-    expect(item.className).toContain('text-muted-foreground');
-    expect(item.className).not.toContain('text-destructive');
+    await screen.findByText('Linear');
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
   });
 
-  it('selecting it does nothing: no confirmation, no DELETE', async () => {
+  it('offers no "Add connector" in the empty state, and does not tell them to add one', async () => {
+    asMember([]);
     renderTab();
-    const menu = await openMenu('Gmail');
-    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
-    fireEvent.click(item);
-    fireEvent.keyDown(item, { key: 'Enter' });
-    await new Promise((r) => setTimeout(r, 0));
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(removeMock).not.toHaveBeenCalled();
+    expect(await screen.findByText('No connectors yet')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add connector' })).toBeNull();
+    expect(screen.getByText(/Ask the agent’s owner/)).toBeTruthy();
+    expect(screen.queryByText(/Connect a tool like Linear/)).toBeNull();
   });
 
-  it('says why in a tooltip on keyboard focus', async () => {
-    renderTab();
-    const menu = await openMenu('Gmail');
-    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
-    act(() => item.focus());
-    const tip = await screen.findByRole('tooltip');
-    expect(tip.textContent).toBe(REASON);
-  });
-
-  it('says why in a tooltip on hover', async () => {
-    renderTab();
-    const menu = await openMenu('Gmail');
-    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
-    fireEvent.pointerMove(item, { pointerType: 'mouse' });
-    const tip = await screen.findByRole('tooltip');
-    expect(tip.textContent).toBe(REASON);
-  });
-
-  it('a removable row in the same list is unchanged: enabled, and it asks first', async () => {
+  it('offers no Remove from <agent> at all — not even disabled', async () => {
+    asMember();
     renderTab();
     const menu = await openMenu('Linear');
-    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
-    expect(item.getAttribute('aria-disabled')).toBeNull();
-    expect(item.getAttribute('aria-description')).toBeNull();
-    expect(item).toHaveAccessibleDescription('');
-    fireEvent.click(item);
-    expect(await screen.findByRole('dialog')).toBeTruthy();
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'View details',
+      'Edit connector',
+    ]);
+    expect(within(menu).queryByText(/Remove from/)).toBeNull();
+  });
+
+  it('an ask-owner row wears the muted icon saying who can sign in, and offers no Sign in', async () => {
+    asMember();
+    renderTab();
+    const icon = await screen.findByRole('button', { name: ASK_OWNER });
+    expect(icon.previousElementSibling?.textContent).toBe('Gmail');
+    expect(icon.className).toContain('text-muted-foreground');
+    expect(icon.className).not.toContain('text-destructive');
+    act(() => icon.focus());
+    expect((await screen.findByRole('tooltip')).textContent).toBe(ASK_OWNER);
+    const menu = await openMenu('Gmail');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'View details',
+    ]);
+    expect(within(menu).queryByText(/Sign in/)).toBeNull();
+  });
+
+  it('still offers Add key — that key is their own', async () => {
+    asMember();
+    renderTab();
+    const menu = await openMenu('Notion');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Add key',
+      'View details',
+    ]);
+  });
+
+  it('Retry finding nobody signed in points at the agent’s owner', async () => {
+    asMember([
+      { id: 'slack', name: 'Slack', source: 'attached', editable: false, health: 'unreachable', removable: false },
+    ]);
+    retryMock.mockResolvedValueOnce({ health: 'needs-sign-in', setup: 'ask-owner' });
+    renderTab();
+    const menu = await openMenu('Slack');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
+    expect(
+      await screen.findByText(
+        'Slack is reachable, but nobody has signed in yet. Ask the agent’s owner to sign in.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/workspace admin/)).toBeNull();
+  });
+
+  it('a team sign-in that expired offers no Reconnect, and says who can fix it', async () => {
+    asMember([
+      { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: false },
+    ]);
+    renderTab();
+    const reason = 'Team sign-in expired. Ask the agent’s owner to sign in again.';
+    const icon = await screen.findByRole('button', { name: reason });
+    act(() => icon.focus());
+    expect((await screen.findByRole('tooltip')).textContent).toBe(reason);
+    const menu = await openMenu('Gmail');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'View details',
+    ]);
+  });
+
+  it('Retry finding the team sign-in expired points at the owner, not Reconnect', async () => {
+    asMember([
+      { id: 'slack', name: 'Slack', source: 'attached', editable: false, health: 'unreachable', removable: false },
+    ]);
+    retryMock.mockResolvedValueOnce({ health: 'needs-reconnect', sharedSignIn: true });
+    renderTab();
+    const menu = await openMenu('Slack');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
+    expect(
+      await screen.findByText(
+        'Slack is reachable, but its team sign-in expired. Ask the agent’s owner to sign in again.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Choose Reconnect/)).toBeNull();
+  });
+
+  it('their own expired sign-in still offers Sign in again (TASK-774)', async () => {
+    asMember([
+      { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', removable: false },
+    ]);
+    renderTab();
+    expect(await screen.findByRole('button', { name: 'Your sign-in expired' })).toBeTruthy();
+    const menu = await openMenu('Gmail');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Sign in again',
+      'View details',
+    ]);
+  });
+
+  it('the owner or an admin of the same team agent still gets Add, Sign in and Remove', async () => {
+    connectorsMock.mockResolvedValue({
+      connectors: [
+        { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
+        { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-sign-in', setup: 'sign-in', removable: true },
+      ],
+      shared: true,
+      connectorsSupported: true,
+      manageable: true,
+    });
+    renderTab();
+    await screen.findByText('Linear');
+    expect(screen.getByRole('button', { name: 'Add' })).toBeTruthy();
+    const menu = await openMenu('Gmail');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Sign in',
+      'View details',
+      'Remove from Quill',
+    ]);
   });
 });
 
 describe('empty state', () => {
   it('is a dashed card with the plug, the title, the copy and "Add connector"', async () => {
-    connectorsMock.mockResolvedValue({ connectors: [], shared: false, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: [], shared: false, connectorsSupported: true, manageable: true });
     const { container } = renderTab();
     expect(await screen.findByText('No connectors yet')).toBeTruthy();
     expect(
@@ -306,7 +388,7 @@ describe('connector health (TASK-741)', () => {
   const retryMock = vi.mocked(workspaceApi.retryConnector);
 
   beforeEach(() => {
-    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: false, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: ERRORED, shared: false, connectorsSupported: true, manageable: true });
   });
 
   it('puts ONE icon after an errored name, named by its reason, with no inline error text', async () => {
@@ -339,7 +421,7 @@ describe('connector health (TASK-741)', () => {
         { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: true },
       ],
       shared: true,
-      connectorsSupported: true,
+      connectorsSupported: true, manageable: true,
     });
     renderTab();
     const icon = await screen.findByRole('button', { name: 'Team sign-in expired' });
@@ -436,7 +518,7 @@ describe('connector health (TASK-741)', () => {
     connectorsMock.mockResolvedValue({
       connectors: ERRORED.map((r) => (r.id === 'gmail' ? { ...r, sharedSignIn: true as const } : r)),
       shared: true,
-      connectorsSupported: true,
+      connectorsSupported: true, manageable: true,
     });
     renderTab();
     const menu = await openMenu('Gmail');
@@ -463,7 +545,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
   const retryMock = vi.mocked(workspaceApi.retryConnector);
 
   it('says “Your sign-in expired” and offers Sign in again, not Reconnect', async () => {
-    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: true, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: true, connectorsSupported: true, manageable: true });
     renderTab();
     expect(await screen.findByRole('button', { name: 'Your sign-in expired' })).toBeTruthy();
     const menu = await openMenu('Gmail');
@@ -475,7 +557,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
   });
 
   it('Sign in again runs a PERSONAL sign-in: no agent, no shared-agent consent', async () => {
-    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: true, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: true, connectorsSupported: true, manageable: true });
     beginMock.mockResolvedValue({ authorizationUrl: 'https://auth.example/authorize' });
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
     try {
@@ -499,7 +581,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
   });
 
   it('a shared expired sign-in keeps Reconnect, which signs in on this agent', async () => {
-    connectorsMock.mockResolvedValue({ connectors: SHARED, shared: true, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: SHARED, shared: true, connectorsSupported: true, manageable: true });
     beginMock.mockResolvedValue({ authorizationUrl: 'https://auth.example/authorize' });
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
     try {
@@ -518,7 +600,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
   });
 
   it('a personal agent keeps Reconnect for its (always personal) sign-in', async () => {
-    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: false, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: PERSONAL, shared: false, connectorsSupported: true, manageable: true });
     renderTab();
     const menu = await openMenu('Gmail');
     expect(within(menu).getByRole('menuitem', { name: 'Reconnect' })).toBeTruthy();
@@ -526,7 +608,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
   });
 
   it('Retry finding the member’s own sign-in expired points at Sign in again, and the menu follows', async () => {
-    connectorsMock.mockResolvedValue({ connectors: UNREACHABLE, shared: true, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: UNREACHABLE, shared: true, connectorsSupported: true, manageable: true });
     retryMock.mockResolvedValueOnce({ health: 'needs-reconnect' });
     renderTab();
     const menu = await openMenu('Slack');
@@ -537,7 +619,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
   });
 
   it('Retry finding the team’s sign-in expired points at Reconnect', async () => {
-    connectorsMock.mockResolvedValue({ connectors: UNREACHABLE, shared: true, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: UNREACHABLE, shared: true, connectorsSupported: true, manageable: true });
     retryMock.mockResolvedValueOnce({ health: 'needs-reconnect', sharedSignIn: true });
     renderTab();
     const menu = await openMenu('Slack');
@@ -555,7 +637,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
   ];
 
   beforeEach(() => {
-    connectorsMock.mockResolvedValue({ connectors: NOT_LOADED, shared: false, connectorsSupported: true });
+    connectorsMock.mockResolvedValue({ connectors: NOT_LOADED, shared: false, connectorsSupported: true, manageable: true });
   });
 
   it('wears the error icon after its name, saying what this person can do about it', async () => {
@@ -605,7 +687,7 @@ describe("an agent whose model can't use connectors (TASK-761)", () => {
   const NOTICE = 'Quill’s model can’t use connectors yet, so nothing here applies to Quill for now.';
 
   it('says so plainly and offers no Add, while still listing what is there', async () => {
-    connectorsMock.mockResolvedValue({ connectors: ROWS, shared: false, connectorsSupported: false });
+    connectorsMock.mockResolvedValue({ connectors: ROWS, shared: false, connectorsSupported: false, manageable: true });
     renderTab();
     expect(await screen.findByText(NOTICE)).toBeTruthy();
     expect(screen.getByText('Linear')).toBeTruthy();
@@ -613,7 +695,7 @@ describe("an agent whose model can't use connectors (TASK-761)", () => {
   });
 
   it('replaces the empty state (and its "Add connector") with the same notice', async () => {
-    connectorsMock.mockResolvedValue({ connectors: [], shared: false, connectorsSupported: false });
+    connectorsMock.mockResolvedValue({ connectors: [], shared: false, connectorsSupported: false, manageable: true });
     renderTab();
     expect(await screen.findByText(NOTICE)).toBeTruthy();
     expect(screen.queryByText('No connectors yet')).toBeNull();

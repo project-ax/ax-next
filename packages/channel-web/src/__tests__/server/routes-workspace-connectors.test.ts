@@ -111,6 +111,9 @@ describe('agent connector routes', () => {
   let vault: Set<string>;
   let credentialReads: Array<{ ref: string; userId: string; agentId: string }>;
   let credentialError: unknown;
+  /** TASK-765 / TASK-798 — what `agents:can-exclude-connector` answers. */
+  let canManage: 'allow' | 'deny' | 'throw';
+  let canManageCalls: Array<Record<string, unknown>>;
 
   function handlers() {
     return makeWorkspaceHandlers({ bus, initCtx });
@@ -215,6 +218,13 @@ describe('agent connector routes', () => {
       detachCalls.push(i as Record<string, unknown>);
       if (detachRefusal !== null) throw detachRefusal;
       return { agent: {}, changed: true };
+    });
+    canManage = 'allow';
+    canManageCalls = [];
+    bus.registerService('agents:can-exclude-connector', 'agents', async (_c, i: unknown) => {
+      canManageCalls.push(i as Record<string, unknown>);
+      if (canManage === 'throw') throw new Error('teams store row 9 is corrupt');
+      return { allowed: canManage === 'allow' };
     });
     bus.registerService('tool-policy:list-agent-overrides', 'policy', async () => ({
       overrides: [...overrides.entries()].map(([toolKey, verdict]) => ({
@@ -616,6 +626,40 @@ describe('agent connector routes', () => {
         expect('setup' in byId.notes!).toBe(false);
       });
 
+      // TASK-798 — a sign-in on a team agent is stored ON the agent, so only
+      // its owner or an admin is offered Sign in; a member is told to ask the
+      // owner. A missing key stays add-key: the rail's Add key is their own.
+      // UNFIXED: gmail says `sign-in` to the member -> fails.
+      it('a team-agent member: a missing sign-in is ask-owner, a missing key stays add-key', async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'team' };
+        canManage = 'deny';
+        const byId = rowsById(await list());
+        expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+      });
+
+      it("the team agent's owner still gets sign-in; a personal agent never asks", async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'team' };
+        expect(rowsById(await list()).gmail).toMatchObject({ setup: 'sign-in' });
+        agentRow = { ...agentRow, visibility: 'personal' };
+        canManage = 'deny';
+        expect(rowsById(await list()).gmail).toMatchObject({ setup: 'sign-in' });
+      });
+
+      it('Retry on a team agent answers ask-owner to a member, too', async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'team' };
+        canManage = 'deny';
+        const r = await retry('gmail');
+        expect(r.statusCode).toBe(200);
+        expect(r.body).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
+      });
+
       it('signed in → ok, and the row carries no setup key', async () => {
         registerHealth();
         registerHas();
@@ -882,7 +926,7 @@ describe('agent connector routes', () => {
       expect(r.statusCode).toBe(200);
       expect(r.body).toEqual({
         connectors: [
-          { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok', removable: false },
+          { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok', removable: true },
           { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
           {
             id: 'notes',
@@ -890,10 +934,11 @@ describe('agent connector routes', () => {
             source: 'legacy-owned',
             editable: true,
             health: 'ok',
-            removable: false,
+            removable: true,
           },
         ],
         shared: false,
+        manageable: true,
         connectorsSupported: true,
       });
       // The SAME inputs a session opens with: this agent's attachments AND
@@ -945,75 +990,67 @@ describe('agent connector routes', () => {
       expect((await list()).body).toMatchObject({ connectorsSupported: false });
     });
 
-    // TASK-765 — removing a default (or legacy-owned) connector from a TEAM
-    // agent takes it away from every member, so only the agent's owner or a
-    // workspace admin may. @ax/agents owns that rule; the route only asks it
-    // once and shows the answer per row. The server still enforces on DELETE.
-    describe('removable (TASK-765)', () => {
-      let canExcludeCalls: Array<Record<string, unknown>>;
-      let canExclude: boolean;
-      let canExcludeThrows: boolean;
-
-      function registerCanExclude() {
-        bus.registerService('agents:can-exclude-connector', 'agents', async (_c, i: unknown) => {
-          canExcludeCalls.push(i as Record<string, unknown>);
-          if (canExcludeThrows) throw new Error('teams store row 9 is corrupt');
-          return { allowed: canExclude };
-        });
-      }
-
+    // TASK-765 / TASK-798 — on a TEAM agent only its owner (a team admin) or a
+    // workspace admin may add, remove or sign in ON the agent. @ax/agents owns
+    // that rule; the route asks it once and shows the answer as `manageable`
+    // and on every row's `removable`. The server still enforces on each write.
+    describe('manageable (TASK-765, TASK-798)', () => {
       function removableById(r: Captured): Record<string, boolean> {
         const rows = (r.body as { connectors: Array<{ id: string; removable: boolean }> }).connectors;
         return Object.fromEntries(rows.map((x) => [x.id, x.removable]));
       }
 
       beforeEach(() => {
-        canExcludeCalls = [];
-        canExclude = false;
-        canExcludeThrows = false;
         agentRow = { ...agentRow, visibility: 'team' };
       });
 
-      it('a member who may not exclude: defaults and legacy-owned are not removable, attached is', async () => {
-        registerCanExclude();
+      // UNFIXED: no `manageable`, and the attached row says removable -> fails.
+      it('a plain member: not manageable, and NO row is removable — attached ones included', async () => {
+        canManage = 'deny';
         const r = await list();
         expect(r.statusCode).toBe(200);
-        expect(removableById(r)).toEqual({ gmail: false, linear: true, notes: false });
+        expect(r.body).toMatchObject({ shared: true, manageable: false });
+        expect(removableById(r)).toEqual({ gmail: false, linear: false, notes: false });
       });
 
-      it('an owner/admin the hook allows: every row is removable', async () => {
-        registerCanExclude();
-        canExclude = true;
-        expect(removableById(await list())).toEqual({ gmail: true, linear: true, notes: true });
+      it('an owner/admin the hook allows: manageable, every row removable', async () => {
+        const r = await list();
+        expect(r.body).toMatchObject({ manageable: true });
+        expect(removableById(r)).toEqual({ gmail: true, linear: true, notes: true });
       });
 
-      it("asks the hook ONCE, with the caller's real admin bit and this agent", async () => {
-        registerCanExclude();
+      it("asks the hook ONCE, with the caller's real admin bit and this agent — even for an empty list", async () => {
         caller = { id: 'u1', isAdmin: true };
         await list();
-        expect(canExcludeCalls).toEqual([{ actor: { userId: 'u1', isAdmin: true }, agentId: 'a1' }]);
+        expect(canManageCalls).toEqual([{ actor: { userId: 'u1', isAdmin: true }, agentId: 'a1' }]);
+        canManageCalls = [];
+        effective = [];
+        expect((await list()).body).toMatchObject({ connectors: [], manageable: true });
+        expect(canManageCalls).toHaveLength(1);
       });
 
-      it('does not ask when every row is attached', async () => {
-        registerCanExclude();
-        effective = effective.filter((e) => e.source === 'attached');
-        expect(removableById(await list())).toEqual({ linear: true });
-        expect(canExcludeCalls).toHaveLength(0);
-      });
-
-      it('no hook: non-attached rows fail closed to not removable', async () => {
-        expect(removableById(await list())).toEqual({ gmail: false, linear: true, notes: false });
+      it('no hook: fails closed to not manageable', async () => {
+        bus = new HookBus();
+        bus.registerService('auth:require-user', 'auth', async () => ({ user: caller }));
+        bus.registerService('agents:resolve', 'agents', async () => ({
+          agent: { id: 'a1', displayName: 'Quill', ...agentRow },
+        }));
+        bus.registerService('connectors:list-effective', 'connectors', async () => ({
+          connectors: effective,
+        }));
+        const r = await list();
+        expect(r.body).toMatchObject({ manageable: false });
+        expect(removableById(r)).toEqual({ gmail: false, linear: false, notes: false });
       });
 
       it('a throwing hook: fails closed, the list still loads, logged by error NAME only', async () => {
-        registerCanExclude();
-        canExcludeThrows = true;
+        canManage = 'throw';
         const warn = vi.spyOn(initCtx.logger, 'warn');
         const r = await list();
         const call = warn.mock.calls.find((c) => c[0] === 'workspace_connector_can_exclude_failed');
         warn.mockRestore();
         expect(r.statusCode).toBe(200);
-        expect(removableById(r)).toEqual({ gmail: false, linear: true, notes: false });
+        expect(r.body).toMatchObject({ manageable: false });
         expect(call?.[1]).toEqual({ agentId: 'a1', name: expect.any(String) });
         expect(JSON.stringify(call?.[1])).not.toContain('corrupt');
       });
@@ -1109,13 +1146,32 @@ describe('agent connector routes', () => {
       detachRefusal = new PluginError({
         code: 'forbidden',
         plugin: 'agents',
-        message: "only the agent's owner or an admin can remove a connector every member reaches",
+        message: "only the agent's owner or an admin can change its connectors",
       });
       const r = await remove('gmail');
       expect(r.statusCode).toBe(403);
       expect(r.body).toEqual({ error: 'forbidden' });
       expect(detachCalls).toEqual([
         { actor: { userId: 'u1', isAdmin: false }, agentId: 'a1', connectorId: 'gmail', exclude: true },
+      ]);
+      expect(overrideClears).toHaveLength(0);
+      expect(revokeCalls).toHaveLength(0);
+    });
+
+    // TASK-798 — an ATTACHED connector too: removing it from a team agent
+    // takes it from every member. @ax/agents refuses; nothing is cleaned.
+    it('403s a member removing an ATTACHED connector from a team agent — nothing cleaned (TASK-798)', async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      detachRefusal = new PluginError({
+        code: 'forbidden',
+        plugin: 'agents',
+        message: "only the agent's owner or an admin can change its connectors",
+      });
+      const r = await remove('linear');
+      expect(r.statusCode).toBe(403);
+      expect(r.body).toEqual({ error: 'forbidden' });
+      expect(detachCalls).toEqual([
+        { actor: { userId: 'u1', isAdmin: false }, agentId: 'a1', connectorId: 'linear', exclude: false },
       ]);
       expect(overrideClears).toHaveLength(0);
       expect(revokeCalls).toHaveLength(0);
@@ -1181,23 +1237,55 @@ describe('agent connector routes', () => {
       expect(r.body).toEqual({ error: 'forbidden' });
     });
 
-    // TASK-766 — a member re-adding a connector the owner/admin removed from
-    // this agent: the hook's tagged refusal keeps its reason, as a stable code.
-    it('says connector-excluded when the hook refuses re-adding a removed connector', async () => {
+    // TASK-798 — a plain member of a TEAM agent may not add anything to it.
+    // Refused up front (the hook decides again), before the TASK-761 gate
+    // reads any credential presence on the member's behalf.
+    // UNFIXED: the gate runs, the attach lands -> 200 -> fails.
+    it('SECURITY: 403s a team-agent member before any credential read or attach', async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      canManage = 'deny';
+      const r = await attach({ connectorId: 'figma' });
+      expect(r.statusCode).toBe(403);
+      expect(r.body).toEqual({ error: 'forbidden' });
+      expect(credentialReads).toHaveLength(0);
+      expect(attachCalls).toHaveLength(0);
+      expect(canManageCalls).toEqual([{ actor: { userId: 'u1', isAdmin: false }, agentId: 'a1' }]);
+    });
+
+    it('SECURITY: a team-agent member is refused when the may-manage answer cannot be read', async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      canManage = 'throw';
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(403);
+      expect(attachCalls).toHaveLength(0);
+    });
+
+    it("the team agent's owner (a team admin) attaches: 200", async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(200);
+      expect(attachCalls).toHaveLength(1);
+    });
+
+    it('a workspace admin attaches to a team agent without the up-front ask', async () => {
+      agentRow = { ...agentRow, visibility: 'team' };
+      caller = { id: 'u1', isAdmin: true };
+      canManage = 'deny';
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(200);
+      expect(canManageCalls).toHaveLength(0);
+    });
+
+    // The hook is the enforcer; its member refusal is a plain 403 here.
+    it("turns the hook's owner-or-admin refusal into a plain 403", async () => {
       attachRefusal = new PluginError({
         code: 'forbidden',
         plugin: 'agents',
-        message: "connector 'linear' was removed from this agent; only its owner or an admin can bring it back",
-        diagnosis: { reason: 'connector-excluded' },
+        message: "only the agent's owner or an admin can change its connectors",
       });
       const r = await attach({ connectorId: 'linear' });
       expect(r.statusCode).toBe(403);
-      const body = r.body as { error: string; message: string };
-      expect(body.error).toBe('connector-excluded');
-      expect(Object.keys(body).sort()).toEqual(['error', 'message']);
-      // Never echoes the hook's message (it names the id) or anyone's identity.
-      expect(body.message).not.toContain('linear');
-      expect(body.message).not.toContain('u1');
+      expect(r.body).toEqual({ error: 'forbidden' });
     });
 
     it('an owner/admin attach the hook allows is unchanged: 200', async () => {

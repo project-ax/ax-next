@@ -37,7 +37,7 @@ function row(over: Partial<AgentConnectorRow> = {}): AgentConnectorRow {
 }
 
 async function loaded(rows: AgentConnectorRow[]) {
-  connectorsMock.mockResolvedValue({ connectors: rows, shared: false, connectorsSupported: true });
+  connectorsMock.mockResolvedValue({ connectors: rows, shared: false, connectorsSupported: true, manageable: true });
   const hook = renderHook(() => useAgentConnectors('a-quill'));
   await waitFor(() => expect(hook.result.current.status).toBe('ok'));
   return hook;
@@ -73,5 +73,28 @@ describe('retry() and the row setup (TASK-795)', () => {
     const after = hook.result.current.connectors?.[0];
     expect(after?.health).toBe('unreachable');
     expect(after !== undefined && 'setup' in after).toBe(false);
+  });
+});
+
+describe('manageable (TASK-798)', () => {
+  it('is false until the list is read, then says what the server answered', async () => {
+    connectorsMock.mockResolvedValue({ connectors: [row()], shared: true, connectorsSupported: true, manageable: true });
+    const hook = renderHook(() => useAgentConnectors('a-quill'));
+    expect(hook.result.current.manageable).toBe(false);
+    await waitFor(() => expect(hook.result.current.status).toBe('ok'));
+    expect(hook.result.current.manageable).toBe(true);
+  });
+
+  it('stays false for a member, and when the server sent no answer', async () => {
+    connectorsMock.mockResolvedValueOnce({ connectors: [row()], shared: true, connectorsSupported: true, manageable: false });
+    const member = renderHook(() => useAgentConnectors('a-quill'));
+    await waitFor(() => expect(member.result.current.status).toBe('ok'));
+    expect(member.result.current.manageable).toBe(false);
+
+    // A server that never sent the flag: nothing is offered.
+    connectorsMock.mockResolvedValueOnce({ connectors: [row()], shared: true, connectorsSupported: true } as never);
+    const old = renderHook(() => useAgentConnectors('a-quill'));
+    await waitFor(() => expect(old.result.current.status).toBe('ok'));
+    expect(old.result.current.manageable).toBe(false);
   });
 });

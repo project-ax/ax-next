@@ -1299,11 +1299,10 @@ describe('@ax/agents admin routes', () => {
     ]);
   });
 
-  // TASK-765 — a default connector reaches every member of a team agent, and an
-  // explicit attachment beats an exclusion at resolve time. So putting an
-  // EXCLUDED id back via this route needs the right to exclude (team admin /
-  // workspace admin); the hook's `forbidden` surfaces as a plain 403.
-  it('SECURITY: connector-attachments adding an EXCLUDED id — plain team member → 403 and nothing written; team admin and workspace admin → 200', async () => {
+  // TASK-765 / TASK-798 — what a team agent attaches reaches every member's
+  // runs, so changing the list is the owner's (a team admin's) or a workspace
+  // admin's call; a plain member's PATCH is a plain 403, excluded id or not.
+  it('SECURITY: connector-attachments on a team agent — plain team member → 403 and nothing written; team admin and workspace admin → 200', async () => {
     const memberB = await mintSecondUserCookie();
     const teamAdminC = await mintSecondUserCookie();
     const roles: Record<string, 'admin' | 'member'> = {
@@ -1344,9 +1343,15 @@ describe('@ax/agents admin routes', () => {
 
     const refused = await patch(memberB.cookie);
     expect(refused.status).toBe(403);
-    // TASK-766 — the specific, stable reason (not a bare `forbidden`), and
-    // nothing about who removed it.
-    expect(refused.body).toEqual({ error: 'connector-excluded' });
+    expect(refused.body).toEqual({ error: 'forbidden' });
+    // TASK-798 — not only an excluded id: ANY change is refused to a member.
+    const refusedFresh = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie: memberB.cookie, body: { connectorAttachments: ['fresh-conn'] } },
+    );
+    expect(refusedFresh.status).toBe(403);
     const afterRefusal = await http(stack.port, 'GET', `/admin/agents/${id}`, {
       cookie: adminCookie,
     });

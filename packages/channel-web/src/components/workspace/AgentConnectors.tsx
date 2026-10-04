@@ -11,9 +11,17 @@
  *   - **Remove from <agent>** — destructive, behind a confirmation. Removing
  *     touches THIS agent only: the connector, and every other agent using it,
  *     stay as they are.
- *     A workspace default on a team agent is the owner's or an admin's to
- *     remove (TASK-765): for anyone else the server says `removable: false`
- *     and the item stays, disabled, with the reason on hover and focus.
+ *
+ * Who may change a TEAM agent's connectors (TASK-798): only the agent's owner
+ * (a team admin) or a workspace admin may add one, sign in ON the agent, or
+ * remove one. The server answers `manageable` (and each row's `removable`,
+ * the same answer) and enforces it; for everyone else the rail simply does
+ * not offer those actions — no "+ Add", no "Add connector", no Remove, no
+ * Sign in (the row's setup is `ask-owner`: "Ask the agent’s owner to sign
+ * in"), and no Reconnect for the team's shared sign-in ("Team sign-in
+ * expired. Ask the agent’s owner to sign in again."). What stays theirs:
+ * Add key (it stores their own key), Sign in again for their own expired
+ * sign-in, Retry, View details, and Edit for a connector they may edit.
  *
  * Connector health (TASK-741, slice 8): a row whose sign-in was rejected or
  * whose server could not be reached gets ONE red `CircleAlert` right after its
@@ -59,7 +67,7 @@
  * details), so Reconnect / Retry are there too — and the dialogs stay mounted
  * across the switch, so a sign-in started from either view is never cut off.
  */
-import { Fragment, useEffect, useId, useState } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import {
   CircleAlert,
   Info,
@@ -123,7 +131,6 @@ import type {
 import {
   ConnectorDetails,
   ConnectorsUnsupported,
-  REMOVE_REFUSED_REASON,
   SETUP_REASON,
   SETUP_UNKNOWN_REASON,
 } from './ConnectorDetails';
@@ -137,7 +144,10 @@ const HEALTH_REASON: Record<
   unreachable: 'Can’t reach it',
 };
 
-function healthReason(row: AgentConnectorRow): string {
+/** TASK-798 — a team agent's shared sign-in, for someone who can't redo it. */
+const TEAM_SIGN_IN_ASK_OWNER = 'Team sign-in expired. Ask the agent’s owner to sign in again.';
+
+function healthReason(row: AgentConnectorRow, manageable: boolean): string {
   if (row.health === 'needs-sign-in') {
     return row.setup !== undefined ? SETUP_REASON[row.setup] : SETUP_UNKNOWN_REASON;
   }
@@ -147,7 +157,9 @@ function healthReason(row: AgentConnectorRow): string {
       : 'Couldn’t load it. Ask a workspace admin to fix it.';
   }
   // TASK-756 — a team agent's shared sign-in is the team's, not this person's.
-  if (row.health === 'needs-reconnect' && row.sharedSignIn === true) return 'Team sign-in expired';
+  if (row.health === 'needs-reconnect' && row.sharedSignIn === true) {
+    return manageable ? 'Team sign-in expired' : TEAM_SIGN_IN_ASK_OWNER;
+  }
   return row.health === 'ok' ? '' : HEALTH_REASON[row.health];
 }
 
@@ -206,6 +218,7 @@ export function AgentConnectors({
     removing,
     remove,
     shared,
+    manageable,
     connectorsSupported,
     retrying,
     retry,
@@ -213,7 +226,8 @@ export function AgentConnectors({
   } = useAgentConnectors(agentId);
   // TASK-761 — an agent whose model gets no connector tools (aisdk) is not
   // offered Add: setting up access it can't use would only mislead.
-  const addable = connectorsSupported ? onAdd : undefined;
+  // TASK-798 — nor is anyone who may not add to this agent.
+  const addable = connectorsSupported && manageable ? onAdd : undefined;
   const isAdmin = useUser()?.role === 'admin';
   const [confirming, setConfirming] = useState<AgentConnectorRow | null>(null);
   const [notice, setNotice] = useState<
@@ -258,7 +272,9 @@ export function AgentConnectors({
         text:
           shared && !sharedSignIn
             ? `${row.name} is reachable, but your sign-in expired. Choose Sign in again to fix it.`
-            : `${row.name} is reachable, but its sign-in expired. Choose Reconnect to sign in again.`,
+            : sharedSignIn && !manageable
+              ? `${row.name} is reachable, but its team sign-in expired. Ask the agent’s owner to sign in again.`
+              : `${row.name} is reachable, but its sign-in expired. Choose Reconnect to sign in again.`,
       });
       return;
     }
@@ -270,7 +286,11 @@ export function AgentConnectors({
             ? `${row.name} is reachable, but nobody has signed in yet. Choose Sign in to set it up.`
             : setup === 'add-key'
               ? `${row.name} is reachable, but no key has been added yet. Choose Add key to set it up.`
-              : `${row.name} is reachable, but it needs a key from a workspace admin.`,
+              : setup === 'ask-owner'
+                ? `${row.name} is reachable, but nobody has signed in yet. Ask the agent’s owner to sign in.`
+                : setup === 'ask-admin'
+                  ? `${row.name} is reachable, but it needs a key from a workspace admin.`
+                  : `${row.name} is reachable, but it isn’t set up yet.`,
       });
     }
   }
@@ -336,6 +356,7 @@ export function AgentConnectors({
       agentName={name}
       busy={removing.has(row.id) || retrying.has(row.id)}
       personalSignIn={personalExpiry(row, shared)}
+      canReconnect={manageable || row.sharedSignIn !== true}
       onReconnect={() => {
         setNotice(null);
         setReconnecting(row);
@@ -393,7 +414,7 @@ export function AgentConnectors({
         </p>
       )}
       {status === 'ok' && connectorsSupported && connectors !== null && connectors.length === 0 && (
-        <NoConnectors name={name} onAdd={addable} />
+        <NoConnectors name={name} onAdd={addable} manageable={manageable} />
       )}
       {status === 'ok' && connectors !== null && connectors.length > 0 && (
         <Card className="shadow-none">
@@ -405,7 +426,7 @@ export function AgentConnectors({
                   <span className="min-w-0 truncate text-[13px]">{row.name}</span>
                   {row.health !== 'ok' && (
                     <HealthIcon
-                      reason={healthReason(row)}
+                      reason={healthReason(row, manageable)}
                       tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
                     />
                   )}
@@ -639,9 +660,12 @@ function ConnectorsHeader({
 function NoConnectors({
   name,
   onAdd,
+  manageable,
 }: {
   name: string;
   onAdd: (() => void) | undefined;
+  /** TASK-798 — false: this person can't add one, so don't tell them to. */
+  manageable: boolean;
 }) {
   return (
     <Empty className="border border-dashed p-5 md:p-5">
@@ -651,7 +675,9 @@ function NoConnectors({
         </EmptyMedia>
         <EmptyTitle className="text-[13px]">No connectors yet</EmptyTitle>
         <EmptyDescription className="text-[12px]">
-          Connect a tool like Linear or Gmail and {name} can work in it for you.
+          {manageable
+            ? `Connect a tool like Linear or Gmail and ${name} can work in it for you.`
+            : `Ask the agent’s owner to connect a tool like Linear or Gmail, and ${name} can work in it for you.`}
         </EmptyDescription>
       </EmptyHeader>
       {onAdd !== undefined && (
@@ -701,6 +727,7 @@ function RowMenu({
   agentName,
   busy,
   personalSignIn,
+  canReconnect,
   onReconnect,
   onSignInAgain,
   onRetry,
@@ -714,6 +741,11 @@ function RowMenu({
   busy: boolean;
   /** TASK-774 — the fix is this person's own sign-in, not Reconnect. */
   personalSignIn: boolean;
+  /**
+   * TASK-798 — false for a team agent's shared sign-in when this person may
+   * not sign in on the agent: the server would refuse, so it isn't offered.
+   */
+  canReconnect: boolean;
   onReconnect: () => void;
   onSignInAgain: () => void;
   onRetry: () => void;
@@ -724,7 +756,87 @@ function RowMenu({
   onEdit: () => void;
   onRemove: () => void;
 }) {
-  const refusedReasonId = useId();
+  // One group per kind of action, separated — only the groups this row has.
+  const groups: { key: string; item: ReactNode }[] = [];
+  if (row.health === 'needs-sign-in' && (row.setup === 'sign-in' || row.setup === 'add-key')) {
+    groups.push({
+      key: 'setup',
+      item: (
+        <DropdownMenuItem onSelect={onSetUp}>
+          {row.setup === 'sign-in' ? <LogIn aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
+          {row.setup === 'sign-in' ? 'Sign in' : 'Add key'}
+        </DropdownMenuItem>
+      ),
+    });
+  }
+  if (row.health === 'needs-reconnect' && personalSignIn) {
+    groups.push({
+      key: 'fix',
+      item: (
+        <DropdownMenuItem onSelect={onSignInAgain}>
+          <LogIn aria-hidden="true" />
+          Sign in again
+        </DropdownMenuItem>
+      ),
+    });
+  } else if (row.health === 'needs-reconnect' && canReconnect) {
+    groups.push({
+      key: 'fix',
+      item: (
+        <DropdownMenuItem onSelect={onReconnect}>
+          <LogIn aria-hidden="true" />
+          Reconnect
+        </DropdownMenuItem>
+      ),
+    });
+  } else if (row.health === 'unreachable') {
+    groups.push({
+      key: 'fix',
+      item: (
+        <DropdownMenuItem onSelect={onRetry}>
+          <RotateCw aria-hidden="true" />
+          Retry
+        </DropdownMenuItem>
+      ),
+    });
+  }
+  if (onView !== undefined) {
+    groups.push({
+      key: 'view',
+      item: (
+        <DropdownMenuItem onSelect={onView}>
+          <Info aria-hidden="true" />
+          View details
+        </DropdownMenuItem>
+      ),
+    });
+  }
+  if (row.editable) {
+    groups.push({
+      key: 'edit',
+      item: (
+        <DropdownMenuItem onSelect={onEdit}>
+          <Pencil aria-hidden="true" />
+          Edit connector
+        </DropdownMenuItem>
+      ),
+    });
+  }
+  // TASK-798 — hidden, not drawn disabled, for anyone who may not remove it.
+  if (row.removable) {
+    groups.push({
+      key: 'remove',
+      item: (
+        <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={onRemove}>
+          <Trash2 aria-hidden="true" />
+          Remove from {agentName}
+        </DropdownMenuItem>
+      ),
+    });
+  }
+  // Nothing to offer (the details view of a row this person can only look
+  // at): no `⋯` that opens onto an empty menu.
+  if (groups.length === 0) return null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -739,107 +851,12 @@ function RowMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4} className="shadow-popover">
-        {row.health === 'needs-sign-in' &&
-          (row.setup === 'sign-in' || row.setup === 'add-key') && (
-            <>
-              <DropdownMenuGroup>
-                <DropdownMenuItem onSelect={onSetUp}>
-                  {row.setup === 'sign-in' ? (
-                    <LogIn aria-hidden="true" />
-                  ) : (
-                    <KeyRound aria-hidden="true" />
-                  )}
-                  {row.setup === 'sign-in' ? 'Sign in' : 'Add key'}
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-            </>
-          )}
-        {(row.health === 'needs-reconnect' || row.health === 'unreachable') && (
-          <>
-            <DropdownMenuGroup>
-              {row.health === 'needs-reconnect' ? (
-                personalSignIn ? (
-                  <DropdownMenuItem onSelect={onSignInAgain}>
-                    <LogIn aria-hidden="true" />
-                    Sign in again
-                  </DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem onSelect={onReconnect}>
-                    <LogIn aria-hidden="true" />
-                    Reconnect
-                  </DropdownMenuItem>
-                )
-              ) : (
-                <DropdownMenuItem onSelect={onRetry}>
-                  <RotateCw aria-hidden="true" />
-                  Retry
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-          </>
-        )}
-        {onView !== undefined && (
-          <>
-            <DropdownMenuGroup>
-              <DropdownMenuItem onSelect={onView}>
-                <Info aria-hidden="true" />
-                View details
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            {!row.editable && <DropdownMenuSeparator />}
-          </>
-        )}
-        {row.editable && (
-          <>
-            <DropdownMenuGroup>
-              <DropdownMenuItem onSelect={onEdit}>
-                <Pencil aria-hidden="true" />
-                Edit connector
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-          </>
-        )}
-        <DropdownMenuGroup>
-          {row.removable ? (
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              onSelect={onRemove}
-            >
-              <Trash2 aria-hidden="true" />
-              Remove from {agentName}
-            </DropdownMenuItem>
-          ) : (
-            // TASK-765 — not Radix's `disabled`: that drops the item from
-            // keyboard navigation and pointer events, so the reason could
-            // never be reached. Focusable + aria-disabled + a no-op select.
-            // TASK-768 — the reason is wired with aria-describedby to a
-            // `hidden` node (aria-description is read unevenly by VoiceOver).
-            <>
-            <span id={refusedReasonId} hidden>
-              {REMOVE_REFUSED_REASON}
-            </span>
-            <TooltipProvider delayDuration={200}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <DropdownMenuItem
-                    aria-disabled="true"
-                    aria-describedby={refusedReasonId}
-                    className="cursor-not-allowed text-muted-foreground focus:text-muted-foreground"
-                    onSelect={(e) => e.preventDefault()}
-                  >
-                    <Trash2 aria-hidden="true" />
-                    Remove from {agentName}
-                  </DropdownMenuItem>
-                </TooltipTrigger>
-                <TooltipContent side="left">{REMOVE_REFUSED_REASON}</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-            </>
-          )}
-        </DropdownMenuGroup>
+        {groups.map(({ key, item }, i) => (
+          <Fragment key={key}>
+            {i > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuGroup>{item}</DropdownMenuGroup>
+          </Fragment>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   );

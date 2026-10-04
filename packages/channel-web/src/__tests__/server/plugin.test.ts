@@ -881,7 +881,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'agents:can-exclude-connector',
           degradation:
-            'connectors this agent gets by default are shown as not removable',
+            'the Connectors tab offers no Add, Remove or team Sign in, and a team agent refuses Add to anyone but a workspace admin',
         },
         {
           hook: 'connectors:get',

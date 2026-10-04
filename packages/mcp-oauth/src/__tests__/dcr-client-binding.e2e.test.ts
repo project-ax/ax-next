@@ -409,6 +409,8 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
     'agents:resolve': (async (_c, input) => ({
       agent: { id: (input as { agentId: string }).agentId, visibility: opts.visibility, ownerId: 'alice' },
     })) as ServiceHandler,
+    // TASK-798 — every signer here may sign in for the agent (owner / team admin).
+    'agents:can-exclude-connector': (async () => ({ allowed: true })) as ServiceHandler,
     // TASK-711 — @ax/connectors' "is this the one shared connector" answer: yes,
     // so a team-agent sign-in is stored on the agent and members read it there.
     'credentials:authorize-agent:account': (async () => ({ allowed: true })) as ServiceHandler,

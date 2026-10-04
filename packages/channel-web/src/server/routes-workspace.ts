@@ -1420,9 +1420,10 @@ interface AgentsConnectorChangeOutput {
 }
 /**
  * Structural mirror of @ax/agents' `agents:can-exclude-connector` (TASK-765)
- * — no import (invariant 2). Answers whether the actor may take a connector
- * every member reaches (a workspace default, a legacy-owned one) off this
- * agent. The same rule guards `agents:detach-connector {exclude: true}`.
+ * — no import (invariant 2). Since TASK-798 it answers whether the actor may
+ * change this agent's connectors at all — add, remove, or sign in ON the
+ * agent: the agent's owner (a team admin, on a team agent) or a workspace
+ * admin. The same rule guards `agents:attach-connector` / `detach-connector`.
  */
 interface AgentsCanExcludeConnectorInput {
   actor: { userId: string; isAdmin: boolean };
@@ -1617,8 +1618,8 @@ function credentialMissing(err: unknown): boolean {
  * by its id rather than dropped — dropping it would hide reach.
  */
 /**
- * Rows start `ok` and non-attached rows start not-removable; the GET overlays
- * stored health (TASK-741) and the exclusion answer (TASK-765) afterwards.
+ * Rows start `ok` and not removable; the GET overlays stored health
+ * (TASK-741) and the may-manage answer (TASK-765 / TASK-798) afterwards.
  */
 function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[] {
   const rows: AgentConnectorRow[] = [];
@@ -1632,9 +1633,7 @@ function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[
       source,
       editable: entry.summary.canEdit === true,
       health: 'ok',
-      // Detaching an attachment is always the caller's to ask for; the GET
-      // overlays the exclusion answer onto the rest (TASK-765).
-      removable: source === 'attached',
+      removable: false,
     });
   }
   return rows;
@@ -1938,25 +1937,13 @@ async function authActorOr401(
 
 /**
  * Map an `@ax/agents` connector-write refusal onto a status. `forbidden`
- * (not allowed to edit this agent, or a non-admin attaching a workspace
- * connector) is a 403 — the caller already passed `agents:resolve`, so the
- * agent's existence is not a secret from them. Anything else is not ours.
+ * (not the agent's owner or an admin — TASK-798 — or a non-admin attaching a
+ * workspace connector) is a 403 — the caller already passed `agents:resolve`,
+ * so the agent's existence is not a secret from them. Anything else is not
+ * ours.
  */
 function connectorWriteRefused(res: RouteResponse, err: unknown): boolean {
   if (!(err instanceof PluginError)) return false;
-  // TASK-766 — @ax/agents tags one `forbidden` with a reason: this connector
-  // was removed from this agent and the caller may not bring it back (only the
-  // agent's owner or an admin may; TASK-765). Say THAT, with a stable code,
-  // so the add view can explain it. Nothing about who removed it or when —
-  // the hook does not carry that and neither do we. Matched by string, not by
-  // importing @ax/agents (I2). Every other `forbidden` stays opaque.
-  if (err.code === 'forbidden' && err.diagnosis?.['reason'] === 'connector-excluded') {
-    res.status(403).json({
-      error: 'connector-excluded',
-      message: 'This connector was removed from this agent. Only its owner or a workspace admin can add it back.',
-    });
-    return true;
-  }
   if (err.code === 'forbidden') {
     res.status(403).json({ error: 'forbidden' });
     return true;
@@ -3915,12 +3902,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   const retryCooldown = new Map<string, RetryEntry>();
 
   /**
-   * TASK-765 — may this caller take a connector every member reaches off this
-   * agent? Asked once per list. Absent or failing → false, logged by error
-   * name only: a Remove item greyed out by mistake is the cheaper way to be
-   * wrong, and the DELETE asks @ax/agents again regardless.
+   * TASK-765 / TASK-798 — may this caller change this agent's connectors (add,
+   * remove, sign in ON the agent)? Asked once per list. Absent or failing →
+   * false, logged by error name only: an action hidden by mistake is the
+   * cheaper way to be wrong, and every write asks @ax/agents (or
+   * @ax/mcp-oauth) again regardless.
    */
-  async function connectorExclusionAllowed(
+  async function connectorsManageable(
     agentId: string,
     actor: { id: string; isAdmin: boolean },
   ): Promise<boolean> {
@@ -3939,6 +3927,21 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       });
       return false;
     }
+  }
+
+  /**
+   * TASK-798 — the setup a `needs-sign-in` row offers THIS caller. A sign-in
+   * on a team agent is stored on the agent (everyone acts as the signer), so
+   * only someone who may manage its connectors gets **Sign in**; anyone else
+   * is told to ask the owner. A missing key stays `add-key`: the rail's Add
+   * key writes the caller's OWN key, which never touches anyone else.
+   */
+  function setupForCaller(
+    setup: AgentConnectorSetup | undefined,
+    teamAgent: boolean,
+    manageable: boolean,
+  ): AgentConnectorSetup | undefined {
+    return setup === 'sign-in' && teamAgent && !manageable ? 'ask-owner' : setup;
   }
 
   /**
@@ -6557,24 +6560,26 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       const out = await listEffectiveConnectors(agent, userId);
       const rows = toConnectorRows(out);
-      const [health, canExclude] = await Promise.all([
+      const teamAgent = agent.visibility === 'team';
+      // TASK-798 — asked even for an empty list: it also decides whether the
+      // tab offers Add at all.
+      const [health, manageable] = await Promise.all([
         connectorHealth(agentId, actor, rows.map((r) => r.id), out, connectorsNotLoaded(out)),
-        rows.some((r) => r.source !== 'attached')
-          ? connectorExclusionAllowed(agentId, actor)
-          : Promise.resolve(false),
+        connectorsManageable(agentId, actor),
       ]);
       res.status(200).json({
         connectors: rows.map((r) => {
-          const setup = health.setup.get(r.id);
+          const setup = setupForCaller(health.setup.get(r.id), teamAgent, manageable);
           return {
             ...r,
             health: health.health.get(r.id) ?? 'ok',
             ...(health.sharedSignIn.has(r.id) ? { sharedSignIn: true as const } : {}),
             ...(setup !== undefined ? { setup } : {}),
-            removable: r.source === 'attached' ? true : canExclude,
+            removable: manageable,
           };
         }),
-        shared: agent.visibility === 'team',
+        shared: teamAgent,
+        manageable,
         connectorsSupported: runnerLoadsConnectors(agent.runner),
       } satisfies AgentConnectorsRead);
     },
@@ -6689,7 +6694,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
               new Map([[connectorId, checked]]),
               connectorId,
             );
-      const setup = health === 'needs-sign-in' ? stored.setup.get(connectorId) : undefined;
+      const storedSetup = health === 'needs-sign-in' ? stored.setup.get(connectorId) : undefined;
+      // TASK-798 — the same "ask the owner" rewrite the list applies; only
+      // asked when it could change the answer.
+      const setup =
+        storedSetup === 'sign-in' && agent.visibility === 'team'
+          ? setupForCaller(storedSetup, true, await connectorsManageable(agentId, actor))
+          : storedSetup;
       res.status(200).json({
         health,
         ...(health === 'needs-reconnect' && stored.sharedSignIn.has(connectorId)
@@ -6705,8 +6716,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * One id per call, through `agents:attach-connector`, which is atomic
      * (two people attaching at once never lose either write) and which owns
      * the workspace-connector rule: only an admin may attach a connector that
-     * spends the company's key. This route does not re-decide that; it passes
-     * the caller's identity and reports the hook's refusal as a 403.
+     * spends the company's key, and (TASK-798) on a team agent only its owner
+     * (a team admin) or a workspace admin may attach at all. This route does
+     * not re-decide either; it passes the caller's identity and reports the
+     * hook's refusal as a 403. It does ASK @ax/agents the TASK-798 question up
+     * front on a team agent, so a member's request never makes the host read
+     * credential presence on their behalf before being refused.
      */
     async attachConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authActorOr401(bus, initCtx, req, res);
@@ -6732,6 +6747,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       if (!bus.hasService('agents:attach-connector')) {
         res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      // TASK-798 — refuse a team agent's plain member before the gate below
+      // reads any credential presence for them. The hook decides again.
+      if (
+        agent.visibility === 'team' &&
+        !actor.isAdmin &&
+        !(await connectorsManageable(agentId, actor))
+      ) {
+        res.status(403).json({ error: 'forbidden' });
         return;
       }
       // TASK-761 — signed in / keyed FIRST, attached second (see the gate).
@@ -6772,12 +6797,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * other agent using it, are untouched — product decision 4). A connector
      * that is not in this agent's list is a 404, never a silent exclusion.
      *
-     * Excluding a `default` or `legacy-owned` connector from a TEAM agent
-     * takes it away from every member, so it is the agent's owner (a team
-     * admin) or a workspace admin only (TASK-765). @ax/agents enforces that
-     * inside `agents:detach-connector`; its `forbidden` is a 403 here, and
-     * nothing is cleaned up. The GET's `removable` is only the same answer
-     * shown ahead of time.
+     * Removing anything from a TEAM agent takes it away from every member, so
+     * it is the agent's owner (a team admin) or a workspace admin only
+     * (TASK-765 for defaults, every connector since TASK-798). @ax/agents
+     * enforces that inside `agents:detach-connector`; its `forbidden` is a
+     * 403 here, and nothing is cleaned up. The GET's `removable` is only the
+     * same answer shown ahead of time.
      *
      * After the detach lands, what this agent held for the connector goes
      * too: its per-tool choices (tool-policy overrides under the connector's
