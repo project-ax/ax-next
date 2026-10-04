@@ -389,7 +389,8 @@ export AX_AUTH_SECRET=$(gcloud secrets versions access latest \
 ```
 
 Then pass `--set auth.secret="$AX_AUTH_SECRET"` on the Step 6 install (and every
-`helm upgrade`), right alongside the other two keys. Leave it off and the chart
+`helm upgrade`, after the [Step 4c](#4c-before-every-upgrade-check-the-backup-matches-the-live-cluster)
+check), right alongside the other two keys. Leave it off and the chart
 generates one — but then it lives **only** in-cluster, and you're back to the
 `kubectl`-and-pray recovery path the moment you need a fresh cluster.
 
@@ -409,6 +410,82 @@ The rules:
   Secret; they will overwrite the key on the next sync and brick every stored
   credential). If you use GitOps, source these keys from your secrets manager,
   not from a fresh `openssl rand`.
+
+### 4c. Before every upgrade: check the backup matches the live cluster
+
+A backup you've never compared against the real thing is a hope, not a backup.
+So before any `helm upgrade` that passes `--set auth.secret` (or the other two
+keys), check that what Secret Manager holds is **byte-for-byte** what the
+running cluster is actually using. Skip this on the very first install — there's
+no live Secret yet.
+
+This prints hashes only. No key ever reaches your terminal or shell history:
+
+```bash
+# The cluster whose keys are live. For a migration (Step M4) that's the OLD one.
+KCTX=${KCTX:-$(kubectl config current-context)}
+echo "comparing Secret Manager against cluster: $KCTX"
+
+fp() { openssl sha256 | awk '{print $NF}'; }
+EMPTY=$(printf '' | fp)
+
+for pair in credentials-key=ax-next-credentials-key \
+            http-cookie-key=ax-next-http-cookie-key \
+            auth-secret=ax-next-auth-secret; do
+  key=${pair%%=*}; gsm=${pair#*=}
+  # The in-cluster Secret stores base64; decode it back to the raw value.
+  live=$(kubectl --context "$KCTX" get secret ax-next-secrets -n ax-next \
+    -o "jsonpath={.data.$key}" | base64 -d | fp)
+  # Hash exactly what the export above would hand to --set.
+  backup=$(printf '%s' "$(gcloud secrets versions access latest \
+    --secret="$gsm" --project=$PROJECT_ID)" | fp)
+  if [ "$live" = "$EMPTY" ] || [ "$backup" = "$EMPTY" ]; then
+    echo "MISSING  $key  (live or backup unreadable; stop and look)"
+  elif [ "$live" = "$backup" ]; then
+    echo "match    $key"
+  else
+    echo "MISMATCH $key  (do NOT pass the Secret Manager value; read below)"
+  fi
+done
+```
+
+Three `match` lines and you're good to go. Anything else, **stop before you
+upgrade**:
+
+- **The live cluster wins.** It's the key that actually encrypted every stored
+  credential and OAuth token. A mismatched backup is the thing that's wrong.
+  (If you have a real reason to believe otherwise, that's a human call, not a
+  script's.)
+- **Fix the backup, don't overwrite the cluster.** Add a new Secret Manager
+  version holding the live value, re-run the check until it says `match`, then
+  disable the stale version. For `auth-secret`:
+
+  ```bash
+  kubectl --context "$KCTX" get secret ax-next-secrets -n ax-next \
+    -o jsonpath='{.data.auth-secret}' \
+    | base64 -d \
+    | gcloud secrets versions add ax-next-auth-secret --data-file=- --project=$PROJECT_ID
+  # Re-run the check above. Once it matches, retire the old version:
+  gcloud secrets versions list ax-next-auth-secret --project=$PROJECT_ID
+  gcloud secrets versions disable <OLD_VERSION> --secret=ax-next-auth-secret --project=$PROJECT_ID
+  ```
+
+  Same shape for the other two keys (swap the Secret key and the Secret Manager
+  name). Then re-run the `export` lines above so your shell holds the fixed value.
+- **The usual culprit is a skipped `base64 -d`.** A 32-byte key is 44 characters
+  of base64. If the backup is about 60 characters, it's holding the base64 *of*
+  the base64: the right key, encoded one time too many. That's exactly what we
+  found on 2026-09-29 (a backup taken straight from `.data.auth-secret` without
+  decoding it).
+
+Why bother, if the upgrade is in place? Honest answer: on an **in-place**
+`helm upgrade` the chart reuses whatever key the live Secret already holds and
+quietly ignores `--set` (see `templates/hook-secret.yaml`). So a bad backup
+won't bite you *today*. It bites the day you actually need it: a new cluster
+([Step M4](#step-m4--re-create-the-secrets)), a GitOps render that can't see the
+live Secret, or a restore after losing the namespace. Every one of those turns a
+wrong backup into everyone's Google login breaking at once. Checking on each
+upgrade is the cheap moment to notice.
 
 ---
 
@@ -1235,6 +1312,13 @@ kubectl create secret generic ax-next-serve-token -n ax-next \
 
 (The `ax-next-secrets` Secret holding the keys is created *by helm* in Step M6
 from the `--set` flags above — you don't create it by hand.)
+
+**Before Step M6, run the
+[Step 4c check](#4c-before-every-upgrade-check-the-backup-matches-the-live-cluster)
+against the OLD cluster** (`KCTX=<old-autopilot-context>`). This is the one
+upgrade where `--set` really is the source of truth: the new cluster has no live
+Secret to fall back on, so whatever Secret Manager holds is what every stored
+credential and OAuth token gets decrypted with from now on.
 
 > **Carry over `auth-secret`, or every Google/OAuth login breaks.** `ax-next-secrets`
 > holds a **third** key — `auth-secret` (`AX_AUTH_SECRET`), which `@ax/auth-better`
