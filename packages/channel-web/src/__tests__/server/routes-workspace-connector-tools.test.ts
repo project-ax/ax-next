@@ -134,12 +134,13 @@ describe('connector details routes (mock bus)', () => {
   let visibility: 'personal' | 'team' | undefined;
   let canManage: boolean;
   let canManageCalls: number;
+  let isAdmin: boolean;
 
   function registerAll(omit: string[] = []) {
     const reg = (hook: string, fn: (i: unknown) => Promise<unknown>) => {
       if (!omit.includes(hook)) bus.registerService(hook, 'mock', async (_c, i) => fn(i));
     };
-    reg('auth:require-user', async () => ({ user: { id: 'u1', isAdmin: false } }));
+    reg('auth:require-user', async () => ({ user: { id: 'u1', isAdmin } }));
     reg('agents:resolve', async (i) => {
       const { agentId, userId } = i as { agentId: string; userId: string };
       if (owners.get(agentId) !== userId) {
@@ -246,6 +247,7 @@ describe('connector details routes (mock bus)', () => {
     visibility = undefined;
     canManage = false;
     canManageCalls = 0;
+    isAdmin = false;
     registerAll();
   });
 
@@ -472,6 +474,18 @@ describe('connector details routes (mock bus)', () => {
             expect(r.statusCode).toBe(409);
             expect(setCalls).toEqual([]);
           }
+        });
+
+        it('a workspace admin may pick Allow without the manage check', async () => {
+          isAdmin = true;
+          canManage = false;
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'allow',
+          });
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r.statusCode).toBe(200);
+          expect(canManageCalls).toBe(0);
         });
 
         it('a personal agent never asks the manage check', async () => {
