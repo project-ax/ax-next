@@ -231,14 +231,17 @@ export interface ProxyListenerOptions {
    */
   meteredTunnelIdleMs?: number;
   /**
-   * How long a bypassMITM raw tunnel may spend waiting for the upstream TCP
-   * connect to complete before the proxy gives up, answers the client 502 and
-   * tears the half-open upstream socket down. Defaults to 30 seconds — far
-   * longer than any healthy handshake, far shorter than the OS's own SYN-retry
-   * timeout (~2 minutes on Linux). Applies only until the tunnel is
-   * established; an open tunnel is never timed out by it. Tests shorten it.
+   * How long a CONNECT tunnel may spend waiting for its upstream connection
+   * before the proxy gives up and tears both sides down. On a bypassMITM raw
+   * tunnel that is the TCP connect (the client is answered 502); on the MITM
+   * path it is the TCP connect PLUS the upstream TLS handshake (the client has
+   * already been told 200, so it sees the tunnel close; the audit row is a
+   * 502). Defaults to 30 seconds — far longer than any healthy handshake, far
+   * shorter than the OS's own SYN-retry timeout (~2 minutes on Linux) or the
+   * 15-minute tunnel idle timeout. Applies only until the upstream is
+   * connected; an open tunnel is never timed out by it. Tests shorten it.
    */
-  bypassConnectTimeoutMs?: number;
+  upstreamConnectTimeoutMs?: number;
 }
 
 export interface ProxyListener {
@@ -290,11 +293,13 @@ function allowlistMissBody(hostname: string): string {
 const METERED_TUNNEL_IDLE_MS = 15 * 60_000;
 
 /**
- * How long a bypassMITM raw tunnel waits for its upstream TCP connect (TASK-786).
- * Without it, an allowlisted host that black-holes SYNs holds the client and the
- * upstream socket until the OS gives up.
+ * How long a CONNECT tunnel waits for its upstream connection — the bypassMITM
+ * raw tunnel's TCP connect (TASK-786) and the MITM path's TCP connect + TLS
+ * handshake (TASK-823). Without it, an allowlisted host that black-holes SYNs
+ * holds the client and the upstream socket until the OS gives up (raw tunnel)
+ * or the 15-minute idle timeout fires (MITM).
  */
-const BYPASS_CONNECT_TIMEOUT_MS = 30_000;
+const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
 
 /**
  * The response a metered tunnel gives when it refuses a request (TASK-715): a
@@ -540,7 +545,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   const maxHttpRequestBodyBytes =
     opts.maxHttpRequestBodyBytes ?? DEFAULT_MAX_HTTP_REQUEST_BODY_BYTES;
   const meteredTunnelIdleMs = opts.meteredTunnelIdleMs ?? METERED_TUNNEL_IDLE_MS;
-  const bypassConnectTimeoutMs = opts.bypassConnectTimeoutMs ?? BYPASS_CONNECT_TIMEOUT_MS;
+  const upstreamConnectTimeoutMs = opts.upstreamConnectTimeoutMs ?? UPSTREAM_CONNECT_TIMEOUT_MS;
   const activeSockets = new Set<net.Socket>();
 
   function audit(entry: ProxyAuditEntry): void {
@@ -1021,6 +1026,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
+      clearTimeout(connectTimer);
       activeSockets.delete(clientTls);
       activeSockets.delete(targetTls);
       clientTls.destroy();
@@ -1060,6 +1066,28 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     clientTls.on('end', () => targetTls.end());
     clientTls.setTimeout(meteredTunnelIdleMs, cleanup);
     targetTls.setTimeout(meteredTunnelIdleMs, cleanup);
+
+    // Bound the upstream connect phase (TASK-823) — TCP connect AND the TLS
+    // handshake — the way TASK-786 bounds the raw tunnel's. Without it a
+    // black-holed allowlisted host (or one that accepts TCP and never answers
+    // the ClientHello) holds both sides until the 15-minute idle timeout above.
+    // Firing destroys the upstream with an error, which runs the existing
+    // upstream-error path: one 502 `tls_error` audit row, then cleanup() tears
+    // down both sides. 'secureConnect' and cleanup() both clear it, so it never
+    // touches an established tunnel and never outlives this exchange.
+    //
+    // Armed LAST, after the dial and every handler: `tls.connect` throws
+    // synchronously on a bad port (ERR_SOCKET_BAD_PORT, e.g. CONNECT
+    // host:99999), and a timer armed before that throw would fire into
+    // bindings that were never initialized — an uncaught error on the host.
+    // 'secureConnect' and cleanup() only ever run from socket events, which
+    // Node never emits synchronously, so both see it assigned.
+    targetTls.once('secureConnect', () => clearTimeout(connectTimer));
+    const connectTimer = setTimeout(() => {
+      targetTls.destroy(
+        new Error(`upstream connect timed out after ${upstreamConnectTimeoutMs}ms`),
+      );
+    }, upstreamConnectTimeoutMs);
   }
 
   // ── HTTPS CONNECT — MITM (default) or raw TCP tunnel (bypassMITM hosts) ──
@@ -1309,7 +1337,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // events, which Node never emits synchronously, so both see it assigned.
       const connectTimer = setTimeout(() => {
         if (!established) cleanup();
-      }, bypassConnectTimeoutMs);
+      }, upstreamConnectTimeoutMs);
     } catch (err) {
       // BlockedIPError → 403 (policy block); anything else → 502 (network/DNS).
       // Reviewer M3 from Task 5: typed instanceof, not string match.
