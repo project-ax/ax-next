@@ -137,9 +137,15 @@ help:
 #
 # Written as a single `|| { ...; exit 1; }` line rather than leaning on
 # .SHELLFLAGS: macOS ships GNU Make 3.81, which ignores it.
+#
+# `grep -Fx … >/dev/null`, NOT `grep -Fxq` (TASK-825). `-q` exits at the first
+# match and closes the pipe; if the context is not the LAST one listed, kubectl's
+# next write dies of SIGPIPE, and under `-o pipefail` (which GNU Make 4 does
+# apply) that 141 sends the guard down its REFUSING branch for a context that is
+# right there. It raced on CI and refused the gke-deploy success case.
 # ----------------------------------------------------------------------------
 kube-guard:
-	@$(KUBECTL) config get-contexts -o name | grep -Fxq -- '$(KUBE_CONTEXT)' || { \
+	@$(KUBECTL) config get-contexts -o name | grep -Fx -- '$(KUBE_CONTEXT)' >/dev/null || { \
 	  echo "REFUSING: your kubeconfig has no context named '$(KUBE_CONTEXT)', so there is no kind cluster to act on."; \
 	  echo "  Create it:       kind create cluster --name $(KIND_CLUSTER)"; \
 	  echo "  or re-add it:    kind export kubeconfig --name $(KIND_CLUSTER)"; \
@@ -157,7 +163,7 @@ gke-guard:
 	  echo "  This target does not follow your current context: a stale default would send the deploy to the wrong cluster."; \
 	  exit 1; }
 	@case "$$GKE_CONTEXT" in kind-*) echo "REFUSING: '$$GKE_CONTEXT' is a kind cluster, not GKE. Use the kind targets for kind."; exit 1;; esac
-	@$(GKE_KUBECTL) config get-contexts -o name | grep -Fxq -- "$$GKE_CONTEXT" || { \
+	@$(GKE_KUBECTL) config get-contexts -o name | grep -Fx -- "$$GKE_CONTEXT" >/dev/null || { \
 	  echo "REFUSING: your kubeconfig has no context named '$$GKE_CONTEXT'."; \
 	  echo "  Fetch it with 'gcloud container clusters get-credentials ...' (deploy/GKE.md Step 0), or fix the name."; \
 	  exit 1; }
