@@ -611,7 +611,9 @@ export function RemoteMcpConnectorForm({
                   {textField('url', 'Server URL', 'https://example.com/mcp')}
                 </FieldGroup>
                 {addressChanged && (
-                  <Alert data-testid="address-change-resets-tools">
+                  // TASK-790 — advice beside a field being typed in, not an
+                  // interruption: the shared Alert defaults to role="alert".
+                  <Alert data-testid="address-change-resets-tools" role="note">
                     <AlertDescription>
                       Changing the address resets this server’s tool permissions.
                       Every tool goes back to asking first, and choices people made

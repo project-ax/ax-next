@@ -310,6 +310,12 @@ function connectorsMiddleware(
     const path = parsed.pathname;
     const method = req.method ?? 'GET';
 
+    // Only a path shaped like one of this bundle's routes is ours. Production
+    // 404s anything else under the prefix (`/admin/connectorsx`, `<base>/a/b`)
+    // before any auth gate runs, because no route matches it; claiming it here
+    // and answering 401/403 first would disagree with prod (TASK-790).
+    if (path !== base && !idRe.test(path) && !toolPermsRe.test(path)) return false;
+
     // auth:require-user — 401 with no session. The `/admin/connectors*` bundle
     // (mode 'admin') is additionally ADMIN-ONLY, mirroring the real
     // `@ax/connectors` admin-routes gate (TASK-698): a signed-in non-admin gets

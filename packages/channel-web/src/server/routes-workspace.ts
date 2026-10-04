@@ -2322,17 +2322,17 @@ function wireRequest(stored: StoredDecision): DecisionRequest | null {
   const tool = fenceLine(stored.call?.name, DECISION_REQUEST_TOOL_MAX_CHARS);
   if (tool === null) return null;
   const input = stored.call?.input;
+  // "No input" is decided on the SERIALIZED text, not on the value's shape
+  // (TASK-790): `[]`, `{a: undefined}` and a bare function would otherwise draw
+  // as an empty-looking `[]` / `{}` block (or nothing) instead of the "No
+  // details" line. `null` serializes to "null" and is caught by the same rule.
   let json: string | undefined;
   try {
-    json =
-      input === undefined ||
-      input === null ||
-      (typeof input === 'object' && !Array.isArray(input) && Object.keys(input).length === 0)
-        ? undefined
-        : JSON.stringify(input, null, 2);
+    json = JSON.stringify(input, null, 2);
   } catch {
     json = undefined;
   }
+  if (json === undefined || json === '{}' || json === '[]' || json === 'null') json = undefined;
   const block = fenceBlock(json, DECISION_REQUEST_INPUT_MAX_CHARS, DECISION_REQUEST_INPUT_MAX_LINES);
   return { tool, input: block?.text ?? null, truncated: block?.truncated ?? false };
 }

@@ -972,3 +972,50 @@ describe('AgentRail — a rail that would not load', () => {
     expect(screen.queryByText('This week')).toBeNull();
   });
 });
+
+/**
+ * TASK-790 — a past conversation's date reaches the screen reader through
+ * aria-describedby (the TASK-768 / #875 pattern), not aria-description, which
+ * VoiceOver reads unevenly. jest-dom's toHaveAccessibleDescription honours
+ * BOTH attributes, so it alone cannot tell the wirings apart: assert the
+ * attribute shape too.
+ */
+describe('AgentRail — past conversations', () => {
+  it('describes each past conversation by its date through aria-describedby', async () => {
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    render(
+      <AgentRail
+        detail={detail({
+          past: [
+            { id: 'c-march', title: 'March plans', lastActivityAt: tenDaysAgo },
+            { id: 'c-april', title: 'April plans', lastActivityAt: tenDaysAgo },
+          ],
+        })}
+        openPastId={null}
+        onOpenPast={vi.fn()}
+        tab="chat"
+      />,
+    );
+    const rows = [
+      await screen.findByRole('button', { name: 'March plans' }),
+      screen.getByRole('button', { name: 'April plans' }),
+    ];
+    const ids = new Set<string>();
+    for (const row of rows) {
+      expect(row).not.toHaveAttribute('aria-description');
+      const id = row.getAttribute('aria-describedby');
+      expect(id).toBeTruthy();
+      ids.add(id!);
+      const target = document.getElementById(id!);
+      expect(target).not.toBeNull();
+      // Hidden: the date is already drawn visibly in the row, so browse mode
+      // must not read it a second time after the button.
+      expect(target).toHaveAttribute('hidden');
+      expect(target!.textContent).not.toBe('');
+      expect(row).toHaveAccessibleDescription(target!.textContent!);
+    }
+    // One description per row — two rows never share (and so never swap) one.
+    expect(ids.size).toBe(2);
+    await waitFor(() => expect(railMock).toHaveBeenCalled());
+  });
+});

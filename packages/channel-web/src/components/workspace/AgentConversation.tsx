@@ -453,7 +453,10 @@ export function AgentConversation({
   const fieldRef = useRef<HTMLInputElement>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const stopClicked = useRef(false);
-  useEffect(() => {
+  // A layout effect, not a passive one (TASK-790): the field takes focus in
+  // the same commit that turns Stop back into Send, so there is no tick where
+  // focus sits on the button or <body> and a fast typist's key goes nowhere.
+  useLayoutEffect(() => {
     if (busy || !stopClicked.current) return;
     stopClicked.current = false;
     const at = document.activeElement;
