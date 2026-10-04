@@ -14,14 +14,10 @@ import {
   validateNewAttachments,
   type NewAttachmentInput,
 } from './skill-attachments-validation.js';
-import {
-  isWorkspaceConnectorForbidden,
-  workspaceConnectorGrantViolation,
-} from './connector-guard.js';
+import { workspaceConnectorGrantViolation } from './connector-guard.js';
 import {
   DISPLAY_NAME_FORBIDDEN,
   DISPLAY_NAME_FORBIDDEN_MESSAGE,
-  validateConnectorAttachmentIds,
 } from './store.js';
 import type {
   Actor,
@@ -36,8 +32,6 @@ import type {
   ListForUserOutput,
   ResolveInput,
   ResolveOutput,
-  SetConnectorAttachmentsInput,
-  SetConnectorAttachmentsOutput,
   SkillAttachment,
   UpdateInput,
   UpdateOutput,
@@ -229,19 +223,6 @@ const skillAttachmentSchema = z
 const patchAttachmentsBodySchema = z
   .object({
     skillAttachments: z.array(skillAttachmentSchema).max(20),
-  })
-  .strict();
-
-/**
- * Body schema for `PATCH /admin/agents/:id/connector-attachments` (TASK-107).
- * Replaces the entire connector_attachments id list. An empty array detaches
- * all connectors. The wire is a plain list of connector-id strings; the full
- * slug/dedup/count validation lives in `validateConnectorAttachmentIds` (the
- * single source of truth, shared with the store), called by the handler.
- */
-const patchConnectorAttachmentsBodySchema = z
-  .object({
-    connectorAttachments: z.array(z.string()),
   })
   .strict();
 
@@ -831,64 +812,6 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       }
     },
 
-    /** PATCH /admin/agents/:id/connector-attachments (TASK-107) */
-    async setConnectorAttachments(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
-      if (actor === null) return;
-      // Owner-scoped (agent ownership enforced by the hook's assertWriteAllowed).
-      // A non-admin may attach their OWN PERSONAL connectors (their own reach);
-      // the workspace-connector guard after id validation rejects attaching a
-      // shared/global-keyed connector (that would grant the company key). Admins
-      // bypass that guard.
-      const agentId = req.params.id;
-      if (typeof agentId !== 'string' || agentId.length === 0) {
-        res.status(400).json({ error: 'missing-agent-id' });
-        return;
-      }
-      const parsed = parseAndValidate(req.body, patchConnectorAttachmentsBodySchema);
-      if (!parsed.ok) {
-        res.status(parsed.status).json({ error: parsed.message });
-        return;
-      }
-      // Slug/dedup/count validation (the single source of truth, shared with
-      // the store). Connector EXISTENCE is intentionally NOT checked: a dangling
-      // id is tolerated and simply never resolves at session open (the
-      // orchestrator's NON-FATAL union) — mirroring skill_attachments' orphan
-      // tolerance and keeping this route decoupled from @ax/connectors.
-      let connectorIds: string[];
-      try {
-        connectorIds = validateConnectorAttachmentIds(parsed.value.connectorAttachments);
-      } catch (err) {
-        if (err instanceof PluginError && err.code === 'invalid-payload') {
-          res.status(400).json({ error: err.message });
-          return;
-        }
-        throw err;
-      }
-      // The non-admin workspace-connector guard (reject ADDING a shared/
-      // global-keyed connector) is enforced inside agents:set-connector-
-      // attachments so every caller gets it; its refusal surfaces as a 403
-      // carrying the guard's message (it names only ids this caller sent).
-      try {
-        const out = await deps.bus.call<
-          SetConnectorAttachmentsInput,
-          SetConnectorAttachmentsOutput
-        >('agents:set-connector-attachments', ctx, {
-          actor: { userId: actor.id, isAdmin: actor.isAdmin } satisfies Actor,
-          agentId,
-          connectorIds,
-        });
-        res.status(200).json({ agent: serializeAgent(out.agent) });
-      } catch (err) {
-        if (isWorkspaceConnectorForbidden(err)) {
-          res.status(403).json({ error: err.message });
-          return;
-        }
-        if (writeServiceError(res, err)) return;
-        throw err;
-      }
-    },
-
     /** GET /admin/agents/:id/authored-skills */
     async listAuthoredSkills(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireUser(deps.bus, ctx, req, res);
@@ -1116,11 +1039,6 @@ export async function registerAdminAgentRoutes(
       method: 'PATCH',
       path: '/admin/agents/:id/skill-attachments',
       handler: handlers.setSkillAttachments,
-    },
-    {
-      method: 'PATCH',
-      path: '/admin/agents/:id/connector-attachments',
-      handler: handlers.setConnectorAttachments,
     },
     {
       method: 'GET',

@@ -98,7 +98,9 @@ describe('connector access disclosure: coverage (TASK-700)', () => {
       'components/settings/ProposedConnectorApproveDialog.tsx',
       'components/workspace/GrantRow.tsx',
       'components/workspace/AddConnector.tsx',
-      'components/admin/AgentForm.tsx',
+      // TASK-799 — AgentForm no longer attaches connectors or signs a team agent
+      // in; that moved to the workspace rail.
+      'components/workspace/AgentConnectors.tsx',
       'components/credentials/CredentialSlotForm.tsx',
     ]) {
       expect(rels, `the scan no longer sees ${expected}`).toContain(expected);

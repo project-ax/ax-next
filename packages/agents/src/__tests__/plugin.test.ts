@@ -32,8 +32,6 @@ import type {
   DetachConnectorOutput,
   CanExcludeConnectorInput,
   CanExcludeConnectorOutput,
-  SetConnectorAttachmentsInput,
-  SetConnectorAttachmentsOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -137,7 +135,6 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:ensure-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
-        'agents:set-connector-attachments',
         'agents:attach-connector',
         'agents:detach-connector',
         'agents:can-exclude-connector',
@@ -181,6 +178,18 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
       ],
       subscribes: ['bootstrap:reset-cleanup'],
     });
+  });
+
+  // TASK-799 — the list-replace connector hook is retired: attach / detach are
+  // the only write path for connectorAttachments.
+  it('agents:set-connector-attachments is not registered; attach / detach are', async () => {
+    expect(createAgentsPlugin().manifest.registers).not.toContain(
+      'agents:set-connector-attachments',
+    );
+    const h = await makeHarness();
+    expect(h.bus.hasService('agents:set-connector-attachments')).toBe(false);
+    expect(h.bus.hasService('agents:attach-connector')).toBe(true);
+    expect(h.bus.hasService('agents:detach-connector')).toBe(true);
   });
 
   it('init runs the migration so agents_v1_agents is reachable', async () => {
@@ -1148,7 +1157,10 @@ describe('agents:attach-connector / agents:detach-connector (TASK-739)', () => {
       attach(h, { actor: owner, agentId, connectorId: 'workspace-conn' }),
     ).rejects.toMatchObject({
       code: 'forbidden',
-      message: expect.stringMatching(/workspace \(shared\) connector/),
+      // TASK-799 — attach's documented error contract: the guard's refusal is
+      // tagged apart from the ACL's, and names only the id the caller sent.
+      diagnosis: { reason: 'workspace-connector' },
+      message: expect.stringMatching(/'workspace-conn' is a workspace \(shared\) connector/),
     });
     expect((await current(h, agentId)).connectorAttachments).toEqual([]);
     const byAdmin = await attach(h, { actor: admin, agentId, connectorId: 'workspace-conn' });
@@ -1159,52 +1171,12 @@ describe('agents:attach-connector / agents:detach-connector (TASK-739)', () => {
     const { h, agentId } = await seed(false);
     await expect(
       attach(h, { actor: owner, agentId, connectorId: 'personal-conn' }),
-    ).rejects.toMatchObject({ code: 'forbidden' });
+    ).rejects.toMatchObject({ code: 'forbidden', diagnosis: { reason: 'workspace-connector' } });
     // An admin is unaffected.
     await attach(h, { actor: admin, agentId, connectorId: 'personal-conn' });
     // detach never grants reach, so it is not guarded.
     const out = await detach(h, { actor: owner, agentId, connectorId: 'x', exclude: true });
     expect(out.agent.connectorExclusions).toEqual(['x']);
-  });
-
-  it('set-connector-attachments: a non-admin ADDING a workspace connector is forbidden', async () => {
-    const { h, agentId } = await seed();
-    await expect(
-      h.bus.call<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
-        'agents:set-connector-attachments',
-        h.ctx(),
-        { actor: owner, agentId, connectorIds: ['personal-conn', 'workspace-conn'] },
-      ),
-    ).rejects.toMatchObject({ code: 'forbidden' });
-    expect((await current(h, agentId)).connectorAttachments).toEqual([]);
-  });
-
-  it('set-connector-attachments: a non-admin list that still NAMES a workspace connector is forbidden (whole list, no stale-read re-attach)', async () => {
-    const { h, agentId } = await seed();
-    await h.bus.call<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
-      'agents:set-connector-attachments',
-      h.ctx(),
-      { actor: admin, agentId, connectorIds: ['workspace-conn', 'personal-conn'] },
-    );
-    await expect(
-      h.bus.call<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
-        'agents:set-connector-attachments',
-        h.ctx(),
-        { actor: owner, agentId, connectorIds: ['workspace-conn'] },
-      ),
-    ).rejects.toMatchObject({ code: 'forbidden' });
-    // The single-id detach is how a non-admin takes one away instead.
-    const out = await h.bus.call<
-      { actor: typeof owner; agentId: string; connectorId: string; exclude: boolean },
-      { changed: boolean }
-    >('agents:detach-connector', h.ctx(), {
-      actor: owner,
-      agentId,
-      connectorId: 'personal-conn',
-      exclude: false,
-    });
-    expect(out.changed).toBe(true);
-    expect((await current(h, agentId)).connectorAttachments).toEqual(['workspace-conn']);
   });
 
   it('CONCURRENCY: 10 parallel hook attaches of distinct ids all land', async () => {
@@ -1231,7 +1203,7 @@ describe('agents:attach-connector / agents:detach-connector (TASK-739)', () => {
 // TASK-765 / TASK-798 — whatever connector a team agent reaches, every member's
 // runs reach (and a sign-in on it decides whose account they all act as). So a
 // plain member may not change a team agent's connectors at all: attach, detach
-// (with or without `exclude`), or replace the list. Only the agent's owner
+// (with or without `exclude`). Only the agent's owner
 // (personal) / a team admin (team) / a workspace admin may.
 // `agents:can-exclude-connector` exposes the same answer to the route and to
 // @ax/mcp-oauth, so nobody is offered a button the server would refuse.
@@ -1316,13 +1288,6 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       'agents:detach-connector',
       h.ctx(),
       input,
-    );
-  }
-  function setList(h: TestHarness, actor: typeof member, agentId: string, ids: string[]) {
-    return h.bus.call<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
-      'agents:set-connector-attachments',
-      h.ctx(),
-      { actor, agentId, connectorIds: ids },
     );
   }
   function canExclude(h: TestHarness, input: CanExcludeConnectorInput) {
@@ -1508,47 +1473,6 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       await expect(
         detach(h, { actor: outsider, agentId, connectorId: 'b-default', exclude: true }),
       ).rejects.toMatchObject({ code: 'forbidden' });
-    });
-  });
-
-  // The wholesale setter is the OTHER way to change what a team agent reaches,
-  // so it gets the same gate until it is retired.
-  describe('agents:set-connector-attachments', () => {
-    // UNFIXED (TASK-798): a list adding no excluded id is accepted -> fails.
-    it('SECURITY: a plain member cannot replace the list; nothing is written', async () => {
-      const { h, agentId } = await seedTeamAgent();
-      await expect(setList(h, member, agentId, ['fresh-conn'])).rejects.toMatchObject({
-        code: 'forbidden',
-      });
-      expect((await stored(h, agentId)).connectorAttachments).toEqual([]);
-    });
-
-    it('a team admin may add an excluded id; the exclusion is left as it was', async () => {
-      const { h, agentId } = await seedTeamAgent();
-      await detach(h, { actor: teamAdmin, agentId, connectorId: 'personal-conn', exclude: true });
-      const out = await setList(h, teamAdmin, agentId, ['personal-conn']);
-      expect(out.agent.connectorAttachments).toEqual(['personal-conn']);
-      expect(out.agent.connectorExclusions).toEqual(['personal-conn']);
-    });
-
-    it('a workspace admin may replace the list', async () => {
-      const { h, agentId } = await seedTeamAgent();
-      const out = await setList(h, workspaceAdmin, agentId, ['personal-conn']);
-      expect(out.agent.connectorAttachments).toEqual(['personal-conn']);
-    });
-
-    it('a role lookup failing for any OTHER reason propagates', async () => {
-      const { h, agentId } = await seedTeamAgent();
-      teamsFailsAfter(1, 'broken');
-      await expect(setList(h, member, agentId, ['fresh-conn'])).rejects.toThrow(
-        'teams db is down',
-      );
-    });
-
-    it('a personal agent owner may replace the list', async () => {
-      const { h, agentId } = await seedPersonalAgent();
-      const out = await setList(h, owner, agentId, ['personal-conn']);
-      expect(out.agent.connectorAttachments).toEqual(['personal-conn']);
     });
   });
 

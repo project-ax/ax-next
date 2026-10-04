@@ -87,8 +87,8 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // NOT NULL DEFAULT '[]' so every existing row reads safely — this additive
   // column IS the idempotent migration (no lossy mcp_config_ids reclassification:
   // a real MCP config id and a TASK-98 connector id are indistinguishable, and
-  // ax-next has no prod data). Owned exclusively by PATCH
-  // /admin/agents/:id/connector-attachments (never the generic update path).
+  // ax-next has no prod data). Written only by agents:attach-connector /
+  // agents:detach-connector (never the generic update path).
   await sql`
     ALTER TABLE agents_v1_agents
       ADD COLUMN IF NOT EXISTS connector_attachments JSONB NOT NULL DEFAULT '[]'

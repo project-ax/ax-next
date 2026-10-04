@@ -15,7 +15,7 @@ import {
   resolveAllowedModels,
   validateCreateInput,
   validateUpdatePatch,
-  validateConnectorAttachmentIds,
+  validateConnectorId,
   SUPPORTED_RUNNERS,
 } from '../store.js';
 import { scopedAgents } from '../scope.js';
@@ -510,39 +510,25 @@ describe('store + scopedAgents', () => {
 });
 
 // TASK-107 — per-agent connector-attachment store.
-describe('validateConnectorAttachmentIds', () => {
-  it('accepts a deduped list of well-formed connector-id slugs', () => {
-    expect(validateConnectorAttachmentIds(['salesforce', 'my-drive', 'gh_2'])).toEqual([
-      'salesforce',
-      'my-drive',
-      'gh_2',
-    ]);
+describe('validateConnectorId', () => {
+  it('accepts a well-formed connector-id slug and returns it unchanged', () => {
+    expect(validateConnectorId('salesforce')).toBe('salesforce');
+    expect(validateConnectorId('my-drive')).toBe('my-drive');
+    expect(validateConnectorId('gh_2')).toBe('gh_2');
   });
 
-  it('accepts an empty list', () => {
-    expect(validateConnectorAttachmentIds([])).toEqual([]);
+  it('rejects a non-string', () => {
+    expect(() => validateConnectorId(1)).toThrow(/must be a string/);
   });
 
-  it('rejects a non-array', () => {
-    expect(() => validateConnectorAttachmentIds('nope')).toThrow(/must be an array/);
-  });
-
-  it('rejects a non-string entry', () => {
-    expect(() => validateConnectorAttachmentIds([1])).toThrow(/entries must be strings/);
+  it('rejects an empty or over-long id', () => {
+    expect(() => validateConnectorId('')).toThrow(/1-128 chars/);
+    expect(() => validateConnectorId('a'.repeat(129))).toThrow(/1-128 chars/);
   });
 
   it('rejects a malformed slug', () => {
-    expect(() => validateConnectorAttachmentIds(['Bad Id'])).toThrow(/must match/);
-    expect(() => validateConnectorAttachmentIds(['-leading'])).toThrow(/must match/);
-  });
-
-  it('rejects a duplicate', () => {
-    expect(() => validateConnectorAttachmentIds(['gh', 'gh'])).toThrow(/duplicated/);
-  });
-
-  it('rejects more than 50 entries', () => {
-    const many = Array.from({ length: 51 }, (_, i) => `c${i}`);
-    expect(() => validateConnectorAttachmentIds(many)).toThrow(/at most 50/);
+    expect(() => validateConnectorId('Bad Id')).toThrow(/must match/);
+    expect(() => validateConnectorId('-leading')).toThrow(/must match/);
   });
 });
 
@@ -561,33 +547,6 @@ describe('store connector attachments', () => {
     expect(round!.connectorAttachments).toEqual([]);
   });
 
-  it('setConnectorAttachments replaces the list wholesale and round-trips', async () => {
-    const db = makeKysely();
-    await runAgentsMigration(db);
-    const store = createAgentStore(db);
-    const created = await store.create({
-      ownerId: 'u1',
-      ownerType: 'user',
-      validated: validateCreateInput(makeInput(), { allowedModels: ALLOWED }),
-    });
-    const updated = await store.setConnectorAttachments(created.id, ['salesforce', 'gh']);
-    expect(updated.connectorAttachments).toEqual(['salesforce', 'gh']);
-    // Wholesale replace — a second call with a different set overwrites, not appends.
-    const replaced = await store.setConnectorAttachments(created.id, ['gh']);
-    expect(replaced.connectorAttachments).toEqual(['gh']);
-    const round = await store.getById(created.id);
-    expect(round!.connectorAttachments).toEqual(['gh']);
-  });
-
-  it('setConnectorAttachments throws not-found for a missing agent', async () => {
-    const db = makeKysely();
-    await runAgentsMigration(db);
-    const store = createAgentStore(db);
-    await expect(store.setConnectorAttachments('agt_missing', ['gh'])).rejects.toThrow(
-      /not found/,
-    );
-  });
-
   it('does not touch mcpConfigIds (mcpConfigIds reverts to MCP-only)', async () => {
     const db = makeKysely();
     await runAgentsMigration(db);
@@ -599,7 +558,7 @@ describe('store connector attachments', () => {
         allowedModels: ALLOWED,
       }),
     });
-    const updated = await store.setConnectorAttachments(created.id, ['gh']);
+    const { agent: updated } = await store.attachConnector(created.id, 'gh');
     // The connector attach store is orthogonal to the MCP binding.
     expect(updated.mcpConfigIds).toEqual(['real-mcp']);
     expect(updated.connectorAttachments).toEqual(['gh']);
@@ -640,10 +599,7 @@ describe('store attach / detach connector (TASK-739)', () => {
 
   it('attachConnector refuses the 51st attachment (invalid-payload)', async () => {
     const { store, id } = await seed();
-    await store.setConnectorAttachments(
-      id,
-      Array.from({ length: 50 }, (_, i) => `c${i}`),
-    );
+    for (let i = 0; i < 50; i++) await store.attachConnector(id, `c${i}`);
     await expect(store.attachConnector(id, 'one-more')).rejects.toMatchObject({
       code: 'invalid-payload',
     });
@@ -651,7 +607,8 @@ describe('store attach / detach connector (TASK-739)', () => {
 
   it('detachConnector removes; exclude=true also records an exclusion once', async () => {
     const { store, id } = await seed();
-    await store.setConnectorAttachments(id, ['gh', 'sf']);
+    await store.attachConnector(id, 'gh');
+    await store.attachConnector(id, 'sf');
     const a = await store.detachConnector(id, 'gh', false);
     expect(a.changed).toBe(true);
     expect(a.agent.connectorAttachments).toEqual(['sf']);
@@ -666,16 +623,6 @@ describe('store attach / detach connector (TASK-739)', () => {
     const d = await store.detachConnector(id, 'default-one', true);
     expect(d.changed).toBe(true);
     expect(d.agent.connectorExclusions).toEqual(['sf', 'default-one']);
-  });
-
-  // Who may clear an exclusion is the hook's question (TASK-798); the store
-  // just records what it is told, on the locked row.
-  it('setConnectorAttachments adding an excluded id leaves the exclusion alone', async () => {
-    const { store, id } = await seed();
-    await store.detachConnector(id, 'gh', true);
-    const out = await store.setConnectorAttachments(id, ['gh']);
-    expect(out.connectorAttachments).toEqual(['gh']);
-    expect(out.connectorExclusions).toEqual(['gh']);
   });
 
   it('attach / detach throw not-found for a missing agent', async () => {
@@ -698,7 +645,7 @@ describe('store attach / detach connector (TASK-739)', () => {
 
   it('CONCURRENCY: attach(A) racing detach(B, exclude) keeps both effects', async () => {
     const { store, id } = await seed();
-    await store.setConnectorAttachments(id, ['b']);
+    await store.attachConnector(id, 'b');
     await Promise.all([store.attachConnector(id, 'a'), store.detachConnector(id, 'b', true)]);
     const after = await store.getById(id);
     expect(after!.connectorAttachments).toEqual(['a']);

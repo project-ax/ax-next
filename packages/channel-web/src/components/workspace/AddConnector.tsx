@@ -18,7 +18,7 @@
  * saved, and it grants this agent nothing until the attach lands.
  *
  * A team agent's sign-in is stored ON THE AGENT, so everyone using it acts as
- * the person who signed in. That gets the same consent line the agent editor
+ * the person who signed in. That gets the same consent line the rail's Reconnect
  * shows before the sign-in starts. Whether the agent is a team agent comes
  * from the server, on the same read as its connector list (`shared`, the flag
  * Reconnect already uses — TASK-741).

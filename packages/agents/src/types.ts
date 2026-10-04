@@ -60,9 +60,9 @@ export interface Agent {
    * per-agent connector-attachment store replacing the TASK-98 stopgap that
    * overloaded `mcpConfigIds`. A plain list of opaque connector-id slugs (no
    * credential bindings — a connector owns its own slots; the credential ref
-   * derives from keyMode→scope, TASK-96). Written exclusively via
-   * PATCH /admin/agents/:id/connector-attachments / agents:set-connector-attachments,
-   * never agents:create / agents:update. Empty/absent ⟹ no attached connectors.
+   * derives from keyMode→scope, TASK-96). Written only via
+   * agents:attach-connector / agents:detach-connector (one id per call), never
+   * agents:create / agents:update. Empty/absent ⟹ no attached connectors.
    * The orchestrator resolves each via connectors:resolve into sandbox reach.
    */
   connectorAttachments: string[];
@@ -295,41 +295,26 @@ export interface ListPersonalOwnersOutput {
   agents: Array<{ agentId: string; ownerUserId: string }>;
 }
 
-// --- agents:set-connector-attachments (TASK-107) -----------------------------
-//
-// Replace the agent's connector-attachment id list wholesale. ACL: owner OR
-// admin (same as agents:update / agents:set-skill-attachments). Storage- and
-// transport-agnostic: `connectorIds` are opaque connector-id slugs, no backing-
-// mechanism vocab (no `mcp`/`url`/`transport`). A dangling id is tolerated — it
-// simply never resolves at session open (the orchestrator's NON-FATAL union),
-// mirroring skill_attachments' orphan tolerance.
-//
-// TASK-798 — like attach / detach, refused with `forbidden` unless the actor
-// may change this agent's connectors (the agent's owner / a team admin / a
-// workspace admin — see agents:can-exclude-connector). `connectorExclusions`
-// itself is never edited by this hook.
-
-export interface SetConnectorAttachmentsInput {
-  actor: Actor;
-  agentId: string;
-  connectorIds: string[];
-}
-
-export interface SetConnectorAttachmentsOutput {
-  agent: Agent;
-}
-
 // --- agents:attach-connector / agents:detach-connector (TASK-739) -----------
 //
 // Single-connector edits, each ONE row-locked read-modify-write so two
-// concurrent edits of the same agent never lose a write (the wholesale
-// set-connector-attachments replaces the list, so it is last-writer-wins on the
-// list's contents). ACL (TASK-765, widened by TASK-798): the agent's owner (a
-// personal agent) / a team admin (a team agent) / a workspace admin — the same
-// answer agents:can-exclude-connector gives. A plain team member may not attach
+// concurrent edits of the same agent never lose a write. These two hooks are
+// the ONLY write path for `connectorAttachments` (TASK-799). ACL (TASK-765,
+// widened by TASK-798): the agent's owner (a personal agent) / a team admin (a
+// team agent) / a workspace admin — the same answer
+// agents:can-exclude-connector gives. A plain team member may not attach
 // or detach anything: whatever a team agent reaches, every member's runs reach.
 // Attach additionally runs the non-admin workspace-connector guard (attaching a
 // shared/company-keyed connector is admin-only).
+//
+// Attach's error contract for that guard: a non-admin attaching a connector
+// that resolves (owner-scoped to the actor) to keyMode 'workspace' — or ANY
+// attach by a non-admin when `connectors:resolve` is absent (fail-closed: reach
+// can't be verified) — is refused with a PluginError of code `forbidden` and
+// `diagnosis.reason === 'workspace-connector'`. That tag tells it apart from the
+// ACL's `forbidden`; its message names only the connector id the caller sent,
+// so a transport may surface it verbatim. Admins bypass the guard.
+//
 // `changed` is false when the call was a no-op (already attached / already
 // absent and not newly excluded). `exclude` records the id in
 // `connectorExclusions` so a connector that reaches the agent by another
@@ -362,8 +347,8 @@ export interface DetachConnectorOutput {
 //
 // Can `actor` change this agent's connectors — attach, detach, exclude a
 // default, or (TASK-798, asked by @ax/mcp-oauth) sign in ON the agent? The
-// same predicate `agents:attach-connector` / `agents:detach-connector` /
-// `agents:set-connector-attachments` enforce, exposed so a caller can show the
+// same predicate `agents:attach-connector` / `agents:detach-connector`
+// enforce, exposed so a caller can show the
 // affordance only to someone it will work for. (Named for its first use,
 // TASK-765's exclusions; the question is wider now.) `allowed` is `false` — not an error — for an actor
 // who cannot reach the agent at all. `not-found` when the agent does not exist.

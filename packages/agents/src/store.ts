@@ -261,8 +261,9 @@ const CONNECTOR_ATTACHMENTS_MAX = 50;
 const CONNECTOR_EXCLUSIONS_MAX = 100;
 
 /**
- * TASK-739 — validate ONE connector id (the attach / detach hooks). Same
- * grammar as validateConnectorAttachmentIds; returns the id unchanged.
+ * TASK-739 — validate ONE connector id (the attach / detach hooks — the only
+ * write path for connector_attachments). Checks the connector-id slug grammar
+ * above; returns the id unchanged.
  */
 export function validateConnectorId(value: unknown): string {
   if (typeof value !== 'string') {
@@ -275,43 +276,6 @@ export function validateConnectorId(value: unknown): string {
     throw invalid(`connectorId '${value}' must match ${CONNECTOR_ID_RE.source}`);
   }
   return value;
-}
-
-/**
- * Validate a per-agent connector-attachment id list: bounded count, each a
- * well-formed connector-id slug, deduped. Returns the deduped, validated list.
- * Used by the admin route before calling agents:set-connector-attachments.
- */
-export function validateConnectorAttachmentIds(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    throw invalid('connectorAttachments must be an array');
-  }
-  if (value.length > CONNECTOR_ATTACHMENTS_MAX) {
-    throw invalid(
-      `connectorAttachments must have at most ${CONNECTOR_ATTACHMENTS_MAX} entries`,
-    );
-  }
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== 'string') {
-      throw invalid('connectorAttachments entries must be strings');
-    }
-    if (entry.length === 0 || entry.length > CONNECTOR_ID_MAX) {
-      throw invalid(`connectorAttachments entry must be 1-${CONNECTOR_ID_MAX} chars`);
-    }
-    if (!CONNECTOR_ID_RE.test(entry)) {
-      throw invalid(
-        `connectorAttachments entry '${entry}' must match ${CONNECTOR_ID_RE.source}`,
-      );
-    }
-    if (seen.has(entry)) {
-      throw invalid(`connectorAttachments entry '${entry}' duplicated`);
-    }
-    seen.add(entry);
-    out.push(entry);
-  }
-  return out;
 }
 
 function validateModel(value: unknown, allowed: readonly string[]): string {
@@ -678,18 +642,6 @@ export interface AgentStore {
    */
   setSkillAttachments(agentId: string, attachments: SkillAttachment[]): Promise<Agent>;
   /**
-   * TASK-107 — replace the connector_attachments id list wholesale for an
-   * agent. The caller (agents:set-connector-attachments) pre-validates the ids
-   * with validateConnectorAttachmentIds before calling. Throws
-   * PluginError(not-found) when the agent row doesn't exist. Mirrors
-   * setSkillAttachments.
-   *
-   * It is a row-locked read-modify-write (`SELECT ... FOR UPDATE`, as attach /
-   * detach), and never edits connector_exclusions. Who may call it is the
-   * hook's job (TASK-798: the agent's owner or an admin only).
-   */
-  setConnectorAttachments(agentId: string, connectorIds: string[]): Promise<Agent>;
-  /**
    * TASK-739 — attach ONE connector: append to connector_attachments if absent
    * (max 50 → invalid-payload) and drop it from connector_exclusions. ONE
    * transaction holding the row lock (`SELECT … FOR UPDATE`), so concurrent
@@ -976,17 +928,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         });
       }
       return rowToAgent(row as AgentsRow);
-    },
-
-    async setConnectorAttachments(agentId, connectorIds) {
-      // One row-locked read-modify-write (the same path attach / detach use),
-      // so it never loses a concurrent attach / detach of the same agent.
-      // `exclusions` pass through untouched.
-      const { agent } = await editConnectorLists(db, agentId, (_attachments, exclusions) => ({
-        attachments: connectorIds,
-        exclusions,
-      }));
-      return agent;
     },
 
     async attachConnector(agentId, connectorId) {

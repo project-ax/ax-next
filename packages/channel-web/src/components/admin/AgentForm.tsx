@@ -3,9 +3,7 @@ import { movedNotice } from '@/lib/models-copy';
  * AgentForm — CRUD for agents, in the user "Settings" surface. Agents are
  * owner-scoped, so EVERY user manages their OWN agents here (the `/admin/agents`
  * routes are requireUser + owner-scoped, not admin-gated). `isAdmin` gates the
- * admin-only bits: non-admins read/attach connectors via `/settings/connectors`
- * and may attach only PERSONAL connectors (workspace/shared stay admin-only —
- * enforced server-side); the authored-skill drafts section is admin-only for now.
+ * admin-only bits: the authored-skill drafts section is admin-only for now.
  *
  * Shape mirrors the real `/admin/agents` wire (camelCase + visibility).
  * The legacy snake_case mock fields (desc/color/tag/owner_type) have no
@@ -19,14 +17,9 @@ import { movedNotice } from '@/lib/models-copy';
  *     or PATCHes (edit) and re-fetches the list on success.
  *
  * Visibility radio toggles the team picker. The teams list comes from
- * `/admin/teams`. `allowedTools` stays a dumb comma-separated text field;
- * connectors are attached via a PICKER — a checkbox list over
- * `/admin/connectors`. TASK-107 — selected connector ids are now written to the
- * FIRST-CLASS per-agent connector-attachment store
- * (PATCH /admin/agents/:id/connector-attachments), NOT `mcpConfigIds` (which
- * reverts to MCP-only meaning). The orchestrator's connector union reads that
- * store; the picker save runs AFTER the agent create/PATCH so the agent id
- * exists (mirroring the SkillAttachmentsSection two-step save).
+ * `/admin/teams`. `allowedTools` stays a dumb comma-separated text field.
+ * Connectors are NOT assigned here (TASK-799) — people add them from the
+ * workspace rail.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -35,7 +28,6 @@ import {
   getAdminAgent,
   createAgent,
   patchAgent,
-  patchAgentConnectorAttachments,
   getAgentIdentity,
   putAgentIdentity,
   deleteAgent,
@@ -45,23 +37,13 @@ import {
   type AgentModelOption,
   type Team,
 } from '../../lib/admin';
-import { listConnectors, getConnector, type ConnectorSummary, type ConnectorRouteBase } from '../../lib/connectors';
-import { getOAuthStatus, type OAuthStatus } from '../../lib/connectors-oauth';
-
-/** Sentinel for a status-fetch error (distinct from the API 'not-connected' value). */
-const OAUTH_STATUS_ERROR = 'fetch-error' as const;
-type OAuthStatusOrError = OAuthStatus | typeof OAUTH_STATUS_ERROR;
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import { AuthoredSkillsSection } from './AuthoredSkillsSection';
-import { ConnectorOAuthConnect } from '../settings/ConnectorOAuthConnect';
-import { ConnectorAccessNotice } from '../credentials/ConnectorAccessNotice';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
@@ -85,10 +67,6 @@ type FormState = {
   operating: string;
   model: string;
   allowedTools: string;
-  /** The connectors attached to this agent, by id. Saved to the first-class
-   *  per-agent connector-attachment store (TASK-107) after the agent create/PATCH
-   *  resolves — NOT written into `mcpConfigIds`. */
-  connectorIds: string[];
 };
 
 const emptyForm = (): FormState => ({
@@ -102,7 +80,6 @@ const emptyForm = (): FormState => ({
   // allow-list decides what a valid model is, not a constant in the SPA.
   model: '',
   allowedTools: '',
-  connectorIds: [],
 });
 
 const formFromAgent = (a: AdminAgent): FormState => ({
@@ -116,7 +93,6 @@ const formFromAgent = (a: AdminAgent): FormState => ({
   operating: '',
   model: a.model,
   allowedTools: (a.allowedTools ?? []).join(', '),
-  connectorIds: a.connectorAttachments ?? [],
 });
 
 const splitChips = (s: string): string[] =>
@@ -124,51 +100,6 @@ const splitChips = (s: string): string[] =>
     .split(',')
     .map((x) => x.trim())
     .filter(Boolean);
-
-/**
- * Read-only OAuth status hint for a personal agent's connector attachment.
- * The connection lives at user scope and is managed in the Connectors tab —
- * this is purely informational so an attached-but-unconnected connector is
- * legible. No connect button.
- */
-function ConnectorOAuthStatusHint({
-  status,
-}: {
-  status: OAuthStatusOrError | undefined;
-}) {
-  if (status === undefined) {
-    return (
-      <span className="text-xs text-muted-foreground">
-        Checking connection…
-      </span>
-    );
-  }
-  if (status === OAUTH_STATUS_ERROR) {
-    // M4 — a fetch failure must not be collapsed into "Not connected"
-    // (design §8). Show a distinct muted note instead.
-    return (
-      <span className="text-xs text-muted-foreground">
-        Couldn't check the connection.
-      </span>
-    );
-  }
-  if (status === 'connected') {
-    return <Badge variant="secondary">Connected</Badge>;
-  }
-  if (status === 'needs-reconnect') {
-    return (
-      <span className="text-xs text-muted-foreground">
-        Sign-in expired — reconnect in the Connectors tab.
-      </span>
-    );
-  }
-  // not-connected
-  return (
-    <span className="text-xs text-muted-foreground">
-      Not connected yet — connect it in the Connectors tab.
-    </span>
-  );
-}
 
 /**
  * The model a freshly-opened picker is EFFECTIVELY showing: the user's explicit
@@ -238,7 +169,6 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   // Distinguishing the two prevents writing an empty `teamId` if the
   // user toggles to `team` before `/admin/teams` resolves.
   const [teams, setTeams] = useState<Team[] | null>(null);
-  const [connectors, setConnectors] = useState<ConnectorSummary[]>([]);
   // The selectable models for this deployment, from GET /admin/agents/models
   // — the operator's agents allow-list, labelled by whichever
   // `models:list-supported:<provider>` registrants are loaded (an allow-listed
@@ -261,18 +191,6 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   // The agent awaiting delete confirmation (null = no dialog). Styled-confirm
   // pattern (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
   const [pendingDelete, setPendingDelete] = useState<AdminAgent | null>(null);
-  // OAuth-capable connectors among those attached to the agent being edited.
-  // Only populated when editing an existing agent (not 'new'). Keyed by
-  // connector id; value carries the service name for the affordance label.
-  const [oauthConnectors, setOauthConnectors] = useState<
-    Map<string, { serviceName: string }>
-  >(new Map());
-  // Per-connector OAuth status for personal agents (read-only hint). Keyed by
-  // connector id → the fetched OAuthStatus or the OAUTH_STATUS_ERROR sentinel
-  // (undefined while loading).
-  const [personalOauthStatus, setPersonalOauthStatus] = useState<
-    Map<string, OAuthStatusOrError>
-  >(new Map());
 
   const refresh = async () => {
     try {
@@ -287,11 +205,11 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     void refresh();
   }, []);
 
-  // Teams + connectors are only needed once the form actually opens — they
-  // feed the team picker and the connector picker. Defer fetching until then
-  // so the list view stays a single round-trip. Both lookups are best-effort:
-  // if either fails or returns a shape we can't read, fall back to empty
-  // arrays — the form still submits.
+  // Teams + models are only needed once the form actually opens — they feed
+  // the team picker and the model picker. Defer fetching until then so the
+  // list view stays a single round-trip. The teams lookup is best-effort: if it
+  // fails or returns a shape we can't read, fall back to an empty array — the
+  // form still submits.
   useEffect(() => {
     if (editing === null) return;
     void listTeams()
@@ -307,14 +225,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         setModels([]);
         setModelsError(err instanceof Error ? err.message : String(err));
       });
-    // A non-admin reads/writes their OWN connectors via /settings/connectors and
-    // may only attach PERSONAL ones (their own key) — workspace/shared connectors
-    // are admin-only to attach (the server enforces this; filtering the picker is
-    // the friendly front for it). Admins curate via /admin/connectors and see all.
-    void listConnectors(isAdmin ? '/admin/connectors' : '/settings/connectors')
-      .then((c) => setConnectors((c ?? []).filter((conn) => isAdmin || conn.keyMode === 'personal')))
-      .catch(() => setConnectors([]));
-  }, [editing, isAdmin]);
+  }, [editing]);
 
   // TASK-142 — load the agent's `.ax/` identity files when editing an existing
   // agent. A new agent has no files yet (its workspace is seeded on first save),
@@ -347,77 +258,6 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       cancelled = true;
     };
   }, [editing]);
-
-  // For each attached connector, fetch the full record (which carries
-  // capabilities.credentials) to determine which ones have an oauth slot.
-  // Only runs when editing an existing agent — 'new' has no agent id and the
-  // connector section still renders, but there's nothing to connect yet.
-  // Uses a `cancelled` guard (same pattern as the identity effect above) so
-  // a stale resolve from a previous agent doesn't bleed into the current one.
-  const connectorBase: ConnectorRouteBase = isAdmin
-    ? '/admin/connectors'
-    : '/settings/connectors';
-  useEffect(() => {
-    if (editing === null || editing === 'new') {
-      setOauthConnectors(new Map());
-      setPersonalOauthStatus(new Map());
-      return;
-    }
-    const agentId = editing.id;
-    const attachedIds = form.connectorIds;
-    if (attachedIds.length === 0) {
-      setOauthConnectors(new Map());
-      setPersonalOauthStatus(new Map());
-      return;
-    }
-    let cancelled = false;
-    void Promise.all(
-      attachedIds.map((id) =>
-        getConnector(id, connectorBase).catch(() => null),
-      ),
-    ).then((results) => {
-      if (cancelled) return;
-      const oauthMap = new Map<string, { serviceName: string }>();
-      for (const connector of results) {
-        // A null means the fetch threw; undefined means the server returned
-        // a 200 without a `connector` field (best-effort parse gap). Either
-        // way skip this connector — no oauth affordance is shown.
-        if (connector === null || connector === undefined) continue;
-        if (!connector.capabilities) continue;
-        const hasOauth = connector.capabilities.credentials.some(
-          (slot) => slot.kind === 'oauth',
-        );
-        if (hasOauth) {
-          oauthMap.set(connector.id, { serviceName: connector.name });
-        }
-      }
-      setOauthConnectors(oauthMap);
-      // For personal agents, also fetch the OAuth status for each oauth
-      // connector so the read-only hint can show the current state.
-      if (form.visibility === 'personal' && oauthMap.size > 0) {
-        void Promise.all(
-          Array.from(oauthMap.keys()).map((cid) =>
-            getOAuthStatus({ connectorId: cid, agentId }).catch(
-              // M4 — use a distinct sentinel so fetch failures are not
-              // reported as "Not connected" (design §8).
-              (): OAuthStatusOrError => OAUTH_STATUS_ERROR,
-            ),
-          ),
-        ).then((statuses) => {
-          if (cancelled) return;
-          const statusMap = new Map<string, OAuthStatusOrError>();
-          Array.from(oauthMap.keys()).forEach((cid, i) => {
-            const s = statuses[i];
-            if (s !== undefined) statusMap.set(cid, s);
-          });
-          setPersonalOauthStatus(statusMap);
-        });
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [form.connectorIds, editing]);
 
   const startNew = () => {
     editRequest.current += 1;
@@ -482,10 +322,10 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     setBusy(true);
     setError(null);
     const allowedTools = splitChips(form.allowedTools);
-    // TASK-107 — `mcpConfigIds` reverts to MCP-only meaning. Connectors are
-    // saved to the first-class attachment store AFTER create/PATCH (below), not
-    // here. The wildcard sentinel (`allowedTools=[] && mcpConfigIds=[]`) is
-    // reserved for the dev-mode bypass and rejected by the admin API.
+    // `mcpConfigIds` carries MCP configs only; connectors are added from the
+    // workspace rail, not this form (TASK-799). The wildcard sentinel
+    // (`allowedTools=[] && mcpConfigIds=[]`) is reserved for the dev-mode bypass
+    // and rejected by the admin API.
     const mcpConfigIds: string[] = [];
     // TASK-147 — a WILDCARD/BARE agent (persisted `allowedTools` empty AND no
     // mcp configs) is a legitimate, store-allowed state. Editing such an agent's
@@ -531,8 +371,8 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       ...(form.visibility === 'team' ? { teamId: form.teamId } : {}),
     };
     try {
-      // The agent id we attach connectors to: the freshly created id for a new
-      // agent, or the edited agent's id.
+      // The agent id the identity files are saved under: the freshly created id
+      // for a new agent, or the edited agent's id.
       let agentId: string;
       if (editing === 'new') {
         const created = await createAgent(base);
@@ -563,14 +403,10 @@ if (base.model !== editing.model) patch.model = base.model;
         setBusy(false);
         return;
       }
-      // TASK-107 — save the connector attachments to the first-class store. A
-      // separate PATCH so the agent id exists (new agents are created first).
-      await patchAgentConnectorAttachments(agentId, form.connectorIds);
       // TASK-142 — save the agent's `.ax/` identity files (IDENTITY.md /
       // SOUL.md / AGENTS.md) through workspace:apply (→ validator-identity). A
-      // separate PUT after the agent exists (new agents are created first, like
-      // the connector save). The server creates AGENTS.md only when `operating`
-      // is non-empty.
+      // separate PUT after the agent exists (new agents are created first). The
+      // server creates AGENTS.md only when `operating` is non-empty.
       await putAgentIdentity(agentId, {
         identity: form.identity,
         soul: form.soul,
@@ -922,96 +758,6 @@ if (base.model !== editing.model) patch.model = base.model;
                 setForm((f) => ({ ...f, allowedTools: e.target.value }))
               }
             />
-          </div>
-
-          {/* Connectors — attach the services this agent can reach. */}
-          <div className="flex flex-col gap-2">
-            <span className="text-sm font-medium leading-none">Connectors</span>
-            {/* (TASK-700) Attaching is the decision, so the disclosure sits above
-                the checkboxes — one notice for the list, and only when there is
-                something to attach. The team-agent OAuth connect widget below is
-                told not to add a second one (`showAccessNotice={false}`): same
-                decision, one notice. */}
-            {connectors.length > 0 && <ConnectorAccessNotice kind="attach" />}
-            {connectors.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No connectors yet. Create one under Connectors, then attach it
-                here.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
-                {connectors.map((c) => {
-                  const checked = form.connectorIds.includes(c.id);
-                  const oauthEntry = oauthConnectors.get(c.id);
-                  const isOauth = checked && oauthEntry !== undefined;
-                  const isExistingAgent =
-                    editing !== null && editing !== 'new';
-                  return (
-                    <div key={c.id} className="flex flex-col gap-2">
-                      <label className="flex items-center gap-2.5 text-sm cursor-pointer">
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(v) =>
-                            setForm((f) => ({
-                              ...f,
-                              connectorIds:
-                                v === true
-                                  ? [...f.connectorIds, c.id]
-                                  : f.connectorIds.filter((id) => id !== c.id),
-                            }))
-                          }
-                          aria-label={`Attach ${c.name}`}
-                        />
-                        <span className="flex-1 min-w-0">
-                          <span className="font-medium">{c.name}</span>
-                          {c.description && (
-                            <span className="text-muted-foreground">
-                              {' '}
-                              — {c.description}
-                            </span>
-                          )}
-                        </span>
-                      </label>
-
-                      {/* OAuth affordances — only for attached oauth connectors
-                          on an existing agent (not 'new'; the agent id must
-                          exist before a connection can be stored). */}
-                      {isOauth && isExistingAgent && (
-                        <div className="ml-7">
-                          {form.visibility === 'team' ? (
-                            /* Team agent: one-time connect via ConnectorOAuthConnect.
-                               This is the ONLY place a team-agent connection can be set
-                               up — it needs the specific agent id in context. */
-                            <ConnectorOAuthConnect
-                              connectorId={c.id}
-                              serviceName={oauthEntry.serviceName}
-                              agentId={editing.id}
-                              requiresConsent
-                              showAccessNotice={false}
-                            />
-                          ) : (
-                            /* Personal agent: read-only status hint. The connection
-                               is user-level, managed in the Connectors tab. No
-                               connect button here. */
-                            <ConnectorOAuthStatusHint
-                              status={personalOauthStatus.get(c.id)}
-                            />
-                          )}
-                        </div>
-                      )}
-
-                      {/* "Save first" note for new agents with oauth connectors
-                          (no agent id yet, so we can't connect). */}
-                      {isOauth && !isExistingAgent && (
-                        <p className="ml-7 text-xs text-muted-foreground">
-                          Save this agent first — then you can connect right here.
-                        </p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
 
           {error && (

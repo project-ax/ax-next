@@ -348,7 +348,7 @@ function ConnectKeyForms({
         // OAuth slot — render the OAuth connect widget.
         // No agentId (personal/user-scope) and no requiresConsent (the Connectors
         // tab is the single home for personal connect; consent is only for
-        // team-agent connects in the agent editor).
+        // team-agent connects on the workspace rail).
         if (slotMeta?.kind === 'oauth') {
           return (
             <div key={entry.slot} className="flex flex-col gap-2">

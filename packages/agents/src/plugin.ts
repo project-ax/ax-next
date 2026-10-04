@@ -62,8 +62,6 @@ import type {
   ResolveOutput,
   RotateWebhookTokenInput,
   RotateWebhookTokenOutput,
-  SetConnectorAttachmentsInput,
-  SetConnectorAttachmentsOutput,
   SkillAttachment,
   UpdateInput,
   UpdateOutput,
@@ -128,7 +126,6 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:ensure-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
-        'agents:set-connector-attachments',
         'agents:attach-connector',
         'agents:detach-connector',
         'agents:can-exclude-connector',
@@ -369,68 +366,6 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             input.agentId,
             input.attachments,
           );
-          return { agent: updated };
-        },
-      );
-
-      // TASK-107 — per-agent connector attachments. Replaces the agent's
-      // connector_attachments id list wholesale. Same ACL as attach / detach:
-      // the ownership ACL, then (TASK-798) the agent's owner or an admin only —
-      // on a team agent a team admin, so a plain member cannot swap what every
-      // member's runs reach. The id
-      // shape is validated by the admin route (validateConnectorAttachmentIds)
-      // before this call; a dangling-but-well-formed id is tolerated (it simply
-      // never resolves at session open — the orchestrator's NON-FATAL union).
-      bus.registerService<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
-        'agents:set-connector-attachments',
-        PLUGIN_NAME,
-        async (ctx, input) => {
-          const existing = await localStore.getById(input.agentId);
-          if (existing === null) {
-            throw new PluginError({
-              code: 'not-found',
-              plugin: PLUGIN_NAME,
-              message: `agent '${input.agentId}' not found`,
-            });
-          }
-          await assertWriteAllowed(existing, bus, ctx, input.actor);
-          await assertConnectorsManageAllowed(
-            existing,
-            bus,
-            ctx,
-            input.actor,
-            'agents:set-connector-attachments',
-          );
-          // TASK-739 — the workspace-connector guard runs HERE (not only in the
-          // admin route) so every caller gets it. Over the WHOLE list, as the
-          // route always did: checking only the ids "being added" would read
-          // the row outside any lock, so a non-admin saving a stale list could
-          // re-attach a workspace connector an admin removed a moment earlier.
-          await assertConnectorGrantAllowed(
-            bus,
-            ctx,
-            input.actor,
-            input.connectorIds,
-            'agents:set-connector-attachments',
-          );
-          // Exclusions are never edited on this path. Adding an excluded id (an
-          // explicit attachment wins over an exclusion at resolve time) is
-          // fine: only someone who may exclude gets this far (TASK-798).
-          const updated = await localStore.setConnectorAttachments(
-            input.agentId,
-            input.connectorIds,
-          );
-          // TASK-737 — newly attached connectors copy their per-tool
-          // defaults (best-effort; see connector-snapshot.ts). Resolved as the
-          // agent's owner for a personal agent — who its sessions resolve as —
-          // else as the person attaching.
-          await snapshotNewlyAttachedConnectors(bus, ctx, {
-            agentId: input.agentId,
-            before: existing.connectorAttachments,
-            after: updated.connectorAttachments,
-            resolveAs: existing.ownerType === 'user' ? existing.ownerId : input.actor.userId,
-            actorId: input.actor.userId,
-          });
           return { agent: updated };
         },
       );
