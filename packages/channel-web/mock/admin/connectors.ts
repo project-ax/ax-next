@@ -28,8 +28,8 @@ import { requireSession } from '../auth';
  *   PUT    <base>/:id/tool-permissions  body { verdicts: [{ toolKey, verdict|null }] }
  *          → { ok: true }   (TASK-737; editors only, 403 otherwise)
  *
- * Note the path has NO `/api/` prefix (unlike the mock `/api/admin/mcp-servers`)
- * — it matches the real `@ax/connectors` routes, which the UI hits directly.
+ * Note the path has NO `/api/` prefix — it matches the real `@ax/connectors`
+ * routes, which the UI hits directly.
  *
  * SECURITY parity: identity comes from the session. The `/admin/connectors*`
  * bundle is admin-only (403 `forbidden` for a signed-in non-admin, TASK-698);
@@ -39,7 +39,7 @@ import { requireSession } from '../auth';
  * These type shapes are DUPLICATED from `@ax/connectors` (not imported):
  * channel-web is not a `@ax/connectors` dependency and plugins talk through the
  * hook bus, never via cross-package imports (CLAUDE.md invariant 2). This is the
- * same posture `admin/mcp-servers.ts` keeps for the `@ax/mcp-client` shapes.
+ * same posture the other mock middlewares keep for plugin-owned shapes.
  */
 
 /** Which route bundle a mock middleware serves (mirrors the client base). */
