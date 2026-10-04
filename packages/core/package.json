@@ -17,6 +17,10 @@
     "./humanize": {
       "types": "./dist/humanize.d.ts",
       "default": "./dist/humanize.js"
+    },
+    "./error-codes": {
+      "types": "./dist/error-codes.d.ts",
+      "default": "./dist/error-codes.js"
     }
   },
   "files": ["dist"],
