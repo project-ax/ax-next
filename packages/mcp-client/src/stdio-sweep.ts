@@ -1,7 +1,8 @@
 // Boot-time sweep: hard-delete every stored stdio MCP server config (stdio was
 // removed 2026-10-04 — docs/plans/2026-10-04-drop-stdio-mcp-design.md). Reads
 // RAW JSON because parseConfig no longer accepts these rows. Purges the env
-// credential slots the row declared, tombstones the row (the same empty-buffer
+// credential slots the row declared (env / credentialRefs keys, plus any
+// credentialRefs value in the row's own `mcp:<id>:env:` namespace), tombstones the row (the same empty-buffer
 // delete `deleteConfig` uses — there is no storage:delete), and drops it from
 // the index. Idempotent; logs a count only, and only when it removed something
 // (the default logger writes to stdout, and the CLI preset loads this plugin —
@@ -48,11 +49,23 @@ export async function sweepStdioConfigs(bus: HookBus, ctx: AgentContext): Promis
     }
     const r = raw as { transport?: unknown; env?: unknown; credentialRefs?: unknown } | null;
     if (r?.transport !== 'stdio') continue;
+    const refs =
+      typeof r.credentialRefs === 'object' && r.credentialRefs !== null
+        ? (r.credentialRefs as Record<string, unknown>)
+        : {};
+    // The old stdio transport resolved secrets through credentialRefs VALUES,
+    // so a value can name a vault ref whose key differs from the env name. Purge
+    // those too — but only refs in THIS server's own `mcp:<id>:env:` namespace,
+    // never a ref that belongs to anything else.
+    const ownPrefix = `mcp:${id}:env:`;
+    const refNames = Object.values(refs)
+      .filter((v): v is string => typeof v === 'string' && v.startsWith(ownPrefix))
+      .map((v) => v.slice(ownPrefix.length))
+      .filter((n) => n.length > 0);
     const envNames = [
       ...Object.keys(typeof r.env === 'object' && r.env !== null ? r.env : {}),
-      ...Object.keys(
-        typeof r.credentialRefs === 'object' && r.credentialRefs !== null ? r.credentialRefs : {},
-      ),
+      ...Object.keys(refs),
+      ...refNames,
     ];
     try {
       await purgeMcpCredentials(bus, ctx, id, [...new Set(envNames)], []);

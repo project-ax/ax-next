@@ -120,6 +120,36 @@ describe('sweepStdioConfigs', () => {
     expect(deleted.sort()).toEqual(['mcp:local:env:A', 'mcp:local:env:B']);
   });
 
+  it('also purges credentialRefs VALUES in the server\'s own mcp:<id>:env: namespace, and no other refs', async () => {
+    const { bus, deleted } = fakeBus(
+      {
+        'mcp-server-index': ['local'],
+        'mcp-server:local': stdioRow('local', {
+          credentialRefs: {
+            TOKEN: 'mcp:local:env:SAVED_TOKEN',
+            // Not this server's namespace: must survive.
+            OTHER: 'mcp:other:env:SAVED_TOKEN',
+            PREFIXY: 'mcp:local2:env:X',
+            HEADER: 'mcp:local:header:Authorization',
+            PLAIN: 'some-credential-id',
+            EMPTY: 'mcp:local:env:',
+            NOT_A_STRING: 42,
+          },
+        }),
+      },
+      [
+        { scope: 'user', ownerId: 'u1', ref: 'mcp:local:env:SAVED_TOKEN' },
+        { scope: 'global', ownerId: null, ref: 'mcp:local:env:TOKEN' },
+        { scope: 'global', ownerId: null, ref: 'mcp:other:env:SAVED_TOKEN' },
+        { scope: 'global', ownerId: null, ref: 'mcp:local2:env:X' },
+        { scope: 'global', ownerId: null, ref: 'mcp:local:header:Authorization' },
+        { scope: 'global', ownerId: null, ref: 'some-credential-id' },
+      ],
+    );
+    expect(await sweepStdioConfigs(bus, ctx)).toBe(1);
+    expect(deleted.sort()).toEqual(['mcp:local:env:SAVED_TOKEN', 'mcp:local:env:TOKEN']);
+  });
+
   it('is a no-op for http / sse rows (a second pass finds nothing)', async () => {
     const { bus } = fakeBus(
       {
