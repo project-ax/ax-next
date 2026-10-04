@@ -122,6 +122,8 @@ describe('connector details routes (mock bus)', () => {
   /** toolKey → admin default. */
   let defaults: Map<string, string>;
   let defaultsCalls: unknown[];
+  /** What get-connector-defaults answers as `agentSourcedNamespaces` (TASK-809). */
+  let agentSourced: unknown;
   /** toolKey → stored override. */
   let overrides: Map<string, { verdict: string; ceiling?: string }>;
   let listOverridesCalls: number;
@@ -154,6 +156,7 @@ describe('connector details routes (mock bus)', () => {
       defaultsCalls.push(i);
       return {
         defaults: [...defaults.entries()].map(([toolKey, verdict]) => ({ toolKey, verdict })),
+        ...(agentSourced !== undefined && { agentSourcedNamespaces: agentSourced }),
       };
     });
     reg('tool-policy:list-agent-overrides', async () => {
@@ -210,6 +213,7 @@ describe('connector details routes (mock bus)', () => {
       [k(NS_LINEAR, 'delete_issue'), 'deny'],
     ]);
     defaultsCalls = [];
+    agentSourced = undefined;
     overrides = new Map([
       [k(NS_LINEAR, 'create_issue'), { verdict: 'hold', ceiling: 'allow' }],
       [k(NS_GMAIL, 'send'), { verdict: 'deny', ceiling: 'allow' }],
@@ -338,6 +342,62 @@ describe('connector details routes (mock bus)', () => {
       expect(rows.find((t) => t.toolKey === k(NS_LINEAR, 'search'))).toMatchObject({
         verdict: 'hold',
         ceiling: 'hold',
+      });
+    });
+
+    describe('agent-sourced namespaces (TASK-809: OAuth connectors have no admin ceiling)', () => {
+      beforeEach(() => {
+        inventory = {
+          ...inventory,
+          tools: [tool(NS_GMAIL, 'read_message', { readOnly: true }), tool(NS_GMAIL, 'send')],
+        };
+        // Gmail's `send` row holds Deny under its own reported ceiling; the
+        // read tool has no row at all.
+        overrides.set(k(NS_GMAIL, 'send'), { verdict: 'deny', ceiling: 'allow' });
+      });
+
+      it('a tool with no override row answers ceiling allow, verdict hold (Allow is pickable)', async () => {
+        agentSourced = [NS_GMAIL];
+        const rows = toolsOf(await get('gmail'));
+        expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+          ceiling: 'allow',
+          verdict: 'hold',
+        });
+        // A row that exists keeps its own ceiling and the strictest verdict.
+        expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'send'))).toMatchObject({
+          ceiling: 'allow',
+          verdict: 'deny',
+        });
+      });
+
+      it('an override row under a tighter ceiling is still capped by it', async () => {
+        agentSourced = [NS_GMAIL];
+        overrides.set(k(NS_GMAIL, 'read_message'), { verdict: 'allow', ceiling: 'hold' });
+        const rows = toolsOf(await get('gmail'));
+        expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+          ceiling: 'hold',
+          verdict: 'hold',
+        });
+      });
+
+      it('a connector-sourced tool with no default still answers ceiling hold', async () => {
+        agentSourced = [];
+        const rows = toolsOf(await get('gmail'));
+        expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+          ceiling: 'hold',
+          verdict: 'hold',
+        });
+      });
+
+      it('fails closed on a missing, malformed, or foreign agentSourcedNamespaces', async () => {
+        for (const bad of [undefined, NS_GMAIL, { 0: NS_GMAIL }, [NS_LINEAR, 42, null]]) {
+          agentSourced = bad;
+          const rows = toolsOf(await get('gmail'));
+          expect(rows.find((t) => t.toolKey === k(NS_GMAIL, 'read_message'))).toMatchObject({
+            ceiling: 'hold',
+            verdict: 'hold',
+          });
+        }
       });
     });
 

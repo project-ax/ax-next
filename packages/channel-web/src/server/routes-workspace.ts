@@ -1835,6 +1835,12 @@ interface GetConnectorDefaultsInput {
 }
 interface GetConnectorDefaultsOutput {
   defaults: Array<{ toolKey: string; verdict: AbilityVerdict }>;
+  /**
+   * TASK-809 — the asked namespaces whose tools carry NO connector ceiling
+   * (OAuth servers: people choose per agent). Read defensively: a missing or
+   * malformed field reads as none, i.e. today's capped behaviour.
+   */
+  agentSourcedNamespaces?: unknown;
 }
 
 /** Rows one details view carries — tool-policy's own per-write cap. */
@@ -7039,6 +7045,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
 
       const defaults = new Map<string, AgentToolVerdict>();
+      const agentSourced = new Set<string>();
       if (namespaces.length > 0) {
         const out = await bus.call<GetConnectorDefaultsInput, GetConnectorDefaultsOutput>(
           'tool-policy:get-connector-defaults',
@@ -7049,6 +7056,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           if (typeof d?.toolKey !== 'string') continue;
           // An unreadable verdict fails closed: Ask first, never Allow.
           defaults.set(d.toolKey, isToolVerdict(d.verdict) ? d.verdict : 'hold');
+        }
+        // Only this connector's own namespaces can be agent-sourced here; a
+        // stray or malformed entry is ignored (fails closed to the capped read).
+        const sourced: unknown = out?.agentSourcedNamespaces;
+        if (Array.isArray(sourced)) {
+          for (const ns of sourced as unknown[]) {
+            if (typeof ns === 'string' && own.has(ns)) agentSourced.add(ns);
+          }
         }
       }
       const overrides = new Map<string, { verdict: AgentToolVerdict; ceiling?: AgentToolVerdict }>();
@@ -7082,9 +7097,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         fields: Partial<DescribeToolsInventoryOutput['tools'][number]>,
       ): AgentConnectorTool => {
         const override = overrides.get(toolKey);
-        const ceiling = override?.ceiling ?? defaults.get(toolKey) ?? 'hold';
+        // TASK-809 — an agent-sourced namespace (OAuth connector) has no admin
+        // ceiling: with no row of its own a tool is Ask first, but the person
+        // may pick anything (ceiling `allow`; only static rules cap it, and a
+        // row that exists reports its own ceiling). Connector-sourced
+        // namespaces keep the admin default as the ceiling.
+        const ceiling =
+          override?.ceiling ??
+          (agentSourced.has(ns) ? 'allow' : (defaults.get(toolKey) ?? 'hold'));
         const held: AgentToolVerdict | undefined =
-          override === undefined && copied.has(ns) ? 'hold' : undefined;
+          override === undefined && (copied.has(ns) || agentSourced.has(ns)) ? 'hold' : undefined;
         return {
           toolKey,
           title: connectorToolTitle(toolKey, ns, fields.title, fields.name),

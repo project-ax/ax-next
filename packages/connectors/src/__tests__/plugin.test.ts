@@ -66,6 +66,13 @@ describe('@ax/connectors plugin manifest', () => {
           degradation:
             'an endpoint change saves without a reset; with no per-tool-permission provider there are no stored choices for it to carry over',
         },
+        // TASK-809 — which ceiling (admin per-connector vs. per-agent) applies
+        // to each tool namespace, keyed off the server's auth type.
+        {
+          hook: 'tool-policy:set-ceiling-sources',
+          degradation:
+            'no per-tool-permission provider is loaded, so there is no admin ceiling to switch on or off; connectors save normally',
+        },
         // TASK-697 — the admin check on a workspace-keyed connector's owner.
         {
           hook: 'auth:get-user',

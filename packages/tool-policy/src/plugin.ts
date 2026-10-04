@@ -38,9 +38,13 @@ import {
   ListAgentOverridesOutputSchema,
   ListCapabilitiesOutputSchema,
   SetAgentOverrideOutputSchema,
+  SetCeilingSourcesOutputSchema,
   SetConnectorDefaultsOutputSchema,
   SnapshotConnectorForAgentOutputSchema,
   type CapabilityRow,
+  type CeilingSource,
+  type SetCeilingSourcesInput,
+  type SetCeilingSourcesOutput,
   type EgressListInput,
   type EgressListOutput,
   type EgressRememberInput,
@@ -250,6 +254,8 @@ const DEFAULT_VERDICT_CACHE_TTL_MS = 30_000;
 /** One write hook call may name at most this many tools. */
 const MAX_VERDICTS_PER_WRITE = 500;
 const MAX_NAMESPACES_PER_CALL = 32;
+/** `tool-policy:set-ceiling-sources` accepts at most this many namespaces (TASK-809). */
+const MAX_CEILING_SOURCES_PER_CALL = 64;
 const MAX_ID_CHARS = 256;
 
 function isId(v: unknown): v is string {
@@ -319,6 +325,9 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         // before the edit commits (a subscriber failure is invisible to the
         // firer, so the event alone cannot gate it).
         'tool-policy:reset-tool-namespaces',
+        // TASK-809 — per tool namespace, whether the connector's defaults
+        // or each agent's own choice set the ceiling.
+        'tool-policy:set-ceiling-sources',
       ],
       // The rule TABLE is still in-repo and still consulted with no I/O. What
       // needs storage is the egress ALLOWLIST (TASK-330) — per-person data a
@@ -336,9 +345,9 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
             'global hosts still apply, but a host a person allowed is forgotten ' +
             'on restart and the next page read from it is held again — one extra ' +
             'approval, never a silent grant. Per-tool verdicts (connector ' +
-            'defaults, agent overrides) are likewise in-process only: after a ' +
-            'restart connector tools fall back to Ask first and abilities to ' +
-            'their static rule.',
+            'defaults, agent overrides, which namespaces each agent chooses ' +
+            'for) are likewise in-process only: after a restart connector ' +
+            'tools fall back to Ask first and abilities to their static rule.',
         },
       ],
       // Purges (TASK-736): an agent's overrides go with the agent; a
@@ -446,7 +455,14 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         copied: Set<string>;
       }
       const overrideCache = new Map<string, Cached<AgentVerdicts>>();
-      const defaultsCache = new Map<string, Cached<Map<string, PolicyVerdict>>>();
+      // Per namespace: its connector defaults AND whether its ceiling source
+      // is the agent (TASK-809) — read together, because the second decides
+      // whether the first applies at all.
+      interface NamespaceCeiling {
+        defaults: Map<string, PolicyVerdict>;
+        agentSourced: boolean;
+      }
+      const defaultsCache = new Map<string, Cached<NamespaceCeiling>>();
       const fresh = <T,>(c: Cached<T> | undefined): c is Cached<T> =>
         c !== undefined && clock() - c.at < cacheTtlMs;
 
@@ -465,27 +481,32 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         return value;
       };
 
-      const defaultsFor = async (
+      /** One namespace's ceiling, cached. Throws on a store failure. */
+      const ceilingOf = async (toolNamespace: string): Promise<NamespaceCeiling> => {
+        const hit = defaultsCache.get(toolNamespace);
+        if (fresh(hit)) return hit.value;
+        const [defaults, agentSourced] = await Promise.all([
+          verdictStore.connectorDefaultsFor([toolNamespace]),
+          verdictStore.agentSourcedNamespaces([toolNamespace]),
+        ]);
+        const value: NamespaceCeiling = { defaults, agentSourced: agentSourced.has(toolNamespace) };
+        defaultsCache.set(toolNamespace, { at: clock(), value });
+        return value;
+      };
+
+      /**
+       * Defaults + ceiling sources for these namespaces, read FRESH (not
+       * cached) — for the write-time ceiling check and the settings reads,
+       * where the person who just changed something must see it.
+       */
+      const ceilingsFresh = async (
         toolNamespaces: readonly string[],
-      ): Promise<Map<string, PolicyVerdict>> => {
-        const out = new Map<string, PolicyVerdict>();
-        const missing: string[] = [];
-        for (const ns of toolNamespaces) {
-          const hit = defaultsCache.get(ns);
-          if (fresh(hit)) for (const [k, v] of hit.value) out.set(k, v);
-          else missing.push(ns);
-        }
-        if (missing.length > 0) {
-          const read = await verdictStore.connectorDefaultsFor(missing);
-          const at = clock();
-          for (const ns of missing) {
-            const prefix = `mcp.${ns}.`;
-            const value = new Map([...read].filter(([k]) => k.startsWith(prefix)));
-            defaultsCache.set(ns, { at, value });
-            for (const [k, v] of value) out.set(k, v);
-          }
-        }
-        return out;
+      ): Promise<{ defaults: Map<string, PolicyVerdict>; agentSourced: Set<string> }> => {
+        const [defaults, agentSourced] = await Promise.all([
+          verdictStore.connectorDefaultsFor(toolNamespaces),
+          verdictStore.agentSourcedNamespaces(toolNamespaces),
+        ]);
+        return { defaults, agentSourced };
       };
 
       /** Namespaces of the connector tool keys in `keys`, deduped. */
@@ -527,9 +548,14 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           const override =
             agent.rows.get(toolName)?.verdict ??
             (conn !== null && agent.copied.has(conn.toolNamespace) ? 'hold' : undefined);
-          const connectorDefault =
-            conn === null ? undefined : (await defaultsFor([conn.toolNamespace])).get(toolName);
-          return layeredVerdict({ toolName, staticVerdict, connectorDefault, override });
+          const ceiling = conn === null ? undefined : await ceilingOf(conn.toolNamespace);
+          return layeredVerdict({
+            toolName,
+            staticVerdict,
+            connectorDefault: ceiling?.defaults.get(toolName),
+            override,
+            agentSourced: ceiling?.agentSourced === true,
+          });
         } catch (err) {
           ctx.logger.error('tool_policy_verdict_store_read_failed', {
             plugin: PLUGIN_NAME,
@@ -595,7 +621,7 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           // the implicit `hold` floor, with no I/O (TASK-699). Without this it
           // would ride the table's no-match `allow`.
           if (!consultsVerdictStore(call.name)) {
-            const floored = strictest(base.verdict, implicitMcpCeiling(call.name, undefined));
+            const floored = strictest(base.verdict, implicitMcpCeiling(call.name, undefined, false));
             return floored === base.verdict ? base : { ...base, verdict: floored };
           }
           const verdict = await layered(ctx, input?.agentId, call.name, base.verdict);
@@ -773,6 +799,23 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
             }
             rows.push({ ...parsed, verdict: v.verdict });
           }
+          // TASK-809 — an agent-sourced namespace has no connector ceiling, so
+          // there is no default to set (or clear). Refuse the whole batch,
+          // naming the first such key. Read fresh: a stale "connector" here
+          // would let an editor think a default took effect. (A default that
+          // races in under a namespace marked a moment later is inert — the
+          // layering ignores it — and the next mark deletes it.)
+          const agentSourced = await verdictStore.agentSourcedNamespaces([
+            ...new Set(rows.map((r) => r.toolNamespace)),
+          ]);
+          const blocked = rows.find((r) => agentSourced.has(r.toolNamespace));
+          if (blocked !== undefined) {
+            return {
+              ok: false,
+              reason: 'invalid-key',
+              toolKey: `mcp.${blocked.toolNamespace}.${blocked.tool}`,
+            };
+          }
           await verdictStore.setConnectorDefaults(input.connectorId, rows, ctx.userId);
           for (const r of rows) defaultsCache.delete(r.toolNamespace);
           return { ok: true };
@@ -790,11 +833,72 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
               'tool-policy:get-connector-defaults needs a connectorId and its toolNamespaces',
             );
           }
+          const [defaults, agentSourced] = await Promise.all([
+            verdictStore.listConnectorDefaults(input.connectorId, namespaces),
+            verdictStore.agentSourcedNamespaces(namespaces),
+          ]);
           return {
-            defaults: await verdictStore.listConnectorDefaults(input.connectorId, namespaces),
+            defaults,
+            agentSourcedNamespaces: namespaces.filter((ns) => agentSourced.has(ns)),
           };
         },
         { returns: GetConnectorDefaultsOutputSchema },
+      );
+
+      // TASK-809 — who sets the ceiling for each of a connector's tool
+      // namespaces. `@ax/connectors` knows (this plugin never learns why) and
+      // calls this BEFORE committing the change it derives it from; a throw —
+      // malformed input or a store failure — makes it refuse that change, so
+      // nothing is half-applied and nothing is guessed at.
+      bus.registerService<SetCeilingSourcesInput, SetCeilingSourcesOutput>(
+        'tool-policy:set-ceiling-sources',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const fail = (why: string): never => {
+            throw new Error(`tool-policy:set-ceiling-sources ${why}`);
+          };
+          if (!isId(input?.connectorId)) fail('needs a connectorId');
+          const raw: unknown = input?.namespaces;
+          if (!Array.isArray(raw) || raw.length > MAX_CEILING_SOURCES_PER_CALL) {
+            fail(`needs a list of at most ${MAX_CEILING_SOURCES_PER_CALL} namespaces`);
+          }
+          const entries: Array<{ toolNamespace: string; source: CeilingSource }> = [];
+          const seen = new Map<string, CeilingSource>();
+          for (const e of raw as unknown[]) {
+            const ns = (e as { toolNamespace?: unknown } | null | undefined)?.toolNamespace;
+            const source = (e as { source?: unknown } | null | undefined)?.source;
+            if (typeof ns !== 'string' || !CONNECTOR_TOOL_NAMESPACE_RE.test(ns)) {
+              fail('refused a malformed tool namespace');
+            }
+            if (source !== 'agent' && source !== 'connector') fail('refused a malformed source');
+            const nsStr = ns as string;
+            const src = source as CeilingSource;
+            const prior = seen.get(nsStr);
+            if (prior !== undefined) {
+              // Named twice: harmless when it agrees, ambiguous when not.
+              if (prior !== src) fail('refused a namespace listed with two sources');
+              continue;
+            }
+            seen.set(nsStr, src);
+            entries.push({ toolNamespace: nsStr, source: src });
+          }
+          if (entries.length === 0) return { toolNamespaces: [] };
+          try {
+            await verdictStore.setCeilingSources(input.connectorId, entries, ctx.userId);
+          } finally {
+            // Clear even on a failure: a half-known write must not be masked
+            // by a cache that still answers with the old ceiling.
+            for (const e of entries) defaultsCache.delete(e.toolNamespace);
+            overrideCache.clear();
+          }
+          const toolNamespaces = entries.map((e) => e.toolNamespace);
+          ctx.logger.info('tool_policy_set_ceiling_sources', {
+            connectorId: input.connectorId,
+            namespaces: entries,
+          });
+          return { toolNamespaces };
+        },
+        { returns: SetCeilingSourcesOutputSchema },
       );
 
       // TASK-758 — forget every stored choice under these namespaces (admin
@@ -850,11 +954,13 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
             // `strictest` — but the person would be shown a choice that does
             // not take effect.)
             const conn = parseConnectorToolKey(input.toolKey);
-            const connectorDefault =
-              conn === null
-                ? undefined
-                : (await verdictStore.connectorDefaultsFor([conn.toolNamespace])).get(input.toolKey);
-            const ceiling = ceilingFor(rules, input.toolKey, connectorDefault);
+            const read = conn === null ? undefined : await ceilingsFresh([conn.toolNamespace]);
+            const ceiling = ceilingFor(
+              rules,
+              input.toolKey,
+              read?.defaults.get(input.toolKey),
+              conn !== null && read?.agentSourced.has(conn.toolNamespace) === true,
+            );
             if (isLooserThan(verdict, ceiling)) {
               return { ok: false, reason: 'ceiling-violation', ceiling };
             }
@@ -879,14 +985,19 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
             verdictStore.overridesFor(input.agentId),
             verdictStore.copiedNamespacesFor(input.agentId),
           ]);
-          const defaults = await verdictStore.connectorDefaultsFor(
+          const { defaults, agentSourced } = await ceilingsFresh(
             namespacesOf(rows.map((r) => r.toolKey)),
           );
           return {
             overrides: rows.map((r) => ({
               toolKey: r.toolKey,
               verdict: r.verdict,
-              ceiling: ceilingFor(rules, r.toolKey, defaults.get(r.toolKey)),
+              ceiling: ceilingFor(
+                rules,
+                r.toolKey,
+                defaults.get(r.toolKey),
+                agentSourced.has(parseConnectorToolKey(r.toolKey)?.toolNamespace ?? ''),
+              ),
               origin: r.origin,
             })),
             copiedNamespaces,
@@ -908,6 +1019,29 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           if (input.onlyIfNotCopied !== undefined && typeof input.onlyIfNotCopied !== 'boolean') {
             throw new Error('tool-policy:snapshot-connector-for-agent onlyIfNotCopied must be a boolean');
           }
+          if (input.startingVerdicts !== undefined && !Array.isArray(input.startingVerdicts)) {
+            throw new Error(
+              'tool-policy:snapshot-connector-for-agent startingVerdicts must be an array',
+            );
+          }
+          // TASK-809 — candidate starting verdicts: well-formed connector keys
+          // under one of THIS call's namespaces, first entry per key wins.
+          // Whether each namespace is agent-sourced is checked against the
+          // store below; everything else is dropped without a word, because
+          // the hints come from an MCP server and are suggestions, not input
+          // anyone vouched for.
+          const candidates = new Map<string, { toolKey: string; toolNamespace: string; verdict: PolicyVerdict }>();
+          for (const e of (input.startingVerdicts ?? []).slice(0, MAX_VERDICTS_PER_WRITE)) {
+            const toolKey = (e as { toolKey?: unknown } | null | undefined)?.toolKey;
+            const verdict = (e as { verdict?: unknown } | null | undefined)?.verdict;
+            const parsed = parseConnectorToolKey(toolKey);
+            if (parsed === null || !isPolicyVerdict(verdict)) continue;
+            if (!namespaces.includes(parsed.toolNamespace)) continue;
+            const key = toolKey as string;
+            if (!candidates.has(key)) {
+              candidates.set(key, { toolKey: key, toolNamespace: parsed.toolNamespace, verdict });
+            }
+          }
           const onlyIfNotCopied = input.onlyIfNotCopied === true;
           // "Copy on attach" (design decision 2): the agent keeps what the
           // admin said at attach time, so a later admin LOOSENING does not
@@ -920,20 +1054,42 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
           // connector reaches an agent without an attach). It runs every
           // session, so skip the write when this process already knows every
           // namespace is copied; the store's claim is what makes it exact.
-          if (onlyIfNotCopied) {
+          //
+          // The shortcut is skipped when there are starting verdicts to seed:
+          // the seed is insert-if-absent and keyed per tool, not per
+          // namespace, so "already copied" says nothing about it.
+          if (onlyIfNotCopied && candidates.size === 0) {
             const hit = overrideCache.get(input.agentId);
             if (fresh(hit) && namespaces.every((ns) => hit.value.copied.has(ns))) {
               return { copied: 0 };
             }
           }
-          const copied = await verdictStore.copyConnectorDefaults(
-            input.agentId,
-            input.connectorId,
-            namespaces,
-            { onlyIfNotCopied },
-            ctx.userId,
-          );
-          overrideCache.delete(input.agentId);
+          let copied: number;
+          try {
+            copied = await verdictStore.copyConnectorDefaults(
+              input.agentId,
+              input.connectorId,
+              namespaces,
+              { onlyIfNotCopied },
+              ctx.userId,
+            );
+            if (candidates.size > 0) {
+              // Read fresh: seeding a verdict under a namespace that is (now)
+              // connector-sourced would skip the admin ceiling's say at
+              // attach. (Enforcement would still clamp it — `strictest`.)
+              const agentSourced = await verdictStore.agentSourcedNamespaces([
+                ...new Set([...candidates.values()].map((c) => c.toolNamespace)),
+              ]);
+              const seeds = [...candidates.values()]
+                .filter((c) => agentSourced.has(c.toolNamespace))
+                .map(({ toolKey, verdict }) => ({ toolKey, verdict }));
+              if (seeds.length > 0) {
+                copied += await verdictStore.seedOverrides(input.agentId, seeds, ctx.userId);
+              }
+            }
+          } finally {
+            overrideCache.delete(input.agentId);
+          }
           return { copied };
         },
         { returns: SnapshotConnectorForAgentOutputSchema },

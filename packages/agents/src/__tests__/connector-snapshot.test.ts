@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -263,5 +263,206 @@ describe('snapshot-on-attach (agents:attach-connector)', () => {
     expect(out.agent.connectorAttachments).toEqual(['linear']);
     // Only the workspace-connector guard's lookup (TASK-739) — no snapshot one.
     expect(resolveCalls).toEqual([{ userId: OWNER.userId, connectorId: 'linear' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-809 — an OAuth connector has NO admin per-tool ceiling, so at attach
+// (the person has signed in, the tool inventory can be listed) each tool's
+// starting per-agent verdict is seeded from the MCP server's hints:
+// readOnly === true -> allow, anything else -> hold. Both `connectors:resolve`
+// and `connectors:describe-tools` are stubbed; `tool-policy:snapshot-
+// connector-for-agent` is a recording stub so the INPUT the agents plugin
+// sends is what is asserted (tool-policy's own honouring of it is covered in
+// its package).
+// ---------------------------------------------------------------------------
+
+interface SnapshotCall {
+  agentId: string;
+  connectorId: string;
+  toolNamespaces: string[];
+  startingVerdicts?: Array<{ toolKey: string; verdict: string }>;
+}
+interface DescribeCall {
+  userId: string;
+  agentId?: string;
+  connectorId: string;
+}
+type DescribeTool = { toolKey: string; readOnly: boolean | null };
+
+const OAUTH_NS = 'c3333333333';
+const OTHER_NS = 'c4444444444';
+
+describe('attach-time starting verdicts for OAuth connectors (TASK-809)', () => {
+  let snapshotCalls: SnapshotCall[] = [];
+  let describeCalls: DescribeCall[] = [];
+  let describeImpl: () => Promise<{ status: string; tools: DescribeTool[]; checkedAt: string }>;
+
+  const okTools: DescribeTool[] = [
+    { toolKey: `mcp.${OAUTH_NS}.search_issues`, readOnly: true },
+    { toolKey: `mcp.${OAUTH_NS}.create_issue`, readOnly: false },
+    { toolKey: `mcp.${OAUTH_NS}.mystery`, readOnly: null },
+    // Another connector's / namespace's key must never be seeded from this one.
+    { toolKey: `mcp.${OTHER_NS}.search_issues`, readOnly: true },
+    { toolKey: `mcp.${OAUTH_NS}x.search_issues`, readOnly: true },
+  ];
+
+  async function makeStubHarness(opts: { describeTools?: boolean } = {}): Promise<TestHarness> {
+    const withDescribe = opts.describeTools !== false;
+    const h = await createTestHarness({
+      services: {
+        'http:register-route': async () => ({ unregister: () => {} }),
+        'auth:require-user': async () => {
+          throw new Error('not used');
+        },
+        'connectors:resolve': async (_ctx, input) => {
+          const { connectorId } = input as { userId: string; connectorId: string };
+          if (connectorId === 'oauthy') {
+            return {
+              keyMode: 'personal',
+              capabilities: {
+                mcpServers: [{ name: 'oauthy' }],
+                credentials: [{ slot: 'oauth', kind: 'oauth', server: 'oauthy' }],
+              },
+              toolNamespaces: [{ server: 'oauthy', toolNamespace: OAUTH_NS }],
+            };
+          }
+          if (connectorId === 'keyed') {
+            return {
+              keyMode: 'personal',
+              capabilities: {
+                mcpServers: [{ name: 'keyed' }],
+                credentials: [{ slot: 'api', kind: 'api-key', server: 'keyed' }],
+              },
+              toolNamespaces: [{ server: 'keyed', toolNamespace: OTHER_NS }],
+            };
+          }
+          throw new Error(`connector '${connectorId}' not found`);
+        },
+        'tool-policy:snapshot-connector-for-agent': async (_ctx, input) => {
+          snapshotCalls.push(input as SnapshotCall);
+          return { ok: true };
+        },
+        ...(withDescribe
+          ? {
+              'connectors:describe-tools': async (_ctx, input) => {
+                describeCalls.push(input as DescribeCall);
+                return describeImpl();
+              },
+            }
+          : {}),
+      },
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createAgentsPlugin()],
+    });
+    harnesses.push(h);
+    return h;
+  }
+
+  beforeEach(() => {
+    snapshotCalls = [];
+    describeCalls = [];
+    describeImpl = async () => ({ status: 'ok', tools: okTools, checkedAt: new Date().toISOString() });
+  });
+
+  it('seeds readOnly true -> allow and false/null -> hold, scoped to the OAuth namespace', async () => {
+    const h = await makeStubHarness();
+    const agentId = await newAgent(h);
+    await attach(h, agentId, ['oauthy']);
+
+    // Asked as the person who attached, for this agent + connector.
+    expect(describeCalls).toEqual([{ userId: OWNER.userId, agentId, connectorId: 'oauthy' }]);
+    expect(snapshotCalls).toEqual([
+      {
+        agentId,
+        connectorId: 'oauthy',
+        toolNamespaces: [OAUTH_NS],
+        startingVerdicts: [
+          { toolKey: `mcp.${OAUTH_NS}.search_issues`, verdict: 'allow' },
+          { toolKey: `mcp.${OAUTH_NS}.create_issue`, verdict: 'hold' },
+          { toolKey: `mcp.${OAUTH_NS}.mystery`, verdict: 'hold' },
+        ],
+      },
+    ]);
+  });
+
+  it('asks describe-tools as the ACTOR (an admin attaching to the owner’s agent), not the resolve user', async () => {
+    const h = await makeStubHarness();
+    const agentId = await newAgent(h);
+    await attach(h, agentId, ['oauthy'], ADMIN);
+    expect(describeCalls).toEqual([{ userId: ADMIN.userId, agentId, connectorId: 'oauthy' }]);
+  });
+
+  it('caps the seeded verdicts at 500', async () => {
+    describeImpl = async () => ({
+      status: 'ok',
+      tools: Array.from({ length: 600 }, (_, i) => ({
+        toolKey: `mcp.${OAUTH_NS}.tool_${i}`,
+        readOnly: true,
+      })),
+      checkedAt: new Date().toISOString(),
+    });
+    const h = await makeStubHarness();
+    const agentId = await newAgent(h);
+    await attach(h, agentId, ['oauthy']);
+    expect(snapshotCalls).toHaveLength(1);
+    expect(snapshotCalls[0]!.startingVerdicts).toHaveLength(500);
+  });
+
+  it('an API-key connector never asks describe-tools and sends no startingVerdicts', async () => {
+    const h = await makeStubHarness();
+    const agentId = await newAgent(h);
+    await attach(h, agentId, ['keyed']);
+    expect(describeCalls).toEqual([]);
+    expect(snapshotCalls).toEqual([{ agentId, connectorId: 'keyed', toolNamespaces: [OTHER_NS] }]);
+    expect('startingVerdicts' in snapshotCalls[0]!).toBe(false);
+  });
+
+  it('describe-tools throwing still snapshots, without startingVerdicts', async () => {
+    describeImpl = async () => {
+      throw new Error('inventory exploded');
+    };
+    const h = await makeStubHarness();
+    const agentId = await newAgent(h);
+    const out = await attach(h, agentId, ['oauthy']);
+    expect(out.agent.connectorAttachments).toEqual(['oauthy']);
+    expect(describeCalls).toHaveLength(1);
+    expect(snapshotCalls).toEqual([{ agentId, connectorId: 'oauthy', toolNamespaces: [OAUTH_NS] }]);
+    expect('startingVerdicts' in snapshotCalls[0]!).toBe(false);
+  });
+
+  it.each(['needs-auth', 'unreachable', 'unknown'])(
+    'status %s -> snapshot without startingVerdicts (tools are not trusted unless ok)',
+    async (status) => {
+      describeImpl = async () => ({ status, tools: okTools, checkedAt: new Date().toISOString() });
+      const h = await makeStubHarness();
+      const agentId = await newAgent(h);
+      await attach(h, agentId, ['oauthy']);
+      expect(describeCalls).toHaveLength(1);
+      expect(snapshotCalls).toEqual([{ agentId, connectorId: 'oauthy', toolNamespaces: [OAUTH_NS] }]);
+      expect('startingVerdicts' in snapshotCalls[0]!).toBe(false);
+    },
+  );
+
+  it('an ok answer with no tools of the namespace omits startingVerdicts', async () => {
+    describeImpl = async () => ({
+      status: 'ok',
+      tools: [{ toolKey: `mcp.${OTHER_NS}.search_issues`, readOnly: true }],
+      checkedAt: new Date().toISOString(),
+    });
+    const h = await makeStubHarness();
+    const agentId = await newAgent(h);
+    await attach(h, agentId, ['oauthy']);
+    expect(describeCalls).toHaveLength(1);
+    expect(snapshotCalls).toEqual([{ agentId, connectorId: 'oauthy', toolNamespaces: [OAUTH_NS] }]);
+    expect('startingVerdicts' in snapshotCalls[0]!).toBe(false);
+  });
+
+  it('without a describe-tools service the snapshot still happens, without startingVerdicts', async () => {
+    const h = await makeStubHarness({ describeTools: false });
+    const agentId = await newAgent(h);
+    await attach(h, agentId, ['oauthy']);
+    expect(describeCalls).toEqual([]);
+    expect(snapshotCalls).toEqual([{ agentId, connectorId: 'oauthy', toolNamespaces: [OAUTH_NS] }]);
+    expect('startingVerdicts' in snapshotCalls[0]!).toBe(false);
   });
 });

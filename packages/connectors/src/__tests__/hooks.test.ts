@@ -1144,6 +1144,181 @@ describe('@ax/connectors hooks — upsert fires connectors:tool-namespaces-chang
   });
 });
 
+describe('@ax/connectors hooks — ceiling sources follow auth type (TASK-809)', () => {
+  const HOOK = 'tool-policy:set-ceiling-sources';
+  type SetInput = {
+    connectorId: string;
+    namespaces: Array<{ toolNamespace: string; source: 'connector' | 'agent' }>;
+  };
+
+  /** api-key server `a`, plus (optionally) an OAuth server `b`. */
+  function capsWith(opts: { oauthB: boolean }): Capabilities {
+    const base = mcpCaps();
+    const a = { ...base.mcpServers[0]!, name: 'a', url: 'https://mcp.example.com/a' };
+    const b = { ...base.mcpServers[0]!, name: 'b', url: 'https://mcp.example.com/b' };
+    return {
+      ...base,
+      credentials: opts.oauthB
+        ? [{ slot: 'A_KEY', kind: 'api-key' }, { slot: 'B_TOKEN', kind: 'oauth', server: 'b' }] as unknown as Capabilities['credentials']
+        : [{ slot: 'A_KEY', kind: 'api-key' }],
+      mcpServers: opts.oauthB ? [a, b] : [a],
+    };
+  }
+  const NS_A = deriveToolNamespace('userA', 'gdrive', 'a');
+  const NS_B = deriveToolNamespace('userA', 'gdrive', 'b');
+
+  const savedServers = async (h: TestHarness): Promise<string[] | null> => {
+    try {
+      const got = await h.bus.call<GetInput, GetOutput>('connectors:get', h.ctx({ userId: 'userA' }), {
+        userId: 'userA',
+        connectorId: 'gdrive',
+      });
+      return got.connector.capabilities.mcpServers.map((s) => s.name);
+    } catch {
+      return null;
+    }
+  };
+
+  it('sends connector-capped namespaces BEFORE the write and agent-chosen ones AFTER it', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: capsWith({ oauthB: false }) }),
+    );
+    const calls: Array<{ input: SetInput; serversAtCall: string[] | null }> = [];
+    h.bus.registerService<SetInput, { toolNamespaces: string[] }>(HOOK, 'test/ceiling', async (_ctx, input) => {
+      calls.push({ input, serversAtCall: await savedServers(h) });
+      return { toolNamespaces: input.namespaces.map((n) => n.toolNamespace) };
+    });
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: capsWith({ oauthB: true }) }),
+    );
+    expect(calls).toEqual([
+      {
+        input: { connectorId: 'gdrive', namespaces: [{ toolNamespace: NS_A, source: 'connector' }] },
+        serversAtCall: ['a'],
+      },
+      {
+        input: { connectorId: 'gdrive', namespaces: [{ toolNamespace: NS_B, source: 'agent' }] },
+        serversAtCall: ['a', 'b'],
+      },
+    ]);
+  });
+
+  it('a throwing pre-write call refuses the edit with tool-permissions-reset-failed and leaves the row unchanged', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: capsWith({ oauthB: false }) }),
+    );
+    h.bus.registerService<SetInput, unknown>(HOOK, 'test/ceiling', async () => {
+      throw new Error('verdict store is down');
+    });
+    await expect(
+      h.bus.call<UpsertInput, UpsertOutput>(
+        'connectors:upsert',
+        h.ctx({ userId: 'userA' }),
+        upsertInput({ capabilities: capsWith({ oauthB: true }) }),
+      ),
+    ).rejects.toMatchObject({ code: 'tool-permissions-reset-failed' });
+    expect(await savedServers(h)).toEqual(['a']);
+  });
+
+  it('a throwing post-write (agent) call does not fail the upsert', async () => {
+    const h = await makeHarness();
+    const seen: SetInput[] = [];
+    h.bus.registerService<SetInput, { toolNamespaces: string[] }>(HOOK, 'test/ceiling', async (_ctx, input) => {
+      seen.push(input);
+      if (input.namespaces.some((n) => n.source === 'agent')) throw new Error('post-write boom');
+      return { toolNamespaces: input.namespaces.map((n) => n.toolNamespace) };
+    });
+    const out = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: capsWith({ oauthB: true }) }),
+    );
+    expect(out.connector.capabilities.mcpServers.map((s) => s.name)).toEqual(['a', 'b']);
+    expect(seen.map((s) => s.namespaces.map((n) => n.source))).toEqual([['connector'], ['agent']]);
+  });
+
+  it('with no ceiling-source provider loaded the upsert still saves', async () => {
+    const h = await makeHarness();
+    const out = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ capabilities: capsWith({ oauthB: true }) }),
+    );
+    expect(out.created).toBe(true);
+  });
+
+  it('boot reconciles every live connector row across owners (an OAuth connector made before init gets agent)', async () => {
+    // Rows written by an earlier boot, with no tool-policy loaded.
+    const seed = await makeHarness();
+    const up = (userId: string, connectorId: string, capabilities: Capabilities) =>
+      seed.bus.call<UpsertInput, UpsertOutput>(
+        'connectors:upsert',
+        seed.ctx({ userId }),
+        upsertInput({ userId, connectorId, capabilities }),
+      );
+    await up('userA', 'gdrive', capsWith({ oauthB: true }));
+    await up('userB', 'other', capsWith({ oauthB: false }));
+    await up('userB', 'cli', cliCaps()); // no MCP servers → nothing to send
+    await up('userB', 'gone', capsWith({ oauthB: false }));
+    await seed.bus.call<DeleteInput, DeleteOutput>('connectors:delete', seed.ctx({ userId: 'userB' }), {
+      userId: 'userB',
+      connectorId: 'gone',
+    });
+    await up('userB', 'broken', capsWith({ oauthB: false }));
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query(
+        `UPDATE connectors_v1_connectors SET capabilities = '{"bogus": true}'::jsonb WHERE connector_id = 'broken'`,
+      );
+    } finally {
+      await pg.end().catch(() => {});
+    }
+
+    const calls: SetInput[] = [];
+    const h = await createTestHarness({
+      services: {
+        [HOOK]: async (_ctx, input) => {
+          const i = input as SetInput;
+          calls.push(i);
+          if (i.connectorId === 'other') throw new Error('one bad connector must not stop the rest');
+          return { toolNamespaces: i.namespaces.map((n) => n.toolNamespace) };
+        },
+      },
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createConnectorsPlugin()],
+    });
+    harnesses.push(h);
+
+    expect([...calls].sort((x, y) => x.connectorId.localeCompare(y.connectorId))).toEqual([
+      {
+        connectorId: 'gdrive',
+        namespaces: [
+          { toolNamespace: NS_A, source: 'connector' },
+          { toolNamespace: NS_B, source: 'agent' },
+        ],
+      },
+      {
+        connectorId: 'other',
+        namespaces: [{ toolNamespace: deriveToolNamespace('userB', 'other', 'a'), source: 'connector' }],
+      },
+    ]);
+    // Init survived the throwing call and the unparseable row: the plugin serves.
+    const got = await h.bus.call<GetInput, GetOutput>('connectors:get', h.ctx({ userId: 'userA' }), {
+      userId: 'userA',
+      connectorId: 'gdrive',
+    });
+    expect(got.connector.id).toBe('gdrive');
+  });
+});
+
 describe('@ax/connectors hooks — boundary validation', () => {
   it('rejects a bad keyMode / visibility / connectorId / capabilities with invalid-payload', async () => {
     const h = await makeHarness();

@@ -1,7 +1,7 @@
 import { sql, type Kysely } from 'kysely';
 import type { ToolPolicyDatabase } from './migrations.js';
-import type { OverrideOrigin, PolicyVerdict } from './types.js';
-import { CONNECTOR_TOOL_NAMESPACE_RE, isPolicyVerdict } from './verdicts.js';
+import type { CeilingSource, OverrideOrigin, PolicyVerdict } from './types.js';
+import { CONNECTOR_TOOL_NAMESPACE_RE, isPolicyVerdict, parseConnectorToolKey } from './verdicts.js';
 
 /**
  * Storage for per-tool verdicts (TASK-736). The single source of truth for
@@ -75,10 +75,38 @@ export interface VerdictStore {
     opts: { onlyIfNotCopied: boolean },
     updatedBy: string,
   ): Promise<number>;
+  /**
+   * TASK-809 — the subset of `toolNamespaces` whose ceiling source is `agent`
+   * (a marker row exists). THROWS on a malformed namespace.
+   */
+  agentSourcedNamespaces(toolNamespaces: readonly string[]): Promise<Set<string>>;
+  /**
+   * TASK-809 — record each namespace's ceiling source, in ONE transaction.
+   * `agent`: upsert the marker AND delete every connector default under that
+   * namespace (the one-time cleanup of defaults nobody may set any more;
+   * idempotent). `connector`: delete the marker. Agent overrides are never
+   * touched. THROWS, writing nothing, on a malformed namespace.
+   */
+  setCeilingSources(
+    connectorId: string,
+    entries: ReadonlyArray<{ toolNamespace: string; source: CeilingSource }>,
+    updatedBy: string,
+  ): Promise<void>;
+  /**
+   * TASK-809 — write each row as `origin: 'snapshot'` ONLY where the agent has
+   * no row for that key yet, of any origin. Returns how many were written.
+   * THROWS, writing nothing, when a key is not a connector tool key.
+   */
+  seedOverrides(
+    agentId: string,
+    rows: ReadonlyArray<{ toolKey: string; verdict: PolicyVerdict }>,
+    updatedBy: string,
+  ): Promise<number>;
   purgeAgent(agentId: string): Promise<number>;
   /**
    * Drop defaults under these namespaces AND every agent's overrides and
-   * copied-namespace records for them.
+   * copied-namespace records for them, AND their ceiling-source markers
+   * (TASK-809).
    * THROWS, deleting nothing, when any entry is not a host-minted `c<10 hex>`
    * namespace (see {@link assertToolNamespaces}).
    */
@@ -93,6 +121,12 @@ export interface VerdictStore {
    * exists now. THROWS, moving nothing, on a malformed namespace, on
    * `from === to`, or when the pairs overlap (a name used twice, or a `to`
    * that is also a `from` — a swap or a chain has no order-free meaning).
+   *
+   * Ceiling-source markers (TASK-809) do NOT move: the marker under each
+   * `from` is DELETED and `to` is left as it was. Carrying it across could
+   * un-cap a renamed server whose new endpoint is configured differently (no
+   * longer agent-sourced); `@ax/connectors` re-sets the source of `to`
+   * itself, and until it does the namespace is capped — the safe side.
    */
   renameNamespaces(pairs: ReadonlyArray<{ from: string; to: string }>): Promise<void>;
 }
@@ -123,6 +157,28 @@ function assertRenamePairs(pairs: ReadonlyArray<{ from: string; to: string }>): 
     }
     seen.add(p.from);
     seen.add(p.to);
+  }
+}
+
+function assertCeilingSources(
+  entries: ReadonlyArray<{ toolNamespace: string; source: CeilingSource }>,
+): void {
+  assertToolNamespaces(
+    entries.map((e) => e?.toolNamespace),
+    'setCeilingSources',
+  );
+  for (const e of entries) {
+    if (e.source !== 'agent' && e.source !== 'connector') {
+      throw new Error('tool-policy verdict store: setCeilingSources refused a malformed source');
+    }
+  }
+}
+
+function assertSeedRows(rows: ReadonlyArray<{ toolKey: string; verdict: PolicyVerdict }>): void {
+  for (const r of rows) {
+    if (parseConnectorToolKey(r?.toolKey) === null || !isPolicyVerdict(r.verdict)) {
+      throw new Error('tool-policy verdict store: seedOverrides refused a malformed row');
+    }
   }
 }
 
@@ -326,6 +382,84 @@ export function createDbVerdictStore(db: Kysely<ToolPolicyDatabase>): VerdictSto
       });
     },
 
+    async agentSourcedNamespaces(toolNamespaces) {
+      assertToolNamespaces(toolNamespaces, 'agentSourcedNamespaces');
+      if (toolNamespaces.length === 0) return new Set<string>();
+      const rows = await db
+        .selectFrom('tool_policy_v1_agent_sourced_namespaces')
+        .select('tool_namespace')
+        .where('tool_namespace', 'in', [...toolNamespaces])
+        .execute();
+      return new Set(rows.map((r) => r.tool_namespace));
+    },
+
+    async setCeilingSources(connectorId, entries, updatedBy) {
+      assertCeilingSources(entries);
+      if (entries.length === 0) return;
+      const agent = [...new Set(entries.filter((e) => e.source === 'agent').map((e) => e.toolNamespace))];
+      const connector = [
+        ...new Set(entries.filter((e) => e.source === 'connector').map((e) => e.toolNamespace)),
+      ];
+      await db.transaction().execute(async (trx) => {
+        const now = new Date();
+        if (agent.length > 0) {
+          await trx
+            .insertInto('tool_policy_v1_agent_sourced_namespaces')
+            .values(
+              agent.map((ns) => ({
+                tool_namespace: ns,
+                connector_id: connectorId,
+                updated_by: updatedBy,
+                updated_at: now,
+              })),
+            )
+            .onConflict((oc) =>
+              oc.column('tool_namespace').doUpdateSet({
+                connector_id: connectorId,
+                updated_by: updatedBy,
+                updated_at: now,
+              }),
+            )
+            .execute();
+          await trx
+            .deleteFrom('tool_policy_v1_connector_defaults')
+            .where('tool_namespace', 'in', agent)
+            .execute();
+        }
+        if (connector.length > 0) {
+          await trx
+            .deleteFrom('tool_policy_v1_agent_sourced_namespaces')
+            .where('tool_namespace', 'in', connector)
+            .execute();
+        }
+      });
+    },
+
+    async seedOverrides(agentId, rows, updatedBy) {
+      assertSeedRows(rows);
+      if (rows.length === 0) return 0;
+      return db.transaction().execute(async (trx) => {
+        const now = new Date();
+        let written = 0;
+        for (const r of rows) {
+          const res = await trx
+            .insertInto('tool_policy_v1_agent_overrides')
+            .values({
+              agent_id: agentId,
+              tool_key: r.toolKey,
+              verdict: r.verdict,
+              origin: 'snapshot',
+              updated_by: updatedBy,
+              updated_at: now,
+            })
+            .onConflict((oc) => oc.columns(['agent_id', 'tool_key']).doNothing())
+            .executeTakeFirst();
+          written += Number(res.numInsertedOrUpdatedRows ?? 0n);
+        }
+        return written;
+      });
+    },
+
     async purgeAgent(agentId) {
       return db.transaction().execute(async (trx) => {
         await trx
@@ -354,6 +488,10 @@ export function createDbVerdictStore(db: Kysely<ToolPolicyDatabase>): VerdictSto
           .execute();
         await trx
           .deleteFrom('tool_policy_v1_agent_copied_namespaces')
+          .where('tool_namespace', 'in', [...toolNamespaces])
+          .execute();
+        await trx
+          .deleteFrom('tool_policy_v1_agent_sourced_namespaces')
           .where('tool_namespace', 'in', [...toolNamespaces])
           .execute();
       });
@@ -398,6 +536,11 @@ export function createDbVerdictStore(db: Kysely<ToolPolicyDatabase>): VerdictSto
             .set({ tool_namespace: to })
             .where('tool_namespace', '=', from)
             .execute();
+          // Deleted, not moved — see the interface comment.
+          await trx
+            .deleteFrom('tool_policy_v1_agent_sourced_namespaces')
+            .where('tool_namespace', '=', from)
+            .execute();
         }
       });
     },
@@ -419,6 +562,8 @@ export function createMemoryVerdictStore(): VerdictStore {
   const overrides = new Map<string, Map<string, { verdict: PolicyVerdict; origin: OverrideOrigin }>>();
   // agentId -> copied namespaces
   const copied = new Map<string, Set<string>>();
+  // agent-sourced namespaces (TASK-809)
+  const agentSourced = new Set<string>();
 
   const agentMap = (agentId: string) => {
     let m = overrides.get(agentId);
@@ -512,6 +657,35 @@ export function createMemoryVerdictStore(): VerdictStore {
       return written;
     },
 
+    async agentSourcedNamespaces(toolNamespaces) {
+      assertToolNamespaces(toolNamespaces, 'agentSourcedNamespaces');
+      return new Set(toolNamespaces.filter((ns) => agentSourced.has(ns)));
+    },
+
+    async setCeilingSources(_connectorId, entries) {
+      assertCeilingSources(entries);
+      for (const { toolNamespace, source } of entries) {
+        if (source === 'agent') {
+          agentSourced.add(toolNamespace);
+          defaults.delete(toolNamespace);
+        } else {
+          agentSourced.delete(toolNamespace);
+        }
+      }
+    },
+
+    async seedOverrides(agentId, rows) {
+      assertSeedRows(rows);
+      const m = agentMap(agentId);
+      let written = 0;
+      for (const r of rows) {
+        if (m.has(r.toolKey)) continue;
+        m.set(r.toolKey, { verdict: r.verdict, origin: 'snapshot' });
+        written += 1;
+      }
+      return written;
+    },
+
     async purgeAgent(agentId) {
       const n = overrides.get(agentId)?.size ?? 0;
       overrides.delete(agentId);
@@ -528,6 +702,7 @@ export function createMemoryVerdictStore(): VerdictStore {
           for (const key of [...m.keys()]) if (key.startsWith(prefix)) m.delete(key);
         }
         for (const set of copied.values()) set.delete(ns);
+        agentSourced.delete(ns);
       }
     },
 
@@ -552,6 +727,8 @@ export function createMemoryVerdictStore(): VerdictStore {
           set.delete(to);
           if (set.delete(from)) set.add(to);
         }
+        // Deleted, not moved — see the interface comment.
+        agentSourced.delete(from);
       }
     },
   };

@@ -15,6 +15,7 @@ export type { EgressAllowlistStore } from './egress-allowlist.js';
 export { runToolPolicyMigration } from './migrations.js';
 export type {
   AgentOverrideRow,
+  AgentSourcedNamespaceRow,
   ConnectorDefaultRow,
   EgressAllowlistRow,
   ToolPolicyDatabase,
@@ -46,6 +47,8 @@ export {
   PolicyVerdictSchema,
   ResetToolNamespacesOutputSchema,
   SetAgentOverrideOutputSchema,
+  CeilingSourceSchema,
+  SetCeilingSourcesOutputSchema,
   SetConnectorDefaultsOutputSchema,
   SnapshotConnectorForAgentOutputSchema,
 } from './types.js';
@@ -80,6 +83,9 @@ export type {
   ResetToolNamespacesOutput,
   SetAgentOverrideInput,
   SetAgentOverrideOutput,
+  CeilingSource,
+  SetCeilingSourcesInput,
+  SetCeilingSourcesOutput,
   SetConnectorDefaultsInput,
   SetConnectorDefaultsOutput,
   SnapshotConnectorForAgentInput,

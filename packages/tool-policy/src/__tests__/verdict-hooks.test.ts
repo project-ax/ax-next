@@ -9,6 +9,7 @@ import type {
   ListAgentOverridesOutput,
   PolicyVerdict,
   SetAgentOverrideOutput,
+  SetCeilingSourcesOutput,
   SetConnectorDefaultsOutput,
   SnapshotConnectorForAgentOutput,
 } from '../types.js';
@@ -722,6 +723,301 @@ describe('tool-policy:reset-tool-namespaces — the gated reset (TASK-758)', () 
       ).rejects.toThrow(/needs a list of connector tool namespaces/);
     }
     expect(await verdictOf(h, SEND)).toBe('allow');
+  });
+});
+
+// TASK-809 — a namespace whose ceiling source is the AGENT has no admin
+// ceiling: a person chooses per agent, and a tool nobody chose is held.
+describe('ceiling sources (TASK-809)', () => {
+  const setSources = (
+    h: TestHarness,
+    namespaces: unknown,
+    connectorId: unknown = 'gmail',
+  ) =>
+    call<SetCeilingSourcesOutput>(h, 'tool-policy:set-ceiling-sources', { connectorId, namespaces });
+  const getDefaults = (h: TestHarness, toolNamespaces = [NS, NS2], connectorId = 'gmail') =>
+    call<GetConnectorDefaultsOutput>(h, 'tool-policy:get-connector-defaults', { connectorId, toolNamespaces });
+  const snapshot = (h: TestHarness, extra: Record<string, unknown> = {}) =>
+    call<SnapshotConnectorForAgentOutput>(h, 'tool-policy:snapshot-connector-for-agent', {
+      agentId: AGENT,
+      connectorId: 'gmail',
+      toolNamespaces: [NS],
+      ...extra,
+    });
+
+  it('agent: deletes that namespace’s connector defaults, leaves other namespaces’, and is idempotent', async () => {
+    const h = await boot();
+    await setDefaults(h, [
+      { toolKey: SEND, verdict: 'allow' },
+      { toolKey: LIST, verdict: 'deny' },
+      { toolKey: OTHER, verdict: 'allow' },
+    ]);
+    // Warm the defaults cache so a stale read would show.
+    expect(await verdictOf(h, SEND)).toBe('allow');
+    for (let i = 0; i < 2; i += 1) {
+      expect(await setSources(h, [{ toolNamespace: NS, source: 'agent' }])).toEqual({ toolNamespaces: [NS] });
+      expect((await getDefaults(h)).defaults).toEqual([{ toolKey: OTHER, verdict: 'allow' }]);
+    }
+    // The old admin Allow no longer applies: nobody chose for this agent.
+    expect(await verdictOf(h, SEND)).toBe('hold');
+    expect(await verdictOf(h, LIST)).toBe('hold');
+    expect(await verdictOf(h, OTHER)).toBe('allow');
+  });
+
+  it('an agent override decides an agent-sourced tool; with none it is held', async () => {
+    const h = await boot();
+    await setSources(h, [{ toolNamespace: NS, source: 'agent' }]);
+    expect(await setOverride(h, SEND, 'allow')).toEqual({ ok: true });
+    expect(await verdictOf(h, SEND)).toBe('allow');
+    expect(await verdictOf(h, LIST)).toBe('hold');
+    expect(await verdictOf(h, SEND, 'agent-2')).toBe('hold');
+  });
+
+  it('the admin ceiling still caps a connector-sourced namespace with no default (the API-key path)', async () => {
+    const h = await boot();
+    await setSources(h, [{ toolNamespace: NS, source: 'agent' }]);
+    expect(await setOverride(h, OTHER, 'allow')).toEqual({
+      ok: false,
+      reason: 'ceiling-violation',
+      ceiling: 'hold',
+    });
+    expect(await setOverride(h, SEND, 'allow')).toEqual({ ok: true });
+  });
+
+  it('list-agent-overrides reports the static ceiling (allow) for an agent-sourced key', async () => {
+    const h = await boot();
+    await setSources(h, [{ toolNamespace: NS, source: 'agent' }]);
+    await setOverride(h, SEND, 'hold');
+    await setOverride(h, OTHER, 'hold');
+    expect((await listOverrides(h)).overrides).toEqual([
+      { toolKey: OTHER, verdict: 'hold', ceiling: 'hold', origin: 'user' },
+      { toolKey: SEND, verdict: 'hold', ceiling: 'allow', origin: 'user' },
+    ]);
+  });
+
+  it('get-connector-defaults names the agent-sourced subset of the asked namespaces (through the returns re-parse)', async () => {
+    const h = await boot();
+    expect(await getDefaults(h)).toEqual({ defaults: [], agentSourcedNamespaces: [] });
+    await setSources(h, [{ toolNamespace: NS2, source: 'agent' }], 'linear');
+    const got = await getDefaults(h, [NS, NS2]);
+    expect(got).toEqual({ defaults: [], agentSourcedNamespaces: [NS2] });
+    expect((await getDefaults(h, [NS])).agentSourcedNamespaces).toEqual([]);
+  });
+
+  it('switching back to connector re-caps an Allow override to hold', async () => {
+    const h = await boot();
+    await setSources(h, [{ toolNamespace: NS, source: 'agent' }]);
+    await setOverride(h, SEND, 'allow');
+    expect(await verdictOf(h, SEND)).toBe('allow');
+    expect(await setSources(h, [{ toolNamespace: NS, source: 'connector' }])).toEqual({ toolNamespaces: [NS] });
+    expect(await verdictOf(h, SEND)).toBe('hold');
+    expect((await getDefaults(h)).agentSourcedNamespaces).toEqual([]);
+    // The override row itself is untouched either way.
+    expect((await listOverrides(h)).overrides).toEqual([
+      { toolKey: SEND, verdict: 'allow', ceiling: 'hold', origin: 'user' },
+    ]);
+  });
+
+  it('set-connector-defaults refuses a key under an agent-sourced namespace and writes nothing', async () => {
+    const h = await boot();
+    await setSources(h, [{ toolNamespace: NS, source: 'agent' }]);
+    expect(
+      await setDefaults(h, [
+        { toolKey: OTHER, verdict: 'allow' },
+        { toolKey: SEND, verdict: 'allow' },
+      ]),
+    ).toEqual({ ok: false, reason: 'invalid-key', toolKey: SEND });
+    expect((await getDefaults(h)).defaults).toEqual([]);
+    expect(await setDefaults(h, [{ toolKey: SEND, verdict: null }])).toMatchObject({ ok: false, reason: 'invalid-key' });
+  });
+
+  it('snapshot startingVerdicts: honoured only for agent-sourced namespaces in the input, insert-if-absent', async () => {
+    const h = await boot();
+    await setSources(h, [
+      { toolNamespace: NS, source: 'agent' },
+      { toolNamespace: NS2, source: 'agent' },
+    ]);
+    await setOverride(h, SEND, 'deny');
+    const out = await snapshot(h, {
+      startingVerdicts: [
+        { toolKey: SEND, verdict: 'allow' }, // a person's row exists — never overwritten
+        { toolKey: LIST, verdict: 'allow' }, // seeded
+        { toolKey: OTHER, verdict: 'allow' }, // NS2 is not in toolNamespaces — dropped
+        { toolKey: `mcp.${NS}.bad_verdict`, verdict: 'yes' }, // dropped
+        { toolKey: 'Bash', verdict: 'deny' }, // not a connector key — dropped
+        null,
+        { toolKey: LIST, verdict: 'deny' }, // already seeded above — insert-if-absent
+      ],
+    });
+    expect(out).toEqual({ copied: 1 });
+    expect((await listOverrides(h)).overrides).toEqual([
+      { toolKey: LIST, verdict: 'allow', ceiling: 'allow', origin: 'snapshot' },
+      { toolKey: SEND, verdict: 'deny', ceiling: 'allow', origin: 'user' },
+    ]);
+    expect(await verdictOf(h, LIST)).toBe('allow');
+    expect(await verdictOf(h, OTHER)).toBe('hold');
+    // A second snapshot never overwrites the seeded row either.
+    expect(await snapshot(h, { startingVerdicts: [{ toolKey: LIST, verdict: 'deny' }] })).toEqual({ copied: 0 });
+    expect(await verdictOf(h, LIST)).toBe('allow');
+  });
+
+  it('snapshot startingVerdicts are dropped for a connector-sourced namespace (the admin ceiling decides)', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'hold' }]);
+    const out = await snapshot(h, {
+      startingVerdicts: [
+        { toolKey: SEND, verdict: 'allow' },
+        { toolKey: LIST, verdict: 'allow' },
+      ],
+    });
+    expect(out).toEqual({ copied: 1 });
+    expect((await listOverrides(h)).overrides).toEqual([
+      { toolKey: SEND, verdict: 'hold', ceiling: 'hold', origin: 'snapshot' },
+    ]);
+    expect(await verdictOf(h, LIST)).toBe('hold');
+  });
+
+  it('snapshot startingVerdicts still seed on a default-on (onlyIfNotCopied) open after the namespace is copied', async () => {
+    const h = await boot();
+    await setSources(h, [{ toolNamespace: NS, source: 'agent' }]);
+    expect(await snapshot(h, { onlyIfNotCopied: true })).toEqual({ copied: 0 });
+    // Warm the per-agent cache, so the "already copied" shortcut is live.
+    expect(await verdictOf(h, LIST)).toBe('hold');
+    expect(
+      await snapshot(h, { onlyIfNotCopied: true, startingVerdicts: [{ toolKey: LIST, verdict: 'allow' }] }),
+    ).toEqual({ copied: 1 });
+    expect(await verdictOf(h, LIST)).toBe('allow');
+  });
+
+  it('snapshot refuses a non-array startingVerdicts', async () => {
+    const h = await boot();
+    await expect(snapshot(h, { startingVerdicts: { toolKey: SEND, verdict: 'allow' } })).rejects.toThrow();
+  });
+
+  it('throws on malformed input and writes nothing', async () => {
+    const h = await boot();
+    await setDefaults(h, [{ toolKey: SEND, verdict: 'allow' }]);
+    const tooMany = Array.from({ length: 65 }, (_, i) => ({
+      toolNamespace: `c${i.toString(16).padStart(10, '0')}`,
+      source: 'connector',
+    }));
+    const bad: Array<[unknown, unknown]> = [
+      [[{ toolNamespace: NS, source: 'agent' }], ''],
+      [[{ toolNamespace: NS, source: 'agent' }], 7],
+      ['x', 'gmail'],
+      [undefined, 'gmail'],
+      [tooMany, 'gmail'],
+      [[{ toolNamespace: NS, source: 'agent' }, { toolNamespace: '%', source: 'agent' }], 'gmail'],
+      [[{ toolNamespace: NS, source: 'agent' }, { toolNamespace: NS2, source: 'admin' }], 'gmail'],
+      [[{ toolNamespace: NS, source: 'agent' }, null], 'gmail'],
+    ];
+    for (const [namespaces, connectorId] of bad) {
+      await expect(setSources(h, namespaces, connectorId)).rejects.toThrow();
+    }
+    expect(await verdictOf(h, SEND)).toBe('allow');
+    expect((await getDefaults(h)).agentSourcedNamespaces).toEqual([]);
+  });
+
+  it('dedupes namespaces in input order', async () => {
+    const h = await boot();
+    expect(
+      await setSources(h, [
+        { toolNamespace: NS2, source: 'agent' },
+        { toolNamespace: NS, source: 'connector' },
+        { toolNamespace: NS2, source: 'agent' },
+      ]),
+    ).toEqual({ toolNamespaces: [NS2, NS] });
+  });
+
+  it('THROWS when the store fails', async () => {
+    const store = createMemoryVerdictStore();
+    const h = await boot({
+      verdictStore: {
+        ...store,
+        setCeilingSources: async () => {
+          throw new Error('verdict store is down');
+        },
+      },
+    });
+    await expect(setSources(h, [{ toolNamespace: NS, source: 'agent' }])).rejects.toThrow(/verdict store is down/);
+  });
+
+  it('a store read failure on the sources read still holds (fail closed)', async () => {
+    const store = createMemoryVerdictStore();
+    const h = await boot({
+      verdictStore: {
+        ...store,
+        agentSourcedNamespaces: async () => {
+          throw new Error('down');
+        },
+      },
+    });
+    await store.setCeilingSources('gmail', [{ toolNamespace: NS, source: 'agent' }], 'a');
+    await store.setOverride(AGENT, SEND, 'allow', 'a');
+    expect(await verdictOf(h, SEND)).toBe('hold');
+  });
+
+  it('connectors:deleted clears the marker; a rename drops the from marker and does not mark the to namespace', async () => {
+    const NEW = 'cabcdef0123';
+    const h = await boot();
+    await setSources(h, [
+      { toolNamespace: NS, source: 'agent' },
+      { toolNamespace: NS2, source: 'agent' },
+    ]);
+    await setOverride(h, `mcp.${NS}.send_message`, 'allow');
+    expect(await verdictOf(h, SEND)).toBe('allow');
+    await h.bus.fire('connectors:tool-namespaces-changed', h.ctx(), {
+      connectorId: 'gmail',
+      renamed: [{ from: { server: 'gmail', toolNamespace: NS }, to: { server: 'mail', toolNamespace: NEW } }],
+      removed: [],
+    });
+    expect((await getDefaults(h, [NS, NEW, NS2])).agentSourcedNamespaces).toEqual([NS2]);
+    // The moved Allow is capped again until connectors re-marks the new namespace.
+    expect(await verdictOf(h, `mcp.${NEW}.send_message`)).toBe('hold');
+    await h.bus.fire('connectors:deleted', h.ctx(), {
+      connectorId: 'gmail',
+      toolNamespaces: [{ server: 'linear', toolNamespace: NS2 }],
+    });
+    expect((await getDefaults(h, [NS2])).agentSourcedNamespaces).toEqual([]);
+  });
+});
+
+describe('memory verdict store — ceiling-source markers (TASK-809)', () => {
+  it('set / clear / purge; rename drops the from marker and leaves to unmarked', async () => {
+    const store = createMemoryVerdictStore();
+    const NEW = 'cabcdef0123';
+    await store.setConnectorDefaults('gmail', [{ toolNamespace: NS, tool: 'send_message', verdict: 'allow' }], 'a');
+    await store.setConnectorDefaults('gmail', [{ toolNamespace: NS2, tool: 'create_issue', verdict: 'allow' }], 'a');
+    await store.setOverride(AGENT, SEND, 'deny', 'a');
+    await store.setCeilingSources('gmail', [{ toolNamespace: NS, source: 'agent' }], 'a');
+    expect([...(await store.agentSourcedNamespaces([NS, NS2]))]).toEqual([NS]);
+    expect([...(await store.connectorDefaultsFor([NS, NS2])).keys()]).toEqual([OTHER]);
+    expect(await store.overridesFor(AGENT)).toEqual([{ toolKey: SEND, verdict: 'deny', origin: 'user' }]);
+    await store.setCeilingSources('gmail', [{ toolNamespace: NS, source: 'connector' }], 'a');
+    expect([...(await store.agentSourcedNamespaces([NS]))]).toEqual([]);
+    await store.setCeilingSources('gmail', [{ toolNamespace: NS, source: 'agent' }, { toolNamespace: NS2, source: 'agent' }], 'a');
+    await store.purgeNamespaces([NS2]);
+    expect([...(await store.agentSourcedNamespaces([NS, NS2]))]).toEqual([NS]);
+    await store.renameNamespaces([{ from: NS, to: NEW }]);
+    expect([...(await store.agentSourcedNamespaces([NS, NEW]))]).toEqual([]);
+    await expect(store.agentSourcedNamespaces(['%'])).rejects.toThrow(/malformed tool namespace/);
+  });
+
+  it('seedOverrides inserts only where no row exists', async () => {
+    const store = createMemoryVerdictStore();
+    await store.setOverride(AGENT, SEND, 'deny', 'a');
+    expect(
+      await store.seedOverrides(AGENT, [
+        { toolKey: SEND, verdict: 'allow' },
+        { toolKey: LIST, verdict: 'allow' },
+      ], 'b'),
+    ).toBe(1);
+    expect(await store.seedOverrides(AGENT, [{ toolKey: LIST, verdict: 'deny' }], 'b')).toBe(0);
+    expect(await store.overridesFor(AGENT)).toEqual([
+      { toolKey: LIST, verdict: 'allow', origin: 'snapshot' },
+      { toolKey: SEND, verdict: 'deny', origin: 'user' },
+    ]);
+    await expect(store.seedOverrides(AGENT, [{ toolKey: 'mcp.%.x', verdict: 'allow' }], 'b')).rejects.toThrow();
   });
 });
 

@@ -95,6 +95,21 @@ export async function runToolPolicyMigration<DB>(db: Kysely<DB>): Promise<void> 
       PRIMARY KEY (agent_id, tool_namespace)
     )
   `.execute(db);
+
+  // TASK-809 — connector tool namespaces whose CEILING SOURCE is the agent:
+  // there is no admin ceiling, and a person chooses per agent (a tool nobody
+  // chose is held). A row's PRESENCE is the whole fact; no row means the
+  // namespace is `connector`-sourced, today's behaviour — so an empty table,
+  // a fresh deployment and a namespace nobody marked all stay capped.
+  // `connector_id` is a grouping column only, as on the defaults table.
+  await sql`
+    CREATE TABLE IF NOT EXISTS tool_policy_v1_agent_sourced_namespaces (
+      tool_namespace TEXT PRIMARY KEY,
+      connector_id   TEXT NOT NULL,
+      updated_by     TEXT NOT NULL,
+      updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.execute(db);
 }
 
 export interface EgressAllowlistRow {
@@ -129,9 +144,17 @@ export interface AgentCopiedNamespaceRow {
   copied_at: Date;
 }
 
+export interface AgentSourcedNamespaceRow {
+  tool_namespace: string;
+  connector_id: string;
+  updated_by: string;
+  updated_at: Date;
+}
+
 export interface ToolPolicyDatabase {
   tool_policy_v1_egress_allowlist: EgressAllowlistRow;
   tool_policy_v1_connector_defaults: ConnectorDefaultRow;
   tool_policy_v1_agent_overrides: AgentOverrideRow;
   tool_policy_v1_agent_copied_namespaces: AgentCopiedNamespaceRow;
+  tool_policy_v1_agent_sourced_namespaces: AgentSourcedNamespaceRow;
 }

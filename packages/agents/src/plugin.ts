@@ -166,6 +166,14 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           degradation:
             "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected; a newly attached connector also cannot copy its per-tool defaults",
         },
+        // TASK-809 — the attach-time seed for an OAuth connector's tools asks
+        // `connectors:describe-tools` (@ax/mcp-client). That hook is deliberately
+        // NOT declared here, neither in `calls` nor in `optionalCalls`:
+        // @ax/mcp-client calls `agents:resolve`, so a declared edge would close a
+        // plugin call-graph cycle (agents -> mcp-client -> agents) and bootstrap
+        // would refuse every preset that loads both. It is `bus.hasService`-
+        // guarded at call time (see connector-snapshot.ts); without it the tools
+        // simply start at Ask first.
         {
           hook: 'tool-policy:snapshot-connector-for-agent',
           degradation:

@@ -46,7 +46,10 @@ import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
 import {
   TOOL_PERMISSIONS_RESET_FAILED,
   type ResetToolNamespacesInputLike,
+  type SetCeilingSourcesInputLike,
+  type SetCeilingSourcesOutputLike,
 } from './tool-permissions.js';
+import { ceilingSourcesFor, type CeilingSourceEntry } from './ceiling-sources.js';
 import {
   ActivateAuthoredOutputSchema,
   AuthorizeAgentOutputSchema,
@@ -257,6 +260,16 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
           degradation:
             'an endpoint change saves without a reset; with no per-tool-permission provider there are no stored choices for it to carry over',
         },
+        // TASK-809 — this plugin owns each server's auth type, so it tells
+        // tool-policy which ceiling applies per tool namespace: OAuth servers
+        // get none (people choose per agent), API-key / no-auth servers keep
+        // the admin ceiling. Called around every connector write and once at
+        // boot (reconcile). See `syncCeilingSources`.
+        {
+          hook: 'tool-policy:set-ceiling-sources',
+          degradation:
+            'no per-tool-permission provider is loaded, so there is no admin ceiling to switch on or off; connectors save normally',
+        },
         {
           hook: 'auth:get-user',
           degradation:
@@ -454,6 +467,10 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
           return undefined;
         },
       );
+
+      // TASK-809 — boot reconcile. Awaited so a fresh boot has converged
+      // before the first turn, but it never fails init (see the function).
+      await reconcileCeilingSources(localStore, bus, initCtx);
     },
 
     async shutdown() {
@@ -740,6 +757,39 @@ async function upsertConnector(
   if (prior !== null) {
     await resetMovedEndpoints(bus, ctx, userId, connectorId, prior, capabilities, hookName);
   }
+  // TASK-809 — the ceiling source of each server, from the NEW capabilities
+  // (namespaces derive from the row owner, which is `userId` here).
+  //
+  // Ordering: `connector` entries go BEFORE the write and refuse the edit if
+  // they fail; `agent` entries go AFTER the write (and after the namespace
+  // event) and only warn if they fail. Every failure lands on the CAPPED side:
+  //   - pre-write fails → nothing saved, the old row and its ceiling stand;
+  //   - pre-write lands, write fails → a server re-capped that may not need
+  //     it yet (at worst Ask first), never an un-capped one;
+  //   - post-write fails → the OAuth server keeps its old admin ceiling until
+  //     the next save or boot reconcile (tools stay capped at Ask first).
+  // Sending `agent` before a commit that then fails would un-cap a server that
+  // is still API-key in the stored row — the one outcome that grants reach.
+  const sources = ceilingSourcesFor(userId, { id: connectorId, capabilities });
+  const capped = sources.filter((e) => e.source === 'connector');
+  const uncapped = sources.filter((e) => e.source === 'agent');
+  try {
+    await syncCeilingSources(bus, ctx, connectorId, capped);
+  } catch (err) {
+    ctx.logger.error('connectors_ceiling_sources_failed', {
+      connectorId,
+      phase: 'before-write',
+      err: err instanceof Error ? err.message : String(err),
+    });
+    throw new PluginError({
+      code: TOOL_PERMISSIONS_RESET_FAILED,
+      plugin: PLUGIN_NAME,
+      hookName,
+      message:
+        'couldn\'t update the tool permissions of this connector\'s servers, so the edit was not saved',
+      cause: err,
+    });
+  }
   const { connector, created } = await store.upsert({
     userId,
     connectorId,
@@ -753,7 +803,83 @@ async function upsertConnector(
   if (prior !== null) {
     await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);
   }
+  try {
+    await syncCeilingSources(bus, ctx, connectorId, uncapped);
+  } catch (err) {
+    // Fail-closed: the edit is committed; the OAuth server's tools stay under
+    // the admin ceiling (Ask first by default) until the next save or boot.
+    ctx.logger.warn('connectors_ceiling_sources_failed', {
+      connectorId,
+      phase: 'after-write',
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
   return { connector, created };
+}
+
+const SET_CEILING_SOURCES_HOOK = 'tool-policy:set-ceiling-sources';
+
+/**
+ * TASK-809 — tell tool-policy which ceiling applies to these namespaces.
+ * No-op for an empty list or when no provider is loaded (then there is no
+ * admin ceiling to switch). Throws whatever the provider throws.
+ */
+async function syncCeilingSources(
+  bus: HookBus,
+  ctx: AgentContext,
+  connectorId: string,
+  namespaces: CeilingSourceEntry[],
+): Promise<void> {
+  if (namespaces.length === 0 || !bus.hasService(SET_CEILING_SOURCES_HOOK)) return;
+  await bus.call<SetCeilingSourcesInputLike, SetCeilingSourcesOutputLike>(
+    SET_CEILING_SOURCES_HOOK,
+    ctx,
+    { connectorId, namespaces },
+  );
+}
+
+/**
+ * TASK-809 — at boot, re-send every live connector's ceiling sources (all of
+ * them, both kinds). Idempotent; this is what purges stale admin defaults on
+ * OAuth connectors written before the split, and heals a post-write call that
+ * failed. Per-connector failures are logged and skipped; it never throws, so a
+ * bad row or a down verdict store can't stop the host from booting.
+ */
+async function reconcileCeilingSources(
+  store: ConnectorStore,
+  bus: HookBus,
+  ctx: AgentContext,
+): Promise<void> {
+  if (!bus.hasService(SET_CEILING_SOURCES_HOOK)) return;
+  let rows: Awaited<ReturnType<ConnectorStore['listAllLive']>>;
+  try {
+    rows = await store.listAllLive((connectorId, err) => {
+      ctx.logger.warn('connectors_ceiling_sources_reconcile_skipped_row', {
+        connectorId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
+  } catch (err) {
+    ctx.logger.warn('connectors_ceiling_sources_reconcile_failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  for (const row of rows) {
+    const sources = ceilingSourcesFor(row.ownerUserId, {
+      id: row.connectorId,
+      capabilities: row.capabilities,
+    });
+    try {
+      await syncCeilingSources(bus, ctx, row.connectorId, sources);
+    } catch (err) {
+      ctx.logger.warn('connectors_ceiling_sources_failed', {
+        connectorId: row.connectorId,
+        phase: 'boot-reconcile',
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 /** The hook that must succeed before an endpoint change commits (TASK-758). */

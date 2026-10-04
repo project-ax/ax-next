@@ -126,7 +126,11 @@ export function RemoteMcpConnectorForm({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const keyMode = connector?.keyMode ?? 'personal';
   const base = isAdmin ? '/admin/connectors' : '/settings/connectors';
-  const toolPermissions = useToolPermissions(connector?.id, base);
+  // TASK-809 — a new connector that doesn't sign in with OAuth is added in two
+  // steps in this one dialog: Add creates it, then its tools are listed here
+  // so Save gives every one an admin default. `created` is that new connector.
+  const [created, setCreated] = useState<Connector | null>(null);
+  const toolsStepRef = useRef<HTMLDivElement>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -205,6 +209,14 @@ export function RemoteMcpConnectorForm({
       : 'none'
     : draft.signIn;
   const signInKnown = Boolean(discovered) || usingSavedSignIn;
+  // TASK-809 — an OAuth connector has no admin tool permissions: each person
+  // chooses per agent in the rail. So it never loads, shows or writes them.
+  // (`signIn` falls back to the saved choice while discovery runs, so an
+  // API-key connector's section doesn't flicker away on open.)
+  const toolPermissions = useToolPermissions(
+    created ? created.id : signIn === 'oauth' ? undefined : connector?.id,
+    base,
+  );
   // The server picks CIMD over DCR for 'auto'; CIMD also needs AX itself to be
   // reachable at a public HTTPS URL.
   const clientMetadata = typeof metadata === 'object' ? metadata : null;
@@ -343,9 +355,58 @@ export function RemoteMcpConnectorForm({
   }, [discovered?.auth, useKey]);
 
   const blocked = awaitingDiscovery || (discoveryFailed && !usingSavedSignIn);
+  // Step two waits for the tool list (it resolves or errors), so Save never
+  // races past rows that are about to appear.
+  const toolsLoading = toolPermissions.load.kind === 'loading';
+
+  useEffect(() => {
+    if (created) toolsStepRef.current?.focus();
+  }, [created]);
+
+  // The connector already exists once step two is showing, so any way out of
+  // the dialog refreshes the list (the parents' onSaved also closes it).
+  function close() {
+    if (created) onSaved();
+    onOpenChange(false);
+  }
+
+  function toolPermissionsSaveError(err: unknown): string {
+    const status = err instanceof ToolPermissionsError ? err.status : 0;
+    return status === 503
+      ? 'We saved the connector, but tool permissions can’t be saved right now. Try again in a little while.'
+      : status === 400
+        ? 'We saved the connector, but these tool permissions didn’t look right to us. Reopen the connector and try again.'
+        : status === 403
+          ? // Saving again cannot help here, so don't suggest it.
+            'We saved the connector, but your account can’t change its tool permissions. Ask a workspace admin to set them.'
+          : 'We saved the connector, but not its tool permissions. Try saving again.';
+  }
+
+  /** Step two of adding a connector: write its tools' defaults, nothing else. */
+  async function saveCreatedTools(createdId: string) {
+    if (saving || toolsLoading) return;
+    setSaving(true);
+    setSaveError('');
+    try {
+      // Nothing is saved yet, so `changes` holds every row on screen,
+      // untouched suggestions included. A list that couldn't load has none.
+      if (toolPermissions.changes.length)
+        await putToolPermissions(createdId, base, toolPermissions.changes);
+      onSaved();
+      onOpenChange(false);
+    } catch (err) {
+      setSaveError(toolPermissionsSaveError(err));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (created) {
+      await saveCreatedTools(created.id);
+      return;
+    }
     if (saving || blocked) return;
     const nextErrors = remoteErrors(effectiveDraft);
     if (
@@ -437,31 +498,28 @@ export function RemoteMcpConnectorForm({
         capabilities,
         keyMode,
       };
+      let added: Connector | undefined;
       if (connector) await patchConnector(connectorId, input, base);
       else
-        await createConnector({ ...input, visibility: 'shared' }, base);
+        added = await createConnector({ ...input, visibility: 'shared' }, base);
       update('clientSecret', '');
       // The connector now names the stored copy. A retry (say, of tool
       // permissions below) must not point it back at the one it replaced.
       update('clientSecretRef', clientSecretRef);
       setNeedsMigration(false);
-      const toolChanges = addressChanged ? [] : toolPermissions.changes;
+      if (added && signIn !== 'oauth') {
+        // TASK-809 — stay open on the new connector for step two (its tools).
+        setCreated(added);
+        return;
+      }
+      const toolChanges =
+        addressChanged || signIn === 'oauth' ? [] : toolPermissions.changes;
       if (connector && toolChanges.length) {
         try {
           await putToolPermissions(connectorId, base, toolChanges);
         } catch (err) {
           // The connector itself is saved; stay open so Save can retry this.
-          const status = err instanceof ToolPermissionsError ? err.status : 0;
-          setSaveError(
-            status === 503
-              ? 'We saved the connector, but tool permissions can’t be saved right now. Try again in a little while.'
-              : status === 400
-                ? 'We saved the connector, but these tool permissions didn’t look right to us. Reopen the connector and try again.'
-                : status === 403
-                  ? // Saving again cannot help here, so don't suggest it.
-                    'We saved the connector, but your account can’t change its tool permissions. Ask a workspace admin to set them.'
-                  : 'We saved the connector, but not its tool permissions. Try saving again.',
-          );
+          setSaveError(toolPermissionsSaveError(err));
           return;
         }
       }
@@ -519,7 +577,9 @@ export function RemoteMcpConnectorForm({
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!saving) onOpenChange(nextOpen);
+        if (saving) return;
+        if (nextOpen) onOpenChange(true);
+        else close();
       }}
     >
       <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[560px] flex-col gap-0 overflow-hidden rounded-xl border-border p-0 transition-none motion-reduce:animate-none [&>button:last-child]:right-6 [&>button:last-child]:top-6 [&>button:last-child]:flex [&>button:last-child]:size-11 [&>button:last-child]:items-center [&>button:last-child]:justify-center [&>button:last-child]:rounded-md sm:[&>button:last-child]:size-10">
@@ -530,7 +590,9 @@ export function RemoteMcpConnectorForm({
           <DialogDescription className="leading-5">
             {connector
               ? 'Update the remote server and how we connect.'
-              : 'Connect AX to a remote MCP server.'}
+              : created
+                ? `${created.name} is added. Now choose what agents may do with its tools.`
+                : 'Connect AX to a remote MCP server.'}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -542,6 +604,8 @@ export function RemoteMcpConnectorForm({
           <div className="max-h-[660px] min-h-0 overflow-y-auto overscroll-contain px-6">
             <FieldSet disabled={saving} className="min-w-0 pb-6">
               <FieldGroup>
+                {!created && (
+                <>
                 <FieldGroup>
                   {textField('name', 'Name', 'e.g. Linear')}
                   {textField('url', 'Server URL', 'https://example.com/mcp')}
@@ -981,12 +1045,27 @@ export function RemoteMcpConnectorForm({
                     </div>
                   </>
                 )}
-                {!addressChanged && (
-                  <ConnectorToolPermissions
-                    state={toolPermissions}
-                    connectorName={connector?.name ?? draft.name}
-                    isNew={!connector}
-                  />
+                </>
+                )}
+                {created ? (
+                  <div ref={toolsStepRef} tabIndex={-1} className="outline-none">
+                    <ConnectorToolPermissions
+                      state={toolPermissions}
+                      connectorName={created.name}
+                      isNew={false}
+                    />
+                  </div>
+                ) : (
+                  !addressChanged &&
+                  // TASK-809 — no admin tool permissions for OAuth; for a new
+                  // connector, only once we know it won't sign in that way.
+                  (connector ? signIn !== 'oauth' : signInKnown && signIn !== 'oauth') && (
+                    <ConnectorToolPermissions
+                      state={toolPermissions}
+                      connectorName={connector?.name ?? draft.name}
+                      isNew={!connector}
+                    />
+                  )
                 )}
                 {errors.workspace && (
                   <FieldError>{errors.workspace}</FieldError>
@@ -1005,20 +1084,25 @@ export function RemoteMcpConnectorForm({
               variant="ghost"
               className="h-11 sm:h-10"
               disabled={saving}
-              onClick={() => onOpenChange(false)}
+              onClick={close}
             >
-              Cancel
+              {/* Step two: the connector already exists, so this only skips
+                  its tools (they ask first). "Cancel" would promise an undo, and the
+                  dialog's X is already named "Close". */}
+              {created ? 'Skip for now' : 'Cancel'}
             </Button>
             <Button
               type="submit"
               className="h-11 sm:h-10"
-              disabled={saving || blocked}
+              disabled={saving || (created ? toolsLoading : blocked)}
             >
               {saving
                 ? 'Saving…'
                 : connector
                   ? 'Save changes'
-                  : 'Add connector'}
+                  : created
+                    ? 'Save'
+                    : 'Add connector'}
             </Button>
           </div>
         </form>

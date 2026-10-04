@@ -213,7 +213,10 @@ export async function patchConnector(
  * TASK-758 — the `error` a connector save answers (503) when it pointed a
  * server at a new address but couldn't first reset that server's tool
  * permissions. The server refused the whole save, so nothing changed: the old
- * address is still in use, with the choices people made for it.
+ * address is still in use, with the choices people made for it. TASK-809: a
+ * save (create included) also answers this when it couldn't record which of
+ * the connector's servers have an admin ceiling — same refusal, same retry,
+ * so the copy names neither cause.
  *
  * Canonical spelling: `TOOL_PERMISSIONS_RESET_FAILED` in `@ax/connectors`
  * (`src/tool-permissions.ts`); `server/routes-chat.ts` carries a third copy.
@@ -222,7 +225,7 @@ export const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
 
 /** What the editors say for {@link TOOL_PERMISSIONS_RESET_FAILED}. */
 export const TOOL_PERMISSIONS_RESET_FAILED_MESSAGE =
-  'We couldn’t reset this server’s tool permissions, so we didn’t save your changes. It still uses its old address. Try saving again in a moment.';
+  'We couldn’t update this server’s tool permissions, so we didn’t save your changes. Your saved settings are unchanged. Try saving again in a moment.';
 
 /**
  * TASK-771 — the same refusal on the authored-connector APPROVE path
@@ -232,7 +235,7 @@ export const TOOL_PERMISSIONS_RESET_FAILED_MESSAGE =
  * Nothing was approved; the proposal stays put, so Connect can be tried again.
  */
 export const TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE =
-  'We couldn’t reset this server’s tool permissions, so we didn’t connect it. It still uses its old address. Try Connect again in a moment.';
+  'We couldn’t update this server’s tool permissions, so we didn’t connect it. Try Connect again in a moment.';
 
 /**
  * True when a {@link createConnector} / {@link patchConnector} /
