@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startMcpHttpServerStub } from '@ax/test-harness';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import {
   connectConnectorTools,
@@ -189,6 +190,17 @@ describe('connectConnectorTools', () => {
     expect(ct.logs.join('\n')).toMatch(/256/);
   });
 
+  it('stops after 16 list pages and says so', async () => {
+    const tools = Array.from({ length: 20 }, (_, i) => ({ name: `t${i}` }));
+    const s = await testServer(tools, { pageSize: 1 });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(Object.keys(ct.tools)).toHaveLength(16);
+    expect(ct.tools[`mcp__${NS}__t15`]).toBeDefined();
+    expect(ct.tools[`mcp__${NS}__t16`]).toBeUndefined();
+    expect(ct.logs).toContain(`${NS}: tools/list still had more pages after 16 — the rest are not offered`);
+    expect(ct.loadedBundles).toEqual(new Set(['b']));
+  });
+
   it('aborts an in-flight call on Stop instead of waiting out the call timeout', async () => {
     const s = await testServer([{ name: 'slow', handler: () => new Promise(() => {}) }]);
     const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
@@ -356,6 +368,22 @@ describe('connectConnectorTools', () => {
 
   it(`MAX_TOOLS_PER_SESSION is the strictest provider function limit (${MAX_TOOLS_PER_SESSION})`, () => {
     expect(MAX_TOOLS_PER_SESSION).toBe(128);
+  });
+
+  it('close() gives up after its bound and says so', async () => {
+    const s = await testServer([{ name: 'ping' }]);
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const hang = vi.spyOn(Client.prototype, 'close').mockImplementation(() => new Promise(() => {}));
+    vi.useFakeTimers();
+    try {
+      const p = ct.close();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await p;
+      expect(ct.logs).toContain('closing connector clients timed out after 5000ms');
+    } finally {
+      vi.useRealTimers();
+      hang.mockRestore();
+    }
   });
 
   it('no servers → no tools, no logs', async () => {

@@ -134,7 +134,7 @@ async function connectAndList(
   server: ProjectedMcpServer,
   fetchImpl: typeof fetch | undefined,
   timeoutMs: number,
-): Promise<{ client: Client; tools: ListedTool[]; truncated: boolean }> {
+): Promise<{ client: Client; tools: ListedTool[]; truncated: boolean; morePages: boolean }> {
   const client = new Client({ name: 'ax-aisdk-runner', version: '0.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(server.url), {
     ...(fetchImpl !== undefined ? { fetch: fetchImpl } : {}),
@@ -161,11 +161,14 @@ async function connectAndList(
         cursor = res.nextCursor;
         if (cursor === undefined || tools.length > MAX_TOOLS_PER_CONNECTOR) break;
       }
-      return tools;
+      // Page cap hit with the server still offering more (and not already
+      // over the per-connector cap, which has its own log line).
+      const morePages = cursor !== undefined && tools.length <= MAX_TOOLS_PER_CONNECTOR;
+      return { tools, morePages };
     })();
-    const tools = await raceAbort(work, ac.signal);
+    const { tools, morePages } = await raceAbort(work, ac.signal);
     const truncated = tools.length > MAX_TOOLS_PER_CONNECTOR;
-    return { client, tools: tools.slice(0, MAX_TOOLS_PER_CONNECTOR), truncated };
+    return { client, tools: tools.slice(0, MAX_TOOLS_PER_CONNECTOR), truncated, morePages };
   } catch (err) {
     await client.close().catch(() => {});
     throw err;
@@ -252,9 +255,12 @@ export async function connectConnectorTools(
       log(`${settledNs}: could not load this connector's tools: ${quoteUntrusted(errText(r.reason))}`);
       continue;
     }
-    const { ns, server, client, tools: listed, truncated } = r.value;
+    const { ns, server, client, tools: listed, truncated, morePages } = r.value;
     if (truncated) {
       log(`${ns}: lists more than ${MAX_TOOLS_PER_CONNECTOR} tools; only the first ${MAX_TOOLS_PER_CONNECTOR} are offered`);
+    }
+    if (morePages) {
+      log(`${ns}: tools/list still had more pages after ${MAX_LIST_PAGES} — the rest are not offered`);
     }
     const own: Record<string, Tool> = {};
     const seen = new Set<string>();
@@ -295,14 +301,15 @@ export async function connectConnectorTools(
       if (closed) return;
       closed = true;
       let timer: NodeJS.Timeout | undefined;
-      await Promise.race([
-        Promise.allSettled(clients.map((c) => c.close())),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, CLOSE_TIMEOUT_MS);
+      const finished = await Promise.race([
+        Promise.allSettled(clients.map((c) => c.close())).then(() => true),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), CLOSE_TIMEOUT_MS);
           timer.unref();
         }),
       ]);
       if (timer !== undefined) clearTimeout(timer);
+      if (!finished) log(`closing connector clients timed out after ${CLOSE_TIMEOUT_MS}ms`);
     },
   };
 }
