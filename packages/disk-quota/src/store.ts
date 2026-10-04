@@ -43,7 +43,45 @@ export interface DiskQuotaStore {
   /** The biggest owners first (by workspace + file bytes, ties by id). */
   topOwners(limit: number): Promise<OwnerUsageRow[]>;
   totals(): Promise<UsageTotals>;
+
+  // ---- the blob pass (design D6) ------------------------------------------
+  /**
+   * Distinct shas of `blob:<sha>` rows last written before `cutoff`, in sha
+   * order, strictly after `afterSha` (a cursor), at most `limit`. Only rows
+   * whose source is `blob:` + 64 lowercase hex are ever candidates: a holder
+   * rejects a candidate list WHOLE if any entry is not a sha256, so one odd
+   * row must not stall every pass. Other blob rows are never released.
+   */
+  staleBlobShas(cutoff: Date, afterSha: string | undefined, limit: number): Promise<string[]>;
+  /** Every (owner, sha) blob row for these shas last written before `cutoff`. */
+  staleBlobRows(shas: readonly string[], cutoff: Date): Promise<BlobRow[]>;
+  /**
+   * Every (owner, sha) blob row for these shas, of ANY age: who is still
+   * paying for those bytes. The blob pass releases one owner's share of
+   * shared bytes only while a listed holder is still charged for them.
+   */
+  chargedOwners(shas: readonly string[]): Promise<BlobRow[]>;
+  /**
+   * Delete these `(owner, blob:<sha>)` rows, but only those STILL older than
+   * `cutoff`: the age is re-checked inside the DELETE, so a re-put that
+   * landed between the select and now (it refreshes `updated_at`) keeps its
+   * row. Resolves how many rows went.
+   */
+  releaseBlobRows(rows: readonly BlobRow[], cutoff: Date): Promise<number>;
+  /** The roster: every holder that has ever answered `blob:collect-refs`. */
+  listRefHolders(): Promise<string[]>;
+  /** Add these holders to the roster, or bump their `last_seen_at`. */
+  touchRefHolders(names: readonly string[]): Promise<void>;
+  /** Drop one holder from the roster. Resolves whether it was there. */
+  forgetRefHolder(name: string): Promise<boolean>;
 }
+
+export interface BlobRow {
+  ownerId: string;
+  sha256: string;
+}
+
+const BLOB_SOURCE_RE = '^blob:[0-9a-f]{64}$';
 
 /** pg returns SUM(bigint) as a numeric string (or null over zero rows). */
 function num(v: unknown): number {
@@ -128,6 +166,93 @@ export function createDiskQuotaStore(db: Kysely<DiskQuotaDatabase>): DiskQuotaSt
       `.execute(db);
       const row = res.rows[0];
       return { owners: num(row?.owners), bytes: num(row?.bytes) };
+    },
+
+    async staleBlobShas(cutoff, afterSha, limit) {
+      const cap = Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 1));
+      const after = afterSha === undefined ? null : `blob:${afterSha}`;
+      // COLLATE "C": the cursor comparison and the ORDER BY must agree byte for
+      // byte, whatever the database's default collation is.
+      const res = await sql<{ source: string }>`
+        SELECT DISTINCT source COLLATE "C" AS source
+        FROM disk_quota_v1_usage
+        WHERE kind = 'blob'
+          AND updated_at < ${cutoff}
+          AND source ~ ${BLOB_SOURCE_RE}
+          AND (${after}::text IS NULL OR source COLLATE "C" > ${after}::text COLLATE "C")
+        ORDER BY 1
+        LIMIT ${cap}
+      `.execute(db);
+      return res.rows.map((r) => r.source.slice('blob:'.length));
+    },
+
+    async staleBlobRows(shas, cutoff) {
+      if (shas.length === 0) return [];
+      const sources = shas.map((s) => `blob:${s}`);
+      const res = await sql<{ owner_id: string; source: string }>`
+        SELECT owner_id, source
+        FROM disk_quota_v1_usage
+        WHERE kind = 'blob'
+          AND updated_at < ${cutoff}
+          AND source = ANY(${sources}::text[])
+        ORDER BY source, owner_id
+      `.execute(db);
+      return res.rows.map((r) => ({ ownerId: r.owner_id, sha256: r.source.slice('blob:'.length) }));
+    },
+
+    async chargedOwners(shas) {
+      if (shas.length === 0) return [];
+      const sources = shas.map((s) => `blob:${s}`);
+      const res = await sql<{ owner_id: string; source: string }>`
+        SELECT owner_id, source
+        FROM disk_quota_v1_usage
+        WHERE kind = 'blob'
+          AND source = ANY(${sources}::text[])
+        ORDER BY source, owner_id
+      `.execute(db);
+      return res.rows.map((r) => ({ ownerId: r.owner_id, sha256: r.source.slice('blob:'.length) }));
+    },
+
+    async releaseBlobRows(rows, cutoff) {
+      if (rows.length === 0) return 0;
+      const owners = rows.map((r) => r.ownerId);
+      const sources = rows.map((r) => `blob:${r.sha256}`);
+      const res = await sql`
+        DELETE FROM disk_quota_v1_usage u
+        USING unnest(${owners}::text[], ${sources}::text[]) AS t(owner_id, source)
+        WHERE u.owner_id = t.owner_id
+          AND u.source = t.source
+          AND u.kind = 'blob'
+          AND u.updated_at < ${cutoff}
+      `.execute(db);
+      return Number(res.numAffectedRows ?? 0);
+    },
+
+    async listRefHolders() {
+      const rows = await db
+        .selectFrom('disk_quota_v1_ref_holders')
+        .select('holder')
+        .orderBy('holder')
+        .execute();
+      return rows.map((r) => r.holder);
+    },
+
+    async touchRefHolders(names) {
+      const unique = [...new Set(names)];
+      if (unique.length === 0) return;
+      await db
+        .insertInto('disk_quota_v1_ref_holders')
+        .values(unique.map((holder) => ({ holder })))
+        .onConflict((oc) => oc.column('holder').doUpdateSet({ last_seen_at: sql<Date>`now()` }))
+        .execute();
+    },
+
+    async forgetRefHolder(name) {
+      const res = await db
+        .deleteFrom('disk_quota_v1_ref_holders')
+        .where('holder', '=', name)
+        .executeTakeFirst();
+      return Number(res.numDeletedRows) > 0;
     },
   };
 }

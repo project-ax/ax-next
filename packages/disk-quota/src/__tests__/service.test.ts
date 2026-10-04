@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { HookBus, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
+import {
+  answerBlobCollectRefs,
+  BLOB_COLLECT_REFS_HOOK,
+  BLOB_COLLECT_REFS_MAX_CANDIDATES,
+  HookBus,
+  makeAgentContext,
+  reject,
+  type AgentContext,
+  type BlobRef,
+  type Logger,
+} from '@ax/core';
 import { stopPostgresContainer, startTestContainer } from '@ax/test-harness';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -40,7 +50,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(async () => {
-  await sql`TRUNCATE disk_quota_v1_usage`.execute(db);
+  await sql`TRUNCATE disk_quota_v1_usage, disk_quota_v1_ref_holders`.execute(db);
 });
 
 afterAll(async () => {
@@ -79,6 +89,16 @@ function makeWorld(
     services?: Record<string, Handler>;
     store?: DiskQuotaStore;
     storageGetThrows?: boolean;
+    /** Where the injected clock starts (ms since epoch). */
+    startAt?: number;
+    /**
+     * The blob store's `blob:stat`. Default: registered; every sha in
+     * `storedShas` (none unless given) answers `{ size }`, every other sha
+     * `{ found: false }` (the bytes are gone). `false` leaves `blob:stat`
+     * unregistered; a function replaces the answer.
+     */
+    blobStat?: false | ((sha256: string) => Promise<unknown>);
+    storedShas?: Iterable<string>;
   } = {},
 ): World {
   const bus = new HookBus();
@@ -102,6 +122,15 @@ function makeWorld(
   for (const [hook, handler] of Object.entries(opts.services ?? {})) {
     bus.registerService(hook, 'test', handler as never);
   }
+  if (opts.blobStat !== false) {
+    const stored = new Set(opts.storedShas ?? []);
+    const stat =
+      opts.blobStat ??
+      (async (sha256: string) => (stored.has(sha256) ? { size: 4096 } : { found: false }));
+    bus.registerService<{ sha256: string }, unknown>('blob:stat', 'test', async (_c, { sha256 }) =>
+      stat(sha256),
+    );
+  }
 
   const lines: Line[] = [];
   const mk = (level: string) => (msg: string, bindings?: Record<string, unknown>) => {
@@ -117,7 +146,7 @@ function makeWorld(
   const ctx = (userId: string, agentId = 'agt_default') =>
     makeAgentContext({ sessionId: 's', agentId, userId, logger });
 
-  let t = 1_000_000;
+  let t = opts.startAt ?? 1_000_000;
   const clock = {
     now: () => new Date(t),
     advance: (ms: number) => {
@@ -127,7 +156,7 @@ function makeWorld(
   const limitsCtx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'system', logger });
   const limits = createLimitsStore({ bus, ctx: limitsCtx, now: clock.now, ttlMs: 1000 });
   const store = opts.store ?? realStore;
-  const svc = createDiskQuotaService({ bus, store, limits, logger });
+  const svc = createDiskQuotaService({ bus, store, limits, logger, now: clock.now });
 
   return {
     bus,
@@ -165,6 +194,27 @@ const failingStore: DiskQuotaStore = {
     throw new Error('db down');
   },
   async deleteWorkspaceUsage() {
+    throw new Error('db down');
+  },
+  async staleBlobShas() {
+    throw new Error('db down');
+  },
+  async staleBlobRows() {
+    throw new Error('db down');
+  },
+  async releaseBlobRows() {
+    throw new Error('db down');
+  },
+  async listRefHolders() {
+    throw new Error('db down');
+  },
+  async touchRefHolders() {
+    throw new Error('db down');
+  },
+  async forgetRefHolder() {
+    throw new Error('db down');
+  },
+  async chargedOwners() {
     throw new Error('db down');
   },
 };
@@ -956,7 +1006,7 @@ describe('reconcile (the sweep)', () => {
         },
       },
     });
-    expect(await w.svc.reconcile()).toEqual({ measured: 3, failed: 0 });
+    expect(await w.svc.reconcile()).toEqual({ measured: 3, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
     expect(await w.store.usageFor('alice')).toEqual({ workspaceBytes: 15 * MB, fileBytes: 0 });
     expect(await w.store.usageFor('bob')).toEqual({ workspaceBytes: 7 * MB, fileBytes: 0 });
     // Each agent is measured AS its owner, in a sweep session of its own.
@@ -996,7 +1046,7 @@ describe('reconcile (the sweep)', () => {
         },
       },
     });
-    expect(await listOnly.svc.reconcile()).toEqual({ measured: 0, failed: 0 });
+    expect(await listOnly.svc.reconcile()).toEqual({ measured: 0, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
 
     const usageOnly = makeWorld({
       services: {
@@ -1006,10 +1056,10 @@ describe('reconcile (the sweep)', () => {
         },
       },
     });
-    expect(await usageOnly.svc.reconcile()).toEqual({ measured: 0, failed: 0 });
+    expect(await usageOnly.svc.reconcile()).toEqual({ measured: 0, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
 
     const neither = makeWorld();
-    expect(await neither.svc.reconcile()).toEqual({ measured: 0, failed: 0 });
+    expect(await neither.svc.reconcile()).toEqual({ measured: 0, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
     expect(calls).toEqual([]);
     expect(await realStore.topOwners(10)).toEqual([]);
   });
@@ -1030,7 +1080,7 @@ describe('reconcile (the sweep)', () => {
         },
       },
     });
-    expect(await w.svc.reconcile()).toEqual({ measured: 2, failed: 2 });
+    expect(await w.svc.reconcile()).toEqual({ measured: 2, failed: 2, blobsReleased: 0, blobReleaseAborted: false });
     expect((await w.store.usageFor('alice')).workspaceBytes).toBe(1 * MB);
     expect((await w.store.usageFor('bob')).workspaceBytes).toBe(1 * MB);
     expect(w.lines.some((l) => l.level === 'warn' && l.msg === 'disk_quota_measure_failed')).toBe(true);
@@ -1052,7 +1102,7 @@ describe('reconcile (the sweep)', () => {
         },
       },
     });
-    expect(await w.svc.reconcile()).toEqual({ measured: 8, failed: 0 });
+    expect(await w.svc.reconcile()).toEqual({ measured: 8, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
     expect(SWEEP_CONCURRENCY).toBe(2);
     expect(peak).toBe(2);
   });
@@ -1066,7 +1116,7 @@ describe('reconcile (the sweep)', () => {
         'workspace:usage': async () => ({ bytes: 1 }),
       },
     });
-    expect(await w.svc.reconcile()).toEqual({ measured: 0, failed: 0 });
+    expect(await w.svc.reconcile()).toEqual({ measured: 0, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
   });
 
   it('ignores malformed list entries', async () => {
@@ -1086,7 +1136,7 @@ describe('reconcile (the sweep)', () => {
         'workspace:usage': async () => ({ bytes: 1 * MB }),
       },
     });
-    expect(await w.svc.reconcile()).toEqual({ measured: 1, failed: 0 });
+    expect(await w.svc.reconcile()).toEqual({ measured: 1, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
     expect(await w.store.topOwners(10)).toEqual([{ ownerId: 'alice', workspaceBytes: MB, fileBytes: 0 }]);
   });
 
@@ -1097,6 +1147,326 @@ describe('reconcile (the sweep)', () => {
         'workspace:usage': async () => ({ bytes: 1 }),
       },
     });
-    expect(await w.svc.reconcile()).toEqual({ measured: 0, failed: 0 });
+    expect(await w.svc.reconcile()).toEqual({ measured: 0, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The blob pass (design D6): release an (owner, blob:<sha>) charge once the row
+// is past the grace window AND every holder agrees that owner no longer holds
+// the sha. It fails CLOSED: any doubt releases nothing.
+// ---------------------------------------------------------------------------
+describe('the blob pass (reconcile releases blob charges nobody holds)', () => {
+  const HOUR = 3_600_000;
+  const S = 'a'.repeat(64);
+  const T = 'b'.repeat(64);
+
+  /** A world whose clock starts at the real time (rows are stamped by the db's now()). */
+  const blobWorld = (opts: Parameters<typeof makeWorld>[0] = {}) =>
+    makeWorld({ startAt: Date.now(), ...opts });
+
+  type Answer = BlobRef[] | 'throw' | 'fail';
+
+  /** A holder that answers through the real helper, as a holder plugin does. */
+  function holder(w: World, name: string, answer: (candidates: string[]) => Answer): string[][] {
+    const asked: string[][] = [];
+    w.bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, name, async (_c, payload) => {
+      const candidates = (payload as { candidates: string[] }).candidates;
+      asked.push([...candidates]);
+      const a = answer(candidates);
+      if (a === 'throw') throw new Error(`${name} crashed`);
+      return answerBlobCollectRefs(payload, name, async () => {
+        if (a === 'fail') throw new Error('query failed');
+        return a;
+      });
+    });
+    return asked;
+  }
+
+  async function charge(owner: string, sha: string): Promise<void> {
+    await realStore.upsertUsage(owner, `blob:${sha}`, 'blob', 4096);
+  }
+
+  /** `owner blob:<first hex char>` per row, sorted. */
+  async function rows(): Promise<string[]> {
+    const r = await db.selectFrom('disk_quota_v1_usage').select(['owner_id', 'source']).execute();
+    return r.map((x) => `${x.owner_id} ${x.source.slice(0, 'blob:'.length + 1)}`).sort();
+  }
+
+  const aborted = (w: World) => w.lines.find((l) => l.msg === 'disk_quota_blob_release_aborted');
+
+  it("releases A's charge and keeps B's when only B still holds the identical bytes", async () => {
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => [{ sha256: S, userIds: ['bob'] }]);
+    await charge('alice', S);
+    await charge('bob', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toEqual({
+      measured: 0,
+      failed: 0,
+      blobsReleased: 1,
+      blobReleaseAborted: false,
+    });
+    expect(await rows()).toEqual(['bob blob:a']);
+    expect(await realStore.usageFor('alice')).toEqual({ workspaceBytes: 0, fileBytes: 0 });
+    expect(w.lines.some((l) => l.msg === 'disk_quota_blob_release_done')).toBe(true);
+  });
+
+  it('QUOTA BYPASS: a sha nobody holds whose bytes STILL EXIST keeps its charge', async () => {
+    // Upload to the limit, drop every reference, wait out the grace window:
+    // the bytes are still on the volume, so the charge must stay with someone.
+    const w = blobWorld({ storedShas: [S] });
+    holder(w, '@ax/attachments', () => []);
+    await charge('alice', S);
+    await charge('bob', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a', 'bob blob:a']);
+  });
+
+  it('a sha nobody holds is released once blob:stat says the bytes are gone', async () => {
+    const statted: string[] = [];
+    const w = blobWorld({
+      blobStat: async (sha) => {
+        statted.push(sha);
+        return sha === T ? { size: 4096 } : { found: false };
+      },
+    });
+    holder(w, '@ax/attachments', () => []);
+    await charge('alice', S);
+    await charge('bob', S);
+    await charge('alice', T);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 2, blobReleaseAborted: false });
+    expect(statted.sort()).toEqual([S, T]);
+    expect(await rows()).toEqual(['alice blob:b']);
+  });
+
+  it('FAIL CLOSED: blob:stat throwing, or answering anything but { found: false }, keeps the charge; the pass goes on', async () => {
+    const U = 'c'.repeat(64);
+    const V = 'd'.repeat(64);
+    const w = blobWorld({
+      blobStat: async (sha) => {
+        if (sha === S) throw new Error('volume unreadable');
+        if (sha === T) return { found: true };
+        if (sha === U) return {};
+        return { found: false };
+      },
+    });
+    holder(w, '@ax/attachments', () => []);
+    for (const sha of [S, T, U, V]) await charge('alice', sha);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a', 'alice blob:b', 'alice blob:c']);
+  });
+
+  it('FAIL CLOSED: without blob:stat, a sha nobody holds is never released; held shas still are', async () => {
+    const w = blobWorld({ blobStat: false });
+    holder(w, '@ax/attachments', () => [{ sha256: T, userIds: ['bob'] }]);
+    await charge('alice', S);
+    await charge('alice', T);
+    await charge('bob', T);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a', 'bob blob:b']);
+  });
+
+  it("keeps A's charge when the only holder of the sha (B) is not charged for it", async () => {
+    // B references A's bytes through dedup but never paid for them: releasing
+    // A would leave bytes that exist charged to nobody.
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => [{ sha256: S, userIds: ['bob'] }]);
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a']);
+  });
+
+  it("releases A when a listed holder's own charge is still FRESH (a charge of any age counts)", async () => {
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => [{ sha256: S, userIds: ['bob'] }]);
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    // The db stamps bob's row with its own now(): inside the grace window.
+    await charge('bob', S);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['bob blob:a']);
+  });
+
+  it('runs even though the workspace sweep is skipped (its optional hooks are absent)', async () => {
+    const w = blobWorld();
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    const r = await w.svc.reconcile();
+    expect(r).toMatchObject({ measured: 0, blobsReleased: 1, blobReleaseAborted: false });
+    expect(w.lines.some((l) => l.msg === 'disk_quota_sweep_skipped')).toBe(true);
+  });
+
+  it('leaves rows inside the grace window alone, and never even asks about them', async () => {
+    const w = blobWorld();
+    const asked = holder(w, '@ax/attachments', () => []);
+    await charge('alice', S);
+    expect((await w.svc.reconcile()).blobsReleased).toBe(0);
+    w.clock.advance(23 * HOUR);
+    expect((await w.svc.reconcile()).blobsReleased).toBe(0);
+    expect(asked.every((c) => c.length === 0)).toBe(true);
+    expect(await rows()).toEqual(['alice blob:a']);
+    w.clock.advance(2 * HOUR);
+    expect((await w.svc.reconcile()).blobsReleased).toBe(1);
+    expect(asked.at(-1)).toEqual([S]);
+    expect(await rows()).toEqual([]);
+  });
+
+  it('reads the grace window from the admin setting', async () => {
+    const w = blobWorld();
+    await w.limits.set({ graceMs: HOUR });
+    await charge('alice', S);
+    w.clock.advance(2 * HOUR);
+    expect((await w.svc.reconcile()).blobsReleased).toBe(1);
+  });
+
+  it('an empty pass still asks the holders, so the roster fills before anything is stale', async () => {
+    const w = blobWorld();
+    const asked = holder(w, '@ax/attachments', () => []);
+    await charge('alice', S); // fresh: not a candidate yet
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: false });
+    expect(asked).toEqual([[]]);
+    expect(await realStore.listRefHolders()).toEqual(['@ax/attachments']);
+  });
+
+  it('FAIL CLOSED: a holder that answered before and now throws aborts with nothing released', async () => {
+    const w = blobWorld();
+    let crash = false;
+    holder(w, '@ax/attachments', () => (crash ? 'throw' : []));
+    await charge('alice', S);
+    await charge('bob', T);
+    await w.svc.reconcile(); // empty pass: @ax/attachments joins the roster
+    crash = true;
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: true });
+    expect(await rows()).toEqual(['alice blob:a', 'bob blob:b']);
+    expect(aborted(w)?.bindings).toMatchObject({ missing: ['@ax/attachments'], failed: [] });
+  });
+
+  it('FAIL CLOSED: a roster member that is no longer loaded aborts until it is forgotten', async () => {
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => []);
+    await realStore.touchRefHolders(['@ax/retired-plugin']);
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: true });
+    expect(await rows()).toEqual(['alice blob:a']);
+    expect(aborted(w)?.level).toBe('error');
+    expect(aborted(w)?.bindings).toMatchObject({ missing: ['@ax/retired-plugin'] });
+    // Forgetting it (the admin route's job) lets the next pass go ahead.
+    await realStore.forgetRefHolder('@ax/retired-plugin');
+    expect((await w.svc.reconcile()).blobsReleased).toBe(1);
+  });
+
+  it('FAIL CLOSED: a holder answering ok:false aborts (and still joins the roster)', async () => {
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => []);
+    holder(w, '@ax/skills', () => 'fail');
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: true });
+    expect(await rows()).toEqual(['alice blob:a']);
+    expect(aborted(w)?.bindings).toMatchObject({ failed: ['@ax/skills'], missing: [] });
+    expect(await realStore.listRefHolders()).toEqual(['@ax/attachments', '@ax/skills']);
+  });
+
+  it('FAIL CLOSED: a malformed answer aborts', async () => {
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => []);
+    w.bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, 'rogue', async (_c, payload) => {
+      const p = payload as { answers: unknown[] };
+      return { ...p, answers: [...p.answers, { ok: true, refs: [] }] };
+    });
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: true });
+    expect(await rows()).toEqual(['alice blob:a']);
+    expect(aborted(w)?.bindings).toMatchObject({ malformed: 1 });
+  });
+
+  it('FAIL CLOSED: a rejected fire aborts', async () => {
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => []);
+    w.bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, 'vetoer', async () => reject({ reason: 'no' }));
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: true });
+    expect(await rows()).toEqual(['alice blob:a']);
+    expect(aborted(w)?.bindings).toMatchObject({ rejected: true });
+  });
+
+  it('an unattributed ref (userIds: []) releases nothing for that sha; other shas still go', async () => {
+    const w = blobWorld();
+    holder(w, '@ax/skills', () => [{ sha256: S, userIds: [] }]);
+    holder(w, '@ax/attachments', () => [{ sha256: S, userIds: ['bob'] }]);
+    await charge('alice', S);
+    await charge('bob', S);
+    await charge('alice', T);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a', 'bob blob:a']);
+  });
+
+  it('never offers (or releases) a blob row whose source is not a sha256', async () => {
+    const w = blobWorld();
+    const asked = holder(w, '@ax/attachments', () => []);
+    await realStore.upsertUsage('alice', 'blob:seed', 'blob', 1);
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(asked.at(-1)).toEqual([S]);
+    const left = await db.selectFrom('disk_quota_v1_usage').select('source').execute();
+    expect(left.map((r) => r.source)).toEqual(['blob:seed']);
+  });
+
+  it('asks in batches of at most 1000 shas; an aborting batch stops the pass, earlier releases stand', async () => {
+    const w = blobWorld();
+    const n = BLOB_COLLECT_REFS_MAX_CANDIDATES + 5;
+    await sql`
+      INSERT INTO disk_quota_v1_usage (owner_id, source, kind, bytes)
+      SELECT 'alice', 'blob:' || encode(sha256(i::text::bytea), 'hex'), 'blob', 4096
+      FROM generate_series(1, ${n}::int) AS i
+    `.execute(db);
+    let stale = 0;
+    const asked = holder(w, '@ax/attachments', (c) => {
+      if (c.length === 0) return [];
+      stale++;
+      return stale === 1 ? [] : 'fail';
+    });
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toEqual({
+      measured: 0,
+      failed: 0,
+      blobsReleased: BLOB_COLLECT_REFS_MAX_CANDIDATES,
+      blobReleaseAborted: true,
+    });
+    expect(asked.map((c) => c.length)).toEqual([BLOB_COLLECT_REFS_MAX_CANDIDATES, 5]);
+    expect((await rows()).length).toBe(5);
+    // Next pass: the holder is healthy again and the tail goes.
+    stale = 0;
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 5, blobReleaseAborted: false });
+  });
+
+  it('never throws: a broken store or setting is an aborted pass with nothing released', async () => {
+    const broken = blobWorld({ store: failingStore });
+    expect(await broken.svc.reconcile()).toEqual({
+      measured: 0,
+      failed: 0,
+      blobsReleased: 0,
+      blobReleaseAborted: true,
+    });
+    const noSetting = blobWorld({ storageGetThrows: true });
+    await charge('alice', S);
+    noSetting.clock.advance(25 * HOUR);
+    expect(await noSetting.svc.reconcile()).toMatchObject({
+      blobsReleased: 0,
+      blobReleaseAborted: true,
+    });
+    expect(await rows()).toEqual(['alice blob:a']);
   });
 });

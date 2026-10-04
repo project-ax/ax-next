@@ -1,4 +1,9 @@
-import { makeAgentContext, type Plugin } from '@ax/core';
+import {
+  BLOB_COLLECT_REFS_HOOK,
+  answerBlobCollectRefs,
+  makeAgentContext,
+  type Plugin,
+} from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runAttachmentsMigration, type AttachmentsDatabase } from './migrations.js';
 import { createAttachmentsStore, type AttachmentsStore } from './store.js';
@@ -69,6 +74,12 @@ function parsePurgedIds(payload: unknown): string[] | undefined {
 //   - subscribes: `conversations:purged` (TASK-718). A hard-deleted
 //     conversation (agent delete) takes its files/artifacts metadata rows with
 //     it. The blob bytes are left in place (content-addressed + shared).
+//   - subscribes: `blob:collect-refs` (TASK-776). We store blob shas in our own
+//     rows, so we answer "which of these do you still reference, and for
+//     whom?" from both tables. Reclaiming bytes is the sweeper's job, and it
+//     only deletes what every holder agrees nobody references.
+//   - calls `blob:stat` (TASK-776): artifacts:publish-blob refuses a sha the
+//     blob store does not hold, so no row ever points at missing bytes.
 // ---------------------------------------------------------------------------
 
 export function createAttachmentsPlugin(
@@ -98,9 +109,14 @@ export function createAttachmentsPlugin(
         // attachments:download fetches via blob:get. The git path is dropped.
         'blob:put',
         'blob:get',
+        // TASK-776 (D10): artifacts:publish-blob refuses a sha the store lacks.
+        'blob:stat',
         'conversations:get',
       ],
-      subscribes: ['conversations:purged'],
+      // `blob:collect-refs`: this plugin stores blob shas in its own rows, so it
+      // is a holder (TASK-776, D2/D7). It must answer, or a sweep would read the
+      // absence as "no one holds these bytes".
+      subscribes: ['conversations:purged', BLOB_COLLECT_REFS_HOOK],
     },
 
     async init({ bus }) {
@@ -129,7 +145,7 @@ export function createAttachmentsPlugin(
       const commitHandler = createCommitHandler({ store, bus });
       const downloadHandler = createDownloadHandler({ bus, store });
       const listForConversationHandler = createListForConversationHandler({ store });
-      const publishArtifactBlobHandler = createPublishArtifactBlobHandler({ store });
+      const publishArtifactBlobHandler = createPublishArtifactBlobHandler({ store, bus });
 
       // 4) Register the hooks. `bus.registerService` is generic in I/O;
       //    each handler factory above returned a correctly-typed closure,
@@ -195,7 +211,16 @@ export function createAttachmentsPlugin(
         },
       );
 
-      // 6) Start the janitor. The interval defaults to 5 minutes; tests
+      // 6) TASK-776: answer "which of these blobs do you still reference, and
+      //    for whom?" from our own rows (D7). `answerBlobCollectRefs` validates
+      //    the (untrusted) payload and turns any failure into `ok: false`
+      //    instead of throwing: HookBus.fire swallows a throw, which the caller
+      //    would read as "nothing here references these bytes".
+      bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, PLUGIN_NAME, async (_ctx, payload) =>
+        answerBlobCollectRefs(payload, PLUGIN_NAME, (shas) => store.blobRefs(shas)),
+      );
+
+      // 7) Start the janitor. The interval defaults to 5 minutes; tests
       //    can override via `janitorIntervalSeconds`.
       janitor = startJanitor({
         store,

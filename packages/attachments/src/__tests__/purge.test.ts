@@ -277,6 +277,7 @@ async function makePluginRig(): Promise<PluginRig> {
     services: {
       'blob:put': async () => ({ sha256: 'a'.repeat(64), size: 0 }),
       'blob:get': async () => ({ found: false }) as const,
+      'blob:stat': async () => ({ found: false }) as const,
       // A spy, not a behavior: attachments must never reach for blob deletion
       // from this subscriber (blobs are content-addressed and shared).
       'blob:delete': async (_ctx: unknown, input: unknown) => {
@@ -318,7 +319,11 @@ async function makePluginRig(): Promise<PluginRig> {
 
 describe('@ax/attachments subscribes to conversations:purged', () => {
   it('lists the subscription in the manifest', () => {
-    expect(createAttachmentsPlugin().manifest.subscribes).toEqual(['conversations:purged']);
+    // Plus blob:collect-refs (TASK-776): the holder side of blob reclamation.
+    expect(createAttachmentsPlugin().manifest.subscribes).toEqual([
+      'conversations:purged',
+      'blob:collect-refs',
+    ]);
   });
 
   it('deletes the purged conversations rows, keeps the others (shared sha256 too), leaves temps alone', async () => {

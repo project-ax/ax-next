@@ -38,7 +38,7 @@ function blobStubPlugin(): Plugin {
     manifest: {
       name: 'test-blob-stub',
       version: '0.0.0',
-      registers: ['blob:put', 'blob:get'],
+      registers: ['blob:put', 'blob:get', 'blob:stat'],
       calls: [],
       subscribes: [],
     },
@@ -54,6 +54,12 @@ function blobStubPlugin(): Plugin {
       bus.registerService('blob:get', 'test-blob-stub', async (_ctx, input) => {
         const bytes = blobs.get((input as { sha256: string }).sha256);
         return bytes === undefined ? { found: false } : { bytes };
+      });
+      // @ax/attachments declares blob:stat (artifacts:publish-blob checks the sha
+      // exists); these tests never publish, the stub just has to register.
+      bus.registerService('blob:stat', 'test-blob-stub', async (_ctx, input) => {
+        const bytes = blobs.get((input as { sha256: string }).sha256);
+        return bytes === undefined ? { found: false } : { size: bytes.length };
       });
     },
   };

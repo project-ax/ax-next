@@ -8,6 +8,7 @@ export {
 export {
   DEFAULT_RECORD,
   parseRecord,
+  parseRecordStrict,
   serializeRecord,
   toWire,
   type BrandingRecord,

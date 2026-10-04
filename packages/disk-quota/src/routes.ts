@@ -1,4 +1,5 @@
 import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
+import { z } from 'zod';
 import {
   DEFAULT_LIMITS,
   DiskQuotaLimitsSchema,
@@ -27,7 +28,12 @@ import type { DiskQuotaStore } from './store.js';
 //
 //   GET /settings/storage       — any signed-in person: THEIR OWN numbers
 //   GET /admin/storage          — admin: the limits and the biggest owners
-//   PUT /admin/storage/limits   — admin: change the limits
+//   PUT /admin/storage/limits   — admin: change the limits (including the
+//                                 blob pass's grace window, `graceMs`)
+//   POST /admin/storage/ref-holders/forget
+//                               — admin: drop one holder from the blob pass's
+//                                 roster (a plugin that was really retired).
+//                                 The ONLY way the roster shrinks; logged.
 //
 // Nothing here takes a user from the URL or the body: `/settings/storage`
 // answers for the session user and only for them, so there is no id to
@@ -40,6 +46,13 @@ export const ADMIN_OWNER_LIMIT = 200;
 const NAME_LOOKUP_CONCURRENCY = 8;
 
 const PutLimitsSchema = DiskQuotaLimitsSchema.partial();
+
+/** A holder is a plugin name; nothing longer than this is one. */
+export const HOLDER_NAME_MAX = 200;
+
+const ForgetHolderSchema = z
+  .object({ holder: z.string().min(1).max(HOLDER_NAME_MAX) })
+  .strict();
 
 interface WireOwner {
   ownerId: string;
@@ -56,6 +69,7 @@ export interface StorageRouteHandlers {
   getMine(req: RouteRequest, res: RouteResponse): Promise<void>;
   getAdmin(req: RouteRequest, res: RouteResponse): Promise<void>;
   putLimits(req: RouteRequest, res: RouteResponse): Promise<void>;
+  forgetRefHolder(req: RouteRequest, res: RouteResponse): Promise<void>;
 }
 
 export function createStorageRouteHandlers(deps: {
@@ -141,6 +155,7 @@ export function createStorageRouteHandlers(deps: {
         bounds: {
           limitMb: { ...LIMIT_BOUNDS.limitMb },
           warnPercent: { ...LIMIT_BOUNDS.warnPercent },
+          graceMs: { ...LIMIT_BOUNDS.graceMs },
         },
         owners,
         // Across EVERY owner, not just the capped list above.
@@ -167,6 +182,7 @@ export function createStorageRouteHandlers(deps: {
       const partial: Partial<DiskQuotaLimits> = {};
       if (body.data.limitMb !== undefined) partial.limitMb = body.data.limitMb;
       if (body.data.warnPercent !== undefined) partial.warnPercent = body.data.warnPercent;
+      if (body.data.graceMs !== undefined) partial.graceMs = body.data.graceMs;
       try {
         const saved = await limits.set(partial);
         res.status(200).json({ limits: saved });
@@ -178,11 +194,33 @@ export function createStorageRouteHandlers(deps: {
         throw err;
       }
     },
+
+    // Forgetting a holder lets the blob pass go ahead without it. If that
+    // plugin's rows still exist, the next pass may release charges it would
+    // have kept, so this is an admin's deliberate call, and it is logged.
+    async forgetRefHolder(req, res) {
+      const actor = await requireAdmin(bus, ctx, req, res);
+      if (actor === null) return;
+      const parsed = parseRequestBody(req.body);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      const body = ForgetHolderSchema.safeParse(parsed.value);
+      if (!body.success) {
+        res.status(400).json({ error: 'invalid-holder' });
+        return;
+      }
+      const holder = body.data.holder;
+      const forgotten = await store.forgetRefHolder(holder);
+      ctx.logger.warn('disk_quota_ref_holder_forgotten', { holder, by: actor.id, forgotten });
+      res.status(200).json({ forgotten });
+    },
   };
 }
 
 interface RouteSpec {
-  method: 'GET' | 'PUT';
+  method: 'GET' | 'PUT' | 'POST';
   path: string;
   handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   maxBodyBytes?: number;
@@ -204,6 +242,12 @@ export async function registerStorageRoutes(
       method: 'PUT',
       path: '/admin/storage/limits',
       handler: handlers.putLimits,
+      maxBodyBytes: STORAGE_BODY_MAX_BYTES,
+    },
+    {
+      method: 'POST',
+      path: '/admin/storage/ref-holders/forget',
+      handler: handlers.forgetRefHolder,
       maxBodyBytes: STORAGE_BODY_MAX_BYTES,
     },
   ];

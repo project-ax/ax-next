@@ -381,6 +381,7 @@ function permissiveWorkspacePlugin(): Plugin {
         // download path now rides.
         'blob:put',
         'blob:get',
+        'blob:stat',
       ],
       calls: [],
       subscribes: [],
@@ -462,6 +463,16 @@ function permissiveWorkspacePlugin(): Plugin {
         async (_ctx, input: unknown) => {
           const bytes = cas.get((input as { sha256: string }).sha256);
           return bytes === undefined ? { found: false } : { bytes };
+        },
+      );
+      // @ax/attachments declares blob:stat (artifacts:publish-blob checks the sha
+      // exists); these tests never publish, the stub just has to register.
+      bus.registerService(
+        'blob:stat',
+        'mock-workspace-permissive',
+        async (_ctx, input: unknown) => {
+          const bytes = cas.get((input as { sha256: string }).sha256);
+          return bytes === undefined ? { found: false } : { size: bytes.length };
         },
       );
     },

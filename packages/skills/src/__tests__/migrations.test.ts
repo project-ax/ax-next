@@ -633,3 +633,42 @@ describe('runSkillsMigration — skills_v1_catalog_requests admit queue', () => 
     expect(rows).toHaveLength(1);
   });
 });
+
+describe('runSkillsMigration — blob reference columns (TASK-776)', () => {
+  // TASK-776 (blob-gc design D7): @ax/skills answers `blob:collect-refs` with
+  // `WHERE bundle_tree_sha = ANY($1)` over four tables, once per sweep batch.
+  it.each([
+    'skills_v1_skills',
+    'skills_v1_user_skills',
+    'skills_v1_authored',
+    'skills_v1_catalog_requests',
+  ])('indexes %s.bundle_tree_sha for the blob:collect-refs holder lookup', async (table) => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const result = await sql<{ indexdef: string }>`
+      SELECT indexdef FROM pg_indexes WHERE tablename = ${table}
+    `.execute(db);
+    expect(result.rows.some((r) => /\(bundle_tree_sha\)/.test(r.indexdef))).toBe(true);
+  });
+
+  // TASK-776 (design D7, "verify"): the one other table that once held bundle
+  // content must hold NO blob sha, or it would have to be a holder too. Pinned
+  // on a real Postgres so a future column named like a sha fails here, not as a
+  // silently deleted bundle.
+  it('skills_v1_skill_files holds no blob sha (so it is not a blob:collect-refs holder)', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const cols = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'skills_v1_skill_files'
+       ORDER BY column_name
+    `.execute(db);
+    expect(cols.rows.map((r) => r.column_name)).toEqual([
+      'contents',
+      'owner_user_id',
+      'path',
+      'scope',
+      'skill_id',
+    ]);
+  });
+});

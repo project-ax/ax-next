@@ -62,27 +62,37 @@ const recordSchema = z.object({
 });
 
 /**
+ * Strict read: `undefined` when nothing is stored (absent or empty bytes), the
+ * record when the bytes are a valid one, and a THROW for anything stored that
+ * cannot be read as one (not UTF-8, not JSON, wrong shape, a bad logo pointer).
+ *
+ * This is the read for callers that must tell "nothing here" apart from "there
+ * is something here that I cannot read". The `blob:collect-refs` holder is one:
+ * answering "no logos" for a record it could not parse would tell a sweep that
+ * nothing holds the logo bytes, and the sweep would delete them.
+ */
+export function parseRecordStrict(
+  bytes: Uint8Array | undefined,
+): BrandingRecord | undefined {
+  if (bytes === undefined || bytes.length === 0) return undefined;
+  // `fatal` makes a bad byte a throw instead of a U+FFFD that would then fail
+  // the JSON parse with a less useful message.
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  return recordSchema.parse(JSON.parse(text));
+}
+
+/**
  * Tolerant read: undefined / empty / non-JSON / wrong-shape bytes all yield a
  * fresh copy of the default record so the public GET never 500s on a corrupt
  * row. A fresh copy (not the shared default) keeps callers from mutating it.
+ * (Not for the blob holder: see `parseRecordStrict`.)
  */
 export function parseRecord(bytes: Uint8Array | undefined): BrandingRecord {
-  if (bytes === undefined || bytes.length === 0) return { ...DEFAULT_RECORD };
-  let text: string;
   try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return parseRecordStrict(bytes) ?? { ...DEFAULT_RECORD };
   } catch {
     return { ...DEFAULT_RECORD };
   }
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    return { ...DEFAULT_RECORD };
-  }
-  const parsed = recordSchema.safeParse(json);
-  if (!parsed.success) return { ...DEFAULT_RECORD };
-  return parsed.data;
 }
 
 export function serializeRecord(record: BrandingRecord): Uint8Array {

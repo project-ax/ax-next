@@ -9,7 +9,7 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { makeAgentContext } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext } from '@ax/core';
 import { runAttachmentsMigration, type AttachmentsDatabase } from '../migrations.js';
 import { createAttachmentsStore } from '../store.js';
 import {
@@ -67,11 +67,28 @@ afterAll(async () => {
 });
 
 const SHA = 'a'.repeat(64);
+const SHA2 = 'b'.repeat(64);
+
+// D10: `artifacts:publish-blob` asks the blob store whether the sha is there
+// before it writes a row. `stored` is the set of shas this fake store holds.
+function makeBlobStatBus(stored: string[] = [SHA, SHA2]): { bus: HookBus; stats: string[] } {
+  const bus = new HookBus();
+  const stats: string[] = [];
+  bus.registerService<{ sha256: string }, { size: number } | { found: false }>(
+    'blob:stat',
+    'test-blob',
+    async (_ctx, { sha256 }) => {
+      stats.push(sha256);
+      return stored.includes(sha256) ? { size: 1 } : { found: false };
+    },
+  );
+  return { bus, stats };
+}
 
 describe('artifacts:publish-blob handler', () => {
   it('inserts an artifact row scoped to ctx.userId and returns an opaque id', async () => {
     const { store } = await freshSetup();
-    const handler = createPublishArtifactBlobHandler({ store });
+    const handler = createPublishArtifactBlobHandler({ store, bus: makeBlobStatBus().bus });
     const out = await handler(makeCtx('u-1'), {
       conversationId: 'c-1',
       sha256: SHA,
@@ -90,7 +107,7 @@ describe('artifacts:publish-blob handler', () => {
 
   it('publishes identical bytes under multiple paths and conversations', async () => {
     const { store } = await freshSetup();
-    const handler = createPublishArtifactBlobHandler({ store });
+    const handler = createPublishArtifactBlobHandler({ store, bus: makeBlobStatBus().bus });
     const ids: string[] = [];
     for (const [conversationId, path] of [['c-1', 'a.txt'], ['c-1', 'b.txt'], ['c-2', 'a.txt']]) {
       const result = await handler(makeCtx('u-1'), {
@@ -105,7 +122,7 @@ describe('artifacts:publish-blob handler', () => {
 
   it('is idempotent on (conversationId, path) — re-publish upserts', async () => {
     const { store } = await freshSetup();
-    const handler = createPublishArtifactBlobHandler({ store });
+    const handler = createPublishArtifactBlobHandler({ store, bus: makeBlobStatBus().bus });
     const base = {
       conversationId: 'c-1',
       path: 'workspace/report.pdf',
@@ -114,10 +131,71 @@ describe('artifacts:publish-blob handler', () => {
       size: 1,
     };
     await handler(makeCtx('u-1'), { ...base, sha256: SHA });
-    const SHA2 = 'b'.repeat(64);
     await handler(makeCtx('u-1'), { ...base, sha256: SHA2 });
     const row = await store.getArtifactByPath('c-1', 'workspace/report.pdf');
     expect(row!.sha256).toBe(SHA2); // refreshed, not duplicated
+  });
+
+  // TASK-776 / design D10. The bug this closes: a runner could publish a row
+  // pointing at a sha the blob store no longer (or never) held, and the person
+  // got a download link that 404s. The row must not be written at all.
+  it('publish of an unknown sha writes no row', async () => {
+    const { store } = await freshSetup();
+    const { bus, stats } = makeBlobStatBus([]); // the store holds nothing
+    const handler = createPublishArtifactBlobHandler({ store, bus });
+    const input = {
+      conversationId: 'c-1',
+      sha256: SHA,
+      path: 'workspace/report.pdf',
+      displayName: 'report.pdf',
+      mediaType: 'application/pdf',
+      size: 2048,
+    };
+    const err = await handler(makeCtx('u-1'), input).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('not-found');
+    expect((err as PluginError).plugin).toBe('@ax/attachments');
+    expect((err as PluginError).hookName).toBe('artifacts:publish-blob');
+    expect(stats).toEqual([SHA]);
+    expect(await store.getArtifactByPath('c-1', 'workspace/report.pdf')).toBeNull();
+  });
+
+  it('a blob:stat failure propagates and writes no row (never "assume it is there")', async () => {
+    const { store } = await freshSetup();
+    const bus = new HookBus();
+    bus.registerService('blob:stat', 'test-blob', async () => {
+      throw new Error('blob store unreachable');
+    });
+    const handler = createPublishArtifactBlobHandler({ store, bus });
+    await expect(
+      handler(makeCtx('u-1'), {
+        conversationId: 'c-1',
+        sha256: SHA,
+        path: 'workspace/report.pdf',
+        displayName: 'report.pdf',
+        mediaType: 'application/pdf',
+        size: 1,
+      }),
+    ).rejects.toThrow(/blob store unreachable/);
+    expect(await store.getArtifactByPath('c-1', 'workspace/report.pdf')).toBeNull();
+  });
+
+  it('a re-publish of an unknown sha leaves the earlier row untouched', async () => {
+    const { store } = await freshSetup();
+    const base = {
+      conversationId: 'c-1',
+      path: 'workspace/report.pdf',
+      displayName: 'report.pdf',
+      mediaType: 'application/pdf',
+      size: 1,
+    };
+    await createPublishArtifactBlobHandler({ store, bus: makeBlobStatBus().bus })(
+      makeCtx('u-1'),
+      { ...base, sha256: SHA },
+    );
+    const gone = createPublishArtifactBlobHandler({ store, bus: makeBlobStatBus([]).bus });
+    await expect(gone(makeCtx('u-1'), { ...base, sha256: SHA2 })).rejects.toThrow(PluginError);
+    expect((await store.getArtifactByPath('c-1', 'workspace/report.pdf'))?.sha256).toBe(SHA);
   });
 });
 

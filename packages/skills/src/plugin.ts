@@ -1,10 +1,13 @@
 import {
+  BLOB_COLLECT_REFS_HOOK,
+  answerBlobCollectRefs,
   makeAgentContext,
   PluginError,
   type HookBus,
   type Plugin,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
+import { collectBundleRefs } from './blob-refs-store.js';
 import { checkForUpdates } from './check-updates.js';
 import { createBlobBundleStore } from './blob-bundle-store.js';
 import { validateBundleFiles } from './bundle-files.js';
@@ -275,7 +278,10 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
       // TASK-718 — `@ax/agents` fires `agents:deleted` after the agent row is
       // gone. The four agent-keyed tables have no FK to it, so this plugin
       // deletes its own rows keyed on the agent.
-      subscribes: ['agents:deleted'],
+      // TASK-776 — four of our tables store a blob sha (`bundle_tree_sha`), so we
+      // are a `blob:collect-refs` holder. If we did not answer, a sweep would read
+      // the silence as "no one holds these bundles".
+      subscribes: ['agents:deleted', BLOB_COLLECT_REFS_HOOK],
     },
 
     async init({ bus }) {
@@ -1375,6 +1381,16 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
           }
           return undefined;
         },
+      );
+
+      // TASK-776 — answer "which of these blobs do you still reference, and for
+      // whom?" from our bundle pointers (design D7). `answerBlobCollectRefs`
+      // validates the (untrusted) payload and turns any failure into `ok: false`
+      // instead of throwing: HookBus.fire swallows a throw, which the caller
+      // would read as "nothing here references these bytes".
+      const refsDb = db;
+      bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, PLUGIN_NAME, async (_ctx, payload) =>
+        answerBlobCollectRefs(payload, PLUGIN_NAME, (shas) => collectBundleRefs(refsDb, shas)),
       );
     },
 

@@ -1,14 +1,18 @@
 import {
+  BLOB_COLLECT_REFS_HOOK,
+  BLOB_COLLECT_REFS_MAX_CANDIDATES,
   isOwnerlessId,
   makeAgentContext,
+  readBlobCollectRefsAnswers,
   type AgentContext,
+  type BlobHolding,
   type HookBus,
   type Logger,
 } from '@ax/core';
 import { limitBytesOf, type LimitsStore } from './config.js';
 import { blobFullMessage, STORAGE_UNAVAILABLE_MESSAGE, workspaceFullMessage } from './messages.js';
 import { mapBounded, PLUGIN_NAME } from './shared.js';
-import type { DiskQuotaStore } from './store.js';
+import type { BlobRow, DiskQuotaStore } from './store.js';
 
 // ---------------------------------------------------------------------------
 // The gates and the meters, kept apart from the plugin wiring so they can be
@@ -22,7 +26,15 @@ import type { DiskQuotaStore } from './store.js';
 //                         repo off the write's critical path.
 //   releaseWorkspace    — `workspace:deleted`: the agent's repo is gone, so
 //                         drop its row and give the owner the room back.
-//   reconcile           — the periodic sweep over every personal agent.
+//   reconcile           — the periodic sweep: every personal agent's
+//                         workspace, then the BLOB PASS (releaseBlobs).
+//   releaseBlobs        — drop an (owner, blob:<sha>) charge once it is past
+//                         the grace window and no holder says that owner
+//                         still holds the sha (design D6), but never so that
+//                         bytes that still exist end up charged to nobody: a
+//                         sha held by others goes only while one of them is
+//                         charged for it, a sha held by nobody only once
+//                         `blob:stat` says its bytes are gone. Fails CLOSED.
 //
 // Error posture is deliberately lopsided (the same as @ax/usage-limits):
 //   - The GATES fail CLOSED. HookBus.fire isolates a throwing subscriber and
@@ -55,6 +67,19 @@ export interface ReconcileResult {
   measured: number;
   /** Agents the sweep tried but could not measure. */
   failed: number;
+  /** Blob ledger rows (one owner's charge for one sha) the blob pass released. */
+  blobsReleased: number;
+  /**
+   * The blob pass stopped early: a holder failed or went missing, an answer
+   * could not be read, the fire was vetoed, or the pass itself broke. Rows
+   * released by batches BEFORE the abort stand (see releaseBlobs).
+   */
+  blobReleaseAborted: boolean;
+}
+
+export interface BlobReleaseResult {
+  released: number;
+  aborted: boolean;
 }
 
 export interface DiskQuotaService {
@@ -72,8 +97,14 @@ export interface DiskQuotaService {
    * deletes nothing. Never throws.
    */
   releaseWorkspace(agentId: unknown): Promise<void>;
-  /** Sweep every personal agent. Skips (measured: 0) when a hook it needs is absent. Never throws. */
+  /**
+   * Sweep every personal agent (skipped, measured: 0, when a hook it needs is
+   * absent), then run the blob pass, which needs neither of those hooks.
+   * Never throws.
+   */
   reconcile(): Promise<ReconcileResult>;
+  /** The blob pass on its own (reconcile runs it). Never throws. */
+  releaseBlobs(): Promise<BlobReleaseResult>;
   /** Resolves once every background measurement has settled. */
   drain(): Promise<void>;
   /** Who a write in this context is charged to; undefined when nobody. */
@@ -84,6 +115,8 @@ export interface DiskQuotaService {
 export const OWNER_CACHE_MAX = 5000;
 /** The sweep measures this many agents at once. */
 export const SWEEP_CONCURRENCY = 2;
+/** The blob pass asks `blob:stat` about this many unheld shas at once. */
+export const BLOB_STAT_CONCURRENCY = 8;
 
 /**
  * A user id that names a person the ledger can be charged to. The empty id and
@@ -145,8 +178,11 @@ export function createDiskQuotaService(deps: {
   limits: LimitsStore;
   /** For the sweep's own contexts (no request to borrow a logger from). */
   logger?: Logger;
+  /** Injected clock: the blob pass's grace cutoff is measured from it. */
+  now?: () => Date;
 }): DiskQuotaService {
   const { bus, store, limits } = deps;
+  const now = deps.now ?? (() => new Date());
   const sweepLogger: { logger?: Logger } = deps.logger === undefined ? {} : { logger: deps.logger };
 
   // ---- who pays ------------------------------------------------------------
@@ -393,13 +429,17 @@ export function createDiskQuotaService(deps: {
     }
   }
 
-  async function reconcile(): Promise<ReconcileResult> {
-    const sweepCtx = makeAgentContext({
+  function sweepContext(): AgentContext {
+    return makeAgentContext({
       sessionId: 'disk-quota-sweep',
       agentId: PLUGIN_NAME,
       userId: 'system',
       ...sweepLogger,
     });
+  }
+
+  async function sweepWorkspaces(): Promise<{ measured: number; failed: number }> {
+    const sweepCtx = sweepContext();
     try {
       if (!bus.hasService('agents:list-personal-owners') || !bus.hasService('workspace:usage')) {
         log(sweepCtx, 'debug', 'disk_quota_sweep_skipped');
@@ -438,6 +478,189 @@ export function createDiskQuotaService(deps: {
     }
   }
 
+  /**
+   * Ask every holder about one batch of candidate shas (possibly none: an
+   * empty ask still records who answers, so the roster is filled long before
+   * anything is stale, design D2). Resolves the reading when the answers can
+   * be trusted, or undefined after logging why not. Every holder that
+   * answered at all joins the roster first, ok or not.
+   */
+  async function askHolders(
+    ctx: AgentContext,
+    candidates: string[],
+  ): Promise<ReturnType<typeof readBlobCollectRefsAnswers> | undefined> {
+    const roster = await store.listRefHolders();
+    const fired = await bus.fire(BLOB_COLLECT_REFS_HOOK, ctx, {
+      candidates: [...candidates],
+      answers: [],
+    });
+    if (fired.rejected) {
+      log(ctx, 'error', 'disk_quota_blob_release_aborted', {
+        candidates: candidates.length,
+        rejected: true,
+        source: fired.source,
+        missing: [],
+        failed: [],
+        malformed: 0,
+      });
+      return undefined;
+    }
+    // Judged against OUR candidate list, not the (rewritable) payload's.
+    const outcome = readBlobCollectRefsAnswers(fired.payload, candidates);
+    if (outcome.answered.size > 0) await store.touchRefHolders([...outcome.answered]);
+    const missing = roster.filter((h) => !outcome.answered.has(h)).sort();
+    if (missing.length > 0 || outcome.failed.length > 0 || outcome.malformed > 0) {
+      // An error, not a warn: a missing holder that is really gone stays
+      // missing until an admin forgets it, and until then nobody gets a
+      // released charge back. This is the line an operator acts on.
+      log(ctx, 'error', 'disk_quota_blob_release_aborted', {
+        candidates: candidates.length,
+        rejected: false,
+        missing,
+        failed: outcome.failed,
+        malformed: outcome.malformed,
+      });
+      return undefined;
+    }
+    return outcome;
+  }
+
+  /**
+   * Of the shas nobody holds, the ones whose bytes the blob store says are
+   * GONE (`blob:stat` answered exactly `{ found: false }`). Anything else (a
+   * size, an odd answer, a throw, no `blob:stat` at all) means "maybe still
+   * there", and that sha keeps its charge. Never throws.
+   */
+  async function bytesGone(ctx: AgentContext, shas: readonly string[]): Promise<Set<string>> {
+    const gone = new Set<string>();
+    if (shas.length === 0) return gone;
+    if (!bus.hasService('blob:stat')) {
+      log(ctx, 'info', 'disk_quota_blob_release_unverifiable', { shas: shas.length });
+      return gone;
+    }
+    let failed = 0;
+    await mapBounded(shas, BLOB_STAT_CONCURRENCY, async (sha256) => {
+      try {
+        const out = await bus.call<{ sha256: string }, unknown>('blob:stat', ctx, { sha256 });
+        if (
+          out !== null &&
+          typeof out === 'object' &&
+          (out as Record<string, unknown>).found === false &&
+          !('size' in out)
+        ) {
+          gone.add(sha256);
+        }
+      } catch (err) {
+        failed++;
+        log(ctx, 'debug', 'disk_quota_blob_stat_failed', { sha256, err });
+      }
+    });
+    if (failed > 0) log(ctx, 'warn', 'disk_quota_blob_stat_failed', { failed, of: shas.length });
+    return gone;
+  }
+
+  /**
+   * Which of these stale rows may go. Per sha:
+   *   1. held for nobody in particular (some ref with `userIds: []`): none;
+   *   2. held by named people U: the row of an owner outside U goes ONLY IF
+   *      someone in U is still charged for that sha (a row of any age);
+   *      otherwise every row stays, because the bytes exist and someone has to
+   *      keep paying for them;
+   *   3. held by nobody: the rows go ONLY IF the bytes are confirmed gone
+   *      (`blob:stat` says `{ found: false }`; see bytesGone).
+   *
+   * The invariant: this pass never leaves bytes that still exist charged to
+   * nobody. A charge for unreferenced bytes is given back only once the bytes
+   * are gone (the later byte GC's purge), and one owner's share of shared bytes
+   * is released only while someone listed is still charged for them. Without
+   * this, upload to the limit, drop every reference, wait out the grace window
+   * and repeat would grow the shared volume without bound.
+   */
+  async function releasableRows(
+    ctx: AgentContext,
+    rows: readonly BlobRow[],
+    held: ReadonlyMap<string, BlobHolding>,
+  ): Promise<BlobRow[]> {
+    const shas = [...new Set(rows.map((r) => r.sha256))];
+    const unheld = shas.filter((s) => !held.has(s));
+    const shared = shas.filter((s) => {
+      const h = held.get(s);
+      if (h === undefined || h.unattributed) return false;
+      return rows.some((r) => r.sha256 === s && !h.userIds.has(r.ownerId));
+    });
+    const payers = new Map<string, Set<string>>();
+    for (const r of await store.chargedOwners(shared)) {
+      let set = payers.get(r.sha256);
+      if (set === undefined) payers.set(r.sha256, (set = new Set()));
+      set.add(r.ownerId);
+    }
+    const gone = await bytesGone(ctx, unheld);
+    return rows.filter((r) => {
+      const h = held.get(r.sha256);
+      if (h === undefined) return gone.has(r.sha256);
+      if (h.unattributed || h.userIds.has(r.ownerId)) return false;
+      const charged = payers.get(r.sha256);
+      return charged !== undefined && [...h.userIds].some((u) => charged.has(u));
+    });
+  }
+
+  /**
+   * The blob pass (design D6). Takes this plugin's own `blob:<sha>` rows last
+   * written before `now - graceMs`, in batches of at most
+   * BLOB_COLLECT_REFS_MAX_CANDIDATES shas, asks every holder about each batch
+   * through `blob:collect-refs`, and drops the (owner, sha) rows the release
+   * rule allows (releasableRows): an owner no holder lists loses their charge
+   * while a listed holder is still charged for the same bytes; a sha held for
+   * nobody in particular (`userIds: []`) releases nothing at all; a sha held
+   * by nobody is released only once `blob:stat` confirms its bytes are gone.
+   * The pass never leaves bytes that still exist charged to nobody.
+   *
+   * FAILS CLOSED: a vetoed fire, a holder answering `ok: false`, an answer that
+   * cannot be read, or a roster member that did not answer (it threw, or its
+   * plugin is no longer loaded) releases NOTHING for that batch and stops the
+   * pass. Batches already done stay done: each was decided on a complete set
+   * of answers for its own shas, so an abort later says nothing about them.
+   *
+   * The DELETE re-checks the row's age, so a re-put landing between the ask
+   * and the delete (it refreshes `updated_at`) keeps its row. Never throws.
+   */
+  async function releaseBlobs(): Promise<BlobReleaseResult> {
+    const ctx = sweepContext();
+    let released = 0;
+    let candidatesSeen = 0;
+    try {
+      const { graceMs } = await limits.get();
+      const cutoff = new Date(now().getTime() - graceMs);
+      let after: string | undefined;
+      for (;;) {
+        const shas = await store.staleBlobShas(cutoff, after, BLOB_COLLECT_REFS_MAX_CANDIDATES);
+        // The first ask goes out even with no candidates (see askHolders).
+        if (shas.length === 0 && after !== undefined) break;
+        candidatesSeen += shas.length;
+        const outcome = await askHolders(ctx, shas);
+        if (outcome === undefined) return { released, aborted: true };
+        if (shas.length === 0) break;
+
+        const rows = await store.staleBlobRows(shas, cutoff);
+        const release = await releasableRows(ctx, rows, outcome.held);
+        if (release.length > 0) released += await store.releaseBlobRows(release, cutoff);
+        if (shas.length < BLOB_COLLECT_REFS_MAX_CANDIDATES) break;
+        after = shas[shas.length - 1];
+      }
+      log(ctx, 'info', 'disk_quota_blob_release_done', { candidates: candidatesSeen, released });
+      return { released, aborted: false };
+    } catch (err) {
+      log(ctx, 'error', 'disk_quota_blob_release_failed', { released, err });
+      return { released, aborted: true };
+    }
+  }
+
+  async function reconcile(): Promise<ReconcileResult> {
+    const sweep = await sweepWorkspaces();
+    const blobs = await releaseBlobs();
+    return { ...sweep, blobsReleased: blobs.released, blobReleaseAborted: blobs.aborted };
+  }
+
   return {
     admitWorkspaceWrite,
     admitBlobWrite,
@@ -446,6 +669,7 @@ export function createDiskQuotaService(deps: {
     scheduleWorkspaceMeasure,
     releaseWorkspace,
     reconcile,
+    releaseBlobs,
     ownerOf,
     async drain() {
       while (inflight.size > 0) await Promise.allSettled([...inflight]);
