@@ -117,3 +117,25 @@ export function stdioConnectorRowsForSystemSweep(db: Kysely<ConnectorDatabase>) 
     .select(['owner_user_id', 'connector_id', 'key_mode', 'visibility', 'capabilities', 'deleted_at'])
     .where(hasStdioMcpServer('capabilities'));
 }
+
+/**
+ * DELIBERATELY UNSCOPED — does any OTHER live connector, of ANY owner, that the
+ * stdio sweep will NOT delete share `connectorId`? A global credential ref is
+ * `account:<connectorId>[:<slot>]` with no owner in it, so when such a row
+ * exists the sweep must leave the global key alone: it may be that row's
+ * company key. Only the boot-time system sweep (stdio-sweep.ts) calls this.
+ */
+export async function hasSurvivingSameIdConnectorForSystemSweep(
+  db: Kysely<ConnectorDatabase>,
+  connectorId: string,
+): Promise<boolean> {
+  const row = await db
+    .selectFrom('connectors_v1_connectors')
+    .select('owner_user_id')
+    .where('connector_id', '=', connectorId)
+    .where('deleted_at', 'is', null)
+    .where((eb) => eb.not(hasStdioMcpServer('capabilities')))
+    .limit(1)
+    .executeTakeFirst();
+  return row !== undefined;
+}

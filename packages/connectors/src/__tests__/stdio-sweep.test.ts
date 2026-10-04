@@ -116,6 +116,21 @@ describe('@ax/connectors stdio sweep', () => {
     expect(purged).toEqual([{ scope: 'global', ownerId: null, ref: 'account:teamtool' }]);
   });
 
+  it('keeps the GLOBAL key when another owner\'s live non-stdio connector shares the id', async () => {
+    await (await boot()).close({ onError: () => {} });
+    harnesses.pop();
+    await insertConnector('admin1', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('userB', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
+    const events: ConnectorDeletedEvent[] = [];
+    const purged: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
+    await boot([capturePlugin(events, purged)]);
+    const rows = await sql('SELECT owner_user_id FROM connectors_v1_connectors');
+    expect(rows.map((r) => r['owner_user_id'])).toEqual(['admin1']);
+    expect(purged).not.toContainEqual({ scope: 'global', ownerId: null, ref: 'account:teamtool' });
+    expect(purged.filter((p) => p.scope === 'global')).toEqual([]);
+    expect(events.map((e) => e.connectorId)).toEqual(['teamtool']);
+  });
+
   it('deletes a row whose capabilities are garbage but mention stdio, without purging and without throwing', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
