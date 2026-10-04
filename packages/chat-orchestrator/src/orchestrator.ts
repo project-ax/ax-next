@@ -1821,8 +1821,11 @@ export function createOrchestrator(
   // connector attached mid-chat only shows up in a NEW conversation, and a
   // detached one stays callable in this one until the session idles out.
   // Compared against the agent row `agents:resolve` returns on EVERY invoke, so
-  // every write path (attach, detach, exclude, any future one) is seen without
-  // a change event, and nothing here depends on which replica took the write.
+  // every write to the row's attachments / exclusions is seen without a change
+  // event, and nothing here depends on which replica took the write. NOT seen:
+  // changes that leave the row alone — a connector deleted or its capabilities
+  // edited, or the owner's legacy-owned set changing. Those still wait for the
+  // warm session to idle out.
   // Only sessions this process spawned have an entry; one it did not spawn is
   // already retired as `host-session-lost` in keepalive mode. Same lifetime as
   // `augmentGenBySession`.
