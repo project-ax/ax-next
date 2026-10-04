@@ -19,6 +19,7 @@ import {
   type OpenSessionParsed,
 } from '@ax/sandbox-protocol';
 import { allowlistFromParent } from './env.js';
+import { createStderrTail } from './stderr-tail.js';
 import { resolveUserFilesMount } from './resolve-user-files-mount.js';
 import {
   composeAvailable,
@@ -856,11 +857,31 @@ export async function openSessionImpl(
     ctx.logger.debug('runner_child_error', { err: err.message });
   });
 
-  // 10. Stderr → debug. reqId is already bound on ctx.logger so per-request
-  //     correlation is automatic; no token anywhere.
+  // 10. Stderr → debug, plus a capped, redacted tail we log ONCE at warn when
+  //     the runner exits non-zero (TASK-784). A runner that dies at boot
+  //     (exit 2, e.g. a bad env) has said nothing over IPC; its stderr is the
+  //     only place the reason lives, and debug alone hid it at the default
+  //     level. The tail is untrusted runner text: capped, host-minted secrets
+  //     redacted, host log only — never sent to the browser (the orchestrator
+  //     maps the exit to a fixed reason code). reqId is already bound on
+  //     ctx.logger so per-request correlation is automatic.
+  const stderrTail = createStderrTail([
+    created.token,
+    ...(input.proxyConfig !== undefined ? [input.proxyConfig.proxyAuthToken] : []),
+  ]);
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
+    stderrTail.append(chunk);
     ctx.logger.debug('runner_stderr', { chunk });
+  });
+  child.once('close', (code, signal) => {
+    if (code === null || code === 0) return;
+    ctx.logger.warn('runner_exited_nonzero', {
+      sessionId: created.sessionId,
+      code,
+      signal,
+      stderrTail: stderrTail.text(),
+    });
   });
 
   // 11. kill(): SIGTERM, escalate to SIGKILL after 5s if still alive. A no-op
