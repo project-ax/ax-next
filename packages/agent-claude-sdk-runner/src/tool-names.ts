@@ -59,12 +59,12 @@
 //   4. Connector MCP tools (TASK-734). Connector MCP servers run INSIDE the
 //      sandbox via the per-directory `.mcp.json` the runner materializes
 //      (`@ax/agent-runner-core` installed-skills) and then loads into
-//      `query()`'s `mcpServers` itself (`projected-mcp-servers.ts`, TASK-760 —
-//      the SDK never reads a skill dir's `.mcp.json`). The host keys each server
-//      by an opaque, host-minted `toolNamespace` (`c` + 10 lowercase hex) —
-//      never the connector author's free-text `spec.name` — so the SDK names
-//      their tools `mcp__<toolNamespace>__<tool>`. We lift exactly that shape
-//      to the canonical connector tool key
+//      `query()`'s `mcpServers` itself (`projected-mcp-servers.ts` → runner-core's
+//      loader, TASK-760/826 — the SDK never reads a skill dir's `.mcp.json`). The
+//      host keys each server by an opaque, host-minted `toolNamespace` (`c` + 10
+//      lowercase hex) — never the connector author's free-text `spec.name` — so
+//      the SDK names their tools `mcp__<toolNamespace>__<tool>`. We lift exactly
+//      that shape to the canonical connector tool key
 //
 //          toolKey = `mcp.<toolNamespace>.<tool>`
 //
@@ -90,6 +90,8 @@
 // host-side subscribers will see the full `mcp__<other>__<tool>` name and
 // can decide how to handle it (most likely: reject).
 // ---------------------------------------------------------------------------
+
+import { CONNECTOR_TOOL_NAMESPACE_RE } from '@ax/agent-runner-core';
 
 export const MCP_HOST_SERVER_NAME = 'ax-host-tools';
 export const MCP_SANDBOX_SERVER_NAME = 'ax-sandbox-tools';
@@ -143,13 +145,9 @@ export const DISABLED_BUILTIN_REASONS: Record<DisabledBuiltin, string> = {
     'answer back. Ask in your reply instead, list the options, and wait.',
 };
 
-/**
- * Shape of a host-minted connector `toolNamespace`: `c` + 10 lowercase hex.
- * Mirrors `@ax/connectors`' `TOOL_NAMESPACE_RE` (no cross-plugin import, I2).
- * Anchored and case-sensitive on purpose — `C0123456789`, 9/11 hex chars and
- * non-hex characters are all NOT host-minted and are not lifted.
- */
-export const CONNECTOR_TOOL_NAMESPACE_RE = /^c[0-9a-f]{10}$/;
+// The namespace shape lives in @ax/agent-runner-core (TASK-826) so the aisdk
+// runner reads the same one. Re-exported for this runner's existing callers.
+export { CONNECTOR_TOOL_NAMESPACE_RE };
 
 export type SdkToolClass =
   | { kind: 'builtin'; axName: string }
