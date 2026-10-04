@@ -6975,9 +6975,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * Each row's `ceiling` is the loosest choice THIS caller may pick (the
      * admin's limit, lowered to Ask first for a plain member of a team agent on
      * an OAuth tool — TASK-809) and `verdict` is the strictest of the admin's
-     * limit and the agent's own choice: what the gate does, not what was asked
-     * for. So a `verdict` looser than `ceiling` means a connector manager chose
-     * it; the rail names them in its tooltip (TASK-819). A ceiling the store does not report reads as `hold`, the
+     * limit (none for an OAuth tool) and the agent's own choice: what the gate
+     * does, not what was asked for. So a `verdict` looser than `ceiling` means
+     * a connector manager chose it; the rail names them in its tooltip
+     * (TASK-819). A ceiling the store does not report reads as `hold`, the
      * gate's own default for a connector tool nobody has decided on.
      *
      * Titles and descriptions are the connector server's words — untrusted,
