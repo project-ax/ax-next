@@ -260,7 +260,16 @@ function chatRunMockPlugin(): Plugin {
   };
 }
 
-function agentsMockPlugin(args: { allow: boolean }): Plugin {
+function agentsMockPlugin(args: {
+  allow: boolean;
+  /**
+   * TASK-803 — make `agt_test` a TEAM agent and register the two connector
+   * hooks the attach route's up-front ask touches. `canManage` is the hook's
+   * answer (or its fault, if it throws); every attach that reaches the write
+   * hook is pushed onto `attached`.
+   */
+  teamConnectors?: { canManage: () => unknown; attached: unknown[] };
+}): Plugin {
   return {
     manifest: {
       name: 'mock-agents',
@@ -272,6 +281,9 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
         'workspace:apply',
         'workspace:read',
         'workspace:list',
+        ...(args.teamConnectors === undefined
+          ? []
+          : ['agents:attach-connector', 'agents:can-manage-connectors']),
       ],
       calls: [],
       subscribes: [],
@@ -299,8 +311,23 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
             message: 'forbidden',
           });
         }
-        return { agent: { id: 'agt_test', visibility: 'personal' } };
+        return {
+          agent: {
+            id: 'agt_test',
+            visibility: args.teamConnectors === undefined ? 'personal' : 'team',
+          },
+        };
       });
+      const team = args.teamConnectors;
+      if (team !== undefined) {
+        bus.registerService('agents:can-manage-connectors', 'mock-agents', async () =>
+          team.canManage(),
+        );
+        bus.registerService('agents:attach-connector', 'mock-agents', async (_c, i: unknown) => {
+          team.attached.push(i);
+          return { agent: {}, changed: true };
+        });
+      }
       // Channel-web's manifest declares this as a hard call (Task 13);
       // this suite doesn't exercise GET /api/chat/agents, so a no-op
       // registration satisfies the bootstrap verifyCalls walk.
@@ -482,6 +509,8 @@ interface BootArgs {
     | null
   >;
   agentsAllow?: boolean;
+  /** TASK-803 — see {@link agentsMockPlugin}. */
+  teamConnectors?: Parameters<typeof agentsMockPlugin>[0]['teamConnectors'];
 }
 
 async function boot(args: BootArgs = {}): Promise<{
@@ -527,7 +556,10 @@ async function boot(args: BootArgs = {}): Promise<{
           ? {}
           : { turns: args.conversationTurns }),
       }),
-      agentsMockPlugin({ allow: args.agentsAllow ?? true }),
+      agentsMockPlugin({
+        allow: args.agentsAllow ?? true,
+        ...(args.teamConnectors === undefined ? {} : { teamConnectors: args.teamConnectors }),
+      }),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
       skillsMockPlugin(),
@@ -879,9 +911,9 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'Remove on a connector answers 503 connectors-unavailable',
         },
         {
-          hook: 'agents:can-exclude-connector',
+          hook: 'agents:can-manage-connectors',
           degradation:
-            'the Connectors tab offers no Add, Remove or team Sign in, and a team agent refuses Add to anyone but a workspace admin',
+            'the Connectors tab offers no Add, Remove or team Sign in, and Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin',
         },
         {
           hook: 'connectors:get',
@@ -1202,6 +1234,56 @@ describe('@ax/channel-web server plugin (integration)', () => {
       };
       expect(pastBody.conversationId).toBe('cnv_march');
       expect(pastBody.thread[0]?.text).toBe('happened in March');
+    });
+
+    /*
+      TASK-803 — POST …/connectors on a TEAM agent, a plain member, through the
+      real server. A handler-level test calls the handler directly, so it can
+      prove the handler REJECTS on a hook fault but not what status the router
+      then puts on the wire; only a round trip shows 403 for a denial and 5xx
+      (not 403) for a fault.
+    */
+    describe('POST /api/workspace/agents/:agentId/connectors — may-manage ask (TASK-803)', () => {
+      function post(port: number): Promise<Response> {
+        return fetch(`http://127.0.0.1:${port}/api/workspace/agents/agt_test/connectors`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+          body: JSON.stringify({ connectorId: 'linear' }),
+        });
+      }
+
+      it('an explicit deny from the hook is a 403 and nothing is attached', async () => {
+        const attached: unknown[] = [];
+        const booted = await boot({
+          conversationRows: [],
+          teamConnectors: { canManage: () => ({ allowed: false }), attached },
+        });
+        harness = booted.harness;
+        const r = await post(booted.port);
+        expect(r.status).toBe(403);
+        expect(await r.json()).toEqual({ error: 'forbidden' });
+        expect(attached).toHaveLength(0);
+      });
+
+      // UNFIXED: the fault was folded into `false` -> 403 -> fails.
+      it('a hook FAULT is a 5xx — not a 403 — and nothing is attached', async () => {
+        const attached: unknown[] = [];
+        const booted = await boot({
+          conversationRows: [],
+          teamConnectors: {
+            canManage: () => {
+              throw new Error('teams store row 9 is corrupt');
+            },
+            attached,
+          },
+        });
+        harness = booted.harness;
+        const r = await post(booted.port);
+        expect(r.status).toBe(500);
+        expect(attached).toHaveLength(0);
+        // The fault's own text must not reach the person.
+        expect(JSON.stringify(await r.json())).not.toContain('corrupt');
+      });
     });
 
     /*

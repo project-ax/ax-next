@@ -203,7 +203,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
               },
               {
                 // TASK-798 — provided by @ax/agents.
-                hook: 'agents:can-exclude-connector',
+                hook: 'agents:can-manage-connectors',
                 degradation:
                   "only a workspace admin may start a sign-in on a team agent (its owner is not recognised)",
               },

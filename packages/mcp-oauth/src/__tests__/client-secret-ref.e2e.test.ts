@@ -268,7 +268,7 @@ async function boot() {
     }) as ServiceHandler,
     // TASK-798 — let her past the owner-or-admin gate, so these cases still
     // exercise the client-secret-ref checks behind it.
-    'agents:can-exclude-connector': (async () => ({ allowed: true })) as ServiceHandler,
+    'agents:can-manage-connectors': (async () => ({ allowed: true })) as ServiceHandler,
     'connectors:get': (async (_c, input) => {
       const { connectorId } = input as { connectorId: string };
       if (!refs.has(connectorId)) throw new Error(`unexpected connector ${connectorId}`);
@@ -366,7 +366,7 @@ async function unaccidentalHandlers(s: Stack, agentIdForVault: string) {
     // hook is absent, so show it the real answer for THAT hook. Every other
     // optional hook stays invisible, exactly as before this wrapper knew of it.
     hasService: (hook: string) =>
-      hook === 'agents:can-exclude-connector' && s.h.bus.hasService(hook),
+      hook === 'agents:can-manage-connectors' && s.h.bus.hasService(hook),
   };
   const handlers = createMcpOAuthRouteHandlers({
     bus: wrapped as never,

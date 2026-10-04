@@ -112,7 +112,7 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     // TASK-798 — the team-agent owner-or-admin check is declared (optional:
     // without @ax/agents only a workspace admin may sign in on a team agent).
     expect(on.manifest.optionalCalls?.map((c) => c.hook)).toContain(
-      'agents:can-exclude-connector',
+      'agents:can-manage-connectors',
     );
   });
 });

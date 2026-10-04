@@ -1419,17 +1419,17 @@ interface AgentsConnectorChangeOutput {
   changed: boolean;
 }
 /**
- * Structural mirror of @ax/agents' `agents:can-exclude-connector` (TASK-765)
- * — no import (invariant 2). Since TASK-798 it answers whether the actor may
+ * Structural mirror of @ax/agents' `agents:can-manage-connectors` (TASK-765,
+ * renamed TASK-803) — no import (invariant 2). Since TASK-798 it answers whether the actor may
  * change this agent's connectors at all — add, remove, or sign in ON the
  * agent: the agent's owner (a team admin, on a team agent) or a workspace
  * admin. The same rule guards `agents:attach-connector` / `detach-connector`.
  */
-interface AgentsCanExcludeConnectorInput {
+interface AgentsCanManageConnectorsInput {
   actor: { userId: string; isAdmin: boolean };
   agentId: string;
 }
-interface AgentsCanExcludeConnectorOutput {
+interface AgentsCanManageConnectorsOutput {
   allowed: boolean;
 }
 
@@ -3902,26 +3902,46 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   const retryCooldown = new Map<string, RetryEntry>();
 
   /**
+   * TASK-803 — ask @ax/agents whether this caller may change this agent's
+   * connectors. Resolves `true` / `false` ONLY for an explicit
+   * `{ allowed: true | false }`; a rejection, or a reply with no boolean
+   * verdict, THROWS. The hook's one and only "no" is `allowed: false`, so a
+   * caller that wants to refuse with a 403 must tell that apart from a fault
+   * — the two are not the same thing to report to a person. Callers that
+   * must stay quiet on a fault go through {@link connectorsManageable}.
+   */
+  async function askCanManageConnectors(
+    agentId: string,
+    actor: { id: string; isAdmin: boolean },
+  ): Promise<boolean> {
+    const r = await bus.call<AgentsCanManageConnectorsInput, AgentsCanManageConnectorsOutput>(
+      'agents:can-manage-connectors',
+      agentWorkspaceCtx(agentId, actor.id),
+      { actor: { userId: actor.id, isAdmin: actor.isAdmin }, agentId },
+    );
+    if (r?.allowed === true) return true;
+    if (r?.allowed === false) return false;
+    throw new Error('agents:can-manage-connectors answered without an allowed verdict');
+  }
+
+  /**
    * TASK-765 / TASK-798 — may this caller change this agent's connectors (add,
    * remove, sign in ON the agent)? Asked once per list. Absent or failing →
    * false, logged by error name only: an action hidden by mistake is the
    * cheaper way to be wrong, and every write asks @ax/agents (or
-   * @ax/mcp-oauth) again regardless.
+   * @ax/mcp-oauth) again regardless. Display only: a WRITE that wants to
+   * refuse must use {@link askCanManageConnectors} so a fault is not reported
+   * as a denial.
    */
   async function connectorsManageable(
     agentId: string,
     actor: { id: string; isAdmin: boolean },
   ): Promise<boolean> {
-    if (!bus.hasService('agents:can-exclude-connector')) return false;
+    if (!bus.hasService('agents:can-manage-connectors')) return false;
     try {
-      const r = await bus.call<AgentsCanExcludeConnectorInput, AgentsCanExcludeConnectorOutput>(
-        'agents:can-exclude-connector',
-        agentWorkspaceCtx(agentId, actor.id),
-        { actor: { userId: actor.id, isAdmin: actor.isAdmin }, agentId },
-      );
-      return r?.allowed === true;
+      return await askCanManageConnectors(agentId, actor);
     } catch (err) {
-      initCtx.logger.warn('workspace_connector_can_exclude_failed', {
+      initCtx.logger.warn('workspace_connector_can_manage_failed', {
         agentId,
         name: err instanceof Error ? err.name : 'unknown',
       });
@@ -6721,7 +6741,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * not re-decide either; it passes the caller's identity and reports the
      * hook's refusal as a 403. It does ASK @ax/agents the TASK-798 question up
      * front on a team agent, so a member's request never makes the host read
-     * credential presence on their behalf before being refused.
+     * credential presence on their behalf before being refused. That ask
+     * (TASK-803) is a 403 only for the hook's explicit `allowed: false`; a
+     * fault in it propagates (5xx) and a missing hook is a 503, so a person is
+     * never told "forbidden" about a question that was never answered.
      */
     async attachConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authActorOr401(bus, initCtx, req, res);
@@ -6751,13 +6774,29 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       // TASK-798 — refuse a team agent's plain member before the gate below
       // reads any credential presence for them. The hook decides again.
-      if (
-        agent.visibility === 'team' &&
-        !actor.isAdmin &&
-        !(await connectorsManageable(agentId, actor))
-      ) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
+      // TASK-803 — 403 ONLY on the hook's explicit `allowed: false`. A fault
+      // (a rejection, a reply with no verdict) rethrows so the router answers
+      // 5xx and logs it, and a missing hook is 503 — never "forbidden". All
+      // three still stop here: nothing below runs without a yes.
+      if (agent.visibility === 'team' && !actor.isAdmin) {
+        if (!bus.hasService('agents:can-manage-connectors')) {
+          res.status(503).json({ error: 'connectors-unavailable' });
+          return;
+        }
+        let mayManage: boolean;
+        try {
+          mayManage = await askCanManageConnectors(agentId, actor);
+        } catch (err) {
+          if (err instanceof PluginError && err.code === 'not-found') {
+            res.status(404).json({ error: 'agent-not-found' });
+            return;
+          }
+          throw err;
+        }
+        if (!mayManage) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
       }
       // TASK-761 — signed in / keyed FIRST, attached second (see the gate).
       const gate = await attachCredentialGate(

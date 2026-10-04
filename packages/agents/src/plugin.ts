@@ -42,8 +42,8 @@ import type {
   AttachConnectorInput,
   AttachConnectorOutput,
   AuthoredResolvedSkill,
-  CanExcludeConnectorInput,
-  CanExcludeConnectorOutput,
+  CanManageConnectorsInput,
+  CanManageConnectorsOutput,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -128,7 +128,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:set-skill-attachments',
         'agents:attach-connector',
         'agents:detach-connector',
-        'agents:can-exclude-connector',
+        'agents:can-manage-connectors',
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
@@ -456,16 +456,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // the agent)? The predicate the hooks above enforce, exposed so a caller
       // shows the affordance only to someone it will work for. An actor who
       // can't reach the agent at all gets `false`, not an error; a missing
-      // agent is `not-found`. (Named for TASK-765's first use; the question is
-      // wider now.)
-      bus.registerService<CanExcludeConnectorInput, CanExcludeConnectorOutput>(
-        'agents:can-exclude-connector',
+      // agent is `not-found`. (TASK-803: renamed from its TASK-765 name,
+      // which was about exclusions only, now the question is wider.)
+      bus.registerService<CanManageConnectorsInput, CanManageConnectorsOutput>(
+        'agents:can-manage-connectors',
         PLUGIN_NAME,
         async (ctx, input) => {
           const existing = await getForConnectorEdit(
             localStore,
             input.agentId,
-            'agents:can-exclude-connector',
+            'agents:can-manage-connectors',
           );
           try {
             await assertWriteAllowed(existing, bus, ctx, input.actor);
