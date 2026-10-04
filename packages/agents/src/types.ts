@@ -349,7 +349,8 @@ export interface DetachConnectorOutput {
 // --- agents:can-manage-connectors (TASK-765, renamed TASK-803) ---------------
 //
 // Can `actor` change this agent's connectors — attach, detach, exclude a
-// legacy-owned connector, or (TASK-798, asked by @ax/mcp-oauth) sign in ON the agent? The
+// legacy-owned connector? (Signing in ON the agent was asked here from TASK-798
+// until TASK-813 moved it to agents:can-set-shared-credential, below.) The
 // same predicate `agents:attach-connector` / `agents:detach-connector`
 // enforce, exposed so a caller can show the affordance only to someone it
 // will work for. (TASK-803: renamed from its TASK-765 name, which was about
@@ -365,6 +366,29 @@ export interface CanManageConnectorsInput {
 }
 
 export interface CanManageConnectorsOutput {
+  allowed: boolean;
+}
+
+// --- agents:can-set-shared-credential (TASK-813) -----------------------------
+//
+// May `actor` choose the SHARED credential stored on this agent — start an
+// OAuth sign-in ON it (@ax/mcp-oauth) or save an agent-scope ("team") key?
+// The sign-in or key stored on a team agent is the account every member's runs
+// act as, so choosing it belongs to the team's admins: `allowed` iff the agent
+// is a team agent, the actor can reach it, and teams:is-member says they are a
+// member with role `admin`. `actor.isAdmin` is IGNORED — a workspace admin who
+// is not a team admin gets `false` (unlike agents:can-manage-connectors). A
+// personal agent is always `false`: it has no shared credential (its sign-in or
+// key is stored on the person). A missing teams plugin is `false`; any other
+// lookup fault rejects, and callers treat a rejection as "no" (fail closed).
+// `not-found` when the agent does not exist.
+
+export interface CanSetSharedCredentialInput {
+  actor: Actor;
+  agentId: string;
+}
+
+export interface CanSetSharedCredentialOutput {
   allowed: boolean;
 }
 

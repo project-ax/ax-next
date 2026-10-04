@@ -1422,9 +1422,11 @@ interface AgentsConnectorChangeOutput {
 /**
  * Structural mirror of @ax/agents' `agents:can-manage-connectors` (TASK-765,
  * renamed TASK-803) — no import (invariant 2). Since TASK-798 it answers whether the actor may
- * change this agent's connectors at all — add, remove, or sign in ON the
- * agent: the agent's owner (a team admin, on a team agent) or a workspace
- * admin. The same rule guards `agents:attach-connector` / `detach-connector`.
+ * change this agent's connectors at all — add or remove: the agent's owner
+ * (a team admin, on a team agent) or a workspace admin. The same rule guards
+ * `agents:attach-connector` / `detach-connector`. Signing in or adding a team
+ * key ON a team agent is the stricter `agents:can-set-shared-credential`
+ * (TASK-813: team admins only, no workspace-admin bypass).
  */
 interface AgentsCanManageConnectorsInput {
   actor: { userId: string; isAdmin: boolean };
@@ -1432,6 +1434,42 @@ interface AgentsCanManageConnectorsInput {
 }
 interface AgentsCanManageConnectorsOutput {
   allowed: boolean;
+}
+/**
+ * Structural mirror of @ax/agents' `agents:can-set-shared-credential`
+ * (TASK-813) — no import (invariant 2). May the actor store a credential ON
+ * this agent (a sign-in or a team key everyone using the agent acts as)? Only
+ * an admin of the team that owns a team agent; `isAdmin` is passed for the
+ * record but grants nothing, and a personal agent is always `false`.
+ */
+interface AgentsCanSetSharedCredentialInput {
+  actor: { userId: string; isAdmin: boolean };
+  agentId: string;
+}
+interface AgentsCanSetSharedCredentialOutput {
+  allowed: boolean;
+}
+/**
+ * Structural mirror of @ax/connectors' `credentials:authorize-agent:account`
+ * (TASK-711 / TASK-788) — no import (invariant 2). With no `purpose` it asks
+ * the READ question: would the vault let `userId` read this `account:` ref
+ * from agent `agentId`'s row? A team key nobody could read is not saved.
+ */
+interface CredentialsAuthorizeAgentInput {
+  userId: string;
+  agentId: string;
+  ref: string;
+}
+interface CredentialsAuthorizeAgentOutput {
+  allowed: boolean;
+}
+/** Structural mirror of @ax/credentials' `credentials:set` input — no import (I2). */
+interface CredentialsSetInput {
+  scope: 'agent';
+  ownerId: string;
+  ref: string;
+  kind: 'api-key';
+  payload: Uint8Array;
 }
 
 const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = ['attached', 'legacy-owned'];
@@ -1479,6 +1517,8 @@ type AttachGate =
 /** One credential a connector needs: the vault ref, and whether it is a sign-in. */
 interface ConnectorCredentialCheck {
   ref: string;
+  /** The connector's slot name this ref was derived from (TASK-813). */
+  slot: string;
   /** An OAuth slot (fix: Sign in), not a key (fix: Add key). */
   signIn: boolean;
 }
@@ -1534,8 +1574,53 @@ export function credentialChecks(connector: {
     .filter((entry) => !entry.ref.endsWith(`:${OAUTH_CLIENT_SECRET_SLOT}`))
     .map((entry) => ({
       ref: entry.ref,
+      slot: entry.slot,
       signIn: slots.find((s) => s.slot === entry.slot)?.kind === 'oauth',
     }));
+}
+
+/** TASK-813 — the largest team key `payloadB64` accepted (base64 chars). */
+export const TEAM_KEY_PAYLOAD_B64_MAX_CHARS = 16 * 1024;
+/** Strict base64: `Buffer.from` silently coerces malformed input. */
+const STRICT_BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/**
+ * TASK-813 — the team-key PUT body, `{ slot, payloadB64 }` and nothing else
+ * (a client-chosen `ref` is refused, not ignored). The error strings never
+ * carry any part of the body.
+ */
+function readTeamKeyBody(
+  raw: Buffer,
+): { ok: true; slot: string; payload: Uint8Array } | { ok: false; error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.toString('utf-8')) as unknown;
+  } catch {
+    return { ok: false, error: 'invalid-json' };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'invalid-body' };
+  }
+  const fields = parsed as Record<string, unknown>;
+  if (Object.keys(fields).some((k) => k !== 'slot' && k !== 'payloadB64')) {
+    return { ok: false, error: 'invalid-body' };
+  }
+  const { slot, payloadB64 } = fields;
+  if (typeof slot !== 'string' || slot.length === 0 || slot.length > 64) {
+    return { ok: false, error: 'invalid-body' };
+  }
+  if (
+    typeof payloadB64 !== 'string' ||
+    payloadB64.length === 0 ||
+    payloadB64.length > TEAM_KEY_PAYLOAD_B64_MAX_CHARS ||
+    payloadB64.length % 4 !== 0 ||
+    !STRICT_BASE64.test(payloadB64)
+  ) {
+    return { ok: false, error: 'invalid-key' };
+  }
+  const payload = new Uint8Array(Buffer.from(payloadB64, 'base64'));
+  if (payload.length === 0) return { ok: false, error: 'invalid-key' };
+  return { ok: true, slot, payload };
 }
 
 async function attachCredentialGate(
@@ -3953,7 +4038,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
   /**
    * TASK-765 / TASK-798 — may this caller change this agent's connectors (add,
-   * remove, sign in ON the agent)? Asked once per list. Absent or failing →
+   * remove)? Asked once per list. Signing in ON a team agent is no longer this
+   * question (TASK-813 — {@link sharedCredentialsAllowed}). Absent or failing →
    * false, logged by error name only: an action hidden by mistake is the
    * cheaper way to be wrong, and every write asks @ax/agents (or
    * @ax/mcp-oauth) again regardless. Display only: a WRITE that wants to
@@ -3977,18 +4063,83 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
+   * TASK-813 — ask @ax/agents whether this caller may store a credential ON
+   * this agent (sign in on it, or save a team key). Same contract as
+   * {@link askCanManageConnectors}: `true` / `false` only for an explicit
+   * verdict; a rejection or a reply without one THROWS, so a write can tell
+   * a fault (5xx) from a refusal (403). Display goes through
+   * {@link sharedCredentialsAllowed}.
+   */
+  async function askCanSetSharedCredential(
+    agentId: string,
+    actor: { id: string; isAdmin: boolean },
+  ): Promise<boolean> {
+    const r = await bus.call<AgentsCanSetSharedCredentialInput, AgentsCanSetSharedCredentialOutput>(
+      'agents:can-set-shared-credential',
+      agentWorkspaceCtx(agentId, actor.id),
+      { actor: { userId: actor.id, isAdmin: actor.isAdmin }, agentId },
+    );
+    if (r?.allowed === true) return true;
+    if (r?.allowed === false) return false;
+    throw new Error('agents:can-set-shared-credential answered without an allowed verdict');
+  }
+
+  /**
+   * TASK-813 — may this caller sign in, or add a team key, ON this agent?
+   * Display only. Never asked for a personal agent (always false: its
+   * credentials live on the person). Absent or failing → false, logged by
+   * error name only — the write asks again and fails closed on its own.
+   */
+  async function sharedCredentialsAllowed(
+    agentId: string,
+    teamAgent: boolean,
+    actor: { id: string; isAdmin: boolean },
+  ): Promise<boolean> {
+    if (!teamAgent || !bus.hasService('agents:can-set-shared-credential')) return false;
+    try {
+      return await askCanSetSharedCredential(agentId, actor);
+    } catch (err) {
+      initCtx.logger.warn('workspace_connector_can_set_shared_failed', {
+        agentId,
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+      return false;
+    }
+  }
+
+  /**
    * TASK-798 — the setup a `needs-sign-in` row offers THIS caller. A sign-in
    * on a team agent is stored on the agent (everyone acts as the signer), so
-   * only someone who may manage its connectors gets **Sign in**; anyone else
-   * is told to ask the owner. A missing key stays `add-key`: the rail's Add
-   * key writes the caller's OWN key, which never touches anyone else.
+   * only someone who may store a credential there gets **Sign in** — since
+   * TASK-813 an admin of the owning team only (`sharedCredentials`, not
+   * `manageable`: a workspace admin may add a connector but not sign the
+   * team in). Anyone else is told to ask the owner. A missing key stays
+   * `add-key`: the rail's Add key writes the caller's OWN key, which never
+   * touches anyone else.
    */
   function setupForCaller(
     setup: AgentConnectorSetup | undefined,
     teamAgent: boolean,
-    manageable: boolean,
+    sharedCredentials: boolean,
   ): AgentConnectorSetup | undefined {
-    return setup === 'sign-in' && teamAgent && !manageable ? 'ask-owner' : setup;
+    return setup === 'sign-in' && teamAgent && !sharedCredentials ? 'ask-owner' : setup;
+  }
+
+  /**
+   * TASK-813 — connector id → whether a TEAM key can be added for it: the
+   * connector spends a per-person key (`keyMode` is not `workspace`) and has
+   * at least one api-key ref the plan derives (the OAuth client secret is
+   * already excluded by {@link credentialChecks}).
+   */
+  function teamKeyConnectors(effective: ConnectorsListEffectiveOutput): Set<string> {
+    const out = new Set<string>();
+    for (const e of Array.isArray(effective?.connectors) ? effective.connectors : []) {
+      const id = e?.summary?.id;
+      if (!isConnectorId(id) || e.summary.keyMode === 'workspace') continue;
+      const checks = credentialChecks({ id, keyMode: e.summary.keyMode, capabilities: e.capabilities });
+      if (checks.some((c) => !c.signIn)) out.add(id);
+    }
+    return out;
   }
 
   /**
@@ -6610,23 +6761,28 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const teamAgent = agent.visibility === 'team';
       // TASK-798 — asked even for an empty list: it also decides whether the
       // tab offers Add at all.
-      const [health, manageable] = await Promise.all([
+      // TASK-813 — sign-in / team key ON a team agent is its own question.
+      const [health, manageable, sharedCredentials] = await Promise.all([
         connectorHealth(agentId, actor, rows.map((r) => r.id), out, connectorsNotLoaded(out)),
         connectorsManageable(agentId, actor),
+        sharedCredentialsAllowed(agentId, teamAgent, actor),
       ]);
+      const teamKeys = sharedCredentials ? teamKeyConnectors(out) : new Set<string>();
       res.status(200).json({
         connectors: rows.map((r) => {
-          const setup = setupForCaller(health.setup.get(r.id), teamAgent, manageable);
+          const setup = setupForCaller(health.setup.get(r.id), teamAgent, sharedCredentials);
           return {
             ...r,
             health: health.health.get(r.id) ?? 'ok',
             ...(health.sharedSignIn.has(r.id) ? { sharedSignIn: true as const } : {}),
             ...(setup !== undefined ? { setup } : {}),
             removable: manageable,
+            ...(teamKeys.has(r.id) ? { teamKey: true as const } : {}),
           };
         }),
         shared: teamAgent,
         manageable,
+        sharedCredentials,
         connectorsSupported: runnerLoadsConnectors(agent.runner),
       } satisfies AgentConnectorsRead);
     },
@@ -6762,11 +6918,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         );
       }
       const storedSetup = health === 'needs-sign-in' ? stored.setup.get(connectorId) : undefined;
-      // TASK-798 — the same "ask the owner" rewrite the list applies; only
-      // asked when it could change the answer.
+      // TASK-798 / TASK-813 — the same "ask the owner" rewrite the list
+      // applies; only asked when it could change the answer.
       const setup =
         storedSetup === 'sign-in' && agent.visibility === 'team'
-          ? setupForCaller(storedSetup, true, await connectorsManageable(agentId, actor))
+          ? setupForCaller(storedSetup, true, await sharedCredentialsAllowed(agentId, true, actor))
           : storedSetup;
       res.status(200).json({
         health,
@@ -6775,6 +6931,173 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           : {}),
         ...(setup !== undefined ? { setup } : {}),
       } satisfies AgentConnectorRetried);
+    },
+
+    /**
+     * PUT /api/workspace/agents/:agentId/connectors/:connectorId/team-key
+     * `{ slot, payloadB64 }` — save a TEAM key (TASK-813): an agent-scope
+     * api-key every member of this team agent uses unless they add their own.
+     *
+     * Only an admin of the team that owns the agent may, per
+     * `agents:can-set-shared-credential` — a workspace admin who is not one is
+     * refused like a member. Every check runs, in order, before the vault is
+     * written, and each fails closed:
+     *
+     *   1. signed in (401), a connector id (400), the agent resolves under the
+     *      caller (404);
+     *   2. a team agent (409 `not-a-team-agent` — a personal agent's keys live
+     *      on the person);
+     *   3. the permission hook says yes (403 `forbidden`; absent → 503
+     *      `connectors-unavailable`, faulting → 503 `team-key-check-failed`,
+     *      logged by error name);
+     *   4. a well-formed body: `slot` + strict base64 `payloadB64` ≤ 16 KiB
+     *      that decodes to something (400 `invalid-json` / `invalid-body` /
+     *      `invalid-key`);
+     *   5. the connector exists for the caller (404 `connector-not-found`),
+     *      spends a per-person key (`keyMode: workspace` → 409
+     *      `team-key-unavailable`), and `slot` is one of its api-key slots (400
+     *      `unknown-slot`). The ref comes from the connector's credential plan
+     *      — never from the client — and an OAuth slot or the admin's OAuth
+     *      client secret is not a team key;
+     *   6. the vault would let the agent's users READ that ref from the agent
+     *      (`credentials:authorize-agent:account`, TASK-788): a key nobody can
+     *      use is not saved (409 `team-key-unavailable`; absent or faulting →
+     *      503).
+     *
+     * Then `credentials:set` at scope `agent`. A failure there is a 502
+     * `team-key-not-saved`. The key and `payloadB64` are never logged or
+     * echoed; errors are logged by name only.
+     */
+    async setTeamKey(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await authActorOr401(bus, initCtx, req, res);
+      if (actor === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const connectorId = req.params.connectorId ?? '';
+      if (!isConnectorId(connectorId)) {
+        res.status(400).json({ error: 'invalid-connector' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, actor.id, res);
+      if (agent === null) return;
+      if (agent.visibility !== 'team') {
+        res.status(409).json({ error: 'not-a-team-agent' });
+        return;
+      }
+      const failed = (step: string, err: unknown): void => {
+        initCtx.logger.warn('workspace_team_key_check_failed', {
+          agentId,
+          connectorId,
+          step,
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+        res.status(503).json({ error: 'team-key-check-failed' });
+      };
+      if (!bus.hasService('agents:can-set-shared-credential')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      let allowed: boolean;
+      try {
+        allowed = await askCanSetSharedCredential(agentId, actor);
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'not-found') {
+          res.status(404).json({ error: 'agent-not-found' });
+          return;
+        }
+        failed('permission', err);
+        return;
+      }
+      if (!allowed) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+
+      const body = readTeamKeyBody(req.body);
+      if (!body.ok) {
+        res.status(400).json({ error: body.error });
+        return;
+      }
+
+      if (!bus.hasService('connectors:get')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      const ctx = agentWorkspaceCtx(agentId, actor.id);
+      let connector: Connector;
+      try {
+        const out = await bus.call<{ userId: string; connectorId: string }, { connector: Connector }>(
+          'connectors:get',
+          ctx,
+          { userId: actor.id, connectorId },
+        );
+        connector = out.connector;
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'not-found') {
+          res.status(404).json({ error: 'connector-not-found' });
+          return;
+        }
+        failed('connector', err);
+        return;
+      }
+      if (connector?.keyMode === 'workspace') {
+        res.status(409).json({ error: 'team-key-unavailable' });
+        return;
+      }
+      const check = credentialChecks(connector).find((c) => !c.signIn && c.slot === body.slot);
+      if (check === undefined) {
+        res.status(400).json({ error: 'unknown-slot' });
+        return;
+      }
+      const ref = check.ref;
+
+      if (!bus.hasService('credentials:authorize-agent:account')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      let readable: boolean;
+      try {
+        const r = await bus.call<CredentialsAuthorizeAgentInput, CredentialsAuthorizeAgentOutput>(
+          'credentials:authorize-agent:account',
+          ctx,
+          { userId: actor.id, agentId, ref },
+        );
+        readable = r?.allowed === true;
+      } catch (err) {
+        failed('authorize', err);
+        return;
+      }
+      if (!readable) {
+        res.status(409).json({ error: 'team-key-unavailable' });
+        return;
+      }
+
+      if (!bus.hasService('credentials:set')) {
+        res.status(503).json({ error: 'credentials-unavailable' });
+        return;
+      }
+      try {
+        await bus.call<CredentialsSetInput, unknown>('credentials:set', ctx, {
+          scope: 'agent',
+          ownerId: agentId,
+          ref,
+          kind: 'api-key',
+          payload: body.payload,
+        });
+      } catch (err) {
+        initCtx.logger.warn('workspace_team_key_save_failed', {
+          agentId,
+          connectorId,
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+        res.status(502).json({ error: 'team-key-not-saved' });
+        return;
+      }
+      initCtx.logger.info('workspace_team_key_saved', { agentId, connectorId });
+      res.status(200).json({ saved: true });
     },
 
     /**
@@ -8044,6 +8367,12 @@ export async function registerWorkspaceRoutes(
       method: 'DELETE',
       path: '/api/workspace/agents/:agentId/connectors/:connectorId',
       handler: handlers.removeConnector as unknown as RouteHandler,
+    },
+    {
+      // TASK-813 — a team agent's shared key, team admins only.
+      method: 'PUT',
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-key',
+      handler: handlers.setTeamKey as unknown as RouteHandler,
     },
     {
       // TASK-741 — the row menu's "Retry": one forced check of one connector.

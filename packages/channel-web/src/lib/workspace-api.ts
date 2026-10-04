@@ -485,6 +485,36 @@ async function req<T>(
   return (await res.json()) as T;
 }
 
+/** TASK-813 — the team-key refusals a person can act on. */
+export const TEAM_KEY_FORBIDDEN = 'Only the team’s admins can add a team key.';
+export const TEAM_KEY_UNAVAILABLE =
+  'A team key can’t be used for this connector. Each person can still add their own key.';
+export const TEAM_KEY_INVALID = 'That key didn’t look right. Check it and paste it again.';
+
+/** UTF-8 → base64, same encoding the credentials routes take. */
+function utf8Base64(s: string): string {
+  let bin = '';
+  for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+/**
+ * The sentence for a refused team-key save, or `undefined` for the generic
+ * per-status copy. Only the `error` code is read — never rendered — so an
+ * unexpected body can't put anything on screen.
+ */
+async function teamKeyRefusal(res: Response): Promise<string | undefined> {
+  if (res.status === 403) return TEAM_KEY_FORBIDDEN;
+  if (res.status === 409) return TEAM_KEY_UNAVAILABLE;
+  if (res.status !== 400) return undefined;
+  try {
+    const body = (await res.json()) as { error?: unknown } | null;
+    return body?.error === 'invalid-key' ? TEAM_KEY_INVALID : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface RouteProposal {
   agentId: string;
   agentName: string;
@@ -948,6 +978,39 @@ export const workspaceApi = {
       `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}`,
       { method: 'DELETE' },
     ),
+
+  /**
+   * TASK-813 — save a TEAM key: an api-key on this team agent that everyone
+   * using it uses unless they've added their own. Only the team's admins may
+   * (`sharedCredentials` / a row's `teamKey`); the server decides again.
+   *
+   * Not `req()`: a secret rides in this body, so a transport exception is
+   * replaced by a bare `HttpError` (the original may carry request details),
+   * and nothing here logs anything but the route and status.
+   */
+  setTeamKey: async (
+    agentId: string,
+    connectorId: string,
+    slot: string,
+    payload: string,
+  ): Promise<void> => {
+    const route =
+      `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/team-key`;
+    const url = `/api/workspace${route}`;
+    let res: Response;
+    try {
+      res = await httpFetch(url, {
+        method: 'PUT',
+        headers: writeHeaders,
+        body: JSON.stringify({ slot, payloadB64: utf8Base64(payload) }),
+      });
+    } catch {
+      throw new HttpError(url, 0);
+    }
+    if (res.ok) return;
+    console.warn(`[workspace] ${route} → ${res.status}`);
+    throw new HttpError(url, res.status, await teamKeyRefusal(res));
+  },
 
   /**
    * The row menu's "Retry" (TASK-741): one fresh check of one connector.

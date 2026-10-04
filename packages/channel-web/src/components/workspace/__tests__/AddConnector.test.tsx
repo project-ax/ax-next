@@ -100,7 +100,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.connectors).mockResolvedValue({
     connectors: [{ id: 'linear', name: 'Linear', source: 'attached', editable: false, health: 'ok', removable: true }],
     shared: false,
-      connectorsSupported: true, manageable: true,
+      connectorsSupported: true, manageable: true, sharedCredentials: false,
   });
   vi.mocked(listConnectors).mockResolvedValue(CATALOG);
   vi.mocked(getConnector).mockImplementation(async (id) => full(id));
@@ -395,7 +395,7 @@ describe('sign in, then attach', () => {
   });
 
   it('a team agent (the server says shared) asks for consent before the sign-in starts', async () => {
-    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true, connectorsSupported: true, manageable: true });
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true, connectorsSupported: true, manageable: true, sharedCredentials: true });
     renderAdd();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
@@ -405,6 +405,28 @@ describe('sign in, then attach', () => {
     expect(beginOAuth).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await waitFor(() => expect(beginOAuth).toHaveBeenCalled());
+  });
+
+  // TASK-813 — only the team's admins may sign in ON a team agent; a workspace
+  // admin who isn't one would be refused by the sign-in itself.
+  it('a team agent offers no Sign in to someone who may not sign in on it — key and Add stay', async () => {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true, connectorsSupported: true, manageable: true, sharedCredentials: false });
+    renderAdd('admin');
+    await screen.findByRole('button', { name: 'Add key — Zendesk' });
+    await screen.findByRole('button', { name: 'Add — Stripe' });
+    await waitFor(() =>
+      expect(within(row('Notion')).getByText('Ask the agent’s owner to sign in')).toBeTruthy(),
+    );
+    expect(screen.queryByRole('button', { name: 'Sign in — Notion' })).toBeNull();
+    expect(within(row('Notion')).queryByRole('button')).toBeNull();
+    expect(beginOAuth).not.toHaveBeenCalled();
+  });
+
+  it('a personal agent keeps Sign in whatever sharedCredentials says', async () => {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
+    renderAdd();
+    await ready();
+    expect(screen.queryByText('Ask the agent’s owner to sign in')).toBeNull();
   });
 
   it('a personal agent signs in without the consent step', async () => {

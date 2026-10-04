@@ -23,6 +23,12 @@
  * from the server, on the same read as its connector list (`shared`, the flag
  * Reconnect already uses — TASK-741).
  *
+ * Only an admin of the team that owns a team agent may sign in ON it
+ * (TASK-813, `sharedCredentials` on the same read) — a workspace admin who
+ * isn't one is refused by the sign-in itself. For them a row whose action is
+ * Sign in shows "Ask the agent’s owner to sign in" instead of a button. Add
+ * key (their own key) and Add are unchanged.
+ *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -54,6 +60,7 @@ import { HttpError, logRequestFailure } from '@/lib/http';
 import { useOAuthPopup } from '@/lib/use-oauth-popup';
 import { useUser } from '@/lib/user-context';
 import { workspaceApi } from '@/lib/workspace-api';
+import { SETUP_REASON } from './ConnectorDetails';
 
 interface Props {
   agentId: string;
@@ -89,6 +96,8 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
   // Until the read lands no row is drawn, so this default is never shown;
   // it errs on asking.
   const [teamAgent, setTeamAgent] = useState(true);
+  // TASK-813 — may sign in ON this (team) agent. Errs on not offering.
+  const [sharedCredentials, setSharedCredentials] = useState(false);
   const [attempt, setAttempt] = useState(0);
   // Only the newest load lands, and nothing lands after unmount.
   const scope = useRef(0);
@@ -148,6 +157,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
           isAdmin,
         );
         setTeamAgent(effective.shared !== false);
+        setSharedCredentials(effective.sharedCredentials === true);
         setAvailable(list);
         setActions(Object.fromEntries(list.map((c) => [c.id, 'checking' as const])));
         setLoad('ok');
@@ -338,6 +348,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
               attaching={attaching.has(c.id)}
               problem={problems[c.id] ?? null}
               teamAgent={teamAgent}
+              canSignIn={!teamAgent || sharedCredentials}
               onSignedIn={() => {
                 signedIn.current.add(c.id);
                 void advance(c);
@@ -383,6 +394,7 @@ function AvailableRow({
   attaching,
   problem,
   teamAgent,
+  canSignIn,
   onSignedIn,
   onAddKey,
   onAdd,
@@ -396,6 +408,8 @@ function AvailableRow({
   attaching: boolean;
   problem: RowProblem | null;
   teamAgent: boolean;
+  /** TASK-813 — false: a team agent this person may not sign in on. */
+  canSignIn: boolean;
   onSignedIn: () => void;
   onAddKey: () => void;
   onAdd: () => void;
@@ -437,6 +451,12 @@ function AvailableRow({
     );
   } else if (action === 'checking') {
     control = <Skeleton className="mr-1 h-7 w-16" aria-label="Checking" />;
+  } else if (action === 'sign-in' && !canSignIn) {
+    control = (
+      <span className="mr-1.5 shrink-0 text-[12px] text-muted-foreground">
+        {SETUP_REASON['ask-owner']}
+      </span>
+    );
   } else {
     const label = action === 'sign-in' ? 'Sign in' : action === 'key' ? 'Add key' : 'Add';
     control = (

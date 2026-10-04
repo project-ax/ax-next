@@ -37,7 +37,7 @@ function row(over: Partial<AgentConnectorRow> = {}): AgentConnectorRow {
 }
 
 async function loaded(rows: AgentConnectorRow[]) {
-  connectorsMock.mockResolvedValue({ connectors: rows, shared: false, connectorsSupported: true, manageable: true });
+  connectorsMock.mockResolvedValue({ connectors: rows, shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
   const hook = renderHook(() => useAgentConnectors('a-quill'));
   await waitFor(() => expect(hook.result.current.status).toBe('ok'));
   return hook;
@@ -78,7 +78,7 @@ describe('retry() and the row setup (TASK-795)', () => {
 
 describe('manageable (TASK-798)', () => {
   it('is false until the list is read, then says what the server answered', async () => {
-    connectorsMock.mockResolvedValue({ connectors: [row()], shared: true, connectorsSupported: true, manageable: true });
+    connectorsMock.mockResolvedValue({ connectors: [row()], shared: true, connectorsSupported: true, manageable: true, sharedCredentials: true });
     const hook = renderHook(() => useAgentConnectors('a-quill'));
     expect(hook.result.current.manageable).toBe(false);
     await waitFor(() => expect(hook.result.current.status).toBe('ok'));
@@ -86,7 +86,7 @@ describe('manageable (TASK-798)', () => {
   });
 
   it('stays false for a member, and when the server sent no answer', async () => {
-    connectorsMock.mockResolvedValueOnce({ connectors: [row()], shared: true, connectorsSupported: true, manageable: false });
+    connectorsMock.mockResolvedValueOnce({ connectors: [row()], shared: true, connectorsSupported: true, manageable: false, sharedCredentials: false });
     const member = renderHook(() => useAgentConnectors('a-quill'));
     await waitFor(() => expect(member.result.current.status).toBe('ok'));
     expect(member.result.current.manageable).toBe(false);
@@ -96,5 +96,28 @@ describe('manageable (TASK-798)', () => {
     const old = renderHook(() => useAgentConnectors('a-quill'));
     await waitFor(() => expect(old.result.current.status).toBe('ok'));
     expect(old.result.current.manageable).toBe(false);
+  });
+});
+
+describe('sharedCredentials (TASK-813)', () => {
+  it('is false until read, then follows the server — independent of manageable', async () => {
+    // A workspace admin who is not the team's admin: may manage, may not sign in on it.
+    connectorsMock.mockResolvedValueOnce({ connectors: [row()], shared: true, connectorsSupported: true, manageable: true, sharedCredentials: false });
+    const admin = renderHook(() => useAgentConnectors('a-quill'));
+    expect(admin.result.current.sharedCredentials).toBe(false);
+    await waitFor(() => expect(admin.result.current.status).toBe('ok'));
+    expect(admin.result.current.manageable).toBe(true);
+    expect(admin.result.current.sharedCredentials).toBe(false);
+
+    connectorsMock.mockResolvedValueOnce({ connectors: [row()], shared: true, connectorsSupported: true, manageable: true, sharedCredentials: true });
+    const teamAdmin = renderHook(() => useAgentConnectors('a-quill'));
+    await waitFor(() => expect(teamAdmin.result.current.status).toBe('ok'));
+    expect(teamAdmin.result.current.sharedCredentials).toBe(true);
+
+    // A server that never sent the flag: nothing is offered.
+    connectorsMock.mockResolvedValueOnce({ connectors: [row()], shared: true, connectorsSupported: true, manageable: true } as never);
+    const old = renderHook(() => useAgentConnectors('a-quill'));
+    await waitFor(() => expect(old.result.current.status).toBe('ok'));
+    expect(old.result.current.sharedCredentials).toBe(false);
   });
 });

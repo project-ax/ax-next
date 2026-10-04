@@ -13,6 +13,12 @@ export interface CredentialSlotFormProps {
   scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
   current: { set: boolean; rotatedAt?: string };
   onSaved: () => void;
+  /**
+   * TASK-813 — where the key goes instead of the destination's own route (the
+   * team-key dialog saves through the agent's team-key PUT). Absent: the
+   * default `setDestinationCredential` write. A rejection's message is shown.
+   */
+  save?: (payload: string) => Promise<void>;
 }
 
 export function CredentialSlotForm({
@@ -21,6 +27,7 @@ export function CredentialSlotForm({
   scope,
   current,
   onSaved,
+  save,
 }: CredentialSlotFormProps) {
   const [payload, setPayload] = useState('');
   const [busy, setBusy] = useState(false);
@@ -36,7 +43,8 @@ export function CredentialSlotForm({
     setBusy(true);
     setError(null);
     try {
-      await setDestinationCredential({ destination, slot, scope, payload });
+      if (save) await save(payload);
+      else await setDestinationCredential({ destination, slot, scope, payload });
       setPayload('');
       onSaved();
     } catch (err) {

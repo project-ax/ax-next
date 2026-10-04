@@ -505,7 +505,27 @@ export function createChannelWebServerPlugin(
           // agent's connectors (add, remove, sign in on it).
           hook: 'agents:can-manage-connectors',
           degradation:
-            'the Connectors tab offers no Add, Remove or team Sign in, and Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin',
+            'the Connectors tab offers no Add or Remove, and Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin',
+        },
+        {
+          // TASK-813 — may this person store a credential ON a team agent (sign in
+          // on it, add a team key)? Team admins only.
+          hook: 'agents:can-set-shared-credential',
+          degradation:
+            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and PUT …/connectors/:connectorId/team-key answers 503 connectors-unavailable',
+        },
+        {
+          // TASK-813 — before saving a team key: would the vault let the agent's
+          // users read it (TASK-788 read question)?
+          hook: 'credentials:authorize-agent:account',
+          degradation:
+            'PUT …/connectors/:connectorId/team-key answers 503 connectors-unavailable (whether the agent\'s users could read the key cannot be checked)',
+        },
+        {
+          // TASK-813 — the team key's write, at scope agent.
+          hook: 'credentials:set',
+          degradation:
+            'PUT …/connectors/:connectorId/team-key answers 503 credentials-unavailable (a team key cannot be saved)',
         },
         {
           // TASK-761 — the attach gate reads the connector's credential slots

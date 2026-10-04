@@ -1082,10 +1082,12 @@ export type AgentConnectorHealth =
  *     and this caller is not a workspace admin: nothing to click, the tooltip
  *     says who can fix it.
  *   - `ask-owner` (TASK-798) — a sign-in is missing on a TEAM agent and this
- *     caller may not sign in for it (not the agent's owner — a team admin —
- *     nor a workspace admin): nothing to click, "Ask the agent’s owner to
- *     sign in". A missing key stays `add-key` for them: the rail's Add key
- *     writes the caller's OWN key, which a member may always do.
+ *     caller may not sign in for it: nothing to click, "Ask the agent’s owner
+ *     to sign in". Since TASK-813 only an admin of the owning team may sign in
+ *     on a team agent ({@link AgentConnectorsRead.sharedCredentials}) — a
+ *     workspace admin who is not a team admin gets `ask-owner` too. A missing
+ *     key stays `add-key` for them: the rail's Add key writes the caller's OWN
+ *     key, which a member may always do.
  */
 export type AgentConnectorSetup = 'sign-in' | 'add-key' | 'ask-admin' | 'ask-owner';
 
@@ -1111,6 +1113,15 @@ export interface AgentConnectorRow {
    * (attached or legacy-owned alike); the server still decides on the DELETE.
    */
   removable: boolean;
+  /**
+   * TASK-813 — present (true) when this caller may add a TEAM key for this
+   * connector: an agent-scope key every member of this team agent uses unless
+   * they add their own. Only on a team agent, only when
+   * {@link AgentConnectorsRead.sharedCredentials} is true, only for a
+   * connector with an api-key slot (not one that spends the company's key).
+   * Saved with `PUT …/connectors/:connectorId/team-key`, which decides again.
+   */
+  teamKey?: true;
 }
 
 /** `GET /api/workspace/agents/:agentId/connectors` answers this. */
@@ -1122,13 +1133,23 @@ export interface AgentConnectorsRead {
    */
   shared: boolean;
   /**
-   * TASK-798 — the caller may change this agent's connectors: add, remove,
-   * and sign in ON the agent (first sign-in or Reconnect of a shared one).
+   * TASK-798 — the caller may add and remove this agent's connectors.
    * Always true for a personal agent's owner and for a workspace admin; on a
-   * team agent only for its owner (a team admin). False also when the answer
-   * could not be read — the server decides again on every write.
+   * team agent otherwise only for its owner (a team admin). False also when
+   * the answer could not be read — the server decides again on every write.
+   * Since TASK-813 it no longer covers signing in ON a team agent: that is
+   * {@link sharedCredentials}.
    */
   manageable: boolean;
+  /**
+   * TASK-813 — the caller may sign in, or add a team key, ON this agent: a
+   * credential stored on the agent that everyone using it acts as. Only an
+   * admin of the team that owns the agent — a workspace admin who is not one
+   * is refused like any member. Always false on a personal agent (its
+   * sign-ins and keys are stored on the person), and false when the answer
+   * could not be read; the server decides again on every write.
+   */
+  sharedCredentials: boolean;
   /**
    * TASK-761 — false when this agent's runner is not given connector tools
    * at all (the aisdk runner does not load connectors). The tab then says so

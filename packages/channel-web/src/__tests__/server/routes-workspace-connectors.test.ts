@@ -114,6 +114,9 @@ describe('agent connector routes', () => {
   /** TASK-765 / TASK-798 — what `agents:can-manage-connectors` answers. */
   let canManage: 'allow' | 'deny' | 'throw' | 'malformed' | 'not-found';
   let canManageCalls: Array<Record<string, unknown>>;
+  /** TASK-813 — what `agents:can-set-shared-credential` answers. */
+  let canSetShared: 'allow' | 'deny' | 'throw';
+  let canSetSharedCalls: Array<Record<string, unknown>>;
 
   function handlers() {
     return makeWorkspaceHandlers({ bus, initCtx });
@@ -229,6 +232,13 @@ describe('agent connector routes', () => {
       }
       if (canManage === 'malformed') return {};
       return { allowed: canManage === 'allow' };
+    });
+    canSetShared = 'allow';
+    canSetSharedCalls = [];
+    bus.registerService('agents:can-set-shared-credential', 'agents', async (_c, i: unknown) => {
+      canSetSharedCalls.push(i as Record<string, unknown>);
+      if (canSetShared === 'throw') throw new Error('teams store row 9 is corrupt');
+      return { allowed: canSetShared === 'allow' };
     });
     bus.registerService('tool-policy:list-agent-overrides', 'policy', async () => ({
       overrides: [...overrides.entries()].map(([toolKey, verdict]) => ({
@@ -657,14 +667,17 @@ describe('agent connector routes', () => {
       });
 
       // TASK-798 — a sign-in on a team agent is stored ON the agent, so only
-      // its owner or an admin is offered Sign in; a member is told to ask the
-      // owner. A missing key stays add-key: the rail's Add key is their own.
+      // its owner is offered Sign in; a member is told to ask the owner.
+      // TASK-813 — "its owner" is a team admin ONLY (agents:can-set-shared-credential),
+      // no workspace-admin bypass. A missing key stays add-key: the rail's Add
+      // key is their own.
       // UNFIXED: gmail says `sign-in` to the member -> fails.
       it('a team-agent member: a missing sign-in is ask-owner, a missing key stays add-key', async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
         canManage = 'deny';
+        canSetShared = 'deny';
         const byId = rowsById(await list());
         expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
         expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
@@ -677,7 +690,99 @@ describe('agent connector routes', () => {
         expect(rowsById(await list()).gmail).toMatchObject({ setup: 'sign-in' });
         agentRow = { ...agentRow, visibility: 'personal' };
         canManage = 'deny';
+        canSetShared = 'deny';
         expect(rowsById(await list()).gmail).toMatchObject({ setup: 'sign-in' });
+      });
+
+      // TASK-813 — sign-in on a team agent follows sharedCredentials, NOT
+      // manageable: a workspace admin may still add/remove connectors there
+      // (manageable stays true) but may not sign in for the team.
+      // UNFIXED: setup reads `sign-in` off manageable -> fails.
+      it('a workspace admin who is not a team admin: manageable, but a missing sign-in is ask-owner', async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'team' };
+        caller = { id: 'u1', isAdmin: true };
+        canManage = 'allow';
+        canSetShared = 'deny';
+        const r = await list();
+        expect(r.body).toMatchObject({ shared: true, manageable: true, sharedCredentials: false });
+        const byId = rowsById(r);
+        expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+        expect('teamKey' in byId.linear!).toBe(false);
+        expect(canSetSharedCalls).toEqual([{ actor: { userId: 'u1', isAdmin: true }, agentId: 'a1' }]);
+      });
+
+      it('a team admin: sharedCredentials, sign-in, and a team key offered on the api-key personal connector only', async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'team' };
+        // notes: a workspace-keyed api-key connector — the company key, never a team key.
+        effective[2] = {
+          ...effective[2]!,
+          summary: { ...effective[2]!.summary, keyMode: 'workspace' },
+          capabilities: { credentials: [key('NOTES_KEY')] },
+        };
+        const r = await list();
+        expect(r.body).toMatchObject({ shared: true, sharedCredentials: true });
+        const byId = rowsById(r);
+        expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
+        expect('teamKey' in byId.gmail!).toBe(false);
+        expect(byId.linear).toMatchObject({ teamKey: true });
+        expect('teamKey' in byId.notes!).toBe(false);
+        // Present whatever the row's health: a team key can replace a working one.
+        present = new Set(['account:gmail', 'account:linear']);
+        expect(rowsById(await list()).linear).toMatchObject({ health: 'ok', teamKey: true });
+      });
+
+      it('a plain member: no sharedCredentials, no team key', async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'team' };
+        canManage = 'deny';
+        canSetShared = 'deny';
+        const r = await list();
+        expect(r.body).toMatchObject({ manageable: false, sharedCredentials: false });
+        for (const row of Object.values(rowsById(r))) expect('teamKey' in row).toBe(false);
+      });
+
+      it('a personal agent: sharedCredentials false, no team key, the hook is never asked', async () => {
+        registerHealth();
+        registerHas();
+        const r = await list();
+        expect(r.body).toMatchObject({ shared: false, manageable: true, sharedCredentials: false });
+        const byId = rowsById(r);
+        expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
+        for (const row of Object.values(byId)) expect('teamKey' in row).toBe(false);
+        expect(canSetSharedCalls).toEqual([]);
+      });
+
+      it('a throwing shared-credential hook fails closed: ask-owner, logged by error NAME only', async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'team' };
+        canSetShared = 'throw';
+        const warn = vi.spyOn(initCtx.logger, 'warn');
+        const r = await list();
+        const call = warn.mock.calls.find((c) => c[0] === 'workspace_connector_can_set_shared_failed');
+        warn.mockRestore();
+        expect(r.statusCode).toBe(200);
+        expect(r.body).toMatchObject({ sharedCredentials: false });
+        expect(rowsById(r).gmail).toMatchObject({ setup: 'ask-owner' });
+        expect(call?.[1]).toEqual({ agentId: 'a1', name: expect.any(String) });
+        expect(JSON.stringify(call?.[1])).not.toContain('corrupt');
+      });
+
+      it('Retry on a team agent answers ask-owner to a workspace admin who is not a team admin', async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'team' };
+        caller = { id: 'u1', isAdmin: true };
+        canSetShared = 'deny';
+        expect((await retry('gmail')).body).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
+        canSetShared = 'allow';
+        expect((await retry('gmail')).body).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
       });
 
       it('Retry on a team agent answers ask-owner to a member, too', async () => {
@@ -685,6 +790,7 @@ describe('agent connector routes', () => {
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
         canManage = 'deny';
+        canSetShared = 'deny';
         const r = await retry('gmail');
         expect(r.statusCode).toBe(200);
         expect(r.body).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
@@ -870,6 +976,7 @@ describe('agent connector routes', () => {
         it('keeps the setup the caller is owed: ask-owner on a team agent, ask-admin for a company key', async () => {
           agentRow = { ...agentRow, visibility: 'team' };
           canManage = 'deny';
+          canSetShared = 'deny';
           expect((await retry('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'ask-owner' });
           agentRow = { ...agentRow, visibility: 'personal' };
           effective[1] = {
@@ -1074,6 +1181,7 @@ describe('agent connector routes', () => {
         ],
         shared: false,
         manageable: true,
+        sharedCredentials: false,
         connectorsSupported: true,
       });
       // The SAME inputs a session opens with: this agent's attachments AND
