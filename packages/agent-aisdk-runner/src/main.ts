@@ -10,6 +10,7 @@ import {
   createHeldCallRegistry,
   createHoldLatch,
   createToolPolicy,
+  loadProjectedMcpServers,
   runRunner,
   waitForAssignment,
   type Loop,
@@ -33,12 +34,14 @@ import {
   type MemoryTranscriptSource,
 } from './memory-transcript-source.js';
 import {
+  createProxyFetch,
   messagesForProvider,
   providerIdForModelRef,
   resolveModel,
 } from './provider.js';
 import { discoverInstalledSkills, buildSkillsPromptSection } from './skills-index.js';
 import { buildBuiltinTools } from './tools/builtins.js';
+import { connectConnectorTools } from './tools/connector-tools.js';
 import { createFailedCallRegistry } from './tools/failed-calls.js';
 import { buildHostTools } from './tools/host-tools.js';
 import { assertAllToolsWrapped, mergeToolSets } from './tools/policy-wrap.js';
@@ -252,387 +255,429 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       // with a loud log, not a dead session.
       const skills = await discoverInstalledSkills();
 
-      // Merged rather than spread: one flat namespace means a collision must be
-      // an error, not a last-write-wins coin flip. See mergeToolSets.
-      const tools = mergeToolSets([
-        {
-          label: 'built-ins',
-          tools: buildBuiltinTools({
-            policy,
-            homeDir,
-            env: bashEnv,
-            holdLatch,
-            onHold,
-            onToolFailure,
-            // The agent's per-tool DENY verdicts: a denied built-in (e.g.
-            // Bash) is never offered to the model. Host-catalog denies were
-            // already dropped from `catalog` by runner-core.
-            disallowed: agentConfig.disallowedTools,
-          }),
-        },
-        {
-          label: 'host catalog tools',
-          tools: buildHostTools({
-            policy,
-            client,
-            tools: catalog,
-            flushWorkspace: flushWorkspaceForHostTool,
-            holdLatch,
-            onHold,
-            onToolFailure,
-          }),
-        },
-        {
-          label: 'sandbox catalog tools',
-          tools: buildSandboxTools({
-            policy,
-            dispatcher: localDispatcher,
-            tools: catalog,
-            holdLatch,
-            onHold,
-            onToolFailure,
-          }),
-        },
-        {
-          label: 'the Skill tool',
-          tools: buildSkillTool({ policy, skills, holdLatch, onHold, onToolFailure }),
-        },
-      ]) as unknown as Record<string, Tool>;
-      // I₁, enforced rather than asserted in prose. `WebFetch`/`WebSearch`/
-      // `Task`/`AskUserQuestion`/`TodoWrite` are absent by construction here —
-      // on this runner "disabled" means "never registered", so there is no
-      // deny-list to keep in sync. (Web capability is unaffected: @ax/web-tools
-      // supplies web_search/web_extract as ordinary host tools above.)
-      assertAllToolsWrapped(tools, holdLatch);
-
-      // One parse, one opinion about which provider this is: `provider.ts`
-      // owns both the model construction and the per-provider send-site
-      // message policy, so the turn loop never re-derives "is this Anthropic?".
-      const providerId = providerIdForModelRef(agentConfig.model);
-
-      const instructions = composeInstructions(
-        systemPrompt,
-        buildSkillsPromptSection(skills),
+      // Connectors (TASK-826). The same host-written projection the Skill
+      // index walks, read through the loader the claude-sdk runner uses
+      // (@ax/agent-runner-core). Connected eagerly, in parallel, each bounded:
+      // a dead or wedged connector costs its own tools and one stderr line,
+      // never the session. ONE proxy fetch serves the model and every
+      // connector — the credential proxy is the only way out of the sandbox,
+      // and it is what swaps the ax-cred placeholders on allowlisted hosts.
+      const proxyFetch = createProxyFetch(proxyStartup.providerEnv);
+      const projectedMcp = await loadProjectedMcpServers(
+        proxyStartup.providerEnv['CLAUDE_CONFIG_DIR'] ?? process.env['CLAUDE_CONFIG_DIR'],
       );
-
-      // Compaction (design §7). `prepareStep` is the only hook that can rewrite
-      // the message list per step AND have the rewrite carry forward to the
-      // rest of the turn, which is what makes a long tool loop survivable.
-      //
-      // SEND-SITE ONLY, like the reasoning prune above it: `transcript` keeps
-      // every message, and each step recomputes the compaction from what it is
-      // handed. Nothing here reaches the host's stored bytes.
-      //
-      // Rung 3 (summarize) is the exception to "send-site only" and rides
-      // `turn()` below, not `prepareStep`. It costs a model call, so it is the
-      // one rung whose result is written back to `transcript` and published to
-      // the host.
-      const model = resolveModel({
-        modelRef: agentConfig.model,
-        providerEnv: proxyStartup.providerEnv,
-      });
-      const compactor = createCompactor({
-        modelRef: agentConfig.model,
-        instructions,
-        toolCount: Object.keys(tools).length,
-        // The agent's OWN model summarizes (design §7). A dedicated summarizer
-        // model would mean a second entry in the per-agent allow-list and a
-        // second credential to resolve, to save money on a call that happens
-        // once per several dozen turns. `tools` is deliberately not passed:
-        // this call reads, it does not act.
-        summarizeText: async ({ instructions: summaryInstructions, prompt }) => {
-          const { text } = await generateText({
-            model,
-            instructions: summaryInstructions,
-            prompt,
-            abortSignal: AbortSignal.timeout(SUMMARY_TIMEOUT_MS),
-          });
-          return text;
-        },
+      const connectors = await connectConnectorTools({
+        servers: projectedMcp.servers,
+        fetch: proxyFetch,
+        policy,
+        holdLatch,
+        onHold,
+        onToolFailure,
+        disallowed: agentConfig.disallowedTools ?? [],
       });
 
-      const agent = new ToolLoopAgent({
-        model,
-        instructions,
-        tools,
-        // The tool's `execute` cannot stop the loop by itself (it returns
-        // text, not a signal) — the latch composes with the step cap so a
-        // hold ends the turn after the step that tripped it.
-        stopWhen: [stepCountIs(MAX_STEPS_PER_TURN), () => holdLatch.tripped],
-        prepareStep: ({ steps, messages }) => compactor.step({ steps, messages }),
-      });
+      // Every exit below — `return 0`, a thrown model error, a throw in
+      // mergeToolSets/assertAllToolsWrapped — closes the connector clients.
+      try {
+        // Merged rather than spread: one flat namespace means a collision must be
+        // an error, not a last-write-wins coin flip. See mergeToolSets.
+        const tools = mergeToolSets([
+          {
+            label: 'built-ins',
+            tools: buildBuiltinTools({
+              policy,
+              homeDir,
+              env: bashEnv,
+              holdLatch,
+              onHold,
+              onToolFailure,
+              // The agent's per-tool DENY verdicts: a denied built-in (e.g.
+              // Bash) is never offered to the model. Host-catalog denies were
+              // already dropped from `catalog` by runner-core.
+              disallowed: agentConfig.disallowedTools,
+            }),
+          },
+          {
+            label: 'host catalog tools',
+            tools: buildHostTools({
+              policy,
+              client,
+              tools: catalog,
+              flushWorkspace: flushWorkspaceForHostTool,
+              holdLatch,
+              onHold,
+              onToolFailure,
+            }),
+          },
+          {
+            label: 'sandbox catalog tools',
+            tools: buildSandboxTools({
+              policy,
+              dispatcher: localDispatcher,
+              tools: catalog,
+              holdLatch,
+              onHold,
+              onToolFailure,
+            }),
+          },
+          {
+            label: 'the Skill tool',
+            tools: buildSkillTool({
+              policy,
+              skills,
+              holdLatch,
+              onHold,
+              onToolFailure,
+              loadedMcpBundles: connectors.loadedBundles,
+            }),
+          },
+          {
+            label: 'connector tools',
+            tools: connectors.tools,
+          },
+        ]) as unknown as Record<string, Tool>;
+        // I₁, enforced rather than asserted in prose — over all five groups,
+        // connector tools included (connector-tools.ts builds each one through
+        // `wrapWithPolicy`, so a connector tool off that path fails boot here
+        // like any other). `WebFetch`/`WebSearch`/`Task`/`AskUserQuestion`/
+        // `TodoWrite` are absent by construction here —
+        // on this runner "disabled" means "never registered", so there is no
+        // deny-list to keep in sync. (Web capability is unaffected: @ax/web-tools
+        // supplies web_search/web_extract as ordinary host tools above.)
+        assertAllToolsWrapped(tools, holdLatch);
 
-      // The transcript session id. On resume the shell already seeded it (and
-      // already restored our message array through the transcript source); on a
-      // fresh boot we mint one and report it, because the shell's deferred
-      // `conversation.store-runner-session` bind is gated on having one.
-      if (ctx.getTranscriptSessionId() === null && resumeSessionId === null) {
-        ctx.setTranscriptSessionId(randomUUID());
-      }
+        // One parse, one opinion about which provider this is: `provider.ts`
+        // owns both the model construction and the per-provider send-site
+        // message policy, so the turn loop never re-derives "is this Anthropic?".
+        const providerId = providerIdForModelRef(agentConfig.model);
 
-      for (;;) {
-        const next = await ctx.nextMessage();
-        // null = the inbox said cancel (or hit its idle floor). Drain and exit;
-        // the shell emits the single `event.chat-end` on the way out.
-        if (next === null) return 0;
+        const instructions = composeInstructions(
+          systemPrompt,
+          buildSkillsPromptSection(skills),
+        );
 
-        // Per-turn latch: a hold in one turn must not bleed into the next.
-        holdLatch.reset();
-        heldCalls.clear();
-        failedCalls.clear();
-
-        transcript.append([toUserModelMessage(next.content)]);
-
-        // TASK-688 — Stop. One controller per turn, tripped by the shell when a
-        // person presses Stop (`interrupt` in the inbox). It is registered
-        // BEFORE the compaction call and the model call so a press at any point
-        // in the turn lands: an early press is latched by the shell and fires on
-        // registration, and `agent.stream` given an already-aborted signal ends
-        // at once. The signal is what actually stops the work — the model
-        // request, and the Bash child (killed by process group on the tool's
-        // own `abortSignal`, see tools/builtins.ts). It is NOT the runner
-        // ending: `cancel` does that. This loop carries on to the next message.
-        const stop = new AbortController();
-        const offInterrupt = ctx.onInterrupt(() => stop.abort());
-
-        // Rung 3 of the compaction ladder (design §7), at the only point in the
-        // turn where it is safe: the message list is quiescent — every tool call
-        // has its result, no signed thinking block is mid-flight — and the
-        // rewrite can be made durable before a single token of this turn is
-        // spent. `turn()` decides; it declines unless rungs 1-2 would leave the
-        // conversation over the threshold anyway, and it never throws.
+        // Compaction (design §7). `prepareStep` is the only hook that can rewrite
+        // the message list per step AND have the rewrite carry forward to the
+        // rest of the turn, which is what makes a long tool loop survivable.
         //
-        // Unlike rungs 1-2 this DOES rewrite the transcript, because a model
-        // call cannot be recomputed for free the way a mask or a prune can. The
-        // two writes belong together: adopting the shorter list without
-        // publishing it would leave the host's stored copy long, and the next
-        // resume would silently undo the compaction and buy the summarizer call
-        // again.
-        const compacted = await compactor.turn({ messages: transcript.messages() });
-        if (compacted.summarized) {
-          transcript.replace(compacted.messages);
-          await ctx.replaceTranscript();
-        }
-
-        // What the turn has FINISHED, tracked here rather than read back from
-        // `result.steps` at the end: after a Stop, `steps` can reject (no step
-        // ever finished) or wait on work that cannot be taken back, and this
-        // list is what the stopped path needs to be ready without either.
-        // `ai@7` calls `onStepEnd` once a step is complete INCLUDING its tool
-        // results, so an in-flight step — a model call cut off mid-sentence, a
-        // tool still running — is never in here.
+        // SEND-SITE ONLY, like the reasoning prune above it: `transcript` keeps
+        // every message, and each step recomputes the compaction from what it is
+        // handed. Nothing here reaches the host's stored bytes.
         //
-        // It also carries each finished step's `usage`, which is what a Stopped
-        // turn reports (TASK-692): those model calls were paid for.
-        const finishedSteps: Array<{
-          response: { messages: ModelMessage[] };
-          usage: StepUsageLike;
-        }> = [];
-        // Text the CURRENT step has streamed so far. Reset at every step
-        // boundary, so after a Stop it is exactly the words the person watched
-        // appear that no finished step accounts for.
-        let stepText = '';
-
-        // Send-site only. `messagesForProvider` prunes prior-turn reasoning for
-        // providers that reject a replay of it (design §6) — the transcript
-        // itself is untouched, because its persisted bytes are the host's
-        // source of truth and rewriting them would break `prefixHash` and force
-        // a full resync on every resume.
-        const result = await agent.stream({
-          messages: messagesForProvider({
-            providerId,
-            messages: transcript.messages(),
-          }),
-          abortSignal: stop.signal,
-          onStepEnd: (step) => {
-            finishedSteps.push(step);
+        // Rung 3 (summarize) is the exception to "send-site only" and rides
+        // `turn()` below, not `prepareStep`. It costs a model call, so it is the
+        // one rung whose result is written back to `transcript` and published to
+        // the host.
+        const model = resolveModel({
+          modelRef: agentConfig.model,
+          providerEnv: proxyStartup.providerEnv,
+          fetchImpl: proxyFetch,
+        });
+        const compactor = createCompactor({
+          modelRef: agentConfig.model,
+          instructions,
+          toolCount: Object.keys(tools).length,
+          // The agent's OWN model summarizes (design §7). A dedicated summarizer
+          // model would mean a second entry in the per-agent allow-list and a
+          // second credential to resolve, to save money on a call that happens
+          // once per several dozen turns. `tools` is deliberately not passed:
+          // this call reads, it does not act.
+          summarizeText: async ({ instructions: summaryInstructions, prompt }) => {
+            const { text } = await generateText({
+              model,
+              instructions: summaryInstructions,
+              prompt,
+              abortSignal: AbortSignal.timeout(SUMMARY_TIMEOUT_MS),
+            });
+            return text;
           },
         });
 
-        // Live streaming. Per-delta so the SSE fan-out feels like typing; the
-        // canonical record comes from the response messages below, never from
-        // this loop — see turn-blocks.ts.
-        //
-        // A provider failure arrives as an `error` PART rather than a rejected
-        // promise; `await result.steps` then throws a generic
-        // `AI_NoOutputGeneratedError: No output generated. Check the stream for
-        // errors.` which loses the actual cause. Capture the part so the
-        // `chat:turn-error` the user sees names the real failure.
-        let streamError: unknown;
-        // After a Stop the stream normally closes at once (the model request
-        // is aborted; Bash is killed). But `ai@7` does not close it until every
-        // tool it dispatched has returned, and a host tool or a sandbox catalog
-        // tool cannot be taken back — it can hold the stream for up to the 30 s
-        // IPC ceiling. So a stopped turn gets a short grace, then the loop
-        // stops waiting: the abandoned work finishes (or not) on its own, its
-        // result is dropped, and the person is not held hostage by it.
-        const STOP_GRACE_ELAPSED = Symbol('stop-grace-elapsed');
-        const stopGraceElapsed = new Promise<typeof STOP_GRACE_ELAPSED>((resolve) => {
-          const arm = (): void => {
-            setTimeout(() => resolve(STOP_GRACE_ELAPSED), STOP_GRACE_MS).unref();
-          };
-          if (stop.signal.aborted) arm();
-          else stop.signal.addEventListener('abort', arm, { once: true });
+        const agent = new ToolLoopAgent({
+          model,
+          instructions,
+          tools,
+          // The tool's `execute` cannot stop the loop by itself (it returns
+          // text, not a signal) — the latch composes with the step cap so a
+          // hold ends the turn after the step that tripped it.
+          stopWhen: [stepCountIs(MAX_STEPS_PER_TURN), () => holdLatch.tripped],
+          prepareStep: ({ steps, messages }) => compactor.step({ steps, messages }),
         });
-        const parts = result.fullStream[Symbol.asyncIterator]();
+
+        // The transcript session id. On resume the shell already seeded it (and
+        // already restored our message array through the transcript source); on a
+        // fresh boot we mint one and report it, because the shell's deferred
+        // `conversation.store-runner-session` bind is gated on having one.
+        if (ctx.getTranscriptSessionId() === null && resumeSessionId === null) {
+          ctx.setTranscriptSessionId(randomUUID());
+        }
+
         for (;;) {
-          const pulled = await Promise.race([parts.next(), stopGraceElapsed]);
-          if (pulled === STOP_GRACE_ELAPSED) {
-            // Not awaited: closing the iterator waits on the very work we just
-            // stopped waiting for.
-            void Promise.resolve(parts.return?.()).catch(() => undefined);
-            break;
+          const next = await ctx.nextMessage();
+          // null = the inbox said cancel (or hit its idle floor). Drain and exit;
+          // the shell emits the single `event.chat-end` on the way out.
+          if (next === null) return 0;
+
+          // Per-turn latch: a hold in one turn must not bleed into the next.
+          holdLatch.reset();
+          heldCalls.clear();
+          failedCalls.clear();
+
+          transcript.append([toUserModelMessage(next.content)]);
+
+          // TASK-688 — Stop. One controller per turn, tripped by the shell when a
+          // person presses Stop (`interrupt` in the inbox). It is registered
+          // BEFORE the compaction call and the model call so a press at any point
+          // in the turn lands: an early press is latched by the shell and fires on
+          // registration, and `agent.stream` given an already-aborted signal ends
+          // at once. The signal is what actually stops the work — the model
+          // request, and the Bash child (killed by process group on the tool's
+          // own `abortSignal`, see tools/builtins.ts). It is NOT the runner
+          // ending: `cancel` does that. This loop carries on to the next message.
+          const stop = new AbortController();
+          const offInterrupt = ctx.onInterrupt(() => stop.abort());
+
+          // Rung 3 of the compaction ladder (design §7), at the only point in the
+          // turn where it is safe: the message list is quiescent — every tool call
+          // has its result, no signed thinking block is mid-flight — and the
+          // rewrite can be made durable before a single token of this turn is
+          // spent. `turn()` decides; it declines unless rungs 1-2 would leave the
+          // conversation over the threshold anyway, and it never throws.
+          //
+          // Unlike rungs 1-2 this DOES rewrite the transcript, because a model
+          // call cannot be recomputed for free the way a mask or a prune can. The
+          // two writes belong together: adopting the shorter list without
+          // publishing it would leave the host's stored copy long, and the next
+          // resume would silently undo the compaction and buy the summarizer call
+          // again.
+          const compacted = await compactor.turn({ messages: transcript.messages() });
+          if (compacted.summarized) {
+            transcript.replace(compacted.messages);
+            await ctx.replaceTranscript();
           }
-          if (pulled.done === true) break;
-          const part = pulled.value;
-          if (part.type === 'error') {
-            streamError = part.error;
-          } else if (part.type === 'start-step' || part.type === 'finish-step') {
-            stepText = '';
-          } else if (part.type === 'text-delta') {
-            if (part.text.length > 0) {
-              stepText += part.text;
-              await ctx.emitChunk({ kind: 'text', text: part.text });
+
+          // What the turn has FINISHED, tracked here rather than read back from
+          // `result.steps` at the end: after a Stop, `steps` can reject (no step
+          // ever finished) or wait on work that cannot be taken back, and this
+          // list is what the stopped path needs to be ready without either.
+          // `ai@7` calls `onStepEnd` once a step is complete INCLUDING its tool
+          // results, so an in-flight step — a model call cut off mid-sentence, a
+          // tool still running — is never in here.
+          //
+          // It also carries each finished step's `usage`, which is what a Stopped
+          // turn reports (TASK-692): those model calls were paid for.
+          const finishedSteps: Array<{
+            response: { messages: ModelMessage[] };
+            usage: StepUsageLike;
+          }> = [];
+          // Text the CURRENT step has streamed so far. Reset at every step
+          // boundary, so after a Stop it is exactly the words the person watched
+          // appear that no finished step accounts for.
+          let stepText = '';
+
+          // Send-site only. `messagesForProvider` prunes prior-turn reasoning for
+          // providers that reject a replay of it (design §6) — the transcript
+          // itself is untouched, because its persisted bytes are the host's
+          // source of truth and rewriting them would break `prefixHash` and force
+          // a full resync on every resume.
+          const result = await agent.stream({
+            messages: messagesForProvider({
+              providerId,
+              messages: transcript.messages(),
+            }),
+            abortSignal: stop.signal,
+            onStepEnd: (step) => {
+              finishedSteps.push(step);
+            },
+          });
+
+          // Live streaming. Per-delta so the SSE fan-out feels like typing; the
+          // canonical record comes from the response messages below, never from
+          // this loop — see turn-blocks.ts.
+          //
+          // A provider failure arrives as an `error` PART rather than a rejected
+          // promise; `await result.steps` then throws a generic
+          // `AI_NoOutputGeneratedError: No output generated. Check the stream for
+          // errors.` which loses the actual cause. Capture the part so the
+          // `chat:turn-error` the user sees names the real failure.
+          let streamError: unknown;
+          // After a Stop the stream normally closes at once (the model request
+          // is aborted; Bash is killed). But `ai@7` does not close it until every
+          // tool it dispatched has returned, and a host tool or a sandbox catalog
+          // tool cannot be taken back — it can hold the stream for up to the 30 s
+          // IPC ceiling. So a stopped turn gets a short grace, then the loop
+          // stops waiting: the abandoned work finishes (or not) on its own, its
+          // result is dropped, and the person is not held hostage by it.
+          const STOP_GRACE_ELAPSED = Symbol('stop-grace-elapsed');
+          const stopGraceElapsed = new Promise<typeof STOP_GRACE_ELAPSED>((resolve) => {
+            const arm = (): void => {
+              setTimeout(() => resolve(STOP_GRACE_ELAPSED), STOP_GRACE_MS).unref();
+            };
+            if (stop.signal.aborted) arm();
+            else stop.signal.addEventListener('abort', arm, { once: true });
+          });
+          const parts = result.fullStream[Symbol.asyncIterator]();
+          for (;;) {
+            const pulled = await Promise.race([parts.next(), stopGraceElapsed]);
+            if (pulled === STOP_GRACE_ELAPSED) {
+              // Not awaited: closing the iterator waits on the very work we just
+              // stopped waiting for.
+              void Promise.resolve(parts.return?.()).catch(() => undefined);
+              break;
             }
-          } else if (part.type === 'reasoning-delta') {
-            if (part.text.length > 0) {
-              await ctx.emitChunk({ kind: 'thinking', text: part.text });
+            if (pulled.done === true) break;
+            const part = pulled.value;
+            if (part.type === 'error') {
+              streamError = part.error;
+            } else if (part.type === 'start-step' || part.type === 'finish-step') {
+              stepText = '';
+            } else if (part.type === 'text-delta') {
+              if (part.text.length > 0) {
+                stepText += part.text;
+                await ctx.emitChunk({ kind: 'text', text: part.text });
+              }
+            } else if (part.type === 'reasoning-delta') {
+              if (part.text.length > 0) {
+                await ctx.emitChunk({ kind: 'thinking', text: part.text });
+              }
+            } else if (part.type === 'tool-call') {
+              // TASK-271: same phrase attach as the persisted blocks below.
+              const phrase = phraseByName.get(part.toolName);
+              await ctx.emitChunk({
+                kind: 'tool-use',
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+                input: (part.input ?? {}) as Record<string, unknown>,
+                ...(phrase !== undefined ? { activityPhrase: phrase } : {}),
+              });
+            } else if (part.type === 'tool-result') {
+              // TASK-270: the hold branch returns text (never throws), so a
+              // held call arrives here, not on the tool-error arm. Mark it
+              // from the per-turn record — never from the output copy.
+              //
+              // TASK-430: and a call that RAN and FAILED is marked from the same
+              // per-turn record the persisted block reads, so the live stream and
+              // the durable transcript cannot disagree about whether it failed.
+              // `held` is checked first and exclusively: a hold is not a failure,
+              // and a held call never reaches the failure record anyway.
+              await ctx.emitChunk({
+                kind: 'tool-result',
+                toolCallId: part.toolCallId,
+                output: renderStreamedOutput(part.output),
+                ...(heldCalls.has(part.toolCallId)
+                  ? { held: true }
+                  : failedCalls.has(part.toolCallId)
+                    ? { isError: true }
+                    : {}),
+              });
+            } else if (part.type === 'tool-error') {
+              // A thrown executor. `ai@7` still produces a tool result for the
+              // model (`error-text`) and continues the loop, so this is a failed
+              // tool, not a failed turn — mark it and keep going.
+              await ctx.emitChunk({
+                kind: 'tool-result',
+                toolCallId: part.toolCallId,
+                output: errorText(part.error),
+                isError: true,
+              });
             }
-          } else if (part.type === 'tool-call') {
-            // TASK-271: same phrase attach as the persisted blocks below.
-            const phrase = phraseByName.get(part.toolName);
-            await ctx.emitChunk({
-              kind: 'tool-use',
-              toolCallId: part.toolCallId,
-              toolName: part.toolName,
-              input: (part.input ?? {}) as Record<string, unknown>,
-              ...(phrase !== undefined ? { activityPhrase: phrase } : {}),
-            });
-          } else if (part.type === 'tool-result') {
-            // TASK-270: the hold branch returns text (never throws), so a
-            // held call arrives here, not on the tool-error arm. Mark it
-            // from the per-turn record — never from the output copy.
+            // start / text-start / raw / … are bookkeeping the host does not need.
+          }
+          // The turn's streaming is over, one way or another. (A throw below ends
+          // the run, so there is no path on which this handler outlives a turn.)
+          offInterrupt();
+
+          let newMessages: ModelMessage[];
+          // What the turn cost (TASK-692, per-user spend limits), summed from the
+          // steps that FINISHED. `null` when there is nothing to sum, and the host
+          // then charges a flat assumed cost rather than treating it as free.
+          let turnUsage: TurnUsage | null;
+          if (stop.signal.aborted) {
+            // TASK-688. The person pressed Stop. The turn ends HERE, on the same
+            // path as any other turn — `endTurn` below still ships the transcript
+            // and emits the turn-end that closes their stream — with whatever it
+            // had produced by then:
             //
-            // TASK-430: and a call that RAN and FAILED is marked from the same
-            // per-turn record the persisted block reads, so the live stream and
-            // the durable transcript cannot disagree about whether it failed.
-            // `held` is checked first and exclusively: a hold is not a failure,
-            // and a held call never reaches the failure record anyway.
-            await ctx.emitChunk({
-              kind: 'tool-result',
-              toolCallId: part.toolCallId,
-              output: renderStreamedOutput(part.output),
-              ...(heldCalls.has(part.toolCallId)
-                ? { held: true }
-                : failedCalls.has(part.toolCallId)
-                  ? { isError: true }
-                  : {}),
-            });
-          } else if (part.type === 'tool-error') {
-            // A thrown executor. `ai@7` still produces a tool result for the
-            // model (`error-text`) and continues the loop, so this is a failed
-            // tool, not a failed turn — mark it and keep going.
-            await ctx.emitChunk({
-              kind: 'tool-result',
-              toolCallId: part.toolCallId,
-              output: errorText(part.error),
-              isError: true,
-            });
+            //   - every FINISHED step, exactly as a normal turn would have it;
+            //   - the words of the step that was cut off, as a plain assistant
+            //     message. They are what the person watched appear; dropping them
+            //     would make the reply vanish when the thread is re-read after
+            //     Stop. (Its unfinished reasoning is dropped — a thinking block
+            //     without its signature is not something to replay.)
+            //   - NOT the cut-off step's tool calls. A tool call with no result is
+            //     a hard 400 from the provider on the very next message, and a
+            //     call that was killed half way has no result worth keeping.
+            //
+            // A Stop that lands after the last step already finished simply finds
+            // the turn complete, and that is fine: the two lists agree.
+            newMessages = finishedSteps.flatMap((s) => s.response.messages);
+            // Bill what finished. The step that was cut off has no usage to read
+            // (its model request was aborted mid-stream), so its tokens go
+            // uncounted; a Stop before ANY step finished reports `null`.
+            turnUsage = sumStepUsage(agentConfig.model, finishedSteps);
+            if (stepText.length > 0) {
+              newMessages.push({
+                role: 'assistant',
+                content: [{ type: 'text', text: stepText }],
+              });
+            }
+          } else {
+            // A step that fails AFTER an earlier one succeeded closes the stream
+            // with an `error` part and leaves `result.steps` RESOLVED, carrying the
+            // steps that did work (verified against ai@7.0.70: the step loop's
+            // `catch` enqueues the error and closes; `NoOutputGeneratedError` only
+            // fires when NOTHING was produced). So the catch below never runs for
+            // that case, and without this line the turn would end as a SUCCESS with
+            // partial content and the failure silently dropped — no
+            // `chat:turn-error`, no retry card, nothing in the log.
+            //
+            // Any `error` part means the turn failed: tool failures arrive as
+            // `tool-error` (handled above, loop continues) and cancellation arrives
+            // as `abort` (handled by the branch above), so this is not stealing
+            // either of them.
+            if (streamError !== undefined) throw modelCallError(undefined, streamError);
+
+            // EVERY step's messages, not `result.response.messages` — that carries
+            // only the LAST step's, which on a tool-using turn silently drops every
+            // tool call and tool result from both the transcript and the persisted
+            // turn. (Verified against ai@7.0.70.)
+            let steps;
+            try {
+              steps = await result.steps;
+            } catch (err) {
+              throw modelCallError(err, streamError);
+            }
+            newMessages = steps.flatMap((s) => s.response.messages);
+            // `ai@7` reports usage per step; a tool-using turn is several billed
+            // round trips, so the turn's cost is the sum over EVERY step.
+            turnUsage = sumStepUsage(agentConfig.model, steps);
           }
-          // start / text-start / raw / … are bookkeeping the host does not need.
+          transcript.append(newMessages);
+
+          const { contentBlocks, toolResultBlocks, assistantText } =
+            toTurnBlocks(
+              newMessages,
+              phraseByName,
+              (toolCallId) => heldCalls.has(toolCallId),
+              (toolCallId) => failedCalls.has(toolCallId),
+            );
+          if (assistantText.length > 0) ctx.recordAssistantText(assistantText);
+
+          await ctx.endTurn({
+            contentBlocks,
+            toolResultBlocks,
+            usage: turnUsage,
+            // NO `beforeCommit`. Its absence is the point: the claude-sdk loop
+            // must wait for the SDK to flush its jsonl before the shell can ship
+            // (the TASK-11 / PR #163 / F-1-F-2 lineage). Here the messages are
+            // already in `transcript` by the time this line runs — durability is
+            // a function return, not a poll. Do not "restore" a wait here.
+            readTurnId: async (_sessionId, role) =>
+              transcript.lastUuidOfRole(role),
+          });
         }
-        // The turn's streaming is over, one way or another. (A throw below ends
-        // the run, so there is no path on which this handler outlives a turn.)
-        offInterrupt();
-
-        let newMessages: ModelMessage[];
-        // What the turn cost (TASK-692, per-user spend limits), summed from the
-        // steps that FINISHED. `null` when there is nothing to sum, and the host
-        // then charges a flat assumed cost rather than treating it as free.
-        let turnUsage: TurnUsage | null;
-        if (stop.signal.aborted) {
-          // TASK-688. The person pressed Stop. The turn ends HERE, on the same
-          // path as any other turn — `endTurn` below still ships the transcript
-          // and emits the turn-end that closes their stream — with whatever it
-          // had produced by then:
-          //
-          //   - every FINISHED step, exactly as a normal turn would have it;
-          //   - the words of the step that was cut off, as a plain assistant
-          //     message. They are what the person watched appear; dropping them
-          //     would make the reply vanish when the thread is re-read after
-          //     Stop. (Its unfinished reasoning is dropped — a thinking block
-          //     without its signature is not something to replay.)
-          //   - NOT the cut-off step's tool calls. A tool call with no result is
-          //     a hard 400 from the provider on the very next message, and a
-          //     call that was killed half way has no result worth keeping.
-          //
-          // A Stop that lands after the last step already finished simply finds
-          // the turn complete, and that is fine: the two lists agree.
-          newMessages = finishedSteps.flatMap((s) => s.response.messages);
-          // Bill what finished. The step that was cut off has no usage to read
-          // (its model request was aborted mid-stream), so its tokens go
-          // uncounted; a Stop before ANY step finished reports `null`.
-          turnUsage = sumStepUsage(agentConfig.model, finishedSteps);
-          if (stepText.length > 0) {
-            newMessages.push({
-              role: 'assistant',
-              content: [{ type: 'text', text: stepText }],
-            });
-          }
-        } else {
-          // A step that fails AFTER an earlier one succeeded closes the stream
-          // with an `error` part and leaves `result.steps` RESOLVED, carrying the
-          // steps that did work (verified against ai@7.0.70: the step loop's
-          // `catch` enqueues the error and closes; `NoOutputGeneratedError` only
-          // fires when NOTHING was produced). So the catch below never runs for
-          // that case, and without this line the turn would end as a SUCCESS with
-          // partial content and the failure silently dropped — no
-          // `chat:turn-error`, no retry card, nothing in the log.
-          //
-          // Any `error` part means the turn failed: tool failures arrive as
-          // `tool-error` (handled above, loop continues) and cancellation arrives
-          // as `abort` (handled by the branch above), so this is not stealing
-          // either of them.
-          if (streamError !== undefined) throw modelCallError(undefined, streamError);
-
-          // EVERY step's messages, not `result.response.messages` — that carries
-          // only the LAST step's, which on a tool-using turn silently drops every
-          // tool call and tool result from both the transcript and the persisted
-          // turn. (Verified against ai@7.0.70.)
-          let steps;
-          try {
-            steps = await result.steps;
-          } catch (err) {
-            throw modelCallError(err, streamError);
-          }
-          newMessages = steps.flatMap((s) => s.response.messages);
-          // `ai@7` reports usage per step; a tool-using turn is several billed
-          // round trips, so the turn's cost is the sum over EVERY step.
-          turnUsage = sumStepUsage(agentConfig.model, steps);
-        }
-        transcript.append(newMessages);
-
-        const { contentBlocks, toolResultBlocks, assistantText } =
-          toTurnBlocks(
-            newMessages,
-            phraseByName,
-            (toolCallId) => heldCalls.has(toolCallId),
-            (toolCallId) => failedCalls.has(toolCallId),
-          );
-        if (assistantText.length > 0) ctx.recordAssistantText(assistantText);
-
-        await ctx.endTurn({
-          contentBlocks,
-          toolResultBlocks,
-          usage: turnUsage,
-          // NO `beforeCommit`. Its absence is the point: the claude-sdk loop
-          // must wait for the SDK to flush its jsonl before the shell can ship
-          // (the TASK-11 / PR #163 / F-1-F-2 lineage). Here the messages are
-          // already in `transcript` by the time this line runs — durability is
-          // a function return, not a poll. Do not "restore" a wait here.
-          readTurnId: async (_sessionId, role) =>
-            transcript.lastUuidOfRole(role),
-        });
+      } finally {
+        await connectors.close();
       }
     },
   };
