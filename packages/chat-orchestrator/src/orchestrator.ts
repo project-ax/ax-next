@@ -1541,6 +1541,7 @@ export function createOrchestrator(
     augmentGenBySession.delete(sessionId);
     skippedConnectorRefsBySession.delete(sessionId);
     rotationFailedSessions.delete(sessionId);
+    connectorSelectionBySession.delete(sessionId);
   }
 
   // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the
@@ -1812,6 +1813,30 @@ export function createOrchestrator(
       }),
     );
     return answers.some((present) => present);
+  }
+
+  // TASK-811 — the fifth reason a warm session is retired at its next turn: a
+  // connector was attached to (or detached / excluded from) its agent since it
+  // spawned. The runner loads its MCP servers once, at spawn, so without this a
+  // connector attached mid-chat only shows up in a NEW conversation, and a
+  // detached one stays callable in this one until the session idles out.
+  // Compared against the agent row `agents:resolve` returns on EVERY invoke, so
+  // every write path (attach, detach, exclude, any future one) is seen without
+  // a change event, and nothing here depends on which replica took the write.
+  // Only sessions this process spawned have an entry; one it did not spawn is
+  // already retired as `host-session-lost` in keepalive mode. Same lifetime as
+  // `augmentGenBySession`.
+  const connectorSelectionBySession = new Map<string, string>();
+
+  /** Order-insensitive key for the agent row's connector selection. */
+  function connectorSelectionKey(agent: AgentRecord): string {
+    const norm = (ids: string[] | undefined): string[] => [...new Set(ids ?? [])].sort();
+    return JSON.stringify([norm(agent.connectorAttachments), norm(agent.connectorExclusions)]);
+  }
+
+  function connectorSelectionChanged(sessionId: string, agent: AgentRecord): boolean {
+    const atSpawn = connectorSelectionBySession.get(sessionId);
+    return atSpawn !== undefined && atSpawn !== connectorSelectionKey(agent);
   }
 
   function isAugmentStale(sessionId: string, agentId: string): boolean {
@@ -2107,14 +2132,22 @@ export function createOrchestrator(
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             const rotationFailed = rotationFailedSessions.has(candidate);
+            // TASK-811 — a connector attached / detached since this session spawned.
+            const connectorsChanged = connectorSelectionChanged(candidate, agent);
             const connectorSignedIn =
-              !(skillsDirty || augmentStale || hostSessionMissing || rotationFailed) &&
-              (await skippedConnectorSignedIn(ctx, candidate));
+              !(
+                skillsDirty ||
+                augmentStale ||
+                hostSessionMissing ||
+                rotationFailed ||
+                connectorsChanged
+              ) && (await skippedConnectorSignedIn(ctx, candidate));
             if (
               skillsDirty ||
               augmentStale ||
               hostSessionMissing ||
               rotationFailed ||
+              connectorsChanged ||
               connectorSignedIn
             ) {
               // B3: this session's agent's draft-skills changed since it
@@ -2132,6 +2165,9 @@ export function createOrchestrator(
               //
               // TASK-783: and when its credential rotation failed. The fresh
               // open re-resolves every ref and names a dead connector.
+              //
+              // TASK-811: and when a connector was attached to or detached from
+              // the agent mid-chat. The fresh spawn folds the new set.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
                 reason: hostSessionMissing
@@ -2142,7 +2178,9 @@ export function createOrchestrator(
                       ? 'system-prompt-augment-changed'
                       : rotationFailed
                         ? 'credential-rotation-failed'
-                        : 'connector-signed-in',
+                        : connectorsChanged
+                          ? 'connectors-changed'
+                          : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -2160,6 +2198,7 @@ export function createOrchestrator(
               augmentGenBySession.delete(candidate);
               skippedConnectorRefsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
+              connectorSelectionBySession.delete(candidate);
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
               } catch (err) {
@@ -3252,6 +3291,7 @@ export function createOrchestrator(
       );
       handle = opened.handle;
       augmentGenBySession.set(sessionId, augmentGenAtSpawn);
+      connectorSelectionBySession.set(sessionId, connectorSelectionKey(agent));
       if (connectorSignIn.skipped.length > 0) {
         skippedConnectorRefsBySession.set(
           sessionId,
@@ -3286,6 +3326,7 @@ export function createOrchestrator(
             augmentGenBySession.delete(sessionId);
             skippedConnectorRefsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
+            connectorSelectionBySession.delete(sessionId);
             if (proxyOpened) {
               void bus
                 .call<ProxyCloseSessionInput, Record<string, never>>(
@@ -3560,6 +3601,7 @@ export function createOrchestrator(
         augmentGenBySession.delete(ctx.sessionId);
         skippedConnectorRefsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);
+        connectorSelectionBySession.delete(ctx.sessionId);
       }
     }
   }
