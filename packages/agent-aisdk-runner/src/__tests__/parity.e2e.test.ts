@@ -7,6 +7,7 @@ import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type { InboxLoopEntry } from '@ax/agent-runner-core';
 import { startMcpTestServer, type McpTestServer } from './helpers/mcp-test-server.js';
 import { MAX_TOOLS_PER_SESSION } from '../tools/connector-tools.js';
+import { MCP_NOT_LOADED_NOTE } from '../tools/skill-tool.js';
 
 // ---------------------------------------------------------------------------
 // Runner-side parity suite (design §8).
@@ -877,11 +878,22 @@ describe('aisdk runner — parity', () => {
         { mcpJson: { mcpServers: { [NS]: { type: 'http', url: mcp.url } } } },
       );
       scriptedModel.mockReturnValue(
-        modelReplaying([toolStep(`mcp__${NS}__ping`, {}), textStep('done')]),
+        modelReplaying([
+          toolStep('Skill', { name: 'connector-probe' }, 'c0'),
+          toolStep(`mcp__${NS}__ping`, {}, 'c1'),
+          textStep('done'),
+        ]),
       );
       inboxEntries = [userMessage('ping it')];
 
       await expect(main()).resolves.toBe(0);
+
+      // The connector loaded, so main() handed its bundle to the Skill tool:
+      // the skill body arrives WITHOUT the could-not-load note.
+      const toolEntries = shippedEntries().filter((e) => e.role === 'tool').map((e) => JSON.stringify(e));
+      const skillResult = toolEntries.find((e) => e.includes('Use the ping tool.'));
+      expect(skillResult).toBeDefined();
+      expect(skillResult).not.toContain(MCP_NOT_LOADED_NOTE);
 
       // Offered to the model under the SDK-parity name.
       const offered = (sentTools[0] as Array<{ name: string }>).map((t) => t.name);
@@ -893,8 +905,7 @@ describe('aisdk runner — parity', () => {
       );
       expect(preCall).toBeDefined();
       // The connector actually answered, and the model saw it.
-      const toolResult = JSON.stringify(shippedEntries().find((e) => e.role === 'tool'));
-      expect(toolResult).toContain('pong-from-connector');
+      expect(toolEntries.some((e) => e.includes('pong-from-connector'))).toBe(true);
       // The live chunk and the persisted block carry the model-facing name —
       // the string channel-web's connectorToolLabel keys on.
       expect(JSON.stringify(chunks())).toContain(`mcp__${NS}__ping`);
@@ -915,6 +926,8 @@ describe('aisdk runner — parity', () => {
 
       await expect(main()).resolves.toBe(0);
 
+      const offered = (sentTools[0] as Array<{ name: string }>).map((t) => t.name);
+      expect(offered).not.toContain(`mcp__${NS}__ping`);
       const toolResult = JSON.stringify(shippedEntries().find((e) => e.role === 'tool'));
       expect(toolResult).toContain('Use the ping tool.');
       expect(toolResult).toMatch(/could not be loaded this session/);
