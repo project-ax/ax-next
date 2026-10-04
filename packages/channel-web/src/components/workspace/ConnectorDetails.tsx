@@ -19,7 +19,7 @@
  * description is deliberately not drawn here (the editor in Settings shows it,
  * fenced); the rail is too narrow to set it apart as "their words".
  */
-import { Fragment, useId, useState } from 'react';
+import { Fragment, useState } from 'react';
 import {
   ChevronLeft,
   CircleAlert,
@@ -62,13 +62,6 @@ import type {
 import { GrantLine, ReadFailure } from './bits';
 
 /**
- * TASK-765 — why Remove is drawn disabled: taking a workspace default off a
- * team agent takes it away from every member, so the server only lets the
- * agent's owner or an admin. Shared with the list's `⋯` menu.
- */
-export const REMOVE_REFUSED_REASON = "Only the agent’s owner or an admin can remove this.";
-
-/**
  * TASK-795 — the word for a `needs-sign-in` connector, by the setup it needs.
  * The list's neutral icon and this view's connection line say the same thing.
  */
@@ -76,6 +69,8 @@ export const SETUP_REASON: Record<AgentConnectorSetup, string> = {
   'sign-in': 'Not signed in yet',
   'add-key': 'No key added yet',
   'ask-admin': 'Needs a key from a workspace admin',
+  // TASK-798 — a team agent's sign-in is its owner's (or an admin's) to make.
+  'ask-owner': 'Ask the agent’s owner to sign in',
 };
 
 /** An older server may send `needs-sign-in` without a setup: no action then. */
@@ -144,7 +139,6 @@ export function ConnectorDetails({
 }: Props) {
   const state = useConnectorTools(agentId, row.id);
   const { data, status } = state;
-  const refusedReasonId = useId();
   return (
     <div className="flex min-h-full flex-col">
       <div className="-ml-2 mb-3 flex items-center justify-between gap-2">
@@ -238,7 +232,11 @@ export function ConnectorDetails({
         in both the scrolling and the short case; `pb-8` (py-3 + those 20px)
         paints the strip; `z-10` keeps the segmented controls' focus layer
         under it. Keep the 5s in step with the rail scroller's padding.
+
+        TASK-798 — with neither action to offer, there is no footer at all
+        rather than an empty strip.
       */}
+      {(row.editable || row.removable) && (
       <div
         data-testid="connector-details-footer"
         className="sticky -bottom-5 z-10 -mx-1 -mb-5 mt-4 flex items-center justify-between gap-2 border-t border-border bg-background px-1 pb-8 pt-3"
@@ -251,7 +249,9 @@ export function ConnectorDetails({
         ) : (
           <span />
         )}
-        {row.removable ? (
+        {/* TASK-798 — hidden, not drawn disabled, for anyone who may not
+            remove it (on a team agent: not its owner, not an admin). */}
+        {row.removable && (
           <Button
             type="button"
             variant="ghost"
@@ -263,37 +263,9 @@ export function ConnectorDetails({
             <Trash2 data-icon="inline-start" aria-hidden="true" />
             Remove
           </Button>
-        ) : (
-          // TASK-765 — focusable rather than `disabled`, so the reason
-          // reaches a keyboard (tooltip) and a screen reader (description).
-          // TASK-768 — aria-describedby to a `hidden` node, not
-          // aria-description (read unevenly by VoiceOver).
-          <>
-          <span id={refusedReasonId} hidden>
-            {REMOVE_REFUSED_REASON}
-          </span>
-          <TooltipProvider delayDuration={200}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-disabled="true"
-                  aria-describedby={refusedReasonId}
-                  className="cursor-not-allowed text-muted-foreground hover:bg-transparent hover:text-muted-foreground"
-                  onClick={(e) => e.preventDefault()}
-                >
-                  <Trash2 data-icon="inline-start" aria-hidden="true" />
-                  Remove
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top">{REMOVE_REFUSED_REASON}</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          </>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -355,7 +327,9 @@ function ConnectionLine({
 /**
  * TASK-795 — nobody has set this connector up yet. Muted, not red: nothing is
  * broken. The button is the same first-time setup the `⋯` menu leads with;
- * `ask-admin` has none (only a workspace admin can add that key).
+ * `ask-admin` has none (only a workspace admin can add that key), and nor
+ * does `ask-owner` (TASK-798: only the team agent's owner or an admin can
+ * sign in on it).
  */
 function SetupLine({
   setup,

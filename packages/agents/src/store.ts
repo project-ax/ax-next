@@ -2,7 +2,6 @@ import { randomBytes } from 'node:crypto';
 import { isModelRef, parseModelRef, PluginError } from '@ax/core';
 import { REWRITES_THE_SURFACE, replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { sql, type Kysely, type Transaction } from 'kysely';
-import { connectorExcludedForbidden } from './connector-guard.js';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
 import type { Agent, AgentInput, RunnerId, SkillAttachment } from './types.js';
@@ -686,44 +685,21 @@ export interface AgentStore {
    * setSkillAttachments.
    *
    * It is a row-locked read-modify-write (`SELECT ... FOR UPDATE`, as attach /
-   * detach), and never edits connector_exclusions. TASK-765 --
-   * `opts.refuseIfExcluded`: an explicit attachment wins over an exclusion at
-   * resolve time, so ADDING an id that is excluded would undo whoever removed
-   * it. When set, a list that adds (is not already attached in the locked row,
-   * and is excluded in it) such an id throws PluginError(forbidden), writing
-   * nothing. Checked here, on the locked row, because a read made beforehand can
-   * miss an exclusion committed in between; deciding whether the actor MAY
-   * clear an exclusion is the caller's job (it needs bus calls, which must stay
-   * out of this transaction): it passes `refuseIfExcluded: !mayClear`.
+   * detach), and never edits connector_exclusions. Who may call it is the
+   * hook's job (TASK-798: the agent's owner or an admin only).
    */
-  setConnectorAttachments(
-    agentId: string,
-    connectorIds: string[],
-    opts?: { refuseIfExcluded?: boolean },
-  ): Promise<Agent>;
+  setConnectorAttachments(agentId: string, connectorIds: string[]): Promise<Agent>;
   /**
    * TASK-739 — attach ONE connector: append to connector_attachments if absent
    * (max 50 → invalid-payload) and drop it from connector_exclusions. ONE
    * transaction holding the row lock (`SELECT … FOR UPDATE`), so concurrent
    * attach / detach calls on the same agent serialize instead of losing a
    * write. `changed` is whether either array changed. Throws not-found.
-   * The caller pre-validates the id (validateConnectorId) and the ACL.
-   *
-   * TASK-765 — `opts.refuseIfExcluded`: attaching clears the id from
-   * connector_exclusions, which would undo someone's removal of a default
-   * connector. When set, the LOCKED row's exclusions are checked and the call
-   * throws PluginError(forbidden) (nothing written) if they contain the id. It
-   * is checked here, inside the transaction, because a check on a row read
-   * beforehand can miss an exclusion committed in between. Deciding whether
-   * the actor MAY clear an exclusion is the caller's job (it needs bus calls,
-   * which must not run inside this transaction): it passes
-   * `refuseIfExcluded: !mayClear`. Default (unset) is the TASK-739 behaviour.
+   * The caller pre-validates the id (validateConnectorId) and the ACL —
+   * clearing an exclusion is only reachable by someone who may create one
+   * (TASK-798's owner-or-admin check in the hook).
    */
-  attachConnector(
-    agentId: string,
-    connectorId: string,
-    opts?: { refuseIfExcluded?: boolean },
-  ): Promise<ConnectorEditResult>;
+  attachConnector(agentId: string, connectorId: string): Promise<ConnectorEditResult>;
   /**
    * TASK-739 — detach ONE connector: drop it from connector_attachments; when
    * `exclude`, also add it to connector_exclusions if absent (max 100 →
@@ -1002,36 +978,19 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       return rowToAgent(row as AgentsRow);
     },
 
-    async setConnectorAttachments(agentId, connectorIds, opts) {
+    async setConnectorAttachments(agentId, connectorIds) {
       // One row-locked read-modify-write (the same path attach / detach use),
-      // so the TASK-765 check below reads the exclusions that are actually
-      // there at write time. `exclusions` pass through untouched.
-      const { agent } = await editConnectorLists(db, agentId, (attachments, exclusions) => {
-        if (opts?.refuseIfExcluded === true) {
-          // Only an id being ADDED counts: one already attached (and, by some
-          // earlier state, excluded too) is not new reach, so it must not make
-          // an unrelated save fail.
-          const added = connectorIds.find(
-            (id) => exclusions.includes(id) && !attachments.includes(id),
-          );
-          if (added !== undefined) {
-            // Thrown inside the transaction -> rolled back, nothing written.
-            // Tagged (TASK-766) so routes can say why, not just "forbidden".
-            throw connectorExcludedForbidden(added);
-          }
-        }
-        return { attachments: connectorIds, exclusions };
-      });
+      // so it never loses a concurrent attach / detach of the same agent.
+      // `exclusions` pass through untouched.
+      const { agent } = await editConnectorLists(db, agentId, (_attachments, exclusions) => ({
+        attachments: connectorIds,
+        exclusions,
+      }));
       return agent;
     },
 
-    async attachConnector(agentId, connectorId, opts) {
+    async attachConnector(agentId, connectorId) {
       return editConnectorLists(db, agentId, (attachments, exclusions) => {
-        if (opts?.refuseIfExcluded === true && exclusions.includes(connectorId)) {
-          // Thrown inside the transaction → rolled back, nothing written.
-          // Tagged (TASK-766) so routes can say why, not just "forbidden".
-          throw connectorExcludedForbidden(connectorId);
-        }
         const nextAttachments = attachments.includes(connectorId)
           ? attachments
           : [...attachments, connectorId];

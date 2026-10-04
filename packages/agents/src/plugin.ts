@@ -374,9 +374,10 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       );
 
       // TASK-107 — per-agent connector attachments. Replaces the agent's
-      // connector_attachments id list wholesale. Same ACL as
-      // agents:set-skill-attachments (owner OR admin), plus the TASK-765 rule that
-      // adding an id the agent has EXCLUDED needs the right to exclude. The id
+      // connector_attachments id list wholesale. Same ACL as attach / detach:
+      // the ownership ACL, then (TASK-798) the agent's owner or an admin only —
+      // on a team agent a team admin, so a plain member cannot swap what every
+      // member's runs reach. The id
       // shape is validated by the admin route (validateConnectorAttachmentIds)
       // before this call; a dangling-but-well-formed id is tolerated (it simply
       // never resolves at session open — the orchestrator's NON-FATAL union).
@@ -393,6 +394,13 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             });
           }
           await assertWriteAllowed(existing, bus, ctx, input.actor);
+          await assertConnectorsManageAllowed(
+            existing,
+            bus,
+            ctx,
+            input.actor,
+            'agents:set-connector-attachments',
+          );
           // TASK-739 — the workspace-connector guard runs HERE (not only in the
           // admin route) so every caller gets it. Over the WHOLE list, as the
           // route always did: checking only the ids "being added" would read
@@ -405,16 +413,12 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             input.connectorIds,
             'agents:set-connector-attachments',
           );
-          // TASK-765 — an explicit attachment wins over an exclusion at resolve
-          // time, so ADDING an excluded id here would undo the owner's removal
-          // of a default just as attach-connector would. Same rule: computed
-          // here (bus calls stay out of the store's transaction), enforced in
-          // the store on the locked row. Exclusions are never edited on this path.
-          const mayClearExclusion = await exclusionAllowed(existing, bus, ctx, input.actor);
+          // Exclusions are never edited on this path. Adding an excluded id (an
+          // explicit attachment wins over an exclusion at resolve time) is
+          // fine: only someone who may exclude gets this far (TASK-798).
           const updated = await localStore.setConnectorAttachments(
             input.agentId,
             input.connectorIds,
-            { refuseIfExcluded: !mayClearExclusion },
           );
           // TASK-737 — newly attached connectors copy their per-tool
           // defaults (best-effort; see connector-snapshot.ts). Resolved as the
@@ -432,9 +436,9 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       );
 
       // TASK-739 — attach ONE connector. Order: id shape → agent exists →
-      // ownership ACL → workspace-connector guard (non-admin) → one row-locked
-      // read-modify-write (append if absent, drop from exclusions — refused
-      // there, on the locked row, when the actor may not clear one; TASK-765).
+      // ownership ACL → owner-or-admin (TASK-798) → workspace-connector guard
+      // (non-admin) → one row-locked read-modify-write (append if absent, drop
+      // from exclusions).
       bus.registerService<AttachConnectorInput, AttachConnectorOutput>(
         'agents:attach-connector',
         PLUGIN_NAME,
@@ -446,6 +450,18 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             'agents:attach-connector',
           );
           await assertWriteAllowed(existing, bus, ctx, input.actor);
+          // TASK-798 — on a team agent whatever is attached reaches every
+          // member's runs, so only its owner (a team admin) or a workspace admin
+          // may attach. This one check also covers TASK-765's "a member must not
+          // undo the owner's removal of a default": attaching drops the id from
+          // `connectorExclusions`, and only someone who may exclude gets here.
+          await assertConnectorsManageAllowed(
+            existing,
+            bus,
+            ctx,
+            input.actor,
+            'agents:attach-connector',
+          );
           await assertConnectorGrantAllowed(
             bus,
             ctx,
@@ -453,17 +469,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             [connectorId],
             'agents:attach-connector',
           );
-          // TASK-765 — attaching drops the id from `connectorExclusions`, which
-          // would let a plain team member undo the owner's removal of a default.
-          // Clearing an exclusion is limited to whoever may create one. The
-          // answer is computed HERE (it needs bus calls, which stay out of the
-          // store's transaction) but ENFORCED in the store on the locked row:
-          // checking `existing.connectorExclusions` above would miss an
-          // exclusion committed after that read.
-          const mayClearExclusion = await exclusionAllowed(existing, bus, ctx, input.actor);
-          const out = await localStore.attachConnector(input.agentId, connectorId, {
-            refuseIfExcluded: !mayClearExclusion,
-          });
+          const out = await localStore.attachConnector(input.agentId, connectorId);
           // TASK-737's snapshot-on-attach, on THIS path too: a newly attached
           // connector copies its per-tool defaults. Only when the id is new to
           // the attachment list — re-copying an existing attachment would
@@ -480,11 +486,10 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       );
 
       // TASK-739 — detach ONE connector; `exclude` also hides it from the
-      // agent's other sources (a default). Dropping an ATTACHED connector only
-      // removes reach from this agent, so the ownership ACL is enough. An
-      // exclusion (TASK-765) removes a connector every member of a team agent
-      // would otherwise get, so it is limited to whoever `exclusionAllowed`
-      // names (owner / team admin / workspace admin).
+      // agent's other sources (a default). On a team agent either one changes
+      // what every member's runs reach, so both are the owner's (a team
+      // admin's) or a workspace admin's call — TASK-765 for an exclusion,
+      // widened to every detach by TASK-798. One check, below.
       bus.registerService<DetachConnectorInput, DetachConnectorOutput>(
         'agents:detach-connector',
         PLUGIN_NAME,
@@ -496,18 +501,13 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             'agents:detach-connector',
           );
           await assertWriteAllowed(existing, bus, ctx, input.actor);
-          if (
-            input.exclude === true &&
-            !(await exclusionAllowed(existing, bus, ctx, input.actor))
-          ) {
-            throw new PluginError({
-              code: 'forbidden',
-              plugin: PLUGIN_NAME,
-              hookName: 'agents:detach-connector',
-              message:
-                "only the agent's owner or an admin can remove a connector every member reaches",
-            });
-          }
+          await assertConnectorsManageAllowed(
+            existing,
+            bus,
+            ctx,
+            input.actor,
+            'agents:detach-connector',
+          );
           return localStore.detachConnector(
             input.agentId,
             connectorId,
@@ -516,11 +516,13 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         },
       );
 
-      // TASK-765 — may this actor exclude (and so re-attach an excluded)
-      // connector on this agent? The predicate the two hooks above enforce,
-      // exposed so a caller shows the affordance only to someone it will work
-      // for. An actor who can't reach the agent at all gets `false`, not an
-      // error; a missing agent is `not-found`.
+      // TASK-765 / TASK-798 — may this actor change this agent's connectors
+      // (attach, detach, exclude, and — asked by @ax/mcp-oauth — sign in ON
+      // the agent)? The predicate the hooks above enforce, exposed so a caller
+      // shows the affordance only to someone it will work for. An actor who
+      // can't reach the agent at all gets `false`, not an error; a missing
+      // agent is `not-found`. (Named for TASK-765's first use; the question is
+      // wider now.)
       bus.registerService<CanExcludeConnectorInput, CanExcludeConnectorOutput>(
         'agents:can-exclude-connector',
         PLUGIN_NAME,
@@ -538,7 +540,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             }
             throw err;
           }
-          return { allowed: await exclusionAllowed(existing, bus, ctx, input.actor) };
+          return { allowed: await connectorsManageAllowed(existing, bus, ctx, input.actor) };
         },
       );
 
@@ -982,22 +984,25 @@ async function isTeamMember(
 }
 
 /**
- * TASK-765 — may `actor` REMOVE a connector that reaches `agent` by another
- * source (a default), or bring back one that was removed? A default connector
- * reaches every member of a team agent, so removing it is a decision about the
- * whole team, not about the actor's own use of the agent:
+ * TASK-765 / TASK-798 — may `actor` change which connectors `agent` reaches
+ * (attach, detach, exclude a default, sign in ON the agent)? On a team agent
+ * that changes what every member's runs reach — and a sign-in on it decides
+ * whose account they all act as — so it is a decision about the whole team,
+ * not about the actor's own use of the agent:
  *
  *   - a workspace admin: always;
  *   - a personal agent: its owner;
- *   - a team agent: a member whose team role is `admin`.
+ *   - a team agent: a member whose team role is `admin` (the agent's "owner":
+ *     a team agent has no single owning person).
  *
  * Deliberately NOT part of `assertWriteAllowed`, whose "any team member may
- * write" semantics stay as they were — this is a narrower question asked on
- * top of it. Anything we can't prove is a refusal: a missing teams plugin
- * (`no-service`) and malformed ownership are `false`; every OTHER lookup
- * failure propagates so it surfaces as a 5xx rather than a quiet denial.
+ * write" semantics stay as they were for the agent's other fields — this is a
+ * narrower question asked on top of it. Anything we can't prove is a refusal:
+ * a missing teams plugin (`no-service`) and malformed ownership are `false`;
+ * every OTHER lookup failure propagates so it surfaces as a 5xx rather than a
+ * quiet denial.
  */
-async function exclusionAllowed(
+async function connectorsManageAllowed(
   agent: Agent,
   bus: HookBus,
   ctx: AgentContext,
@@ -1018,4 +1023,21 @@ async function exclusionAllowed(
     if (err instanceof PluginError && err.code === 'no-service') return false;
     throw err;
   }
+}
+
+/** {@link connectorsManageAllowed} as a `forbidden` refusal, for the write hooks. */
+async function assertConnectorsManageAllowed(
+  agent: Agent,
+  bus: HookBus,
+  ctx: AgentContext,
+  actor: Actor,
+  hookName: string,
+): Promise<void> {
+  if (await connectorsManageAllowed(agent, bus, ctx, actor)) return;
+  throw new PluginError({
+    code: 'forbidden',
+    plugin: PLUGIN_NAME,
+    hookName,
+    message: "only the agent's owner or an admin can change its connectors",
+  });
 }

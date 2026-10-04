@@ -333,20 +333,6 @@ export class WorkspaceApiError extends HttpError {
 }
 
 /**
- * TASK-766 — the attach route's `403 { error: 'connector-excluded' }`: this
- * connector was removed from this agent, and only the agent's owner or a
- * workspace admin may add it back. Still a 403 `WorkspaceApiError`, so every
- * existing status check keeps working; the Add view tells it apart to say why.
- * Carries nothing from the body — the copy is ours, never the server's text.
- */
-export class ConnectorExcludedError extends WorkspaceApiError {
-  constructor(path: string) {
-    super(path, 403);
-    this.name = 'ConnectorExcludedError';
-  }
-}
-
-/**
  * A 200 whose BODY is not the shape we asked for.
  *
  * Separate from `WorkspaceApiError` because it means something different to
@@ -480,12 +466,6 @@ async function req<T>(
      * `WorkspaceApiError`, exactly as before, and its body is never read.
      */
     storageFull?: string;
-    /**
-     * Opt in to reading a 403 `connector-excluded` refusal (TASK-766). Only
-     * the attach call passes it; every other 403 stays a bare
-     * `WorkspaceApiError` whose body is never read.
-     */
-    connectorExcluded?: true;
   },
 ): Promise<T> {
   const res = await httpFetch(`/api/workspace${path}`, {
@@ -499,12 +479,6 @@ async function req<T>(
     if (init?.storageFull !== undefined) {
       const full = await readStorageFull(`/api/workspace${path}`, res, init.storageFull);
       if (full !== null) throw full;
-    }
-    if (init?.connectorExcluded === true && res.status === 403) {
-      const body: unknown = await res.json().catch(() => null);
-      if ((body as { error?: unknown } | null)?.error === 'connector-excluded') {
-        throw new ConnectorExcludedError(path);
-      }
     }
     throw new WorkspaceApiError(path, res.status);
   }
@@ -949,15 +923,13 @@ export const workspaceApi = {
    * Attach one connector to this agent (TASK-740, the rail's Add subview).
    * Atomic server-side, and it copies the connector's tool defaults onto the
    * agent. Called ONLY after the connector's sign-in / key has succeeded.
-   * 403 = a company-key connector and the caller isn't an admin; a
-   * `ConnectorExcludedError` (also 403) = it was removed from this agent and
-   * the caller may not add it back (TASK-766).
+   * 403 = a company-key connector and the caller isn't an admin, or a team
+   * agent and the caller is neither its owner nor an admin (TASK-798).
    */
   attachConnector: (agentId: string, connectorId: string) =>
     req<AgentConnectorAttached>(`/agents/${encodeURIComponent(agentId)}/connectors`, {
       method: 'POST',
       body: { connectorId },
-      connectorExcluded: true,
     }),
 
   /**

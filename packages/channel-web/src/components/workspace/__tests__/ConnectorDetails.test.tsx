@@ -130,7 +130,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.abilities).mockResolvedValue({
     abilities: { webSearch: true, readPages: true, runCode: true },
   });
-  vi.mocked(workspaceApi.connectors).mockResolvedValue({ shared: false, connectorsSupported: true, connectors: ROWS });
+  vi.mocked(workspaceApi.connectors).mockResolvedValue({ shared: false, connectorsSupported: true, manageable: true, connectors: ROWS });
   toolsMock.mockResolvedValue(read());
 });
 
@@ -172,38 +172,28 @@ describe('opening and closing', () => {
   });
 });
 
-// TASK-765 — the footer's Remove follows the same rule as the menu's.
-describe('a connector this person may not remove (TASK-765)', () => {
-  const REASON = "Only the agent’s owner or an admin can remove this.";
-
-  beforeEach(() => {
+// TASK-798 — a member on a team agent may not remove connectors or sign in
+// on the agent: the details view offers neither (the list's rule, here too).
+describe('a member on a team agent (TASK-798)', () => {
+  function asMember(connectors: AgentConnectorRow[]) {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: true,
       connectorsSupported: true,
-      connectors: [{ ...ROWS[0]!, source: 'default', removable: false }],
+      manageable: false,
+      connectors,
     });
-  });
+  }
 
-  it('the footer Remove is disabled, says why on focus, and does nothing', async () => {
+  it('has no Remove in the footer — not even a disabled one — and keeps Edit connector', async () => {
+    asMember([{ ...ROWS[0]!, removable: false }]);
     renderTab();
     await openDetails();
-    const remove = screen.getByRole('button', { name: 'Remove' });
-    expect(remove.getAttribute('aria-disabled')).toBe('true');
-    // TASK-768 — via aria-describedby (jest-dom honours aria-description
-    // too, so assert the attribute shape, not just the computed text).
-    expect(remove).not.toHaveAttribute('aria-description');
-    expect(document.getElementById(remove.getAttribute('aria-describedby') ?? '')).not.toBeNull();
-    expect(remove).toHaveAccessibleDescription(REASON);
-    expect(remove).toHaveAccessibleName('Remove');
-    fireEvent.click(remove);
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(workspaceApi.removeConnector).not.toHaveBeenCalled();
-    act(() => remove.focus());
-    const tip = await screen.findByRole('tooltip');
-    expect(tip.textContent).toBe(REASON);
+    expect(screen.getByRole('button', { name: 'Edit connector' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
   });
 
-  it('the details menu disables its Remove too', async () => {
+  it('has no Remove in the details menu either', async () => {
+    asMember([{ ...ROWS[0]!, health: 'unreachable', removable: false }]);
     renderTab();
     await openDetails();
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for Linear' }), {
@@ -211,8 +201,34 @@ describe('a connector this person may not remove (TASK-765)', () => {
       ctrlKey: false,
     });
     const menu = await screen.findByRole('menu');
-    const item = within(menu).getByRole('menuitem', { name: 'Remove from Quill' });
-    expect(item.getAttribute('aria-disabled')).toBe('true');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Retry',
+      'Edit connector',
+    ]);
+  });
+
+  it('an ask-owner row says to ask the agent’s owner, with no Sign in button', async () => {
+    asMember([
+      { ...ROWS[0]!, health: 'needs-sign-in', setup: 'ask-owner', removable: false },
+    ]);
+    renderTab();
+    await openDetails();
+    expect(screen.getByText('Ask the agent’s owner to sign in')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add key' })).toBeNull();
+  });
+
+  it('the owner of the same team agent still gets Remove and Sign in', async () => {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      shared: true,
+      connectorsSupported: true,
+      manageable: true,
+      connectors: [{ ...ROWS[0]!, health: 'needs-sign-in', setup: 'sign-in', removable: true }],
+    });
+    renderTab();
+    await openDetails();
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
   });
 });
 
@@ -386,7 +402,7 @@ describe('when the tool list cannot be read', () => {
     // that answers needs-auth may be a connector nobody has signed in to.
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
-      connectorsSupported: true,
+      connectorsSupported: true, manageable: true,
       connectors: [{ ...ROWS[0]!, health: 'needs-reconnect' }],
     });
     toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
@@ -399,7 +415,7 @@ describe('when the tool list cannot be read', () => {
   it('says a connector a session cannot fully load could not load — never "Connected" (TASK-745)', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
-      connectorsSupported: true,
+      connectorsSupported: true, manageable: true,
       connectors: [{ ...ROWS[0]!, health: 'not-loaded' }],
     });
     toolsMock.mockResolvedValue(read({ status: 'ok' }));
@@ -538,7 +554,7 @@ describe("an agent whose model can't use connectors (TASK-761)", () => {
   it('says so in the details view too', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
-      connectorsSupported: false,
+      connectorsSupported: false, manageable: true,
       connectors: ROWS,
     });
     toolsMock.mockResolvedValue(read());

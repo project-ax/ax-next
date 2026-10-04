@@ -90,36 +90,3 @@ export function isWorkspaceConnectorForbidden(err: unknown): err is PluginError 
     err.diagnosis?.['reason'] === WORKSPACE_CONNECTOR_REASON
   );
 }
-
-/**
- * TASK-766 — marks a `forbidden` PluginError as "this connector was removed
- * from this agent (it is excluded), and this actor may not bring it back"
- * (TASK-765's `refuseIfExcluded`). Routes answer it with this stable error
- * code, so a member learns WHY their add failed instead of a bare `forbidden`.
- *
- * It says nothing about who excluded the connector or when — only that it is
- * excluded on THIS agent, which a caller already past this agent's ACL can see
- * from the agent's own list anyway. Hosts match the string (they may not import
- * this plugin), so it is part of the `agents:attach-connector` /
- * `agents:set-connector-attachments` error contract: do not rename it lightly.
- */
-export const CONNECTOR_EXCLUDED_REASON = 'connector-excluded';
-
-/** The refusal `refuseIfExcluded` throws, tagged with {@link CONNECTOR_EXCLUDED_REASON}. */
-export function connectorExcludedForbidden(connectorId: string): PluginError {
-  return new PluginError({
-    code: 'forbidden',
-    plugin: PLUGIN_NAME,
-    message: `connector '${connectorId}' was removed from this agent; only its owner or an admin can bring it back`,
-    diagnosis: { reason: CONNECTOR_EXCLUDED_REASON },
-  });
-}
-
-/** True when `err` is {@link connectorExcludedForbidden}'s refusal. */
-export function isConnectorExcludedForbidden(err: unknown): err is PluginError {
-  return (
-    err instanceof PluginError &&
-    err.code === 'forbidden' &&
-    err.diagnosis?.['reason'] === CONNECTOR_EXCLUDED_REASON
-  );
-}
