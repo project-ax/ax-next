@@ -143,9 +143,13 @@ export async function truncateDiskQuotaTables(connectionString: string): Promise
   const c = new pg.Client({ connectionString });
   await c.connect();
   try {
-    await c.query('TRUNCATE disk_quota_v1_usage');
-  } catch {
-    /* table not created yet */
+    for (const table of ['disk_quota_v1_usage', 'disk_quota_v1_ref_holders']) {
+      try {
+        await c.query(`TRUNCATE ${table}`);
+      } catch {
+        /* table not created yet */
+      }
+    }
   } finally {
     await c.end().catch(() => {});
   }

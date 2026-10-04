@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import type { AgentContext, ServiceHandler } from '@ax/core';
 import { stopPostgresContainer, startTestContainer } from '@ax/test-harness';
@@ -49,6 +49,7 @@ describe('auth', () => {
       ['GET', '/settings/storage'],
       ['GET', '/admin/storage'],
       ['PUT', '/admin/storage/limits'],
+      ['POST', '/admin/storage/ref-holders/forget'],
     ];
     b.setAuth('throw');
     for (const [m, p] of calls) {
@@ -77,6 +78,7 @@ describe('auth', () => {
     expect(b.routes.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
       'GET /admin/storage',
       'GET /settings/storage',
+      'POST /admin/storage/ref-holders/forget',
       'PUT /admin/storage/limits',
     ]);
     for (const r of b.routes.filter((x) => x.method !== 'GET')) expect(r.maxBodyBytes).toBe(4096);
@@ -208,11 +210,12 @@ describe('GET /admin/storage', () => {
     const r = await b.request('GET', '/admin/storage');
     expect(r.status).toBe(200);
     expect(r.json).toEqual({
-      limits: { limitMb: 64, warnPercent: 50 },
-      defaults: { limitMb: 1024, warnPercent: 80 },
+      limits: { limitMb: 64, warnPercent: 50, graceMs: 86_400_000 },
+      defaults: { limitMb: 1024, warnPercent: 80, graceMs: 86_400_000 },
       bounds: {
         limitMb: { min: 64, max: 10_485_760 },
         warnPercent: { min: 1, max: 99 },
+        graceMs: { min: 3_600_000, max: 2_592_000_000 },
       },
       owners: [
         {
@@ -288,7 +291,7 @@ describe('GET /admin/storage', () => {
     const b = await boot();
     const r = await b.request('GET', '/admin/storage');
     expect(r.json).toMatchObject({
-      limits: { limitMb: 1024, warnPercent: 80 },
+      limits: { limitMb: 1024, warnPercent: 80, graceMs: 86_400_000 },
       owners: [],
       ownerCount: 0,
       totalBytes: 0,
@@ -320,20 +323,34 @@ describe('PUT /admin/storage/limits', () => {
   it('saves valid limits through storage and returns them', async () => {
     const b = await boot();
     const r = await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 2048, warnPercent: 90 } });
-    expect(r).toEqual({ status: 200, json: { limits: { limitMb: 2048, warnPercent: 90 } } });
+    expect(r).toEqual({
+      status: 200,
+      json: { limits: { limitMb: 2048, warnPercent: 90, graceMs: 86_400_000 } },
+    });
     expect(JSON.parse(new TextDecoder().decode(b.storage.get(LIMITS_STORAGE_KEY)))).toEqual({
       limitMb: 2048,
       warnPercent: 90,
+      graceMs: 86_400_000,
     });
   });
 
   it('changes only the fields sent', async () => {
     const b = await boot();
     expect((await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 500 } })).json).toEqual({
-      limits: { limitMb: 500, warnPercent: 80 },
+      limits: { limitMb: 500, warnPercent: 80, graceMs: 86_400_000 },
     });
     expect((await b.request('PUT', '/admin/storage/limits', { body: { warnPercent: 70 } })).json).toEqual({
-      limits: { limitMb: 500, warnPercent: 70 },
+      limits: { limitMb: 500, warnPercent: 70, graceMs: 86_400_000 },
+    });
+    // The blob pass's grace window is one more field of the same setting.
+    expect((await b.request('PUT', '/admin/storage/limits', { body: { graceMs: 7_200_000 } })).json).toEqual({
+      limits: { limitMb: 500, warnPercent: 70, graceMs: 7_200_000 },
+    });
+    const g = await b.request('GET', '/admin/storage');
+    expect((g.json as { limits: unknown }).limits).toEqual({
+      limitMb: 500,
+      warnPercent: 70,
+      graceMs: 7_200_000,
     });
   });
 
@@ -346,6 +363,9 @@ describe('PUT /admin/storage/limits', () => {
       (await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 10_485_760, warnPercent: 99 } }))
         .status,
     ).toBe(200);
+    for (const graceMs of [3_600_000, 2_592_000_000]) {
+      expect((await b.request('PUT', '/admin/storage/limits', { body: { graceMs } })).status).toBe(200);
+    }
   });
 
   it('rejects bad shapes and bounds with invalid-limits, and bad bodies, writing nothing', async () => {
@@ -361,6 +381,10 @@ describe('PUT /admin/storage/limits', () => {
       { warnPercent: 100 },
       { warnPercent: 80.5 },
       { warnPercent: '80' },
+      { graceMs: 3_599_999 },
+      { graceMs: 2_592_000_001 },
+      { graceMs: 3_600_000.5 },
+      { graceMs: '86400000' },
       { limitMb: 512, extra: true },
       { unknown: 1 },
       [1, 2],
@@ -403,10 +427,121 @@ describe('PUT /admin/storage/limits', () => {
 
     await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 64 } });
     const g = await b.request('GET', '/admin/storage');
-    expect((g.json as { limits: unknown }).limits).toEqual({ limitMb: 64, warnPercent: 80 });
+    expect((g.json as { limits: unknown }).limits).toEqual({
+      limitMb: 64,
+      warnPercent: 80,
+      graceMs: 86_400_000,
+    });
     expect((await b.harness.bus.fire('blob:pre-put', alice, { size: 5 * MB })).rejected).toBe(true);
 
     await b.request('PUT', '/admin/storage/limits', { body: { limitMb: 128 } });
     expect((await b.harness.bus.fire('blob:pre-put', alice, { size: 5 * MB })).rejected).toBe(false);
+  });
+});
+
+describe('POST /admin/storage/ref-holders/forget', () => {
+  const FORGET = '/admin/storage/ref-holders/forget';
+
+  async function dbOf(b: Booted): Promise<Kysely<unknown>> {
+    const { db } = await b.harness.bus.call<unknown, { db: Kysely<unknown> }>(
+      'database:get-instance',
+      b.harness.ctx(),
+      {},
+    );
+    return db;
+  }
+
+  async function roster(b: Booted): Promise<string[]> {
+    const r = await sql<{ holder: string }>`SELECT holder FROM disk_quota_v1_ref_holders ORDER BY holder`.execute(
+      await dbOf(b),
+    );
+    return r.rows.map((x) => x.holder);
+  }
+
+  async function seedRoster(b: Booted, names: string[]): Promise<void> {
+    const db = await dbOf(b);
+    for (const n of names) {
+      await sql`INSERT INTO disk_quota_v1_ref_holders (holder) VALUES (${n})`.execute(db);
+    }
+  }
+
+  it('drops one holder from the roster, logs who did it, and says whether it was there', async () => {
+    const b = await boot();
+    await seedRoster(b, ['@ax/attachments', '@ax/retired']);
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      b.setAuth({ id: 'admin-1', isAdmin: true });
+      expect(await b.request('POST', FORGET, { body: { holder: '@ax/retired' } })).toEqual({
+        status: 200,
+        json: { forgotten: true },
+      });
+      expect(await b.request('POST', FORGET, { body: { holder: '@ax/retired' } })).toEqual({
+        status: 200,
+        json: { forgotten: false },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await roster(b)).toEqual(['@ax/attachments']);
+    const logged = lines
+      .flatMap((l) => l.split('\n'))
+      .filter((l) => l.includes('disk_quota_ref_holder_forgotten'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(logged).toHaveLength(2);
+    expect(logged[0]).toMatchObject({ holder: '@ax/retired', by: 'admin-1', forgotten: true });
+  });
+
+  it('401 / 403 change nothing', async () => {
+    const b = await boot();
+    await seedRoster(b, ['@ax/retired']);
+    b.setAuth('throw');
+    expect(await b.request('POST', FORGET, { body: { holder: '@ax/retired' } })).toEqual({
+      status: 401,
+      json: { error: 'unauthenticated' },
+    });
+    b.setAuth({ id: 'u9', isAdmin: false });
+    expect(await b.request('POST', FORGET, { body: { holder: '@ax/retired' } })).toEqual({
+      status: 403,
+      json: { error: 'forbidden' },
+    });
+    expect(await roster(b)).toEqual(['@ax/retired']);
+  });
+
+  it('400 on a missing, empty, over-long or non-string holder, or extra fields; 413 on a huge body', async () => {
+    const b = await boot();
+    await seedRoster(b, ['@ax/retired', 'x'.repeat(200)]);
+    const bad: unknown[] = [
+      {},
+      { holder: '' },
+      { holder: 'x'.repeat(201) },
+      { holder: 5 },
+      { holder: null },
+      { holder: ['@ax/retired'] },
+      { holder: '@ax/retired', extra: 1 },
+      [],
+      null,
+      'text',
+    ];
+    for (const body of bad) {
+      const r = await b.request('POST', FORGET, { body });
+      expect(r, JSON.stringify(body)).toEqual({ status: 400, json: { error: 'invalid-holder' } });
+    }
+    expect(await b.request('POST', FORGET, { rawBody: Buffer.from('{nope') })).toEqual({
+      status: 400,
+      json: { error: 'invalid-json' },
+    });
+    expect(await b.request('POST', FORGET, { rawBody: Buffer.alloc(4097, 0x20) })).toEqual({
+      status: 413,
+      json: { error: 'body-too-large' },
+    });
+    expect(await roster(b)).toEqual(['@ax/retired', 'x'.repeat(200)]);
+    // The 200-character name is the longest accepted.
+    expect((await b.request('POST', FORGET, { body: { holder: 'x'.repeat(200) } })).json).toEqual({
+      forgotten: true,
+    });
   });
 });

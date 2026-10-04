@@ -19,11 +19,19 @@ export interface DiskQuotaLimits {
   limitMb: number;
   /** The "getting full" notice starts at this percentage of the limit. */
   warnPercent: number;
+  /**
+   * How long a stored file's charge is left alone before the blob pass may
+   * release it, in milliseconds. A charge whose row was written (or re-put)
+   * more recently than this is never even asked about, which protects a put
+   * whose holder row has not landed yet (design D6).
+   */
+  graceMs: number;
 }
 
 export const DEFAULT_LIMITS: Readonly<DiskQuotaLimits> = Object.freeze({
   limitMb: 1024,
   warnPercent: 80,
+  graceMs: 86_400_000, // 24 h
 });
 
 /** 1 MB is 1048576 bytes everywhere in this plugin. */
@@ -32,6 +40,8 @@ export const BYTES_PER_MB = 1_048_576;
 export const LIMIT_BOUNDS = Object.freeze({
   limitMb: Object.freeze({ min: 64, max: 10_485_760 }),
   warnPercent: Object.freeze({ min: 1, max: 99 }),
+  // 1 hour .. 30 days.
+  graceMs: Object.freeze({ min: 3_600_000, max: 2_592_000_000 }),
 });
 
 export const LIMITS_STORAGE_KEY = 'settings:disk-quota';
@@ -39,12 +49,14 @@ export const LIMITS_STORAGE_KEY = 'settings:disk-quota';
 const FIELD_SCHEMAS = {
   limitMb: z.number().int().min(LIMIT_BOUNDS.limitMb.min).max(LIMIT_BOUNDS.limitMb.max),
   warnPercent: z.number().int().min(LIMIT_BOUNDS.warnPercent.min).max(LIMIT_BOUNDS.warnPercent.max),
+  graceMs: z.number().int().min(LIMIT_BOUNDS.graceMs.min).max(LIMIT_BOUNDS.graceMs.max),
 } as const;
 
 export const DiskQuotaLimitsSchema = z
   .object({
     limitMb: FIELD_SCHEMAS.limitMb,
     warnPercent: FIELD_SCHEMAS.warnPercent,
+    graceMs: FIELD_SCHEMAS.graceMs,
   })
   .strict();
 
@@ -62,7 +74,7 @@ export interface LimitBytes {
   warnBytes: number;
 }
 
-export function limitBytesOf(limits: DiskQuotaLimits): LimitBytes {
+export function limitBytesOf(limits: Pick<DiskQuotaLimits, 'limitMb' | 'warnPercent'>): LimitBytes {
   const limitBytes = limits.limitMb * BYTES_PER_MB;
   return { limitBytes, warnBytes: Math.floor((limitBytes * limits.warnPercent) / 100) };
 }

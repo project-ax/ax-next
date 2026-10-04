@@ -69,10 +69,11 @@ function setup(initial?: unknown) {
 
 describe('the defaults and bounds', () => {
   it('are 1 GB and a warning at 80%, with the documented bounds', () => {
-    expect(DEFAULT_LIMITS).toEqual({ limitMb: 1024, warnPercent: 80 });
+    expect(DEFAULT_LIMITS).toEqual({ limitMb: 1024, warnPercent: 80, graceMs: 86_400_000 });
     expect(LIMIT_BOUNDS).toEqual({
       limitMb: { min: 64, max: 10_485_760 },
       warnPercent: { min: 1, max: 99 },
+      graceMs: { min: 3_600_000, max: 2_592_000_000 },
     });
     expect(LIMITS_STORAGE_KEY).toBe('settings:disk-quota');
   });
@@ -109,14 +110,22 @@ describe('createLimitsStore', () => {
 
   it('merges a partial stored record over the defaults', async () => {
     const { limits, logger } = setup({ limitMb: 2048 });
-    expect(await limits.get()).toEqual({ limitMb: 2048, warnPercent: 80 });
+    expect(await limits.get()).toEqual({ limitMb: 2048, warnPercent: 80, graceMs: 86_400_000 });
     expect(logger.warns).toEqual([]);
   });
 
   it('falls back field-by-field on out-of-bounds values, with a warn', async () => {
     const { limits, logger } = setup({ limitMb: 63, warnPercent: 90 });
-    expect(await limits.get()).toEqual({ limitMb: DEFAULT_LIMITS.limitMb, warnPercent: 90 });
+    expect(await limits.get()).toEqual({ limitMb: DEFAULT_LIMITS.limitMb, warnPercent: 90, graceMs: 86_400_000 });
     expect(logger.warns).toEqual(['disk_quota_setting_invalid_field']);
+  });
+
+  it('reads a stored grace window, and falls back to 24 h (with a warn) on a bad one', async () => {
+    const ok = setup({ graceMs: 7_200_000 });
+    expect((await ok.limits.get()).graceMs).toBe(7_200_000);
+    const short = setup({ graceMs: 60_000 });
+    expect((await short.limits.get()).graceMs).toBe(86_400_000);
+    expect(short.logger.warns).toEqual(['disk_quota_setting_invalid_field']);
   });
 
   it('rejects a fractional or non-numeric stored value the same way', async () => {
@@ -168,14 +177,14 @@ describe('createLimitsStore', () => {
     );
     clock.advance(10);
     const eff = await limits.set({ limitMb: 500 });
-    expect(eff).toEqual({ limitMb: 500, warnPercent: 70 });
+    expect(eff).toEqual({ limitMb: 500, warnPercent: 70, graceMs: 86_400_000 });
     expect(await limits.get()).toEqual(eff);
     expect(JSON.parse(new TextDecoder().decode(storage.get(LIMITS_STORAGE_KEY)))).toEqual(eff);
   });
 
   it('set({}) changes nothing and still succeeds', async () => {
     const { limits } = setup({ limitMb: 200 });
-    expect(await limits.set({})).toEqual({ limitMb: 200, warnPercent: 80 });
+    expect(await limits.set({})).toEqual({ limitMb: 200, warnPercent: 80, graceMs: 86_400_000 });
   });
 
   it('set() rejects out-of-bounds values with InvalidLimitsError and leaves storage untouched', async () => {
@@ -189,6 +198,9 @@ describe('createLimitsStore', () => {
       { warnPercent: 0 },
       { warnPercent: 100 },
       { warnPercent: 79.5 },
+      { graceMs: 3_599_999 },
+      { graceMs: 2_592_000_001 },
+      { graceMs: 3_600_000.5 },
     ]) {
       await expect(limits.set(bad), JSON.stringify(bad)).rejects.toBeInstanceOf(InvalidLimitsError);
     }
@@ -197,10 +209,15 @@ describe('createLimitsStore', () => {
 
   it('set() accepts both bounds inclusively', async () => {
     const { limits } = setup();
-    expect(await limits.set({ limitMb: 64, warnPercent: 1 })).toEqual({ limitMb: 64, warnPercent: 1 });
-    expect(await limits.set({ limitMb: 10_485_760, warnPercent: 99 })).toEqual({
+    expect(await limits.set({ limitMb: 64, warnPercent: 1, graceMs: 3_600_000 })).toEqual({
+      limitMb: 64,
+      warnPercent: 1,
+      graceMs: 3_600_000,
+    });
+    expect(await limits.set({ limitMb: 10_485_760, warnPercent: 99, graceMs: 2_592_000_000 })).toEqual({
       limitMb: 10_485_760,
       warnPercent: 99,
+      graceMs: 2_592_000_000,
     });
   });
 

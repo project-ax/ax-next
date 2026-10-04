@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { HookBus, makeAgentContext, type AgentContext, type ServiceHandler } from '@ax/core';
+import {
+  answerBlobCollectRefs,
+  BLOB_COLLECT_REFS_HOOK,
+  HookBus,
+  makeAgentContext,
+  type AgentContext,
+  type ServiceHandler,
+} from '@ax/core';
 import { stopPostgresContainer, startTestContainer } from '@ax/test-harness';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
@@ -496,10 +503,49 @@ describe('the sweep', () => {
     })) as ServiceHandler,
   });
 
+  it('reconcile() before init resolves all zeros', async () => {
+    expect(await createDiskQuotaPlugin().reconcile()).toEqual({
+      measured: 0,
+      failed: 0,
+      blobsReleased: 0,
+      blobReleaseAborted: false,
+    });
+  });
+
+  it("reconcile() runs the blob pass on the plugin's clock: A's charge goes once A lets go, B's stays", async () => {
+    const b = await boot();
+    const alice = b.harness.ctx({ userId: 'alice' });
+    const bob = b.harness.ctx({ userId: 'bob' });
+    await blobStored(b, alice, 3 * MB);
+    await blobStored(b, bob, 3 * MB);
+    b.harness.bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, '@ax/attachments', async (_c, p) =>
+      answerBlobCollectRefs(p, '@ax/attachments', async () => [{ sha256: sha('a'), userIds: ['bob'] }]),
+    );
+    // Rows are stamped with the database's own now(); the cutoff comes from
+    // the INJECTED clock, so step it rather than sleep.
+    b.clock.set(new Date(Date.now() + 60 * 60 * 1000));
+    expect(await b.plugin.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: false });
+    expect((await mine(b, 'alice')).fileBytes).toBe(3 * MB);
+    b.clock.set(new Date(Date.now() + 25 * 60 * 60 * 1000));
+    expect(await b.plugin.reconcile()).toEqual({
+      measured: 0,
+      failed: 0,
+      blobsReleased: 1,
+      blobReleaseAborted: false,
+    });
+    expect((await mine(b, 'alice')).fileBytes).toBe(0);
+    expect((await mine(b, 'bob')).fileBytes).toBe(3 * MB);
+  });
+
   it('reconcile() backfills workspaces that existed before the plugin did', async () => {
     const calls = { list: 0 };
     const b = await boot(fleet(calls));
-    expect(await b.plugin.reconcile()).toEqual({ measured: 2, failed: 0 });
+    expect(await b.plugin.reconcile()).toEqual({
+      measured: 2,
+      failed: 0,
+      blobsReleased: 0,
+      blobReleaseAborted: false,
+    });
     expect((await mine(b, 'alice')).workspaceBytes).toBe(11 * MB);
     expect((await mine(b, 'bob')).workspaceBytes).toBe(5 * MB);
   });
@@ -560,7 +606,7 @@ describe('lifecycle', () => {
     expect((await chatStart(b, alice)).rejected).toBe(true);
     await b.harness.close({ onError: () => {} });
     expect(b.unregistered.sort()).toEqual(
-      ['GET /admin/storage', 'GET /settings/storage', 'PUT /admin/storage/limits'].sort(),
+      ['GET /admin/storage', 'GET /settings/storage', 'PUT /admin/storage/limits', 'POST /admin/storage/ref-holders/forget'].sort(),
     );
     // No gate left: the (now closed) plugin is gone rather than refusing.
     expect(await blobPrePut(b, alice, 1)).toEqual({ rejected: false, payload: { size: 1 } });

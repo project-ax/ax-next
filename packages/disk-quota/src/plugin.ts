@@ -56,13 +56,25 @@ const SUBSCRIBED = [
 //     that agent's repo in the background; a periodic sweep backfills every
 //     personal agent and repairs drift. `workspace:deleted` (the agent's repo is
 //     gone) drops that agent's row, so a deleted agent stops charging its owner.
+//   - RELEASES blob charges nobody holds any more (design D6,
+//     docs/plans/2026-10-03-blob-gc-design.md). The same periodic sweep runs a
+//     blob pass: `blob:<sha>` rows older than the grace window (`graceMs` in
+//     `settings:disk-quota`, default 24 h) are offered, in batches of at most
+//     1000 shas, to every holder through `blob:collect-refs`, and an (owner,
+//     sha) row goes when no holder attributes that sha to that owner. It FAILS
+//     CLOSED against a persisted roster of holders (a holder that failed,
+//     threw or is no longer loaded aborts the pass with nothing released) and
+//     needs none of the workspace sweep's optional hooks.
+//     `POST /admin/storage/ref-holders/forget` is the only way the roster
+//     shrinks. This plugin only FIRES `blob:collect-refs`, so it is not in
+//     `subscribes`; firing needs no manifest entry.
 //   - Mounts the usage views under /settings/storage and /admin/storage.
 //
 // Registers no service hooks. See docs/plans/2026-09-29-workspace-disk-quota.md.
 // ---------------------------------------------------------------------------
 
 export interface DiskQuotaPluginConfig {
-  /** Injected clock for the limit setting's cache (tests). */
+  /** Injected clock for the limit setting's cache and the blob pass's grace cutoff (tests). */
   now?: () => Date;
   /** How long after boot the first sweep runs. Default 60 s. */
   sweepInitialDelayMs?: number;
@@ -75,7 +87,7 @@ export interface DiskQuotaPluginConfig {
 export interface DiskQuotaPlugin extends Plugin {
   /** Resolves once background measurements and any running sweep have settled. */
   drain(): Promise<void>;
-  /** Run the sweep now. Resolves `{ measured: 0, failed: 0 }` before init. */
+  /** Run the sweep (workspaces, then the blob pass) now. Resolves all zeros before init. */
   reconcile(): Promise<ReconcileResult>;
 }
 
@@ -201,7 +213,7 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
           now,
           ...(config.limitsCacheTtlMs !== undefined ? { ttlMs: config.limitsCacheTtlMs } : {}),
         });
-        const svc = createDiskQuotaService({ bus, store, limits, logger: initCtx.logger });
+        const svc = createDiskQuotaService({ bus, store, limits, logger: initCtx.logger, now });
         service = svc;
 
         unregisterRoutes.push(
@@ -296,7 +308,9 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
     },
 
     async reconcile() {
-      return service === undefined ? { measured: 0, failed: 0 } : service.reconcile();
+      return service === undefined
+        ? { measured: 0, failed: 0, blobsReleased: 0, blobReleaseAborted: false }
+        : service.reconcile();
     },
   };
 }
