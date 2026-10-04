@@ -395,6 +395,60 @@ describe('destination credential handlers', () => {
     expect((bodyOf() as { error: string }).error).toMatch(/destination\.kind/);
   });
 
+  // TASK-813 — a connector key ON an agent is a team key: only the team's
+  // admins choose it, through the agent's team-key route. A workspace admin
+  // must not reach the same vault row through this route.
+  it('SECURITY: POST /admin refuses an account key at agent scope (403) and stores nothing', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'linear' },
+          scope: 'agent',
+          ownerId: 'team-agent-1',
+          kind: 'api-key',
+          payloadB64: Buffer.from('lin-secret').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(403);
+    expect(bodyOf()).toEqual({ error: 'team-key-via-agent' });
+    const out = await bus.call<Record<string, never>, { credentials: Array<{ ref: string }> }>(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(out.credentials.find((c) => c.ref === 'account:linear')).toBeUndefined();
+  });
+
+  it('POST /admin: an account key at GLOBAL scope (the company key) is still stored', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'linear' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('lin-secret').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(204);
+  });
+
   it('POST /admin: non-admin gets 403', async () => {
     const bus = await makeBus({ id: 'alice', isAdmin: false });
     const handlers = createDestinationHandlers({ bus });

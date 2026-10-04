@@ -260,6 +260,18 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     const scope = forceUser !== null ? ('user' as const) : data.scope;
     const ownerId = forceUser !== null ? forceUser.id : data.ownerId;
 
+    // TASK-813 — a connector key stored ON an agent (`account:` at scope
+    // `agent`) is the account every member of a team agent acts as, and only
+    // that team's admins may choose it — through the agent's own team-key
+    // route (channel-web), which asks @ax/agents. Being a workspace admin is
+    // not enough, so this admin route refuses that one combination outright
+    // rather than becoming a second door around the team-admin check.
+    // Provider / other refs at agent scope, and deletes, are unchanged.
+    if (scope === 'agent' && data.destination.kind === 'account') {
+      res.status(403).json({ error: 'team-key-via-agent' });
+      return;
+    }
+
     let ref: string;
     try {
       ref = refForDestination(data.destination as Destination);
