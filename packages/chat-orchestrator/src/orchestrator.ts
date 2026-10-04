@@ -35,9 +35,16 @@ import {
   foldConnectorCaps,
   stampConnectorHeaders,
   connectorCredentialEnvName,
+  connectorLabel,
   ConnectorServiceCollisionError,
   type FoldConnectorResult,
 } from './connector-union.js';
+import {
+  isNeedsReconnect,
+  isCredentialNotFound,
+  failedCredentialEnvName,
+  errorLogFields,
+} from './proxy-errors.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -860,38 +867,50 @@ interface OpenSessionResult {
 }
 
 // ---------------------------------------------------------------------------
-// TASK-713 — a session that could not open because a connector's sign-in is
-// dead (the OAuth refresh token was rejected, or there is none) is not a
-// generic failure: the person can fix it by reconnecting that connector. The
-// credential resolver throws an error NAMED `NeedsReconnectError`; it reaches
-// us through `proxy:open-session` → `credentials:get` →
-// `credentials:resolve:<kind>`, and HookBus wraps a non-PluginError once, so
-// it is either the thrown value or the wrapper's `.cause`. Matched by NAME —
-// no import across plugins (invariant 2), the same name duck-typing
-// `@ax/mcp-client`'s describe-tools `noUsableCredential` uses for the
-// Connectors rail's needs-auth health. A vault blip, a decrypt failure or a
-// missing provider key keeps `proxy-open-failed`.
+// TASK-713 / TASK-783 — a session that could not open because a connector's
+// sign-in is dead is not a generic failure: the person can fix it by
+// reconnecting that connector, and the turn error says WHICH one.
 //
-// DELIBERATELY NARROWER than `noUsableCredential`: that one also counts
-// `credential-not-found` as needs-auth, because it asks about ONE connector's
-// ref. `proxy:open-session` resolves the agent's WHOLE merged set — provider
-// keys included — and its error does not say which ref failed, so a bare
-// `credential-not-found` here may be a missing model-provider key, and telling
-// that person to reconnect a connector would send them the wrong way. A
-// connector whose account row is simply absent never gets here at all since
-// TASK-806: it is skipped for the session BEFORE the open
-// (`partitionConnectorsBySignIn`), so the turn runs without it. (TASK-796/802's
-// after-the-fact `connector-needs-sign-in` classification was removed with
-// that; an open that still fails on a missing row — a race, or a presence read
-// that faulted and kept the connector — reads as `proxy-open-failed`.)
+// Two shapes count (see ./proxy-errors.ts for how they are read):
+//   - the resolver threw an error NAMED `NeedsReconnectError` (the OAuth
+//     refresh token was rejected, or there is none) — wherever it failed;
+//   - the vault had no row (`credential-not-found`) for a ref the proxy says
+//     belongs to a CONNECTOR. Since TASK-806 a connector whose row is absent is
+//     skipped before the open (`partitionConnectorsBySignIn`), so this is the
+//     race (the row went between the presence read and the open) or a presence
+//     read that faulted and kept the connector.
+//
+// `credential-not-found` on any OTHER ref — the model-provider key — stays
+// `proxy-open-failed`: telling that person to reconnect a connector would send
+// them the wrong way. Before TASK-783 the proxy's error did not say which ref
+// failed, so a bare `credential-not-found` could not be attributed and was
+// left unmapped; the proxy now names the failing credential by OUR env key
+// (`diagnosis.envName`), which the connector fold maps back to its connector.
+// A vault blip or a decrypt failure keeps `proxy-open-failed`.
 // ---------------------------------------------------------------------------
 
 /** Turn-error reason: a connector's sign-in expired; reconnect it, then retry. */
 const CONNECTOR_NEEDS_RECONNECT = 'connector-needs-reconnect';
 
-function isNeedsReconnect(err: unknown): boolean {
-  const named = (e: unknown): boolean => e instanceof Error && e.name === 'NeedsReconnectError';
-  return named(err) || named((err as { cause?: unknown } | null)?.cause);
+/**
+ * Classify a failed `proxy:open-session`. `connectorFor(envName)` answers the
+ * connector that owns a credential env key, or undefined for the agent's own
+ * keys. `detail` is the turn error's untrusted detail line — the connector's
+ * label (already control-stripped and clamped by `connectorLabel`), present
+ * only when the failure is attributed to a connector.
+ */
+function classifyProxyOpenFailure(
+  err: unknown,
+  connectorFor: (envName: string) => { id: string; name?: unknown } | undefined,
+): { reason: string; detail?: string } {
+  const envName = failedCredentialEnvName(err);
+  const connector = envName !== undefined ? connectorFor(envName) : undefined;
+  const reconnect =
+    isNeedsReconnect(err) || (connector !== undefined && isCredentialNotFound(err));
+  if (!reconnect) return { reason: 'proxy-open-failed' };
+  return connector !== undefined
+    ? { reason: CONNECTOR_NEEDS_RECONNECT, detail: `Connector: ${connectorLabel(connector)}` }
+    : { reason: CONNECTOR_NEEDS_RECONNECT };
 }
 
 /** Owner tag for the agent's own credential slots — the model-provider key. */
@@ -1524,6 +1543,7 @@ export function createOrchestrator(
     respawnSessions.delete(sessionId);
     augmentGenBySession.delete(sessionId);
     skippedConnectorRefsBySession.delete(sessionId);
+    rotationFailedSessions.delete(sessionId);
   }
 
   // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the
@@ -1726,6 +1746,13 @@ export function createOrchestrator(
   // Membership is added after a successful proxy:open-session and removed in
   // the runAgentInvoke finally that fires proxy:close-session.
   const sessionsNeedingRotation = new Set<string>();
+
+  // TASK-783 — the fourth reason a warm session is retired at its next turn:
+  // its between-turns `proxy:rotate-session` failed (see onTurnEnd). Same
+  // lifetime + single-replica posture as `respawnSessions`. The rotate is
+  // fire-and-forget at turn end, so a message sent before it settles still
+  // routes to the old session; the one after that re-spawns.
+  const rotationFailedSessions = new Set<string>();
 
   // Sessions that proposed a skill this turn must re-spawn next turn (the runner
   // reads skills only at spawn, "frozen at spawn", design §D6). Populated by the
@@ -2082,10 +2109,17 @@ export function createOrchestrator(
             const hostSessionMissing = keepAlive && !warmSessions.has(candidate);
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
+            const rotationFailed = rotationFailedSessions.has(candidate);
             const connectorSignedIn =
-              !(skillsDirty || augmentStale || hostSessionMissing) &&
+              !(skillsDirty || augmentStale || hostSessionMissing || rotationFailed) &&
               (await skippedConnectorSignedIn(ctx, candidate));
-            if (skillsDirty || augmentStale || hostSessionMissing || connectorSignedIn) {
+            if (
+              skillsDirty ||
+              augmentStale ||
+              hostSessionMissing ||
+              rotationFailed ||
+              connectorSignedIn
+            ) {
               // B3: this session's agent's draft-skills changed since it
               // spawned (the runner freezes the projection at spawn). Retire it
               // and fall through to a fresh spawn that re-derives the
@@ -2098,6 +2132,9 @@ export function createOrchestrator(
               //
               // TASK-806: and when a connector skipped at spawn (never signed
               // in) has been signed in since. The fresh spawn folds it.
+              //
+              // TASK-783: and when its credential rotation failed. The fresh
+              // open re-resolves every ref and names a dead connector.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
                 reason: hostSessionMissing
@@ -2106,7 +2143,9 @@ export function createOrchestrator(
                     ? 'skills-proposed'
                     : augmentStale
                       ? 'system-prompt-augment-changed'
-                      : 'connector-signed-in',
+                      : rotationFailed
+                        ? 'credential-rotation-failed'
+                        : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -2123,6 +2162,7 @@ export function createOrchestrator(
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
               skippedConnectorRefsBySession.delete(candidate);
+              rotationFailedSessions.delete(candidate);
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
               } catch (err) {
@@ -2654,7 +2694,9 @@ export function createOrchestrator(
     const trustedBareNames = new Set<string>(Object.keys(baseCreds));
 
     // Track slot ownership (now keyed by the NAMESPACED env name for skill slots,
-    // the bare name for trusted base creds) — purely diagnostic / idempotence.
+    // the bare name for trusted base creds) — diagnostic / idempotence, and
+    // (TASK-783) how a failed proxy:open-session is attributed to the
+    // connector that owns the credential it failed on.
     const slotOwners = new Map<string, string>(
       [...trustedBareNames].map((slot) => [slot, AGENT_SLOT_OWNER]),
     );
@@ -3094,16 +3136,22 @@ export function createOrchestrator(
           .catch((closeErr: unknown) => {
             ctx.logger.warn('proxy_close_session_failed', {
               sessionId: ctx.sessionId,
-              err:
-                closeErr instanceof Error
-                  ? closeErr
-                  : new Error(String(closeErr)),
+              ...errorLogFields(closeErr),
             });
           });
       }
+      // TASK-783 — attribute the failure to the connector that owns the
+      // credential the proxy failed on (`slotOwners` is the fold's own
+      // envName → `connector:<id>` record; the kept list carries the name).
+      const failure = classifyProxyOpenFailure(err, (envName) => {
+        const owner = slotOwners.get(envName);
+        if (owner === undefined || !owner.startsWith('connector:')) return undefined;
+        const id = owner.slice('connector:'.length);
+        return connectorSignIn.kept.find((c) => c.id === id);
+      });
       const outcome: AgentOutcome = {
         kind: 'terminated',
-        reason: isNeedsReconnect(err) ? CONNECTOR_NEEDS_RECONNECT : 'proxy-open-failed',
+        reason: failure.reason,
         error: err,
       };
       // TASK-22 — credential resolution failure at session-open. This is the
@@ -3115,8 +3163,9 @@ export function createOrchestrator(
       // Surface on the SSE BEFORE chat:end so the client flips to error+retry.
       // Only the coarse `reason` crosses to the (untrusted) client; the raw
       // `err` stays on the audit chat:end outcome (no credential/decryption
-      // detail leaks).
-      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      // detail leaks). TASK-783: plus, for a connector failure, the connector's
+      // label as the detail line — host-sanitized text, never the error's.
+      await fireTurnError(ctx, ctx.reqId, outcome.reason, failure.detail);
       await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
@@ -3239,6 +3288,7 @@ export function createOrchestrator(
             sessionsNeedingRotation.delete(sessionId);
             augmentGenBySession.delete(sessionId);
             skippedConnectorRefsBySession.delete(sessionId);
+            rotationFailedSessions.delete(sessionId);
             if (proxyOpened) {
               void bus
                 .call<ProxyCloseSessionInput, Record<string, never>>(
@@ -3247,7 +3297,7 @@ export function createOrchestrator(
                 .catch((err: unknown) => {
                   warmCtx.logger.warn('proxy_close_session_failed', {
                     sessionId: warmCtx.sessionId,
-                    err: err instanceof Error ? err : new Error(String(err)),
+                    ...errorLogFields(err),
                   });
                 });
             }
@@ -3500,7 +3550,7 @@ export function createOrchestrator(
           .catch((err: unknown) => {
             ctx.logger.warn('proxy_close_session_failed', {
               sessionId: ctx.sessionId,
-              err: err instanceof Error ? err : new Error(String(err)),
+              ...errorLogFields(err),
             });
           });
         // I10 — drop the rotation flag on the non-warm paths only. A warm
@@ -3512,6 +3562,7 @@ export function createOrchestrator(
         // session drops it in handle.exited; a one-shot session is done now.
         augmentGenBySession.delete(ctx.sessionId);
         skippedConnectorRefsBySession.delete(ctx.sessionId);
+        rotationFailedSessions.delete(ctx.sessionId);
       }
     }
   }
@@ -3559,9 +3610,11 @@ export function createOrchestrator(
     //
     // The rotation is fire-and-forget: a failing rotate (network blip,
     // refresh-failed) shouldn't kill the chat. The credentials facade's
-    // resolve sub-service is what decides whether to refresh; if refresh
-    // fails the next request through the proxy will fail with 401 and the
-    // user sees a clear error path (I9).
+    // resolve sub-service is what decides whether to refresh. If the refresh
+    // fails, the session is marked for retirement (TASK-783): the NEXT turn
+    // re-spawns, and its fresh proxy:open-session reports a dead connector
+    // sign-in as `connector-needs-reconnect` naming the connector, rather than
+    // the turn failing later at the provider with a bare 401.
     if (sessionsNeedingRotation.has(ctx.sessionId)) {
       void bus
         .call<{ sessionId: string }, { envMap: Record<string, string> }>(
@@ -3570,10 +3623,22 @@ export function createOrchestrator(
           { sessionId: ctx.sessionId },
         )
         .catch((err: unknown) => {
+          // TASK-783 — name/code only (a refresh failure's message can carry
+          // the OAuth server's own text), plus OUR env key for the credential
+          // that failed, when the proxy named one.
+          const envName = failedCredentialEnvName(err);
           ctx.logger.warn('proxy_rotate_session_failed', {
             sessionId: ctx.sessionId,
-            err: err instanceof Error ? err : new Error(String(err)),
+            ...errorLogFields(err),
+            ...(envName !== undefined ? { envName } : {}),
           });
+          // A warm session whose credentials could not be refreshed would run
+          // its next turn on a dead token and fail at the provider with nothing
+          // naming the cause. Retire it instead: the next turn re-spawns, and
+          // the fresh proxy:open-session resolves every ref again — so a dead
+          // connector sign-in surfaces as `connector-needs-reconnect` naming
+          // that connector (or the turn simply runs, if this was a blip).
+          rotationFailedSessions.add(ctx.sessionId);
         });
     }
 

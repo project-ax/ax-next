@@ -2446,23 +2446,39 @@ describe('chat-orchestrator', () => {
           const i = input as { credentials: Record<string, { ref: string }>; allowlist: string[] };
           state.openRefs = Object.values(i.credentials).map((c) => c.ref);
           state.openAllowlist = [...i.allowlist];
-          for (const { ref } of Object.values(i.credentials)) {
+          // The REAL proxy's failure shape (TASK-783): the resolver's error,
+          // wrapped as `credential-resolve-failed` naming OUR env key.
+          const named = (envName: string, cause: unknown) =>
+            new PluginError({
+              code: 'credential-resolve-failed',
+              plugin: '@ax/credential-proxy',
+              message: 'a session credential could not be resolved',
+              cause,
+              diagnosis: { envName },
+            });
+          for (const [envName, { ref }] of Object.entries(i.credentials)) {
             if (rejected.has(ref)) {
               const cause = new Error('refresh token rejected; reconnect required');
               cause.name = 'NeedsReconnectError';
-              throw new PluginError({
-                code: 'unknown',
-                plugin: '@ax/mcp-oauth',
-                message: "service hook 'credentials:resolve:mcp-oauth' threw: x",
-                cause,
-              });
+              throw named(
+                envName,
+                new PluginError({
+                  code: 'unknown',
+                  plugin: '@ax/mcp-oauth',
+                  message: "service hook 'credentials:resolve:mcp-oauth' threw: x",
+                  cause,
+                }),
+              );
             }
             if (!rows.has(ref)) {
-              throw new PluginError({
-                code: 'credential-not-found',
-                plugin: '@ax/credentials',
-                message: `no credential for ref='${ref}'`,
-              });
+              throw named(
+                envName,
+                new PluginError({
+                  code: 'credential-not-found',
+                  plugin: '@ax/credentials',
+                  message: `no credential for ref='${ref}'`,
+                }),
+              );
             }
           }
           return {
@@ -2596,11 +2612,13 @@ describe('chat-orchestrator', () => {
       );
     });
 
-    it('rejected-refresh (needs-reconnect) is NOT skipped → connector-needs-reconnect, as before', async () => {
+    it('rejected-refresh (needs-reconnect) is NOT skipped → connector-needs-reconnect naming it (TASK-783)', async () => {
       const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
       const { outcome, turnErrors, mocks } = await invoke(vault, 'skip-rejected');
       expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
-      expect(turnErrors).toEqual([{ reqId: 'r-skip-rejected', reason: 'connector-needs-reconnect' }]);
+      expect(turnErrors).toEqual([
+        { reqId: 'r-skip-rejected', reason: 'connector-needs-reconnect', detail: 'Connector: Gmail' },
+      ]);
       expect(mocks.calls.sandboxOpen).toBe(0);
       // It was kept: its ref went to the open.
       expect(vault.state.openRefs).toContain(GMAIL_REF);
@@ -2614,11 +2632,16 @@ describe('chat-orchestrator', () => {
       expect(sandboxIn?.owner.agentConfig.systemPromptAugment).not.toContain('Connectors not signed in');
     });
 
-    it('a presence read that throws KEEPS the connector (never widens the skip) → the open fails as before', async () => {
+    // TASK-783: the kept connector's missing row now reads as "reconnect
+    // Gmail" — the proxy names the failing credential, so a
+    // credential-not-found on a CONNECTOR ref is no longer anonymous.
+    it('a presence read that throws KEEPS the connector (never widens the skip) → the open fails naming it', async () => {
       const vault = buildVaultHooks({ rows: [PROVIDER_REF], hasThrows: new Error('vault blip') });
       const { outcome, turnErrors } = await invoke(vault, 'skip-throws');
-      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'proxy-open-failed' });
-      expect(turnErrors).toEqual([{ reqId: 'r-skip-throws', reason: 'proxy-open-failed' }]);
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+      expect(turnErrors).toEqual([
+        { reqId: 'r-skip-throws', reason: 'connector-needs-reconnect', detail: 'Connector: Gmail' },
+      ]);
       expect(vault.state.openRefs).toContain(GMAIL_REF);
     });
 
@@ -2632,7 +2655,7 @@ describe('chat-orchestrator', () => {
     it('no credentials:has loaded → nothing is skipped (soft-coupled peer; the open fails as before)', async () => {
       const vault = buildVaultHooks({ rows: [PROVIDER_REF], noHas: true });
       const { outcome } = await invoke(vault, 'skip-nohas');
-      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'proxy-open-failed' });
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
       expect(vault.state.openRefs).toContain(GMAIL_REF);
     });
 
@@ -2641,6 +2664,34 @@ describe('chat-orchestrator', () => {
       const { outcome, turnErrors } = await invoke(vault, 'skip-provider');
       expect(outcome).toMatchObject({ kind: 'terminated', reason: 'proxy-open-failed' });
       expect(turnErrors).toEqual([{ reqId: 'r-skip-provider', reason: 'proxy-open-failed' }]);
+    });
+
+    // TASK-783 — the turn error names the connector whose credential failed,
+    // and only that one: Linear is signed in, Gmail's row is gone (the race
+    // TASK-806's skip cannot see: presence said yes, the open said no).
+    it('credential-not-found on one of two connectors → reconnect naming THAT connector', async () => {
+      const vault = buildVaultHooks({
+        rows: [PROVIDER_REF, LINEAR_REF],
+        // Presence lies "yes" for Gmail (the row vanished after the read).
+        hasAnswers: { present: true },
+      });
+      const { outcome, turnErrors, mocks } = await invoke(vault, 'race-two', { linear: LINEAR, gmail: GMAIL });
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+      expect(turnErrors).toEqual([
+        { reqId: 'r-race-two', reason: 'connector-needs-reconnect', detail: 'Connector: Gmail' },
+      ]);
+      expect(mocks.calls.sandboxOpen).toBe(0);
+    });
+
+    it('a hostile connector name reaches the turn-error detail as one clamped plain line', async () => {
+      const hostile = oauthConnector('gmail', 'c0123abcdef', `Gmail\n\u202eevil${'x'.repeat(200)}`);
+      const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF] });
+      const { turnErrors } = await invoke(vault, 'hostile-detail', { gmail: hostile });
+      const detail = (turnErrors[0] as { detail?: string }).detail ?? '';
+      expect(detail.startsWith('Connector: Gmail evil')).toBe(true);
+      expect(detail).not.toMatch(/[\n\r\u202e]/);
+      // 'Connector: ' + 64 code points + '…'
+      expect([...detail].length).toBe('Connector: '.length + 64 + 1);
     });
 
     it('the connector name reaches the prompt as inert, quoted data', async () => {
@@ -2943,6 +2994,69 @@ describe('chat-orchestrator', () => {
     expect((proxy.state.lastRotateInput as { sessionId?: string }).sessionId).toBe(
       'rotate-oauth-session',
     );
+  });
+
+  // TASK-783 — a failed proxy:close-session is logged by name/code only. The
+  // error used to be logged whole, and a wrapped resolver/provider error's
+  // message can carry provider-authored text.
+  it.each([
+    ['turn completed (per-invoke finally)', 'tcp://127.0.0.1:54321', 'complete'],
+    ['open succeeded, endpoint translation threw (open-failure catch)', 'http://oops:54321', 'terminated'],
+  ] as const)('proxy_close_session_failed logs name/code, never the message — %s', async (_label, endpoint, kind) => {
+    const SECRET_TEXT = 'error_description=provider-text-that-must-not-be-logged';
+    const proxy = buildProxyHooks({
+      openOutput: { proxyEndpoint: endpoint, caCertPem: 'CA', envMap: {} },
+    });
+    proxy.services['proxy:close-session'] = async () => {
+      const e = new Error(SECRET_TEXT) as Error & { code?: string };
+      e.code = 'ECONNRESET';
+      throw e;
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        fireTurnEndAndChatEnd(busRef, sessionId, ctx.reqId);
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+    const lines: Array<Record<string, unknown>> = [];
+    const ctx = makeAgentContext({
+      sessionId: 'close-log-session',
+      agentId: 'a',
+      userId: 'u',
+      logger: createLogger({
+        reqId: 'close-log',
+        writer: (l: string) => lines.push(JSON.parse(l) as Record<string, unknown>),
+      }),
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctx, {
+      message: { role: 'user', content: 'hi' },
+    });
+    expect(outcome.kind).toBe(kind);
+    const line = lines.find((l) => l.msg === 'proxy_close_session_failed');
+    // The bus wraps the throw (and copies its message into the wrapper's), so
+    // the inner error's name/code ride as causeName/causeCode.
+    expect(line).toMatchObject({
+      sessionId: 'close-log-session',
+      name: 'PluginError',
+      code: 'unknown',
+      causeName: 'Error',
+      causeCode: 'ECONNRESET',
+    });
+    expect(line).not.toHaveProperty('err');
+    expect(JSON.stringify(lines)).not.toContain(SECRET_TEXT);
   });
 
   it('does NOT fire proxy:rotate-session for api-key-only sessions', async () => {
@@ -6460,6 +6574,145 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
   // signed in) must pick the connector up once the person signs in: the skip
   // is frozen at spawn, so the next turn re-asks credentials:has about the
   // skipped refs and retires the session if one is now present.
+  // TASK-783 — a warm session whose between-turns credential rotation failed
+  // used to be only LOGGED (and the log carried the whole error, provider text
+  // included). Now the failure is logged by name/code + env key, and the
+  // session is retired at its next turn, whose fresh proxy:open-session names
+  // the dead connector.
+  describe('TASK-783: a failed warm rotation retires the session and names the connector', () => {
+    const PROVIDER_TEXT = 'error_description=the-provider-said-something';
+
+    function namedFailure(envName: string): PluginError {
+      const cause = new Error(`refresh rejected: ${PROVIDER_TEXT}`);
+      cause.name = 'NeedsReconnectError';
+      return new PluginError({
+        code: 'credential-resolve-failed',
+        plugin: '@ax/credential-proxy',
+        message: 'a session credential could not be resolved',
+        cause: new PluginError({
+          code: 'unknown',
+          plugin: '@ax/mcp-oauth',
+          message: `service hook 'credentials:resolve:mcp-oauth' threw: ${cause.message}`,
+          cause,
+        }),
+        diagnosis: { envName },
+      });
+    }
+
+    async function run(opts: { rotateThrows: boolean }) {
+      let proxyOpens = 0;
+      const lines: Array<Record<string, unknown>> = [];
+      const { h, counters } = await makeKeepaliveHarness({
+        'connectors:list-effective': async () => ({
+          connectors: [
+            {
+              summary: { id: 'gmail', name: 'Gmail' },
+              source: 'attached',
+              toolNamespaces: [{ server: 'gmail', toolNamespace: 'c0123abcdef' }],
+              capabilities: {
+                allowedHosts: [],
+                credentials: [{ slot: 'GMAIL', kind: 'oauth', server: 'gmail' }],
+                mcpServers: [
+                  {
+                    name: 'gmail',
+                    transport: 'http',
+                    url: 'https://gmail.mcp.example.com/mcp',
+                    allowedHosts: ['gmail.mcp.example.com'],
+                    credentials: [],
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        'credentials:has': async () => ({ present: true }),
+        // First open succeeds; a later (re-spawn) open fails on Gmail's
+        // dead sign-in, exactly as the real proxy reports it.
+        'proxy:open-session': async () => {
+          proxyOpens += 1;
+          if (proxyOpens > 1) throw namedFailure('connector:gmail:GMAIL');
+          return { proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} };
+        },
+        'proxy:rotate-session': async () => {
+          if (opts.rotateThrows) throw namedFailure('connector:gmail:GMAIL');
+          return { envMap: {} };
+        },
+      } as Record<string, ServiceHandler>);
+      const turnErrors: Array<Record<string, unknown>> = [];
+      h.bus.subscribe('chat:turn-error', 'obs', async (_c, p: unknown) => {
+        turnErrors.push(p as Record<string, unknown>);
+        return undefined;
+      });
+      // Turn-end with a CAPTURING logger: onTurnEnd logs the rotate failure
+      // on the turn-end's ctx.
+      const turnEnd = (reqId: string) =>
+        setImmediate(() => {
+          void h.bus.fire(
+            'chat:turn-end',
+            makeAgentContext({
+              sessionId: 's-1',
+              agentId: 'a',
+              userId: 'u',
+              reqId: 'ipc-fresh',
+              logger: createLogger({
+                reqId: 'ipc-fresh',
+                writer: (l: string) => lines.push(JSON.parse(l) as Record<string, unknown>),
+              }),
+            }),
+            { reason: 'user-message-wait', reqId },
+          );
+        });
+      turnEnd('req-1');
+      const first = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+        { message: { role: 'user', content: 'hi' } },
+      );
+      // Let the fire-and-forget rotate settle.
+      await new Promise((r) => setTimeout(r, 0));
+      turnEnd('req-2');
+      const second = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-2' }),
+        { message: { role: 'user', content: 'again' } },
+      );
+      return { first, second, counters, turnErrors, lines, proxyOpens: () => proxyOpens };
+    }
+
+    it('rotate fails → next turn re-spawns and fails with connector-needs-reconnect naming Gmail', async () => {
+      const r = await run({ rotateThrows: true });
+      expect(r.first.kind).toBe('complete');
+      expect(r.counters.terminates).toContain('s-1');
+      expect(r.proxyOpens()).toBe(2);
+      expect(r.second).toMatchObject({ kind: 'terminated', reason: 'connector-needs-reconnect' });
+      expect(r.turnErrors).toEqual([
+        { reqId: 'req-2', reason: 'connector-needs-reconnect', detail: 'Connector: Gmail' },
+      ]);
+    });
+
+    it('the rotate-failure log carries name/code + env key, never the error text', async () => {
+      const r = await run({ rotateThrows: true });
+      const line = r.lines.find((l) => l.msg === 'proxy_rotate_session_failed');
+      expect(line).toMatchObject({
+        sessionId: 's-1',
+        name: 'PluginError',
+        code: 'credential-resolve-failed',
+        causeName: 'NeedsReconnectError',
+        envName: 'connector:gmail:GMAIL',
+      });
+      expect(line).not.toHaveProperty('err');
+      expect(JSON.stringify(r.lines)).not.toContain(PROVIDER_TEXT);
+    });
+
+    it('rotate succeeds → the warm session is reused (control)', async () => {
+      const r = await run({ rotateThrows: false });
+      expect(r.second.kind).toBe('complete');
+      expect(r.counters.terminates).not.toContain('s-1');
+      expect(r.proxyOpens()).toBe(1);
+      expect(r.turnErrors).toEqual([]);
+    });
+  });
+
   describe('TASK-806: skipped connector signed in since spawn', () => {
     function gmailServices(vault: { signedIn: boolean; hasThrows?: boolean; hasCalls: string[] }) {
       return {

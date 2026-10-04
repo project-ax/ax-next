@@ -590,6 +590,25 @@ const SKIPPED_NAME_MAX = 64;
 const SKIPPED_NAMES_MAX = 10;
 
 /**
+ * A connector's display name, made safe to show as ONE line of plain text:
+ * control and format characters (newlines, bidi overrides, zero-width) become
+ * spaces, whitespace collapses, an empty result falls back to the id, and the
+ * length is clamped to {@link SKIPPED_NAME_MAX} code points (with `…`). The
+ * name is admin/user-authored, so every reader treats the result as data —
+ * the agent-prompt line JSON-quotes it, the turn-error detail (TASK-783)
+ * renders it as a text node.
+ */
+export function connectorLabel(connector: { id: string; name?: unknown }): string {
+  const raw = typeof connector.name === 'string' ? connector.name : '';
+  const clean = raw
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const chars = [...(clean.length > 0 ? clean : connector.id)];
+  return chars.length > SKIPPED_NAME_MAX ? `${chars.slice(0, SKIPPED_NAME_MAX).join('')}…` : chars.join('');
+}
+
+/**
  * TASK-806 — the one line that tells the AGENT which connectors are off for
  * this chat, so it can say "sign in to Gmail first" instead of acting as if
  * the tool never existed. Empty string when nothing was skipped.
@@ -604,16 +623,7 @@ export function skippedConnectorsPromptLine(
   skipped: ReadonlyArray<{ connector: ResolvedConnectorForOrch }>,
 ): string {
   if (skipped.length === 0) return '';
-  const names = skipped.map(({ connector }) => {
-    const raw = typeof connector.name === 'string' ? connector.name : '';
-    const clean = raw
-      .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const chars = [...(clean.length > 0 ? clean : connector.id)];
-    const clamped = chars.length > SKIPPED_NAME_MAX ? `${chars.slice(0, SKIPPED_NAME_MAX).join('')}…` : chars.join('');
-    return JSON.stringify(clamped);
-  });
+  const names = skipped.map(({ connector }) => JSON.stringify(connectorLabel(connector)));
   const listed = names.slice(0, SKIPPED_NAMES_MAX).join(', ');
   const more = names.length > SKIPPED_NAMES_MAX ? ` and ${names.length - SKIPPED_NAMES_MAX} more` : '';
   return (
