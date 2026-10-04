@@ -641,10 +641,9 @@ describe('agent connector routes', () => {
         effective[0] = {
           ...effective[0]!,
           capabilities: {
-            credentials: [
-              { ...oauth('gmail'), clientSecretRef: 'account:gmail:OAUTH_CLIENT_SECRET' },
-              key('OAUTH_CLIENT_SECRET'),
-            ],
+            // (The real OAuth slot also carries `clientSecretRef`; the rail
+            // reads only slot / kind, so this fixture's type leaves it out.)
+            credentials: [oauth('gmail'), key('OAUTH_CLIENT_SECRET')],
           },
         };
         present = new Set(['account:gmail:MCP_OAUTH', 'account:linear']);
