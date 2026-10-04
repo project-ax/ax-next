@@ -863,6 +863,12 @@ fails loudly, not silently.
   no branch protection to stop a direct push. The window is seconds, and the
   push-to-main backstop still catches the result. Native merge queue is the fix if
   this ever matters (see above).
+- **Whether GitHub's server-side merge always builds the same tree as local
+  `git merge-tree`.** The guard test simulates the update with a local
+  `git merge --no-ff`, so it can't catch a difference in GitHub's merge algorithm (rename
+  detection, say). Such a difference fails *closed*: `UPDATE-UNVERIFIED` orders a review
+  pass you didn't need. It never lets a bad merge through. If it happens repeatedly on
+  real updates, journal the sha pair and revisit.
 - **Flaky or environment-dependent failures.** A re-run on current `main` reproduces
   real interactions, not flakes. Two false main-red halts in the same run as #920 —
   `kind-tooling-pinned-to-kind-context.test.js` (fixed by #917) and
