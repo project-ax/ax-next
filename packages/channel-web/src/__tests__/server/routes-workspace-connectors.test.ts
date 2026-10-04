@@ -71,10 +71,13 @@ const NS_GMAIL = 'cabcdef0123';
 
 type Source = 'default' | 'attached' | 'legacy-owned';
 interface Effective {
-  summary: { id: string; name: string; canEdit?: boolean };
+  summary: { id: string; name: string; canEdit?: boolean; keyMode?: 'personal' | 'workspace' };
   source: Source;
   toolNamespaces: Array<{ server: string; toolNamespace: string }>;
-  capabilities?: { mcpServers: Array<{ name: string }> };
+  capabilities?: {
+    mcpServers?: Array<{ name: string }>;
+    credentials?: Array<{ slot: string; kind: 'oauth' | 'api-key'; server?: string; headerName?: string }>;
+  };
 }
 
 describe('agent connector routes', () => {
@@ -556,6 +559,190 @@ describe('agent connector routes', () => {
       const r = await list();
       expect(r.statusCode).toBe(200);
       expect(healthById(r)).toEqual({ gmail: 'ok', linear: 'ok', notes: 'ok' });
+    });
+
+    // TASK-795 — a connector nobody this caller's use would reach has signed in
+    // to (or added a key for) says so, from a vault PRESENCE read: never a
+    // credentials:get, never a resolver (no refresh, no network).
+    describe('needs sign-in (TASK-795)', () => {
+      /** Refs `credentials:has` reports present. */
+      let present: Set<string>;
+      let hasCalls: Array<{ ref: string; userId: string; agentId: string }>;
+      let hasThrows: boolean;
+
+      function registerHas(): void {
+        bus.registerService('credentials:has', 'credentials', async (c, i: unknown) => {
+          const { ref, userId } = i as { ref: string; userId: string };
+          hasCalls.push({ ref, userId, agentId: c.agentId });
+          if (hasThrows) throw new Error('vault down');
+          return { present: present.has(ref) };
+        });
+      }
+
+      const oauth = (server: string) => ({ slot: 'MCP_OAUTH', kind: 'oauth' as const, server });
+      const key = (slot: string) => ({ slot, kind: 'api-key' as const });
+
+      beforeEach(() => {
+        present = new Set();
+        hasCalls = [];
+        hasThrows = false;
+        // gmail: OAuth sign-in; linear: personal API key; notes: no credentials.
+        effective[0] = {
+          ...effective[0]!,
+          summary: { ...effective[0]!.summary, keyMode: 'personal' },
+          capabilities: { credentials: [oauth('gmail')] },
+        };
+        effective[1] = {
+          ...effective[1]!,
+          summary: { ...effective[1]!.summary, keyMode: 'personal' },
+          capabilities: { credentials: [key('LINEAR_KEY')] },
+        };
+      });
+
+      function rowsById(r: Captured): Record<string, Record<string, unknown>> {
+        const rows = (r.body as { connectors: Array<Record<string, unknown>> }).connectors;
+        return Object.fromEntries(rows.map((x) => [x.id as string, x]));
+      }
+
+      it('never signed in → needs-sign-in with setup sign-in; a key-only one → add-key', async () => {
+        registerHealth();
+        registerHas();
+        const r = await list();
+        expect(r.statusCode).toBe(200);
+        const byId = rowsById(r);
+        expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+        expect(byId.notes!.health).toBe('ok');
+        expect('setup' in byId.notes!).toBe(false);
+      });
+
+      it('signed in → ok, and the row carries no setup key', async () => {
+        registerHealth();
+        registerHas();
+        present = new Set(['account:gmail', 'account:linear']);
+        const byId = rowsById(await list());
+        expect(byId.gmail!.health).toBe('ok');
+        expect(byId.linear!.health).toBe('ok');
+        for (const row of Object.values(byId)) expect('setup' in row).toBe(false);
+        // ok because the vault said present — not because nobody asked.
+        expect(hasCalls.map((c) => c.ref).sort()).toEqual(['account:gmail', 'account:linear']);
+      });
+
+      it('presence reads use the caller, the agent, and the plan refs; no slots → no read', async () => {
+        registerHealth();
+        registerHas();
+        // A multi-slot connector derives one `account:<id>:<SLOT>` ref per slot.
+        effective[1] = {
+          ...effective[1]!,
+          capabilities: { credentials: [key('A_KEY'), key('B_KEY')] },
+        };
+        await list();
+        expect(
+          [...hasCalls].sort((a, b) => a.ref.localeCompare(b.ref)),
+        ).toEqual([
+          { ref: 'account:gmail', userId: 'u1', agentId: 'a1' },
+          { ref: 'account:linear:A_KEY', userId: 'u1', agentId: 'a1' },
+          { ref: 'account:linear:B_KEY', userId: 'u1', agentId: 'a1' },
+        ]);
+        expect(hasCalls.some((c) => c.ref.includes('notes'))).toBe(false);
+      });
+
+      it('one missing slot of several is enough; a missing OAuth slot wins sign-in over add-key', async () => {
+        registerHealth();
+        registerHas();
+        effective[1] = {
+          ...effective[1]!,
+          capabilities: { credentials: [key('A_KEY'), oauth('linear')] },
+        };
+        present = new Set(['account:linear:A_KEY']);
+        expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
+      });
+
+      it('a workspace-key connector asks a member to ask an admin, and offers an admin Add key', async () => {
+        registerHealth();
+        registerHas();
+        effective[1] = {
+          ...effective[1]!,
+          summary: { ...effective[1]!.summary, keyMode: 'workspace' },
+        };
+        expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-admin' });
+        caller = { id: 'u1', isAdmin: true };
+        expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+      });
+
+      it('a rejected refresh outranks never-signed-in', async () => {
+        registerHealth();
+        registerHas();
+        marked = new Set(['gmail']);
+        const byId = rowsById(await list());
+        expect(byId.gmail!.health).toBe('needs-reconnect');
+        expect('setup' in byId.gmail!).toBe(false);
+        // The same read, unmarked, does say needs-sign-in.
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+      });
+
+      it('needs-sign-in outranks unreachable; not-loaded outranks needs-sign-in', async () => {
+        registerHealth();
+        registerHas();
+        cached = new Map([['gmail', 'unreachable']]);
+        effective[1] = {
+          ...effective[1]!,
+          capabilities: { ...effective[1]!.capabilities, mcpServers: [{ name: 'linear' }, { name: 'linear' }] },
+        };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.health).toBe('needs-sign-in');
+        expect(byId.linear!.health).toBe('not-loaded');
+        expect('setup' in byId.linear!).toBe(false);
+      });
+
+      it('no credentials:has, or one that throws, degrades to ok — the list still loads', async () => {
+        registerHealth();
+        let r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(healthById(r)).toEqual({ gmail: 'ok', linear: 'ok', notes: 'ok' });
+        registerHas();
+        hasThrows = true;
+        r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(healthById(r)).toEqual({ gmail: 'ok', linear: 'ok', notes: 'ok' });
+        expect(hasCalls.length).toBeGreaterThan(0);
+      });
+
+      it('the health read never resolves a credential (no credentials:get, no resolver)', async () => {
+        registerHealth();
+        registerHas();
+        const called: string[] = [];
+        const real = bus.call.bind(bus);
+        vi.spyOn(bus, 'call').mockImplementation(((name: string, ...rest: unknown[]) => {
+          called.push(name);
+          return (real as (n: string, ...r: unknown[]) => Promise<unknown>)(name, ...rest);
+        }) as typeof bus.call);
+        await list();
+        expect(called).toContain('credentials:has');
+        expect(called.filter((n) => n === 'credentials:get' || n.startsWith('credentials:resolve:'))).toEqual([]);
+        expect(credentialReads).toEqual([]);
+      });
+
+      it('Retry answers needs-sign-in with its setup', async () => {
+        registerHealth();
+        registerHas();
+        describeStatus = 'needs-auth';
+        expect((await retry('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
+        caller = { id: 'u1', isAdmin: false };
+        effective[1] = {
+          ...effective[1]!,
+          summary: { ...effective[1]!.summary, keyMode: 'workspace' },
+        };
+        expect((await retry('linear')).body).toEqual({ health: 'needs-sign-in', setup: 'ask-admin' });
+      });
+
+      it('Retry on a signed-in connector answers ok with no setup', async () => {
+        registerHealth();
+        registerHas();
+        present = new Set(['account:gmail']);
+        expect((await retry('gmail')).body).toEqual({ health: 'ok' });
+        expect(hasCalls).toEqual([{ ref: 'account:gmail', userId: 'u1', agentId: 'a1' }]);
+      });
     });
 
     // TASK-745 — a session folds these same rows and DROPS a server it cannot

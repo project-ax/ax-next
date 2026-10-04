@@ -24,7 +24,9 @@ import {
   ChevronLeft,
   CircleAlert,
   CircleCheck,
+  KeyRound,
   Loader2,
+  LogIn,
   Pencil,
   Trash2,
 } from 'lucide-react';
@@ -52,6 +54,7 @@ import type { GrantRow } from '@/lib/workspace-api';
 import type {
   AgentConnectorHealth,
   AgentConnectorRow,
+  AgentConnectorSetup,
   AgentConnectorTool,
   AgentConnectorToolsRead,
   AgentToolVerdict,
@@ -64,6 +67,19 @@ import { GrantLine, ReadFailure } from './bits';
  * agent's owner or an admin. Shared with the list's `⋯` menu.
  */
 export const REMOVE_REFUSED_REASON = "Only the agent’s owner or an admin can remove this.";
+
+/**
+ * TASK-795 — the word for a `needs-sign-in` connector, by the setup it needs.
+ * The list's neutral icon and this view's connection line say the same thing.
+ */
+export const SETUP_REASON: Record<AgentConnectorSetup, string> = {
+  'sign-in': 'Not signed in yet',
+  'add-key': 'No key added yet',
+  'ask-admin': 'Needs a key from a workspace admin',
+};
+
+/** An older server may send `needs-sign-in` without a setup: no action then. */
+export const SETUP_UNKNOWN_REASON = 'Not set up yet';
 
 /** Decision 3: an unattended run cannot stop to ask, so it waits. */
 export const ROUTINES_WAIT_NOTE = 'With Ask first, routines pause and wait for you.';
@@ -87,6 +103,11 @@ interface Props {
   onRemove: () => void;
   /** TASK-761 — this agent's model gets no connector tools (aisdk). */
   unsupported?: boolean;
+  /**
+   * TASK-795 — Sign in / Add key for a `needs-sign-in` row: the same dialogs
+   * the `⋯` menu opens.
+   */
+  onSetUp?: () => void;
 }
 
 /**
@@ -119,6 +140,7 @@ export function ConnectorDetails({
   onEdit,
   onRemove,
   unsupported = false,
+  onSetUp,
 }: Props) {
   const state = useConnectorTools(agentId, row.id);
   const { data, status } = state;
@@ -139,7 +161,11 @@ export function ConnectorDetails({
         {menu}
       </div>
       <h3 className="truncate text-base font-semibold">{row.name}</h3>
-      <ConnectionLine data={data} health={row.health} />
+      {row.health === 'needs-sign-in' ? (
+        <SetupLine setup={row.setup} onSetUp={onSetUp} />
+      ) : (
+        <ConnectionLine data={data} health={row.health} />
+      )}
       {unsupported && (
         <div className="mt-4">
           <ConnectorsUnsupported name={agentName} />
@@ -169,7 +195,12 @@ export function ConnectorDetails({
           </div>
         )}
         {status === 'ok' && data !== null && (
-          <ToolList agentName={agentName} data={data} state={state} />
+          <ToolList
+            agentName={agentName}
+            data={data}
+            state={state}
+            notSetUp={row.health === 'needs-sign-in'}
+          />
         )}
         {(grants.length > 0 || grantsFailed) && (
           <section aria-label="Access you approved" className="mt-6">
@@ -321,10 +352,47 @@ function ConnectionLine({
   );
 }
 
-function unavailableText(data: AgentConnectorToolsRead): string | null {
+/**
+ * TASK-795 — nobody has set this connector up yet. Muted, not red: nothing is
+ * broken. The button is the same first-time setup the `⋯` menu leads with;
+ * `ask-admin` has none (only a workspace admin can add that key).
+ */
+function SetupLine({
+  setup,
+  onSetUp,
+}: {
+  setup: AgentConnectorSetup | undefined;
+  onSetUp: (() => void) | undefined;
+}) {
+  const action =
+    setup === 'sign-in' ? 'Sign in' : setup === 'add-key' ? 'Add key' : null;
+  return (
+    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <p className="flex items-center gap-1 text-[12px] text-muted-foreground">
+        <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" />
+        <span>{setup !== undefined ? SETUP_REASON[setup] : SETUP_UNKNOWN_REASON}</span>
+      </p>
+      {action !== null && onSetUp !== undefined && (
+        <Button type="button" variant="outline" size="sm" className="h-7 text-[12px]" onClick={onSetUp}>
+          {setup === 'sign-in' ? (
+            <LogIn data-icon="inline-start" aria-hidden="true" />
+          ) : (
+            <KeyRound data-icon="inline-start" aria-hidden="true" />
+          )}
+          {action}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function unavailableText(data: AgentConnectorToolsRead, notSetUp: boolean): string | null {
   switch (data.status) {
     case 'needs-auth':
-      return 'Sign in to this connector again to see all of its tools.';
+      // TASK-795 — "again" is wrong for someone who never signed in.
+      return notSetUp
+        ? 'Once it’s set up, all of its tools show here.'
+        : 'Sign in to this connector again to see all of its tools.';
     case 'unreachable':
       return 'We couldn’t reach this connector to list its tools.';
     case 'unknown':
@@ -338,17 +406,20 @@ function ToolList({
   agentName,
   data,
   state,
+  notSetUp = false,
 }: {
   agentName: string;
   data: AgentConnectorToolsRead;
   state: ConnectorToolsState;
+  /** TASK-795 — the row is `needs-sign-in`: nobody has set it up yet. */
+  notSetUp?: boolean;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   // TASK-757 — the save landed but we couldn't read it back. Soft, not red:
   // nothing went wrong with the change itself.
   const [unconfirmed, setUnconfirmed] = useState(false);
   const groups = groupTools(data.tools);
-  const missing = unavailableText(data);
+  const missing = unavailableText(data, notSetUp);
 
   async function change(tool: AgentConnectorTool, verdict: AgentToolVerdict) {
     setNotice(null);

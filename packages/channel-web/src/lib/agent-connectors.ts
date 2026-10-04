@@ -9,7 +9,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { HttpError, logRequestFailure } from './http';
 import { workspaceApi } from './workspace-api';
-import type { AgentConnectorHealth, AgentConnectorRow } from './workspace-types';
+import type {
+  AgentConnectorHealth,
+  AgentConnectorRow,
+  AgentConnectorSetup,
+} from './workspace-types';
 
 export type AgentConnectorsStatus = 'loading' | 'ok' | 'unavailable' | 'failed';
 
@@ -27,6 +31,11 @@ export interface RetryResult {
   outcome: RetryOutcome;
   /** True only when `outcome` is `needs-reconnect` and the sign-in is shared. */
   sharedSignIn: boolean;
+  /**
+   * TASK-795 — present only when `outcome` is `needs-sign-in`: the first-time
+   * setup the row now offers (Sign in / Add key / ask an admin).
+   */
+  setup?: AgentConnectorSetup;
 }
 
 export interface AgentConnectorsState {
@@ -136,11 +145,15 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
                   if (r.id !== connectorId) return r;
                   // TASK-756 — whose sign-in expired comes with the answer;
                   // an absent flag must clear one the row carried before.
-                  const { sharedSignIn: _was, ...rest } = r;
+                  // TASK-795 — same for the setup a needs-sign-in row offers.
+                  const { sharedSignIn: _was, setup: _wasSetup, ...rest } = r;
                   return {
                     ...rest,
                     health: out.health,
                     ...(out.sharedSignIn === true ? { sharedSignIn: true as const } : {}),
+                    ...(out.health === 'needs-sign-in' && out.setup !== undefined
+                      ? { setup: out.setup }
+                      : {}),
                   };
                 }),
           );
@@ -148,6 +161,9 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
         return {
           outcome: out.health,
           sharedSignIn: out.health === 'needs-reconnect' && out.sharedSignIn === true,
+          ...(out.health === 'needs-sign-in' && out.setup !== undefined
+            ? { setup: out.setup }
+            : {}),
         };
       } catch (e) {
         logRequestFailure(e, 'agent-connectors');

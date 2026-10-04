@@ -69,6 +69,25 @@ export type CredentialsGetOutput = string;
 /** Runtime contract for `credentials:get` — a resolved secret is a string. */
 export const CredentialsGetOutputSchema = z.string();
 
+export interface CredentialsHasInput {
+  ref: string;
+  userId: string;
+}
+
+export interface CredentialsHasOutput {
+  present: boolean;
+}
+
+/**
+ * Runtime `returns` contract for `credentials:has` (ARCH-6) — a presence
+ * boolean and nothing else. Deliberately carries no value, kind, scope, or
+ * timestamp: the whole point of the hook is that it answers "is something
+ * there?" without handing back anything about what.
+ */
+export const CredentialsHasOutputSchema = z.object({
+  present: z.boolean(),
+}) as unknown as ZodType<CredentialsHasOutput>;
+
 export interface CredentialsSetInput {
   scope: CredentialScope;
   ownerId: string | null;
@@ -375,6 +394,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       version: '0.0.0',
       registers: [
         'credentials:get',
+        'credentials:has',
         'credentials:set',
         'credentials:delete',
         'credentials:list',
@@ -699,37 +719,45 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         return allowed;
       }
 
-      async function doResolve(
-        ctx: Parameters<Parameters<typeof bus.registerService>[2]>[0],
+      // The row-finding walk, shared by `credentials:get` (via doResolve) and
+      // `credentials:has` so the two can never disagree about what "found"
+      // means. Returns the first live row on the chain, or undefined when no
+      // v2 scope has one (the caller then consults the env fallback).
+      //
+      // Walks the resolution-precedence chain: user -> agent -> global. The
+      // chain is intentionally fixed (not configurable) — that's the point of
+      // the abstraction. Tombstones in any scope short-circuit "no credential
+      // here, try next scope" (NOT "give up entirely") because deleting at one
+      // scope shouldn't mask a value at another. Tombstone semantics for
+      // non-fallthrough are tested at the per-scope set/delete level.
+      //
+      // One exception to "every ref walks every scope": an `account:` ref
+      // reaches the AGENT and GLOBAL scopes only when a provider says this
+      // user may read it there — `credentials:authorize-agent:account`
+      // (mayReadAgent, TASK-711) and `credentials:authorize-global:account`
+      // (mayReadGlobal, TASK-697). The ref is a connector id, and the
+      // connector id is chosen by the USER who authors the connector and is
+      // unique only per owner — so a bare fall-through would hand a team
+      // agent's shared sign-in, or a company-wide key, to anyone who names
+      // their own connector after it. Only the user scope stays ungated (a
+      // user row is the caller's own), and `provider:` / `mcp:` / `skill:` /
+      // `routine:` refs are minted by the platform, not chosen by a user, so
+      // they walk the chain unchanged.
+      //
+      // The walk makes no network call and never invokes a
+      // `credentials:resolve:<kind>` service — store-blob:get is one cheap row
+      // read. That is what lets doResolve run it outside the inflight mutex
+      // (keying the mutex on the row that actually got hit, not on the
+      // (userId, ref) input, so a cross-user refresh shares one resolver call)
+      // and what lets `credentials:has` use it without ever refreshing a token.
+      async function findRow(
+        ctx: AgentContext,
         userId: string,
         ref: string,
-      ): Promise<string> {
-        // Walk the resolution-precedence chain: user → agent → global →
-        // envFallback → not-found. The chain is intentionally fixed (not
-        // configurable) — that's the point of the abstraction. Tombstones
-        // in any scope short-circuit "no credential here, try next scope"
-        // (NOT "give up entirely") because deleting at one scope shouldn't
-        // mask a value at another. Tombstone semantics for non-fallthrough
-        // are tested at the per-scope set/delete level.
-        //
-        // One exception to "every ref walks every scope": an `account:` ref
-        // reaches the AGENT and GLOBAL scopes only when a provider says this
-        // user may read it there — `credentials:authorize-agent:account`
-        // (mayReadAgent, TASK-711) and `credentials:authorize-global:account`
-        // (mayReadGlobal, TASK-697). The ref is a connector id, and the
-        // connector id is chosen by the USER who authors the connector and is
-        // unique only per owner — so a bare fall-through would hand a team
-        // agent's shared sign-in, or a company-wide key, to anyone who names
-        // their own connector after it. Only the user scope stays ungated (a
-        // user row is the caller's own), and `provider:` / `mcp:` / `skill:` /
-        // `routine:` refs are minted by the platform, not chosen by a user, so
-        // they walk the chain unchanged.
-        //
-        // The walk runs OUTSIDE the inflight mutex — store-blob:get is
-        // cheap (one row read, no network refresh), and pulling it out of
-        // the mutex lets us key the mutex on the row that actually got
-        // hit, not on the (userId, ref) input. That's what makes a
-        // cross-user refresh share one resolver call.
+      ): Promise<
+        | { scope: CredentialScope; ownerId: string | null; env: ReturnType<typeof unwrapEnvelope> }
+        | undefined
+      > {
         const attempts: Array<{ scope: CredentialScope; ownerId: string | null }> = [];
         attempts.push({ scope: 'user', ownerId: userId });
         if (ctx.agentId !== undefined && ctx.agentId !== '') {
@@ -758,13 +786,37 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           if (got.blob === undefined) continue;
           const env = unwrapEnvelope(got.blob);
           if (env.isTombstone) continue; // tombstone in this scope; try next
+          return { scope: a.scope, ownerId: a.ownerId, env };
+        }
+        return undefined;
+      }
 
+      // The bottom of the chain: the operator-configured env fallback. It is
+      // only consulted when findRow found no row anywhere. Tombstones in user
+      // scope are skipped per attempt and make the walk proceed to agent/global,
+      // but if every scope is empty-or-tombstoned, env fallback is correct.
+      // Tombstones in ALL scopes meaning "deny everywhere" still permit env
+      // fallback — operators who want stricter behaviour should leave env
+      // empty. See CredentialsPluginConfig.envFallback for the trade-off.
+      // Returns undefined when the ref is unmapped or its env var is unset/empty.
+      function envFallbackValue(ref: string): string | undefined {
+        const envName = envFallback[ref];
+        if (envName === undefined) return undefined;
+        const v = process.env[envName];
+        return typeof v === 'string' && v.length > 0 ? v : undefined;
+      }
+
+      async function doResolve(ctx: AgentContext, userId: string, ref: string): Promise<string> {
+        // user -> agent -> global -> envFallback -> not-found. The walk (and
+        // its `account:` gates) is findRow; it runs OUTSIDE the inflight mutex.
+        const found = await findRow(ctx, userId, ref);
+        if (found !== undefined) {
           // Found the row. Mutex on the RESOLVED tuple so concurrent
           // callers landing here share one resolver Promise.
-          const key = mutexKey(a.scope, a.ownerId, ref);
+          const key = mutexKey(found.scope, found.ownerId, ref);
           const existing = inflight.get(key);
           if (existing !== undefined) return existing;
-          const p = resolveFromRow(ctx, a.scope, a.ownerId, ref, userId, env);
+          const p = resolveFromRow(ctx, found.scope, found.ownerId, ref, userId, found.env);
           inflight.set(key, p);
           try {
             return await p;
@@ -773,18 +825,9 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           }
         }
         // None of the v2 scopes had it. Fall through to env fallback —
-        // single-tenant / kind-dev posture. See CredentialsPluginConfig.envFallback
-        // for the trade-off. We only land here when no row matched
-        // anywhere; tombstones in user scope are skipped per attempt loop
-        // and would make us proceed to agent/global, but if every scope
-        // is empty-or-tombstoned, env fallback is correct. Tombstones in
-        // ALL scopes meaning "deny everywhere" still permit env fallback
-        // — operators who want stricter behaviour should leave env empty.
-        const envName = envFallback[ref];
-        if (envName !== undefined) {
-          const v = process.env[envName];
-          if (typeof v === 'string' && v.length > 0) return v;
-        }
+        // single-tenant / kind-dev posture.
+        const fromEnv = envFallbackValue(ref);
+        if (fromEnv !== undefined) return fromEnv;
         throw new PluginError({
           code: 'credential-not-found',
           plugin: PLUGIN_NAME,
@@ -801,6 +844,42 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           return doResolve(ctx, userId, ref);
         },
         { returns: CredentialsGetOutputSchema },
+      );
+
+      // Non-resolving presence check: "would credentials:get find a credential
+      // for this (ctx, userId, ref)?" — answered from the SAME walk (findRow +
+      // envFallbackValue), so the user -> agent -> global order, tombstone
+      // skipping, the TASK-697 / TASK-711 `account:` gates and the env fallback
+      // can never drift from `credentials:get`. What it does NOT do, by design:
+      //   - call `credentials:resolve:<kind>` (so an mcp-oauth token is never
+      //     refreshed and no network is touched — asking "is this connected?"
+      //     must be free of side effects),
+      //   - take the inflight mutex (there is no resolver call to dedupe),
+      //   - call `credentials:set` (nothing is re-stored),
+      //   - return or log any value, payload, kind, or scope.
+      // Presence is about a row, not its usability: a row whose kind has no
+      // resolver loaded is `present: true` here while `credentials:get` fails
+      // closed on it. An undecryptable or malformed row throws, same as get.
+      //
+      // Boundary review:
+      //   - Alternate impl: a vault/KMS-backed store (`@ax/credentials-kms`)
+      //     answering the same presence question from its own metadata, without
+      //     a decrypt round-trip.
+      //   - Leaking field names: none — `{ ref, userId }` in, `{ present }` out;
+      //     no scope, owner, kind, path, or backend vocabulary.
+      //   - Subscriber risk: none — the output is a single boolean.
+      //   - Wire surface: host-side service hook only; not an IPC action, so no
+      //     sandbox can reach it.
+      bus.registerService<CredentialsHasInput, CredentialsHasOutput>(
+        'credentials:has',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const ref = validateRef(input.ref);
+          const userId = validateUserId(input.userId);
+          if ((await findRow(ctx, userId, ref)) !== undefined) return { present: true };
+          return { present: envFallbackValue(ref) !== undefined };
+        },
+        { returns: CredentialsHasOutputSchema },
       );
 
       bus.registerService<CredentialsDeleteInput, CredentialsDeleteOutput>(

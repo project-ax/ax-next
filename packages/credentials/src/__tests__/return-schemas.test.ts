@@ -4,6 +4,8 @@ import {
   CredentialsResolveOutputSchema,
   CredentialsListOutputSchema,
   CredentialsListKindsOutputSchema,
+  CredentialsHasOutputSchema,
+  type CredentialsHasOutput,
   type CredentialsResolveOutput,
   type CredentialsListOutput,
   type CredentialsListKindsOutput,
@@ -14,6 +16,16 @@ describe('credentials return schemas', () => {
     expect(CredentialsGetOutputSchema.safeParse('secret').success).toBe(true);
     expect(CredentialsGetOutputSchema.safeParse(undefined).success).toBe(false);
     expect(CredentialsGetOutputSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('CredentialsHasOutputSchema requires a boolean present and round-trips it', () => {
+    const yes: CredentialsHasOutput = { present: true };
+    const no: CredentialsHasOutput = { present: false };
+    expect(CredentialsHasOutputSchema.parse(yes)).toEqual(yes);
+    expect(CredentialsHasOutputSchema.parse(no)).toEqual(no);
+    expect(CredentialsHasOutputSchema.safeParse({}).success).toBe(false);
+    expect(CredentialsHasOutputSchema.safeParse({ present: 'yes' }).success).toBe(false);
+    expect(CredentialsHasOutputSchema.safeParse(true).success).toBe(false);
   });
 
   it('CredentialsResolveOutputSchema requires a string value, allows optional refreshed', () => {

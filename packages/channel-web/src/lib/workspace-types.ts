@@ -1055,13 +1055,34 @@ export type AgentConnectorSource = 'default' | 'attached' | 'legacy-owned';
  * from stored state only — rendering the list never probes a connector.
  *
  *   - `needs-reconnect` — the caller's sign-in was rejected (fix: Reconnect).
+ *   - `needs-sign-in` (TASK-795) — nobody this caller's use would reach has
+ *     signed in to it / added its key yet: no credential resolves along the
+ *     vault's lookup order for (caller, agent). A presence read, never a
+ *     token refresh. Fix: the row's {@link AgentConnectorSetup} action.
  *   - `unreachable` — the last check could not reach it (fix: Retry).
  *   - `not-loaded` (TASK-745) — a session on this agent would open without
  *     some of its servers, because of how the connector is set up. Neither
  *     Reconnect nor Retry fixes that; editing the connector does.
  *   - `ok` — nothing stored says otherwise (including "never checked").
  */
-export type AgentConnectorHealth = 'ok' | 'needs-reconnect' | 'unreachable' | 'not-loaded';
+export type AgentConnectorHealth =
+  | 'ok'
+  | 'needs-reconnect'
+  | 'needs-sign-in'
+  | 'unreachable'
+  | 'not-loaded';
+
+/**
+ * TASK-795 — the first-time setup a `needs-sign-in` row offers.
+ *
+ *   - `sign-in` — a sign-in slot (OAuth) has no credential: **Sign in**.
+ *   - `add-key` — only key slots are missing, and this caller may add them:
+ *     **Add key**.
+ *   - `ask-admin` — only the company key of a workspace connector is missing,
+ *     and this caller is not a workspace admin: nothing to click, the tooltip
+ *     says who can fix it.
+ */
+export type AgentConnectorSetup = 'sign-in' | 'add-key' | 'ask-admin';
 
 export interface AgentConnectorRow {
   id: string;
@@ -1077,6 +1098,8 @@ export interface AgentConnectorRow {
    * the caller's own sign-in.
    */
   sharedSignIn?: true;
+  /** TASK-795 — present iff `health` is `needs-sign-in`. */
+  setup?: AgentConnectorSetup;
   /**
    * The caller may remove it from this agent. A workspace default on a team
    * agent: only the agent's owner (a team admin) or a workspace admin
@@ -1107,6 +1130,8 @@ export interface AgentConnectorRetried {
   health: AgentConnectorHealth;
   /** TASK-756 — same meaning as on {@link AgentConnectorRow}. */
   sharedSignIn?: true;
+  /** TASK-795 — same meaning as on {@link AgentConnectorRow}. */
+  setup?: AgentConnectorSetup;
 }
 
 /** `POST /api/workspace/agents/:agentId/connectors {connectorId}` answers this. */

@@ -10,11 +10,14 @@ export {
   SCOPE_VALUES,
   CREDENTIALS_AUTHORIZE_GLOBAL_ACCOUNT_HOOK,
   CREDENTIALS_AUTHORIZE_AGENT_ACCOUNT_HOOK,
+  CredentialsHasOutputSchema,
 } from './plugin.js';
 export type {
   CredentialScope,
   CredentialsGetInput,
   CredentialsGetOutput,
+  CredentialsHasInput,
+  CredentialsHasOutput,
   CredentialsSetInput,
   CredentialsSetOutput,
   CredentialsDeleteInput,

@@ -33,6 +33,17 @@
  * for this person only). A personal agent's sign-in is always personal, and
  * its Reconnect already signs in that way, so it keeps Reconnect.
  *
+ * A connector nobody has set up yet (TASK-795, health `needs-sign-in`: no
+ * sign-in or key this person's use of the agent would reach) is not broken,
+ * so its icon is the same `CircleAlert` in muted grey, never red. The row's
+ * `setup` picks the reason and the fix: "Not signed in yet" → **Sign in** (a
+ * dialog around the OAuth widget, on THIS agent — on a team agent it says
+ * everyone will use it as the signer, and the widget asks first); "No key
+ * added yet" → **Add key** (the Settings key dialog); "Needs a key from a
+ * workspace admin" → nothing to click. Sign in / Add key lead the `⋯` menu,
+ * and the details view offers the same button beside the same word. Neither
+ * Retry nor Reconnect is offered: there is nothing to retry or reconnect.
+ *
  * A connector a session cannot fully load (TASK-745 — e.g. two of its servers
  * share a name) wears the same icon, reason "Couldn’t load it". Reconnect and
  * Retry cannot fix that, so neither is offered; the tooltip points at the fix
@@ -52,6 +63,7 @@ import { Fragment, useEffect, useId, useState } from 'react';
 import {
   CircleAlert,
   Info,
+  KeyRound,
   LogIn,
   MoreHorizontal,
   Pencil,
@@ -96,22 +108,39 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
+import { ConnectorConnectDialog } from '@/components/settings/ConnectorConnectDialog';
 import { ConnectorEditDialog } from '@/components/settings/ConnectorEditDialog';
 import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConnect';
 import { useAgentConnectors } from '@/lib/agent-connectors';
 import { getConnector, type Connector } from '@/lib/connectors';
 import { useUser } from '@/lib/user-context';
 import type { GrantRow } from '@/lib/workspace-api';
-import type { AgentConnectorHealth, AgentConnectorRow } from '@/lib/workspace-types';
-import { ConnectorDetails, ConnectorsUnsupported, REMOVE_REFUSED_REASON } from './ConnectorDetails';
+import { cn } from '@/lib/utils';
+import type {
+  AgentConnectorHealth,
+  AgentConnectorRow,
+} from '@/lib/workspace-types';
+import {
+  ConnectorDetails,
+  ConnectorsUnsupported,
+  REMOVE_REFUSED_REASON,
+  SETUP_REASON,
+  SETUP_UNKNOWN_REASON,
+} from './ConnectorDetails';
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
-const HEALTH_REASON: Record<Exclude<AgentConnectorHealth, 'ok' | 'not-loaded'>, string> = {
+const HEALTH_REASON: Record<
+  Exclude<AgentConnectorHealth, 'ok' | 'not-loaded' | 'needs-sign-in'>,
+  string
+> = {
   'needs-reconnect': 'Your sign-in expired',
   unreachable: 'Can’t reach it',
 };
 
 function healthReason(row: AgentConnectorRow): string {
+  if (row.health === 'needs-sign-in') {
+    return row.setup !== undefined ? SETUP_REASON[row.setup] : SETUP_UNKNOWN_REASON;
+  }
   if (row.health === 'not-loaded') {
     return row.editable
       ? 'Couldn’t load it. Choose Edit connector to fix it.'
@@ -194,10 +223,21 @@ export function AgentConnectors({
   const [reconnecting, setReconnecting] = useState<AgentConnectorRow | null>(null);
   // TASK-774 — a team-agent member re-signing in for themselves only.
   const [signingIn, setSigningIn] = useState<AgentConnectorRow | null>(null);
+  // TASK-795 — first-time setup of a `needs-sign-in` row: an OAuth sign-in on
+  // this agent, or the Settings key dialog.
+  const [firstSignIn, setFirstSignIn] = useState<AgentConnectorRow | null>(null);
+  const [addingKey, setAddingKey] = useState<AgentConnectorRow | null>(null);
+
+  /** The row's first-time setup, from the menu or the details view. */
+  function onSetUp(row: AgentConnectorRow) {
+    setNotice(null);
+    if (row.setup === 'sign-in') setFirstSignIn(row);
+    else if (row.setup === 'add-key') setAddingKey(row);
+  }
 
   async function onRetry(row: AgentConnectorRow) {
     setNotice(null);
-    const { outcome, sharedSignIn } = await retry(row.id);
+    const { outcome, sharedSignIn, setup } = await retry(row.id);
     if (outcome === 'failed') {
       setNotice({
         tone: 'error',
@@ -219,6 +259,18 @@ export function AgentConnectors({
           shared && !sharedSignIn
             ? `${row.name} is reachable, but your sign-in expired. Choose Sign in again to fix it.`
             : `${row.name} is reachable, but its sign-in expired. Choose Reconnect to sign in again.`,
+      });
+      return;
+    }
+    if (outcome === 'needs-sign-in') {
+      setNotice({
+        tone: 'note',
+        text:
+          setup === 'sign-in'
+            ? `${row.name} is reachable, but nobody has signed in yet. Choose Sign in to set it up.`
+            : setup === 'add-key'
+              ? `${row.name} is reachable, but no key has been added yet. Choose Add key to set it up.`
+              : `${row.name} is reachable, but it needs a key from a workspace admin.`,
       });
     }
   }
@@ -293,6 +345,7 @@ export function AgentConnectors({
         setSigningIn(row);
       }}
       onRetry={() => void onRetry(row)}
+      onSetUp={() => onSetUp(row)}
       {...(withView && onView !== undefined ? { onView: () => onView(row.id) } : {})}
       onEdit={() => void onEdit(row)}
       onRemove={() => setConfirming(row)}
@@ -320,6 +373,7 @@ export function AgentConnectors({
           onBack={() => onView?.(null)}
           onEdit={() => void onEdit(open)}
           onRemove={() => setConfirming(open)}
+          onSetUp={() => onSetUp(open)}
         />
       ) : (
       <>
@@ -349,7 +403,12 @@ export function AgentConnectors({
               <div className="flex h-11 items-center gap-2 pl-3 pr-1.5">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
                   <span className="min-w-0 truncate text-[13px]">{row.name}</span>
-                  {row.health !== 'ok' && <HealthIcon reason={healthReason(row)} />}
+                  {row.health !== 'ok' && (
+                    <HealthIcon
+                      reason={healthReason(row)}
+                      tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
+                    />
+                  )}
                 </div>
                 {menuFor(row, true)}
               </div>
@@ -479,6 +538,54 @@ export function AgentConnectors({
           )}
         </DialogContent>
       </Dialog>
+      <Dialog
+        open={firstSignIn !== null}
+        onOpenChange={(open) => {
+          if (!open) setFirstSignIn(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sign in to {firstSignIn?.name}</DialogTitle>
+            <DialogDescription>
+              {shared
+                ? `Signing in here lets everyone using ${name} use ${firstSignIn?.name ?? ''} as you.`
+                : `Sign in and ${name} can use ${firstSignIn?.name ?? ''} for you.`}
+            </DialogDescription>
+          </DialogHeader>
+          {/* What signing in hands the assistant — drawn here, in the file that
+              starts the sign-in, so the TASK-700 coverage scan sees it. */}
+          <ConnectorAccessNotice kind="sign-in" />
+          {firstSignIn !== null && (
+            <ConnectorOAuthConnect
+              connectorId={firstSignIn.id}
+              serviceName={firstSignIn.name}
+              agentId={agentId}
+              requiresConsent={shared}
+              showAccessNotice={false}
+              onConnected={() => {
+                setFirstSignIn(null);
+                refresh();
+              }}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+      {addingKey !== null && (
+        <ConnectorConnectDialog
+          connectorId={addingKey.id}
+          connectorName={addingKey.name}
+          isAdmin={isAdmin}
+          open
+          onOpenChange={(open) => {
+            if (!open) setAddingKey(null);
+          }}
+          onConnected={() => {
+            setAddingKey(null);
+            refresh();
+          }}
+        />
+      )}
       {editing !== null && (
         <ConnectorEditDialog
           target={editing}
@@ -559,13 +666,15 @@ function NoConnectors({
 }
 
 /**
- * The error icon after an errored row's name. A real `<button>` so keyboard
- * users reach it and the tooltip opens on focus as well as hover; its
+ * The icon after a row's name when its health is not ok. A real `<button>` so
+ * keyboard users reach it and the tooltip opens on focus as well as hover; its
  * accessible name IS the reason, so a screen reader hears it without the
  * tooltip. Clicking it does nothing on its own — the fix lives in the `⋯`
- * menu. Standard tooltip colours (product owner's call); only the icon is red.
+ * menu. Standard tooltip colours (product owner's call); only the icon is
+ * coloured: red for an error, muted for `neutral` (TASK-795 — not set up yet,
+ * which is nothing broken).
  */
-function HealthIcon({ reason }: { reason: string }) {
+function HealthIcon({ reason, tone }: { reason: string; tone: 'error' | 'neutral' }) {
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
@@ -573,7 +682,10 @@ function HealthIcon({ reason }: { reason: string }) {
           <button
             type="button"
             aria-label={reason}
-            className="inline-flex shrink-0 rounded-sm text-destructive outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className={cn(
+              'inline-flex shrink-0 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              tone === 'error' ? 'text-destructive' : 'text-muted-foreground',
+            )}
           >
             <CircleAlert aria-hidden="true" className="size-3.5" />
           </button>
@@ -592,6 +704,7 @@ function RowMenu({
   onReconnect,
   onSignInAgain,
   onRetry,
+  onSetUp,
   onView,
   onEdit,
   onRemove,
@@ -604,6 +717,8 @@ function RowMenu({
   onReconnect: () => void;
   onSignInAgain: () => void;
   onRetry: () => void;
+  /** TASK-795 — Sign in / Add key on a `needs-sign-in` row. */
+  onSetUp: () => void;
   /** Absent inside the details view itself. */
   onView?: () => void;
   onEdit: () => void;
@@ -624,6 +739,22 @@ function RowMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4} className="shadow-popover">
+        {row.health === 'needs-sign-in' &&
+          (row.setup === 'sign-in' || row.setup === 'add-key') && (
+            <>
+              <DropdownMenuGroup>
+                <DropdownMenuItem onSelect={onSetUp}>
+                  {row.setup === 'sign-in' ? (
+                    <LogIn aria-hidden="true" />
+                  ) : (
+                    <KeyRound aria-hidden="true" />
+                  )}
+                  {row.setup === 'sign-in' ? 'Sign in' : 'Add key'}
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+            </>
+          )}
         {(row.health === 'needs-reconnect' || row.health === 'unreachable') && (
           <>
             <DropdownMenuGroup>
