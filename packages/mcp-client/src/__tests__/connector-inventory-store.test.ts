@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { createTestHarness, startTestContainer, stopPostgresContainer, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
@@ -10,6 +10,7 @@ import {
   type McpClientDatabase,
 } from '../connector-inventory/store.js';
 import type { ListOutcome } from '../connector-inventory/list-tools.js';
+import { CHECK_COOLDOWN_MS } from '../connector-inventory/describe-tools.js';
 import type { DescribeToolsOutput } from '../connector-inventory/types.js';
 
 // ---------------------------------------------------------------------------
@@ -28,6 +29,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterEach(async () => {
+  vi.useRealTimers();
   while (harnesses.length > 0) {
     const h = harnesses.pop()!;
     try {
@@ -191,6 +193,83 @@ describe('plugin wiring', () => {
     // Same id cap as mcp-oauth:status-batch (128), so one list fits both.
     await expect(batch({ userId: 'u1', connectorIds: ['x'.repeat(129)] })).rejects.toThrow();
     expect(await batch({ userId: 'u1', connectorIds: ['x'.repeat(128)] })).toEqual({ statuses: [] });
+  });
+
+  it('TASK-787: during an inventory-write outage the batch shows the newest describe-tools answer; the stored row wins once writes recover', async () => {
+    // Only Date is faked: the 30s per-connector check window is read off the
+    // clock, and the pg driver's own timers must stay real.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-04T12:00:00Z'));
+    const nextWindow = () => vi.setSystemTime(new Date(Date.now() + CHECK_COOLDOWN_MS));
+    let outcome: ListOutcome = { kind: 'ok', dropped: 0, tools: [] };
+    const h = await boot(async () => outcome);
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    const batch = async () =>
+      (
+        await h.bus.call<unknown, { statuses: Array<{ connectorId: string; status: string }> }>(
+          'connectors:inventory-status-batch',
+          h.ctx(),
+          { userId: 'u1', agentId: 'a1', connectorIds: ['linear'] },
+        )
+      ).statuses.map((s) => s.status);
+    const refresh = () =>
+      h.bus.call<unknown, DescribeToolsOutput>('connectors:describe-tools', h.ctx(), {
+        userId: 'u1',
+        agentId: 'a1',
+        connectorId: 'linear',
+        force: true,
+      });
+    const storedStatus = async () =>
+      (await createInventoryStore(db).get({ userId: 'u1', agentId: 'a1', connectorId: 'linear' }))?.status;
+
+    expect((await refresh()).status).toBe('ok');
+    expect(await batch()).toEqual(['ok']);
+
+    // A write outage: inserts and updates fail, reads still work.
+    await sql`CREATE OR REPLACE FUNCTION mcp_client_test_refuse_write() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'inventory write refused'; END; $$ LANGUAGE plpgsql`.execute(db);
+    await sql`CREATE TRIGGER mcp_client_test_refuse BEFORE INSERT OR UPDATE ON mcp_client_v1_tool_inventory
+      FOR EACH ROW EXECUTE FUNCTION mcp_client_test_refuse_write()`.execute(db);
+    outcome = { kind: 'needs-auth' };
+    nextWindow();
+    expect((await refresh()).status).toBe('needs-auth');
+    expect(await storedStatus()).toBe('ok'); // the write really failed
+    expect(await batch()).toEqual(['needs-auth']);
+
+    // Recovery: the next write lands, and the stored row is the answer.
+    await sql`DROP TRIGGER mcp_client_test_refuse ON mcp_client_v1_tool_inventory`.execute(db);
+    await sql`DROP FUNCTION mcp_client_test_refuse_write()`.execute(db);
+    outcome = { kind: 'unreachable', reason: 'timeout' };
+    nextWindow();
+    expect((await refresh()).status).toBe('unreachable');
+    expect(await storedStatus()).toBe('unreachable');
+    expect(await batch()).toEqual(['unreachable']);
+  });
+
+  it("TASK-787: agents:deleted also forgets the agent's answers held during a write outage", async () => {
+    const h = await boot(async () => ({ kind: 'needs-auth' }));
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpClientDatabase> }>('database:get-instance', h.ctx(), {});
+    await sql`CREATE OR REPLACE FUNCTION mcp_client_test_refuse_write() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'inventory write refused'; END; $$ LANGUAGE plpgsql`.execute(db);
+    await sql`CREATE TRIGGER mcp_client_test_refuse BEFORE INSERT OR UPDATE ON mcp_client_v1_tool_inventory
+      FOR EACH ROW EXECUTE FUNCTION mcp_client_test_refuse_write()`.execute(db);
+    const batch = async (agentId: string) =>
+      (
+        await h.bus.call<unknown, { statuses: Array<{ status: string }> }>('connectors:inventory-status-batch', h.ctx(), {
+          userId: 'u1',
+          agentId,
+          connectorIds: ['linear'],
+        })
+      ).statuses.map((s) => s.status);
+    for (const agentId of ['gone', 'kept']) {
+      await h.bus.call('connectors:describe-tools', h.ctx(), { userId: 'u1', agentId, connectorId: 'linear' });
+    }
+    expect(await batch('gone')).toEqual(['needs-auth']);
+    await h.bus.fire('agents:deleted', h.ctx(), { agentId: 'gone', ownerId: 'u1', ownerType: 'user' });
+    expect(await batch('gone')).toEqual([]);
+    expect(await batch('kept')).toEqual(['needs-auth']);
+    await sql`DROP TRIGGER mcp_client_test_refuse ON mcp_client_v1_tool_inventory`.execute(db);
+    await sql`DROP FUNCTION mcp_client_test_refuse_write()`.execute(db);
   });
 
   it('TASK-753: inventory-tool-titles reads cached titles only, newest first, scoped to the user', async () => {

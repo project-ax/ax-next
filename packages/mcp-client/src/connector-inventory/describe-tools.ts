@@ -14,7 +14,8 @@
 //      blip) → the call throws `credential-unavailable` and stores nothing
 //      (TASK-756), so a blip is never reported as a sign-in problem.
 //   5. Store (a failed write is logged and the answer held in memory, so
-//      the cooldown still sees it — TASK-773), and fire `connectors:tools-discovered` when an `ok` inventory
+//      the cooldown — and the rail's status batch, TASK-787 — still see it;
+//      TASK-773), and fire `connectors:tools-discovered` when an `ok` inventory
 //      differs from the last `ok` one.
 //
 // Secrets: header values live only in the per-server `headers` objects of
@@ -96,9 +97,57 @@ export interface BusLike {
   fire(hookName: string, ctx: AgentContext, payload: unknown): Promise<unknown>;
 }
 
+/**
+ * TASK-773 / TASK-787 — answers this process produced that the store did NOT
+ * keep, keyed by (user, agent, connector). Each stands in for the missing row
+ * until a write for that key succeeds. ONE holder is shared by describe-tools
+ * (which fills it) and `connectors:inventory-status-batch` (which overlays
+ * it), so during an inventory-write outage the rail shows the same answer a
+ * describe-tools call returns, not the stale stored row. In memory, per
+ * process, bounded; oldest goes first when full.
+ */
+export interface UnstoredInventory {
+  get(key: InventoryKey): InventoryRow | undefined;
+  keep(key: InventoryKey, row: InventoryRow): void;
+  drop(key: InventoryKey): void;
+  /** Forget every held answer of a deleted agent (alongside the store purge). */
+  dropAgent(agentId: string): void;
+}
+
+export function createUnstoredInventory(maxKeys: number = UNSTORED_MAX_KEYS): UnstoredInventory {
+  const held = new Map<string, { agentId: string; row: InventoryRow }>();
+  const k = (key: InventoryKey) => JSON.stringify([key.userId, key.agentId, key.connectorId]);
+  return {
+    get: (key) => held.get(k(key))?.row,
+    keep(key, row) {
+      const id = k(key);
+      held.delete(id);
+      while (held.size >= maxKeys) {
+        const oldest = held.keys().next().value;
+        if (oldest === undefined) break;
+        held.delete(oldest);
+      }
+      held.set(id, { agentId: key.agentId, row });
+    },
+    drop: (key) => {
+      held.delete(k(key));
+    },
+    dropAgent(agentId) {
+      for (const [id, entry] of held) if (entry.agentId === agentId) held.delete(id);
+    },
+  };
+}
+
+/** The held answer when it was checked after the stored one (or nothing is stored). */
+function heldIsNewer(held: { checkedAt: Date } | undefined, stored: { checkedAt: Date } | null | undefined): boolean {
+  return held !== undefined && (stored == null || held.checkedAt.getTime() > stored.checkedAt.getTime());
+}
+
 export interface DescribeToolsDeps {
   bus: BusLike;
   store: InventoryStore;
+  /** TASK-787 — shared with the status batch; a private one when omitted. */
+  unstored?: UnstoredInventory;
   now?: () => Date;
   /** Test seam: replace the network listing. */
   listTools?: (opts: ListServerToolsOptions) => Promise<ListOutcome>;
@@ -149,21 +198,12 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     lastChecked.set(key, at);
   }
   /**
-   * (user, agent, connector) → the last answer this process produced that the
-   * store did NOT keep (TASK-773). It stands in for the missing row, so the
-   * TTL and the cooldown see a checked connector whether or not the write
-   * landed. Dropped as soon as a write for that key succeeds.
+   * The last answer per (user, agent, connector) that the store did NOT keep
+   * (TASK-773). It stands in for the missing row, so the TTL and the cooldown
+   * see a checked connector whether or not the write landed. Dropped as soon
+   * as a write for that key succeeds.
    */
-  const unstored = new Map<string, InventoryRow>();
-  function keepUnstored(key: string, row: InventoryRow): void {
-    unstored.delete(key);
-    while (unstored.size >= UNSTORED_MAX_KEYS) {
-      const oldest = unstored.keys().next().value;
-      if (oldest === undefined) break;
-      unstored.delete(oldest);
-    }
-    unstored.set(key, row);
-  }
+  const unstored = deps.unstored ?? createUnstoredInventory();
 
   async function headersFor(
     connector: ResolvedConnector,
@@ -245,7 +285,6 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     input: { userId: string; connectorId: string },
     ctx: AgentContext,
     key: InventoryKey,
-    flightKey: string,
     previous: InventoryRow | null,
     connector: ResolvedConnector,
   ): Promise<{ out: DescribeToolsOutput; asked: boolean }> {
@@ -342,7 +381,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     const row: InventoryRow = { status, tools, fingerprint: fp, checkedAt };
     try {
       await deps.store.put(key, row);
-      unstored.delete(flightKey);
+      unstored.drop(key);
     } catch (err) {
       // TASK-773 — the servers WERE asked, so this is a real answer: return it,
       // and hold it in memory so the next call inside the window is answered
@@ -352,7 +391,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
         connectorId: input.connectorId,
         code: err instanceof PluginError ? err.code : err instanceof Error ? err.name : 'error',
       });
-      keepUnstored(flightKey, row);
+      unstored.keep(key, row);
     }
     ctx.logger.info('connector_inventory_checked', {
       connectorId: input.connectorId,
@@ -409,11 +448,8 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     // TASK-773 — the newest real answer: the stored row, or the one the store
     // refused to keep (whichever was checked later).
     const stored = await deps.store.get(key);
-    const kept = unstored.get(flightKey);
-    const previous =
-      kept !== undefined && (stored === null || kept.checkedAt.getTime() > stored.checkedAt.getTime())
-        ? kept
-        : stored;
+    const kept = unstored.get(key);
+    const previous = heldIsNewer(kept, stored) ? kept! : stored;
     const coolKey = JSON.stringify([key.userId, key.connectorId]);
     const at = now().getTime();
     const cached = (row: InventoryRow): DescribeToolsOutput => ({
@@ -436,7 +472,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     const pending = inFlight.get(flightKey);
     if (pending !== undefined) return pending;
     noteChecked(coolKey, at);
-    const run = check(input, ctx, key, flightKey, previous, connector)
+    const run = check(input, ctx, key, previous, connector)
       .then(({ out, asked }) => {
         // TASK-812 — same rule as the credential blip below: a check that
         // asked no server must not use up the window. Otherwise a sign-in
@@ -467,9 +503,14 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
 
 /**
  * `connectors:inventory-status-batch` (TASK-741) — the cached status of each
- * connector, never a fresh check. See `InventoryStatusBatchInput`.
+ * connector, never a fresh check. See `InventoryStatusBatchInput`. An answer
+ * describe-tools holds because the store refused it (TASK-787) overrides an
+ * older stored row, so the rail never lags what describe-tools returns.
  */
-export function createInventoryStatusBatch(store: Pick<InventoryStore, 'statuses'>) {
+export function createInventoryStatusBatch(
+  store: Pick<InventoryStore, 'statuses'>,
+  unstored: Pick<UnstoredInventory, 'get'>,
+) {
   return async function inventoryStatusBatch(
     _ctx: AgentContext,
     rawInput: unknown,
@@ -485,13 +526,15 @@ export function createInventoryStatusBatch(store: Pick<InventoryStore, 'statuses
     }
     const { userId, agentId, connectorIds } = parsed.data;
     const rows = await store.statuses(userId, agentId ?? '', connectorIds);
-    return {
-      statuses: rows.map((r) => ({
-        connectorId: r.connectorId,
-        status: r.status,
-        checkedAt: r.checkedAt.toISOString(),
-      })),
-    };
+    const byId = new Map(rows.map((r) => [r.connectorId, r]));
+    const statuses: InventoryStatusBatchOutput['statuses'] = [];
+    for (const connectorId of new Set(connectorIds)) {
+      const stored = byId.get(connectorId);
+      const held = unstored.get({ userId, agentId: agentId ?? '', connectorId });
+      const row = heldIsNewer(held, stored) ? held! : stored;
+      if (row !== undefined) statuses.push({ connectorId, status: row.status, checkedAt: row.checkedAt.toISOString() });
+    }
+    return { statuses };
   };
 }
 
