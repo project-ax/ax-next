@@ -858,7 +858,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(blobWritersThatAreNotHolders([...plugins, holder])).toEqual([]);
   });
 
-  it('loads @ax/blob-gc in report mode next to blob:list and the blob:stored facade (TASK-777)', () => {
+  it('loads @ax/blob-gc next to blob:list and the blob:stored facade; only it can retire or purge (TASK-777, TASK-778)', () => {
     for (const blob of [
       undefined,
       { backend: 's3', bucket: 'ax-blobs' } as const,
@@ -875,10 +875,35 @@ describe('@ax/preset-k8s wiring', () => {
         'storage:set',
         'http:register-route',
         'auth:require-user',
+        'blob:stat',
+        'blob:retire',
+        'blob:purge',
       ]);
-      // Report mode: nothing that could free a byte is in its reach.
-      const reach = [...gc!.manifest.calls, ...(gc!.manifest.optionalCalls ?? []).map((c) => c.hook)];
-      for (const hook of ['blob:delete', 'blob:retire', 'blob:purge']) expect(reach).not.toContain(hook);
+      const reachOf = (p: (typeof plugins)[number]): string[] => [
+        ...p.manifest.calls,
+        ...(p.manifest.optionalCalls ?? []).map((c) => c.hook),
+      ];
+      // blob:delete is gone (TASK-778): nobody can reach it, nobody answers it.
+      for (const p of plugins) {
+        expect(reachOf(p), `${p.manifest.name} reaches blob:delete`).not.toContain('blob:delete');
+        expect(p.manifest.registers, `${p.manifest.name} registers blob:delete`).not.toContain(
+          'blob:delete',
+        );
+      }
+      // The only hooks that move or free a byte are reachable from the GC
+      // alone (it asks every holder first), and answered by exactly one
+      // plugin: the configured backend.
+      const backendName = blob === undefined ? '@ax/blob-store-fs' : '@ax/blob-store-s3';
+      for (const hook of ['blob:retire', 'blob:purge']) {
+        expect(
+          plugins.filter((p) => reachOf(p).includes(hook)).map((p) => p.manifest.name),
+          `callers of ${hook}`,
+        ).toEqual(['@ax/blob-gc']);
+        expect(
+          plugins.filter((p) => p.manifest.registers.includes(hook)).map((p) => p.manifest.name),
+          `registrants of ${hook}`,
+        ).toEqual([backendName]);
+      }
       for (const hook of gc!.manifest.calls) {
         const owners = plugins
           .filter((p) => p.manifest.name !== '@ax/blob-gc')
@@ -889,9 +914,7 @@ describe('@ax/preset-k8s wiring', () => {
       // blob:list comes from whichever backend is configured, and that backend
       // registers behind the blob:put facade, so blob:stored fires on every put.
       const backend = plugins.find((p) => p.manifest.registers.includes('blob:list'))!;
-      expect(backend.manifest.name).toBe(
-        blob === undefined ? '@ax/blob-store-fs' : '@ax/blob-store-s3',
-      );
+      expect(backend.manifest.name).toBe(backendName);
       expect(backend.manifest.registers).toContain('blob:put-internal');
     }
   });
