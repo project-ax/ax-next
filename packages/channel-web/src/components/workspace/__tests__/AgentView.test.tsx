@@ -15,7 +15,7 @@
  *      the composer had already cleared the draft.
  */
 import type { ComponentProps } from 'react';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   workspaceApi,
@@ -1403,6 +1403,90 @@ describe('a reply that could not start because a connector needs a sign-in (TASK
     const box = await screen.findByPlaceholderText('Message Quill');
     fireEvent.change(box, { target: { value: 'check my inbox' } });
     fireEvent.keyDown(box, { key: 'Enter' });
+
+    await screen.findByText(/didn’t finish/);
+    expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
+  });
+});
+
+/*
+  TASK-802 — the two halves above are each tested alone: `streamReply` is
+  proven to hand `onError` a `{ opensConnectors }` hint (workspace-api-stream-
+  error.test.ts), and the strip is proven to render the button from a
+  hand-fed hint (just above). Neither proves the WIRE reaches the button. This
+  drives a real SSE `error` frame through the REAL `streamReply` into the
+  mounted `AgentView` — only the transport (`fetch`) is faked — and clicks what
+  the person would.
+*/
+describe('an SSE error frame, through to the Open Connectors action (TASK-802)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** One SSE response carrying exactly the frames given (the host's wire). */
+  function sseResponse(frames: unknown[]): Response {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        for (const f of frames) {
+          controller.enqueue(enc.encode(`data: ${JSON.stringify(f)}\n\n`));
+        }
+        controller.close();
+      },
+    });
+    return new Response(body, { status: 200 });
+  }
+
+  /** Send a message and let the stream answer with the frames given. */
+  async function sendWithStreamedFrames(frames: unknown[], onTab = vi.fn()) {
+    const real = await vi.importActual<typeof import('@/lib/workspace-api')>(
+      '@/lib/workspace-api',
+    );
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(real.workspaceApi.streamReply);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).startsWith('/api/chat/stream/')
+        ? sseResponse(frames)
+        : new Response(null, { status: 404 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderView({ onTab });
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'check my inbox' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    return { fetchMock, onTab };
+  }
+
+  it('connector-needs-sign-in: the sentence renders and Open Connectors routes to the tab', async () => {
+    const { fetchMock, onTab } = await sendWithStreamedFrames([
+      { reqId: 'r1', error: 'connector-needs-sign-in' },
+    ]);
+
+    expect(await screen.findByText(/isn’t signed in yet/)).toBeTruthy();
+    expect(fetchMock.mock.calls.map(([u]) => String(u))).toContain('/api/chat/stream/r1');
+    // The reason code is an internal identifier; it never reaches the page.
+    expect(screen.queryByText(/connector-needs-sign-in/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
+    expect(onTab).toHaveBeenCalledWith('connectors');
+  });
+
+  it('provider key AND connector missing: names the AI service and still offers Open Connectors', async () => {
+    const { onTab } = await sendWithStreamedFrames([
+      { reqId: 'r1', error: 'provider-key-missing-connector-needs-sign-in' },
+    ]);
+
+    expect(await screen.findByText(/AI service it uses isn’t set up/)).toBeTruthy();
+    expect(screen.queryByText(/provider-key-missing/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
+    expect(onTab).toHaveBeenCalledWith('connectors');
+  });
+
+  it('an ordinary error frame renders no Open Connectors', async () => {
+    await sendWithStreamedFrames([{ reqId: 'r1', error: 'proxy-open-failed' }]);
 
     await screen.findByText(/didn’t finish/);
     expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();

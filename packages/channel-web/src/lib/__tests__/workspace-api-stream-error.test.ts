@@ -139,6 +139,16 @@ describe('streamReply — where the person fixes it (TASK-796)', () => {
     expect(fix).toEqual({ opensConnectors: true });
   });
 
+  it('a missing provider key AND an un-signed-in connector says both and still names Connectors', async () => {
+    const { message, fix } = await fixFrom([
+      { error: 'provider-key-missing-connector-needs-sign-in' },
+    ]);
+    expect(message).toBe(ERROR_LABELS['provider-key-missing-connector-needs-sign-in']);
+    expect(message).toContain('AI service');
+    expect(message).not.toContain('provider-key-missing');
+    expect(fix).toEqual({ opensConnectors: true });
+  });
+
   it('an ordinary failure carries no fix hint', async () => {
     const { fix } = await fixFrom([{ error: 'proxy-open-failed' }]);
     expect(fix).toBeUndefined();
