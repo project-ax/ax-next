@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 
 import {
   createTestProxyPlugin,
-  mcpServerStubPath,
+  startMcpHttpServerStub,
   stubRunnerPath,
   type StubRunnerScript,
 } from '@ax/test-harness';
@@ -15,14 +15,16 @@ import { runMcpCommand } from '../commands/mcp.js';
 import type { Plugin, ToolCall } from '@ax/core';
 
 // ---------------------------------------------------------------------------
-// Phase 6.6 Task 8 — mcp-stdio e2e (I_R3).
+// mcp-http e2e (real child-process streamable-HTTP MCP server).
 //
-// Restores the MCP-stdio coverage that retired with the original
-// `mcp-client.e2e.test.ts` (deleted in Phase 6 PR-A). Drives a real
-// stdio MCP subprocess via the @ax/mcp-client plugin while the chat
-// pipeline runs against the stub agent runner from @ax/test-harness —
-// so we exercise the real subprocess + framing + StdioClientTransport
-// codepath without needing a live LLM.
+// Originally Phase 6.6 Task 8 (I_R3), which restored the MCP coverage that
+// retired with the original `mcp-client.e2e.test.ts` (deleted in Phase 6
+// PR-A); ported from stdio to streamable-HTTP when stdio transport was
+// dropped. Drives a real HTTP MCP server running as a child process via the
+// @ax/mcp-client plugin while the chat pipeline runs against the stub agent
+// runner from @ax/test-harness — so we exercise the real socket +
+// StreamableHTTPClientTransport + process death codepath without needing a
+// live LLM.
 //
 // Two cases:
 //   1. Round-trip — the stub runner calls `mcp.stub.echo`, the host
@@ -56,7 +58,7 @@ type Record_ = PreCallRecord | PostCallRecord;
 function makeRecorderPlugin(records: Record_[]): Plugin {
   return {
     manifest: {
-      name: '@ax/test-mcp-stdio-recorder',
+      name: '@ax/test-mcp-http-recorder',
       version: '0.0.0',
       registers: [],
       calls: [],
@@ -65,7 +67,7 @@ function makeRecorderPlugin(records: Record_[]): Plugin {
     init({ bus }) {
       bus.subscribe<ToolCall>(
         'tool:pre-call',
-        '@ax/test-mcp-stdio-recorder',
+        '@ax/test-mcp-http-recorder',
         async (_ctx, call) => {
           records.push({ kind: 'pre', name: call.name, toolCallId: call.id });
           return undefined;
@@ -73,7 +75,7 @@ function makeRecorderPlugin(records: Record_[]): Plugin {
       );
       bus.subscribe<{ toolCall: ToolCall; output: unknown }>(
         'tool:post-call',
-        '@ax/test-mcp-stdio-recorder',
+        '@ax/test-mcp-http-recorder',
         async (_ctx, payload) => {
           records.push({
             kind: 'post',
@@ -88,17 +90,16 @@ function makeRecorderPlugin(records: Record_[]): Plugin {
   };
 }
 
-async function seedMcpStubConfig(sqlitePath: string): Promise<void> {
-  // The MCP server stub is platform-neutral — `process.execPath` (the
-  // active Node binary) plus the built `mcp-server-stub.js` artifact.
-  // saveConfig validates this through parseConfig, which scans for
+async function seedMcpStubConfig(sqlitePath: string, url: string): Promise<void> {
+  // The MCP server stub is a child process listening on a loopback port
+  // (see `startMcpHttpServerStub`); `url` is its `http://127.0.0.1:<port>/mcp`
+  // endpoint. saveConfig validates this through parseConfig, which scans for
   // inline-secret-shaped fields; we have none.
   const config = {
     id: 'stub',
     enabled: true,
-    transport: 'stdio' as const,
-    command: process.execPath,
-    args: [mcpServerStubPath],
+    transport: 'streamable-http' as const,
+    url,
   };
   const stdoutLines: string[] = [];
   const stderrLines: string[] = [];
@@ -116,32 +117,35 @@ async function seedMcpStubConfig(sqlitePath: string): Promise<void> {
   }
 }
 
-describe('@ax/cli mcp-stdio e2e (real subprocess + stub runner)', () => {
+describe('@ax/cli mcp-http e2e (real child-process server + stub runner)', () => {
   let tmp: string;
+  let stub: { url: string; close(): Promise<void> };
   let originalCredKey: string | undefined;
 
   beforeEach(async () => {
     tmp = await fs.realpath(
-      await fs.mkdtemp(path.join(os.tmpdir(), 'ax-mcp-stdio-')),
+      await fs.mkdtemp(path.join(os.tmpdir(), 'ax-mcp-http-')),
     );
     originalCredKey = process.env.AX_CREDENTIALS_KEY;
     // @ax/credentials init() requires this even when skipCredentialProxy
     // is true; the credentials facade is loaded unconditionally.
     process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
+    stub = await startMcpHttpServerStub();
   });
 
   afterEach(async () => {
+    await stub.close();
     if (originalCredKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
     else process.env.AX_CREDENTIALS_KEY = originalCredKey;
     if (tmp) await fs.rm(tmp, { recursive: true, force: true });
   });
 
   it(
-    'round-trips a tool call to a real stdio MCP server (echo)',
+    'round-trips a tool call to a real HTTP MCP server (echo)',
     { timeout: 20_000 },
     async () => {
-      const sqlitePath = path.join(tmp, 'mcp-stdio-echo.sqlite');
-      await seedMcpStubConfig(sqlitePath);
+      const sqlitePath = path.join(tmp, 'mcp-http-echo.sqlite');
+      await seedMcpStubConfig(sqlitePath, stub.url);
 
       const script: StubRunnerScript = {
         entries: [
@@ -198,7 +202,7 @@ describe('@ax/cli mcp-stdio e2e (real subprocess + stub runner)', () => {
 
       // The MCP SDK wraps the server's response as a result object; the
       // stub server returns `{ content: [{ type: 'text', text }] }` from
-      // its echo handler (see packages/test-harness/src/mcp-server-stub.ts).
+      // its echo handler (see packages/test-harness/src/mcp-http-server-stub.ts).
       // mcp-client's tool:execute hook returns `{ output: result.result }`,
       // and the IPC tool.execute-host handler wraps that whole thing as the
       // protocol's `{ output }` response — so post-call's `output` is the
@@ -222,8 +226,8 @@ describe('@ax/cli mcp-stdio e2e (real subprocess + stub runner)', () => {
     'survives an MCP server crashing mid-call (dead-server tool error)',
     { timeout: 20_000 },
     async () => {
-      const sqlitePath = path.join(tmp, 'mcp-stdio-crash.sqlite');
-      await seedMcpStubConfig(sqlitePath);
+      const sqlitePath = path.join(tmp, 'mcp-http-crash.sqlite');
+      await seedMcpStubConfig(sqlitePath, stub.url);
 
       const script: StubRunnerScript = {
         entries: [

@@ -109,8 +109,8 @@ const STARTS_CONTAINER = /new\s+[A-Za-z]*Container\s*\(|\bstartPostgresContainer
  * A TEST source that drives another OS process directly: it imports
  * `child_process`, or it constructs an MCP stdio transport (which owns and
  * spawns the child itself, so a file can be subprocess-heavy without naming
- * `child_process` once — `test-harness/src/__tests__/mcp-server-stub.test.ts` is
- * exactly that shape).
+ * `child_process` once — `test-harness/src/__tests__/mcp-server-stub.test.ts`
+ * (the stdio MCP stub test, since replaced) was exactly that shape).
  *
  * Why an IMPORT rather than a call. The obvious pattern is `\bspawn\s*\(`, and
  * it was measured before being discarded: across the tree it pulls in
@@ -851,7 +851,7 @@ describe('the scan catches a NEW package, and the config read is a read (TASK-40
   });
 
   it('a test that only drives an MCP stdio transport is caught (no child_process import)', () => {
-    // `test-harness/src/__tests__/mcp-server-stub.test.ts` in miniature: the SDK
+    // The old `test-harness/src/__tests__/mcp-server-stub.test.ts` in miniature: the SDK
     // owns the child, so the file spawns a real process without naming
     // `child_process`.
     makePackage('stdio-only', {

@@ -19,7 +19,8 @@ import { defineConfig } from 'vitest/config';
 //
 // - That test costs **64ms** on an idle machine. CI cut it off at 5373ms, i.e.
 //   at ~84x — and a timeout is censored from above, so nobody knows what it
-//   actually needed. Its neighbours in `mcp-server-stub.test.ts` COMPLETED in
+//   actually needed. Its neighbours in `mcp-server-stub.test.ts` (the stdio MCP
+//   stub test, since replaced by `mcp-http-server-stub.test.ts`) COMPLETED in
 //   the same CI run at 1282/1467/2009ms against 91-95ms idle: 14-21x.
 // - Local load does not reproduce that. Under 32 busy workers on a 14-core box
 //   the worst case moved 95ms -> 253ms (~2.5x), so the honest statement is that
@@ -27,19 +28,20 @@ import { defineConfig } from 'vitest/config';
 //   and the CI numbers are the only ones that count.
 // - When this was set, 30s was ~5.6x the one measured CI worst case (5373ms)
 //   and ~470x this suite's idle cost. That headroom has since shrunk: a later CI
-//   run measured the mcp-server-stub `echo` test at 9087ms against ~90ms idle
-//   (TASK-537), so 30s is now ~3.3x the measured worst case, not 5.6x. It is also
+//   run measured the old stdio mcp-server-stub `echo` test at 9087ms against
+//   ~90ms idle (TASK-537), so 30s is now ~3.3x the measured worst case, not 5.6x. It is also
 //   exactly what this repo already chose for its
 //   other subprocess-heavy suites — `packages/workspace-git*` (TASK-73, PR #146)
 //   and the `scripts` root (TASK-331) — and this package is that same class: it
-//   spawns real Node subprocesses and drives them over real MCP stdio.
+//   spawns real Node subprocesses (the stub runner, the streamable-HTTP MCP
+//   stub) and drives them over real pipes and sockets.
 // - Not 60s (the container-package figure) on purpose. A container boot
 //   genuinely needs tens of seconds; a subprocess spawn does not, so the extra
 //   30s would buy hang-masking rather than headroom.
 //
 // `hookTimeout: 60_000` — a hook's own timeout ARGUMENT overrides this value, so
 // what this governs is the BARE hooks. Every hook in this package is bare (the
-// `afterEach` in `stub-runner.test.ts` and `mcp-server-stub.test.ts`, both of
+// `afterEach` in `stub-runner.test.ts` and `mcp-http-server-stub.test.ts`, both of
 // which kill a real child process and await a transport close), so this value
 // governs all of them. Twice the test budget, per the ratio 18 other packages
 // here use: a teardown should never get less room than the test it is cleaning
