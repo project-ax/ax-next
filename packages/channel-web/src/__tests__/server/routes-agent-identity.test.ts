@@ -271,8 +271,7 @@ describe('PUT /admin/agents/:id/identity', () => {
     the destructive Alert. The route now answers 413 with ONE fixed sentence.
 
     The sentence is only true because of the order the screen saves in
-    (AgentForm creates or patches the agent, and attaches connectors, BEFORE it
-    PUTs the identity) and because `workspace:apply` is all-or-nothing, so a
+    (AgentForm creates or patches the agent BEFORE it PUTs the identity) and because `workspace:apply` is all-or-nothing, so a
     refusal writes none of the three files.
   */
   const AGENT_DIRECTED_REFUSAL =

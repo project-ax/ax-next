@@ -7,12 +7,10 @@
  * edited via the file editor + a separate PUT to /admin/agents/:id/identity —
  * not a `systemPrompt` field on this wire.
  *
- * TASK-98/107: the raw `mcpConfigIds` chip field was replaced by a connector
- * PICKER (a checkbox list over `/admin/connectors`). TASK-107 — selected
- * connector ids are now saved to the FIRST-CLASS per-agent connector-attachment
- * store (PATCH /admin/agents/:id/connector-attachments) AFTER the agent
- * create/PATCH, NOT into `mcpConfigIds` (which reverts to MCP-only meaning and
- * is sent as []).
+ * TASK-799: the form no longer assigns connectors at all — people add them
+ * from the workspace rail — so a save never touches
+ * `/admin/agents/:id/connector-attachments`. `mcpConfigIds` keeps its MCP-only
+ * meaning and is sent as [].
  *
  * Strategy: render AgentForm directly (no shell wrapper) for all content
  * tests. AdminShell (wrapped in UserProvider) is used only for the
@@ -162,9 +160,6 @@ describe('AdminSettings — agents tab', () => {
       if (url === '/admin/agents' && method === 'POST') {
         return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
       }
-      if (/connector-attachments/.test(url)) {
-        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
-      }
       if (/\/identity$/.test(url)) return Promise.resolve(jsonOk({ ok: true }));
       if (/\/admin\/teams(\?|$)/.test(url)) return Promise.resolve(jsonOk({ teams: [] }));
       if (/\/admin\/connectors(\?|$)/.test(url)) {
@@ -225,9 +220,6 @@ describe('AdminSettings — agents tab', () => {
         return Promise.resolve(jsonOk({ models: MODEL_OPTIONS }));
       }
       if (url === '/admin/agents' && method === 'POST') {
-        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
-      }
-      if (/connector-attachments/.test(url)) {
         return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
       }
       if (/\/identity$/.test(url)) return Promise.resolve(jsonOk({ ok: true }));
@@ -301,24 +293,15 @@ describe('AdminSettings — agents tab', () => {
       expect(body.soul).toBe('I am helpful.');
       expect(body.operating).toBe('');
     });
-    // TASK-107 — the connector-attachments PATCH was issued against the new id.
-    await waitFor(() => {
-      const patch = fetchMock.mock.calls.find(
-        ([url, opts]) =>
-          String(url) === '/admin/agents/agent-x/connector-attachments' &&
-          (opts as RequestInit | undefined)?.method === 'PATCH',
-      );
-      expect(patch).toBeTruthy();
-      const body = JSON.parse(String((patch![1] as RequestInit).body));
-      // No connectors were checked in this test → empty attachment list.
-      expect(body.connectorAttachments).toEqual([]);
-    });
+    // TASK-799 — connectors are added from the workspace rail, never here.
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/connector-attachments')),
+    ).toBe(false);
   });
 
   // TASK-719 — the storage limit turned the identity save away. The agent row
-  // was already created and its connectors attached (the form saves in that
-  // order), so the person must be told, in one plain sentence, that the AGENT
-  // is saved and its IDENTITY is not — not handed `save agent identity: 413:
+  // was already created (the form saves in that order), so the person must be
+  // told, in one plain sentence, that the AGENT is saved and its IDENTITY is not — not handed `save agent identity: 413:
   // storage-full`, and not a sentence worded for the agent that writes files.
   it('says a full storage limit in plain words when the identity save is refused', async () => {
     fetchMock.mockReset();
@@ -332,9 +315,6 @@ describe('AdminSettings — agents tab', () => {
         return Promise.resolve(jsonOk({ models: MODEL_OPTIONS }));
       }
       if (url === '/admin/agents' && method === 'POST') {
-        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
-      }
-      if (/connector-attachments/.test(url)) {
         return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
       }
       if (/\/identity$/.test(url) && method === 'PUT') {
@@ -434,110 +414,88 @@ describe('AdminSettings — agents tab', () => {
     expect(screen.queryByLabelText('Model')).toBeNull();
   });
 
-  it('TASK-107: saving with a connector checked PATCHes the connector-attachment store with the id', async () => {
+  it('TASK-799: saving an edited team agent that has connectors never writes connector attachments', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const teamAgent = sampleAgent({
+      id: 'agent-t',
+      ownerId: 'team_1',
+      ownerType: 'team',
+      visibility: 'team',
+      displayName: 'team-bot',
+      connectorAttachments: ['gh'],
+    });
     fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
-      if (/\/admin\/connectors(\?|$)/.test(url)) {
-        return Promise.resolve(
-          jsonOk({
-            connectors: [
-              {
-                id: 'gh',
-                name: 'GitHub',
-                description: '',
-                usageNote: '',
-                keyMode: 'personal',
-                visibility: 'private',
-                createdAt: '2026-01-01T00:00:00.000Z',
-                updatedAt: '2026-01-01T00:00:00.000Z',
-              },
-            ],
-          }),
-        );
-      }
       if (url === '/admin/agents/models') {
         return Promise.resolve(jsonOk({ models: MODEL_OPTIONS }));
       }
-      if (url === '/admin/agents' && method === 'POST') {
-        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-y' }) }));
+      if (url === '/admin/agents/agent-t') {
+        return Promise.resolve(jsonOk({ agent: teamAgent }));
       }
-      if (/connector-attachments/.test(url)) {
-        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-y' }) }));
+      if (/\/admin\/connectors(\?|$)/.test(url)) {
+        return Promise.resolve(jsonOk({ connectors: [] }));
       }
-      if (/\/admin\/teams(\?|$)/.test(url)) return Promise.resolve(jsonOk({ teams: [] }));
-      return Promise.resolve(jsonOk({ agents: [] }));
+      if (/\/identity$/.test(url)) {
+        return Promise.resolve(
+          method === 'PUT'
+            ? jsonOk({ ok: true })
+            : jsonOk({ identity: '', soul: '', operating: '' }),
+        );
+      }
+      if (/\/admin\/teams(\?|$)/.test(url)) {
+        return Promise.resolve(
+          jsonOk({ teams: [{ id: 'team_1', displayName: 'Eng', createdBy: 'u', createdAt: '2026-01-01T00:00:00.000Z' }] }),
+        );
+      }
+      if (/\/admin\/skills(\?|$)/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
+      if (/authored-skills/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
+      return Promise.resolve(jsonOk({ agents: [teamAgent] }));
     });
 
     render(<AgentForm isAdmin />);
-    await waitFor(() => screen.getByText(/New agent/i));
-    fireEvent.click(screen.getByText(/New agent/i));
-    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'cbot' } });
-    fireEvent.change(screen.getByLabelText(/allowed tools/i), {
-      target: { value: 'bash' },
-    });
-    // Check the GitHub connector.
-    const ghCheckbox = await screen.findByRole('checkbox', { name: /Attach GitHub/i });
-    fireEvent.click(ghCheckbox);
-    fireEvent.click(screen.getByRole('button', { name: /Save/i }));
+    await waitFor(() => screen.getByText('team-bot'));
+    fireEvent.click(screen.getByText(/^edit$/i));
+    await screen.findByRole('heading', { name: 'Edit team-bot' });
+    await waitFor(() =>
+      expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+        'anthropic/claude-sonnet-4-6',
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
+    // The identity PUT is the last write of a save — once it lands, the save is done.
     await waitFor(() => {
-      const patch = fetchMock.mock.calls.find(
+      const put = fetchMock.mock.calls.find(
         ([url, opts]) =>
-          String(url) === '/admin/agents/agent-y/connector-attachments' &&
-          (opts as RequestInit | undefined)?.method === 'PATCH',
+          String(url) === '/admin/agents/agent-t/identity' &&
+          (opts as RequestInit | undefined)?.method === 'PUT',
       );
-      expect(patch).toBeTruthy();
-      const body = JSON.parse(String((patch![1] as RequestInit).body));
-      expect(body.connectorAttachments).toEqual(['gh']);
+      expect(put).toBeTruthy();
     });
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/connector-attachments')),
+    ).toBe(false);
   });
 
-  it('clicking edit populates the form + pre-checks the attached connector', async () => {
+  it('clicking edit populates the form', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     fetchMock.mockResolvedValueOnce(
       jsonOk({
-        agents: [
-          sampleAgent({
-            displayName: 'probe',
-            allowedTools: ['bash', 'read_file'],
-            // TASK-107 — the attached connector lives in the first-class store now.
-            connectorAttachments: ['gh'],
-          }),
-        ],
+        agents: [sampleAgent({ displayName: 'probe', allowedTools: ['bash', 'read_file'] })],
       }),
     );
-    // Form-open lookups: teams + the connector list. `gh` is the attached
-    // connector — its checkbox must render checked. The edit view also renders
-    // SkillAttachmentsSection (fetches /admin/skills) + AuthoredSkillsSection
-    // (fetches authored-skills); return empty shapes so neither crashes.
+    // The edit view also renders SkillAttachmentsSection (fetches /admin/skills)
+    // + AuthoredSkillsSection (fetches authored-skills); return empty shapes so
+    // neither crashes.
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/admin/agents/agt-1') {
         return Promise.resolve(jsonOk({ agent: sampleAgent({
-          displayName: 'probe', allowedTools: ['bash', 'read_file'], connectorAttachments: ['gh'],
+          displayName: 'probe', allowedTools: ['bash', 'read_file'],
         }) }));
-      }
-      if (/\/admin\/connectors(\?|$)/.test(url)) {
-        return Promise.resolve(
-          jsonOk({
-            connectors: [
-              {
-                id: 'gh',
-                name: 'GitHub',
-                description: '',
-                usageNote: '',
-                keyMode: 'personal',
-                visibility: 'private',
-                createdAt: '2026-01-01T00:00:00.000Z',
-                updatedAt: '2026-01-01T00:00:00.000Z',
-              },
-            ],
-          }),
-        );
       }
       if (/\/admin\/skills(\?|$)/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
       if (/authored-skills/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
@@ -557,9 +515,6 @@ describe('AdminSettings — agents tab', () => {
     expect(nameInput.value).toBe('probe');
     const tools = screen.getByLabelText(/allowed tools/i) as HTMLInputElement;
     expect(tools.value).toBe('bash, read_file');
-    // The attached connector `gh` renders pre-checked in the picker.
-    const ghCheckbox = await screen.findByRole('checkbox', { name: /Attach GitHub/i });
-    expect(ghCheckbox.getAttribute('data-state')).toBe('checked');
   });
 
   it('delete sends DELETE with X-Requested-With: ax-admin (CSRF regression)', async () => {

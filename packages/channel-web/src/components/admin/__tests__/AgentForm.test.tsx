@@ -15,45 +15,11 @@ vi.mock('@/lib/admin', () => ({
   getAdminAgent: vi.fn(),
   createAgent: vi.fn(),
   patchAgent: vi.fn(),
-  patchAgentConnectorAttachments: vi.fn(),
   getAgentIdentity: vi.fn(),
   putAgentIdentity: vi.fn(),
   deleteAgent: vi.fn(),
   listTeams: vi.fn(),
   listAgentModelOptions: vi.fn(),
-}));
-vi.mock('@/lib/connectors', () => ({
-  listConnectors: vi.fn(),
-  getConnector: vi.fn(),
-}));
-vi.mock('@/lib/connectors-oauth', () => ({
-  getOAuthStatus: vi.fn(),
-}));
-// ConnectorOAuthConnect has internal state + its own fetch calls; stub it so
-// AgentForm render tests stay focused on which affordance APPEARS, not the
-// connect widget's internals.
-vi.mock('../../settings/ConnectorOAuthConnect', () => ({
-  ConnectorOAuthConnect: ({
-    serviceName,
-    requiresConsent,
-    showAccessNotice,
-  }: {
-    connectorId: string;
-    serviceName: string;
-    agentId?: string;
-    requiresConsent?: boolean;
-    showAccessNotice?: boolean;
-    onConnected?: () => void;
-  }) => (
-    // `data-access-notice` echoes the prop AgentForm passed (TASK-700), so a test
-    // can tell "the host turned the widget's own notice off" from "left the default".
-    <div data-testid="oauth-connect" data-access-notice={String(showAccessNotice)}>
-      {requiresConsent && (
-        <span>Authorizing lets anyone who uses this shared agent act as you on {serviceName}. Only people already on this agent are affected.</span>
-      )}
-      <button>Connect with {serviceName}</button>
-    </div>
-  ),
 }));
 // The attachment sections only render in the form view; stub them so the
 // list-view delete test stays isolated.
@@ -72,14 +38,9 @@ import {
   listTeams,
   listAgentModelOptions,
   patchAgent,
-  patchAgentConnectorAttachments,
   getAgentIdentity,
   putAgentIdentity,
 } from '@/lib/admin';
-import { listConnectors, getConnector } from '@/lib/connectors';
-import { getOAuthStatus } from '@/lib/connectors-oauth';
-import type { Connector } from '@/lib/connectors';
-import { connectorAccessCopy } from '@/lib/connector-access-copy';
 
 const mockList = vi.mocked(listAdminAgents);
 const mockDelete = vi.mocked(deleteAgent);
@@ -215,24 +176,12 @@ describe('AgentForm — styled delete confirm', () => {
   });
 });
 
-describe('AgentForm — non-admin owner-scoped sources', () => {
+describe('AgentForm — team picker', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     mockList.mockResolvedValue([AGENT]);
     vi.mocked(listTeams).mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([]);
-  });
-
-  it('a non-admin reads connectors from the user route (/settings/connectors), not the admin one', async () => {
-    render(<AgentForm isAdmin={false} />);
-    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
-    // Opening the form triggers the deferred teams + connectors fetch.
-    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
-    await waitFor(() =>
-      expect(listConnectors).toHaveBeenCalledWith('/settings/connectors'),
-    );
-    expect(listConnectors).not.toHaveBeenCalledWith('/admin/connectors');
   });
 
   it('the team picker names each team by its displayName (TASK-571)', async () => {
@@ -255,15 +204,6 @@ describe('AgentForm — non-admin owner-scoped sources', () => {
     const option = await screen.findByRole('option', { name: 'Engineering' });
     expect((option as HTMLOptionElement).value).toBe('team_1');
   });
-
-  it('an admin reads connectors from the admin route (/admin/connectors)', async () => {
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
-    await waitFor(() =>
-      expect(listConnectors).toHaveBeenCalledWith('/admin/connectors'),
-    );
-  });
 });
 
 describe('AgentForm — file-based identity editor (TASK-142)', () => {
@@ -272,9 +212,7 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
     vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     mockList.mockResolvedValue([AGENT]);
     vi.mocked(listTeams).mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([]);
     vi.mocked(patchAgent).mockResolvedValue(undefined);
-    vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);
     vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
   });
 
@@ -347,9 +285,7 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     vi.clearAllMocks();
     vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
     vi.mocked(listTeams).mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([]);
     vi.mocked(patchAgent).mockResolvedValue(undefined);
-    vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(BARE_AGENT);
     vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
     vi.mocked(createAgent).mockResolvedValue(AGENT);
     vi.mocked(getAgentIdentity).mockResolvedValue({
@@ -457,304 +393,6 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
   });
 });
 
-// ---------------------------------------------------------------------------
-// Fixtures for OAuth affordance tests
-// ---------------------------------------------------------------------------
-
-/** An oauth connector's full record (returned by getConnector). */
-const OAUTH_CONNECTOR: Connector = {
-  id: 'github',
-  name: 'GitHub',
-  description: 'GitHub API access',
-  usageNote: '',
-  keyMode: 'personal',
-  visibility: 'shared',
-  defaultAttached: false,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
-  capabilities: {
-    allowedHosts: ['api.github.com'],
-    credentials: [{ slot: 'token', kind: 'oauth', server: 'github' }],
-    mcpServers: [],
-    packages: { npm: [], pypi: [] },
-  },
-};
-
-/** An api-key-only connector (no oauth slot). */
-const APIKEY_CONNECTOR: Connector = {
-  id: 'openai',
-  name: 'OpenAI',
-  description: 'OpenAI API access',
-  usageNote: '',
-  keyMode: 'personal',
-  visibility: 'private',
-  defaultAttached: false,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
-  capabilities: {
-    allowedHosts: ['api.openai.com'],
-    credentials: [{ slot: 'key', kind: 'api-key' }],
-    mcpServers: [],
-    packages: { npm: [], pypi: [] },
-  },
-};
-
-/** The ConnectorSummary shown in the picker (no capabilities). */
-const OAUTH_CONNECTOR_SUMMARY = {
-  id: 'github',
-  name: 'GitHub',
-  description: 'GitHub API access',
-  usageNote: '',
-  keyMode: 'personal' as const,
-  visibility: 'shared' as const,
-  defaultAttached: false,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
-};
-
-const APIKEY_CONNECTOR_SUMMARY = {
-  id: 'openai',
-  name: 'OpenAI',
-  description: 'OpenAI API access',
-  usageNote: '',
-  keyMode: 'personal' as const,
-  visibility: 'private' as const,
-  defaultAttached: false,
-  createdAt: '2026-01-01T00:00:00.000Z',
-  updatedAt: '2026-01-01T00:00:00.000Z',
-};
-
-/** A team agent with the oauth connector pre-attached. */
-const TEAM_AGENT_WITH_OAUTH: AdminAgent = {
-  ...AGENT,
-  id: 'team-agent-1',
-  visibility: 'team',
-  displayName: 'Team Bot',
-  connectorAttachments: ['github'],
-};
-
-/** A personal agent with the oauth connector pre-attached. */
-const PERSONAL_AGENT_WITH_OAUTH: AdminAgent = {
-  ...AGENT,
-  id: 'personal-agent-1',
-  visibility: 'personal',
-  displayName: 'My Bot',
-  connectorAttachments: ['github'],
-};
-
-/** A personal agent with an api-key-only connector attached. */
-const PERSONAL_AGENT_WITH_APIKEY: AdminAgent = {
-  ...AGENT,
-  id: 'apikey-agent-1',
-  visibility: 'personal',
-  displayName: 'API Bot',
-  connectorAttachments: ['openai'],
-};
-
-describe('AgentForm — agent-editor OAuth affordances', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
-    vi.mocked(listTeams).mockResolvedValue([]);
-    vi.mocked(patchAgent).mockResolvedValue(undefined);
-    vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);
-    vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
-    vi.mocked(getAgentIdentity).mockResolvedValue({
-      identity: '',
-      soul: '',
-      operating: '',
-    });
-    // By default, getConnector returns an api-key connector (no oauth).
-    // Individual tests override this for oauth scenarios.
-    vi.mocked(getConnector).mockResolvedValue(APIKEY_CONNECTOR);
-    vi.mocked(getOAuthStatus).mockResolvedValue('not-connected');
-  });
-
-  it('(1) editing a TEAM agent with an attached oauth connector renders ConnectorOAuthConnect with consent', async () => {
-    mockList.mockResolvedValue([TEAM_AGENT_WITH_OAUTH]);
-    vi.mocked(listConnectors).mockResolvedValue([OAUTH_CONNECTOR_SUMMARY]);
-    vi.mocked(getConnector).mockResolvedValue(OAUTH_CONNECTOR);
-
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText('Team Bot')).toBeTruthy());
-
-    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
-
-    // The oauth connect widget should appear for the attached connector.
-    await waitFor(() =>
-      expect(screen.getByTestId('oauth-connect')).toBeTruthy(),
-    );
-    // requiresConsent=true means the consent copy renders (team agent).
-    expect(
-      screen.getByText(/Authorizing lets anyone who uses this shared agent act as you on GitHub/),
-    ).toBeTruthy();
-    // The connect button should be present.
-    expect(screen.getByRole('button', { name: /Connect with GitHub/i })).toBeTruthy();
-    // No read-only "connect in Connectors" hint for a team agent.
-    expect(screen.queryByText(/connect in Connectors/i)).toBeNull();
-  });
-
-  it('(2) editing a PERSONAL agent with an attached oauth connector renders read-only status hint, no connect button', async () => {
-    mockList.mockResolvedValue([PERSONAL_AGENT_WITH_OAUTH]);
-    vi.mocked(listConnectors).mockResolvedValue([OAUTH_CONNECTOR_SUMMARY]);
-    vi.mocked(getConnector).mockResolvedValue(OAUTH_CONNECTOR);
-    vi.mocked(getOAuthStatus).mockResolvedValue('not-connected');
-
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText('My Bot')).toBeTruthy());
-
-    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
-
-    // The read-only hint should appear.
-    await waitFor(() =>
-      expect(
-        screen.getByText(/Not connected yet — connect it in the Connectors tab/i),
-      ).toBeTruthy(),
-    );
-    // No connect button for a personal agent.
-    expect(screen.queryByRole('button', { name: /Connect with/i })).toBeNull();
-    // ConnectorOAuthConnect widget must not appear.
-    expect(screen.queryByTestId('oauth-connect')).toBeNull();
-  });
-
-  it('(2b) personal agent with needs-reconnect status shows "Sign-in expired" hint', async () => {
-    mockList.mockResolvedValue([PERSONAL_AGENT_WITH_OAUTH]);
-    vi.mocked(listConnectors).mockResolvedValue([OAUTH_CONNECTOR_SUMMARY]);
-    vi.mocked(getConnector).mockResolvedValue(OAUTH_CONNECTOR);
-    vi.mocked(getOAuthStatus).mockResolvedValue('needs-reconnect');
-
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText('My Bot')).toBeTruthy());
-
-    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
-
-    await waitFor(() =>
-      expect(screen.getByText(/Sign-in expired — reconnect in the Connectors tab/i)).toBeTruthy(),
-    );
-    expect(screen.queryByRole('button', { name: /Connect with/i })).toBeNull();
-  });
-
-  it('(3) an attached API-key-only connector renders neither oauth affordance', async () => {
-    mockList.mockResolvedValue([PERSONAL_AGENT_WITH_APIKEY]);
-    vi.mocked(listConnectors).mockResolvedValue([APIKEY_CONNECTOR_SUMMARY]);
-    vi.mocked(getConnector).mockResolvedValue(APIKEY_CONNECTOR);
-
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText('API Bot')).toBeTruthy());
-
-    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
-
-    // Wait for the form to render with the connector checkbox visible.
-    await waitFor(() =>
-      expect(screen.getByLabelText('Attach OpenAI')).toBeTruthy(),
-    );
-    // No oauth affordance for an api-key connector.
-    expect(screen.queryByTestId('oauth-connect')).toBeNull();
-    expect(screen.queryByText(/connect in Connectors/i)).toBeNull();
-    expect(screen.queryByText(/Save this agent first/i)).toBeNull();
-  });
-
-  it('(4) for a NEW agent with an oauth connector checked, shows "Save the agent first" note', async () => {
-    mockList.mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([OAUTH_CONNECTOR_SUMMARY]);
-    // getConnector won't be called for 'new' (the effect is gated on editing !== 'new').
-    // But after checking the box, the oauthConnectors map is empty for 'new'.
-    // The "save first" note relies on isOauth (oauthEntry present) && !isExistingAgent.
-    // Since oauthConnectors is empty for 'new', the note won't appear — this tests
-    // that the code path is correct: oauthConnectors stays empty, no affordance shown.
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText(/No agents yet/i)).toBeTruthy());
-
-    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
-
-    await waitFor(() =>
-      expect(screen.getByLabelText('Attach GitHub')).toBeTruthy(),
-    );
-    // For new agents, no oauth affordance appears (oauthConnectors is empty, effect is gated).
-    expect(screen.queryByTestId('oauth-connect')).toBeNull();
-    expect(screen.queryByText(/connect in Connectors/i)).toBeNull();
-  });
-});
-
-// TASK-700 — the launch disclosure (TASK-328) where a connector is ATTACHED to an
-// agent: attaching gives the agent the access the connector's key or sign-in has,
-// with no per-call approval. One notice for the list, at the checkboxes.
-describe('AgentForm — access disclosure on the connector list (TASK-700)', () => {
-  const NOTICE = 'connector-access-notice';
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
-    vi.mocked(listTeams).mockResolvedValue([]);
-    vi.mocked(patchAgent).mockResolvedValue(undefined);
-    vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);
-    vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
-    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
-    vi.mocked(getConnector).mockResolvedValue(APIKEY_CONNECTOR);
-    vi.mocked(getOAuthStatus).mockResolvedValue('not-connected');
-  });
-
-  it('a new agent with connectors to attach shows the attach notice above the checkboxes', async () => {
-    mockList.mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([APIKEY_CONNECTOR_SUMMARY]);
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText(/No agents yet/i)).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
-    const checkbox = await screen.findByLabelText('Attach OpenAI');
-    const notice = screen.getByTestId(NOTICE);
-    expect(notice).toHaveTextContent(connectorAccessCopy('attach').headline);
-    expect(notice).toHaveTextContent(connectorAccessCopy('attach').details);
-    // The decision is the checkbox, so the disclosure comes first.
-    expect(
-      notice.compareDocumentPosition(checkbox) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-
-  it('the same for a non-admin, who attaches through the owner-scoped list', async () => {
-    mockList.mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([APIKEY_CONNECTOR_SUMMARY]);
-    render(<AgentForm isAdmin={false} />);
-    await waitFor(() => expect(screen.getByText(/No agents yet/i)).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
-    await screen.findByLabelText('Attach OpenAI');
-    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
-  });
-
-  it('with nothing to attach there is no notice (nothing is being handed over)', async () => {
-    mockList.mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([]);
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText(/No agents yet/i)).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
-    await screen.findByText(/No connectors yet/i);
-    expect(screen.queryByTestId(NOTICE)).toBeNull();
-  });
-
-  it('is one notice for the list, however many connectors there are', async () => {
-    mockList.mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([APIKEY_CONNECTOR_SUMMARY, OAUTH_CONNECTOR_SUMMARY]);
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText(/No agents yet/i)).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
-    await screen.findByLabelText('Attach GitHub');
-    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
-  });
-
-  it('editing a team agent with a sign-in connector: the list notice stands, the connect widget adds none', async () => {
-    mockList.mockResolvedValue([TEAM_AGENT_WITH_OAUTH]);
-    vi.mocked(listConnectors).mockResolvedValue([OAUTH_CONNECTOR_SUMMARY]);
-    vi.mocked(getConnector).mockResolvedValue(OAUTH_CONNECTOR);
-    render(<AgentForm isAdmin />);
-    await waitFor(() => expect(screen.getByText('Team Bot')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
-    const widget = await screen.findByTestId('oauth-connect');
-    // Exactly one disclosure on the form (the list's) …
-    expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
-    // … and the widget was told not to stack a second one on the same decision.
-    expect(widget.getAttribute('data-access-notice')).toBe('false');
-  });
-});
-
 describe('AgentForm — model policy (Default, moved notice, PATCH body)', () => {
   const ADMIN_DEFAULT_OPTIONS = [
     { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' as const },
@@ -764,9 +402,7 @@ describe('AgentForm — model policy (Default, moved notice, PATCH body)', () =>
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listTeams).mockResolvedValue([]);
-    vi.mocked(listConnectors).mockResolvedValue([]);
     vi.mocked(patchAgent).mockResolvedValue(undefined);
-    vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);
     vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
     vi.mocked(createAgent).mockResolvedValue(AGENT);
     vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
@@ -855,7 +491,6 @@ describe('AgentForm — model policy (Default, moved notice, PATCH body)', () =>
 it('opens resolved agent details so a stored removed model is shown as the Default', async () => {
   vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
   vi.mocked(listTeams).mockResolvedValue([]);
-  vi.mocked(listConnectors).mockResolvedValue([]);
   vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
   mockList.mockResolvedValue([{ ...AGENT, model: 'openrouter/removed' }]);
   vi.mocked(getAdminAgent).mockResolvedValue({ ...AGENT, requestedModel: 'openrouter/removed' });
@@ -902,4 +537,66 @@ it('keeps a delayed first Edit from replacing a newer Edit', async () => {
   first(AGENT);
   await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Other Bot'));
   expect(screen.queryByRole('heading', { name: 'Edit Research Bot' })).toBeNull();
+});
+
+// TASK-799 — connectors are added from the workspace rail now, not assigned
+// per agent in this form. Neither a create nor an edit, for a personal or a team
+// agent, may render a connector picker, an access notice for one, or a team-agent
+// sign-in affordance.
+describe('AgentForm — no per-agent connector assignment (TASK-799)', () => {
+  const TEAMS = [
+    { id: 'team_1', displayName: 'Engineering', createdBy: 'u1', createdAt: '2026-09-01T12:00:00.000Z' },
+  ];
+  const PERSONAL_AGENT: AdminAgent = { ...AGENT, connectorAttachments: ['github'] };
+  const TEAM_AGENT: AdminAgent = {
+    ...AGENT,
+    id: 'team-agent-1',
+    ownerId: 'team_1',
+    ownerType: 'team',
+    visibility: 'team',
+    displayName: 'Team Bot',
+    connectorAttachments: ['github'],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
+    vi.mocked(listTeams).mockResolvedValue(TEAMS);
+    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: '', soul: '', operating: '' });
+    mockList.mockResolvedValue([PERSONAL_AGENT, TEAM_AGENT]);
+  });
+
+  function expectNoConnectorAssignment() {
+    const form = screen.getByLabelText('Name').closest('form')!;
+    expect(within(form).queryByText(/^Connectors$/)).toBeNull();
+    expect(within(form).queryByText(/No connectors yet/i)).toBeNull();
+    expect(within(form).queryAllByRole('checkbox')).toHaveLength(0);
+    expect(within(form).queryByTestId('connector-access-notice')).toBeNull();
+    expect(within(form).queryByRole('button', { name: /connect|sign in/i })).toBeNull();
+  }
+
+  it('a new agent (personal, then switched to team) has no connector section', async () => {
+    render(<AgentForm isAdmin />);
+    await screen.findByText('Research Bot');
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    await waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).value).not.toBe(''));
+    expectNoConnectorAssignment();
+    const teamRadio = screen.getByRole('radio', { name: /team/i });
+    await waitFor(() => expect((teamRadio as HTMLInputElement).disabled).toBe(false));
+    fireEvent.click(teamRadio);
+    await screen.findByRole('option', { name: 'Engineering' });
+    expectNoConnectorAssignment();
+  });
+
+  it.each([
+    [0, 'Research Bot'],
+    [1, 'Team Bot'],
+  ])('editing agent #%i (%s), which has connectors, shows no picker and no sign-in', async (idx, name) => {
+    render(<AgentForm isAdmin />);
+    await screen.findByText(name);
+    fireEvent.click(screen.getAllByRole('button', { name: 'edit' })[idx]!);
+    await screen.findByRole('heading', { name: `Edit ${name}` });
+    await waitFor(() => expect((screen.getByLabelText('Model') as HTMLSelectElement).value).not.toBe(''));
+    expectNoConnectorAssignment();
+  });
 });

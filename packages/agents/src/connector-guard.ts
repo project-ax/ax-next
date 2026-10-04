@@ -4,9 +4,11 @@ const PLUGIN_NAME = '@ax/agents';
 
 /**
  * Marks a `forbidden` PluginError as the workspace-connector guard's refusal
- * (vs. the agent-ownership ACL's). The admin route surfaces this one's message
- * to the caller — it names only the connector id the caller themselves sent —
- * while the ACL's `forbidden` stays an opaque "forbidden".
+ * (vs. the agent-ownership ACL's). Its message names only the connector id the
+ * caller themselves sent, so a transport may surface it, while the ACL's
+ * `forbidden` stays an opaque "forbidden". This is part of
+ * `agents:attach-connector`'s documented error contract — see the
+ * attach/detach block in ./types.ts.
  */
 const WORKSPACE_CONNECTOR_REASON = 'workspace-connector';
 
@@ -15,7 +17,7 @@ const WORKSPACE_CONNECTOR_REASON = 'workspace-connector';
  * owner-scoped (the agent-ownership ACL lives in the hooks' `assertWriteAllowed`),
  * so a non-admin may manage their OWN agents. The one escalation an attachment
  * could enable is making the agent spend a GLOBAL (company) credential — and that
- * only ever comes from a `keyMode:'workspace'` connector. So a non-admin's set is
+ * only ever comes from a `keyMode:'workspace'` connector. So a non-admin's grant is
  * rejected iff ANY of the given connector ids resolves — OWNER-SCOPED to the actor
  * — to keyMode 'workspace'. A personal connector is the user's own per-user key
  * (their own reach → no escalation); a connector the actor doesn't own never
@@ -58,7 +60,9 @@ export async function workspaceConnectorGrantViolation(
 }
 
 /**
- * Hook-side enforcement: throws `forbidden` (tagged as the guard's refusal)
+ * Hook-side enforcement (used by `agents:attach-connector`): throws `forbidden`
+ * with `diagnosis.reason === 'workspace-connector'` (the guard's refusal —
+ * the error contract documented on the attach hook in ./types.ts)
  * when a non-admin actor would gain a workspace connector among `addedIds`.
  * Admins pass through. Callers pass ONLY the ids being added — removing or
  * keeping an already-attached connector never trips the guard.
@@ -80,13 +84,4 @@ export async function assertConnectorGrantAllowed(
     message: violation,
     diagnosis: { reason: WORKSPACE_CONNECTOR_REASON },
   });
-}
-
-/** True when `err` is the workspace-connector guard's `forbidden`. */
-export function isWorkspaceConnectorForbidden(err: unknown): err is PluginError {
-  return (
-    err instanceof PluginError &&
-    err.code === 'forbidden' &&
-    err.diagnosis?.['reason'] === WORKSPACE_CONNECTOR_REASON
-  );
 }

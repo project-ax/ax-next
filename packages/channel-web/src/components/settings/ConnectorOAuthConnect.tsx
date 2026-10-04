@@ -37,8 +37,8 @@ export interface ConnectorOAuthConnectProps {
   /**
    * (TASK-700) Show the access disclosure — what signing in hands the assistant —
    * above the Connect button. Defaults ON, so a new caller can never forget it;
-   * a host that already shows a wider notice for the same decision (the agent
-   * editor's connector list) turns it off rather than stack two.
+   * a host that already shows a wider notice for the same decision (the
+   * workspace rail's connector card) turns it off rather than stack two.
    */
   showAccessNotice?: boolean;
   /** Called after a successful connect so the parent can refresh. */
