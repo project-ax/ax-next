@@ -306,9 +306,19 @@ export async function authorizeAgentAccountRead(
         { agentId, userId },
       );
       agent = (out?.agent ?? null) as AgentAttachmentsLike | null;
-    } catch {
+    } catch (err) {
       // not-found / forbidden (this user may not use the agent) or a failure:
-      // either way nothing on the agent is this user's to read.
+      // either way nothing on the agent is this user's to read. A refusal is an
+      // ordinary deny; anything else is an outage and must not pass as "no
+      // credential", so it is also logged at warn (the vault only sees a deny).
+      const code = (err as { code?: unknown } | null)?.code;
+      if (code !== 'forbidden' && code !== 'not-found') {
+        ctx.logger.warn('connectors_agent_credential_check_failed', {
+          plugin: PLUGIN_NAME,
+          ref,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       return deny('agent-not-resolvable');
     }
     if (agent === null || typeof agent !== 'object') return deny('agent-not-resolvable');

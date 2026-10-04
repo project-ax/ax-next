@@ -273,6 +273,29 @@ describe('authorizeAgentAccountRead — the connector must be on the agent (TASK
     }
   });
 
+  it('DENIES an agents:resolve FAILURE too, but says so at warn (an outage must not look like "no credential")', async () => {
+    const { bus } = fakeBus(() => {
+      throw new Error('agents db down');
+    });
+    const { store } = fakeStore(async () => SHARED);
+    const { ctx, lines } = ctxWithLog();
+    expect(await authorizeAgentAccountRead(store, bus, ctx, read)).toEqual({ allowed: false });
+    expect(lines).toContainEqual({
+      msg: 'connectors_agent_credential_check_failed',
+      bindings: expect.objectContaining({ ref: 'account:linear', error: 'agents db down' }),
+    });
+  });
+
+  it('a refusal (forbidden / not-found) is an ordinary deny, NOT a warn', async () => {
+    const { bus } = fakeBus(() => {
+      throw new PluginError({ code: 'forbidden', plugin: '@ax/agents', hookName: 'agents:resolve', message: 'no' });
+    });
+    const { store } = fakeStore(async () => SHARED);
+    const { ctx, lines } = ctxWithLog();
+    expect(await authorizeAgentAccountRead(store, bus, ctx, read)).toEqual({ allowed: false });
+    expect(lines.some((l) => l.msg === 'connectors_agent_credential_check_failed')).toBe(false);
+  });
+
   it.each([
     ['attachments not an array', { connectorAttachments: 'linear', connectorExclusions: [] }],
     ['attachments hold a non-string', { connectorAttachments: ['linear', 7], connectorExclusions: [] }],
