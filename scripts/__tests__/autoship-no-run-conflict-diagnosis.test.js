@@ -112,11 +112,20 @@ function bashBlocks(md) {
 
 const isComment = (l) => /^\s*#/.test(l);
 
-/** Blocks that RUN merge-tree (comment lines quoting it do not count). */
+/**
+ * Blocks that RUN merge-tree (comment lines quoting it do not count) AND emit the
+ * diagnosis verdicts. The second term exists since TASK-853: the merge queue's
+ * `ax-merge-freshness: verify-update` block also runs `merge-tree --write-tree` (to
+ * prove an update commit is a clean merge), and is guarded by its own test. It keys on
+ * the NO-RUN-UNDIAGNOSED token, which every arm of the diagnosis block needs and which
+ * the "exactly one" assertion below still pins.
+ */
 function diagnosisBlocks() {
   const md = readFileSync(AUTO_SHIP_DOC, 'utf8');
-  return bashBlocks(md).filter((b) =>
-    b.split('\n').some((l) => !isComment(l) && /git merge-tree --write-tree/.test(l)),
+  return bashBlocks(md).filter(
+    (b) =>
+      b.split('\n').some((l) => !isComment(l) && /git merge-tree --write-tree/.test(l)) &&
+      /NO-RUN-UNDIAGNOSED/.test(b),
   );
 }
 

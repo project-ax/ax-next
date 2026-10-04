@@ -399,7 +399,12 @@ gh pr view <n> --json mergeable,statusCheckRollup     # confirm green + mergeabl
 # failure and invites a retry of a merge that has already happened. (Hit on 2/2 merges
 # in the 2026-08-23 run.) So assert merge SUCCESS positively and treat cleanup as
 # separate, optional, and non-fatal:
-gh pr merge <n> --squash                                     # no --delete-branch
+#
+# ⚠ ONLY AFTER the review gate AND the base-freshness gate (both below) — the freshness
+# gate's `BASE-FRESH #<n>` token, for THIS HEAD_SHA, is the go signal, not a clean
+# merge-tree. `--match-head-commit` makes GitHub refuse the merge if the head moved
+# after you verified it, so the commit that lands is the one CI and review saw.
+gh pr merge <n> --squash --match-head-commit "$HEAD_SHA"     # no --delete-branch
 state=$(gh pr view <n> --json state --jq .state)
 [ "$state" = "MERGED" ] || { echo "MERGE-FAILED #<n> state=$state"; exit 1; }
 echo "MERGE-OK #<n>"                                         # required token
@@ -447,7 +452,8 @@ its CI runs *against* the guard. A PR whose last CI predates the guard can merge
 without the guard ever seeing it. Example: the channel-web manifest guard
 (`manifest-declarations.test.ts`) in #877 checks that channel-web declares every
 `hasService`-gated hook it calls, so any open PR that touched those calls needed the
-update first.
+update first. The base-freshness gate (below) now does this for every PR at merge time,
+so a guard merged ahead of a PR is always in the base that PR's last CI ran on.
 
 **`MERGE-OK #<n>` is the gate.** Its absence halts the queue; a `⚠ cleanup` line never
 does. Leave the local branch + worktree alone during the run — a lingering one is
@@ -704,6 +710,174 @@ the one you execute, so do not improvise a shorter version of it:
    review. Log times, shape, and whether retrieval recovered it in the journal so this
    keeps accumulating evidence.
 
+**Base-freshness gate (blocking — run it AFTER the review gate, immediately BEFORE
+`gh pr merge`).** A clean `git merge-tree` proves two PRs *merge*. It does not prove they
+*work* together. Each PR's CI ran on whatever `main` was when it started, so two PRs
+that each passed their own CI can break `main` the moment the second one lands.
+
+That happened on 2026-10-04 (all times UTC, all measured):
+
+- **#918** (TASK-811) merged at 16:35. It added keepalive tests to
+  `packages/chat-orchestrator` with a `proxy:open-session` stub.
+- **#920** (TASK-784) made `proxyAuthToken` required, across 37 files — including
+  `chat-orchestrator`'s tests. Its only ci.yml run started at **16:29**, six minutes
+  *before* #918 landed. So its CI never saw #918's stub. It merged at 17:02, and
+  `merge-tree` was clean.
+- The push-to-main full suite then failed 4 keepalive tests. The fix was **#924**
+  (TASK-840): one stub line, merged 17:20. The queue was halted until main was green.
+
+The backstop did its job, but only *after* the bad merge landed. This gate moves the
+check to before the merge: **the head you merge must already contain `origin/main`.**
+If it doesn't, you merge `main` into the PR branch (`gh pr update-branch`), wait for CI
+on that new head, and confirm the update commit contains nothing but main's changes.
+
+*Why this shape, and not the other two options the card weighed:*
+
+- **GitHub's native merge queue — rejected for now, not blocked on it.** It needs a
+  `merge_group:` trigger in `ci.yml` (today it has only `push: [main]` and
+  `pull_request: [main]`). It also needs a ruleset that requires the queue — and `main`
+  has **no branch protection and no active ruleset at all** (measured). The test step's
+  affected-package filter reads `github.event.pull_request.base.sha`, which a
+  `merge_group` event doesn't have. And `gh pr merge` would *enqueue* rather than
+  merge, so the `MERGE-OK` / `state == MERGED` check would have to become an async
+  wait. What it would buy over this gate is protection against *concurrent* mergers.
+  auto-ship is already the only, serialized merger. Revisit if humans start merging
+  alongside a drain. (CodeRabbit would be unaffected either way: it reviews PRs based
+  on `main`, and neither option changes a PR's base.)
+- **Re-test only when the packages overlap — rejected as unsound.** PR CI is not only
+  affected-package tests. `pnpm typecheck`, `pnpm lint`, `test:eslint-rules` and
+  `test:scripts` run repo-wide on every PR. Several `scripts/__tests__` guards scan
+  every package (single-owner text, cited paths, NUL bytes), so two PRs in disjoint
+  packages can still collide. And the overlap test would buy almost nothing, because:
+- **The re-test mostly overlaps a wait you already pay.** After every merge the queue
+  waits for the backstop: main's full suite took **6–10 min** over the last 38 green
+  runs. PR CI took **8.1 min p50 / 14.7 p90** over the last 60 merged PRs. So update
+  the *next* PR right after `MERGE-OK #<k>`, and its CI runs *during* `#<k>`'s backstop.
+  The new cost lands only when a PR goes green while the queue is idle.
+
+*How often it fires, measured over those same 60 merged PRs (2026-10-03 17:41Z →
+10-04 21:45Z):* 26 had a `main` commit land between their last ci.yml run and their
+merge. That's the #920 shape. But **46** heads did not contain `main`-at-merge. The rule
+here ("the head must contain `origin/main`") is stricter than "CI ran on a stale base",
+so it updates those extra 20 too. That's deliberate: GitHub doesn't record which `main`
+a `pull_request` run merged with (the run API carries only `head_sha`). The only other
+way to tell would be comparing timestamps across clocks. Ancestry needs neither.
+
+**Order:** existence gate → review gate (Q1/Q2) → **freshness check** → *(if stale:
+update → existence gate + CI green on the new head → verify-update → freshness check
+again)* → `gh pr merge`. Run the review gate on the builder's head, *before* any update.
+After an update, Q2's `<reviewed-sha>..origin/<branch>` range would also list every
+file `main` changed. That's not unreviewed work: verify-update below is what proves the
+update commit carries nothing else.
+
+```bash
+# ax-merge-freshness: check — run AFTER the review gate, immediately BEFORE `gh pr merge`,
+# with HEAD_SHA bound to the head you are about to merge (the existence gate's binding,
+# full 40 chars). The go signal is the BASE-FRESH token — never rc 0 alone.
+case "${HEAD_SHA}" in
+  '' | *[!0-9a-f]*) echo "FRESHNESS-UNDECIDED #<n>: HEAD_SHA '${HEAD_SHA}' is not a sha"; exit 1 ;;
+esac
+[ ${#HEAD_SHA} -eq 40 ] || { echo "FRESHNESS-UNDECIDED #<n>: HEAD_SHA '${HEAD_SHA}' is not a full 40-char sha"; exit 1; }
+# A stale origin/main is the one input that turns this check into a false FRESH: the
+# head contains an OLD main, and the commits that would break it are the ones not fetched.
+git fetch -q origin main || { echo "FRESHNESS-UNDECIDED #<n>: fetch of origin/main failed — a stale origin/main decides nothing"; exit 1; }
+git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || { echo "FRESHNESS-UNDECIDED #<n>: ${HEAD_SHA} is not in this clone — git fetch origin <branch>, then re-run"; exit 1; }
+git merge-base --is-ancestor origin/main "${HEAD_SHA}"; fresh=$?
+case "${fresh}" in
+  0) echo "BASE-FRESH #<n>: ${HEAD_SHA} already contains origin/main — the CI that ran on it saw every merged PR. Proceed to gh pr merge." ;;
+  1)
+    # Record the head you are about to update FROM. HEAD_SHA passed the hex + 40-char
+    # checks above, so this write carries no agent text. verify-update reads it back.
+    printf '%s\n' "${HEAD_SHA}" > "$(git rev-parse --git-dir)/auto-ship-pre-update-<n>"
+    echo "BASE-STALE #<n>: origin/main has commits ${HEAD_SHA} does not, so its CI never ran against them (the #918 x #920 shape). Do NOT merge. Run: gh pr update-branch <n>   (a merge — NEVER --rebase)"
+    exit 1
+    ;;
+  *) echo "FRESHNESS-UNDECIDED #<n>: merge-base rc=${fresh}"; exit 1 ;;
+esac
+```
+
+On `BASE-STALE`, run `gh pr update-branch <n>` — **without `--rebase`**. A rebase
+rewrites the reviewed commits, so the handoff's `reviewed-sha` would stop being an
+ancestor and Q2 would widen to the whole branch. A merge keeps the reviewed commits
+as they are and adds one commit on top. If it fails with a conflict, take the existing
+"not mergeable" path: hand the PR back to the builder to rebase. When it succeeds,
+GitHub pushes a new head, which fires a new ci.yml run. Re-bind `HEAD_SHA` to the new
+`headRefOid`, run the **existence gate** on it, and wait for it to go green (same rules
+as above: full sha, run exists, empty conclusion = pending). Then:
+
+```bash
+# ax-merge-freshness: verify-update — after `gh pr update-branch <n>`, once the NEW head's
+# ci.yml run exists and is green, with HEAD_SHA re-bound to the new headRefOid.
+# Proves the only thing added since the head you checked is GitHub's merge of main, with
+# no hand-made content in it. Anything it cannot prove is UNVERIFIED — never CLEAN.
+unverified() {
+  echo "UPDATE-UNVERIFIED #<n>: $1 — treat what landed as unreviewed: order an independent pass over origin/main...origin/<branch> (the Q1 range) before merging."
+  exit 1
+}
+PRE_FILE="$(git rev-parse --git-dir)/auto-ship-pre-update-<n>"
+PRE=$(cat "${PRE_FILE}" 2>/dev/null)
+case "${PRE}" in
+  '' | *[!0-9a-f]*) unverified "no usable pre-update head recorded in ${PRE_FILE}" ;;
+esac
+[ ${#PRE} -eq 40 ] || unverified "the recorded pre-update head is not a full 40-char sha"
+case "${HEAD_SHA}" in
+  '' | *[!0-9a-f]*) unverified "HEAD_SHA '${HEAD_SHA}' is not a sha" ;;
+esac
+[ ${#HEAD_SHA} -eq 40 ] || unverified "HEAD_SHA is not a full 40-char sha"
+git fetch -q origin main || unverified "fetch of origin/main failed"
+git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || unverified "${HEAD_SHA} is not in this clone (git fetch origin <branch>)"
+# Exactly two parents: the head you updated FROM, and a commit on main. A builder push
+# after the update, a second update, or a rebase all fail one of these.
+set -- $(git rev-list --parents -n 1 "${HEAD_SHA}")
+[ $# -eq 3 ] || unverified "${HEAD_SHA} is not a two-parent merge, so something other than the update landed"
+if [ "$2" = "${PRE}" ]; then
+  MAIN_PARENT=$3
+elif [ "$3" = "${PRE}" ]; then
+  MAIN_PARENT=$2
+else
+  unverified "neither parent of ${HEAD_SHA} is the pre-update head ${PRE}"
+fi
+git merge-base --is-ancestor "${MAIN_PARENT}" origin/main || unverified "the merged-in parent ${MAIN_PARENT} is not on origin/main"
+# The content check: the update's tree must be exactly what git's own clean merge of the
+# same two parents produces. An "evil merge" (a hand edit or conflict resolution folded
+# into the merge commit) has a different tree, and is code no reviewer saw.
+EXPECT=$(git merge-tree --write-tree "${MAIN_PARENT}" "${PRE}") || unverified "${MAIN_PARENT} and ${PRE} do not merge cleanly here, so the update resolved a conflict by hand"
+EXPECT=$(printf '%s\n' "${EXPECT}" | head -n 1)
+GOT=$(git rev-parse "${HEAD_SHA}^{tree}")
+[ "${EXPECT}" = "${GOT}" ] || unverified "the update's tree differs from a clean merge of ${MAIN_PARENT} into ${PRE}, so it carries content that isn't main's"
+echo "UPDATE-CLEAN #<n>: ${HEAD_SHA} is ${PRE} plus a clean merge of main (${MAIN_PARENT}) and nothing else. No new review needed. Now re-run the freshness check on this head."
+```
+
+Then **re-run the freshness check** on the new head. If `main` moved again while CI ran,
+it says `BASE-STALE` again, and records the *updated* head as the next pre-update head,
+so each round is verified against the one before it. When it prints `BASE-FRESH`,
+merge with `--match-head-commit "$HEAD_SHA"` (the merge block above). If the builder
+needs to push a fix after an update, it must `git pull` first: its local branch no
+longer has the update commit, so a plain push is rejected as non-fast-forward. That
+fails loudly, not silently.
+
+**What this gate cannot see:**
+
+- **A merge to `main` by someone other than this queue between `BASE-FRESH` and
+  `gh pr merge`.** `--match-head-commit` pins the PR's head, not `main`, and there is
+  no branch protection to stop a direct push. The window is seconds, and the
+  push-to-main backstop still catches the result. Native merge queue is the fix if
+  this ever matters (see above).
+- **Flaky or environment-dependent failures.** A re-run on current `main` reproduces
+  real interactions, not flakes. Two false main-red halts in the same run as #920 —
+  `kind-tooling-pinned-to-kind-context.test.js` (fixed by #917) and
+  `FactsMemory.test.tsx` (TASK-845) — are a different problem, and this gate doesn't
+  claim to fix them.
+- **Tests the PR's CI doesn't run.** PR CI is affected packages plus dependents. An
+  interaction that shows up only in an unaffected package still reaches `main`, and the
+  backstop is still what catches it. This gate makes the PR's own CI current. It does
+  not make it the full suite.
+
+`scripts/__tests__/autoship-merge-base-freshness.test.js` extracts both blocks and runs
+them against throwaway git repos in bash and zsh: a fresh head, a stale head, a clean
+update, an evil merge, a post-update push, a merged-in parent that isn't on main, and
+the fetch, missing-object and bad-sha cases.
+
 On a `pr-green` handoff (PR open, pre-merge): move the card → **In Review** (the agent
 already logged `PR #<n> opened` in its progress block — you no longer append a link).
 After the merge: move the card → **Done**, `append_progress … "merged #<n> ✅"` on the
@@ -952,6 +1126,7 @@ in-flight, and any walk-filed follow-ups.
 | "I'll just implement this small card inline" | You're the orchestrator. Dispatch it. Inline work blows the budget. |
 | "The walk failed; I'll re-file the fix again" | Same signature ⇒ quarantine. Re-filing the same failure is the loop you must not create. |
 | "Two PRs are green, merge both now" | Serialized queue. One at a time, rebase-on-conflict. |
+| "It's green and merge-tree is clean, merge it" | Green on *which* main? #920 was green and merged cleanly, and still broke main, because its CI predated #918. Run the base-freshness gate: no `BASE-FRESH #<n>` for this head, no merge. |
 | "I'll skip the plan print, the ready set looks obvious" | Print it first. Auto-merging to main is high blast-radius. |
 | "I'll let the agent move its own card / set its deps" | Agents never write the **routing fields** (`Status`, `Depends on`) or another card. The one thing an agent writes is the progress block of its own In-Progress card (§6); you own all routing + moves. |
 | "I'll read the card body to see how far it got" | Never pull a body into context — the `append_progress` RMW is shell-side (§6). For recovery you key off the `Status` lane + PR ground truth (§7), not the body. |
