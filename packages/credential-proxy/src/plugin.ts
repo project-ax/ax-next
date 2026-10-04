@@ -28,7 +28,13 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { PluginError, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
+import {
+  PluginError,
+  makeAgentContext,
+  type AgentContext,
+  type HookBus,
+  type Plugin,
+} from '@ax/core';
 import {
   startProxyListener,
   type ProxyListener,
@@ -391,6 +397,48 @@ function parseMeteredRequests(envName: string, raw: unknown): readonly string[] 
 }
 
 /**
+ * Resolve ONE credential via `credentials:get`, and when that fails, say WHICH
+ * one (TASK-783).
+ *
+ * `proxy:open-session` and `proxy:rotate-session` resolve a whole SET of refs —
+ * the model-provider key and every connector slot together — so a bare
+ * resolver error leaves the caller unable to tell "the provider key is gone"
+ * from "this connector's sign-in died". The failure is rethrown as a
+ * `credential-resolve-failed` PluginError whose `diagnosis.envName` is the
+ * caller's OWN key for that credential (the same key it handed us in
+ * `credentials`), so it can map the failure back to whatever owns it.
+ *
+ * The original error rides on `.cause`, untouched, so a caller can still read
+ * its name/code (e.g. a `NeedsReconnectError`, or `credential-not-found`).
+ * The MESSAGE is fixed text on purpose: a resolver's message can carry an
+ * OAuth server's `error_description` (provider-authored, unbounded), and this
+ * error is logged and audited downstream. The env name stays out of it too —
+ * it lives in `diagnosis`, where it is a field rather than prose.
+ */
+async function resolveCredential(
+  bus: HookBus,
+  ctx: AgentContext,
+  envName: string,
+  ref: string,
+  userId: string,
+): Promise<string> {
+  try {
+    return await bus.call<{ ref: string; userId: string }, string>('credentials:get', ctx, {
+      ref,
+      userId,
+    });
+  } catch (err) {
+    throw new PluginError({
+      code: 'credential-resolve-failed',
+      plugin: PLUGIN_NAME,
+      message: 'a session credential could not be resolved',
+      cause: err,
+      diagnosis: { envName },
+    });
+  }
+}
+
+/**
  * Anything that is not EXACTLY `{ blocked: false }` blocks. The usage ledger is
  * in-process and trusted, but this is a money control: a malformed answer must
  * never read as "go ahead".
@@ -630,10 +678,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
               // discover as an upstream 401. Env NAME only — never a value.
               ctx.logger.warn('credential_unbound', { envName });
             }
-            const value = await bus.call<
-              { ref: string; userId: string },
-              string
-            >('credentials:get', ctx, { ref, userId: input.userId });
+            const value = await resolveCredential(bus, ctx, envName, ref, input.userId);
             map.register(envName, value, allowedHosts);
           }
 
@@ -763,10 +808,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           // different user-context resolve someone else's credentials.
           const userId = sess.userId;
           for (const [envName, { ref }] of Object.entries(refs)) {
-            const value = await bus.call<
-              { ref: string; userId: string },
-              string
-            >('credentials:get', ctx, { ref, userId });
+            const value = await resolveCredential(bus, ctx, envName, ref, userId);
             const placeholder = existingMap.updateValue(envName, value);
             if (placeholder === undefined) {
               // Should be impossible — open-session registered every envName

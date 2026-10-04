@@ -99,6 +99,8 @@ export const ERROR_LABELS: Record<string, string> = {
   // already marks that connector and offers Reconnect (or, on a team agent
   // whose expired sign-in is their own, "Sign in again" — TASK-774), so the
   // sentence points there and uses the lower-case verb that covers both.
+  // TASK-783: when the host can tell which connector it was, the frame's
+  // `detail` names it ("Connector: Gmail"), rendered on the line under this.
   'connector-needs-reconnect':
     'One of this agent’s connectors needs you to sign in again. Open Connectors, reconnect it, then retry.',
   // TASK-796 — the reconnect line's sibling for a connector nobody has signed

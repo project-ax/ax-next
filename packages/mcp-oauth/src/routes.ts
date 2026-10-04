@@ -149,9 +149,16 @@ function isReject(err: unknown): boolean {
   return err instanceof PluginError || isRejection(err);
 }
 
-function neutralMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+/**
+ * What a failed `begin` tells the browser (TASK-783). A FIXED sentence, never
+ * the error's message: discovery / registration / authorize-URL failures come
+ * from the SDK and the authorization server, whose text is provider-authored
+ * (an RFC 6749 `error_description`, a metadata document's fields) and was
+ * shown to the person verbatim. The operator's detail is the warn line's
+ * name/code (`errFields`).
+ */
+const BEGIN_FAILED_MESSAGE =
+  "Couldn't start sign-in with this service. Try again in a moment. If it keeps happening, ask an admin to check the connector's address.";
 
 export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   discoverHosts(req: RouteRequest, res: RouteResponse): Promise<void>;
@@ -495,8 +502,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
 
     // Discovery → client registration → authorize-URL build. Any failure here
-    // is an upstream/metadata problem; report a neutral 502 (message is a
-    // host/url, never a secret) and store nothing.
+    // is an upstream/metadata problem; report a neutral 502 (a fixed sentence,
+    // never the upstream's text — TASK-783) and store nothing.
     try {
       const { authServerUrl, metadata, scope: discoveredScope } = await flow.discover({
         resourceUrl: resource,
@@ -567,11 +574,12 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
       res.status(200).json({ authorizationUrl });
     } catch (err) {
-      // NEVER include code/secret/token here — by construction only discovery /
-      // registration / URL-build ran, none of which we hold secrets for; the
-      // message is a host/url from the SSRF guard or SDK.
+      // NEVER echo the error: by construction only discovery / registration /
+      // URL-build ran, but their messages are SDK / authorization-server text
+      // (provider-controlled). The body is a fixed sentence; the log is
+      // name/code only.
       logger.warn('mcp_oauth_begin_discovery_failed', { connectorId, ...errFields(err) });
-      res.status(502).json({ error: 'oauth_discovery_failed', message: neutralMessage(err) });
+      res.status(502).json({ error: 'oauth_discovery_failed', message: BEGIN_FAILED_MESSAGE });
     }
   }
 

@@ -235,6 +235,62 @@ describe('chat-orchestrator keepalive', () => {
     expect(rotates).toHaveLength(2);
   });
 
+  // TASK-783 — the warm path's deferred proxy close (on handle.exited) logs a
+  // failure by name/code only, never the error's message.
+  it('keepalive: a failed deferred proxy close logs name/code, never the message', async () => {
+    const SECRET_TEXT = 'error_description=provider-text-that-must-not-be-logged';
+    const conv: Record<string, { activeSessionId: string | null }> = { 'conv-1': { activeSessionId: null } };
+    const hk = makeHandle();
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
+      'session:queue-work': async () => ({ cursor: 0 }),
+      'session:terminate': async () => ({}),
+      'session:is-alive': async () => ({ alive: false }),
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return { conversation: {
+          conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent',
+          activeSessionId: conv[i.conversationId]!.activeSessionId, activeReqId: null,
+        } };
+      },
+      'conversations:bind-session': async () => undefined,
+      'sandbox:open-session': async () => ({ runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle }),
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+      'proxy:close-session': async () => {
+        throw new Error(SECRET_TEXT);
+      },
+    };
+    const h = await createTestHarness({
+      services,
+      plugins: [createChatOrchestratorPlugin({
+        runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
+        keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+      })],
+    });
+    const lines: Array<Record<string, unknown>> = [];
+    const ctx = makeAgentContext({
+      sessionId: 's-1', agentId: 'test-agent', userId: 'test-user', conversationId: 'conv-1', reqId: 'req-1',
+      logger: createLogger({
+        reqId: 'req-1',
+        writer: (l: string) => lines.push(JSON.parse(l) as Record<string, unknown>),
+      }),
+    });
+    fireTurnEnd(h.bus, 's-1', 'req-1');
+    const outcome = await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctx, {
+      message: { role: 'user', content: 'hi' },
+    });
+    expect(outcome.kind).toBe('complete');
+    // Warm: the close was deferred to the runner's exit.
+    expect(lines.some((l) => l.msg === 'proxy_close_session_failed')).toBe(false);
+    hk.forceExit();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    const line = lines.find((l) => l.msg === 'proxy_close_session_failed');
+    expect(line).toMatchObject({ sessionId: 's-1', name: 'PluginError', causeName: 'Error' });
+    expect(line).not.toHaveProperty('err');
+    expect(JSON.stringify(lines)).not.toContain(SECRET_TEXT);
+  });
+
   it('keepalive idle reaper: queues a graceful cancel, then force-kills after grace', async () => {
     vi.useFakeTimers();
     try {
