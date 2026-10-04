@@ -84,6 +84,37 @@ describe('mock admin connectors', () => {
     }
   });
 
+  // TASK-790 — production 404s a path that only SHARES the bundle's prefix
+  // (the router has no route for it; no auth gate runs). The mock used to claim
+  // anything that `startsWith(base)` and answer 401/403 before route matching.
+  it('404s prefix-only non-routes for every caller, like production (TASK-790)', async () => {
+    const { url, close } = await startServer(store);
+    try {
+      const paths = [
+        '/admin/connectorsx',
+        '/admin/connectors-catalog',
+        '/admin/connectors/',
+        '/admin/connectors/a/b',
+        '/admin/connectors/a/tool-permissions/extra',
+      ];
+      for (const cookie of [undefined, ALICE, ADMIN]) {
+        for (const path of paths) {
+          const res = await fetch(`${url}${path}`, {
+            headers: cookie ? { cookie } : {},
+          });
+          expect({ cookie, path, status: res.status }).toEqual({ cookie, path, status: 404 });
+        }
+      }
+      // The real routes are still gated: the shape check does not open them up.
+      const real = await fetch(`${url}/admin/connectors/x/tool-permissions`, {
+        headers: { cookie: ALICE },
+      });
+      await expectStatus(real, 403);
+    } finally {
+      await close();
+    }
+  });
+
   it('403s a signed-in non-admin on every /admin/connectors route and writes nothing (TASK-698 gate)', async () => {
     const { url, close } = await startServer(store);
     try {

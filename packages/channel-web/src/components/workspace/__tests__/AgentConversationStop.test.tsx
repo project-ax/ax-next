@@ -11,7 +11,7 @@
  * it can be here: Stop takes the SAME slot Send had (same parent, same index)
  * and carries the SAME shared-`Button` size classes.
  */
-import type { ComponentProps } from 'react';
+import { useLayoutEffect, type ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
@@ -201,6 +201,29 @@ describe('AgentConversation — after a stop, the field comes back under the key
 
     rerender(<AgentConversation {...props} busy={false} />);
     expect(document.activeElement).toBe(screen.getByPlaceholderText('Message Quill'));
+  });
+
+  // TASK-790 — the refocus lands in the SAME commit that clears `busy`, not a
+  // passive-effect tick later. A parent's layout effect runs after its
+  // children's layout effects and before any passive effect, so it sees the
+  // field focused only if the component did it in a layout effect.
+  it('has the field focused by the time the commit that clears busy lays out', () => {
+    const seen: Array<Element | null> = [];
+    function Probe(props: ComponentProps<typeof AgentConversation>) {
+      useLayoutEffect(() => {
+        seen.push(document.activeElement);
+      });
+      return <AgentConversation {...props} />;
+    }
+    const props = propsFor({ busy: true, onStop: vi.fn() });
+    const { rerender } = render(<Probe {...props} />);
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    stop.focus();
+    fireEvent.click(stop);
+    seen.length = 0;
+
+    rerender(<Probe {...props} busy={false} />);
+    expect(seen[0]).toBe(screen.getByPlaceholderText('Message Quill'));
   });
 
   it('does not take focus from someone who has moved on', () => {

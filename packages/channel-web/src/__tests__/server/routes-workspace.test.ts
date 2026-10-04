@@ -3575,6 +3575,39 @@ describe('channel-web agent-workspace BFF', () => {
         // A tool name that fences to nothing means no block at all.
         expect(await get('noname')).toBeNull();
       });
+
+      // TASK-790 — "empty" is decided on the SERIALIZED input, not the value's
+      // shape: whatever would draw as a bare `[]` or `{}` (or nothing at all)
+      // shows as "No details" instead of an empty-looking block.
+      it('shows every input that serializes to nothing, [] or {} as no input', async () => {
+        registerAuth({ id: 'u1', isAdmin: false });
+        const call = (id: string, input: unknown) =>
+          decision({ id, call: { id: `tu-${id}`, name: 'mcp.github.list_issues', input } as never });
+        seed(
+          call('arr', []),
+          call('undef-field', { a: undefined }),
+          call('fn', () => 1),
+          call('nested-empty', [{}]),
+          call('zero', 0),
+        );
+        registerReads();
+        const h = makeWorkspaceHandlers({ bus, initCtx });
+        const get = async (id: string) => {
+          const { res, captured } = mkRes();
+          await h.decision(mkReq({ decisionId: id }), res);
+          return (captured.body as { decision: { request: { tool: string; input: string | null; truncated: boolean } | null } })
+            .decision.request;
+        };
+        for (const id of ['arr', 'undef-field', 'fn']) {
+          expect({ id, request: await get(id) }).toEqual({
+            id,
+            request: { tool: 'mcp.github.list_issues', input: null, truncated: false },
+          });
+        }
+        // Not empty: something is drawn, and it is the serialized value.
+        expect((await get('nested-empty'))!.input).toBe('[\n  {}\n]');
+        expect((await get('zero'))!.input).toBe('0');
+      });
     });
 
     // --- the three resolutions ---------------------------------------------

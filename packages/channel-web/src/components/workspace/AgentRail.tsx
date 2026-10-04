@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   Activity,
   Folder,
@@ -118,6 +118,7 @@ export function AgentRailContent({
     kind: 'rename' | 'delete';
   } | null>(null);
   const [title, setTitle] = useState('');
+  const pastDateId = useId();
 
   async function onRevoke(row: GrantRow) {
     setNotice(null);
@@ -381,15 +382,22 @@ export function AgentRailContent({
                     {detail.conversationId &&
                       menu(detail.conversationId, 'Current conversation')}
                   </div>
-                  {past.map((c) => (
+                  {past.map((c, i) => (
                     <div
                       key={c.id}
                       className="group relative flex min-h-9 items-center rounded-sm"
                     >
+                      {/* TASK-790 — aria-describedby, not aria-description
+                          (read unevenly by VoiceOver); `hidden` keeps the
+                          date from being read twice in browse mode, since
+                          the row already draws it. The #875 pattern. */}
+                      <span id={`${pastDateId}-${i}`} hidden>
+                        {conversationDate(c.lastActivityAt)}
+                      </span>
                       <Button
                         variant="ghost"
                         aria-label={c.title}
-                        aria-description={conversationDate(c.lastActivityAt)}
+                        aria-describedby={`${pastDateId}-${i}`}
                         onClick={() => onOpenPast(c.id)}
                         className={cn(
                           'h-9 w-full justify-start gap-2 rounded-sm px-2 text-[13px] font-normal max-md:h-11',

@@ -1007,6 +1007,26 @@ describe('tool permissions (TASK-737)', () => {
     expect(toolPermsPuts).toEqual([]);
   });
 
+  // TASK-790 — the warning is advice beside a field the person is typing in,
+  // not an urgent interruption: role="note", so a screen reader does not cut
+  // into every keystroke with an alert. (The shared Alert defaults to
+  // role="alert".)
+  it('TASK-790: the address-change warning is a note, not an alert', async () => {
+    serve(inventory({ defaults: [] }));
+    await openEditor();
+    await screen.findByRole('group', { name: 'Permission for Search issues' });
+    fireEvent.change(screen.getByLabelText('Server URL'), {
+      target: { value: 'https://other.example.com/mcp' },
+    });
+    const note = screen.getByRole('note');
+    expect(note).toHaveTextContent('Changing the address resets this server’s tool permissions.');
+    expect(
+      screen
+        .queryAllByRole('alert')
+        .filter((el) => /Changing the address/.test(el.textContent ?? '')),
+    ).toEqual([]);
+  });
+
   it('TASK-755: putting the original address back removes the warning and restores the section', async () => {
     serve(inventory({ defaults: [] }));
     await openEditor();
