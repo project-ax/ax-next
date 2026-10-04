@@ -8,6 +8,8 @@ import {
   createBlobStoreS3PluginWithClient,
   type BlobDeleteOutput,
   type BlobGetOutput,
+  type BlobListInput,
+  type BlobListOutput,
   type BlobPutInput,
   type BlobPutOutput,
   type BlobStatOutput,
@@ -34,12 +36,13 @@ describe('@ax/blob-store-s3 plugin', () => {
     await h.close();
   });
 
-  it('registers all four blob:* hooks (plus the internal put the facade wraps)', () => {
+  it('registers all five blob:* hooks (plus the internal put the facade wraps)', () => {
     expect(h.bus.hasService('blob:put')).toBe(true);
     expect(h.bus.hasService('blob:put-internal')).toBe(true);
     expect(h.bus.hasService('blob:get')).toBe(true);
     expect(h.bus.hasService('blob:stat')).toBe(true);
     expect(h.bus.hasService('blob:delete')).toBe(true);
+    expect(h.bus.hasService('blob:list')).toBe(true);
   });
 
   it('manifest advertises the blob:* hooks and nothing else', () => {
@@ -51,6 +54,7 @@ describe('@ax/blob-store-s3 plugin', () => {
       'blob:get',
       'blob:stat',
       'blob:delete',
+      'blob:list',
     ]);
     expect(p.manifest.calls).toEqual([]);
     expect(p.manifest.subscribes).toEqual([]);
@@ -198,5 +202,53 @@ describe('@ax/blob-store-s3 plugin', () => {
         sha256: '../../../etc/passwd',
       }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('blob:list pages stored blobs ascending by sha, with a cursor until the last page', async () => {
+    const shas: string[] = [];
+    for (const t of ['one', 'two', 'three', 'four', 'five']) {
+      const out = await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), {
+        bytes: new TextEncoder().encode(t),
+      });
+      shas.push(out.sha256);
+    }
+    shas.sort();
+
+    const first = await h.bus.call<BlobListInput, BlobListOutput>('blob:list', h.ctx(), {
+      state: 'live',
+      limit: 2,
+    });
+    expect(first.items.map((i) => i.sha256)).toEqual(shas.slice(0, 2));
+    expect(first.next).toBe(shas[1]);
+
+    const rest = await h.bus.call<BlobListInput, BlobListOutput>('blob:list', h.ctx(), {
+      state: 'live',
+      limit: 10,
+      after: first.next!,
+    });
+    expect(rest.items.map((i) => i.sha256)).toEqual(shas.slice(2));
+    // The `returns` schema must not smuggle in an undefined-valued `next`.
+    expect('next' in rest).toBe(false);
+  });
+
+  it('blob:list rejects a bad limit with invalid-payload', async () => {
+    await expect(
+      h.bus.call<BlobListInput, BlobListOutput>('blob:list', h.ctx(), {
+        state: 'live',
+        limit: 1001,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it("blob:list for state 'retired' is empty for now", async () => {
+    await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', h.ctx(), {
+      bytes: new TextEncoder().encode('still live'),
+    });
+    expect(
+      await h.bus.call<BlobListInput, BlobListOutput>('blob:list', h.ctx(), {
+        state: 'retired',
+        limit: 10,
+      }),
+    ).toEqual({ items: [] });
   });
 });

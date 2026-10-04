@@ -55,6 +55,7 @@
     { "path": "../../packages/teams" },
     { "path": "../../packages/usage-limits" },
     { "path": "../../packages/disk-quota" },
+    { "path": "../../packages/blob-gc" },
     { "path": "../../packages/static-files" },
     { "path": "../../packages/onboarding" },
     { "path": "../../packages/validator-identity" },

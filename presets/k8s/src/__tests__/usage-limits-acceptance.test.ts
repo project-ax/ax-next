@@ -117,6 +117,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Per-owner storage limit (TASK-690): not on this canary's path (it gates
   // writes, not turns); its own canary is disk-quota-acceptance.test.ts.
   '@ax/disk-quota',
+  // Blob GC, report mode (TASK-777): not on this canary's path; its own canary
+  // is blob-gc-report-acceptance.test.ts.
+  '@ax/blob-gc',
 ]);
 
 const AGENT_ID = 'usage-canary-agent';

@@ -3,6 +3,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   type S3Client,
 } from '@aws-sdk/client-s3';
@@ -30,6 +31,17 @@ import { PluginError } from '@ax/core';
 
 /** Lowercase-hex sha256, 64 chars. The only shape a caller may name a blob by. */
 const SHA256_REGEX = /^[a-f0-9]{64}$/;
+
+/**
+ * What a LIVE blob's key looks like once the store prefix is stripped:
+ * `<aa>/<bb>/<sha>`, with the sha filed under its own shard. Anything else under
+ * the prefix (`retired/...`, `<sha>.tmp.<x>` leftovers, stray objects) is not a
+ * live blob.
+ */
+const LIVE_KEY_REGEX = /^([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
+
+/** The most blobs one `list` page may carry. */
+const LIST_MAX_LIMIT = 1000;
 
 const PLUGIN_NAME = '@ax/blob-store-s3';
 
@@ -76,6 +88,36 @@ export interface BlobPutResult {
 export type BlobGetResult = { bytes: Uint8Array } | { found: false };
 export type BlobStatResult = { size: number } | { found: false };
 
+/** One page request for `list`. `after` is the cursor from the previous page. */
+export interface BlobListQuery {
+  state: 'live' | 'retired';
+  after?: string;
+  limit: number;
+}
+/** One page of `list`. `next` is present iff the page is full — see `list`. */
+export interface BlobListResult {
+  items: Array<{ sha256: string; size: number }>;
+  next?: string;
+}
+
+function invalidListInput(message: string): PluginError {
+  return new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME, message });
+}
+
+/** Validate a `list` request before anything is sent to S3. The hook bus hands
+ *  us unchecked JSON-ish input, so check every field's runtime type. */
+function assertValidListQuery(q: BlobListQuery): void {
+  if (q.state !== 'live' && q.state !== 'retired') {
+    throw invalidListInput("state must be 'live' or 'retired'");
+  }
+  if (!Number.isInteger(q.limit) || q.limit < 1 || q.limit > LIST_MAX_LIMIT) {
+    throw invalidListInput(`limit must be an integer between 1 and ${LIST_MAX_LIMIT}`);
+  }
+  if (q.after !== undefined && (typeof q.after !== 'string' || !SHA256_REGEX.test(q.after))) {
+    throw invalidListInput('after must be 64 lowercase-hex characters');
+  }
+}
+
 /**
  * Is this an S3 "object not found" error? HeadObject throws `NotFound` and
  * GetObject throws `NoSuchKey`; some S3-compatible servers (MinIO, GCS) report
@@ -108,6 +150,7 @@ function isNotFound(err: unknown): boolean {
  *   - `get` re-verifies the digest and refuses to return tampered bytes.
  *   - `stat` is a HeadObject; `delete` is a DeleteObject (idempotent — S3
  *     returns success whether or not the key existed).
+ *   - `list` is a ListObjectsV2 scan of the live keys, a page at a time.
  */
 export class S3BlobStore {
   private readonly prefix: string;
@@ -206,6 +249,70 @@ export class S3BlobStore {
     } catch (err) {
       if (isNotFound(err)) return { found: false };
       throw err;
+    }
+  }
+
+  /**
+   * One page of live blobs, ascending by sha256. This is the GC's enumeration
+   * seam (`blob:list`): it finds blobs no ledger row has ever seen.
+   *
+   * `after` is exclusive — pass the previous page's `next`. `next` is present
+   * iff the page holds exactly `limit` items, and then it IS the last item's
+   * sha. So a final page can legitimately be empty (an exact multiple of
+   * `limit`); callers loop until `next` is absent. The key is left OFF rather
+   * than set to `undefined`, so it survives the bus's `returns` schema as-is.
+   *
+   * This is a ListObjectsV2 scan under `<prefix>/`, which S3 already returns in
+   * key order. Since every live key is `<aa>/<bb>/<sha>` and `<aa>` leads with a
+   * hex char, `StartAfter = blobKey(after)` resumes exactly after the cursor.
+   * Only keys shaped like a live blob count; that leaves out
+   * `<sha>.tmp.<x>` leftovers (not blobs yet) and the `retired/` namespace. S3
+   * lists keys by byte order and 'r' sorts after every hex digit, so the first
+   * key whose remainder starts past 'f' ends the live region and we stop there
+   * instead of paging through everything retired.
+   *
+   * `state: 'retired'` is empty for now: the retired namespace lands with a
+   * later card (TASK-778), and nothing is retired until then.
+   */
+  async list(query: BlobListQuery): Promise<BlobListResult> {
+    assertValidListQuery(query);
+    const { state, after, limit } = query;
+    if (state === 'retired') return { items: [] };
+
+    // The empty prefix means "the whole bucket"; don't send `Prefix: ''`.
+    const listPrefix = this.prefix === '' ? '' : `${this.prefix}/`;
+    const items: BlobListResult['items'] = [];
+    let ContinuationToken: string | undefined;
+
+    for (;;) {
+      const res = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          ...(listPrefix === '' ? {} : { Prefix: listPrefix }),
+          ...(after === undefined ? {} : { StartAfter: blobKey(this.prefix, after) }),
+          MaxKeys: limit,
+          ...(ContinuationToken === undefined ? {} : { ContinuationToken }),
+        }),
+      );
+
+      for (const obj of res.Contents ?? []) {
+        const key = obj.Key;
+        if (key === undefined || !key.startsWith(listPrefix)) continue;
+        const rest = key.slice(listPrefix.length);
+        // Past the hex shards (`retired/...`): nothing live sorts after this.
+        if (rest.charAt(0) > 'f') return { items };
+        const m = LIVE_KEY_REGEX.exec(rest);
+        if (m === null) continue;
+        const sha256 = m[3]!;
+        if (!sha256.startsWith(m[1]! + m[2]!)) continue;
+        items.push({ sha256, size: obj.Size ?? 0 });
+        if (items.length === limit) return { items, next: sha256 };
+      }
+
+      if (res.IsTruncated !== true || res.NextContinuationToken === undefined) {
+        return { items };
+      }
+      ContinuationToken = res.NextContinuationToken;
     }
   }
 

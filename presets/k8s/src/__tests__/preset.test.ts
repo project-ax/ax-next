@@ -237,6 +237,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/tool-policy',
         '@ax/usage-limits',
         '@ax/disk-quota',
+        '@ax/blob-gc',
         '@ax/validator-identity',
         '@ax/validator-routine',
         '@ax/validator-service',
@@ -855,6 +856,44 @@ describe('@ax/preset-k8s wiring', () => {
     // ...and stops complaining once it subscribes.
     const holder = { manifest: { ...viaCalls.manifest, subscribes: ['blob:collect-refs'] } };
     expect(blobWritersThatAreNotHolders([...plugins, holder])).toEqual([]);
+  });
+
+  it('loads @ax/blob-gc in report mode next to blob:list and the blob:stored facade (TASK-777)', () => {
+    for (const blob of [
+      undefined,
+      { backend: 's3', bucket: 'ax-blobs' } as const,
+    ]) {
+      const plugins = createK8sPlugins(blob === undefined ? stubConfig : { ...stubConfig, blob });
+      const gc = plugins.find((p) => p.manifest.name === '@ax/blob-gc');
+      expect(gc, 'preset loads @ax/blob-gc').toBeDefined();
+      expect(gc!.manifest.registers).toEqual([]);
+      expect(gc!.manifest.subscribes).toEqual(['blob:stored']);
+      expect(gc!.manifest.calls).toEqual([
+        'database:get-instance',
+        'blob:list',
+        'storage:get',
+        'storage:set',
+        'http:register-route',
+        'auth:require-user',
+      ]);
+      // Report mode: nothing that could free a byte is in its reach.
+      const reach = [...gc!.manifest.calls, ...(gc!.manifest.optionalCalls ?? []).map((c) => c.hook)];
+      for (const hook of ['blob:delete', 'blob:retire', 'blob:purge']) expect(reach).not.toContain(hook);
+      for (const hook of gc!.manifest.calls) {
+        const owners = plugins
+          .filter((p) => p.manifest.name !== '@ax/blob-gc')
+          .filter((p) => p.manifest.registers.includes(hook))
+          .map((p) => p.manifest.name);
+        expect(owners, `no registrant for ${hook}`).toHaveLength(1);
+      }
+      // blob:list comes from whichever backend is configured, and that backend
+      // registers behind the blob:put facade, so blob:stored fires on every put.
+      const backend = plugins.find((p) => p.manifest.registers.includes('blob:list'))!;
+      expect(backend.manifest.name).toBe(
+        blob === undefined ? '@ax/blob-store-fs' : '@ax/blob-store-s3',
+      );
+      expect(backend.manifest.registers).toContain('blob:put-internal');
+    }
   });
 
   it('loads @ax/disk-quota next to BOTH gates it depends on: workspace:pre-apply and blob:put (TASK-690)', () => {

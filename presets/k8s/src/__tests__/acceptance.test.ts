@@ -291,6 +291,12 @@ const PLUGINS_TO_DROP = new Set<string>([
   // postgres, real git backend and real fs blob store) are pinned by the
   // disk-quota-acceptance.test.ts canary.
   '@ax/disk-quota',
+  // Blob GC in report mode (TASK-777): postgres-backed (calls
+  // database:get-instance in init) and hard-calls http:register-route +
+  // auth:require-user for its admin route, all dropped above. Static wiring is
+  // pinned in preset.test.ts and the real sweep (real postgres, real fs blob
+  // store, real holders) by the blob-gc-report-acceptance.test.ts canary.
+  '@ax/blob-gc',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

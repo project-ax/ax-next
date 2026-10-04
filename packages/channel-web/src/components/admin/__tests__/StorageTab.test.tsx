@@ -5,11 +5,12 @@ import { toastActions } from '@/lib/toast-store';
 import type { AdminStorage, MyStorage, StorageOwner } from '@/lib/storage-api';
 
 /*
-  The Storage tab talks to three routes. These tests stub `fetch` at the wire
-  (the seam the real client uses) rather than mocking `lib/storage-api`, so the
-  URLs, methods, headers and bodies the tab really sends are part of what is
-  being asserted, and so is the thing a non-admin must NOT send: a request to
-  /admin/storage.
+  The Storage tab talks to four routes: three in `@ax/disk-quota`, and the
+  report-only "files no longer used" line from `@ax/blob-gc`. These tests stub
+  `fetch` at the wire (the seam the real client uses) rather than mocking
+  `lib/storage-api`, so the URLs, methods, headers and bodies the tab really
+  sends are part of what is being asserted, and so is the thing a non-admin
+  must NOT send: a request to /admin/storage or /admin/storage/cleanup.
 */
 
 const MB = 1_048_576;
@@ -25,6 +26,8 @@ interface Call {
 let calls: Call[];
 let mine: MyStorage;
 let admin: AdminStorage;
+/** The body of `GET /admin/storage/cleanup`. The tab reads only its `report`. */
+let cleanup: unknown;
 let handler: (call: Call) => Response | Promise<Response>;
 
 function json(status: number, body: unknown): Response {
@@ -107,10 +110,40 @@ function makeAdmin(over: Partial<AdminStorage> = {}): AdminStorage {
   };
 }
 
-/** Serve the current `mine` / `admin` for the two reads; everything else is a 404. */
+/**
+ * What `@ax/blob-gc` answers after a sweep has finished: 12 files, 123,456
+ * bytes. `null` is the answer before the first complete sweep.
+ */
+function makeCleanup(report: Record<string, unknown> | null = {}): unknown {
+  return {
+    settings: { mode: 'report', graceMs: 86_400_000, retentionMs: 604_800_000 },
+    defaults: { mode: 'report', graceMs: 86_400_000, retentionMs: 604_800_000 },
+    bounds: {
+      graceMs: { min: 60_000, max: 2_592_000_000 },
+      retentionMs: { min: 3_600_000, max: 31_536_000_000 },
+    },
+    report:
+      report === null
+        ? null
+        : {
+            at: '2026-10-04T10:00:00.000Z',
+            mode: 'report',
+            discovered: 40,
+            candidates: 20,
+            held: 8,
+            wouldRetire: 12,
+            wouldRetireBytes: 123_456,
+            perHolder: { '@ax/attachments': 3 },
+            ...report,
+          },
+  };
+}
+
+/** Serve the current `mine` / `admin` / `cleanup` for the reads; everything else is a 404. */
 function defaultHandler(call: Call): Response {
   if (call.method === 'GET' && call.path === '/settings/storage') return json(200, mine);
   if (call.method === 'GET' && call.path === '/admin/storage') return json(200, admin);
+  if (call.method === 'GET' && call.path === '/admin/storage/cleanup') return json(200, cleanup);
   return json(404, { error: 'not-found' });
 }
 
@@ -140,6 +173,7 @@ let showToast: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   mine = makeMine();
   admin = makeAdmin();
+  cleanup = makeCleanup();
   handler = defaultHandler;
   installFetch();
   toastActions.reset();
@@ -325,6 +359,13 @@ describe('StorageTab — someone who is not an admin', () => {
     expect(calls.filter((c) => c.path.startsWith('/admin'))).toEqual([]);
   });
 
+  it('never asks which files nobody uses any more, and is not told', async () => {
+    await renderPerson();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.filter((c) => c.path === '/admin/storage/cleanup')).toEqual([]);
+    expect(screen.queryByText(/no longer used by anyone/i)).toBeNull();
+  });
+
   it('is not shown the limits form or everyone else\'s storage', async () => {
     await renderPerson();
     expect(screen.queryByRole('heading', { name: 'Storage limits' })).toBeNull();
@@ -429,6 +470,143 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
       expect(screen.queryByRole('table')).toBeNull();
       // The limits are still editable on a quiet day.
       expect(screen.getByLabelText('Limit per person (MB)')).toBeInTheDocument();
+    });
+  });
+
+  describe('files no longer used by anyone (report only)', () => {
+    const LINE = 'Files no longer used by anyone: 12 (120.6 KB). Not removed yet.';
+    const FAILED = "We couldn't check for files no longer in use just now.";
+
+    /** The "Everyone's storage" card: its title up to the next card. */
+    function everyoneCard(): HTMLElement {
+      const title = screen.getByRole('heading', { name: "Everyone's storage" });
+      const card = title.closest('.rounded-lg');
+      if (!(card instanceof HTMLElement)) throw new Error('no card around "Everyone\'s storage"');
+      return card;
+    }
+
+    it('says how many files and how much room, and that nothing is removed yet', async () => {
+      await renderAdmin();
+      const line = await screen.findByText(LINE);
+      expect(callsTo('GET', '/admin/storage/cleanup')).toHaveLength(1);
+      // A small muted aside at the foot of the card, not a heading or an alert.
+      expect(everyoneCard()).toContainElement(line);
+      expect(line).toHaveClass('text-sm', 'text-muted-foreground');
+      expect(line.tagName).toBe('P');
+      expect(within(everyoneCard()).queryByRole('alert')).toBeNull();
+    });
+
+    it('sits after the table, at the bottom of the card', async () => {
+      await renderAdmin();
+      const line = await screen.findByText(LINE);
+      const table = within(everyoneCard()).getByRole('table');
+      expect(table.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      // The last thing in the card's content, with nothing after it.
+      expect(line.nextElementSibling).toBeNull();
+      expect(line.parentElement?.parentElement).toBe(everyoneCard());
+    });
+
+    it('reads the same when there is one file, and groups a big count', async () => {
+      cleanup = makeCleanup({ wouldRetire: 1, wouldRetireBytes: 2048 });
+      const { unmount } = await renderAdmin();
+      expect(
+        await screen.findByText('Files no longer used by anyone: 1 (2 KB). Not removed yet.'),
+      ).toBeInTheDocument();
+      unmount();
+
+      cleanup = makeCleanup({ wouldRetire: 1234567, wouldRetireBytes: 5 * GB });
+      await renderAdmin();
+      expect(
+        await screen.findByText('Files no longer used by anyone: 1,234,567 (5 GB). Not removed yet.'),
+      ).toBeInTheDocument();
+    });
+
+    it('says zero as zero', async () => {
+      cleanup = makeCleanup({ wouldRetire: 0, wouldRetireBytes: 0 });
+      await renderAdmin();
+      expect(
+        await screen.findByText('Files no longer used by anyone: 0 (0 B). Not removed yet.'),
+      ).toBeInTheDocument();
+    });
+
+    it('says it has not looked yet when no sweep has finished', async () => {
+      cleanup = makeCleanup(null);
+      await renderAdmin();
+      expect(
+        await screen.findByText('Files no longer used by anyone: not checked yet.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Not removed yet/)).toBeNull();
+    });
+
+    it('shows nothing about it while it loads, and does not hold the rest of the card back', async () => {
+      handler = (call) =>
+        call.path === '/admin/storage/cleanup' ? new Promise<Response>(() => {}) : defaultHandler(call);
+      await renderAdmin();
+      expect(screen.queryByText(/no longer used by anyone/i)).toBeNull();
+      expect(screen.queryByText(FAILED)).toBeNull();
+      expect(within(everyoneCard()).getByRole('table')).toBeInTheDocument();
+    });
+
+    it('asks while the owners list is still loading, so the two reads run side by side', async () => {
+      handler = (call) =>
+        call.path === '/admin/storage' ? new Promise<Response>(() => {}) : defaultHandler(call);
+      render(<StorageTab isAdmin />);
+      expect(await screen.findByText(LINE)).toBeInTheDocument();
+      expect(screen.getByText("Loading everyone's storage…")).toBeInTheDocument();
+    });
+
+    it('keeps the rest of the tab working, and says so quietly, when the check fails', async () => {
+      handler = (call) =>
+        call.path === '/admin/storage/cleanup' ? json(500, { error: 'db-down' }) : defaultHandler(call);
+      await renderAdmin();
+
+      const sentence = await screen.findByText(FAILED);
+      expect(sentence).toHaveClass('text-sm', 'text-muted-foreground');
+      // Quiet: no alert, no retry button, no code, no reason.
+      expect(sentence.closest('[role="alert"]')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+      expect(sentence).not.toHaveTextContent('db-down');
+      expect(sentence).not.toHaveTextContent('server ran into a problem');
+      // Everything else is as it was.
+      expect(within(everyoneCard()).getByRole('table')).toBeInTheDocument();
+      expect(screen.getByText('4 people and teams, 2.2 GB in total')).toBeInTheDocument();
+      expect(screen.getByLabelText('Limit per person (MB)')).toBeInTheDocument();
+      expect(screen.getByText('2.3 GB of 5 GB used')).toBeInTheDocument();
+      expect(screen.queryByText(/Not removed yet/)).toBeNull();
+    });
+
+    it.each([
+      ['a request that never reaches the server', () => Promise.reject(new TypeError('Failed to fetch'))],
+      ['a 200 that is not a report', () => json(200, { hello: 'world' })],
+      ['a count that is not a number', () => json(200, makeCleanup({ wouldRetire: 'lots' }))],
+    ])('says the same quiet sentence for %s', async (_name, answer) => {
+      handler = (call) => (call.path === '/admin/storage/cleanup' ? answer() : defaultHandler(call));
+      await renderAdmin();
+      expect(await screen.findByText(FAILED)).toBeInTheDocument();
+      expect(screen.queryByText(/NaN|undefined|Failed to fetch/)).toBeNull();
+    });
+
+    it('does not touch the admin report: the limits still load when this read is refused', async () => {
+      handler = (call) =>
+        call.path === '/admin/storage/cleanup' ? json(403, { error: 'forbidden' }) : defaultHandler(call);
+      await renderAdmin();
+      await screen.findByText(FAILED);
+      expect(callsTo('GET', '/admin/storage')).toHaveLength(1);
+      expect(screen.queryByText(/couldn't load the storage limits/i)).toBeNull();
+    });
+
+    it('only reads it; nothing here can start a removal', async () => {
+      await renderAdmin();
+      await screen.findByText(LINE);
+      expect(calls.filter((c) => c.path === '/admin/storage/cleanup').map((c) => c.method)).toEqual(['GET']);
+      expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
+    });
+
+    it('is still there on a quiet day, under the empty state', async () => {
+      admin = makeAdmin({ owners: [], ownerCount: 0, totalBytes: 0 });
+      render(<StorageTab isAdmin />);
+      expect(await screen.findByText('No storage used yet')).toBeInTheDocument();
+      expect(await screen.findByText(LINE)).toBeInTheDocument();
     });
   });
 

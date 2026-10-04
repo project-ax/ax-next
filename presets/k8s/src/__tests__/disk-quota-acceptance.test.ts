@@ -127,6 +127,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/preset-k8s/retire-strata-index',
   // The spend/rate-limit plugin has its own canary and is not on this path.
   '@ax/usage-limits',
+  // Blob GC, report mode (TASK-777): has its own canary
+  // (blob-gc-report-acceptance.test.ts) and is not on this path.
+  '@ax/blob-gc',
   // Re-added below with an injected clock (manifest asserted identical).
   DISK_QUOTA_PLUGIN,
 ]);

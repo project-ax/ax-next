@@ -79,6 +79,7 @@
     { "path": "packages/blob-store-fs" },
     { "path": "packages/blob-store-s3" },
     { "path": "packages/usage-limits" },
-    { "path": "packages/disk-quota" }
+    { "path": "packages/disk-quota" },
+    { "path": "packages/blob-gc" }
   ]
 }

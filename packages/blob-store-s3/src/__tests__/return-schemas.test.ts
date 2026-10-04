@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BlobDeleteOutputSchema,
   BlobGetOutputSchema,
+  BlobListOutputSchema,
   BlobPutOutputSchema,
   BlobStatOutputSchema,
 } from '../plugin.js';
@@ -47,5 +48,30 @@ describe('@ax/blob-store-s3 return schemas', () => {
 
   it('blob:delete round-trips an empty object', () => {
     expect(BlobDeleteOutputSchema.parse({})).toEqual({});
+  });
+
+  it('blob:list round-trips a full page with a cursor', () => {
+    const value = {
+      items: [
+        { sha256: 'a'.repeat(64), size: 1 },
+        { sha256: 'b'.repeat(64), size: 0 },
+      ],
+      next: 'b'.repeat(64),
+    };
+    expect(BlobListOutputSchema.parse(value)).toEqual(value);
+  });
+
+  it('blob:list round-trips a final page WITHOUT growing a `next` key', () => {
+    const parsed = BlobListOutputSchema.parse({ items: [] });
+    expect(parsed).toEqual({ items: [] });
+    expect('next' in parsed).toBe(false);
+  });
+
+  it('blob:list rejects a malformed page', () => {
+    expect(BlobListOutputSchema.safeParse({}).success).toBe(false);
+    expect(BlobListOutputSchema.safeParse({ items: [{ sha256: 'a', size: '1' }] }).success).toBe(
+      false,
+    );
+    expect(BlobListOutputSchema.safeParse({ items: [], next: 7 }).success).toBe(false);
   });
 });

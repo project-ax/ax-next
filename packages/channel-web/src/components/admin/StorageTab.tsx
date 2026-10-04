@@ -9,8 +9,15 @@
  *
  * Reads and writes go through `lib/storage-api.ts`; every sentence comes from
  * `lib/storage-copy.ts`. The admin half is a separate component that only
- * exists for an admin, so a non-admin's browser never asks /admin/storage for
- * anything (the server would say no; not asking is politer, and cheaper).
+ * exists for an admin, so a non-admin's browser never asks /admin/storage (or
+ * /admin/storage/cleanup) for anything (the server would say no; not asking is
+ * politer, and cheaper).
+ *
+ * The foot of "Everyone's storage" carries one more line for admins (TASK-777):
+ * how many files nobody uses any more and how much room they take, ending in
+ * "Not removed yet." It is REPORT-ONLY: nothing is removed and there is no
+ * button for it. It is read on its own, so if that read fails the rest of the
+ * card is untouched and the line says so in one quiet sentence.
  *
  * Layout mirrors the Usage tab: an `h1` from the pane header, then the cards.
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
@@ -53,17 +60,20 @@ import {
   BYTES_PER_MB,
   fetchAdminStorage,
   fetchMyStorage,
+  fetchUnusedFiles,
   type AdminStorage,
   type MyStorage,
   type StorageLimits,
   type StorageOwner,
   type StorageStatus,
+  type UnusedFiles,
 } from '@/lib/storage-api';
 import {
   FULL_BODY,
   FULL_TITLE,
   NEAR_LIMIT_BODY,
   NEAR_LIMIT_TITLE,
+  UNUSED_FILES_FAILED,
   breakdownRows,
   failureMessage,
   formatBytes,
@@ -73,6 +83,7 @@ import {
   ownersSummary,
   shareOfLimit,
   statusLabel,
+  unusedFilesLine,
   usageLine,
 } from '@/lib/storage-copy';
 import { StorageLimitsCard } from './StorageLimitsCard';
@@ -288,6 +299,30 @@ function OwnerRow({ owner, limitBytes }: { owner: StorageOwner; limitBytes: numb
   );
 }
 
+/**
+ * "Files no longer used by anyone: 12 (120.6 KB). Not removed yet." (TASK-777).
+ *
+ * A side note at the foot of the card, read on its own so that a failure here
+ * never touches the numbers above it: it asks for itself the moment the card
+ * mounts (not after the owners list arrives), shows nothing while it waits, and
+ * on a failure says one quiet sentence. No retry: the next visit asks again,
+ * and the answer only changes hourly.
+ *
+ * REPORT-ONLY. It counts what a cleanup would take; nothing is taken yet, and
+ * there is no button here that could start one.
+ */
+function UnusedFilesLine() {
+  // The read builds a longer message (with the reason) for the cards that show
+  // one; this line shows only the fixed sentence, so `what` is that sentence.
+  const { state } = useRead<UnusedFiles>(fetchUnusedFiles, UNUSED_FILES_FAILED);
+  if (state.kind === 'loading') return null;
+  return (
+    <p className="text-sm text-muted-foreground">
+      {state.kind === 'error' ? UNUSED_FILES_FAILED : unusedFilesLine(state.data.report)}
+    </p>
+  );
+}
+
 function EveryoneCard({ admin }: { admin: AdminStorage | null }) {
   const limitBytes = admin === null ? 0 : admin.limits.limitMb * BYTES_PER_MB;
   return (
@@ -338,6 +373,7 @@ function EveryoneCard({ admin }: { admin: AdminStorage | null }) {
             )}
           </>
         )}
+        <UnusedFilesLine />
       </CardContent>
     </Card>
   );

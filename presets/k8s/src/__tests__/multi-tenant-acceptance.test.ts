@@ -216,6 +216,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   // the dropped http/auth plugins). Static wiring in preset.test.ts, real gates
   // in disk-quota-acceptance.test.ts.
   '@ax/disk-quota',
+  // Blob GC, report mode (TASK-777): same reason. Static wiring in
+  // preset.test.ts, the real sweep in blob-gc-report-acceptance.test.ts.
+  '@ax/blob-gc',
 ]);
 
 // Stub producer for the dispatcher's REQUIRED dep this canary drops.

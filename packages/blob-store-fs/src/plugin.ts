@@ -52,6 +52,25 @@ export interface BlobDeleteInput {
 }
 export type BlobDeleteOutput = Record<string, never>;
 
+/**
+ * One page of blobs, ascending by sha256 — the GC's enumeration seam.
+ * `after` is the cursor (the previous page's `next`), exclusive; `limit` is an
+ * integer 1..1000. `next` is present iff the page holds exactly `limit` items,
+ * and then it is the last item's sha256 — so a final page can be empty, and
+ * callers loop until `next` is absent. `state: 'retired'` lists blobs that were
+ * retired but not yet deleted; no backend has that namespace yet, so it is
+ * empty for now (TASK-778).
+ */
+export interface BlobListInput {
+  state: 'live' | 'retired';
+  after?: string;
+  limit: number;
+}
+export interface BlobListOutput {
+  items: Array<{ sha256: string; size: number }>;
+  next?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Runtime `returns` contracts (ARCH-13 drift-guard pattern). Each schema is a
 // per-registration in-process shape assertion (NOT an inter-plugin wire
@@ -84,6 +103,14 @@ export const BlobStatOutputSchema = z.union([
 
 export const BlobDeleteOutputSchema = z.object({}) as unknown as ZodType<BlobDeleteOutput>;
 
+// `next` is `.optional()` so a final page parses without growing the key. The
+// cast is the same one the other schemas use: under exactOptionalPropertyTypes
+// zod infers `next?: string | undefined`, which is looser than the interface.
+export const BlobListOutputSchema = z.object({
+  items: z.array(z.object({ sha256: z.string(), size: z.number() })),
+  next: z.string().optional(),
+}) as unknown as ZodType<BlobListOutput>;
+
 export function createBlobStoreFsPlugin(config: BlobStoreFsConfig): Plugin {
   const store = new BlobStore(config.root);
 
@@ -91,7 +118,14 @@ export function createBlobStoreFsPlugin(config: BlobStoreFsConfig): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['blob:put', 'blob:put-internal', 'blob:get', 'blob:stat', 'blob:delete'],
+      registers: [
+        'blob:put',
+        'blob:put-internal',
+        'blob:get',
+        'blob:stat',
+        'blob:delete',
+        'blob:list',
+      ],
       calls: [],
       subscribes: [],
     },
@@ -130,6 +164,13 @@ export function createBlobStoreFsPlugin(config: BlobStoreFsConfig): Plugin {
           return {};
         },
         { returns: BlobDeleteOutputSchema },
+      );
+
+      bus.registerService<BlobListInput, BlobListOutput>(
+        'blob:list',
+        PLUGIN_NAME,
+        async (_ctx, input) => store.list(input),
+        { returns: BlobListOutputSchema },
       );
     },
   };
