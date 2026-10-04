@@ -1594,6 +1594,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@ax/connectors':
+        specifier: workspace:*
+        version: link:../connectors
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
