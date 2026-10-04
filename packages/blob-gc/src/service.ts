@@ -402,6 +402,19 @@ export function createBlobGcService(deps: {
             // Deletes the RETIRED copy only. A live copy (a re-put, or a read
             // that restored it) survives, and then so does its row.
             await bus.call('blob:purge', ctx, { sha256: b.sha256 });
+            // A READ may have restored it since the retire (blob:get / stat
+            // restore on a live miss and record nothing here), so the row
+            // can say 'retired' while the bytes are live. Probe without
+            // restoring: anything still there means nothing was freed, and
+            // the row goes back to live with a fresh grace window.
+            const left = await bus.call<{ sha256: string; restore: boolean }, unknown>('blob:stat', ctx, {
+              sha256: b.sha256,
+              restore: false,
+            });
+            if (!(left !== null && typeof left === 'object' && (left as Record<string, unknown>).found === false)) {
+              await store.markRestored(b.sha256, now());
+              continue;
+            }
             if (await store.deletePurged(b.sha256, purgeCutoff)) {
               c.purged++;
               c.bytesPurged += b.size;

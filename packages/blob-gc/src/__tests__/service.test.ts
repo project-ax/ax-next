@@ -790,6 +790,31 @@ describe('sweep (enforce): purge pass', () => {
     expect(await row(S)).toMatchObject({ state: 'live' });
   });
 
+  it('a blob a READ restored (no put, so the row still says retired) is not counted as purged and its row goes live', async () => {
+    // Found by the enforce canary: blob:get restores behind the GC's back, so
+    // the row stays 'retired'. Purge then finds no retired copy; deleting the
+    // row would report bytes freed that are still on disk.
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 2500);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+    // A read restores it (the backend's get does this on a live miss).
+    w.backend.set(S, w.retired.get(S)!);
+    w.retired.delete(S);
+    w.clock.advance(8 * DAY);
+    expect(await w.svc.sweep()).toMatchObject({ report: { purged: 0, bytesPurged: 0 } });
+    expect(w.backend.get(S)).toBe(2500);
+    const r = (await row(S))!;
+    expect(r).toMatchObject({ state: 'live', retired_at: null });
+    expect(r.last_put_at.toISOString()).toBe(w.clock.now().toISOString());
+    // It is a candidate again after a fresh grace window, and retired again.
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+    expect(w.retired.get(S)).toBe(2500);
+  });
+
   it('a held blob whose bytes are gone logs blob_gc_held_blob_missing and goes live anyway', async () => {
     const w = world();
     enforce(w);
