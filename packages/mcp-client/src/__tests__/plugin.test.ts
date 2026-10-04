@@ -195,9 +195,8 @@ describe('@ax/mcp-client plugin', () => {
     await saveConfig(bus, ctx(), {
       id: 'a',
       enabled: true,
-      transport: 'stdio',
-      command: 'ignored',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
     await saveConfig(bus, ctx(), {
       id: 'b',
@@ -278,16 +277,14 @@ describe('@ax/mcp-client plugin', () => {
     await saveConfig(bus, ctx(), {
       id: 'a',
       enabled: true,
-      transport: 'stdio',
-      command: 'x',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
     await saveConfig(bus, ctx(), {
       id: 'b',
       enabled: true,
-      transport: 'stdio',
-      command: 'x',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
 
     await createToolDispatcherPlugin().init({ bus, config: undefined });
@@ -341,16 +338,14 @@ describe('@ax/mcp-client plugin', () => {
     await saveConfig(bus, ctx(), {
       id: 'a',
       enabled: true,
-      transport: 'stdio',
-      command: 'x',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
     await saveConfig(bus, ctx(), {
       id: 'disabled-one',
       enabled: false,
-      transport: 'stdio',
-      command: 'x',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
 
     await createToolDispatcherPlugin().init({ bus, config: undefined });
@@ -383,7 +378,7 @@ describe('@ax/mcp-client plugin', () => {
       plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
-    await saveConfig(bus, ctx(), { id: 'a', enabled: true, transport: 'stdio', command: 'x', args: [] });
+    await saveConfig(bus, ctx(), { id: 'a', enabled: true, transport: 'streamable-http', url: 'https://example.test/mcp' });
     // A row written before the reservation existed — saveConfig would now
     // refuse it, so it goes straight to storage.
     const reserved = 'c5e0235982f';
@@ -391,7 +386,7 @@ describe('@ax/mcp-client plugin', () => {
     await bus.call('storage:set', ctx(), {
       key: `mcp-server:${reserved}`,
       value: enc.encode(
-        JSON.stringify({ id: reserved, enabled: true, transport: 'stdio', command: 'x', args: [] }),
+        JSON.stringify({ id: reserved, enabled: true, transport: 'streamable-http', url: 'https://example.test/mcp' }),
       ),
     });
     await bus.call('storage:set', ctx(), {
@@ -426,6 +421,103 @@ describe('@ax/mcp-client plugin', () => {
     await serverR.dispose();
   });
 
+  it('init retires a stored stdio server: never connected, row deleted, env credential purged, http server still wired', async () => {
+    const bus = new HookBus();
+    const serverA = await makeFakeMcpServer({
+      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
+    });
+    // A WORKING server behind the stdio row's id: a connect failure is swallowed
+    // at init, so a throwing factory could not tell "swept" from "tried and
+    // failed". Record every id the plugin tries to connect instead.
+    const serverOld = await makeFakeMcpServer({
+      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
+    });
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await saveConfig(bus, ctx(), {
+      id: 'a',
+      enabled: true,
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
+    });
+    // A pre-removal row goes straight to storage (saveConfig now refuses it),
+    // together with the env credential slot it declared.
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    await bus.call('storage:set', ctx(), {
+      key: 'mcp-server:old',
+      value: enc.encode(
+        JSON.stringify({
+          id: 'old',
+          enabled: true,
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', 'some-mcp-server'],
+          env: { GH_TOKEN: '' },
+        }),
+      ),
+    });
+    await bus.call('storage:set', ctx(), {
+      key: 'mcp-server-index',
+      value: enc.encode(JSON.stringify(['a', 'old'])),
+    });
+    for (const ref of ['mcp:old:env:GH_TOKEN', 'mcp:a:header:Authorization']) {
+      await bus.call('credentials:set', ctx(), {
+        scope: 'global',
+        ownerId: null,
+        ref,
+        kind: 'api-key',
+        payload: enc.encode('s3cret'),
+      });
+    }
+
+    const attempted: string[] = [];
+    await createToolDispatcherPlugin().init({ bus, config: undefined });
+    await createMcpClientPlugin({
+      transportFactory: async ({ config }) => {
+        attempted.push(config.id);
+        return config.id === 'a' ? serverA.clientTransport : serverOld.clientTransport;
+      },
+    }).init({ bus, config: undefined });
+
+    // The stdio server was never connected (so never spawned) ...
+    expect(attempted).toEqual(['a']);
+    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
+      'tool:list',
+      ctx(),
+      {},
+    );
+    expect(listed.tools.map((t) => t.name)).toEqual(['mcp.a.echo']);
+    // ... its row is gone and the index lists only the surviving server ...
+    const row = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+      'storage:get',
+      ctx(),
+      { key: 'mcp-server:old' },
+    );
+    expect(row.value?.length ?? 0).toBe(0);
+    const idx = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+      'storage:get',
+      ctx(),
+      { key: 'mcp-server-index' },
+    );
+    expect(JSON.parse(dec.decode(idx.value!))).toEqual(['a']);
+    // ... and only ITS env credential was purged; the http server's slot stays.
+    const { credentials } = await bus.call<Record<string, never>, { credentials: Array<{ ref: string }> }>(
+      'credentials:list',
+      ctx(),
+      {},
+    );
+    const refs = credentials.map((c) => c.ref);
+    expect(refs).not.toContain('mcp:old:env:GH_TOKEN');
+    expect(refs).toContain('mcp:a:header:Authorization');
+
+    await serverA.dispose();
+    await serverOld.dispose();
+  });
+
   it('tool:execute returns a MCP_SERVER_UNAVAILABLE tool-error result when the server dies', async () => {
     const bus = new HookBus();
     const serverA = await makeFakeMcpServer({
@@ -440,9 +532,8 @@ describe('@ax/mcp-client plugin', () => {
     await saveConfig(bus, ctx(), {
       id: 'a',
       enabled: true,
-      transport: 'stdio',
-      command: 'x',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
 
     await createToolDispatcherPlugin().init({ bus, config: undefined });
@@ -489,16 +580,14 @@ describe('@ax/mcp-client plugin', () => {
     await saveConfig(bus, ctx(), {
       id: 'broken',
       enabled: true,
-      transport: 'stdio',
-      command: 'x',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
     await saveConfig(bus, ctx(), {
       id: 'good',
       enabled: true,
-      transport: 'stdio',
-      command: 'x',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
 
     await createToolDispatcherPlugin().init({ bus, config: undefined });
@@ -659,9 +748,8 @@ describe('@ax/mcp-client plugin', () => {
     await saveConfig(bus, ctx(), {
       id: 'a',
       enabled: true,
-      transport: 'stdio',
-      command: 'x',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
     });
 
     await createToolDispatcherPlugin().init({ bus, config: undefined });

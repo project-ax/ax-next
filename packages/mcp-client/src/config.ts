@@ -57,19 +57,6 @@ const UrlSchema = z.string().refine((v) => /^https?:\/\//.test(v), {
 // before handing the value back. New writes always set the field explicitly.
 const OwnerIdSchema = z.string().min(1).max(128).nullable().optional();
 
-const StdioConfig = z
-  .object({
-    id: IdSchema,
-    enabled: z.boolean(),
-    transport: z.literal('stdio'),
-    command: z.string().min(1),
-    args: z.array(z.string()),
-    env: z.record(z.string(), z.string()).optional(),
-    credentialRefs: z.record(z.string(), z.string()).optional(),
-    ownerId: OwnerIdSchema,
-  })
-  .strict();
-
 const HttpBase = {
   id: IdSchema,
   enabled: z.boolean(),
@@ -87,7 +74,6 @@ const SseConfig = z
   .strict();
 
 export const McpServerConfigSchema = z.discriminatedUnion('transport', [
-  StdioConfig,
   StreamableHttpConfig,
   SseConfig,
 ]);
@@ -147,6 +133,16 @@ function reservedIdError(id: string): PluginError {
  * Week 9.5) and admin-global configs are indistinguishable downstream.
  */
 export function parseConfig(input: unknown): McpServerConfig {
+  // stdio was removed (2026-10-04): it spawned MCP server processes on the
+  // host. Say so, with a way forward, instead of a generic discriminator error.
+  if ((input as { transport?: unknown } | null)?.transport === 'stdio') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message:
+        'stdio MCP servers are no longer supported — configure a streamable-http or sse server URL',
+    });
+  }
   rejectInlineSecrets(input);
   const parsed = McpServerConfigSchema.parse(input);
   if (parsed.ownerId === undefined) {

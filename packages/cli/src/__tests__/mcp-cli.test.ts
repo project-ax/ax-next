@@ -35,6 +35,31 @@ async function seedConfigs(sqlitePath: string, configs: McpServerConfig[]): Prom
   }
 }
 
+// Write a raw row + index entry, bypassing saveConfig's validation — the shape
+// a pre-removal database still holds (e.g. a stdio config).
+async function seedRawRow(sqlitePath: string, id: string, row: unknown): Promise<void> {
+  const bus = new HookBus();
+  await bootstrap({
+    bus,
+    plugins: [
+      createStorageSqlitePlugin({ databasePath: sqlitePath }),
+      createCredentialsStoreDbPlugin(),
+      createCredentialsPlugin(),
+    ],
+    config: {},
+  });
+  const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+  const enc = new TextEncoder();
+  await bus.call('storage:set', ctx, {
+    key: `mcp-server:${id}`,
+    value: enc.encode(JSON.stringify(row)),
+  });
+  await bus.call('storage:set', ctx, {
+    key: 'mcp-server-index',
+    value: enc.encode(JSON.stringify([id])),
+  });
+}
+
 async function readStoredConfigs(sqlitePath: string): Promise<McpServerConfig[]> {
   const bus = new HookBus();
   await bootstrap({
@@ -66,9 +91,8 @@ describe('ax-next mcp add', () => {
     const config: McpServerConfig = {
       id: 'fs',
       enabled: true,
-      transport: 'stdio',
-      command: 'mcp-server-filesystem',
-      args: ['/tmp'],
+      transport: 'streamable-http',
+      url: 'https://mcp.example.com/fs',
     };
 
     const code = await runMcpCommand({
@@ -105,19 +129,45 @@ describe('ax-next mcp add', () => {
     expect(stderrLines.join('\n').toLowerCase()).toContain('json');
   });
 
+  it('rejects a stdio config with the migration hint and stores nothing', async () => {
+    const sqlitePath = join(tmp, 'db.sqlite');
+    const stderrLines: string[] = [];
+
+    const code = await runMcpCommand({
+      argv: ['add'],
+      stdin: stdinFromString(
+        JSON.stringify({
+          id: 'fs',
+          enabled: true,
+          transport: 'stdio',
+          command: 'mcp-server-filesystem',
+          args: ['/tmp'],
+        }),
+      ),
+      stdout: () => {},
+      stderr: (l) => stderrLines.push(l),
+      sqlitePath,
+    });
+
+    expect(code).toBe(1);
+    const stderrAll = stderrLines.join('\n');
+    expect(stderrAll).toContain('no longer supported');
+    expect(stderrAll).toContain('streamable-http');
+    expect(await readStoredConfigs(sqlitePath)).toEqual([]);
+  });
+
   it('exits 1 when saveConfig rejects (inline secret in payload)', async () => {
     const sqlitePath = join(tmp, 'db.sqlite');
     const stderrLines: string[] = [];
 
-    // A stdio config with an inline `password` field will trip the
+    // An http config with an inline `password` field will trip the
     // inline-secret scan in parseConfig / saveConfig.
     const bad = {
       id: 'fs',
       enabled: true,
-      transport: 'stdio',
-      command: 'mcp-server-filesystem',
-      args: [],
-      env: { password: 'hunter2' },
+      transport: 'streamable-http',
+      url: 'https://mcp.example.com/fs',
+      password: 'hunter2',
     };
 
     const code = await runMcpCommand({
@@ -143,9 +193,8 @@ describe('ax-next mcp list', () => {
       {
         id: 'fs',
         enabled: true,
-        transport: 'stdio',
-        command: 'mcp-server-filesystem',
-        args: ['/tmp'],
+        transport: 'sse',
+        url: 'https://mcp.example.com/sse',
       },
       {
         id: 'gh',
@@ -171,10 +220,43 @@ describe('ax-next mcp list', () => {
     const stdoutAll = stdoutLines.join('\n');
     expect(stdoutAll).toContain('fs');
     expect(stdoutAll).toContain('gh');
-    expect(stdoutAll).toContain('stdio');
+    expect(stdoutAll).toContain('sse');
     expect(stdoutAll).toContain('streamable-http');
-    expect(stdoutAll).toContain('mcp-server-filesystem');
+    expect(stdoutAll).toContain('https://mcp.example.com/sse');
     expect(stdoutAll).toContain('https://api.github.com/mcp');
+    // One tab-separated line per server: id, status, transport, url.
+    expect(stdoutLines).toEqual([
+      'fs\tenabled\tsse\thttps://mcp.example.com/sse',
+      'gh\tdisabled\tstreamable-http\thttps://api.github.com/mcp',
+    ]);
+  });
+
+  it('skips a leftover stdio row instead of crashing or printing it', async () => {
+    const sqlitePath = join(tmp, 'db.sqlite');
+    await seedRawRow(sqlitePath, 'old', {
+      id: 'old',
+      enabled: true,
+      transport: 'stdio',
+      command: 'mcp-server-filesystem',
+      args: [],
+    });
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+
+    const code = await runMcpCommand({
+      argv: ['list'],
+      stdin: stdinFromString(''),
+      stdout: (l) => stdoutLines.push(l),
+      stderr: (l) => stderrLines.push(l),
+      sqlitePath,
+    });
+
+    expect(code).toBe(0);
+    expect(stderrLines).toEqual([]);
+    // The unusable row is skipped (loadConfigs logs it), never listed.
+    expect(stdoutLines.join('\n')).not.toContain('mcp-server-filesystem');
+    expect(stdoutLines.join('\n')).not.toContain('undefined');
   });
 
   it('prints a friendly empty-state line when no configs exist', async () => {
@@ -201,9 +283,8 @@ describe('ax-next mcp rm', () => {
       {
         id: 'fs',
         enabled: true,
-        transport: 'stdio',
-        command: 'mcp-server-filesystem',
-        args: [],
+        transport: 'streamable-http',
+        url: 'https://mcp.example.com/fs',
       },
     ]);
 

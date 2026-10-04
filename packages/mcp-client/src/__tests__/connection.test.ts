@@ -37,13 +37,14 @@ const unusedBus: BusLike = {
   },
 };
 
-function stdioConfig(id = 'fake'): McpServerConfig {
+// The transport is injected through `transportFactory` (an InMemoryTransport
+// pair), so the config's transport label and URL are never dialed.
+function httpConfig(id = 'fake'): McpServerConfig {
   return {
     id,
     enabled: true,
-    transport: 'stdio',
-    command: 'not-a-real-command',
-    args: [],
+    transport: 'streamable-http',
+    url: 'https://mcp.example.com',
   };
 }
 
@@ -97,7 +98,7 @@ async function makeLinkedServer(opts?: {
 
   return {
     // The SDK's pairing transport satisfies the Transport interface the
-    // client uses, and nothing in McpConnection reaches into stdio/http
+    // client uses, and nothing in McpConnection reaches into http/sse
     // specific fields, so casting through the union is safe.
     clientTransport: clientTransport as unknown as McpClientTransport,
     dispose: async () => {
@@ -109,7 +110,7 @@ async function makeLinkedServer(opts?: {
 describe('McpConnection', () => {
   it('initial state is disconnected', () => {
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => {
@@ -122,7 +123,7 @@ describe('McpConnection', () => {
   it('connect() transitions to ready and listTools() returns advertised tools', async () => {
     const { clientTransport, dispose } = await makeLinkedServer();
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => clientTransport,
@@ -146,7 +147,7 @@ describe('McpConnection', () => {
   it('callTool() round-trips a call + response', async () => {
     const { clientTransport, dispose } = await makeLinkedServer();
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => clientTransport,
@@ -167,7 +168,7 @@ describe('McpConnection', () => {
   it('disconnect() transitions to closed and is idempotent', async () => {
     const { clientTransport, dispose } = await makeLinkedServer();
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => clientTransport,
@@ -183,7 +184,7 @@ describe('McpConnection', () => {
 
   it('listTools() before connect() throws mcp-not-ready', async () => {
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => {
@@ -199,7 +200,7 @@ describe('McpConnection', () => {
 
   it('callTool() before connect() throws mcp-not-ready', async () => {
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => {
@@ -228,7 +229,7 @@ describe('McpConnection', () => {
     };
 
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => brokenTransport as unknown as McpClientTransport,
@@ -245,7 +246,7 @@ describe('McpConnection', () => {
   it('connect() when already connecting or ready throws mcp-already-connected', async () => {
     const { clientTransport, dispose } = await makeLinkedServer();
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => clientTransport,
@@ -275,7 +276,7 @@ describe('McpConnection', () => {
       async close() {},
     };
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => brokenTransport as unknown as McpClientTransport,
@@ -294,7 +295,7 @@ describe('McpConnection', () => {
     const { clientTransport, dispose } = await makeLinkedServer();
     let attempt = 0;
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => {
@@ -332,7 +333,7 @@ describe('McpConnection', () => {
     // is a bug — callers should construct a new McpConnection instead.
     const { clientTransport, dispose } = await makeLinkedServer();
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => clientTransport,
@@ -361,7 +362,7 @@ describe('McpConnection', () => {
       async close() {},
     };
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => brokenTransport as unknown as McpClientTransport,

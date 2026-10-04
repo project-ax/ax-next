@@ -4,23 +4,18 @@
 // Job: given a validated `McpServerConfig` + access to the hook bus, produce
 // the right `@modelcontextprotocol/sdk` transport object. Does NOT connect —
 // `start()` is the connection manager's problem (Task 10). This keeps the
-// env-allowlist + credential-resolution logic pure and testable without
-// actually spawning a subprocess or opening a socket.
+// credential-resolution logic pure and testable without opening a socket.
+// There is no process-spawning transport here: stdio MCP servers were removed
+// (2026-10-04), so nothing in this module can start a process on the host.
 //
 // Design notes:
-// - For stdio, we explicitly pass `env` to StdioClientTransport so the SDK
-//   does NOT fall back to `getDefaultEnvironment()`. That function inherits
-//   PATH/HOME/LOGNAME/SHELL/TERM/USER from the host by default — more than
-//   we want leaking into a third-party subprocess. Our allowlist (PATH +
-//   HOME + LANG + LC_ALL) is deliberately shorter.
-// - We split the factory into pure `build*Params` / `build*Options` helpers
+// - We split the factory into pure `build*Options` helpers
 //   + a thin `createTransport` wrapper. Tests assert on the pure output
 //   rather than trying to read private fields of the SDK's transport
-//   instances (those are `_serverParams`, `_requestInit`, etc. — not part
-//   of the SDK's supported surface, so poking them would be brittle).
+//   instances (e.g. `_requestInit` — not part of the SDK's supported
+//   surface, so poking them would be brittle).
 // ---------------------------------------------------------------------------
 
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import {
   StreamableHTTPClientTransport,
   type StreamableHTTPClientTransportOptions,
@@ -34,20 +29,6 @@ import type { McpServerConfig } from './config.js';
 
 const PLUGIN_NAME = '@ax/mcp-client';
 
-/**
- * Minimal env allowlist for stdio MCP subprocesses.
- *
- * We do NOT inherit the full `process.env` — too easy to leak secrets the
- * user didn't intend the MCP server to see (think `AWS_ACCESS_KEY_ID`,
- * `AX_CREDENTIALS_KEY`, arbitrary CI-injected vars). Concrete env vars
- * reach the subprocess only via `config.env` or resolved `credentialRefs`.
- *
- * The list is intentionally conservative: PATH so the process can find
- * binaries, HOME because some CLIs sulk without it, LANG/LC_ALL so text
- * output encodings aren't garbage. Add more only with a concrete reason.
- */
-export const BASE_STDIO_ENV_KEYS = ['PATH', 'HOME', 'LANG', 'LC_ALL'] as const;
-
 export interface BusLike {
   call: <I, O>(hookName: string, ctx: AgentContext, input: I) => Promise<O>;
 }
@@ -58,17 +39,7 @@ export interface CreateTransportOptions {
   ctx: AgentContext;
 }
 
-export type McpClientTransport =
-  | StdioClientTransport
-  | StreamableHTTPClientTransport
-  | SSEClientTransport;
-
-// Shape the SDK's StdioClientTransport constructor accepts.
-export interface StdioParams {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-}
+export type McpClientTransport = StreamableHTTPClientTransport | SSEClientTransport;
 
 export interface StreamableHttpBuildResult {
   url: URL;
@@ -117,45 +88,6 @@ async function resolveCredentials(
     }
   }
   return out;
-}
-
-function baseStdioEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of BASE_STDIO_ENV_KEYS) {
-    const value = process.env[key];
-    if (typeof value === 'string') env[key] = value;
-  }
-  return env;
-}
-
-/**
- * Build the `StdioServerParameters` object we'll pass to `new
- * StdioClientTransport(...)`. Exposed (and tested) separately from
- * `createTransport` so we can assert on the exact env/args without
- * having to introspect the SDK transport's private fields.
- *
- * Merge order for env is allowlist → config.env → resolved credential refs.
- * Credentials win last on purpose: if a user accidentally hardcoded a value
- * in `env` with the same key as a credentialRef, the real secret still
- * reaches the subprocess instead of the plaintext.
- */
-export async function buildStdioParams(opts: {
-  config: Extract<McpServerConfig, { transport: 'stdio' }>;
-  bus: BusLike;
-  ctx: AgentContext;
-}): Promise<StdioParams> {
-  const { config, bus, ctx } = opts;
-  const credEnv = await resolveCredentials(bus, ctx, config.credentialRefs);
-  const env: Record<string, string> = {
-    ...baseStdioEnv(),
-    ...(config.env ?? {}),
-    ...credEnv,
-  };
-  return {
-    command: config.command,
-    args: config.args,
-    env,
-  };
 }
 
 /**
@@ -207,10 +139,6 @@ export async function createTransport(
 ): Promise<McpClientTransport> {
   const { config, bus, ctx } = opts;
   switch (config.transport) {
-    case 'stdio': {
-      const params = await buildStdioParams({ config, bus, ctx });
-      return new StdioClientTransport(params);
-    }
     case 'streamable-http': {
       const { url, options } = await buildStreamableHttpOptions({ config, bus, ctx });
       return new StreamableHTTPClientTransport(url, options);
@@ -218,6 +146,19 @@ export async function createTransport(
     case 'sse': {
       const { url, options } = await buildSseOptions({ config, bus, ctx });
       return new SSEClientTransport(url, options);
+    }
+    default: {
+      // Fail closed. `parseConfig` already refuses anything but the two
+      // transports above (a removed `stdio` included), so this is only
+      // reachable by a value that skipped validation. Throw rather than
+      // return undefined: there must be no path from a stored row to a
+      // process spawn on the host.
+      const unsupported: never = config;
+      throw new PluginError({
+        code: 'unsupported-transport',
+        plugin: PLUGIN_NAME,
+        message: `unsupported MCP transport '${String((unsupported as { transport?: unknown }).transport)}' — configure a streamable-http or sse server URL`,
+      });
     }
   }
 }
