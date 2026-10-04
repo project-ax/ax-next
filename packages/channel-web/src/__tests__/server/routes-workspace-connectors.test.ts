@@ -630,6 +630,32 @@ describe('agent connector routes', () => {
         expect('setup' in byId.notes!).toBe(false);
       });
 
+      // TASK-810 — the admin's OAuth client secret is not something a person
+      // signs in with. The host never asks the vault about
+      // `account:<id>:OAUTH_CLIENT_SECRET` (TASK-797), so the rail must not
+      // either: a connector whose ONLY absent row is that one is healthy.
+      // UNFIXED: gmail reads needs-sign-in / add-key off the client-secret row.
+      it('ignores the OAuth client-secret slot: signed in otherwise reads ok, never asked about', async () => {
+        registerHealth();
+        registerHas();
+        effective[0] = {
+          ...effective[0]!,
+          capabilities: {
+            // (The real OAuth slot also carries `clientSecretRef`; the rail
+            // reads only slot / kind, so this fixture's type leaves it out.)
+            credentials: [oauth('gmail'), key('OAUTH_CLIENT_SECRET')],
+          },
+        };
+        present = new Set(['account:gmail:MCP_OAUTH', 'account:linear']);
+        const byId = rowsById(await list());
+        expect(byId.gmail!.health).toBe('ok');
+        expect('setup' in byId.gmail!).toBe(false);
+        expect(hasCalls.map((c) => c.ref)).not.toContain('account:gmail:OAUTH_CLIENT_SECRET');
+        // The user's own sign-in is still checked: absent, it still says so.
+        present = new Set(['account:linear']);
+        expect(rowsById(await list()).gmail).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
+      });
+
       // TASK-798 — a sign-in on a team agent is stored ON the agent, so only
       // its owner or an admin is offered Sign in; a member is told to ask the
       // owner. A missing key stays add-key: the rail's Add key is their own.
@@ -1520,6 +1546,28 @@ describe('agent connector routes', () => {
         expect(attachCalls).toHaveLength(0);
         vault.add('account:stripe');
         expect((await attach({ connectorId: 'stripe' })).statusCode).toBe(200);
+      });
+
+      // TASK-810 — the attach gate asks the same rows the rail does, so it no
+      // longer reads the admin's OAuth client secret on a person's behalf.
+      // UNFIXED: the gate reads account:gsuite:OAUTH_CLIENT_SECRET, finds it
+      // absent and refuses with connector-needs-key.
+      it('does not require (or read) the OAuth client-secret slot', async () => {
+        catalog.set('gsuite', {
+          id: 'gsuite',
+          name: 'gsuite',
+          keyMode: 'personal',
+          capabilities: {
+            credentials: [
+              { slot: 'MCP_OAUTH', kind: 'oauth', server: 'gsuite', clientSecretRef: 'account:gsuite:OAUTH_CLIENT_SECRET' },
+              { slot: 'OAUTH_CLIENT_SECRET', kind: 'api-key' },
+            ],
+          },
+        });
+        vault.add('account:gsuite:MCP_OAUTH');
+        const r = await attach({ connectorId: 'gsuite' });
+        expect(r.statusCode).toBe(200);
+        expect(credentialReads.map((c) => c.ref)).toEqual(['account:gsuite:MCP_OAUTH']);
       });
 
       it('attaches a connector that needs nothing without reading the vault', async () => {

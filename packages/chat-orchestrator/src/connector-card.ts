@@ -11,6 +11,7 @@
  * payload field names are storage- and mechanism-agnostic; backing-mechanism
  * vocabulary (transport/url/command) never appears (mcp is excluded entirely).
  */
+import { connectorSlotRefs } from './connector-union.js';
 
 /** The declared connector proposal, as the card reads it. */
 export interface ConnectorProposalLike {
@@ -91,30 +92,22 @@ export function buildAuthoredConnectorCard(
     return null; // nothing the card can show/approve (mcp-only or empty)
   }
   const hosts = proposal.allowedHosts;
-  // TASK-124 — the per-slot rule keys on the proposal's slot COUNT (mirrors
-  // @ax/connectors' deriveCredentialPlan): exactly 1 slot keeps the collapsed
-  // `account:<service>` ref; ≥2 slots expand to `account:<service>:<slot>` per
-  // slot so two slots that share a service tag no longer collide.
-  const isMulti = proposal.credentials.filter(c => c.kind !== 'api-key' || !c.headerName).length >= 2;
-  const slots = proposal.credentials.map((c) => {
-    // The service tag the key binds is the connectorId (credentials-into-connectors:
-    // each connector owns its own key, no share-by-service — matches
-    // @ax/connectors' serviceTagForSlot). The `c.account ?? connectorId` is
-    // VESTIGIAL: the connectors store strips `account` from a connector proposal's
-    // slots, so it is always `connectorId` here; retained only because the shape is
-    // shared with skill-slot capability cards (which can carry `account`).
-    const service = c.account !== undefined && c.account.length > 0 ? c.account : connectorId;
-    const perSlot = isMulti || Boolean(c.kind === 'api-key' && c.headerName);
-    const ref = perSlot ? `account:${service}:${c.slot}` : `account:${service}`;
-    return {
+  // TASK-124 / TASK-810 — each slot's `account:<service>[:<slot>]` row comes
+  // from `connectorSlotRefs`, the SAME rule the host's skip and proxy plan run
+  // (`connectorCredentialSlots`), unfiltered: the card shows every slot and
+  // writes each key to exactly that row (`service` + `slotTag`). A private
+  // copy here is how the card and the host could come to address different
+  // rows; the contract test in @ax/channel-web runs this builder too.
+  const slots = connectorSlotRefs(connectorId, proposal.credentials).map(
+    ({ slotDef: c, ref, service, slotTag }) => ({
       slot: c.slot,
       kind: 'api-key' as const,
       ...(c.account !== undefined ? { account: c.account } : {}),
       service,
-      ...(perSlot ? { slotTag: c.slot } : {}),
+      ...(slotTag !== undefined ? { slotTag } : {}),
       haveExisting: vaultedRefs.has(ref),
-    };
-  });
+    }),
+  );
   return {
     kind: 'connector',
     connectorId,
