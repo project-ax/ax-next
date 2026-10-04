@@ -548,6 +548,7 @@ describe('connectors:describe-tools', () => {
       });
       expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('needs-auth');
       expect(t.list).toHaveBeenCalledTimes(1);
+      expect(t.list.mock.calls[0]?.[0].url).toBe('https://a.example/mcp');
       // Server A was probed: a second force inside the window must not probe it again.
       await t.run({ userId: 'u1', connectorId: 'linear', force: true });
       expect(t.list).toHaveBeenCalledTimes(1);

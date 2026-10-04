@@ -370,6 +370,8 @@ describe('the details view', () => {
     expect(screen.queryByText(/sign in to this connector again/i)).toBeNull();
     expect(screen.queryByText('Not signed in yet')).toBeNull();
     expect(toolsMock).toHaveBeenLastCalledWith('a-quill', 'linear', true);
+    // One read on open, one forced re-read after the sign-in — no more.
+    expect(toolsMock.mock.calls.filter((c) => c[1] === 'linear')).toHaveLength(2);
   });
 
   it('shows the key as set up right after adding it, with no reload', async () => {
