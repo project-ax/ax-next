@@ -13,11 +13,12 @@
 //      mistake to recover from; the response names the skills that do exist so
 //      the next call succeeds. Throwing would surface as an error result and
 //      teach the model nothing.
-//   3. A skill whose MCP servers can't run still LOADS, and the response says
-//      so. Design §3: "degradation must be visible, not silent" — the same
-//      pattern as the egress-block remediation notes. Tell the model about the
-//      constraint at the moment it matters and it adapts; stay quiet and it
-//      hallucinates tools that will never resolve.
+//   3. A skill whose connector MCP servers did not load this session still
+//      LOADS, and the response says so (`MCP_NOT_LOADED_NOTE`). "Degradation
+//      must be visible, not silent" — the same pattern as the egress-block
+//      remediation notes. Tell the model about the constraint at the moment it
+//      matters and it adapts; stay quiet and it hallucinates tools that will
+//      never resolve. A skill whose servers DID load gets no note (TASK-826).
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type Tool } from 'ai';
@@ -29,16 +30,16 @@ import { wrapWithPolicy } from './policy-wrap.js';
 export const SKILL_TOOL_NAME = 'Skill';
 
 /**
- * Appended to the response of any skill whose MCP servers were materialized.
- * Exported so the acceptance test asserts the DEGRADATION by identity rather
- * than by a substring that a reword would silently break.
+ * Appended to the response of a skill whose bundle ships MCP servers that did
+ * NOT load this session (connect/list failed, or the entry was refused) —
+ * TASK-826. Skills whose servers loaded get no note: their tools are simply in
+ * the tool list. Exported so tests assert by identity, not by substring.
  */
-export const MCP_UNAVAILABLE_NOTE =
-  'Note: this skill declares MCP servers. They are not available on this runner, ' +
-  'so any tool this skill tells you to call from one of those servers does not exist ' +
-  'and never will in this session. Follow the rest of the skill using the tools you ' +
-  'actually have, and say plainly which steps you could not do rather than pretending ' +
-  'a missing tool ran.';
+export const MCP_NOT_LOADED_NOTE =
+  "Note: this skill's connector tools could not be loaded this session (the " +
+  'connection failed or was refused). Do not call tools it names that are not in ' +
+  'your tool list. Follow the rest of the skill with the tools you have, and say ' +
+  'plainly which steps you could not do rather than pretending a missing tool ran.';
 
 export interface BuildSkillToolOptions {
   policy: ToolPolicy;
@@ -49,6 +50,12 @@ export interface BuildSkillToolOptions {
   onHold: (toolCallId: string) => void;
   /** Fired with the call id when a tool ran and failed — see WrapWithPolicyOptions. */
   onToolFailure: (toolCallId: string) => void;
+  /**
+   * Bundle ids whose connector MCP servers connected this session
+   * (`ConnectorTools.loadedBundles`). A skill with `hasMcpServers` whose id is
+   * absent gets `MCP_NOT_LOADED_NOTE`.
+   */
+  loadedMcpBundles: ReadonlySet<string>;
 }
 
 /**
@@ -91,7 +98,9 @@ export function buildSkillTool(
       ];
       // Decision 3 — after the body, so the model reads the instructions and
       // then the caveat that modifies them.
-      if (found.hasMcpServers) parts.push('', MCP_UNAVAILABLE_NOTE);
+      if (found.hasMcpServers && !opts.loadedMcpBundles.has(found.id)) {
+        parts.push('', MCP_NOT_LOADED_NOTE);
+      }
 
       return parts.join('\n');
     },
