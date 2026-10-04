@@ -83,3 +83,78 @@ describe('workspaceApi.setTeamKey', () => {
     }
   });
 });
+
+describe('workspaceApi.getTeamKeys (TASK-854)', () => {
+  it('GETs the team-key route and answers slot + saved only', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          slots: [
+            { slot: 'ACME_KEY', saved: true, value: 'leak', ref: 'r' },
+            { slot: 'ACME_SECRET', saved: false },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const slots = await workspaceApi.getTeamKeys('a/1', 'acme');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit | undefined];
+    expect(url).toBe('/api/workspace/agents/a%2F1/connectors/acme/team-key');
+    expect(init?.method ?? 'GET').toBe('GET');
+    // Only the two fields we asked for, even if the body carried more.
+    expect(slots).toEqual([
+      { slot: 'ACME_KEY', saved: true },
+      { slot: 'ACME_SECRET', saved: false },
+    ]);
+  });
+
+  it('a refusal is an HttpError with the team-key sentence', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+    const e = await failure(workspaceApi.getTeamKeys('a1', 'acme'));
+    expect(e).toBeInstanceOf(HttpError);
+    expect((e as Error).message).toBe(TEAM_KEY_FORBIDDEN);
+  });
+
+  it('a malformed body is a failure, not an empty list', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ nope: 1 }), { status: 200 }));
+    await expect(workspaceApi.getTeamKeys('a1', 'acme')).rejects.toBeInstanceOf(Error);
+  });
+});
+
+describe('workspaceApi.removeTeamKey (TASK-854)', () => {
+  it('DELETEs exactly { slot } on the team-key route', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ removed: true }), { status: 200 }));
+    await workspaceApi.removeTeamKey('a/1', 'acme', 'ACME_KEY');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/workspace/agents/a%2F1/connectors/acme/team-key');
+    expect(init.method).toBe('DELETE');
+    expect((init.headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
+    expect(JSON.parse(init.body as string)).toEqual({ slot: 'ACME_KEY' });
+  });
+
+  it('names a 403 and a 409; a 502 keeps its status', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+    const forbidden = await failure(workspaceApi.removeTeamKey('a1', 'acme', 'ACME_KEY'));
+    expect((forbidden as Error).message).toBe(TEAM_KEY_FORBIDDEN);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'team-key-unavailable' }), { status: 409 }),
+    );
+    const unavailable = await failure(workspaceApi.removeTeamKey('a1', 'acme', 'ACME_KEY'));
+    expect((unavailable as Error).message).toBe(TEAM_KEY_UNAVAILABLE);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'team-key-not-removed' }), { status: 502 }),
+    );
+    const e = await failure(workspaceApi.removeTeamKey('a1', 'acme', 'ACME_KEY'));
+    expect(e).toBeInstanceOf(HttpError);
+    expect((e as HttpError).status).toBe(502);
+  });
+
+  it('a transport failure becomes a bare HttpError', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('boom'));
+    const e = await failure(workspaceApi.removeTeamKey('a1', 'acme', 'ACME_KEY'));
+    expect(e).toBeInstanceOf(HttpError);
+    expect((e as HttpError).status).toBe(0);
+  });
+});
