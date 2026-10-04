@@ -2,9 +2,9 @@
  * Connector client — typed wrappers around the connector REST routes.
  *
  * Shared definitions are readable by all signed-in users. Writes remain
- * owner-scoped. New definitions default to shared with automatic attachment off.
- * `/admin/connectors` additionally requires an admin role; ordinary users use
- * `/settings/connectors`, which rejects workspace keys and default attachment.
+ * owner-scoped. New definitions default to shared. `/admin/connectors`
+ * additionally requires an admin role; ordinary users use
+ * `/settings/connectors`, which rejects workspace keys.
  *
  * Both bundles share the same path shape + CSRF posture as `lib/admin.ts`:
  *
@@ -119,13 +119,11 @@ export type ConnectorKeyMode = 'personal' | 'workspace';
 export type ConnectorVisibility = 'private' | 'shared';
 
 /** Metadata-only descriptor for the list view (no capabilities — those load on
- *  demand via {@link getConnector}). `defaultAttached` is the admin
- *  workspace-default flag, surfaced here (TASK-110) so the user list can badge a
- *  default-on connector as "Catalog" even when its `visibility` is `private`. */
+ *  demand via {@link getConnector}). */
 export interface ConnectorSummary {
   /** Server-derived permission for the authenticated caller. */
   canEdit?: boolean;
-  /** Skip legacy implicit owner attachment; defaults and explicit attachments still apply. */
+  /** Skip legacy implicit owner attachment; explicit attachments still apply. */
   requiresAttachment?: boolean;
   id: string;
   name: string;
@@ -133,7 +131,6 @@ export interface ConnectorSummary {
   usageNote: string;
   keyMode: ConnectorKeyMode;
   visibility: ConnectorVisibility;
-  defaultAttached: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -152,7 +149,6 @@ export interface ConnectorUpsertInput {
   keyMode: ConnectorKeyMode;
   visibility: ConnectorVisibility;
   capabilities: ConnectorCapabilities;
-  defaultAttached?: boolean;
 }
 
 export async function listConnectors(

@@ -29,7 +29,6 @@ const baseConnector = (over: Partial<Connector> = {}): Connector => ({
   usageNote: 'Read and write Drive.',
   keyMode: 'personal',
   visibility: 'private',
-  defaultAttached: false,
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
   capabilities: emptyCapabilities(),
@@ -37,11 +36,11 @@ const baseConnector = (over: Partial<Connector> = {}): Connector => ({
 });
 
 describe('connector-form helpers', () => {
-  it('emptyConnectorForm is a shared, personal, non-default MCP/stdio form', () => {
+  it('emptyConnectorForm is a shared, personal MCP/stdio form', () => {
     const f = emptyConnectorForm();
     expect(f.keyMode).toBe('personal');
     expect(f.visibility).toBe('shared');
-    expect(f.defaultAttached).toBe(false);
+    expect(f).not.toHaveProperty('defaultAttached');
     expect(f.mechanism).toBe('mcp');
     expect(f.transport).toBe('stdio');
     expect(f.credentialSlots).toEqual([]);
@@ -120,7 +119,6 @@ describe('connector-form helpers', () => {
     const c = baseConnector({
       keyMode: 'workspace',
       visibility: 'shared',
-      defaultAttached: true,
       capabilities: {
         ...emptyCapabilities(),
         allowedHosts: ['drive.googleapis.com'],
@@ -141,7 +139,6 @@ describe('connector-form helpers', () => {
     expect(f.mechanism).toBe('mcp');
     expect(f.keyMode).toBe('workspace');
     expect(f.visibility).toBe('shared');
-    expect(f.defaultAttached).toBe(true);
     expect(f.transport).toBe('stdio');
     expect(f.command).toBe('mcp-gdrive');
     expect(f.args).toBe('--flag x');
@@ -600,7 +597,7 @@ services:
       credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'example', scopes: ['read'] }],
     };
     const form = formFromConnector({ id:'x', name:'X', description:'', usageNote:'',
-      keyMode:'personal', visibility:'private', defaultAttached:false,
+      keyMode:'personal', visibility:'private',
       createdAt:'', updatedAt:'', capabilities: caps as never });
     expect(form.credentialSlots[0]).toMatchObject({ kind: 'oauth', server: 'example' });
     const back = capabilitiesFromForm(form);
@@ -611,13 +608,13 @@ services:
     const caps = { allowedHosts: [], packages: { npm: [], pypi: [] }, mcpServers: [],
       credentials: [{ slot: 'X', kind: 'api-key', description: 'tok' }] };
     const form = formFromConnector({ id:'x', name:'X', description:'', usageNote:'',
-      keyMode:'personal', visibility:'private', defaultAttached:false,
+      keyMode:'personal', visibility:'private',
       createdAt:'', updatedAt:'', capabilities: caps as never });
     expect(form.credentialSlots[0]).toMatchObject({ kind: 'api-key', description: 'tok' });
     expect(capabilitiesFromForm(form).credentials[0]).toMatchObject({ slot: 'X', kind: 'api-key', description: 'tok' });
   });
 
-  it('summaryToForm carries the metadata subset incl. defaultAttached', () => {
+  it('summaryToForm carries the metadata subset', () => {
     const partial = summaryToForm({
       id: 'org-github',
       name: 'Org GitHub',
@@ -625,12 +622,11 @@ services:
       usageNote: 'u',
       keyMode: 'workspace',
       visibility: 'private',
-      defaultAttached: true,
       createdAt: 'x',
       updatedAt: 'y',
     });
     expect(partial.connectorId).toBe('org-github');
-    expect(partial.defaultAttached).toBe(true);
+    expect(partial).not.toHaveProperty('defaultAttached');
     expect(partial.keyMode).toBe('workspace');
   });
 });

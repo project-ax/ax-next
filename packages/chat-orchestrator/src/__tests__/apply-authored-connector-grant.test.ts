@@ -105,7 +105,7 @@ function buildMocks(opts: {
         connector: {
           id: i.connectorId, name: i.name, description: i.description, usageNote: i.usageNote,
           keyMode: i.keyMode, visibility: i.visibility, capabilities: i.capabilities,
-          defaultAttached: false, createdAt: '', updatedAt: '',
+          createdAt: '', updatedAt: '',
         },
         created: true,
       };

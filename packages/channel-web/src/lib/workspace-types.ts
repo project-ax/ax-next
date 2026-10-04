@@ -1045,10 +1045,10 @@ export interface AgentAbilityWrite {
 /**
  * Where a connector in an agent's list comes from (TASK-739, connectors-rail
  * slice 6). Removing one does different things per source — an `attached` one
- * is detached, a `default` or `legacy-owned` one is excluded from THIS agent
- * only — so the server keeps the word and the browser never decides it.
+ * is detached, a `legacy-owned` one is excluded from THIS agent only — so the
+ * server keeps the word and the browser never decides it.
  */
-export type AgentConnectorSource = 'default' | 'attached' | 'legacy-owned';
+export type AgentConnectorSource = 'attached' | 'legacy-owned';
 
 /**
  * A connector's health on the rail (TASK-741, connectors-rail slice 8), read

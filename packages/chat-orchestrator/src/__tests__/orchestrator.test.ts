@@ -2507,7 +2507,7 @@ describe('chat-orchestrator', () => {
       };
     }
 
-    // Gmail is a default-on ("Turn on for every agent") connector; Linear is
+    // Gmail is an attached connector this caller never signed in to; Linear is
     // the one this caller HAS signed in to in the two-connector cases.
     const GMAIL = oauthConnector('gmail', 'c0123abcdef', 'Gmail');
     const LINEAR = oauthConnector('linear', 'c0456abcdef', 'Linear');
@@ -2515,7 +2515,7 @@ describe('chat-orchestrator', () => {
     async function invoke(
       vault: ReturnType<typeof buildVaultHooks>,
       sessionId: string,
-      defaults: Record<string, ReturnType<typeof oauthConnector>> = { gmail: GMAIL },
+      attached: Record<string, ReturnType<typeof oauthConnector>> = { gmail: GMAIL },
     ) {
       const busRef: { current: HookBus | null } = { current: null };
       const mocks = buildMocks({
@@ -2528,7 +2528,7 @@ describe('chat-orchestrator', () => {
         }),
         openSession: makeChatEndOpenSession(busRef),
       });
-      Object.assign(mocks.services, vault.services, buildConnectorHooks({ defaults }));
+      Object.assign(mocks.services, vault.services, buildConnectorHooks({ attached }));
       const h = await createTestHarness({
         services: mocks.services,
         plugins: [
@@ -2583,7 +2583,7 @@ describe('chat-orchestrator', () => {
       expect(sandboxIn?.owner.agentConfig.systemPromptAugment).not.toContain('"Linear"');
     });
 
-    it('a never-signed-in DEFAULT-attached connector no longer blocks the turn (was connector-needs-sign-in)', async () => {
+    it('a never-signed-in attached connector no longer blocks the turn (was connector-needs-sign-in)', async () => {
       const vault = buildVaultHooks({ rows: [PROVIDER_REF] });
       const { outcome, turnErrors, sandboxIn, mocks } = await invoke(vault, 'skip-default');
       expect(outcome.kind).toBe('complete');
@@ -4151,7 +4151,7 @@ describe('chat-orchestrator', () => {
 
     it('a user host grant never reaches a bound credential on the explicit agent-row path or a connector slot', async () => {
       const connectorHooks = buildConnectorHooks({
-        defaults: {
+        attached: {
           gdrive: {
             capabilities: {
               allowedHosts: ['drive.googleapis.com'],
@@ -4226,7 +4226,7 @@ describe('chat-orchestrator', () => {
 
     it('connector slots: each is bound to ONLY its own connector hosts (not the union); oauth -> mcp-oauth keeps the binding; no hosts -> []', async () => {
       const connectorHooks = buildConnectorHooks({
-        defaults: {
+        attached: {
           gdrive: {
             capabilities: {
               allowedHosts: ['drive.googleapis.com'],
@@ -4442,7 +4442,7 @@ describe('chat-orchestrator', () => {
 
   // -------------------------------------------------------------------------
   // TASK-97 — connector union into the sandbox. The orchestrator resolves the
-  // agent's effective connector set (defaults + the owner's own) and folds each
+  // agent's effective connector set (attached + the owner's own) and folds each
   // connector's Capabilities through the SAME materialization path as skills.
   // -------------------------------------------------------------------------
   interface ConnectorCapsLike {
@@ -4464,16 +4464,16 @@ describe('chat-orchestrator', () => {
     toolNamespaces?: Array<{ server: string; toolNamespace: string }>;
   }
   /** Stubs the connector hooks the orchestrator soft-couples to.
-   *  `connectors:list-effective` (TASK-739) returns `defaults` then `owned`
+   *  `connectors:list-effective` (TASK-739) returns `attached` then `owned`
    *  (legacy-owned), minus the forwarded exclusions; `connectors:resolve` serves
    *  `owned` for skill-referenced ids. `listEffectiveThrows` exercises the
    *  non-fatal path. */
   function buildConnectorHooks(opts: {
-    defaults?: Record<string, ConnectorFixture>;
+    attached?: Record<string, ConnectorFixture>;
     owned?: Record<string, ConnectorFixture>;
     listEffectiveThrows?: Error;
   }): Record<string, ServiceHandler> {
-    const defaults = opts.defaults ?? {};
+    const attached = opts.attached ?? {};
     const owned = opts.owned ?? {};
     return {
       'connectors:list-effective': async (_c, input) => {
@@ -4481,7 +4481,7 @@ describe('chat-orchestrator', () => {
         const excluded = new Set((input as { exclusions?: string[] }).exclusions ?? []);
         const seen = new Set<string>();
         const entries: Array<Record<string, unknown>> = [];
-        for (const [source, set] of [['default', defaults], ['legacy-owned', owned]] as const) {
+        for (const [source, set] of [['attached', attached], ['legacy-owned', owned]] as const) {
           for (const [id, c] of Object.entries(set)) {
             if (excluded.has(id) || seen.has(id)) continue;
             seen.add(id);
@@ -4513,10 +4513,10 @@ describe('chat-orchestrator', () => {
     };
   }
 
-  it('TASK-97: unions default + owned connector hosts/creds/packages into proxy:open-session and mcpServers into sandbox installedSkills', async () => {
+  it('TASK-97: unions attached + owned connector hosts/creds/packages into proxy:open-session and mcpServers into sandbox installedSkills', async () => {
     const proxy = buildProxyHooks();
     const connectorHooks = buildConnectorHooks({
-      defaults: {
+      attached: {
         gdrive: {
           usageNote: 'Use this to read Drive docs.',
           toolNamespaces: [{ server: 'gdrive', toolNamespace: 'c0123abcdef' }],
@@ -4672,7 +4672,7 @@ describe('chat-orchestrator', () => {
 
   it('TASK-107: a per-agent connectorAttachments id folds its host + slot into proxy:open-session', async () => {
     const proxy = buildProxyHooks();
-    // No defaults and no legacy-owned rows, so the ONLY way this connector
+    // No other attached connectors and no legacy-owned rows, so the ONLY way this connector
     // folds is via the per-agent attachment forwarded to connectors:list-effective.
     const connHook = buildConnectorResolveHook({
       salesforce: {
@@ -4828,14 +4828,14 @@ describe('chat-orchestrator', () => {
       skills: {
         gh: {
           id: 'gh',
-          connectors: [], // the connector below is a workspace default, not skill-referenced
+          connectors: [], // the connector below is attached to the agent, not skill-referenced
           bodyMd: 'gh',
           manifestYaml: 'name: gh\nversion: 1\n',
         },
       },
     });
     const connectorHooks = buildConnectorHooks({
-      defaults: {
+      attached: {
         cx: {
           capabilities: {
             allowedHosts: ['api.shared.example.com'],
@@ -6467,7 +6467,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
           connectors: [
             {
               summary: { id: 'gmail', name: 'Gmail' },
-              source: 'default',
+              source: 'attached',
               toolNamespaces: [{ server: 'gmail', toolNamespace: 'c0123abcdef' }],
               capabilities: {
                 allowedHosts: [],
@@ -6552,7 +6552,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
           connectors: [
             {
               summary: { id: 'multi', name: 'Multi' },
-              source: 'default',
+              source: 'attached',
               capabilities: {
                 allowedHosts: ['multi.example.com'],
                 credentials: [
@@ -6963,9 +6963,10 @@ describe('agentConfig.disallowedTools from tool-policy overrides', () => {
     expect('disallowedTools' in agentConfig).toBe(false);
   });
 
-  // TASK-754 — a workspace-default connector never gets an attach, so the
-  // session open is where it copies its per-tool defaults (first sight only).
-  it('copies a default-on connector\u2019s defaults before the sandbox opens; a failure still opens it', async () => {
+  // TASK-754 — a connector that reaches the agent without an attach (here a
+  // legacy-owned row) never gets one, so the session open is where it copies
+  // its per-tool defaults (first sight only).
+  it('copies a no-attach connector\u2019s defaults before the sandbox opens; a failure still opens it', async () => {
     const order: string[] = [];
     const copies: unknown[] = [];
     const { outcome, mocks } = await run({
@@ -6975,6 +6976,7 @@ describe('agentConfig.disallowedTools from tool-policy overrides', () => {
           connectors: [
             {
               summary: { id: 'linear' },
+              source: 'legacy-owned',
               capabilities: {
                 allowedHosts: [],
                 credentials: [],

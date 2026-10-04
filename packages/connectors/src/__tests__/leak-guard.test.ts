@@ -6,8 +6,9 @@ import {
   GetOutputSchema,
   InstallAuthoredOutputSchema,
   ListAuthoredOutputSchema,
-  ListDefaultsOutputSchema,
+  ClearLegacyDefaultOutputSchema,
   ListEffectiveOutputSchema,
+  ListLegacyDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
   UpsertOutputSchema,
@@ -71,8 +72,9 @@ function topLevelKeysOutsideCapabilities(shape: Record<string, unknown>): string
 describe('@ax/connectors hook surface — no leaked backing-mechanism fields', () => {
   const schemas = {
     'connectors:list': ListOutputSchema,
-    'connectors:list-defaults': ListDefaultsOutputSchema,
     'connectors:list-effective': ListEffectiveOutputSchema,
+    'connectors:list-legacy-defaults': ListLegacyDefaultsOutputSchema,
+    'connectors:clear-legacy-default': ClearLegacyDefaultOutputSchema,
     'connectors:get': GetOutputSchema,
     'connectors:upsert': UpsertOutputSchema,
     'connectors:delete': DeleteOutputSchema,
@@ -125,12 +127,12 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
     expect(keys).toContain('slotTag');
   });
 
-  it('the tool namespaces on resolve + list-defaults are an opaque alias, not mechanism vocabulary (TASK-734)', () => {
+  it('the tool namespaces on resolve + list-effective are an opaque alias, not mechanism vocabulary (TASK-734)', () => {
     // `toolNamespaces: [{ server, toolNamespace }]` — `server` is the spec's own
     // declared name, `toolNamespace` the derived hash alias. Neither is a
     // backing-mechanism field (no transport / command / url / mcp), and the
-    // field sits at the top level of BOTH shapes (resolve and each default).
-    for (const schema of [ResolveOutputSchema, ListDefaultsOutputSchema, ListEffectiveOutputSchema]) {
+    // field sits at the top level of BOTH shapes (resolve and each effective entry).
+    for (const schema of [ResolveOutputSchema, ListEffectiveOutputSchema]) {
       const keys = topLevelKeysOutsideCapabilities(schema);
       expect(keys).toContain('toolNamespaces');
       expect(keys).toContain('toolNamespace');

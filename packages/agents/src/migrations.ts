@@ -95,8 +95,8 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
   `.execute(db);
 
   // TASK-739: per-agent connector EXCLUSIONS — connector ids the owner removed
-  // from this agent although they reach it by another source (a default or a
-  // legacy owned connector). A plain array of connector-id slugs. Additive +
+  // from this agent although they reach it by another source (a legacy owned
+  // connector; connector defaults were retired by TASK-808). A plain array of connector-id slugs. Additive +
   // idempotent; NOT NULL DEFAULT '[]' means every existing row excludes
   // nothing (today's behaviour). Written only by agents:attach-connector /
   // agents:detach-connector (one row-locked transaction each).

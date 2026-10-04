@@ -29,19 +29,14 @@ describe('skillSource', () => {
 });
 
 describe('connectorSource', () => {
-  it('a default-on connector is catalog-sourced', () => {
-    expect(
-      connectorSource({ defaultAttached: true, visibility: 'private' }),
-    ).toBe('catalog');
-  });
   it('a shared connector is catalog-sourced', () => {
     expect(
-      connectorSource({ defaultAttached: false, visibility: 'shared' }),
+      connectorSource({ visibility: 'shared' }),
     ).toBe('catalog');
   });
-  it('a private, non-default connector shows no badge', () => {
+  it('a private connector shows no badge', () => {
     expect(
-      connectorSource({ defaultAttached: false, visibility: 'private' }),
+      connectorSource({ visibility: 'private' }),
     ).toBe('private');
   });
 });

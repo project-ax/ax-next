@@ -11,7 +11,7 @@
  *   1. THE ACL. A caller `agents:resolve` refuses gets a 404 and nothing
  *      downstream runs — not the list, not the detach, not the cleanup.
  *   2. REMOVE MEANS THE RIGHT THING PER SOURCE. An attached connector is
- *      detached; a default / legacy-owned one is excluded from THIS agent.
+ *      detached; a legacy-owned one is excluded from THIS agent.
  *      A connector not in the agent's list is a 404, never a silent exclusion.
  *   3. CLEANUP IS SCOPED. Only this connector's per-tool choices and this
  *      connector's approved access are cleared — and a cleanup miss is
@@ -69,7 +69,7 @@ const initCtx: AgentContext = makeAgentContext({
 const NS_LINEAR = 'c0123456789';
 const NS_GMAIL = 'cabcdef0123';
 
-type Source = 'default' | 'attached' | 'legacy-owned';
+type Source = 'attached' | 'legacy-owned';
 interface Effective {
   summary: { id: string; name: string; canEdit?: boolean; keyMode?: 'personal' | 'workspace' };
   source: Source;
@@ -130,7 +130,7 @@ describe('agent connector routes', () => {
     effective = [
       {
         summary: { id: 'gmail', name: 'Gmail', canEdit: false },
-        source: 'default',
+        source: 'attached',
         toolNamespaces: [{ server: 'gmail', toolNamespace: NS_GMAIL }],
       },
       {
@@ -1035,7 +1035,7 @@ describe('agent connector routes', () => {
       expect(r.statusCode).toBe(200);
       expect(r.body).toEqual({
         connectors: [
-          { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok', removable: true },
+          { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'ok', removable: true },
           { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
           {
             id: 'notes',
@@ -1070,12 +1070,24 @@ describe('agent connector routes', () => {
           source: 'attached',
           toolNamespaces: [],
         },
-        { summary: { id: 'blank', name: '​​', canEdit: false }, source: 'default', toolNamespaces: [] },
+        { summary: { id: 'blank', name: '​​', canEdit: false }, source: 'attached', toolNamespaces: [] },
       ];
       const r = await list();
       const rows = (r.body as { connectors: Array<{ id: string; name: string }> }).connectors;
       expect(rows[0]?.name).not.toMatch(/[‮​]/);
       expect(rows[1]).toMatchObject({ id: 'blank', name: 'blank' });
+    });
+
+    it("never shows a source other than attached / legacy-owned — a retired 'default' reads as attached", async () => {
+      effective = [
+        // Not a source the host emits any more; it must not reach the rail.
+        { summary: { id: 'old', name: 'Old', canEdit: false }, source: 'default' as never, toolNamespaces: [] },
+        ...effective,
+      ];
+      const r = await list();
+      const rows = (r.body as { connectors: Array<{ id: string; source: string }> }).connectors;
+      expect(rows.find((row) => row.id === 'old')?.source).toBe('attached');
+      expect(new Set(rows.map((row) => row.source))).toEqual(new Set(['attached', 'legacy-owned']));
     });
 
     it('drops an entry whose id is not a connector id', async () => {
@@ -1186,12 +1198,6 @@ describe('agent connector routes', () => {
       ]);
     });
 
-    it('EXCLUDES a workspace default from this agent only', async () => {
-      const r = await remove('gmail');
-      expect(r.statusCode).toBe(200);
-      expect(detachCalls[0]).toMatchObject({ connectorId: 'gmail', exclude: true });
-    });
-
     it('excludes a legacy-owned connector', async () => {
       await remove('notes');
       expect(detachCalls[0]).toMatchObject({ connectorId: 'notes', exclude: true });
@@ -1250,18 +1256,18 @@ describe('agent connector routes', () => {
       expect(revokeCalls).toHaveLength(0);
     });
 
-    it('403s a member removing a default from a team agent when the hook refuses — nothing cleaned (TASK-765)', async () => {
+    it('403s a member removing a legacy-owned connector from a team agent when the hook refuses — nothing cleaned', async () => {
       agentRow = { ...agentRow, visibility: 'team' };
       detachRefusal = new PluginError({
         code: 'forbidden',
         plugin: 'agents',
         message: "only the agent's owner or an admin can change its connectors",
       });
-      const r = await remove('gmail');
+      const r = await remove('notes');
       expect(r.statusCode).toBe(403);
       expect(r.body).toEqual({ error: 'forbidden' });
       expect(detachCalls).toEqual([
-        { actor: { userId: 'u1', isAdmin: false }, agentId: 'a1', connectorId: 'gmail', exclude: true },
+        { actor: { userId: 'u1', isAdmin: false }, agentId: 'a1', connectorId: 'notes', exclude: true },
       ]);
       expect(overrideClears).toHaveLength(0);
       expect(revokeCalls).toHaveLength(0);

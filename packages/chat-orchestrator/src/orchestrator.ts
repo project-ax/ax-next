@@ -440,14 +440,14 @@ interface AgentRecord {
    * `connector_attachments` store, replacing TASK-98's `mcpConfigIds` stopgap).
    * Forwarded to `connectors:list-effective`, which resolves each; the
    * orchestrator folds its Capabilities into the session (one source of the
-   * effective set, alongside defaults + the owner's legacy items). Opaque connector-id slugs — no backing
-   * mechanism vocab. Empty/absent ⟹ no attached connectors (back-compat with a
+   * effective set, alongside the owner's legacy items). Opaque connector-id slugs — no
+   * backing mechanism vocab. Empty/absent ⟹ no attached connectors (back-compat with a
    * resolve impl predating the field).
    */
   connectorAttachments?: string[];
   /**
    * TASK-739 — connector ids removed from this agent that would otherwise
-   * arrive as a default or legacy item (the agent row's `connector_exclusions`).
+   * arrive as a legacy-owned item (the agent row's `connector_exclusions`).
    * Forwarded to `connectors:list-effective`. Absent ⟹ no exclusions.
    */
   connectorExclusions?: string[];
@@ -2768,10 +2768,9 @@ export function createOrchestrator(
     ];
 
     // TASK-97/107/739 — CONNECTOR union. Resolve the agent's effective connector
-    // set via connectors:list-effective (workspace defaults ∪ the agent's
-    // per-agent ATTACHMENTS ∪ the owner's legacy connectors, minus the agent's
-    // EXCLUSIONS) and fold each connector's Capabilities through the SAME
-    // materialization path skills use: hosts → baseAllowSet, credential slots →
+    // set via connectors:list-effective (the agent's per-agent ATTACHMENTS ∪
+    // the owner's legacy connectors, minus the agent's EXCLUSIONS) and fold each
+    // connector's Capabilities through the SAME materialization path skills use: hosts → baseAllowSet, credential slots →
     // baseCreds (namespaced `connector:<id>:<slot>`), packages → the registry
     // auto-allow below, mcpServers → installed-skill entries (synthetic SKILL.md +
     // per-dir `.mcp.json`). Deduped against skill caps: hosts via the shared Set,
@@ -2815,8 +2814,9 @@ export function createOrchestrator(
     const allConnectors = [...effectiveConnectors, ...skillReferencedConnectors];
 
     // TASK-754 — a connector that reached this agent without an attach (a
-    // workspace default) copies its per-tool defaults now, on first sight;
-    // attached ones were copied at attach and are a cached no-op here.
+    // skill-referenced connector or a legacy-owned row) copies its per-tool
+    // defaults now, on first sight; attached ones were copied at attach and
+    // are a cached no-op here.
     // NON-FATAL (see the helper). Runs over EVERY connector, skipped ones
     // included: the copy is about the agent getting the connector, not about
     // this caller's sign-in.
@@ -3995,7 +3995,7 @@ export function createOrchestrator(
     //     the card today; the wall does not card individual MCP servers).
     //     keyMode/name/usageNote come from the resolved draft. `visibility` is
     //     the safe `private` default (owner-scoped reach); an admin re-curates to
-    //     shared/default-on later (mirrors the cap-migration promotion default).
+    //     shared later (mirrors the cap-migration promotion default).
     //
     //     Ordered BEFORE the activate flip so a promotion failure leaves the
     //     draft `pending` (re-approvable) rather than active-but-unpromoted.

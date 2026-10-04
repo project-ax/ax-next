@@ -439,10 +439,7 @@ export function RemoteMcpConnectorForm({
       };
       if (connector) await patchConnector(connectorId, input, base);
       else
-        await createConnector(
-          { ...input, visibility: 'shared', defaultAttached: false },
-          base,
-        );
+        await createConnector({ ...input, visibility: 'shared' }, base);
       update('clientSecret', '');
       // The connector now names the stored copy. A retry (say, of tool
       // permissions below) must not point it back at the one it replaced.

@@ -131,14 +131,14 @@ function connectorCaps(services: ServiceDescriptorParsed[]): Record<string, unkn
   };
 }
 
-// Build a self-contained orchestrator harness. `defaultConnectors` are returned
-// as defaults from `connectors:list-effective` (admin-curated, approved — they feed the
+// Build a self-contained orchestrator harness. `effectiveConnectors` are returned
+// as attached connectors from `connectors:list-effective` (admin-curated, approved — they feed the
 // fold). `sandbox:open-session` captures `input.services` and fires chat:end so
 // the orchestrator's waiter resolves. A `chat:turn-error` subscriber records the
 // broadcasts so the error path can assert the SSE got an error frame.
 function buildMocks(
   busRef: { current: HookBus | null },
-  defaultConnectors: Array<{ id: string; capabilities: Record<string, unknown> }>,
+  effectiveConnectors: Array<{ id: string; capabilities: Record<string, unknown> }>,
 ): ServicesCanaryMocks {
   const trace: ServicesCanaryMocks['trace'] = {
     sandboxOpen: 0,
@@ -150,9 +150,9 @@ function buildMocks(
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
     'connectors:list-effective': async () => ({
-      connectors: defaultConnectors.map(({ id, capabilities }) => ({
+      connectors: effectiveConnectors.map(({ id, capabilities }) => ({
         summary: { id },
-        source: 'default',
+        source: 'attached',
         capabilities,
       })),
     }),

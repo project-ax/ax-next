@@ -14,7 +14,6 @@ const SUMMARY: ConnectorSummary = {
   usageNote: 'Read and write Drive.',
   keyMode: 'personal',
   visibility: 'private',
-  defaultAttached: false,
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
 };
@@ -388,7 +387,7 @@ describe('ConnectorEditDialog', () => {
 
   // --- admin vs user variant ----------------------------------------------
 
-  it('admin variant exposes Sharing + default-on', async () => {
+  it('admin variant exposes Sharing (and no default-on control)', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -400,10 +399,10 @@ describe('ConnectorEditDialog', () => {
     );
     await screen.findByLabelText(/service name/i);
     expect(screen.getByText(/^Sharing$/i)).toBeInTheDocument();
-    expect(screen.getByText(/default-on for all agents/i)).toBeInTheDocument();
+    expect(screen.queryByText(/default-on/i)).toBeNull();
   });
 
-  it('user variant hides Sharing + default-on and defaults new connectors to shared', async () => {
+  it('user variant hides Sharing and defaults new connectors to shared', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -415,13 +414,12 @@ describe('ConnectorEditDialog', () => {
     );
     const name = await screen.findByLabelText(/service name/i);
     expect(screen.queryByText(/^Sharing$/i)).toBeNull();
-    expect(screen.queryByText(/default-on for all agents/i)).toBeNull();
     fireEvent.change(name, { target: { value: 'My Private' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
     expect(body.visibility).toBe('shared');
-    expect(body.defaultAttached).toBe(false);
+    expect(body).not.toHaveProperty('defaultAttached');
   });
 
   it('user variant creates through the /settings/connectors route base (TASK-129)', async () => {

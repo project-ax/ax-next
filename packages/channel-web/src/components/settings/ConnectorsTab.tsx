@@ -16,10 +16,10 @@
  * / Can't reach it / Checking… (see STATUS_COPY).
  *
  * AUTHORING: users and admins configure integrations here. New definitions
- * are shared with automatic attachment off. Authors may edit/delete their
- * personal definitions; definitions owned by someone else are read-only.
- * Workspace keys and default attachment remain admin-curated. The actor’s role
- * selects `/settings/connectors` or `/admin/connectors` for writes.
+ * are shared. Authors may edit/delete their personal definitions; definitions
+ * owned by someone else are read-only. Workspace keys remain admin-curated.
+ * The actor’s role selects `/settings/connectors` or `/admin/connectors` for
+ * writes.
  *
  * SCOPE: the list includes owned and shared definitions. Credential presence
  * determines Connected/Available; agent attachment is a separate permission.
@@ -34,7 +34,6 @@ import {
   listConnectors,
   getConnector,
   deleteConnector,
-  patchConnector,
   testConnector,
   deriveCredentialPlan,
   listAuthoredPending,
@@ -300,17 +299,6 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     setTestState((prev) => ({ ...prev, [id]: result.status }));
   };
 
-  const onToggleDefault = async (c: ConnectorSummary) => {
-    try {
-      // Set-default is admin-only (it shapes the shared catalog) → the admin
-      // route base. `base` is already '/admin/connectors' for an admin caller.
-      await patchConnector(c.id, { defaultAttached: !c.defaultAttached }, base);
-      await refreshConnectors();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     try {
@@ -350,13 +338,13 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   const renderTile = (c: ConnectorSummary, section: 'connected' | 'available') => {
     const state = connected[c.id];
     const source = connectorSource(c);
-    // Workspace curation (Test / Set-default) is admin-only — it shapes the
-    // shared catalog, which a non-admin never controls.
+    // Workspace curation (Test) is admin-only — it shapes the shared catalog,
+    // which a non-admin never controls.
     const canManageWorkspace = isAdmin;
     // Availability and edit permission are separate: shared definitions stay
     // editable by their author and read-only for everyone else.
     const canEdit = (c.canEdit ?? (isAdmin || source === 'private')) &&
-      (isAdmin || (!c.defaultAttached && !(c.visibility === 'shared' && c.keyMode === 'workspace')));
+      (isAdmin || !(c.visibility === 'shared' && c.keyMode === 'workspace'));
     return (
       <div key={c.id} data-testid={`connector-tile-${c.id}`}>
         <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
@@ -373,25 +361,14 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
             )}
             <SourceBadge source={source} />
             {canManageWorkspace && (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void onTest(c.id)}
-                  disabled={testState[c.id] === 'testing'}
-                >
-                  Test
-                </Button>
-                {canEdit && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void onToggleDefault(c)}
-                  >
-                    {c.defaultAttached ? 'Unset default' : 'Set default'}
-                  </Button>
-                )}
-              </>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void onTest(c.id)}
+                disabled={testState[c.id] === 'testing'}
+              >
+                Test
+              </Button>
             )}
             {canEdit && (
               <>

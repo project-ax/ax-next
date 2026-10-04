@@ -57,7 +57,7 @@ const railMock = vi.mocked(workspaceApi.rail);
 
 const ROWS: AgentConnectorRow[] = [
   { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
-  { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'ok', removable: true },
+  { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'ok', removable: true },
 ];
 
 function detail(): AgentDetail {
@@ -213,7 +213,7 @@ describe('remove', () => {
 describe('a member on a team agent (TASK-798)', () => {
   const MEMBER_ROWS: AgentConnectorRow[] = [
     { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: false },
-    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-sign-in', setup: 'ask-owner', removable: false },
+    { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'needs-sign-in', setup: 'ask-owner', removable: false },
     { id: 'notion', name: 'Notion', source: 'attached', editable: false, health: 'needs-sign-in', setup: 'add-key', removable: false },
   ];
   const ASK_OWNER = 'Ask the agent’s owner to sign in';
@@ -294,7 +294,7 @@ describe('a member on a team agent (TASK-798)', () => {
 
   it('a team sign-in that expired offers no Reconnect, and says who can fix it', async () => {
     asMember([
-      { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: false },
+      { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: false },
     ]);
     renderTab();
     const reason = 'Team sign-in expired. Ask the agent’s owner to sign in again.';
@@ -325,7 +325,7 @@ describe('a member on a team agent (TASK-798)', () => {
 
   it('their own expired sign-in still offers Sign in again (TASK-774)', async () => {
     asMember([
-      { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', removable: false },
+      { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'needs-reconnect', removable: false },
     ]);
     renderTab();
     expect(await screen.findByRole('button', { name: 'Your sign-in expired' })).toBeTruthy();
@@ -340,7 +340,7 @@ describe('a member on a team agent (TASK-798)', () => {
     connectorsMock.mockResolvedValue({
       connectors: [
         { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
-        { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-sign-in', setup: 'sign-in', removable: true },
+        { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'needs-sign-in', setup: 'sign-in', removable: true },
       ],
       shared: true,
       connectorsSupported: true,
@@ -382,7 +382,7 @@ describe('empty state', () => {
 describe('connector health (TASK-741)', () => {
   const ERRORED: AgentConnectorRow[] = [
     { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'ok', removable: true },
-    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', removable: true },
+    { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'needs-reconnect', removable: true },
     { id: 'slack', name: 'Slack', source: 'attached', editable: true, health: 'unreachable', removable: true },
   ];
   const retryMock = vi.mocked(workspaceApi.retryConnector);
@@ -418,7 +418,7 @@ describe('connector health (TASK-741)', () => {
   it('names a shared expired sign-in as the team’s, in the icon and the Reconnect dialog', async () => {
     connectorsMock.mockResolvedValue({
       connectors: [
-        { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: true },
+        { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: true },
       ],
       shared: true,
       connectorsSupported: true, manageable: true,
@@ -532,10 +532,10 @@ describe('connector health (TASK-741)', () => {
 // personal sign-in ("Sign in again"); Reconnect stays for the team's shared one.
 describe('a team agent member’s own expired sign-in (TASK-774)', () => {
   const PERSONAL: AgentConnectorRow[] = [
-    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', removable: true },
+    { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'needs-reconnect', removable: true },
   ];
   const SHARED: AgentConnectorRow[] = [
-    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: true },
+    { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'needs-reconnect', sharedSignIn: true, removable: true },
   ];
   const UNREACHABLE: AgentConnectorRow[] = [
     { id: 'slack', name: 'Slack', source: 'attached', editable: true, health: 'unreachable', removable: true },
@@ -633,7 +633,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
 describe("a connector a session can't fully load (TASK-745)", () => {
   const NOT_LOADED: AgentConnectorRow[] = [
     { id: 'linear', name: 'Linear', source: 'attached', editable: true, health: 'not-loaded', removable: true },
-    { id: 'gmail', name: 'Gmail', source: 'default', editable: false, health: 'not-loaded', removable: true },
+    { id: 'gmail', name: 'Gmail', source: 'attached', editable: false, health: 'not-loaded', removable: true },
   ];
 
   beforeEach(() => {

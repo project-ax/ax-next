@@ -12,7 +12,12 @@ import {
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConnectorsPlugin } from '../plugin.js';
-import { ListDefaultsOutputSchema, ResolveOutputSchema, ToolLabelsOutputSchema } from '../types.js';
+import {
+  ClearLegacyDefaultOutputSchema,
+  ListLegacyDefaultsOutputSchema,
+  ResolveOutputSchema,
+  ToolLabelsOutputSchema,
+} from '../types.js';
 import {
   deriveToolNamespace,
   deriveToolNamespaces,
@@ -26,8 +31,10 @@ import type {
   DeleteOutput,
   GetInput,
   GetOutput,
-  ListDefaultsInput,
-  ListDefaultsOutput,
+  ClearLegacyDefaultInput,
+  ClearLegacyDefaultOutput,
+  ListLegacyDefaultsInput,
+  ListLegacyDefaultsOutput,
   ListInput,
   ListOutput,
   ResolveInput,
@@ -108,6 +115,22 @@ function upsertInput(over: Partial<UpsertInput> = {}): UpsertInput {
   };
 }
 
+/** The `default_attached` column is no longer written by any hook (TASK-808),
+ *  so a legacy default is simulated the way it exists in the wild: a row whose
+ *  flag was set before this change. Direct SQL, like list-effective's markLegacy. */
+async function flagLegacyDefault(ownerUserId: string, connectorId: string): Promise<void> {
+  const client = new (await import('pg')).default.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(
+      'UPDATE connectors_v1_connectors SET default_attached = true WHERE owner_user_id = $1 AND connector_id = $2',
+      [ownerUserId, connectorId],
+    );
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
 beforeAll(async () => {
   container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
@@ -165,24 +188,33 @@ describe('@ax/connectors hooks — CRUD round-trip', () => {
     // The summary deliberately omits the capabilities spec (mechanism behind
     // Advanced; list stays cheap).
     expect(list.connectors[0]).not.toHaveProperty('capabilities');
-    // TASK-110 — the summary DOES carry the workspace-default flag so the user
-    // list can badge an admin default-on connector. A non-default connector
-    // reports false.
-    expect(list.connectors[0]!.defaultAttached).toBe(false);
+    // TASK-808 — negative space: "Set default" is gone, so no summary carries a
+    // workspace-default flag (a stale reader that keyed off it must see nothing).
+    expect(list.connectors[0]).not.toHaveProperty('defaultAttached');
 
-    // A default-flagged connector surfaces defaultAttached:true on its summary.
+    // ...even for a row that still has the legacy column set in the database
+    // (it is only read by the transitional conversion hooks).
     await h.bus.call<UpsertInput, UpsertOutput>(
       'connectors:upsert',
       h.ctx({ userId: 'userA' }),
-      upsertInput({ connectorId: 'org-github', name: 'Org GitHub', defaultAttached: true }),
+      upsertInput({ connectorId: 'org-github', name: 'Org GitHub' }),
     );
+    await flagLegacyDefault('userA', 'org-github');
     const list2 = await h.bus.call<ListInput, ListOutput>(
       'connectors:list',
       h.ctx({ userId: 'userA' }),
       { userId: 'userA' },
     );
-    const flagged = list2.connectors.find((c) => c.id === 'org-github');
-    expect(flagged?.defaultAttached).toBe(true);
+    expect(list2.connectors.map((c) => c.id)).toContain('org-github');
+    for (const summary of list2.connectors) {
+      expect(summary).not.toHaveProperty('defaultAttached');
+    }
+    const flaggedGet = await h.bus.call<GetInput, GetOutput>(
+      'connectors:get',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'org-github' },
+    );
+    expect(flaggedGet.connector).not.toHaveProperty('defaultAttached');
   });
 
   it('upsert updates an existing connector (created=false) and overwrites fields', async () => {
@@ -249,8 +281,10 @@ describe('@ax/connectors hooks — resolve', () => {
     const resolved = await h.bus.call<ResolveInput, ResolveOutput>('connectors:resolve', h.ctx({ userId: 'userB' }), { userId: 'userB', connectorId: 'gdrive' });
     expect(resolved.credentialPlan).toMatchObject([{ scope: 'user', ref: 'account:gdrive' }]);
     expect(resolved.capabilities).toEqual(mcpCaps());
-    const defaults = await h.bus.call('connectors:list-defaults', h.ctx({ userId: 'userB' }), { userId: 'userB' });
-    expect(defaults).toEqual({ connectors: [] });
+    // A shared definition is not an attachment: it is not effective for a user
+    // who never attached it (TASK-808 — there is no default path left either).
+    const effective = await h.bus.call('connectors:list-effective', h.ctx({ userId: 'userB' }), { userId: 'userB' });
+    expect(effective).toEqual({ connectors: [] });
   });
 
   it('resolve returns the mechanism-agnostic spec descriptor (id + keyMode + capabilities)', async () => {
@@ -1158,56 +1192,155 @@ describe('@ax/connectors hooks — boundary validation', () => {
   });
 });
 
-describe('@ax/connectors hooks — list-defaults', () => {
-  it('returns only the owner\'s default-flagged FULL connectors (capabilities included)', async () => {
-    const h = await makeHarness();
-    // A default-on connector + a non-default one for the same owner.
-    await h.bus.call<UpsertInput, UpsertOutput>(
-      'connectors:upsert',
-      h.ctx({ userId: 'userA' }),
-      upsertInput({ connectorId: 'gdrive', capabilities: mcpCaps(), defaultAttached: true }),
-    );
-    await h.bus.call<UpsertInput, UpsertOutput>(
-      'connectors:upsert',
-      h.ctx({ userId: 'userA' }),
-      upsertInput({ connectorId: 'sf', capabilities: cliCaps(), defaultAttached: false }),
-    );
-
-    const defaults = await h.bus.call<ListDefaultsInput, ListDefaultsOutput>(
-      'connectors:list-defaults',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA' },
-    );
-    expect(defaults.connectors.map((c) => c.id)).toEqual(['gdrive']);
-    // FULL connector — the union needs the capabilities spec to materialize reach.
-    expect(defaults.connectors[0]!.capabilities).toEqual(mcpCaps());
-    expect(defaults.connectors[0]!.defaultAttached).toBe(true);
-  });
-
-  it('an absent userId yields no defaults (owner-scoped)', async () => {
-    const h = await makeHarness();
-    await h.bus.call<UpsertInput, UpsertOutput>(
-      'connectors:upsert',
-      h.ctx({ userId: 'userA' }),
-      upsertInput({ connectorId: 'gdrive', defaultAttached: true }),
-    );
-    const defaults = await h.bus.call<ListDefaultsInput, ListDefaultsOutput>(
-      'connectors:list-defaults',
-      h.ctx({ userId: 'userA' }),
+// ---------------------------------------------------------------------------
+// TASK-808 — the two TRANSITIONAL hooks that let @ax/agents convert the old
+// owner-scoped "Set default" flag into explicit attachments at boot. The flag is
+// no longer written by anything; these are its only readers.
+// ---------------------------------------------------------------------------
+describe('@ax/connectors hooks — legacy default conversion (TASK-808)', () => {
+  async function listLegacy(h: TestHarness): Promise<ListLegacyDefaultsOutput> {
+    return h.bus.call<ListLegacyDefaultsInput, ListLegacyDefaultsOutput>(
+      'connectors:list-legacy-defaults',
+      h.ctx({ userId: 'system' }),
       {},
     );
-    expect(defaults.connectors).toEqual([]);
+  }
+  async function clearLegacy(h: TestHarness, ownerUserId: string, connectorId: string): Promise<ClearLegacyDefaultOutput> {
+    return h.bus.call<ClearLegacyDefaultInput, ClearLegacyDefaultOutput>(
+      'connectors:clear-legacy-default',
+      h.ctx({ userId: 'system' }),
+      { ownerUserId, connectorId },
+    );
+  }
+  async function seedConnector(h: TestHarness, userId: string, connectorId: string): Promise<void> {
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId }),
+      upsertInput({ userId, connectorId }),
+    );
+  }
+
+  it('lists every LIVE flagged row across ALL owners, ordered by (owner, connector id), as bare {ownerUserId, connectorId}', async () => {
+    const h = await makeHarness();
+    await seedConnector(h, 'userB', 'zeta');
+    await seedConnector(h, 'userA', 'beta');
+    await seedConnector(h, 'userA', 'alpha');
+    await seedConnector(h, 'userA', 'plain'); // never flagged
+    await seedConnector(h, 'userB', 'alpha');
+    for (const [owner, id] of [['userB', 'zeta'], ['userA', 'beta'], ['userA', 'alpha'], ['userB', 'alpha']] as const) {
+      await flagLegacyDefault(owner, id);
+    }
+    expect(await listLegacy(h)).toEqual({
+      connectors: [
+        { ownerUserId: 'userA', connectorId: 'alpha' },
+        { ownerUserId: 'userA', connectorId: 'beta' },
+        { ownerUserId: 'userB', connectorId: 'alpha' },
+        { ownerUserId: 'userB', connectorId: 'zeta' },
+      ],
+    });
   });
 
-  it('rejects a non-boolean defaultAttached on upsert', async () => {
+  it('skips tombstoned rows and unflagged rows; an empty database lists nothing', async () => {
     const h = await makeHarness();
-    await expect(
-      h.bus.call<UpsertInput, UpsertOutput>(
-        'connectors:upsert',
-        h.ctx({ userId: 'userA' }),
-        upsertInput({ defaultAttached: 'yes' as unknown as boolean }),
-      ),
-    ).rejects.toMatchObject({ code: 'invalid-payload' });
+    expect(await listLegacy(h)).toEqual({ connectors: [] });
+    await seedConnector(h, 'userA', 'live');
+    await seedConnector(h, 'userA', 'gone');
+    await seedConnector(h, 'userA', 'unflagged');
+    await flagLegacyDefault('userA', 'live');
+    await flagLegacyDefault('userA', 'gone');
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userA' }), { userId: 'userA', connectorId: 'gone' });
+    expect(await listLegacy(h)).toEqual({ connectors: [{ ownerUserId: 'userA', connectorId: 'live' }] });
+  });
+
+  it('carries no capabilities / mechanism detail — only the two identity fields', async () => {
+    const h = await makeHarness();
+    await seedConnector(h, 'userA', 'live');
+    await flagLegacyDefault('userA', 'live');
+    const out = await listLegacy(h);
+    expect(Object.keys(out.connectors[0]!).sort()).toEqual(['connectorId', 'ownerUserId']);
+  });
+
+  it('clear flips the flag off, is idempotent (second call cleared:false) and never touches updated_at', async () => {
+    const h = await makeHarness();
+    await seedConnector(h, 'userA', 'live');
+    await seedConnector(h, 'userA', 'other');
+    await flagLegacyDefault('userA', 'live');
+    await flagLegacyDefault('userA', 'other');
+    const before = await h.bus.call<GetInput, GetOutput>('connectors:get', h.ctx({ userId: 'userA' }), { userId: 'userA', connectorId: 'live' });
+
+    expect(await clearLegacy(h, 'userA', 'live')).toEqual({ cleared: true });
+    // The sibling's flag is untouched; the cleared row has left the list.
+    expect(await listLegacy(h)).toEqual({ connectors: [{ ownerUserId: 'userA', connectorId: 'other' }] });
+    expect(await clearLegacy(h, 'userA', 'live')).toEqual({ cleared: false });
+    expect(await clearLegacy(h, 'userA', 'live')).toEqual({ cleared: false });
+
+    // Not a user edit: updated_at did not move.
+    const after = await h.bus.call<GetInput, GetOutput>('connectors:get', h.ctx({ userId: 'userA' }), { userId: 'userA', connectorId: 'live' });
+    expect(after.connector.updatedAt).toBe(before.connector.updatedAt);
+  });
+
+  it('clear on a row that does not exist, or belongs to another owner, is cleared:false and changes nothing', async () => {
+    const h = await makeHarness();
+    await seedConnector(h, 'userA', 'live');
+    await flagLegacyDefault('userA', 'live');
+    expect(await clearLegacy(h, 'nobody', 'live')).toEqual({ cleared: false });
+    expect(await clearLegacy(h, 'userA', 'missing')).toEqual({ cleared: false });
+    expect(await listLegacy(h)).toEqual({ connectors: [{ ownerUserId: 'userA', connectorId: 'live' }] });
+  });
+
+  it('clear validates both inputs (non-empty owner, a valid connector id)', async () => {
+    const h = await makeHarness();
+    const call = (input: unknown) => h.bus.call('connectors:clear-legacy-default', h.ctx({ userId: 'system' }), input);
+    await expect(call({ ownerUserId: '', connectorId: 'live' })).rejects.toMatchObject({ code: 'invalid-payload' });
+    await expect(call({ connectorId: 'live' })).rejects.toMatchObject({ code: 'invalid-payload' });
+    await expect(call({ ownerUserId: 7, connectorId: 'live' })).rejects.toMatchObject({ code: 'invalid-payload' });
+    await expect(call({ ownerUserId: 'userA', connectorId: '' })).rejects.toMatchObject({ code: 'invalid-payload' });
+    await expect(call({ ownerUserId: 'userA', connectorId: 'Bad Id!' })).rejects.toMatchObject({ code: 'invalid-payload' });
+    await expect(call({ ownerUserId: 'userA' })).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('an edit does not set the flag, and re-creating a tombstoned flagged id starts clean', async () => {
+    const h = await makeHarness();
+    await seedConnector(h, 'userA', 'live');
+    // A plain re-upsert (an edit) of an unflagged row stays unflagged.
+    await seedConnector(h, 'userA', 'live');
+    expect(await listLegacy(h)).toEqual({ connectors: [] });
+
+    // A flagged row that is tombstoned and later re-created under the same id is
+    // a NEW connector: the stale flag must not come back with it.
+    await flagLegacyDefault('userA', 'live');
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userA' }), { userId: 'userA', connectorId: 'live' });
+    await seedConnector(h, 'userA', 'live');
+    expect(await listLegacy(h)).toEqual({ connectors: [] });
+  });
+
+  it('a flagged row is NOT effective on its own any more — only an attachment reaches an agent (list-effective has no default source)', async () => {
+    const h = await makeHarness();
+    await seedConnector(h, 'userA', 'live');
+    await flagLegacyDefault('userA', 'live');
+    const none = await h.bus.call<{ userId: string }, { connectors: unknown[] }>('connectors:list-effective', h.ctx({ userId: 'userA' }), { userId: 'userA' });
+    expect(none.connectors).toEqual([]);
+  });
+
+  it('the old hook is gone; the two conversion hooks are registered; upsert ignores a stale defaultAttached input and never writes the flag', async () => {
+    const h = await makeHarness();
+    expect(h.bus.hasService('connectors:list-defaults')).toBe(false);
+    expect(h.bus.hasService('connectors:list-legacy-defaults')).toBe(true);
+    expect(h.bus.hasService('connectors:clear-legacy-default')).toBe(true);
+    // The HTTP surface is what rejects the field loudly; the hook just ignores it.
+    await h.bus.call('connectors:upsert', h.ctx({ userId: 'userA' }), {
+      ...upsertInput(),
+      defaultAttached: true,
+    });
+    expect(await listLegacy(h)).toEqual({ connectors: [] });
+  });
+
+  it('the return schemas accept the documented shapes and reject malformed ones', () => {
+    expect(ListLegacyDefaultsOutputSchema.parse({ connectors: [{ ownerUserId: 'u', connectorId: 'c' }] }))
+      .toEqual({ connectors: [{ ownerUserId: 'u', connectorId: 'c' }] });
+    expect(ClearLegacyDefaultOutputSchema.parse({ cleared: true })).toEqual({ cleared: true });
+    expect(() => ListLegacyDefaultsOutputSchema.parse({ connectors: [{ ownerUserId: 'u' }] })).toThrow();
+    expect(() => ClearLegacyDefaultOutputSchema.parse({})).toThrow();
   });
 });
 
@@ -1290,14 +1423,17 @@ describe('@ax/connectors hooks — toolNamespaces (TASK-734)', () => {
     expect(resolved.toolNamespaces).toEqual([]);
   });
 
-  it('list-defaults returns toolNamespaces on each connector, equal to resolve for the same record', async () => {
+  it('list-effective returns toolNamespaces on each connector, equal to resolve for the same record', async () => {
     const h = await makeHarness();
-    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'duo', capabilities: twoServerCaps(), defaultAttached: true }));
-    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'sf', capabilities: cliCaps(), defaultAttached: true }));
-    const defaults = await h.bus.call<ListDefaultsInput, ListDefaultsOutput>('connectors:list-defaults', h.ctx({ userId: 'userA' }), { userId: 'userA' });
-    expect(defaults.connectors.map((c) => c.id)).toEqual(['duo', 'sf']);
-    const duo = defaults.connectors[0]!;
-    const sf = defaults.connectors[1]!;
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'duo', capabilities: twoServerCaps() }));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), upsertInput({ connectorId: 'sf', capabilities: cliCaps() }));
+    const effective = await h.bus.call<
+      { userId: string; attachmentIds: string[] },
+      { connectors: Array<{ summary: { id: string }; capabilities: Capabilities; toolNamespaces: unknown[] }> }
+    >('connectors:list-effective', h.ctx({ userId: 'userA' }), { userId: 'userA', attachmentIds: ['duo', 'sf'] });
+    expect(effective.connectors.map((c) => c.summary.id)).toEqual(['duo', 'sf']);
+    const duo = effective.connectors[0]!;
+    const sf = effective.connectors[1]!;
     expect(duo.toolNamespaces).toEqual((await resolve(h, 'userA', 'duo')).toolNamespaces);
     expect(duo.toolNamespaces).toHaveLength(2);
     expect(sf.toolNamespaces).toEqual([]);
@@ -1317,25 +1453,6 @@ describe('@ax/connectors hooks — toolNamespaces (TASK-734)', () => {
       toolNamespaces,
     });
     expect(resolveOut.toolNamespaces).toEqual(toolNamespaces);
-
-    const defaultsOut = ListDefaultsOutputSchema.parse({
-      connectors: [
-        {
-          id: 'gdrive',
-          name: 'Google Drive',
-          description: '',
-          usageNote: '',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-          defaultAttached: true,
-          createdAt: '2026-01-01T00:00:00.000Z',
-          updatedAt: '2026-01-01T00:00:00.000Z',
-          toolNamespaces,
-        },
-      ],
-    });
-    expect(defaultsOut.connectors[0]!.toolNamespaces).toEqual(toolNamespaces);
   });
 
   it('the return schemas reject a payload that omits toolNamespaces (so a producer cannot silently drop it)', () => {

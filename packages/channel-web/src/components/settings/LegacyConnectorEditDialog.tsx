@@ -2,7 +2,7 @@
  * ConnectorEditDialog — the SHARED, mechanism-first connector create/edit form
  * (TASK-128, settings-unified epic). One component, two variants:
  *   - admin curation (the folded Connector Registry, `isAdmin`) — exposes the
- *     workspace-level fields (Sharing / default-on for all agents).
+ *     workspace-level fields (Sharing).
  *   - user authoring (`isAdmin={false}`) — hides those fields and forces the
  *     connector private. (The user-facing ENTRY points + owner-scoped routes are
  *     TASK-129; this component is the variant-aware form they reuse.)
@@ -83,7 +83,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Card,
@@ -121,9 +120,9 @@ export interface ConnectorEditDialogProps {
   /** Called after a successful create/update so the caller can refresh + close. */
   onSaved: () => void;
   /**
-   * Admin variant. When true the workspace-level fields (Sharing / default-on)
-   * are exposed. User edits preserve saved sharing settings; new definitions
-   * are shared with automatic attachment off. Defaults to false.
+   * Admin variant. When true the workspace-level fields (Sharing) are
+   * exposed. User edits preserve saved sharing settings; new definitions are
+   * shared. Defaults to false.
    */
   isAdmin?: boolean;
 }
@@ -532,7 +531,7 @@ export function LegacyConnectorEditDialog({
 
   // The route bundle this variant targets (TASK-129): the admin variant curates
   // via `/admin/connectors`; the user variant authors via the locked-down
-  // `/settings/connectors` (owner forced; workspace keys and defaults rejected
+  // `/settings/connectors` (owner forced; workspace keys rejected
   // server-side; shared definitions owned by others are read-only).
   const base: ConnectorRouteBase = isAdmin
     ? '/admin/connectors'
@@ -589,10 +588,9 @@ export function LegacyConnectorEditDialog({
     const connectorId = form.connectorId || connectorIdFromName(form.name);
     setBusy(true);
     setError(null);
-    // Preserve sharing on user edits. Workspace keys and automatic attachment
-    // remain admin-only on the server.
+    // Preserve sharing on user edits. Workspace keys remain admin-only on the
+    // server.
     const visibility: ConnectorVisibility = isAdmin ? form.visibility : connector?.visibility ?? 'shared';
-    const defaultAttached = isAdmin ? form.defaultAttached : false;
 
     // --- oauth client_secret persistence ------------------------------------
     // For each oauth slot that has a newly-entered client_secret: write the
@@ -669,7 +667,6 @@ export function LegacyConnectorEditDialog({
       usageNote: form.usageNote,
       keyMode: form.keyMode,
       visibility,
-      defaultAttached,
       capabilities: capabilitiesFromForm(formWithSecretRefs),
     };
     try {
@@ -728,7 +725,7 @@ export function LegacyConnectorEditDialog({
           </DialogTitle>
           <DialogDescription>
             {isAdmin
-              ? 'Curate a service the workspace can connect to. Sharing and default-on make it available to everyone’s agents.'
+              ? 'Curate a service the workspace can connect to. Sharing makes it available to everyone’s agents.'
               : 'Add a service your assistant can connect to. It stays private to your agents.'}
           </DialogDescription>
         </DialogHeader>
@@ -844,25 +841,6 @@ export function LegacyConnectorEditDialog({
                     </SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
-
-              {/* Default-on for all agents */}
-              <div className="flex items-start gap-2.5">
-                <Checkbox
-                  id="connector-default"
-                  checked={form.defaultAttached}
-                  onCheckedChange={(v) =>
-                    setForm((f) => ({ ...f, defaultAttached: v === true }))
-                  }
-                />
-                <div className="flex flex-col gap-0.5">
-                  <Label htmlFor="connector-default" className="cursor-pointer">
-                    Default-on for all agents
-                  </Label>
-                  <p className="text-xs text-muted-foreground">
-                    Every agent gets this connector without anyone attaching it.
-                  </p>
-                </div>
               </div>
             </>
           )}

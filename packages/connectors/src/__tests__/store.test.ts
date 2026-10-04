@@ -144,14 +144,12 @@ describe('createConnectorStore', () => {
     const store = createConnectorStore(db);
     const base = { userId: 'author', name: 'Connector', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
     await store.upsert({ ...base, connectorId: 'shared', visibility: 'shared' });
-    await store.upsert({ ...base, connectorId: 'private', visibility: 'private', defaultAttached: true });
-    expect(await store.listForUser('reader')).toMatchObject([{ id: 'shared', canEdit: false, defaultAttached: false }]);
+    await store.upsert({ ...base, connectorId: 'private', visibility: 'private' });
+    expect(await store.listForUser('reader')).toMatchObject([{ id: 'shared', canEdit: false }]);
     expect(await store.getAvailableById('reader', 'shared')).toMatchObject({ ownerUserId: 'author', connector: { id: 'shared', canEdit: false } });
     expect(await store.getAvailableById('reader', 'private')).toBeNull();
     expect(await store.getByIdNotDeleted('reader', 'shared')).toBeNull();
     expect(await store.softDelete('reader', 'shared')).toBe(false);
-    expect(await store.listDefaults('reader')).toEqual([]);
-    expect(await store.listDefaults('author')).toMatchObject([{ ownerUserId: 'author', connector: { id: 'private', defaultAttached: true } }]);
     await store.softDelete('author', 'shared');
     expect(await store.getAvailableById('reader', 'shared')).toBeNull();
     expect(await store.listForUser('reader')).toEqual([]);
@@ -171,14 +169,21 @@ describe('createConnectorStore', () => {
     await runConnectorsMigration(db);
     await runConnectorsMigration(db);
     const store = createConnectorStore(db);
-    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false, defaultAttached: true, visibility: 'private', keyMode: 'workspace' });
+    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false, visibility: 'private', keyMode: 'workspace' });
+    // The legacy default flag survives the migration and an edit — only the
+    // conversion hooks read it (TASK-808) — but never reaches the domain shape.
+    expect(await store.listLegacyDefaults()).toEqual([{ ownerUserId: 'author', connectorId: 'legacy' }]);
+    expect(await store.getByIdNotDeleted('author', 'legacy')).not.toHaveProperty('defaultAttached');
     await store.upsert({ ...base, connectorId: 'legacy', keyMode: 'workspace', visibility: 'private' });
-    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false, defaultAttached: true });
+    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false });
+    expect(await store.listLegacyDefaults()).toEqual([{ ownerUserId: 'author', connectorId: 'legacy' }]);
     await store.upsert({ ...base, connectorId: 'new', visibility: 'shared' });
-    expect(await store.getByIdNotDeleted('author', 'new')).toMatchObject({ requiresAttachment: true, defaultAttached: false });
+    expect(await store.getByIdNotDeleted('author', 'new')).toMatchObject({ requiresAttachment: true });
     await store.softDelete('author', 'legacy');
     await store.upsert({ ...base, connectorId: 'legacy', visibility: 'shared' });
-    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: true, defaultAttached: false });
+    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: true });
+    // Re-creating a tombstoned flagged id starts clean: the stale flag is reset.
+    expect(await store.listLegacyDefaults()).toEqual([]);
   });
 
   it('prefers owned ids and denies ambiguous shared ids consistently', async () => {
@@ -225,140 +230,114 @@ describe('createConnectorStore', () => {
     expect(await store.getSoleSharedById('member', 'linear')).toMatchObject({ ownerUserId: 'owner' });
   });
 
-  it('defaultAttached round-trips; upsert preserves it on a content-only update, clears on explicit false', async () => {
+  it('connector and summary shapes carry no defaultAttached key (TASK-808 negative space)', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createConnectorStore(db);
-
-    // Fresh connector — absent flag defaults to false.
-    const fresh = await store.upsert({
+    const base = {
       userId: 'u',
-      connectorId: 'c',
       name: 'C',
-      description: '',
-      usageNote: '',
-      keyMode: 'personal',
-      visibility: 'private',
-      capabilities: caps(),
-    });
-    expect(fresh.connector.defaultAttached).toBe(false);
-
-    // Flip it default-on.
-    const flagged = await store.upsert({
-      userId: 'u',
-      connectorId: 'c',
-      name: 'C',
-      description: '',
-      usageNote: '',
-      keyMode: 'personal',
-      visibility: 'private',
-      capabilities: caps(),
-      defaultAttached: true,
-    });
-    expect(flagged.connector.defaultAttached).toBe(true);
-
-    // A content-only re-upsert (flag ABSENT) must PRESERVE default-on.
-    const preserved = await store.upsert({
-      userId: 'u',
-      connectorId: 'c',
-      name: 'C renamed',
-      description: 'd',
-      usageNote: '',
-      keyMode: 'personal',
-      visibility: 'private',
-      capabilities: caps(),
-    });
-    expect(preserved.connector.name).toBe('C renamed');
-    expect(preserved.connector.defaultAttached).toBe(true);
-
-    // Explicit false clears it.
-    const cleared = await store.upsert({
-      userId: 'u',
-      connectorId: 'c',
-      name: 'C renamed',
-      description: 'd',
-      usageNote: '',
-      keyMode: 'personal',
-      visibility: 'private',
-      capabilities: caps(),
-      defaultAttached: false,
-    });
-    expect(cleared.connector.defaultAttached).toBe(false);
-  });
-
-  it('listForUser summaries carry defaultAttached (TASK-110 — the user list badges admin default-on connectors)', async () => {
-    const db = makeKysely();
-    await runConnectorsMigration(db);
-    const store = createConnectorStore(db);
-
-    const base = (over: { connectorId: string; defaultAttached?: boolean }) => ({
-      userId: 'u',
-      name: over.connectorId.toUpperCase(),
       description: '',
       usageNote: '',
       keyMode: 'personal' as const,
       visibility: 'private' as const,
       capabilities: caps(),
-      ...over,
-    });
-
-    // A default-on (admin-curated) connector and a plain private one.
-    await store.upsert(base({ connectorId: 'flagged', defaultAttached: true }));
-    await store.upsert(base({ connectorId: 'plain', defaultAttached: false }));
-
-    const summaries = await store.listForUser('u');
-    const byId = new Map(summaries.map((s) => [s.id, s]));
-    // The dropped-field bug: the summary mapper omitted defaultAttached entirely,
-    // so the user list could never badge a default-on, visibility:'private'
-    // connector as "Catalog". The summary must carry the flag faithfully.
-    expect(byId.get('flagged')!.defaultAttached).toBe(true);
-    expect(byId.get('plain')!.defaultAttached).toBe(false);
-    // The summary still omits the capabilities spec (mechanism behind Advanced).
-    expect(byId.get('flagged')).not.toHaveProperty('capabilities');
+    };
+    const { connector } = await store.upsert({ ...base, connectorId: 'c' });
+    expect(connector).not.toHaveProperty('defaultAttached');
+    // ...even when the legacy column is set on the row.
+    await db.updateTable('connectors_v1_connectors').set({ default_attached: true }).where('connector_id', '=', 'c').execute();
+    for (const summary of await store.listForUser('u')) {
+      expect(summary).not.toHaveProperty('defaultAttached');
+      // The summary still omits the capabilities spec (mechanism behind Advanced).
+      expect(summary).not.toHaveProperty('capabilities');
+    }
+    expect(await store.getByIdNotDeleted('u', 'c')).not.toHaveProperty('defaultAttached');
+    for (const entry of await store.listAvailable('u')) {
+      expect(entry.connector).not.toHaveProperty('defaultAttached');
+    }
+    expect(await store.getAvailableById('u', 'c')).not.toHaveProperty('connector.defaultAttached');
   });
 
-  it('listDefaults returns only default-flagged, non-tombstoned, owner-scoped FULL connectors sorted by id', async () => {
+  it('upsert never writes the legacy flag: a fresh row is unflagged and an edit leaves an existing flag exactly as it was', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createConnectorStore(db);
-
-    const base = (over: {
-      userId: string;
-      connectorId: string;
-      defaultAttached?: boolean;
-    }) => ({
-      name: over.connectorId.toUpperCase(),
+    const base = {
+      userId: 'u',
+      connectorId: 'c',
+      name: 'C',
       description: '',
       usageNote: '',
       keyMode: 'personal' as const,
       visibility: 'private' as const,
       capabilities: caps(),
-      ...over,
-    });
+    };
+    await store.upsert(base);
+    expect(await store.listLegacyDefaults()).toEqual([]);
+    await db.updateTable('connectors_v1_connectors').set({ default_attached: true }).execute();
+    await store.upsert({ ...base, name: 'C renamed' });
+    expect(await store.listLegacyDefaults()).toEqual([{ ownerUserId: 'u', connectorId: 'c' }]);
+  });
 
-    // u1: two defaults ('b','a') + one non-default ('z').
-    await store.upsert(base({ userId: 'u1', connectorId: 'b', defaultAttached: true }));
-    await store.upsert(base({ userId: 'u1', connectorId: 'a', defaultAttached: true }));
-    await store.upsert(base({ userId: 'u1', connectorId: 'z', defaultAttached: false }));
-    // u1: a default that gets tombstoned — must NOT appear.
-    await store.upsert(base({ userId: 'u1', connectorId: 'gone', defaultAttached: true }));
+  it('listLegacyDefaults returns only flagged, non-tombstoned rows across ALL owners, ordered by (owner, id), as bare identities', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = (userId: string, connectorId: string) => ({
+      userId,
+      connectorId,
+      name: connectorId.toUpperCase(),
+      description: '',
+      usageNote: '',
+      keyMode: 'personal' as const,
+      visibility: 'private' as const,
+      capabilities: caps(),
+    });
+    const flag = (userId: string, connectorId: string) =>
+      db.updateTable('connectors_v1_connectors').set({ default_attached: true })
+        .where('owner_user_id', '=', userId).where('connector_id', '=', connectorId).execute();
+
+    await store.upsert(base('u2', 'other'));
+    await store.upsert(base('u1', 'b'));
+    await store.upsert(base('u1', 'a'));
+    await store.upsert(base('u1', 'z')); // not flagged
+    await store.upsert(base('u1', 'gone'));
+    for (const [u, c] of [['u2', 'other'], ['u1', 'b'], ['u1', 'a'], ['u1', 'gone']] as const) await flag(u, c);
     await store.softDelete('u1', 'gone');
-    // u2: a default owned by another user — must NOT appear for u1.
-    await store.upsert(base({ userId: 'u2', connectorId: 'other', defaultAttached: true }));
 
-    const defaults = await store.listDefaults('u1');
-    // Sorted by id asc; only u1's live defaults; full connectors (capabilities present).
-    expect(defaults.map((c) => c.connector.id)).toEqual(['a', 'b']);
-    expect(defaults[0]!.connector.capabilities).toEqual(caps());
-    expect(defaults.every((c) => c.connector.defaultAttached)).toBe(true);
-    // Each entry carries the ROW owner (TASK-734: the tool namespace is derived
-    // from the row owner, not the requester).
-    expect(defaults.every((c) => c.ownerUserId === 'u1')).toBe(true);
+    expect(await store.listLegacyDefaults()).toEqual([
+      { ownerUserId: 'u1', connectorId: 'a' },
+      { ownerUserId: 'u1', connectorId: 'b' },
+      { ownerUserId: 'u2', connectorId: 'other' },
+    ]);
+  });
 
-    const u2Defaults = await store.listDefaults('u2');
-    expect(u2Defaults.map((c) => c.connector.id)).toEqual(['other']);
-    expect(u2Defaults[0]!.ownerUserId).toBe('u2');
-    expect(await store.listDefaults('nobody')).toEqual([]);
+  it('clearLegacyDefault flips one (owner, id) flag off without bumping updated_at; idempotent; missing row is false', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = (userId: string, connectorId: string) => ({
+      userId,
+      connectorId,
+      name: connectorId,
+      description: '',
+      usageNote: '',
+      keyMode: 'personal' as const,
+      visibility: 'private' as const,
+      capabilities: caps(),
+    });
+    await store.upsert(base('u1', 'a'));
+    await store.upsert(base('u2', 'a'));
+    await db.updateTable('connectors_v1_connectors').set({ default_attached: true }).execute();
+    const before = await store.getByIdNotDeleted('u1', 'a');
+
+    expect(await store.clearLegacyDefault('u1', 'a')).toBe(true);
+    expect(await store.listLegacyDefaults()).toEqual([{ ownerUserId: 'u2', connectorId: 'a' }]);
+    expect(await store.clearLegacyDefault('u1', 'a')).toBe(false);
+    expect(await store.clearLegacyDefault('u1', 'missing')).toBe(false);
+    expect(await store.clearLegacyDefault('nobody', 'a')).toBe(false);
+    expect((await store.getByIdNotDeleted('u1', 'a'))?.updatedAt).toBe(before?.updatedAt);
   });
 
   it('scopedConnectors filters to owner + non-tombstoned rows', async () => {

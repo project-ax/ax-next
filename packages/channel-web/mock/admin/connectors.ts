@@ -73,9 +73,7 @@ interface Capabilities {
   packages: { npm: string[]; pypi: string[] };
 }
 
-/** Metadata-only descriptor for the list view — omits `capabilities`.
- *  `defaultAttached` is the admin workspace-default flag, on the summary
- *  (TASK-110) so the user list can badge a default-on connector as "Catalog". */
+/** Metadata-only descriptor for the list view — omits `capabilities`. */
 export interface ConnectorSummary {
   canEdit?: boolean;
   requiresAttachment?: boolean;
@@ -85,7 +83,6 @@ export interface ConnectorSummary {
   usageNote: string;
   keyMode: KeyMode;
   visibility: Visibility;
-  defaultAttached: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -132,7 +129,6 @@ function toSummary(row: StoredConnector, actorId: string): ConnectorSummary {
     usageNote: row.usageNote,
     keyMode: row.keyMode,
     visibility: row.visibility,
-    defaultAttached: row.defaultAttached,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -188,6 +184,14 @@ function validateUpsert(
   body: Record<string, unknown>,
   existing?: StoredConnector,
 ): Validated {
+  // The real routes retired the connector `defaultAttached` flag: a body that
+  // carries it (any value) is a 400, so a stale client fails loudly.
+  if ('defaultAttached' in body) {
+    return {
+      ok: false,
+      message: 'defaultAttached is no longer supported: add connectors to each agent instead',
+    };
+  }
   const connectorId = body.connectorId ?? existing?.connectorId;
   if (typeof connectorId !== 'string' || connectorId.length === 0 || connectorId.length > ID_MAX) {
     return { ok: false, message: `connectorId must be 1-${ID_MAX} chars` };
@@ -218,27 +222,22 @@ function validateUpsert(
   }
 
   const capabilities = (body.capabilities ?? existing?.capabilities ?? emptyCapabilities()) as Capabilities;
-  const defaultAttached =
-    typeof body.defaultAttached === 'boolean'
-      ? body.defaultAttached
-      : (existing?.defaultAttached ?? false);
 
   return {
     ok: true,
-    value: { id: connectorId, name, description, usageNote, keyMode, visibility, capabilities, defaultAttached },
+    value: { id: connectorId, name, description, usageNote, keyMode, visibility, capabilities },
   };
 }
 
 function isReadOnly(row: StoredConnector, actorId: string, mode: RouteMode): boolean {
   return row.userId !== actorId || (mode === 'user' &&
-    (row.defaultAttached || (row.visibility === 'shared' && row.keyMode === 'workspace')));
+    (row.visibility === 'shared' && row.keyMode === 'workspace'));
 }
 
 /** Reject admin-only write fields on the user surface (mirrors the real route's
  *  `rejectAdminOnlyFields`). Returns an error message, else null. */
 function rejectAdminOnlyFields(body: Record<string, unknown>): string | null {
   if (body.keyMode === 'workspace') return 'keyMode: workspace is admin-only';
-  if (body.defaultAttached === true) return 'defaultAttached is admin-only';
   return null;
 }
 

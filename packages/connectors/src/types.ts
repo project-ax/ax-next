@@ -210,7 +210,7 @@ export type Visibility = 'private' | 'shared';
 export interface Connector {
   /** Whether the requesting user owns this definition and may edit it. */
   canEdit?: boolean;
-  /** Skip legacy implicit owner attachment; defaults and explicit attachments still apply. */
+  /** Skip legacy implicit owner attachment; only an explicit attachment reaches an agent. */
   requiresAttachment?: boolean;
   /** Stable connector identity (slug). Frozen for the connector's lifetime. */
   id: string;
@@ -229,13 +229,6 @@ export interface Connector {
    * packages). The ONLY place backing-mechanism vocabulary lives.
    */
   capabilities: Capabilities;
-  /**
-   * TASK-97 — workspace-default flag. When true this connector flows into every
-   * agent's effective connector set (the orchestrator reads default-attached
-   * connectors via `connectors:list-defaults`), mirroring a default-attached
-   * skill. Storage-agnostic boolean.
-   */
-  defaultAttached: boolean;
   /** ISO-8601. */
   createdAt: string;
   /** ISO-8601. */
@@ -250,7 +243,7 @@ export interface Connector {
 export interface ConnectorSummary {
   /** Whether the requesting user owns this definition and may edit it. */
   canEdit?: boolean;
-  /** Skip legacy implicit owner attachment; defaults and explicit attachments still apply. */
+  /** Skip legacy implicit owner attachment; only an explicit attachment reaches an agent. */
   requiresAttachment?: boolean;
   id: string;
   name: string;
@@ -258,15 +251,6 @@ export interface ConnectorSummary {
   usageNote: string;
   keyMode: KeyMode;
   visibility: Visibility;
-  /**
-   * TASK-97/110 — the workspace-default flag, surfaced on the LIST shape too so
-   * the user connector list can badge an admin default-on connector as "Catalog"
-   * even when its `visibility` is `private` (the badge derives from
-   * `defaultAttached || visibility === 'shared'`; before TASK-110 the summary
-   * dropped this field, so a default-on private connector wrongly showed no
-   * badge). Storage-agnostic boolean — never a backing-mechanism field.
-   */
-  defaultAttached: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -301,14 +285,6 @@ export interface UpsertInput {
   keyMode: KeyMode;
   visibility: Visibility;
   capabilities: Capabilities;
-  /**
-   * TASK-97 — optional workspace-default flag. Omitted ⟹ false (a fresh
-   * connector is not a default until explicitly flagged). This is the admin
-   * write that flips a connector default-on; the management UI / admin route
-   * (a later card) sets it. Re-upserting without it does NOT silently clear an
-   * existing flag — the store preserves the prior value when the field is absent.
-   */
-  defaultAttached?: boolean;
 }
 export interface UpsertOutput {
   connector: Connector;
@@ -402,9 +378,8 @@ export interface ResolveOutput {
    * into the connector's synthetic SKILL.md body so the agent learns how to use
    * the connector. Empty string when the owner left it blank, in which case the
    * orchestrator falls back to a generic blurb. MUST be carried here: it's the
-   * ONLY resolve path for owner-owned / per-agent-attached connectors (only
-   * `connectors:list-defaults` returns it otherwise), so dropping it silently
-   * stripped every non-default connector's instructions.
+   * resolve path for owner-owned / per-agent-attached connectors, so dropping it
+   * silently strips every such connector's instructions.
    */
   usageNote: string;
   /** The mechanism-agnostic fill the resolver routes on. */
@@ -478,29 +453,35 @@ export interface ToolLabelsOutput {
 }
 
 /**
- * List the workspace-DEFAULT connectors — those flagged `defaultAttached` (the
- * admin-curated set that flows into every agent's effective connector set).
- * Mirrors `skills:list-defaults`. Returns FULL connectors (capabilities
- * included) because the orchestrator union materializes their declared reach
- * into the sandbox; a metadata-only summary wouldn't carry the
- * allowedHosts/credentials/mcpServers/packages the union needs.
+ * TASK-808 — TRANSITIONAL. "Set default" (a connector flowing into every one of
+ * its owner's agents without an attachment) is retired; what is left of it is a
+ * column no code writes any more. These two hooks exist ONLY so `@ax/agents` can
+ * convert each still-flagged row into explicit per-agent attachments at boot and
+ * then clear the flag. Host-internal (no HTTP / IPC surface). Delete them, and
+ * the column's last readers, once a boot has converted every database.
  *
- * `userId` is OPTIONAL so the routing surface can evolve to a per-user overlay
- * (mirroring `skills:list-defaults`'s `ownerUserId`); in this slice defaults are
- * owner-scoped to the supplied user (each owner's own default-flagged
- * connectors), with the system-wide overlay deferred to the catalog/admin work.
+ * `connectors:list-legacy-defaults` — every LIVE flagged row across ALL owners
+ * (the conversion has no session user), ordered by (owner, connector id). Bare
+ * identities only: the converter resolves the connector through
+ * `connectors:resolve` like any other caller.
  */
-export interface ListDefaultsInput {
-  userId?: string;
+// Empty by design: the conversion reads the whole table.
+export type ListLegacyDefaultsInput = Record<string, never>;
+export interface ListLegacyDefaultsOutput {
+  connectors: Array<{ ownerUserId: string; connectorId: string }>;
 }
-export interface ListDefaultsOutput {
-  /**
-   * Each default connector carries its `toolNamespaces` (same field, same
-   * derivation as `connectors:resolve` — row owner + id + server name), so the
-   * orchestrator union can namespace default connectors' MCP servers without a
-   * second round trip.
-   */
-  connectors: Array<Connector & { toolNamespaces: ToolNamespaceEntry[] }>;
+
+/**
+ * `connectors:clear-legacy-default` — flip one (owner, connector) row's flag off
+ * once its attachments exist. Idempotent: `cleared` is true only when this call
+ * actually changed the flag. NOT a user edit, so `updatedAt` is left alone.
+ */
+export interface ClearLegacyDefaultInput {
+  ownerUserId: string;
+  connectorId: string;
+}
+export interface ClearLegacyDefaultOutput {
+  cleared: boolean;
 }
 
 /**
@@ -510,13 +491,15 @@ export interface ListDefaultsOutput {
  * list UI shows `summary` + `source`.
  *
  * Union, in order, deduped by id (first wins); an id in `exclusions` is
- * skipped in the IMPLICIT sources (`default`, `legacy-owned`) — an explicit
- * attachment always wins over a stale exclusion:
- *   1. `default`      — the user's default-attached connectors (id asc).
- *   2. `attached`     — each `attachmentIds` entry the user can resolve; a
+ * skipped in the IMPLICIT source (`legacy-owned`) — an explicit attachment
+ * always wins over a stale exclusion:
+ *   1. `attached`     — each `attachmentIds` entry the user can resolve; a
  *                       malformed / unknown id is skipped (grants nothing).
- *   3. `legacy-owned` — the user's own connectors that predate explicit
+ *   2. `legacy-owned` — the user's own connectors that predate explicit
  *                       attachment (`canEdit !== false && requiresAttachment !== true`).
+ *
+ * TASK-808 — there is no workspace-default source: a connector reaches an agent
+ * only by an attachment (or, for a pre-attachment row, as `legacy-owned`).
  *
  * `attachmentIds` / `exclusions` are the agent row's per-agent lists; the caller
  * passes them (this plugin never reads agent state — I2/I4).
@@ -527,7 +510,7 @@ export interface ListEffectiveInput {
   exclusions?: string[];
 }
 
-export type EffectiveConnectorSource = 'default' | 'attached' | 'legacy-owned';
+export type EffectiveConnectorSource = 'attached' | 'legacy-owned';
 
 export interface EffectiveConnectorEntry {
   /** The same metadata-only shape `connectors:list` returns (no capabilities). */
@@ -703,7 +686,6 @@ const ConnectorSummarySchema = z.object({
   usageNote: z.string(),
   keyMode: KeyModeSchema,
   visibility: VisibilitySchema,
-  defaultAttached: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -718,7 +700,6 @@ const ConnectorSchema = z.object({
   keyMode: KeyModeSchema,
   visibility: VisibilitySchema,
   capabilities: CapabilitiesSchema,
-  defaultAttached: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -790,21 +771,21 @@ export const ToolLabelsOutputSchema = z.object({
   ),
 }) as unknown as ZodType<ToolLabelsOutput>;
 
-export const ListDefaultsOutputSchema = z.object({
+export const ListLegacyDefaultsOutputSchema = z.object({
   connectors: z.array(
-    ConnectorSchema.extend({ toolNamespaces: z.array(ToolNamespaceEntrySchema) }),
+    z.object({ ownerUserId: z.string(), connectorId: z.string() }),
   ),
-}) as unknown as ZodType<ListDefaultsOutput>;
+}) as unknown as ZodType<ListLegacyDefaultsOutput>;
+
+export const ClearLegacyDefaultOutputSchema = z.object({
+  cleared: z.boolean(),
+}) as unknown as ZodType<ClearLegacyDefaultOutput>;
 
 export const ListEffectiveOutputSchema = z.object({
   connectors: z.array(
     z.object({
       summary: ConnectorSummarySchema,
-      source: z.union([
-        z.literal('default'),
-        z.literal('attached'),
-        z.literal('legacy-owned'),
-      ]),
+      source: z.union([z.literal('attached'), z.literal('legacy-owned')]),
       capabilities: CapabilitiesSchema,
       toolNamespaces: z.array(ToolNamespaceEntrySchema),
     }),

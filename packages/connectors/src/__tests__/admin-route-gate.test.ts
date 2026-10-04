@@ -35,7 +35,7 @@ import type {
 // THE BUG. Every handler behind `/admin/connectors*` called only `requireUser`, so
 // a signed-in NON-admin could list / create / read / patch / test / delete through
 // the admin bundle. The visible damage: `POST /admin/connectors` with
-// `keyMode: workspace, visibility: shared, defaultAttached: true` returned 201 and
+// `keyMode: workspace, visibility: shared` returned 201 and
 // stored exactly that row for a non-admin, while the same body on the locked-down
 // `/settings/connectors` twin 400s (`visibility: shared is admin-only`). And
 // `POST /admin/connectors/:id/test` told a non-admin which global `account:` keys
@@ -354,14 +354,13 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
     });
   });
 
-  it('the shared / default-on / workspace-key bypass body is refused for a non-admin and stores nothing', async () => {
+  it('the shared / workspace-key bypass body is refused for a non-admin and stores nothing', async () => {
     const h = await makeHarness();
     const body = {
       connectorId: 'mal-shared',
       name: 'Mal shared',
       keyMode: 'workspace',
       visibility: 'shared',
-      defaultAttached: true,
       capabilities: caps('m.example.com'),
     };
     // The locked-down twin refuses it (the behaviour the admin route bypassed)...

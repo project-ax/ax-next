@@ -854,7 +854,7 @@ describe('@ax/preset-k8s wiring', () => {
     await activity.shutdown?.();
   });
 
-  it('loads @ax/connectors and registers the connectors:* hooks (CRUD TASK-91 + list-defaults TASK-97 + authored lifecycle TASK-94)', () => {
+  it('loads @ax/connectors and registers the connectors:* hooks (CRUD TASK-91 + authored lifecycle TASK-94 + the TASK-808 legacy-default conversion pair)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const connectors = plugins.find(
       (p) => p.manifest.name === '@ax/connectors',
@@ -862,7 +862,6 @@ describe('@ax/preset-k8s wiring', () => {
     expect(connectors).toBeDefined();
     expect(connectors!.manifest.registers).toEqual([
       'connectors:list',
-      'connectors:list-defaults',
       // TASK-739 — an agent's effective connector set.
       'connectors:list-effective',
       'connectors:get',
@@ -878,12 +877,22 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:list-authored-pending',
       'connectors:activate-authored',
       'connectors:clear-authored',
+      // TASK-808 — TRANSITIONAL: let @ax/agents convert the retired "Set default"
+      // flag into explicit attachments at boot (no HTTP / IPC surface).
+      'connectors:list-legacy-defaults',
+      'connectors:clear-legacy-default',
       // TASK-697 — the read-authorization seam @ax/credentials consults before
       // an `account:` ref may fall through to the global (company) scope.
       'credentials:authorize-global:account',
       // TASK-711 — its agent-scope twin.
       'credentials:authorize-agent:account',
     ]);
+    // TASK-808 — "Set default" is retired: the old hook is gone and only the two
+    // transitional conversion hooks read what is left of the flag.
+    expect(connectors!.manifest.registers).not.toContain('connectors:list-defaults');
+    expect(connectors!.manifest.registers).toEqual(
+      expect.arrayContaining(['connectors:list-legacy-defaults', 'connectors:clear-legacy-default']),
+    );
     // database:get-instance is the hard dependency — satisfied by
     // @ax/database-postgres in the real preset (the "every calls entry is
     // satisfied" test above derives this dynamically; this pins the edge).

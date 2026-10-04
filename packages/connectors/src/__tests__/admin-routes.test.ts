@@ -689,8 +689,8 @@ describe('admin connector routes', () => {
 // GET/PATCH/DELETE /settings/connectors/:id (TASK-129, mode:'user').
 //
 // Same owner-scoped bridge as the admin routes, but the write policy is locked
-// down: the connector is forced PRIVATE, admin-only fields (visibility:shared,
-// defaultAttached:true) are REJECTED (400 — not silently dropped), and a
+// down: admin-only fields (keyMode:workspace) are REJECTED (400 — not silently
+// dropped), and a
 // catalog/shared connector is READ-ONLY (editing/deleting it 403s). These are
 // SERVER-SIDE policy proofs — never UI-only — driven against the same real
 // connector store via the duck-typed req/res.
@@ -724,7 +724,7 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(captured.body).toEqual({ error: 'unauthenticated' });
   });
 
-  it('POST defaults a new connector to shared with automatic attachment off', async () => {
+  it('POST defaults a new connector to shared and requiring explicit attachment', async () => {
     const h = await makeHarness();
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
     currentActor = { id: 'userU', isAdmin: false };
@@ -745,7 +745,8 @@ describe('user connector routes (/settings/connectors)', () => {
     const connector = (captured.body as { connector: { visibility: string } })
       .connector;
     expect(connector.visibility).toBe('shared');
-    expect(connector).toMatchObject({ defaultAttached: false });
+    // TASK-808 — the workspace-default flag is gone from the connector shape.
+    expect(connector).not.toHaveProperty('defaultAttached');
   });
 
   it('a shared personal connector supports owner edits and is read-only for other users', async () => {
@@ -761,7 +762,8 @@ describe('user connector routes (/settings/connectors)', () => {
     const edited = makeRes();
     await handlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Updated', requiresAttachment: false } }), edited.res);
     expect(edited.captured.status).toBe(200);
-    expect(edited.captured.body).toMatchObject({ connector: { visibility: 'shared', defaultAttached: false, requiresAttachment: true } });
+    expect(edited.captured.body).toMatchObject({ connector: { visibility: 'shared', requiresAttachment: true } });
+    expect((edited.captured.body as { connector: object }).connector).not.toHaveProperty('defaultAttached');
 
     currentActor = { id: 'reader', isAdmin: false };
     const list = makeRes();
@@ -796,42 +798,94 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(ownDelete.captured.status).toBe(204);
   });
 
-  it('admin create defaults to shared/off; editing and POST upserts preserve legacy settings', async () => {
+  it('admin create defaults to shared; editing and POST upserts preserve the saved visibility and key mode', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'root', isAdmin: true };
     const fresh = makeRes();
     await handlers.create(makeReq({ body: { connectorId: 'fresh', name: 'Fresh', keyMode: 'personal', capabilities: mcpCaps() } }), fresh.res);
-    expect(fresh.captured.body).toMatchObject({ connector: { visibility: 'shared', defaultAttached: false } });
-    await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Legacy', keyMode: 'workspace', visibility: 'private', defaultAttached: true, capabilities: mcpCaps() } }), makeRes().res);
+    expect(fresh.captured.body).toMatchObject({ connector: { visibility: 'shared' } });
+    await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Legacy', keyMode: 'workspace', visibility: 'private', capabilities: mcpCaps() } }), makeRes().res);
     const patch = makeRes();
     await handlers.update(makeReq({ params: { id: 'legacy' }, body: { name: 'Edited' } }), patch.res);
-    expect(patch.captured.body).toMatchObject({ connector: { visibility: 'private', defaultAttached: true, keyMode: 'workspace' } });
+    expect(patch.captured.body).toMatchObject({ connector: { visibility: 'private', keyMode: 'workspace' } });
     const post = makeRes();
     await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Upserted', keyMode: 'workspace', capabilities: mcpCaps() } }), post.res);
-    expect(post.captured.body).toMatchObject({ connector: { visibility: 'private', defaultAttached: true, keyMode: 'workspace' } });
+    expect(post.captured.body).toMatchObject({ connector: { visibility: 'private', keyMode: 'workspace' } });
   });
 
-  it('POST rejects defaultAttached:true (admin-only) with 400', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'sneaky',
-          name: 'Sneaky',
-          keyMode: 'personal',
-          visibility: 'private',
-          defaultAttached: true,
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(400);
-    expect((captured.body as { error: string }).error).toContain('admin-only');
+  // TASK-808 — "Set default" is gone. A stale client that still sends the field
+  // fails LOUDLY (400) instead of being silently dropped, for ONE release, on
+  // every write route, in both modes, whatever the value (it no longer means
+  // anything, so `false` is as stale as `true`). Nothing is stored.
+  describe('defaultAttached is rejected (TASK-808)', () => {
+    const MESSAGE = 'defaultAttached is no longer supported';
+
+    for (const mode of ['admin', 'user'] as const) {
+      for (const value of [true, false, null, 'yes']) {
+        it(`${mode} POST with defaultAttached: ${JSON.stringify(value)} -> 400 and nothing is stored`, async () => {
+          const h = await makeHarness();
+          const handlers = mode === 'admin'
+            ? createAdminConnectorRouteHandlers({ bus: h.bus })
+            : createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+          currentActor = { id: 'userU', isAdmin: mode === 'admin' };
+          const { res, captured } = makeRes();
+          await handlers.create(
+            makeReq({
+              body: {
+                connectorId: 'stale',
+                name: 'Stale client',
+                keyMode: 'personal',
+                visibility: 'private',
+                defaultAttached: value,
+                capabilities: mcpCaps(),
+              },
+            }),
+            res,
+          );
+          expect(captured.status).toBe(400);
+          expect((captured.body as { error: string }).error).toContain(MESSAGE);
+          const list = makeRes();
+          await handlers.list(makeReq({}), list.res);
+          expect(list.captured.body).toEqual({ connectors: [] });
+        });
+
+        it(`${mode} PATCH with defaultAttached: ${JSON.stringify(value)} -> 400 and the connector is unchanged`, async () => {
+          const h = await makeHarness();
+          const handlers = mode === 'admin'
+            ? createAdminConnectorRouteHandlers({ bus: h.bus })
+            : createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+          currentActor = { id: 'userU', isAdmin: mode === 'admin' };
+          await handlers.create(
+            makeReq({ body: { connectorId: 'kept', name: 'Kept', keyMode: 'personal', visibility: 'private', capabilities: mcpCaps() } }),
+            makeRes().res,
+          );
+          const { res, captured } = makeRes();
+          await handlers.update(
+            makeReq({ params: { id: 'kept' }, body: { name: 'Renamed', defaultAttached: value } }),
+            res,
+          );
+          expect(captured.status).toBe(400);
+          expect((captured.body as { error: string }).error).toContain(MESSAGE);
+          const shown = makeRes();
+          await handlers.show(makeReq({ params: { id: 'kept' } }), shown.res);
+          expect(shown.captured.body).toMatchObject({ connector: { name: 'Kept' } });
+        });
+      }
+    }
+
+    it('the message tells the person what to do instead', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'root', isAdmin: true };
+      const { res, captured } = makeRes();
+      await handlers.create(
+        makeReq({ body: { connectorId: 'x', name: 'X', keyMode: 'personal', defaultAttached: true, capabilities: mcpCaps() } }),
+        res,
+      );
+      expect(captured.status).toBe(400);
+      expect((captured.body as { error: string }).error).toMatch(/add connectors to each agent/i);
+    });
   });
 
   it('POST rejects keyMode:workspace (admin-only) — a non-admin must never own a workspace (global-keyed) connector', async () => {
@@ -1055,28 +1109,6 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(
       (gCap.body as { connector: { visibility: string } }).connector.visibility,
     ).toBe('shared');
-  });
-
-  it('PATCH on a DEFAULT-ON connector is read-only — 403', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'userU', isAdmin: true };
-    await adminSeed(h.bus, {
-      connectorId: 'default-conn',
-      name: 'Default',
-      keyMode: 'personal',
-      visibility: 'private',
-      defaultAttached: true,
-      capabilities: mcpCaps(),
-    });
-    currentActor = { id: 'userU', isAdmin: false };
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const { res, captured } = makeRes();
-    await userHandlers.update(
-      makeReq({ params: { id: 'default-conn' }, body: { name: 'hijack' } }),
-      res,
-    );
-    expect(captured.status).toBe(403);
-    expect(captured.body).toEqual({ error: 'read-only' });
   });
 
   it('DELETE on a catalog (shared) connector is read-only — 403', async () => {

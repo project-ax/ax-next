@@ -113,7 +113,7 @@ describe('connector details routes (mock bus)', () => {
   let owners: Map<string, string>;
   let effective: Array<{
     summary: { id: string; name: string; keyMode?: 'personal' | 'workspace' };
-    source: 'default' | 'attached' | 'legacy-owned';
+    source: 'attached' | 'legacy-owned';
     toolNamespaces: Array<{ server: string; toolNamespace: string }>;
   }>;
   let inventory: { status: string; tools: InventoryTool[]; checkedAt: string };
@@ -183,7 +183,7 @@ describe('connector details routes (mock bus)', () => {
     effective = [
       {
         summary: { id: 'gmail', name: 'Gmail', keyMode: 'workspace' },
-        source: 'default',
+        source: 'attached',
         toolNamespaces: [{ server: 'gmail', toolNamespace: NS_GMAIL }],
       },
       {

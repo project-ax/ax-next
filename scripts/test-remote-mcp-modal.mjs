@@ -92,7 +92,6 @@ createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1
     usageNote: 'Preserved instructions',
     keyMode: 'personal',
     visibility: 'private',
-    defaultAttached: false,
     createdAt: '',
     updatedAt: '',
     capabilities: {
@@ -263,9 +262,11 @@ createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1
       !JSON.stringify(saved).includes('test-header-secret'),
     'Secrets must never enter connector configuration',
   );
+  // The server now answers 400 to any write carrying `defaultAttached` (TASK-808),
+  // so the form must never send it (or `visibility`) at all.
   assert(
     !('visibility' in saved) && !('defaultAttached' in saved),
-    'User writes must not carry admin permissions',
+    'User writes must not carry admin permissions or the retired default flag',
   );
   assert.equal(connector.description, 'Preserved description');
   assert.equal(connector.usageNote, 'Preserved instructions');

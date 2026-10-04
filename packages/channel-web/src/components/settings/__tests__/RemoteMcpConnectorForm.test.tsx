@@ -17,7 +17,6 @@ const fixture: Connector = {
   usageNote: 'Preserved instructions',
   keyMode: 'personal',
   visibility: 'shared',
-  defaultAttached: true,
   createdAt: '',
   updatedAt: '',
   capabilities: {
@@ -381,7 +380,6 @@ describe('remote connector editor', () => {
     expect(writes[0]!.body).toMatchObject({
       keyMode: 'personal',
       visibility: 'shared',
-      defaultAttached: false,
       capabilities: {
         credentials: [],
         allowedHosts: ['public.example.com'],
@@ -390,15 +388,17 @@ describe('remote connector editor', () => {
         ],
       },
     });
+    expect(writes[0]!.body).not.toHaveProperty('defaultAttached');
   });
-  it('creates an admin connector shared and off by default without workspace controls', async () => {
+  it('creates an admin connector shared without workspace controls', async () => {
     discovery = { hosts: ['public.example.com'], auth: 'none' };
     const options = await openNew(true);
     expect(screen.queryByRole('button', { name: /Workspace settings/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes[0]!.url).toBe('/admin/connectors');
-    expect(writes[0]!.body).toMatchObject({ visibility: 'shared', defaultAttached: false, keyMode: 'personal' });
+    expect(writes[0]!.body).toMatchObject({ visibility: 'shared', keyMode: 'personal' });
+    expect(writes[0]!.body).not.toHaveProperty('defaultAttached');
   });
   it.each([
     {

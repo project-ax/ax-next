@@ -15,8 +15,6 @@ import { createConnectorsPlugin } from '../plugin.js';
 import { deriveToolNamespaces, type ToolNamespaceEntry } from '../tool-namespace.js';
 import type {
   Capabilities,
-  ListDefaultsInput,
-  ListDefaultsOutput,
   ListEffectiveInput,
   ListEffectiveOutput,
   ListInput,
@@ -31,11 +29,15 @@ import type {
 // TASK-739 — `connectors:list-effective`, the one implementation of an agent's
 // effective connector set, driven through the bus against real postgres.
 //
-// The PARITY block keeps the pre-TASK-739 orchestrator algorithm (defaults via
-// list-defaults, attachments via resolve, legacy-owned via list + resolve) as a
-// test ORACLE over the same bus, and pins that the new hook produces the same
-// ids in the same order with the same capabilities / toolNamespaces / usageNote
-// when no exclusions are given.
+// The PARITY block keeps the pre-TASK-739 orchestrator algorithm (attachments via
+// resolve, legacy-owned via list + resolve) as a test ORACLE over the same bus,
+// and pins that the new hook produces the same ids in the same order with the
+// same capabilities / toolNamespaces / usageNote when no exclusions are given.
+//
+// TASK-808 — the workspace-default source is gone. `seed` still plants a row
+// whose legacy `default_attached` column is set (that is what a pre-conversion
+// database looks like) so every test below also proves the column no longer
+// makes a connector effective.
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -116,9 +118,24 @@ async function listEffective(
   );
 }
 
+/** A pre-TASK-808 "Set default" row. Nothing writes the column any more. */
+async function markLegacyDefault(ownerUserId: string, connectorId: string): Promise<void> {
+  const client = new (await import('pg')).default.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(
+      'UPDATE connectors_v1_connectors SET default_attached = true WHERE owner_user_id = $1 AND connector_id = $2',
+      [ownerUserId, connectorId],
+    );
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
 /**
  * Fixture for userA:
- *   def1     — own, default-attached (requires attachment, still a default)
+ *   def1     — own, carries the LEGACY default flag in the DB (requires
+ *              attachment; the flag grants nothing — TASK-808)
  *   att1     — own, requires explicit attachment
  *   legacy1  — own, legacy (implicitly attached)
  *   legacy2  — own, legacy, older than legacy1
@@ -127,7 +144,7 @@ async function listEffective(
  */
 async function seed(h: TestHarness): Promise<void> {
   await upsert(h, 'userA', 'legacy2');
-  await upsert(h, 'userA', 'def1', { defaultAttached: true });
+  await upsert(h, 'userA', 'def1');
   await upsert(h, 'userA', 'att1');
   await upsert(h, 'userA', 'legacy1');
   await upsert(h, 'userB', 'shared1', { visibility: 'shared' });
@@ -136,6 +153,7 @@ async function seed(h: TestHarness): Promise<void> {
   await markLegacy('userA', 'legacy1');
   await markLegacy('userA', 'legacy2');
   await markLegacy('userB', 'shared1');
+  await markLegacyDefault('userA', 'def1');
 }
 
 beforeAll(async () => {
@@ -162,17 +180,33 @@ afterAll(async () => {
 });
 
 describe('connectors:list-effective — union', () => {
-  it('unions defaults, attachments and legacy-owned rows, in that order, with source tags', async () => {
+  it('unions attachments and legacy-owned rows, in that order, with source tags', async () => {
     const h = await makeHarness();
     await seed(h);
     const out = await listEffective(h, { userId: 'userA', attachmentIds: ['att1'] });
     expect(out.connectors.map((c) => [c.summary.id, c.source])).toEqual([
-      ['def1', 'default'],
       ['att1', 'attached'],
       // legacy-owned: newest-updated first (legacy1 was written after legacy2).
       ['legacy1', 'legacy-owned'],
       ['legacy2', 'legacy-owned'],
     ]);
+  });
+
+  it('never returns a "default" source: a row with the legacy default flag is effective only when attached (TASK-808)', async () => {
+    const h = await makeHarness();
+    await seed(h);
+    const unattached = await listEffective(h, { userId: 'userA' });
+    expect(unattached.connectors.map((c) => c.summary.id)).not.toContain('def1');
+    const attached = await listEffective(h, { userId: 'userA', attachmentIds: ['def1'] });
+    expect(attached.connectors.find((c) => c.summary.id === 'def1')?.source).toBe('attached');
+    for (const out of [unattached, attached]) {
+      for (const entry of out.connectors) {
+        expect(entry.source).not.toBe('default');
+        expect(['attached', 'legacy-owned']).toContain(entry.source);
+        // Negative space: no summary carries the removed flag.
+        expect(entry.summary).not.toHaveProperty('defaultAttached');
+      }
+    }
   });
 
   it('summary is the connectors:list shape (no capabilities) and toolNamespaces match resolve', async () => {
@@ -210,7 +244,7 @@ describe('connectors:list-effective — union', () => {
     });
   });
 
-  it('dedupes by id: a default wins over the same id attached, attached wins over legacy-owned', async () => {
+  it('dedupes by id: attached wins over legacy-owned, and a repeated attachment appears once', async () => {
     const h = await makeHarness();
     await seed(h);
     const out = await listEffective(h, {
@@ -218,14 +252,14 @@ describe('connectors:list-effective — union', () => {
       attachmentIds: ['legacy1', 'def1', 'att1', 'att1'],
     });
     expect(out.connectors.map((c) => [c.summary.id, c.source])).toEqual([
-      ['def1', 'default'],
       ['legacy1', 'attached'],
+      ['def1', 'attached'],
       ['att1', 'attached'],
       ['legacy2', 'legacy-owned'],
     ]);
   });
 
-  it('exclusions remove a default and a legacy-owned row', async () => {
+  it('exclusions hide a legacy-owned row', async () => {
     const h = await makeHarness();
     await seed(h);
     const out = await listEffective(h, {
@@ -265,8 +299,10 @@ describe('connectors:list-effective — union', () => {
     await seed(h);
     const out = await listEffective(h, { userId: 'userA' });
     const ids = out.connectors.map((c) => c.summary.id);
-    expect(ids).toEqual(['def1', 'legacy1', 'legacy2']);
+    expect(ids).toEqual(['legacy1', 'legacy2']);
     expect(ids).not.toContain('att1');
+    // ...nor a row that only carries the legacy default flag.
+    expect(ids).not.toContain('def1');
     // shared1 is legacy on its OWNER's side, but userA cannot edit it.
     expect(ids).not.toContain('shared1');
     // ...while for its owner it IS legacy-owned.
@@ -326,17 +362,6 @@ async function oldResolveEffectiveConnectors(
     ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}),
     ...(c.toolNamespaces !== undefined ? { toolNamespaces: c.toolNamespaces } : {}),
   });
-
-  if (bus.hasService('connectors:list-defaults')) {
-    try {
-      const r = await bus.call<ListDefaultsInput, ListDefaultsOutput>(
-        'connectors:list-defaults', ctx, { userId: ctx.userId },
-      );
-      for (const c of r.connectors) if (!byId.has(c.id)) byId.set(c.id, project(c));
-    } catch {
-      // non-fatal in the old algorithm
-    }
-  }
 
   if (attachmentIds.length > 0 && bus.hasService('connectors:resolve')) {
     for (const connectorId of attachmentIds) {

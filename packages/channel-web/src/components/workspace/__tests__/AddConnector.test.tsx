@@ -66,7 +66,6 @@ function summary(id: string, name: string, extra: Partial<ConnectorSummary> = {}
     usageNote: '',
     keyMode: 'personal',
     visibility: 'shared',
-    defaultAttached: false,
     createdAt: '2026-10-01T00:00:00Z',
     updatedAt: '2026-10-01T00:00:00Z',
     ...extra,

@@ -5,7 +5,7 @@
  * The agent-centric settings surface gives each skill/connector AT MOST ONE
  * source badge:
  *   - "Catalog" — the item comes from the workspace's shared, admin-curated
- *     catalog (it may be default-on). You don't own its definition.
+ *     catalog. You don't own its definition.
  *   - (nothing) — the item is PRIVATE: your own, just your agents, yours to
  *     manage. No badge, no "catalog" language.
  *
@@ -30,22 +30,14 @@ export function skillSource(scope: 'global' | 'user'): ItemSource {
 }
 
 /**
- * Map a connector's curation flags to its source. A connector an admin flagged
- * default-on, OR one shared into the workspace, is catalog-sourced; a private,
- * non-default connector shows no badge. (`visibility`/`defaultAttached` are
- * storage-agnostic flags — never a backing-mechanism field.)
- *
- * `defaultAttached` is optional because the metadata-only connector LIST
- * (`ConnectorSummary`) does not carry it — the list keys the badge off
- * `visibility` alone, while a surface holding the full connector can pass both.
+ * Map a connector's visibility to its source. A connector shared into the
+ * workspace is catalog-sourced; a private connector shows no badge.
+ * (`visibility` is a storage-agnostic flag — never a backing-mechanism field.)
  */
 export function connectorSource(input: {
-  defaultAttached?: boolean;
   visibility: 'private' | 'shared';
 }): ItemSource {
-  return input.defaultAttached === true || input.visibility === 'shared'
-    ? 'catalog'
-    : 'private';
+  return input.visibility === 'shared' ? 'catalog' : 'private';
 }
 
 /**

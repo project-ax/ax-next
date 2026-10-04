@@ -7,14 +7,13 @@ import { createConnectorsPlugin } from '../plugin.js';
 // ---------------------------------------------------------------------------
 
 describe('@ax/connectors plugin manifest', () => {
-  it('registers the connectors:* hooks (CRUD + list-defaults + authored lifecycle), calls database:get-instance, subscribes to agents:deleted', () => {
+  it('registers the connectors:* hooks (CRUD + authored lifecycle + the TASK-808 legacy-default conversion pair), calls database:get-instance, subscribes to agents:deleted', () => {
     const plugin = createConnectorsPlugin();
     expect(plugin.manifest).toEqual({
       name: '@ax/connectors',
       version: '0.0.0',
       registers: [
         'connectors:list',
-        'connectors:list-defaults',
         // TASK-739 — an agent's effective connector set.
         'connectors:list-effective',
         'connectors:get',
@@ -30,6 +29,10 @@ describe('@ax/connectors plugin manifest', () => {
         'connectors:list-authored-pending',
         'connectors:activate-authored',
         'connectors:clear-authored',
+        // TASK-808 — TRANSITIONAL: let @ax/agents convert the retired "Set default"
+        // flag into explicit attachments at boot (no HTTP / IPC surface).
+        'connectors:list-legacy-defaults',
+        'connectors:clear-legacy-default',
         // TASK-697 — the read-authorization seam @ax/credentials consults before an
         // `account:` ref may fall through to the global (company) scope.
         'credentials:authorize-global:account',

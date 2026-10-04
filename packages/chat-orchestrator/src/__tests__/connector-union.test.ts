@@ -159,7 +159,7 @@ describe('resolveEffectiveConnectors (TASK-739 — connectors:list-effective onl
         inputs.push(input);
         return {
           connectors: [
-            effective('d', { source: 'default', usageNote: 'default note' }),
+            effective('att2', { usageNote: 'second note' }),
             effective('att'),
             effective('own', { source: 'legacy-owned' }),
           ],
@@ -171,7 +171,7 @@ describe('resolveEffectiveConnectors (TASK-739 — connectors:list-effective onl
     expect(out).toEqual([
       // TASK-806 — the summary's display name is carried (for the skipped-
       // connectors prompt line).
-      { id: 'd', name: 'd', capabilities: CAPS(), usageNote: 'default note' },
+      { id: 'att2', name: 'att2', capabilities: CAPS(), usageNote: 'second note' },
       { id: 'att', name: 'att', capabilities: CAPS(), usageNote: 'att note' },
       { id: 'own', name: 'own', capabilities: CAPS(), usageNote: 'own note' },
     ]);
@@ -189,14 +189,10 @@ describe('resolveEffectiveConnectors (TASK-739 — connectors:list-effective onl
     expect(inputs).toEqual([{ userId: 'u', attachmentIds: [], exclusions: [] }]);
   });
 
-  it('does not read the retired three-source hooks', async () => {
+  it('does not read the retired per-source hooks', async () => {
     const called: string[] = [];
     const bus = busWith({
       'connectors:list-effective': async () => ({ connectors: [effective('x')] }),
-      'connectors:list-defaults': async () => {
-        called.push('list-defaults');
-        return { connectors: [] };
-      },
       'connectors:list': async () => {
         called.push('list');
         return { connectors: [] };
@@ -985,8 +981,8 @@ describe('toolNamespace keys (TASK-734)', () => {
     const bus = busWith({
       'connectors:list-effective': async () => ({
         connectors: [
-          effective('def', { source: 'default', toolNamespaces: NS('def', 'cdddddddddd') }),
           effective('att', { toolNamespaces: NS('att', 'caaaaaaaaaa') }),
+          effective('att2', { toolNamespaces: NS('att2', 'cdddddddddd') }),
           effective('owned', { source: 'legacy-owned', toolNamespaces: NS('owned', 'c0000000000') }),
         ],
       }),
@@ -994,8 +990,8 @@ describe('toolNamespace keys (TASK-734)', () => {
     const out = await resolveEffectiveConnectors(bus, ctx(), ['att']);
     const byId = Object.fromEntries(out.map((c) => [c.id, c.toolNamespaces]));
     expect(byId).toEqual({
-      def: NS('def', 'cdddddddddd'),
       att: NS('att', 'caaaaaaaaaa'),
+      att2: NS('att2', 'cdddddddddd'),
       owned: NS('owned', 'c0000000000'),
     });
   });
@@ -1013,8 +1009,8 @@ describe('toolNamespace keys (TASK-734)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-754 — a connector that reached the agent without an attach copies its
-// per-tool defaults at session open.
+// TASK-754 — a connector that reached the agent without an attach (skill-
+// referenced, legacy-owned) copies its per-tool defaults at session open.
 // ---------------------------------------------------------------------------
 describe('copyConnectorDefaultsForSession (TASK-754)', () => {
   const connector = (id: string, namespaces: unknown[]): ResolvedConnectorForOrch => ({
