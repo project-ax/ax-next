@@ -170,8 +170,9 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     server: ResolvedServer,
     ctx: AgentContext,
     userId: string,
-  ): Promise<Record<string, string> | 'needs-auth' | 'unavailable'> {
+  ): Promise<{ headers: Record<string, string>; oauthRefs: string[] } | 'needs-auth' | 'unavailable'> {
     const headers: Record<string, string> = {};
+    const oauthRefs: string[] = [];
     for (const slot of connector.capabilities.credentials) {
       if (slot.server !== server.name) continue;
       const header = slot.kind === 'oauth' ? 'Authorization' : slot.headerName;
@@ -195,8 +196,52 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       }
       if (typeof value !== 'string' || value.length === 0) return 'needs-auth';
       headers[header] = slot.kind === 'oauth' ? `Bearer ${value}` : value;
+      if (slot.kind === 'oauth') oauthRefs.push(ref);
     }
-    return headers;
+    return { headers, oauthRefs };
+  }
+
+  /**
+   * TASK-817 — the server answered 401 to the OAuth token we sent. The token
+   * looked fine by the clock (or the vault would have renewed it already), so
+   * the provider revoked or forgot it. Tell the vault (`rejected: true`): the
+   * OAuth resolver renews it, or — when the authorization server refuses the
+   * renewal too — throws its reconnect error and writes the "sign-in
+   * expired" marker the rail reads. Returns the headers to list with once
+   * more, or null when there is nothing better to send (the caller keeps the
+   * 401's needs-auth). Never throws: the server was already asked, so a
+   * credential blip here is not the "nothing was sent" `credential-unavailable`.
+   */
+  async function renewRefused(
+    connectorId: string,
+    oauthRefs: readonly string[],
+    headers: Readonly<Record<string, string>>,
+    ctx: AgentContext,
+    userId: string,
+  ): Promise<Record<string, string> | null> {
+    let renewed: string | undefined;
+    for (const ref of oauthRefs) {
+      try {
+        const value = await deps.bus.call<{ ref: string; userId: string; rejected: true }, string>(
+          'credentials:get',
+          ctx,
+          { ref, userId, rejected: true },
+        );
+        if (typeof value !== 'string' || value.length === 0) return null;
+        renewed = value;
+      } catch (err) {
+        const missing = noUsableCredential(err);
+        ctx.logger.info('connector_inventory_token_renew_failed', {
+          connectorId,
+          code: err instanceof PluginError ? err.code : 'error',
+          reconnect: missing,
+        });
+        return null;
+      }
+    }
+    if (renewed === undefined) return null;
+    // One Authorization header per server: the last OAuth slot's, as headersFor sets it.
+    return { ...headers, Authorization: `Bearer ${renewed}` };
   }
 
   async function check(
@@ -222,7 +267,13 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     // probe server A and then blip on server B to dodge it).
     type Planned =
       | { server: ResolvedServer; ns: string; outcome: ListOutcome }
-      | { server: ResolvedServer; ns: string; url: string; headers: Record<string, string> };
+      | {
+          server: ResolvedServer;
+          ns: string;
+          url: string;
+          headers: Record<string, string>;
+          oauthRefs: string[];
+        };
     const planned: Planned[] = [];
     for (const server of connector.capabilities.mcpServers) {
       anyHttp = true;
@@ -253,7 +304,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       planned.push(
         headers === 'needs-auth'
           ? { server, ns, outcome: { kind: 'needs-auth' } }
-          : { server, ns, url: server.url, headers },
+          : { server, ns, url: server.url, headers: headers.headers, oauthRefs: headers.oauthRefs },
       );
     }
     // TASK-812 — whether pass 2 sends anything anywhere. A check where every
@@ -263,7 +314,21 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     // Pass 2 — the listings.
     for (const p of planned) {
       const ns = p.ns;
-      const outcome: ListOutcome = 'outcome' in p ? p.outcome : await list({ url: p.url, headers: p.headers });
+      let outcome: ListOutcome = 'outcome' in p ? p.outcome : await list({ url: p.url, headers: p.headers });
+      if (
+        !('outcome' in p) &&
+        outcome.kind === 'needs-auth' &&
+        outcome.rejected === true &&
+        p.oauthRefs.length > 0
+      ) {
+        // TASK-817 — one renewal, one more listing; never a loop.
+        const renewed = await renewRefused(connector.id, p.oauthRefs, p.headers, ctx, input.userId);
+        ctx.logger.info('connector_inventory_token_refused', {
+          connectorId: connector.id,
+          renewed: renewed !== null,
+        });
+        if (renewed !== null) outcome = await list({ url: p.url, headers: renewed });
+      }
       const serverStatus: InventoryStatus = outcome.kind;
       if (outcome.kind === 'ok') {
         dropped += outcome.dropped;

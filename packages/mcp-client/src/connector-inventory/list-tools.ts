@@ -131,7 +131,9 @@ export function normalizeTools(raw: ReadonlyArray<unknown>): NormalizeResult {
 
 export type ListOutcome =
   | { kind: 'ok'; tools: InventoryToolBase[]; dropped: number }
-  | { kind: 'needs-auth' }
+  /** `rejected` (TASK-817): the server answered 401 — the credential that was
+   *  sent was refused, as opposed to accepted-but-not-allowed (403). */
+  | { kind: 'needs-auth'; rejected?: true }
   | { kind: 'unreachable'; reason: string };
 
 export interface ListServerToolsOptions {
@@ -147,7 +149,8 @@ export interface ListServerToolsOptions {
 function classifyError(err: unknown): ListOutcome {
   const code = (err as { code?: unknown } | null)?.code;
   const name = err instanceof Error ? err.name : '';
-  if (code === 401 || code === 403 || name === 'UnauthorizedError') return { kind: 'needs-auth' };
+  if (code === 401 || name === 'UnauthorizedError') return { kind: 'needs-auth', rejected: true };
+  if (code === 403) return { kind: 'needs-auth' };
   if (name === 'BlockedRequestError') return { kind: 'unreachable', reason: 'blocked' };
   if (name === 'ResponseTooLargeError') return { kind: 'unreachable', reason: 'response-too-large' };
   if (name === 'TimeoutError' || name === 'AbortError') return { kind: 'unreachable', reason: 'timeout' };
