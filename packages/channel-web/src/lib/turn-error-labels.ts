@@ -101,7 +101,30 @@ export const ERROR_LABELS: Record<string, string> = {
   // sentence points there and uses the lower-case verb that covers both.
   'connector-needs-reconnect':
     'One of this agent’s connectors needs you to sign in again. Open Connectors, reconnect it, then retry.',
+  // TASK-796 — the reconnect line's sibling for a connector nobody has signed
+  // in to yet (a default-on connector reaches every agent this way). "Sign in",
+  // never "reconnect": there was never a connection to restore. The rail marks
+  // that row "Not signed in yet" with Sign in / Add key on it (TASK-795), so
+  // "sign in" covers both and the sentence points there.
+  'connector-needs-sign-in':
+    'One of this agent’s connectors isn’t signed in yet. Open Connectors, sign in, then retry.',
 };
+
+/**
+ * The reason codes a person fixes on the agent's Connectors tab (TASK-796).
+ * The LIVE failure strip offers an "Open Connectors" button for these, so the
+ * sentence's "Open Connectors" is one click rather than a hunt. The reloaded
+ * error row stays text-only by design (see `AgentConversation`).
+ */
+const CONNECTORS_TAB_REASONS: ReadonlySet<string> = new Set([
+  'connector-needs-reconnect',
+  'connector-needs-sign-in',
+]);
+
+/** True when the turn failed for a reason the Connectors tab fixes. */
+export function turnErrorOpensConnectors(reason: string | null | undefined): boolean {
+  return typeof reason === 'string' && CONNECTORS_TAB_REASONS.has(reason);
+}
 
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
  *  already bounded + sanitized server-side; this is a final client-side clamp). */

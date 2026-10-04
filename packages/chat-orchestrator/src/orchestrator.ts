@@ -889,6 +889,69 @@ function isNeedsReconnect(err: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// TASK-796 — the other way a connector stops a session opening: nobody ever
+// signed in to it (or added its key) for this caller. A default-on connector
+// reaches every agent this way. `proxy:open-session` resolves every ref with
+// `credentials:get`, so the missing row fails the whole open with
+// `credential-not-found` — and that error does not say WHICH ref was missing
+// (see the TASK-713 note above: it may be a model-provider key).
+//
+// So, only AFTER an open has failed, ask the vault about the CONNECTOR refs
+// alone, with `credentials:has` (TASK-795): the SAME user → agent → global
+// walk and authz gates `credentials:get` uses (one shared `findRow`), but it
+// never resolves, refreshes or touches the network. If any connector ref has
+// no row for this caller, the person can fix it: sign in on the Connectors
+// tab. Provider keys and skill slots are never asked about, so a missing
+// provider key still reads as `proxy-open-failed`.
+//
+// Order matters: a rejected-refresh (`NeedsReconnectError`) is checked FIRST
+// and wins — its token row still exists, but the caller learns "reconnect",
+// never both. A presence read that throws, or no `credentials:has` at all,
+// counts as present (logged by error NAME only — never a message, which can
+// carry provider text), so the turn falls back to `proxy-open-failed`: the
+// cheaper wrong answer than sending someone to sign in to a connector that
+// is fine. Nothing here runs on a successful open.
+// ---------------------------------------------------------------------------
+
+/** Turn-error reason: a connector was never signed in; sign in, then retry. */
+const CONNECTOR_NEEDS_SIGN_IN = 'connector-needs-sign-in';
+
+/** Owner tag `foldConnectorCaps` stamps on a connector's credential slots. */
+const CONNECTOR_SLOT_OWNER_PREFIX = 'connector:';
+
+async function connectorSignInMissing(
+  bus: HookBus,
+  ctx: AgentContext,
+  creds: Readonly<Record<string, { ref: string }>>,
+  slotOwners: ReadonlyMap<string, string>,
+): Promise<boolean> {
+  if (!bus.hasService('credentials:has')) return false;
+  const refs = new Set<string>();
+  for (const [envName, cred] of Object.entries(creds)) {
+    if (slotOwners.get(envName)?.startsWith(CONNECTOR_SLOT_OWNER_PREFIX) === true) refs.add(cred.ref);
+  }
+  if (refs.size === 0) return false;
+  const answers = await Promise.all(
+    [...refs].map(async (ref) => {
+      try {
+        const r = await bus.call<{ ref: string; userId: string }, { present: boolean }>(
+          'credentials:has',
+          ctx,
+          { ref, userId: ctx.userId },
+        );
+        return r?.present === false;
+      } catch (err) {
+        ctx.logger.warn('connector_sign_in_check_failed', {
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+        return false;
+      }
+    }),
+  );
+  return answers.some((missing) => missing);
+}
+
+// ---------------------------------------------------------------------------
 // Deferred — a Promise we can resolve/reject externally, with an idempotent
 // `settled` guard. Using this (vs. wiring promise executors by hand) keeps
 // the orchestrator flow readable.
@@ -3019,7 +3082,11 @@ export function createOrchestrator(
       }
       const outcome: AgentOutcome = {
         kind: 'terminated',
-        reason: isNeedsReconnect(err) ? CONNECTOR_NEEDS_RECONNECT : 'proxy-open-failed',
+        reason: isNeedsReconnect(err)
+          ? CONNECTOR_NEEDS_RECONNECT
+          : (await connectorSignInMissing(bus, ctx, unionedCreds, slotOwners))
+            ? CONNECTOR_NEEDS_SIGN_IN
+            : 'proxy-open-failed',
         error: err,
       };
       // TASK-22 — credential resolution failure at session-open. This is the

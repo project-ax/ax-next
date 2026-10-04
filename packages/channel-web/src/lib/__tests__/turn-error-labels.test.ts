@@ -3,6 +3,7 @@ import {
   DEFAULT_TURN_ERROR,
   ERROR_LABELS,
   MAX_DETAIL_CHARS,
+  turnErrorOpensConnectors,
   turnErrorText,
 } from '../turn-error-labels';
 
@@ -103,5 +104,24 @@ describe('turnErrorText — a connector sign-in expired (TASK-713)', () => {
 
   it('keeps the generic line for an ordinary session-open failure', () => {
     expect(turnErrorText('proxy-open-failed')).toBe(DEFAULT_TURN_ERROR);
+  });
+});
+
+describe('turnErrorText — a connector nobody signed in to yet (TASK-796)', () => {
+  it('says "sign in", not "reconnect", and points at Connectors', () => {
+    const text = turnErrorText('connector-needs-sign-in');
+    expect(text).not.toBe(DEFAULT_TURN_ERROR);
+    expect(text).toBe(
+      'One of this agent’s connectors isn’t signed in yet. Open Connectors, sign in, then retry.',
+    );
+    expect(text.toLowerCase()).not.toContain('reconnect');
+  });
+
+  it('marks exactly the two connector reasons as fixed on the Connectors tab', () => {
+    expect(turnErrorOpensConnectors('connector-needs-sign-in')).toBe(true);
+    expect(turnErrorOpensConnectors('connector-needs-reconnect')).toBe(true);
+    for (const other of ['proxy-open-failed', 'chat-run-timeout', 'toString', '', null, undefined]) {
+      expect(turnErrorOpensConnectors(other)).toBe(false);
+    }
   });
 });

@@ -52,7 +52,7 @@ import { STORAGE_FULL_RULES } from './storage-copy';
   `transport.ts` with the rest of chat, and this is now the surface that is
   left. The table lives in `./turn-error-labels`, outside the tree that went.
 */
-import { turnErrorText } from './turn-error-labels';
+import { turnErrorOpensConnectors, turnErrorText } from './turn-error-labels';
 import { readSseFrames } from './sse-frames';
 // The ONE producer of a step row's qualifier, shared with the reload path so
 // the same call cannot read two ways (TASK-419).
@@ -592,8 +592,15 @@ export interface StreamHandlers {
    * `ctx.contentSeen`. It is a stable backend-agnostic kind, never a pod name.
    */
   onPhase?: (phase: PhaseKind) => void;
-  /** The turn ended badly, or the stream dropped without a terminator. */
-  onError: (message: string) => void;
+  /**
+   * The turn ended badly, or the stream dropped without a terminator.
+   *
+   * `fix` (TASK-796) says where the person fixes it, when that is somewhere
+   * on this agent: `opensConnectors` for a connector that needs a sign-in. It is
+   * derived from the reason code here, so the code itself still never leaves
+   * this module. Absent for everything else.
+   */
+  onError: (message: string, fix?: { opensConnectors: true }) => void;
   /**
    * The agent stopped mid-turn to ask for something. NON-TERMINAL — the stream
    * stays open and the turn carries on parking for an answer.
@@ -1484,14 +1491,14 @@ async function streamReply(
         costs the reader the only actionable specifics they get.
       */
       terminated = true;
-      onError(
-        turnErrorText(
-          frame.error,
-          'detail' in frame && typeof frame.detail === 'string'
-            ? frame.detail
-            : null,
-        ),
+      const text = turnErrorText(
+        frame.error,
+        'detail' in frame && typeof frame.detail === 'string'
+          ? frame.detail
+          : null,
       );
+      if (turnErrorOpensConnectors(frame.error)) onError(text, { opensConnectors: true });
+      else onError(text);
       return 'stop';
     }
     if ('kind' in frame && frame.kind === 'text' && typeof frame.text === 'string') {

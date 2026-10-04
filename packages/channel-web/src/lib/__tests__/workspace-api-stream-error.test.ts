@@ -115,3 +115,32 @@ describe('streamReply — the SSE error frame', () => {
     expect(reported).not.toContain('\n');
   });
 });
+
+describe('streamReply — where the person fixes it (TASK-796)', () => {
+  async function fixFrom(frames: unknown[]): Promise<{ message: string | null; fix: unknown }> {
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse(frames)));
+    let message: string | null = null;
+    let fix: unknown = 'not-called';
+    await workspaceApi.streamReply('r1', {
+      onText: () => undefined,
+      onDone: () => undefined,
+      onError: (m, f) => {
+        message = m;
+        fix = f;
+      },
+    });
+    return { message, fix };
+  }
+
+  it('a connector that needs a sign-in says so AND names the Connectors tab', async () => {
+    const { message, fix } = await fixFrom([{ error: 'connector-needs-sign-in' }]);
+    expect(message).toBe(ERROR_LABELS['connector-needs-sign-in']);
+    expect(message).not.toContain('connector-needs-sign-in');
+    expect(fix).toEqual({ opensConnectors: true });
+  });
+
+  it('an ordinary failure carries no fix hint', async () => {
+    const { fix } = await fixFrom([{ error: 'proxy-open-failed' }]);
+    expect(fix).toBeUndefined();
+  });
+});
