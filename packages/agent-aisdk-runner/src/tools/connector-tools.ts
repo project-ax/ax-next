@@ -150,8 +150,7 @@ async function connectAndList(
       const reqOpts = { signal: ac.signal, timeout: timeoutMs };
       // The SDK types this transport's `sessionId` accessor as `string |
       // undefined`, which `exactOptionalPropertyTypes` rejects against the
-      // `Transport` interface's `sessionId?: string`. Same object, so cast
-      // (test-harness's mcp-http-server-stub does the same on the server side).
+      // `Transport` interface's `sessionId?: string`. Same object, so cast.
       await client.connect(transport as Transport, reqOpts);
       const tools: ListedTool[] = [];
       let cursor: string | undefined;

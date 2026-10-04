@@ -1,8 +1,7 @@
 // In-process streamable-HTTP MCP server for the connector tests. Stateless
-// mode (fresh Server + transport per request), same shape as
-// @ax/test-harness's mcp-http-server-stub — but in-process and configurable,
-// so a test can capture request headers, page `tools/list`, force an HTTP
-// status, or hand back `isError` results.
+// mode (fresh Server + transport per request), configurable so a test can
+// capture request headers, page `tools/list`, force an HTTP status, or hand
+// back `isError` results.
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { createServer as createNetServer, type AddressInfo, type Socket } from 'node:net';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';

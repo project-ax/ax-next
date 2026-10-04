@@ -161,9 +161,6 @@ importers:
         specifier: '>=6.28.1 <7.0.0'
         version: 6.29.0
     devDependencies:
-      '@ax/test-harness':
-        specifier: workspace:*
-        version: link:../test-harness
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0

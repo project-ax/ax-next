@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { startMcpHttpServerStub } from '@ax/test-harness';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import {
@@ -68,10 +67,35 @@ async function testServer(
   return s;
 }
 
+/**
+ * `echo` + `crash`. `crash` tears the whole HTTP server down mid-request
+ * (every open socket destroyed, nothing answered) — what a connector process
+ * dying under a call looks like from the client's side.
+ */
+async function echoCrashServer() {
+  const ref: { self?: Awaited<ReturnType<typeof startMcpTestServer>> } = {};
+  ref.self = await testServer([
+    {
+      name: 'echo',
+      description: 'echo the input text verbatim',
+      inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      handler: (args) => ({ content: [{ type: 'text', text: String(args['text'] ?? '') }] }),
+    },
+    {
+      name: 'crash',
+      description: 'drop the server mid-call',
+      handler: () => {
+        void ref.self?.close();
+        return new Promise(() => {});
+      },
+    },
+  ]);
+  return ref.self;
+}
+
 describe('connectConnectorTools', () => {
   it('offers tools as mcp__<ns>__<tool>, gates them as mcp.<ns>.<tool>, and round-trips a call', async () => {
-    const stub = await startMcpHttpServerStub();
-    cleanups.push(() => stub.close());
+    const stub = await echoCrashServer();
     const ct = await connect({ [NS]: { url: stub.url, bundle: 'conn-a' } });
 
     expect(Object.keys(ct.tools).sort()).toEqual([`mcp__${NS}__crash`, `mcp__${NS}__echo`]);
@@ -84,8 +108,7 @@ describe('connectConnectorTools', () => {
   });
 
   it('wraps every tool with the policy and the ONE shared latch', async () => {
-    const stub = await startMcpHttpServerStub();
-    cleanups.push(() => stub.close());
+    const stub = await echoCrashServer();
     const holdLatch = createHoldLatch();
     const ct = await connect({ [NS]: { url: stub.url, bundle: 'b' } }, { holdLatch });
     for (const t of Object.values(ct.tools)) {
@@ -96,8 +119,7 @@ describe('connectConnectorTools', () => {
   });
 
   it('a server crash mid-call is a failed tool call; another connector keeps working', async () => {
-    const crashy = await startMcpHttpServerStub();
-    cleanups.push(() => crashy.close());
+    const crashy = await echoCrashServer();
     const healthy = await testServer([
       { name: 'ping', handler: () => ({ content: [{ type: 'text', text: 'pong' }] }) },
     ]);
@@ -118,8 +140,7 @@ describe('connectConnectorTools', () => {
   });
 
   it('a denied connector tool is not offered; its siblings are', async () => {
-    const stub = await startMcpHttpServerStub();
-    cleanups.push(() => stub.close());
+    const stub = await echoCrashServer();
     const ct = await connect({ [NS]: { url: stub.url, bundle: 'b' } }, { disallowed: [`mcp.${NS}.crash`, 'Bash'] });
     expect(Object.keys(ct.tools)).toEqual([`mcp__${NS}__echo`]);
     expect(ct.logs.join('\n')).toMatch(/crash.*denied/);
@@ -274,8 +295,7 @@ describe('connectConnectorTools', () => {
   });
 
   it('close() resolves and is safe to call twice', async () => {
-    const stub = await startMcpHttpServerStub();
-    cleanups.push(() => stub.close());
+    const stub = await echoCrashServer();
     const ct = await connect({ [NS]: { url: stub.url, bundle: 'b' } });
     await ct.close();
     await ct.close();
