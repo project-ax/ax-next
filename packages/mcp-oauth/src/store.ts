@@ -66,6 +66,12 @@ export interface McpOAuthStore {
   /** TASK-741 — the sign-in works again (refreshed, or signed in anew). */
   clearNeedsReconnect(owner: MarkerOwner, connectorId: string): Promise<void>;
   /**
+   * TASK-817 — does `owner` carry a needs-reconnect marker for `connectorId`?
+   * One indexed read; the token resolver asks it only for a token the clock
+   * still calls valid.
+   */
+  hasNeedsReconnect(owner: MarkerOwner, connectorId: string): Promise<boolean>;
+  /**
    * TASK-741/756 — which of `connectorIds` carry a needs-reconnect marker for
    * `userId`'s own sign-in (`personal`) and, when `agentId` is given, for that
    * agent's shared sign-in (`shared`). A pure read: it never touches a token,
@@ -246,6 +252,24 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
         .where('user_id', '=', owner.userId)
         .where('connector_id', '=', connectorId)
         .execute();
+    },
+
+    async hasNeedsReconnect(owner, connectorId) {
+      const row =
+        owner.kind === 'agent'
+          ? await db
+              .selectFrom('mcp_oauth_v1_needs_reconnect_agent')
+              .select('connector_id')
+              .where('agent_id', '=', owner.agentId)
+              .where('connector_id', '=', connectorId)
+              .executeTakeFirst()
+          : await db
+              .selectFrom('mcp_oauth_v1_needs_reconnect')
+              .select('connector_id')
+              .where('user_id', '=', owner.userId)
+              .where('connector_id', '=', connectorId)
+              .executeTakeFirst();
+      return row !== undefined;
     },
 
     async listNeedsReconnect(userId, agentId, connectorIds) {

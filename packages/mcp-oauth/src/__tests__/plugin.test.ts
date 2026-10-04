@@ -242,6 +242,67 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
     expect(await batch(['gmail', 'slack'])).toEqual([]);
   });
 
+  // TASK-817 — the provider refused an UNEXPIRED token (revoked on its side).
+  // The caller says so (`rejected`), the renewal is refused too, and from then
+  // on the same unexpired token is no longer handed out: the rail reads the
+  // marker, and the next ordinary resolve (a chat turn's proxy open) fails as
+  // "reconnect" instead of opening a session that silently lacks the tools.
+  it('a refused unexpired token: rejected resolve marks it, and later ordinary resolves stop answering it until a renewal works', async () => {
+    let reject = true;
+    const refresh = vi.fn(async () => {
+      if (reject) throw new InvalidGrantError('revoked');
+      return { access_token: 'new', refresh_token: 'rt2', expires_in: 3600 };
+    });
+    const h = await createTestHarness({
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createMcpOAuthPlugin({ testOverrides: { refresh } }),
+      ],
+    });
+    harnesses.push(h);
+    const unexpired = encodeTokenBlob({
+      accessToken: 'refused',
+      refreshToken: 'rt1',
+      tokenType: 'Bearer',
+      expiresAt: Date.now() + 60 * 60_000,
+      resource: 'https://mcp.example.com',
+      authServerUrl: 'https://auth.example.com',
+      tokenEndpoint: 'https://auth.example.com/token',
+      clientKey: 'gmail|https://auth.example.com',
+      clientId: 'cid',
+    });
+    const resolve = (extra: Record<string, unknown> = {}) =>
+      h.bus.call<unknown, { value: string }>('credentials:resolve:mcp-oauth', h.ctx(), {
+        payload: unexpired,
+        userId: 'u1',
+        ref: 'account:gmail',
+        ...extra,
+      });
+    const batch = async () =>
+      (
+        await h.bus.call<unknown, { needsReconnect: string[] }>('mcp-oauth:status-batch', h.ctx(), {
+          userId: 'u1',
+          connectorIds: ['gmail'],
+        })
+      ).needsReconnect;
+
+    // Before anyone saw the refusal: the clock says valid, nothing is asked.
+    expect((await resolve()).value).toBe('refused');
+    expect(refresh).not.toHaveBeenCalled();
+
+    await expect(resolve({ rejected: true })).rejects.toThrow();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(await batch()).toEqual(['gmail']);
+
+    // The same unexpired token is no longer answered while the marker stands.
+    await expect(resolve()).rejects.toThrow(/reconnect/i);
+
+    // The provider recovers: the next resolve renews, clears the marker.
+    reject = false;
+    expect((await resolve()).value).toBe('new');
+    expect(await batch()).toEqual([]);
+  });
+
   // TASK-756 — a team agent's token is the agent's (vault scope `agent`): one
   // member's rejected refresh shows for every member, as SHARED, and one
   // member's good refresh clears it for all of them.

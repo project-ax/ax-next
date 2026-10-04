@@ -323,6 +323,19 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
               });
             }
           },
+          // TASK-817 — a marked sign-in's unexpired token is not trusted. A
+          // failed read is logged and counts as unmarked (today's behaviour).
+          isMarked: async (owner, connectorId) => {
+            try {
+              return await store.hasNeedsReconnect(owner, connectorId);
+            } catch (err) {
+              initCtx.logger.warn('mcp_oauth_needs_reconnect_read_failed', {
+                connectorId,
+                name: err instanceof Error ? err.name : 'unknown',
+              });
+              return false;
+            }
+          },
         },
       });
 

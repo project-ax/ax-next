@@ -16,6 +16,9 @@ export interface McpOAuthResolveInput {
    *  so a direct (non-vault) caller still works; absent reads as the caller's own. */
   scope?: 'user' | 'agent' | 'global';
   ownerId?: string | null;
+  /** TASK-817 — the caller presented this ref's last value and the service
+   *  refused it (HTTP 401). Renew instead of answering the stored token. */
+  rejected?: true;
 }
 export interface McpOAuthResolveOutput {
   value: string;
@@ -57,6 +60,13 @@ export interface ResolverDeps {
   marker?: {
     mark(owner: MarkerOwner, connectorId: string): Promise<void>;
     clear(owner: MarkerOwner, connectorId: string): Promise<void>;
+    /**
+     * TASK-817 — is `owner`'s sign-in to `connectorId` marked? Read ONLY for
+     * a token the clock still calls valid (an expired one renews anyway).
+     * Must not throw either; a throw here counts as "not marked", so a
+     * failed read degrades to today's behaviour, never to a refresh storm.
+     */
+    isMarked?(owner: MarkerOwner, connectorId: string): Promise<boolean>;
   };
 }
 
@@ -116,8 +126,19 @@ function isDeadCredentialError(err: unknown): boolean {
 }
 
 export function createMcpOAuthResolver(deps: ResolverDeps) {
-  const resolveToken = createTokenResolver(deps);
   const marker = deps.marker;
+  // TASK-817 — when may a token the clock calls valid be answered as-is? Not
+  // when the caller just saw it refused, and not while its owner's sign-in is
+  // marked "expired": the marker is only ever written when the authorization
+  // server refused us, so a marked token is one we already know is dead. That
+  // is what turns a provider-side revocation into the next chat turn's
+  // "reconnect" error instead of a session that silently lacks the tools.
+  const resolveToken = createTokenResolver(deps, async (input) => {
+    if (input.rejected === true) return true;
+    const connectorId = connectorIdOfRef(input.ref);
+    if (marker?.isMarked === undefined || connectorId === null) return false;
+    return marker.isMarked(markerOwnerOf(input), connectorId).catch(() => false);
+  });
   if (marker === undefined) return resolveToken;
   return async function resolve(input: McpOAuthResolveInput): Promise<McpOAuthResolveOutput> {
     const connectorId = connectorIdOfRef(input.ref);
@@ -140,12 +161,16 @@ export function createMcpOAuthResolver(deps: ResolverDeps) {
   };
 }
 
-function createTokenResolver(deps: ResolverDeps) {
+function createTokenResolver(
+  deps: ResolverDeps,
+  /** TASK-817 — asked only for a token the clock calls valid: renew it anyway? */
+  mustRenew: (input: McpOAuthResolveInput) => Promise<boolean>,
+) {
   return async function resolve(input: McpOAuthResolveInput): Promise<McpOAuthResolveOutput> {
     const blob = decodeTokenBlob(input.payload);
 
     const valid = blob.expiresAt !== undefined && blob.expiresAt - deps.now() > REFRESH_MARGIN_MS;
-    if (valid) return { value: blob.accessToken };
+    if (valid && !(await mustRenew(input))) return { value: blob.accessToken };
 
     if (!blob.refreshToken) throw new NeedsReconnectError('no refresh token; reconnect required');
 
