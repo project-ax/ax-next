@@ -91,10 +91,12 @@ export function createChatOrchestratorPlugin(
         {
           // TASK-796 — after proxy:open-session fails, a presence read over the
           // connector refs tells "you haven't signed in to a connector" apart
-          // from a generic open failure. Never called on a successful open.
+          // from a generic open failure. TASK-802: when a connector is missing,
+          // the agent's own (model-provider) key is checked the same way, so a
+          // turn missing both says both. Never called on a successful open.
           hook: 'credentials:has',
           degradation:
-            'a session that cannot open because a connector was never signed in reads as the generic proxy-open-failed instead of connector-needs-sign-in',
+            'a session that cannot open because a connector was never signed in reads as the generic proxy-open-failed instead of connector-needs-sign-in, and one that is also missing its model-provider key reads as connector-needs-sign-in alone',
         },
       ],
       // ----- conditionally-called peers (NOT in `calls`) -----

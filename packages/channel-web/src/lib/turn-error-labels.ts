@@ -108,6 +108,15 @@ export const ERROR_LABELS: Record<string, string> = {
   // "sign in" covers both and the sentence points there.
   'connector-needs-sign-in':
     'One of this agent’s connectors isn’t signed in yet. Open Connectors, sign in, then retry.',
+  // TASK-802 — two failures at once: the model-provider key is missing AND a
+  // connector isn't signed in. Naming only the connector sent the
+  // person to sign in, retry, and meet the key failure on the second turn. The
+  // turn cannot run without the key, so it comes first, in the same words the
+  // provider-unknown line uses; and since it is an ADMIN's to fix (see that
+  // line), the sentence says so and separates it from the half the reader can
+  // do now. The button on the live strip is for that second half.
+  'provider-key-missing-connector-needs-sign-in':
+    'This agent can’t run right now. The AI service it uses isn’t set up on this server, and one of its connectors isn’t signed in yet. An admin can fix the first one in Settings. Open Connectors to sign in to the second, then retry.',
 };
 
 /**
@@ -119,6 +128,9 @@ export const ERROR_LABELS: Record<string, string> = {
 const CONNECTORS_TAB_REASONS: ReadonlySet<string> = new Set([
   'connector-needs-reconnect',
   'connector-needs-sign-in',
+  // TASK-802 — the connector half of "key AND connector"; the key half is an
+  // admin's, but the strip's button is the part this reader can act on.
+  'provider-key-missing-connector-needs-sign-in',
 ]);
 
 /** True when the turn failed for a reason the Connectors tab fixes. */

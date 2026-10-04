@@ -2413,6 +2413,8 @@ describe('chat-orchestrator', () => {
   // person can fix it by signing in (`connector-needs-sign-in`); a missing
   // provider key, or a presence read that fails, stays `proxy-open-failed`;
   // a rejected refresh stays `connector-needs-reconnect` and never both.
+  // TASK-802: with a connector missing, the agent's own key is asked about too,
+  // and both missing reads as one combined reason.
   describe('TASK-796: connector-needs-sign-in at session open', () => {
     const GMAIL_REF = 'account:gmail';
     const PROVIDER_REF = 'provider:anthropic';
@@ -2423,6 +2425,8 @@ describe('chat-orchestrator', () => {
       rows: string[];
       rejected?: string[];
       hasThrows?: Error;
+      /** Throw only when THIS ref is asked about (the rest answer normally). */
+      hasThrowsRef?: string;
       noHas?: boolean;
     }) {
       const rows = new Set(opts.rows);
@@ -2465,6 +2469,7 @@ describe('chat-orchestrator', () => {
           state.hasRefs.push(ref);
           state.hasUserIds.push(userId);
           if (opts.hasThrows !== undefined) throw opts.hasThrows;
+          if (opts.hasThrowsRef === ref) throw new Error('vault blip');
           // A rejected-refresh token row still EXISTS — presence says yes.
           return { present: rows.has(ref) || rejected.has(ref) };
         };
@@ -2532,9 +2537,38 @@ describe('chat-orchestrator', () => {
       expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-sign-in' });
       expect(turnErrors).toEqual([{ reqId: 'r-signin-missing', reason: 'connector-needs-sign-in' }]);
       expect(mocks.calls.sandboxOpen).toBe(0);
-      // Only the CONNECTOR ref is asked about, as the caller — never the provider key.
-      expect(vault.state.hasRefs).toEqual([GMAIL_REF]);
-      expect(vault.state.hasUserIds).toEqual(['test-user']);
+      // The connector ref is asked about first, as the caller. Only because it
+      // is missing is the agent's own key asked about too (TASK-802), and it is
+      // there, so the answer stays connector-only.
+      expect(vault.state.hasRefs).toEqual([GMAIL_REF, PROVIDER_REF]);
+      expect(vault.state.hasUserIds).toEqual(['test-user', 'test-user']);
+    });
+
+    // TASK-802 — BOTH are missing. Naming only the connector sent the person to
+    // sign in, retry, and land on a second failure. The turn cannot run without
+    // the provider key, so the message has to cover it too.
+    it('no provider key AND no connector credential → one combined reason, never connector-only', async () => {
+      const vault = buildVaultHooks({ rows: [] });
+      const { outcome, turnErrors, mocks } = await invoke(vault, 'signin-both');
+      expect(outcome).toMatchObject({
+        kind: 'terminated',
+        reason: 'provider-key-missing-connector-needs-sign-in',
+      });
+      expect(turnErrors).toEqual([
+        { reqId: 'r-signin-both', reason: 'provider-key-missing-connector-needs-sign-in' },
+      ]);
+      expect(mocks.calls.sandboxOpen).toBe(0);
+      expect(vault.state.hasRefs).toEqual([GMAIL_REF, PROVIDER_REF]);
+      expect(vault.state.hasUserIds).toEqual(['test-user', 'test-user']);
+    });
+
+    it('both missing but the provider-key read throws → today\'s connector-needs-sign-in (fail toward the old answer)', async () => {
+      const vault = buildVaultHooks({ rows: [], hasThrowsRef: PROVIDER_REF });
+      const { outcome, turnErrors } = await invoke(vault, 'signin-both-throws');
+      expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connector-needs-sign-in' });
+      expect(turnErrors).toEqual([
+        { reqId: 'r-signin-both-throws', reason: 'connector-needs-sign-in' },
+      ]);
     });
 
     it('with a credential → the session opens; no turn error and no presence read', async () => {

@@ -117,11 +117,32 @@ describe('turnErrorText — a connector nobody signed in to yet (TASK-796)', () 
     expect(text.toLowerCase()).not.toContain('reconnect');
   });
 
-  it('marks exactly the two connector reasons as fixed on the Connectors tab', () => {
+  it('marks exactly the connector reasons as fixed on the Connectors tab', () => {
     expect(turnErrorOpensConnectors('connector-needs-sign-in')).toBe(true);
     expect(turnErrorOpensConnectors('connector-needs-reconnect')).toBe(true);
+    expect(turnErrorOpensConnectors('provider-key-missing-connector-needs-sign-in')).toBe(true);
     for (const other of ['proxy-open-failed', 'chat-run-timeout', 'toString', '', null, undefined]) {
       expect(turnErrorOpensConnectors(other)).toBe(false);
     }
+  });
+});
+
+describe('turnErrorText — the provider key AND a connector are both missing (TASK-802)', () => {
+  const text = turnErrorText('provider-key-missing-connector-needs-sign-in');
+
+  it('names the AI service, not only the connector, and says who fixes it', () => {
+    expect(text).not.toBe(DEFAULT_TURN_ERROR);
+    expect(text).not.toBe(turnErrorText('connector-needs-sign-in'));
+    expect(text).toContain('AI service');
+    expect(text).toContain('An admin can fix');
+  });
+
+  it('still tells the person the one thing they can do themselves: sign in on Connectors', () => {
+    expect(text).toContain('Open Connectors');
+    expect(text).toContain('sign in');
+  });
+
+  it('never prints the reason code', () => {
+    expect(text).not.toContain('provider-key-missing');
   });
 });
