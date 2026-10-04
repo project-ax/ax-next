@@ -143,6 +143,38 @@ describe('AgentRail — "Right now"', () => {
     expect(await screen.findByText('Resting')).toBeTruthy();
   });
 
+  /*
+    TASK-818 — the 390px walk: Details opened on Activity mid-turn. The
+    detail's word is "resting" before AND after the turn (it never saw the
+    server's working), so the only transition left is the turn finishing.
+  */
+  it('drops a Working line read mid-turn once the turn finishes, with no word change', async () => {
+    railMock.mockResolvedValue(
+      rail({
+        activity: {
+          status: 'ok',
+          activity: railActivity({ phrase: 'Working on your request', source: 'trigger' }),
+        },
+      }),
+    );
+    const d = detail({ agent: agent({ state: 'resting' }) });
+    const { rerender } = render(
+      <AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} busy mobile />,
+    );
+    expect(await screen.findByText('Working on your request')).toBeTruthy();
+    // The card's word agrees with its own line rather than saying "Resting"
+    // beside "Working on your request".
+    expect(screen.getByText('Working')).toBeTruthy();
+    expect(screen.queryByText('Resting')).toBeNull();
+
+    railMock.mockResolvedValue(rail());
+    rerender(
+      <AgentRail detail={d} openPastId={null} onOpenPast={vi.fn()} tab={initialTab} busy={false} mobile />,
+    );
+    await waitFor(() => expect(screen.queryByText('Working on your request')).toBeNull());
+    expect(await screen.findByText('Resting')).toBeTruthy();
+  });
+
   it('renders the phrase, a real counter and elapsed-since-start', async () => {
     railMock.mockResolvedValue(
       rail({
