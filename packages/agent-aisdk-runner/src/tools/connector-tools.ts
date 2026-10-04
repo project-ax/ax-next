@@ -38,6 +38,8 @@ import { wrapWithPolicy } from './policy-wrap.js';
 
 export const CONNECT_TIMEOUT_MS = 10_000;
 export const CALL_TIMEOUT_MS = 300_000;
+/** Hard ceiling so a server can't hold a call open forever by streaming progress; Stop still aborts sooner. */
+export const MAX_CALL_TOTAL_MS = 1_800_000;
 export const MAX_TOOLS_PER_CONNECTOR = 256;
 const MAX_LIST_PAGES = 16;
 const CLOSE_TIMEOUT_MS = 5_000;
@@ -60,6 +62,8 @@ export interface ConnectConnectorToolsOptions {
   disallowed: readonly string[];
   log?: (line: string) => void;
   connectTimeoutMs?: number;
+  /** Per-call timeout (default `CALL_TIMEOUT_MS`). A test seam only — production never sets it. */
+  callTimeoutMs?: number;
 }
 
 export interface ConnectorTools {
@@ -138,6 +142,7 @@ export async function connectConnectorTools(
 ): Promise<ConnectorTools> {
   const log = opts.log ?? ((line: string) => process.stderr.write(`runner: connector-mcp: ${line}\n`));
   const timeoutMs = opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
+  const callTimeoutMs = opts.callTimeoutMs ?? CALL_TIMEOUT_MS;
   const denied = new Set(opts.disallowed);
   const tools: Record<string, Tool> = {};
   const loadedBundles = new Set<string>();
@@ -196,8 +201,13 @@ export async function connectConnectorTools(
           async (input, ctx) => {
             const res = await client.callTool({ name: toolName, arguments: input }, undefined, {
               ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}),
-              timeout: CALL_TIMEOUT_MS,
+              timeout: callTimeoutMs,
               resetTimeoutOnProgress: true,
+              maxTotalTimeout: MAX_CALL_TOTAL_MS,
+              // The SDK only sends a progressToken — and only resets the
+              // timeout on progress — when a handler is registered. Without
+              // this no-op, `resetTimeoutOnProgress` is inert.
+              onprogress: () => {},
             });
             const text = renderMcpResult(res as { content?: unknown; structuredContent?: unknown });
             // Parity with host-tools / the claude-sdk runner: a tool that

@@ -195,6 +195,48 @@ describe('connectConnectorTools', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
+  it('progress notifications extend a call past the per-call timeout', async () => {
+    let sawProgressToken = false;
+    const s = await testServer([
+      {
+        name: 'slow',
+        handler: async (_args, extra) => {
+          const progressToken = extra._meta?.progressToken;
+          if (progressToken !== undefined) {
+            sawProgressToken = true;
+            for (let i = 1; i <= 9; i++) {
+              await new Promise((r) => setTimeout(r, 100));
+              await extra.sendNotification({
+                method: 'notifications/progress',
+                params: { progressToken, progress: i },
+              });
+            }
+          } else {
+            await new Promise((r) => setTimeout(r, 900));
+          }
+          return { content: [{ type: 'text', text: 'pong' }] };
+        },
+      },
+    ]);
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { callTimeoutMs: 300 });
+    await expect(exec(ct, `mcp__${NS}__slow`, {})).resolves.toBe('pong');
+    expect(sawProgressToken).toBe(true);
+  });
+
+  it('a silent call fails at the per-call timeout', async () => {
+    const s = await testServer([
+      {
+        name: 'silent',
+        handler: async () => {
+          await new Promise((r) => setTimeout(r, 900));
+          return { content: [{ type: 'text', text: 'pong' }] };
+        },
+      },
+    ]);
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { callTimeoutMs: 300 });
+    await expect(exec(ct, `mcp__${NS}__silent`, {})).rejects.toThrow();
+  });
+
   it('sends the ax-cred placeholder through the injected fetch — the runner never holds a real secret', async () => {
     const s = await testServer([{ name: 'ping', handler: () => ({ content: [{ type: 'text', text: 'pong' }] }) }]);
     const seenByFetch: string[] = [];

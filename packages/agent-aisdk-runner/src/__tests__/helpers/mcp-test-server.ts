@@ -7,18 +7,25 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { createServer as createNetServer, type AddressInfo, type Socket } from 'node:net';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   type CallToolResult,
+  type ServerNotification,
+  type ServerRequest,
 } from '@modelcontextprotocol/sdk/types.js';
 
 export interface TestTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
-  handler?: (args: Record<string, unknown>) => Promise<CallToolResult> | CallToolResult;
+  handler?: (
+    args: Record<string, unknown>,
+    /** The SDK's per-request context: `_meta.progressToken`, `sendNotification`, `signal`. */
+    extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  ) => Promise<CallToolResult> | CallToolResult;
 }
 
 export interface McpTestServer {
@@ -53,12 +60,12 @@ export async function startMcpTestServer(opts: {
         ...(end < listed.length ? { nextCursor: String(end) } : {}),
       };
     });
-    server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       const t = opts.tools.find((x) => x.name === req.params.name);
       if (t?.handler === undefined) {
         return { content: [{ type: 'text', text: `unknown tool: ${req.params.name}` }], isError: true };
       }
-      return t.handler((req.params.arguments ?? {}) as Record<string, unknown>);
+      return t.handler((req.params.arguments ?? {}) as Record<string, unknown>, extra);
     });
     return server;
   };
