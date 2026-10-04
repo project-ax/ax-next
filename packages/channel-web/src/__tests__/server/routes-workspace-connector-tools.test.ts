@@ -437,6 +437,19 @@ describe('connector details routes (mock bus)', () => {
           expect(setCalls).toEqual([]);
         });
 
+        it('fails closed with no get-connector-defaults: a plain member’s Allow is a 503 and nothing is written (TASK-820)', async () => {
+          // Without the hook the route cannot tell an agent-sourced tool from
+          // a connector-sourced one, so it cannot know the manage check is
+          // owed. Not knowing is a refusal, never a write.
+          canManage = false;
+          bus = new HookBus();
+          registerAll(['tool-policy:get-connector-defaults']);
+          const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'allow' }, 'gmail');
+          expect(r).toEqual({ statusCode: 503, body: { error: 'tool-permissions-unavailable' } });
+          expect(setCalls).toEqual([]);
+          expect(overrides.has(k(NS_GMAIL, 'read_message'))).toBe(false);
+        });
+
         it('a plain member may still tighten (Deny)', async () => {
           canManage = false;
           const r = await put({ toolKey: k(NS_GMAIL, 'read_message'), verdict: 'deny' }, 'gmail');
@@ -763,6 +776,14 @@ describe('connector details routes (mock bus)', () => {
       registerAll(['tool-policy:set-agent-override']);
       const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' });
       expect(r).toEqual({ statusCode: 503, body: { error: 'tool-permissions-unavailable' } });
+    });
+
+    it('503s without get-connector-defaults, like the GET, and never writes (TASK-820)', async () => {
+      bus = new HookBus();
+      registerAll(['tool-policy:get-connector-defaults']);
+      const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' });
+      expect(r).toEqual({ statusCode: 503, body: { error: 'tool-permissions-unavailable' } });
+      expect(setCalls).toHaveLength(0);
     });
   });
 });
