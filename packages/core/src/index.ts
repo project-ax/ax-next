@@ -1,4 +1,5 @@
 export * from './errors.js';
+export { clampCodeUnits } from './clamp.js';
 export * from './model-ref.js';
 export * from './providers.js';
 export * from './context.js';

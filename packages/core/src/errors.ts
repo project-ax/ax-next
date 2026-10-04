@@ -1,3 +1,5 @@
+import { clampCodeUnits } from './clamp.js';
+
 // Core-emitted codes are the documented set; plugins may extend with their
 // own domain codes (e.g. 'duplicate-session', 'unknown-session'). The
 // `(string & {})` branch preserves autocomplete on the known literals while
@@ -179,7 +181,9 @@ export interface Hold extends Rejection {
 }
 
 /**
- * The wire schema (`ToolPreCallResponseSchema`) caps `note` at 2000 characters.
+ * The wire schemas (`ToolPreCallResponseSchema`'s hold arm and the
+ * `decision-resolved` inbox entry) cap `note` at this many UTF-16 code units —
+ * they import this constant rather than repeating the number.
  * We clamp HERE, at the producer, rather than letting an over-long note fail
  * `safeParse` in the host handler — that failure path returns a 500, which the
  * runner's fail-closed catch turns into a generic deny, and a deny is exactly
@@ -193,8 +197,7 @@ export function hold(opts: {
   note: string;
   source?: string;
 }): Hold {
-  const note =
-    opts.note.length > HOLD_NOTE_MAX ? opts.note.slice(0, HOLD_NOTE_MAX) : opts.note;
+  const note = clampCodeUnits(opts.note, HOLD_NOTE_MAX);
   const base = { rejected: true as const, reason: note };
   const withSource = opts.source !== undefined ? { ...base, source: opts.source } : base;
   return { ...withSource, hold: { decisionId: opts.decisionId, note } };

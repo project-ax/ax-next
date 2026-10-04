@@ -1,8 +1,16 @@
 import { describe, it, expect } from 'vitest';
+import { HOLD_NOTE_MAX } from '@ax/core';
 import {
   WorkspaceCommitNotifyResponseSchema,
+  WorkspaceCommitNotifyRequestSchema,
+  WorkspaceCommitBundleQuerySchema,
   ToolPreCallResponseSchema,
+  SessionNextMessageResponseSchema,
+  SkillProposeResponseSchema,
   PRE_CALL_REJECT_REASON_MAX,
+  SKILL_PROPOSE_REASON_MAX,
+  WORKSPACE_COMMIT_REASON_MAX,
+  WORKSPACE_COMMIT_REJECT_REASON_MAX,
 } from '../actions.js';
 
 describe('WorkspaceCommitNotifyResponseSchema', () => {
@@ -167,5 +175,72 @@ describe('ToolPreCallResponseSchema reject arm', () => {
       ToolPreCallResponseSchema.safeParse({ verdict: 'reject', reason: 'x'.repeat(2000) })
         .success,
     ).toBe(true);
+  });
+});
+
+// TASK-781 — every remaining free-text reason/note on these wires has a cap,
+// and the note caps are @ax/core's HOLD_NOTE_MAX, not a repeated literal.
+describe('wire reason/note caps (TASK-781)', () => {
+  it('the deny reason and both note fields share HOLD_NOTE_MAX', () => {
+    expect(PRE_CALL_REJECT_REASON_MAX).toBe(HOLD_NOTE_MAX);
+    const holdAt = (n: number) =>
+      ToolPreCallResponseSchema.safeParse({
+        verdict: 'hold',
+        decisionId: 'dec_1',
+        note: 'x'.repeat(n),
+      }).success;
+    expect(holdAt(HOLD_NOTE_MAX)).toBe(true);
+    expect(holdAt(HOLD_NOTE_MAX + 1)).toBe(false);
+
+    const resolvedAt = (n: number) =>
+      SessionNextMessageResponseSchema.safeParse({
+        type: 'decision-resolved',
+        decisionId: 'dec_1',
+        outcome: 'approved',
+        note: 'x'.repeat(n),
+        cursor: 1,
+      }).success;
+    expect(resolvedAt(HOLD_NOTE_MAX)).toBe(true);
+    expect(resolvedAt(HOLD_NOTE_MAX + 1)).toBe(false);
+  });
+
+  it('caps the commit label on both save carriers', () => {
+    const jsonAt = (n: number) =>
+      WorkspaceCommitNotifyRequestSchema.safeParse({
+        parentVersion: null,
+        reason: 'x'.repeat(n),
+        bundleBytes: '',
+      }).success;
+    expect(jsonAt(WORKSPACE_COMMIT_REASON_MAX)).toBe(true);
+    expect(jsonAt(WORKSPACE_COMMIT_REASON_MAX + 1)).toBe(false);
+
+    const queryAt = (n: number) =>
+      WorkspaceCommitBundleQuerySchema.safeParse({
+        reason: 'x'.repeat(n),
+        parentVersion: null,
+      }).success;
+    expect(queryAt(WORKSPACE_COMMIT_REASON_MAX)).toBe(true);
+    expect(queryAt(WORKSPACE_COMMIT_REASON_MAX + 1)).toBe(false);
+  });
+
+  it("caps the host's commit rejection reason", () => {
+    const at = (n: number) =>
+      WorkspaceCommitNotifyResponseSchema.safeParse({
+        accepted: false,
+        reason: 'x'.repeat(n),
+      }).success;
+    expect(at(WORKSPACE_COMMIT_REJECT_REASON_MAX)).toBe(true);
+    expect(at(WORKSPACE_COMMIT_REJECT_REASON_MAX + 1)).toBe(false);
+  });
+
+  it("caps skill.propose's reason", () => {
+    const at = (n: number) =>
+      SkillProposeResponseSchema.safeParse({
+        skillId: 's',
+        status: 'quarantined',
+        reason: 'x'.repeat(n),
+      }).success;
+    expect(at(SKILL_PROPOSE_REASON_MAX)).toBe(true);
+    expect(at(SKILL_PROPOSE_REASON_MAX + 1)).toBe(false);
   });
 });

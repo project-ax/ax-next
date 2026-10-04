@@ -1,5 +1,6 @@
 import {
   PluginError,
+  clampCodeUnits,
   findRunnerImmutableViolations,
   type AgentContext,
   type FileChange,
@@ -16,6 +17,7 @@ import type {
 import {
   WorkspaceCommitBundleQuerySchema,
   WorkspaceCommitNotifyRequestSchema,
+  WORKSPACE_COMMIT_REJECT_REASON_MAX,
   WorkspaceCommitNotifyResponseSchema,
 } from '@ax/ipc-protocol';
 import { filterToPolicy } from '../bundler/filter.js';
@@ -190,6 +192,17 @@ export const workspaceCommitBundleHandler: BinaryActionHandler = async (
 };
 
 /**
+ * Fit a rejection reason this handler did not write itself — a
+ * `workspace:pre-apply` subscriber's veto (plugin code) or a backend's
+ * `parent-mismatch` message — under the wire cap (TASK-781). Clamped BEFORE
+ * the response parse: an over-long reason must still arrive as that refusal,
+ * not as a 500 the runner reads as a host fault. Surrogate-safe.
+ */
+function clampRejectReason(reason: string): string {
+  return clampCodeUnits(reason, WORKSPACE_COMMIT_REJECT_REASON_MAX);
+}
+
+/**
  * The shared pipeline behind both carriers. `input` is ALREADY validated by
  * the carrier: `bundleBytes` is canonical base64 ('' = empty turn).
  */
@@ -272,7 +285,7 @@ async function commitBundleCore(
       const env = resyncEnvelopeFromCause(err.cause);
       const body: Record<string, unknown> = {
         accepted: false as const,
-        reason: `parent-mismatch: ${err.message}`,
+        reason: clampRejectReason(`parent-mismatch: ${err.message}`),
       };
       // Forward ONLY the head signal — the baseline bundle is NO LONGER inlined
       // here. The runner fetches it out-of-band at `actualParent` via the binary
@@ -538,7 +551,7 @@ async function commitBundleCore(
       // rather than reaching the runner.
       const body = {
         accepted: false as const,
-        reason: pre.reason,
+        reason: clampRejectReason(pre.reason),
         recoverable: false as const,
         ...(scoped ? { discardPaths } : {}),
         ...(pre.code !== undefined ? { code: pre.code } : {}),
@@ -588,7 +601,7 @@ async function commitBundleCore(
         const env = resyncEnvelopeFromCause(err.cause);
         const body: Record<string, unknown> = {
           accepted: false as const,
-          reason: `parent-mismatch: ${err.message}`,
+          reason: clampRejectReason(`parent-mismatch: ${err.message}`),
         };
         if (env.actualParent !== undefined) {
           body.actualParent = env.actualParent;

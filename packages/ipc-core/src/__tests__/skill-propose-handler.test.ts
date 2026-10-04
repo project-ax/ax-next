@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext, ownerlessIdFor, PluginError, type AgentContext } from '@ax/core';
+import { SKILL_PROPOSE_REASON_MAX, SkillProposeResponseSchema } from '@ax/ipc-protocol';
 import { skillProposeHandler } from '../handlers/skill-propose.js';
 
 const emptyCaps = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
@@ -50,6 +51,23 @@ describe('skill.propose handler (TASK-74)', () => {
       status: 'quarantined',
       reason: 'flagged',
     });
+  });
+
+  it('TASK-781: clamps an over-long scan reason to the wire ceiling instead of 500ing', async () => {
+    // The reason is skill-safety-scan text (plugin code), so its length is not
+    // ours to promise. Put an astral character straddling the cut: a plain
+    // slice would leave a lone high surrogate.
+    const long = 'x'.repeat(SKILL_PROPOSE_REASON_MAX - 1) + '\u{1F6AB}' + 'tail';
+    const bus = busWithPropose(async () => ({
+      skillId: 'evil',
+      status: 'quarantined',
+      reason: long,
+    }));
+    const r = await skillProposeHandler(validPayload, boundCtx(), bus);
+    expect(r.status).toBe(200);
+    const body = (r as { body: { reason: string } }).body;
+    expect(body.reason).toBe('x'.repeat(SKILL_PROPOSE_REASON_MAX - 1));
+    expect(SkillProposeResponseSchema.safeParse(body).success).toBe(true);
   });
 
   it('400s a malformed payload (no skills:propose call)', async () => {

@@ -1,4 +1,5 @@
 import {
+  SKILL_PROPOSE_REASON_MAX,
   SkillProposeRequestSchema,
   SkillProposeResponseSchema,
 } from '@ax/ipc-protocol';
@@ -9,7 +10,7 @@ import {
   mapPluginError,
   validationError,
 } from '../errors.js';
-import { isOwnerlessId, PluginError } from '@ax/core';
+import { clampCodeUnits, isOwnerlessId, PluginError } from '@ax/core';
 import type { ActionHandler } from './types.js';
 
 // Structural-validation PluginError codes the skills:propose hook throws when
@@ -124,7 +125,13 @@ export const skillProposeHandler: ActionHandler = async (rawPayload, ctx, bus) =
 
   const body =
     out.reason !== undefined
-      ? { skillId: out.skillId, status: out.status, reason: out.reason }
+      ? {
+          skillId: out.skillId,
+          status: out.status,
+          // Scan text from plugin code: clamp to the wire cap so an over-long
+          // reason still arrives as this verdict, not as a 500 (TASK-781).
+          reason: clampCodeUnits(out.reason, SKILL_PROPOSE_REASON_MAX),
+        }
       : { skillId: out.skillId, status: out.status };
   const checked = SkillProposeResponseSchema.safeParse(body);
   if (!checked.success) {

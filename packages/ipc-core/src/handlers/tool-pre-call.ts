@@ -4,7 +4,7 @@ import {
   ToolPreCallResponseSchema,
   type ToolCall,
 } from '@ax/ipc-protocol';
-import { isHold } from '@ax/core';
+import { clampCodeUnits, isHold } from '@ax/core';
 import {
   internalError,
   logInternalError,
@@ -30,22 +30,6 @@ import type { ActionHandler } from './types.js';
 // `Rejection` subtype (see @ax/core's `Hold`) checked BEFORE the generic
 // rejection branch so it isn't flattened into a plain deny.
 // ---------------------------------------------------------------------------
-
-/**
- * Truncate a deny reason to the wire ceiling. This handler is the only thing
- * that builds the `reject` arm, and any `tool:pre-call` subscriber can put any
- * string in `reason` — so the clamp lives here, not in each subscriber. Too
- * long becomes shorter, never a 500: a deny must still read as this deny.
- * Never cuts a surrogate pair in half (a lone surrogate is not valid UTF-8 and
- * gets mangled on the way out).
- */
-function clampReason(reason: string): string {
-  if (reason.length <= PRE_CALL_REJECT_REASON_MAX) return reason;
-  let end = PRE_CALL_REJECT_REASON_MAX;
-  const last = reason.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
-  return reason.slice(0, end);
-}
 
 export const toolPreCallHandler: ActionHandler = async (rawPayload, ctx, bus) => {
   const parsed = ToolPreCallRequestSchema.safeParse(rawPayload);
@@ -78,7 +62,15 @@ export const toolPreCallHandler: ActionHandler = async (rawPayload, ctx, bus) =>
   }
 
   if (result.rejected) {
-    const body = { verdict: 'reject' as const, reason: clampReason(result.reason) };
+    // This handler is the only thing that builds the `reject` arm, and any
+    // `tool:pre-call` subscriber can put any string in `reason` — so the clamp
+    // lives here, not in each subscriber. Too long becomes shorter, never a
+    // 500: a deny must still read as this deny. `clampCodeUnits` never cuts a
+    // surrogate pair in half.
+    const body = {
+      verdict: 'reject' as const,
+      reason: clampCodeUnits(result.reason, PRE_CALL_REJECT_REASON_MAX),
+    };
     const checked = ToolPreCallResponseSchema.safeParse(body);
     if (!checked.success) {
       logInternalError(
