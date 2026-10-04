@@ -117,7 +117,9 @@ export function FirstRunAutoCreate({
     } catch (e) {
       logRequestFailure(e, 'agent-bootstrap-discard');
       setDiscarding(false);
-      setErr(`We couldn't remove ${agentName} just now. Try Cancel again in a moment.`);
+      setErr(
+        `We couldn't remove ${agentName} just now. Press Cancel again in a moment, or Try again to finish setting it up instead.`,
+      );
       return;
     }
     // The create may have put it in the agent list; take it back out.
