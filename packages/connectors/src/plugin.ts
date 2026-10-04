@@ -766,8 +766,10 @@ async function upsertConnector(
   //   - pre-write fails → nothing saved, the old row and its ceiling stand;
   //   - pre-write lands, write fails → a server re-capped that may not need
   //     it yet (at worst Ask first), never an un-capped one;
-  //   - post-write fails → the OAuth server keeps its old admin ceiling until
-  //     the next save or boot reconcile (tools stay capped at Ask first).
+  //   - post-write fails → the OAuth server keeps its PRIOR ceiling until the
+  //     next save or boot reconcile: Ask first where no admin default exists,
+  //     but an old admin default (Allow included, e.g. after an API-key → OAuth
+  //     switch) still applies until then — never looser than before the save.
   // Sending `agent` before a commit that then fails would un-cap a server that
   // is still API-key in the stored row — the one outcome that grants reach.
   const sources = ceilingSourcesFor(userId, { id: connectorId, capabilities });
@@ -806,8 +808,10 @@ async function upsertConnector(
   try {
     await syncCeilingSources(bus, ctx, connectorId, uncapped);
   } catch (err) {
-    // Fail-closed: the edit is committed; the OAuth server's tools stay under
-    // the admin ceiling (Ask first by default) until the next save or boot.
+    // The edit is committed; the OAuth server keeps its PRIOR ceiling until
+    // the next save or boot reconcile — Ask first for a tool with no admin
+    // default, but an admin default set while the server was API-key (Allow
+    // included) stays live until then. Never looser than before this save.
     ctx.logger.warn('connectors_ceiling_sources_failed', {
       connectorId,
       phase: 'after-write',
