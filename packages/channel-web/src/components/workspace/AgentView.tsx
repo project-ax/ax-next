@@ -589,6 +589,13 @@ export function AgentView({
      * in `sent`.
      */
     refusal?: string;
+    /**
+     * The failure is one the agent's Connectors tab fixes (TASK-796: a
+     * connector nobody signed in to yet, or whose sign-in expired). The strip
+     * then offers "Open Connectors", so the sentence's instruction is one
+     * click. Set only from the turn's own error frame.
+     */
+    opensConnectors?: true;
   } | null>(null);
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
@@ -912,7 +919,7 @@ export function AgentView({
           void load().finally(() => setRereading(false));
           onChanged();
         },
-        onError: (message) => {
+        onError: (message, fix) => {
           // Never leave the spinner up. A stale answer is a state we can
           // render; an absence is not (design H7).
           cancelStop();
@@ -937,7 +944,12 @@ export function AgentView({
             which our own `failed` sentence would have replaced with an
             invitation to Resend forever.
           */
-          setTurnError({ kind: 'failed', sentence: message, source: 'turn' });
+          setTurnError({
+            kind: 'failed',
+            sentence: message,
+            source: 'turn',
+            ...(fix?.opensConnectors === true ? { opensConnectors: true as const } : {}),
+          });
         },
         /*
           The agent stopped to ask for something. NON-TERMINAL: the stream
@@ -1698,6 +1710,22 @@ export function AgentView({
                             disabled={streaming}
                           >
                             Resend
+                          </Button>
+                        )}
+                        {/*
+                          TASK-796 — the sentence says "Open Connectors", so
+                          the strip does it: the tab where the connector's row
+                          carries Sign in / Reconnect. The strip stays up, so
+                          Resend is still here after they come back signed in.
+                        */}
+                        {turnError.opensConnectors === true &&
+                          turnError.source === 'turn' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => onTab('connectors')}
+                          >
+                            Open Connectors
                           </Button>
                         )}
                         <Button

@@ -1362,3 +1362,49 @@ describe('a first message whose committed turn is already in the re-read (TASK-6
     expect(screen.getAllByText('notes')).toHaveLength(2);
   });
 });
+
+describe('a reply that could not start because a connector needs a sign-in (TASK-796)', () => {
+  it('offers Open Connectors, which routes to the Connectors tab', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (
+        _reqId: string,
+        h: { onError: (m: string, fix?: { opensConnectors: true }) => void },
+      ) => {
+        h.onError(
+          'One of this agent’s connectors isn’t signed in yet. Open Connectors, sign in, then retry.',
+          { opensConnectors: true },
+        );
+      },
+    );
+    const onTab = vi.fn();
+    renderView({ onTab });
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'check my inbox' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect(await screen.findByText(/isn’t signed in yet/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
+    expect(onTab).toHaveBeenCalledWith('connectors');
+    // The strip stays, so Resend is still there once they are signed in.
+    expect(screen.getByRole('button', { name: 'Resend' })).toBeTruthy();
+  });
+
+  it('an ordinary failure offers no Open Connectors', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockResolvedValue({ conversationId: 'c-now', reqId: 'r1' });
+    streamMock.mockImplementation(
+      async (_reqId: string, h: { onError: (m: string) => void }) => {
+        h.onError('The agent stopped unexpectedly. Retry to continue.');
+      },
+    );
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'check my inbox' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    await screen.findByText(/didn’t finish/);
+    expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
+  });
+});
