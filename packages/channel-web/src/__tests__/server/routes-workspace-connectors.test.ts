@@ -791,6 +791,111 @@ describe('agent connector routes', () => {
         expect((await retry('gmail')).body).toEqual({ health: 'ok' });
         expect(hasCalls).toEqual([{ ref: 'account:gmail', userId: 'u1', agentId: 'a1' }]);
       });
+
+      // TASK-805 — Retry on a connector nobody has signed in to is
+      // needs-sign-in, never an error: Sign in / Add key is the fix, and the
+      // check says nothing that could change that. @ax/mcp-client reports a
+      // MISSING credential as the status `needs-auth` (it throws
+      // `credential-unavailable` only for a credential it could not READ), so
+      // the plain case never reached the 502 — these pin it for every status
+      // the check can answer.
+      it.each(['needs-auth', 'unreachable', 'unknown', 'ok'])(
+        'Retry on a never-signed-in connector answers needs-sign-in (200) when the check says %s',
+        async (status) => {
+          registerHealth();
+          registerHas();
+          describeStatus = status;
+          const r = await retry('gmail');
+          expect(r.statusCode).toBe(200);
+          expect(r.body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
+          expect((await retry('linear')).body).toEqual({ health: 'needs-sign-in', setup: 'add-key' });
+        },
+      );
+
+      // TASK-805 — the check itself can still fail on such a connector: a
+      // connector with a signed-in slot whose token read blips AND a slot with
+      // no key reads `credential-unavailable` from the signed-in slot before it
+      // ever reaches the missing one. The vault's presence read already said
+      // what the person must do, so Retry says that instead of 502.
+      // UNFIXED: 502 `retry-failed` for both -> fails.
+      describe.each([
+        [
+          'credential-unavailable (a credential could not be read just now)',
+          () => new PluginError({ code: 'credential-unavailable', plugin: 'mcp-client', message: 'blip' }),
+        ],
+        ['an unclassified failure of the check', () => new Error('boom')],
+      ])('a check that cannot run (%s) on a never-signed-in connector', (_label, makeError) => {
+        beforeEach(() => {
+          registerHealth({ describe: false });
+          registerHas();
+          bus.registerService('connectors:describe-tools', 'mcp-client', async (_c, i: unknown) => {
+            describeCalls.push(i);
+            throw makeError();
+          });
+        });
+
+        it('answers needs-sign-in with the setup, not a 502', async () => {
+          const r = await retry('gmail');
+          expect(r.statusCode).toBe(200);
+          expect(r.body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
+          expect((await retry('linear')).body).toEqual({ health: 'needs-sign-in', setup: 'add-key' });
+        });
+
+        it('keeps the setup the caller is owed: ask-owner on a team agent, ask-admin for a company key', async () => {
+          agentRow = { ...agentRow, visibility: 'team' };
+          canManage = 'deny';
+          expect((await retry('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'ask-owner' });
+          agentRow = { ...agentRow, visibility: 'personal' };
+          effective[1] = {
+            ...effective[1]!,
+            summary: { ...effective[1]!.summary, keyMode: 'workspace' },
+          };
+          expect((await retry('linear')).body).toEqual({ health: 'needs-sign-in', setup: 'ask-admin' });
+        });
+
+        // Not over-broad: the same failure on a connector the vault says IS
+        // set up is still "we couldn't check" — nothing here knows better.
+        it('still answers 502 once the connector is signed in', async () => {
+          present = new Set(['account:gmail']);
+          const r = await retry('gmail');
+          expect(r.statusCode).toBe(502);
+          expect(r.body).toEqual({ error: 'retry-failed' });
+        });
+
+        it('still answers 502 when the presence read itself fails — "unknown" is not "never signed in"', async () => {
+          hasThrows = true;
+          expect((await retry('gmail')).statusCode).toBe(502);
+        });
+
+        it('a rejected sign-in outranks it, so the failure stays a 502 rather than claiming first-time setup', async () => {
+          marked = new Set(['gmail']);
+          expect((await retry('gmail')).statusCode).toBe(502);
+        });
+      });
+
+      it('a never-signed-in connector whose check failed is answered again inside the cooldown without a second check', async () => {
+        registerHealth();
+        registerHas();
+        describeThrows = true;
+        const clock = Date.parse('2026-10-03T12:00:00Z');
+        const h = makeWorkspaceHandlers({ bus, initCtx, now: () => new Date(clock) });
+        const retryOn = async (id: string): Promise<Captured> => {
+          const { res, captured } = mkRes();
+          await h.retryConnector(mkReq({ agentId: 'a1', connectorId: id }), res);
+          return captured;
+        };
+        expect((await retryOn('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
+        expect((await retryOn('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
+        expect(describeCalls).toHaveLength(1);
+      });
+
+      it('a genuinely unreachable connector still says unreachable', async () => {
+        registerHealth();
+        registerHas();
+        present = new Set(['account:gmail']);
+        describeStatus = 'unreachable';
+        expect((await retry('gmail')).body).toEqual({ health: 'unreachable' });
+      });
     });
 
     // TASK-745 — a session folds these same rows and DROPS a server it cannot
