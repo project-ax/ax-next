@@ -1483,14 +1483,14 @@ function isConnectorId(v: unknown): v is string {
 
 /**
  * TASK-761 — does this agent's runner give the model connector tools at all?
- * An allow-list on purpose: only the claude-sdk runner loads the connectors'
- * `.mcp.json` (the aisdk runner does not, by design), so a runner nobody has
- * wired for connectors yet says "can't use connectors" rather than offering
- * setup that silently does nothing. An agent row with no runner predates the
- * field and runs on claude-sdk.
+ * An allow-list on purpose: a runner nobody has wired for connectors yet says
+ * "can't use connectors" rather than offering setup that silently does
+ * nothing. Both shipped runners load the connectors' `.mcp.json` — claude-sdk
+ * hands them to the SDK, aisdk connects its own MCP clients (TASK-826). An
+ * agent row with no runner predates the field and runs on claude-sdk.
  */
 function runnerLoadsConnectors(runner: string | undefined): boolean {
-  return runner === undefined || runner === 'claude-sdk';
+  return runner === undefined || runner === 'claude-sdk' || runner === 'aisdk';
 }
 
 /**

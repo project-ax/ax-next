@@ -207,10 +207,11 @@ describe('discoverInstalledSkills', () => {
     expect(skills.map((s) => s.id)).toEqual(['real-skill']);
   });
 
-  // The DEGRADATION, not the capability (design §8). `ai@7` has no MCP client
-  // and we deliberately did not build one; a skill whose servers were
-  // materialized must still LOAD, be indexed, and be flagged.
-  it('flags a skill with a materialized .mcp.json and logs it once', async () => {
+  // TASK-826: connector tools load on this runner, so discovery no longer
+  // claims "no MCP client". It only flags the bundle (the Skill tool decides
+  // whether to warn, from what actually connected); connector-tools.ts owns
+  // logging connect failures.
+  it('flags a skill with a materialized .mcp.json and logs nothing about MCP', async () => {
     const stderr = vi
       .spyOn(process.stderr, 'write')
       .mockImplementation(() => true);
@@ -227,9 +228,10 @@ describe('discoverInstalledSkills', () => {
     expect(skills.find((s) => s.id === 'linear-helper')?.hasMcpServers).toBe(true);
     expect(skills.find((s) => s.id === 'plain-skill')?.hasMcpServers).toBe(false);
 
+    // The old discovery log said "this runner has no MCP client" — false now.
     const logged = stderr.mock.calls.map((c) => String(c[0])).join('');
-    expect(logged).toContain('linear-helper');
-    expect(logged).toMatch(/mcp/i);
+    expect(logged).not.toMatch(/no MCP client/i);
+    expect(logged).not.toContain('linear-helper');
     expect(logged).not.toContain('plain-skill');
   });
 });

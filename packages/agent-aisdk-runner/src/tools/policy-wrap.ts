@@ -100,8 +100,10 @@ export interface WrapWithPolicyOptions {
   policy: ToolPolicy;
   /**
    * The ax-native tool name host subscribers registered — `Bash`, `Read`, a
-   * catalog tool's `name`, `Skill`. No `mcp__…` prefixes exist on this runner,
-   * so unlike the SDK adapter there is nothing to strip.
+   * catalog tool's `name`, `Skill`, or a connector tool's canonical
+   * `mcp.<toolNamespace>.<tool>`. Connector tools are the one place the
+   * record key (`mcp__<ns>__<tool>`, what the model sees) and this name
+   * differ — pass the canonical form here, never the model-facing one.
    */
   name: string;
   /**
@@ -342,7 +344,7 @@ export function mergeToolSets(
         throw new Error(
           `agent-aisdk-runner: tool name '${name}' is claimed by both ` +
             `${previous} and ${group.label}. This runner has ONE flat tool ` +
-            `namespace (no mcp__ prefixes), so the collision would silently ` +
+            `namespace (only connector tools carry an mcp__ prefix), so the collision would silently ` +
             `route calls to whichever was registered last. Rename one.`,
         );
       }
