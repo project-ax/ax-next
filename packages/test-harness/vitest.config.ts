@@ -20,8 +20,9 @@ import { defineConfig } from 'vitest/config';
 // - That test costs **64ms** on an idle machine. CI cut it off at 5373ms, i.e.
 //   at ~84x — and a timeout is censored from above, so nobody knows what it
 //   actually needed. Its neighbours in `mcp-server-stub.test.ts` (the stdio MCP
-//   stub test, since replaced by `mcp-http-server-stub.test.ts`) COMPLETED in
-//   the same CI run at 1282/1467/2009ms against 91-95ms idle: 14-21x.
+//   stub test; the MCP stub tests were later removed outright in TASK-792, when
+//   host MCP servers were retired) COMPLETED in the same CI run at
+//   1282/1467/2009ms against 91-95ms idle: 14-21x.
 // - Local load does not reproduce that. Under 32 busy workers on a 14-core box
 //   the worst case moved 95ms -> 253ms (~2.5x), so the honest statement is that
 //   local measurement bounds nothing here; CI contention is a different animal
@@ -33,19 +34,20 @@ import { defineConfig } from 'vitest/config';
 //   exactly what this repo already chose for its
 //   other subprocess-heavy suites — `packages/workspace-git*` (TASK-73, PR #146)
 //   and the `scripts` root (TASK-331) — and this package is that same class: it
-//   spawns real Node subprocesses (the stub runner, the streamable-HTTP MCP
-//   stub) and drives them over real pipes and sockets.
+//   spawns real Node subprocesses (the stub runner) and drives them over real
+//   pipes and sockets. (It also used to spawn a streamable-HTTP MCP stub; that
+//   helper and its test were removed in TASK-792.)
 // - Not 60s (the container-package figure) on purpose. A container boot
 //   genuinely needs tens of seconds; a subprocess spawn does not, so the extra
 //   30s would buy hang-masking rather than headroom.
 //
 // `hookTimeout: 60_000` — a hook's own timeout ARGUMENT overrides this value, so
 // what this governs is the BARE hooks. Every hook in this package is bare (the
-// `afterEach` in `stub-runner.test.ts` and `mcp-http-server-stub.test.ts`, both of
-// which kill a real child process and await a transport close), so this value
-// governs all of them. Twice the test budget, per the ratio 18 other packages
-// here use: a teardown should never get less room than the test it is cleaning
-// up after.
+// `afterEach` in `stub-runner.test.ts`, which kills a real child process and
+// awaits its exit; a second one in the MCP stub test went away with that test in
+// TASK-792), so this value governs all of them. Twice the test budget, per the
+// ratio 18 other packages here use: a teardown should never get less room than
+// the test it is cleaning up after.
 //
 // Raising these numbers does NOT reach a wall-clock deadline written inside a
 // test body. Two flakes here came from exactly that: a private `Date.now() + 5000`

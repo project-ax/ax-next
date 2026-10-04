@@ -121,22 +121,18 @@ function declaredEffectsFor(rules: readonly PolicyRule[], tool: string): ToolEff
  * tool nobody set a default for is held ("Ask first"), an admin default is a
  * ceiling, and an agent override can only tighten. That closes the TASK-263
  * hole for connector tools. Since TASK-699 every OTHER MCP-spelled name is
- * held the same way — an admin-configured host MCP tool
- * (`mcp.<serverId>.<tool>`, not a `c<10 hex>` connector namespace), an
- * unlifted `mcp__<server>__<tool>`, a malformed or over-long `mcp.` key — with
+ * held the same way — a non-connector `mcp.<segment>.<tool>` (not a
+ * `c<10 hex>` connector namespace; host MCP servers were retired in TASK-792),
+ * an unlifted `mcp__<server>__<tool>`, a malformed or over-long `mcp.` key — with
  * a fixed `hold` floor no stored row can loosen (`implicitMcpCeiling`). So for
  * an MCP tool the `allow` returned HERE is never the answer a call gets.
  *
  * WHAT SUCH A TOOL IS ACTUALLY CALLED HERE, because a guard written against the
- * wrong spelling would catch none of them. There are two routes, and both now
- * arrive in the dotted `mcp.` keyspace:
+ * wrong spelling would catch none of them. There used to be two routes; host-
+ * side MCP servers (`@ax/mcp-client` re-keying tools as `mcp.${serverId}.${tool}`)
+ * were retired in TASK-792, which leaves one, arriving in the dotted `mcp.`
+ * keyspace:
  *
- *   - Host-side MCP (`@ax/mcp-client`): it re-keys every MCP-sourced tool as
- *     `mcp.${serverId}.${tool}` and registers it as a host tool. Host tools are
- *     multiplexed through our own `ax-host-tools` server, so the SDK sees
- *     `mcp__ax-host-tools__mcp.<id>.<tool>` and `classifySdkToolName` strips
- *     that wrapper, leaving `mcp.<id>.<tool>`. On the aisdk runner there is no
- *     `mcp__` prefix at all.
  *   - Sandbox-side connector MCP servers: a connector's `mcpServers` run INSIDE
  *     the sandbox, via the per-directory `.mcp.json` the runner writes from
  *     the installed-skill entry (`foldConnectorCaps` in `@ax/chat-orchestrator`

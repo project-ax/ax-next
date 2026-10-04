@@ -24,14 +24,15 @@ const DISPLAY_NAME_MAX = 128;
 const ALLOWED_TOOLS_MAX = 100;
 const MCP_CONFIG_IDS_MAX = 50;
 const WORKSPACE_REF_MAX = 256;
-// allowedTools is a union of MCP tool names (lowercase, namespaced by
-// @ax/mcp-client's stricter TOOL_NAME_RE) AND Claude Agent SDK built-ins
+// allowedTools is a union of host tool names (lowercase) AND Claude Agent SDK built-ins
 // (`Bash`, `Read`, `WebFetch`, `Skill`, …, PascalCase). The agent layer
 // relaxes the leading-letter case so SDK built-ins parse without an
 // out-of-band case-mapping table. Keep this in sync with admin-routes.ts's
 // schema regex (the two are belt-and-braces).
 const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
-// Mirrors @ax/mcp-client/config.ts ID_RE. Same rationale.
+// The id grammar of the retired host MCP server configs (TASK-792 removed
+// @ax/mcp-client/config.ts). mcpConfigIds is dead vocabulary pending its own
+// removal; the regex stays so existing rows keep parsing.
 const MCP_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 const WORKSPACE_REF_RE = /^[A-Za-z0-9_./-]+$/;
 

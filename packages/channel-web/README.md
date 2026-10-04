@@ -22,7 +22,7 @@ You sign in as **Alice** (`alice@local`, regular user) by default. To sign in as
 
 ## Mock data
 
-Lives in `.mock-data/` at the package root. JSON files per collection: `users.json`, `agents.json`, `sessions.json`, `messages.json`, `mcp-servers.json`, `teams.json`. Gitignored. Survives Vite restarts.
+Lives in `.mock-data/` at the package root. JSON files per collection: `users.json`, `agents.json`, `sessions.json`, `messages.json`, `teams.json`, `team-memberships.json`. Gitignored. Survives Vite restarts.
 
 To reset: `rm -rf .mock-data/` and restart the dev server. The next launch re-seeds from `mock/seed.ts`.
 

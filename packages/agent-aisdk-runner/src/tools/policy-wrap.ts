@@ -322,9 +322,10 @@ function asRecord(input: unknown): Record<string, unknown> {
  * machine doing the reading. Nothing would fail; the file operations would just
  * happen somewhere else.
  *
- * Not reachable from untrusted input today: `@ax/mcp-client` namespaces every
- * third-party tool as `mcp.<serverId>.<tool>` (see its `tool-names.ts`), so a
- * malicious MCP server cannot claim `Bash`. The exposure is a FIRST-PARTY
+ * Not reachable from untrusted input today: only first-party plugins register
+ * host tools (host MCP servers, which re-keyed third-party tools as
+ * `mcp.<serverId>.<tool>`, were retired in TASK-792), so a malicious MCP
+ * server cannot claim `Bash`. The exposure is a FIRST-PARTY
  * registration mistake — which is exactly the kind of thing that should fail at
  * boot with the offending name in the message rather than change where the
  * agent's file writes land.

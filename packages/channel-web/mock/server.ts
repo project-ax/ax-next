@@ -6,7 +6,6 @@ import { authMiddleware } from './auth';
 import { chatMiddleware } from './chat';
 import { agentsMiddleware } from './agents';
 import { adminAgentsMiddleware } from './admin/agents';
-import { adminMcpServersMiddleware } from './admin/mcp-servers';
 import {
   adminConnectorsMiddleware,
   settingsConnectorsMiddleware,
@@ -29,7 +28,6 @@ export function createMockHandler(dataDir?: string): (req: IncomingMessage, res:
     chatMiddleware(store),
     agentsMiddleware(store),
     adminAgentsMiddleware(store),
-    adminMcpServersMiddleware(store),
     adminConnectorsMiddleware(store),
     settingsConnectorsMiddleware(store),
     adminTeamsMiddleware(store),

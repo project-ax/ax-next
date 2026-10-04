@@ -231,7 +231,8 @@ export async function patchAgentSkillAttachments(
 // MCP servers ------------------------------------------------------------
 // TASK-98 collapsed the standalone admin MCP-server surface into the
 // connector registry (invariant #4 — one source of truth). The client
-// wrappers that hit `/admin/mcp-servers` lived here; they're gone. An
+// wrappers that hit `/admin/mcp-servers` lived here; they're gone, and the
+// `/admin/mcp-servers` routes themselves were retired too (TASK-792). An
 // MCP-backed connector is now just a connector whose capabilities.mcpServers
 // is non-empty, managed via `lib/connectors.ts` + `/admin/connectors`.
 // Connectors reach an agent through `agent.connectorAttachments` (above),

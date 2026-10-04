@@ -317,6 +317,64 @@ describe('destination credential handlers', () => {
     expect(statusOf()).toBe(400);
   });
 
+  it('POST /admin: rejects a removed mcp-header destination with 400 and stores nothing', async () => {
+    // Host MCP servers (@ax/mcp-client's /admin/mcp-servers rows) were retired
+    // (TASK-792); `mcp-header` only ever held one of their header secrets. The
+    // kind is gone from the schema, so a client still sending it gets a
+    // validation error before any credential is written.
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'mcp-header' },
+        body: {
+          destination: { kind: 'mcp-header', serverId: 'gh', headerName: 'Authorization' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('secret').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(
+      out.credentials.find((c) => c.ref === 'mcp:gh:header:Authorization'),
+    ).toBeUndefined();
+  });
+
+  it('DELETE /admin: rejects a removed mcp-header destination with 400', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.destroy(
+      mkReq({
+        params: { destinationKind: 'mcp-header' },
+        body: {
+          destination: { kind: 'mcp-header', serverId: 'gh', headerName: 'Authorization' },
+          scope: 'global',
+          ownerId: null,
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+  });
+
   it('POST /admin: computes deterministic ref for skill-slot destination', async () => {
     const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
@@ -379,7 +437,7 @@ describe('destination credential handlers', () => {
 
     await handlers.create(
       mkReq({
-        params: { destinationKind: 'mcp-header' }, // route says mcp-header
+        params: { destinationKind: 'skill-slot' }, // route says skill-slot
         body: {
           destination: { kind: 'provider', provider: 'anthropic' }, // body says provider
           scope: 'global',
@@ -852,7 +910,7 @@ describe('destination credential handlers', () => {
 
     await handlers.destroy(
       mkReq({
-        params: { destinationKind: 'mcp-header' }, // route says mcp-header
+        params: { destinationKind: 'skill-slot' }, // route says skill-slot
         body: {
           destination: { kind: 'provider', provider: 'anthropic' }, // body says provider
           scope: 'global',

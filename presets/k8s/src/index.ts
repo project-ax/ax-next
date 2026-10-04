@@ -91,7 +91,7 @@ import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
 //   4. audit-log (subscribes to event.http-egress; calls storage:set)
 //   5. http-server / auth / teams (control plane access — Week 9.5)
 //   6. sandbox / ipc-http / chat-orchestrator (chat plane)
-//   7. mcp-client (catalog + tool descriptors + tool:register/tool:list)
+//   7. mcp-client (tool catalog: tool:register/tool:list; connector tool inventory)
 //   8. agents (admin endpoints + agents:resolve gate)
 //
 // Two kinds of model traffic, and they take different roads:
@@ -1004,16 +1004,14 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // — the SDK runner's sandboxed Bash/Read/Write replace them).
   //
   // Both plugins live in @ax/mcp-client now (Slice 2 absorbed the former
-  // @ax/tool-dispatcher package). mcp-client gets `mountAdminRoutes: true`
-  // so /admin/mcp-servers* lands alongside the rest of the admin surface.
-  // The flag expands the plugin's manifest `calls` to include
-  // http:register-route + auth:require-user; the kernel's topo-sort picks
-  // up the new edges automatically.
+  // @ax/tool-dispatcher package). Host MCP servers (`/admin/mcp-servers`)
+  // were retired in TASK-792: mcp-client no longer mounts routes or
+  // registers tools; at boot it hard-deletes any stored `mcp-server:*` row.
   plugins.push(createToolDispatcherPlugin());
   // TASK-735: `connectorToolInventory` registers `connectors:describe-tools`
   // (host-side tools/list per connector, cached in mcp_client_v1_tool_inventory)
   // and adds database:get-instance + connectors:resolve + agents:resolve edges.
-  plugins.push(createMcpClientPlugin({ mountAdminRoutes: true, connectorToolInventory: true }));
+  plugins.push(createMcpClientPlugin({ connectorToolInventory: true }));
 
   // ----- 7b. the "Right now" line ----------------------------------------
   // Observe-only: watches chat:start / tool:pre-call / chat:turn-end /

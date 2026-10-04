@@ -142,8 +142,6 @@ export function refForDestination(dest: Destination): string {
       return `provider:${dest.provider}`;
     case 'skill-slot':
       return `skill:${dest.skillId}:${dest.slot}`;
-    case 'mcp-header':
-      return `mcp:${dest.serverId}:header:${dest.headerName}`;
     case 'routine-hmac':
       return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
     case 'account':
