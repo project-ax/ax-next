@@ -13,9 +13,8 @@ import { createHash } from 'node:crypto';
 // out of the skill (design: "Connector = access… the existing SkillCapabilities
 // shape, lifted out of the skill"), so it folds through the SAME path.
 //
-// EFFECTIVE SET. The design's effective set = catalog defaults + manager-added
-// per-agent attachments + the owner's legacy items, minus the agent's
-// exclusions. ONE implementation owns that union: `connectors:list-effective`
+// EFFECTIVE SET. The effective set = manager-added per-agent attachments + the
+// owner's legacy items, minus the agent's exclusions. ONE implementation owns that union: `connectors:list-effective`
 // (@ax/connectors, TASK-739), which the agent connector list UI reads too, so
 // what the person sees on the agent and what the sandbox gets cannot drift.
 // The orchestrator only forwards the agent row's `connector_attachments` +
@@ -29,7 +28,7 @@ import { createHash } from 'node:crypto';
 // terminates the session (same posture as `skills:list-defaults` /
 // `host-grants:list`).
 //
-// APPROVAL. Catalog/default/private connectors are admin/owner-CURATED, so their
+// APPROVAL. Catalog/private connectors are admin/owner-CURATED, so their
 // caps flow into the sandbox directly — the SAME trust posture as catalog/default
 // SKILL caps (which `skills:resolve` / `skills:list-defaults` return ungated). The
 // approved-caps wall (TASK-93) gates MODEL-AUTHORED declarations at their resolver
@@ -174,8 +173,8 @@ function toResolvedConnector(c: ConnectorsResolveOutput): ResolvedConnectorForOr
 
 /**
  * Resolve the agent's effective connector set via `connectors:list-effective`
- * (workspace defaults ∪ the agent's per-agent ATTACHMENTS ∪ the owner's legacy
- * connectors, deduped by id, minus `exclusions`). The union lives store-side;
+ * (the agent's per-agent ATTACHMENTS ∪ the owner's legacy connectors, deduped
+ * by id, minus `exclusions`). The union lives store-side;
  * this only forwards the agent row's lists and projects the result.
  *
  * hasService-gated and NON-FATAL — an absent hook or a throw logs + yields [],
@@ -183,7 +182,7 @@ function toResolvedConnector(c: ConnectorsResolveOutput): ResolvedConnectorForOr
  *
  * `attachmentIds` is the agent row's `connector_attachments` (TASK-107);
  * `exclusions` is its `connector_exclusions` (TASK-739) — ids the person removed
- * from this agent that would otherwise arrive as a default or legacy item.
+ * from this agent that would otherwise arrive as a legacy item.
  */
 export async function resolveEffectiveConnectors(
   bus: HookBus,
@@ -219,11 +218,12 @@ export async function resolveEffectiveConnectors(
 
 /**
  * TASK-754 — "copy on attach" for connectors that reach the agent WITHOUT an
- * attach (a workspace default, a skill-referenced connector). Design decision
+ * attach (a skill-referenced connector, a legacy-owned row). Design decision
  * 2 says an agent copies the connector's per-tool defaults when it gets the
  * connector, so an editor LOOSENING one later does not loosen agents already
- * using it. An attach copies through `@ax/agents`; a default-on connector has
- * no attach, so its first session is the moment it reaches the agent.
+ * using it. An attach copies through `@ax/agents`; a connector that arrives
+ * some other way has no attach, so its first session is the moment it reaches
+ * the agent.
  *
  * `onlyIfNotCopied: true`: tool-policy copies a namespace only the first time
  * it sees it for this agent and never overwrites a row, so calling this every

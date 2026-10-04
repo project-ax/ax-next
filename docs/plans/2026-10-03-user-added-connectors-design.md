@@ -28,6 +28,18 @@ agent rail and signs in with their own Google account.** Instead:
 ## Model after this change
 
 - **Admins define connectors.** Optionally "Turn on for every agent" (`default_attached`) stays.
+
+> **Update 2026-10-04 (TASK-808): "Set default" (`default_attached`) is removed.** Owner decision
+> (Vinay): "default" did not say what it did — a first-timer reads it as "recommended", but it
+> silently put the connector on agents, skipped the attach consent and access notice, and with
+> per-user sign-in it could never actually be "on" (it showed "Not signed in yet" rows instead).
+> People add every connector they need from the rail's **+ Add**; admins never put a connector on
+> someone's agent. Existing defaults were converted once, at boot, into explicit attachments on the
+> connector owner's **personal** agents. (Measured while doing it: a default only ever reached
+> sessions run by the connector's *owner*, not every person.) Team agents were deliberately not
+> converted: an attachment there reaches every member, which is wider than the default ever was. A
+> team admin re-adds it from the rail if the team wants it. The `default_attached` column is kept
+> but nothing reads it except that one-time conversion.
 - **People add connectors to their own agents** from the rail (Add → Sign in / Add key → attach).
   Admins have no per-agent assignment UI.
 - **Every person signs in with their own account** on personal agents, using the admin's OAuth

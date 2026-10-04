@@ -57,8 +57,9 @@ import {
   InstallAuthoredOutputSchema,
   ListAuthoredOutputSchema,
   ListAuthoredPendingOutputSchema,
-  ListDefaultsOutputSchema,
+  ClearLegacyDefaultOutputSchema,
   ListEffectiveOutputSchema,
+  ListLegacyDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
   ToolLabelsOutputSchema,
@@ -88,13 +89,15 @@ import {
   type ListAuthoredOutput,
   type ListAuthoredPendingInput,
   type ListAuthoredPendingOutput,
-  type ListDefaultsInput,
-  type ListDefaultsOutput,
+  type ClearLegacyDefaultInput,
+  type ClearLegacyDefaultOutput,
   type ListEffectiveInput,
   type ListEffectiveOutput,
   type EffectiveConnectorEntry,
   type EffectiveConnectorSource,
   type ListInput,
+  type ListLegacyDefaultsInput,
+  type ListLegacyDefaultsOutput,
   type ListOutput,
   type McpServerSpec,
   type ResolveInput,
@@ -170,10 +173,10 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       version: '0.0.0',
       registers: [
         'connectors:list',
-        'connectors:list-defaults',
         // TASK-739 — the ONE implementation of an agent's effective connector
-        // set (defaults ∪ attachments ∪ legacy-owned, minus exclusions). The
-        // orchestrator folds it; the agent connector list UI shows it.
+        // set (attachments ∪ legacy-owned, minus exclusions). The orchestrator
+        // folds it; the agent connector list UI shows it.
+        // (TASK-808: there is no workspace-default source any more.)
         'connectors:list-effective',
         'connectors:get',
         'connectors:upsert',
@@ -194,6 +197,12 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         'connectors:list-authored-pending',
         'connectors:activate-authored',
         'connectors:clear-authored',
+        // TASK-808 — TRANSITIONAL. "Set default" is retired; these two let
+        // @ax/agents convert each row that still carries the flag into explicit
+        // per-agent attachments at boot, then clear it. Host-internal: no HTTP /
+        // IPC surface. Delete with the column once every database has converted.
+        'connectors:list-legacy-defaults',
+        'connectors:clear-legacy-default',
         // TASK-697 — the read-authorization seam @ax/credentials consults before
         // it lets an `account:` ref fall through to the GLOBAL (company-wide)
         // scope. Registered under the credentials namespace on purpose (same
@@ -285,11 +294,18 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         { returns: ListOutputSchema },
       );
 
-      bus.registerService<ListDefaultsInput, ListDefaultsOutput>(
-        'connectors:list-defaults',
+      bus.registerService<ListLegacyDefaultsInput, ListLegacyDefaultsOutput>(
+        'connectors:list-legacy-defaults',
         PLUGIN_NAME,
-        async (_ctx, input) => listDefaultConnectors(localStore, input),
-        { returns: ListDefaultsOutputSchema },
+        async () => ({ connectors: await localStore.listLegacyDefaults() }),
+        { returns: ListLegacyDefaultsOutputSchema },
+      );
+
+      bus.registerService<ClearLegacyDefaultInput, ClearLegacyDefaultOutput>(
+        'connectors:clear-legacy-default',
+        PLUGIN_NAME,
+        async (_ctx, input) => clearLegacyDefault(localStore, input),
+        { returns: ClearLegacyDefaultOutputSchema },
       );
 
       bus.registerService<ListEffectiveInput, ListEffectiveOutput>(
@@ -463,13 +479,13 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
 // Hook handlers.
 // ---------------------------------------------------------------------------
 
-function requireUserId(value: unknown, hookName: string): string {
+function requireUserId(value: unknown, hookName: string, field = 'userId'): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
       hookName,
-      message: 'userId must be a non-empty string',
+      message: `${field} must be a non-empty string`,
     });
   }
   return value;
@@ -484,26 +500,19 @@ async function listConnectors(
   return { connectors };
 }
 
-async function listDefaultConnectors(
+/**
+ * TASK-808 — the retired default flag's one write: clear it once its attachments
+ * exist. Both identity fields are validated at the boundary; the owner id is an
+ * opaque non-empty string (it names a row, it does not authenticate anyone).
+ */
+async function clearLegacyDefault(
   store: ConnectorStore,
-  input: ListDefaultsInput,
-): Promise<ListDefaultsOutput> {
-  // userId is OPTIONAL on the input (the routing surface may evolve to a
-  // per-user overlay, mirroring skills:list-defaults' ownerUserId). In this
-  // slice an absent userId yields no defaults — defaults are owner-scoped, so
-  // there's nothing to list without an owner.
-  if (input.userId === undefined) return { connectors: [] };
-  const userId = requireUserId(input.userId, 'connectors:list-defaults');
-  const defaults = await store.listDefaults(userId);
-  // TASK-734 — each default carries its tool namespaces, derived from the ROW
-  // owner (listDefaults is owner-scoped today, but the row owner is the identity
-  // that matters if the scope ever widens to a catalog overlay).
-  return {
-    connectors: defaults.map(({ connector, ownerUserId }) => ({
-      ...connector,
-      toolNamespaces: deriveToolNamespaces(ownerUserId, connector),
-    })),
-  };
+  input: ClearLegacyDefaultInput,
+): Promise<ClearLegacyDefaultOutput> {
+  const hookName = 'connectors:clear-legacy-default';
+  const ownerUserId = requireUserId(input.ownerUserId, hookName, 'ownerUserId');
+  const connectorId = validateConnectorId(input.connectorId);
+  return { cleared: await store.clearLegacyDefault(ownerUserId, connectorId) };
 }
 
 /** Upper bound on the per-agent id lists `connectors:list-effective` accepts.
@@ -547,10 +556,10 @@ async function listEffectiveConnectors(
     source: EffectiveConnectorSource,
   ): void => {
     if (byId.has(connector.id)) return;
-    // An exclusion hides a connector the agent got IMPLICITLY (a default, a
-    // legacy-owned row). An explicit attachment always wins: `agents:attach-
-    // connector` clears the exclusion anyway, and an admin re-attaching
-    // through the wholesale list must not be masked by a stale one.
+    // An exclusion hides a connector the agent got IMPLICITLY (a legacy-owned
+    // row). An explicit attachment always wins: `agents:attach-connector`
+    // clears the exclusion anyway, and an admin re-attaching through the
+    // wholesale list must not be masked by a stale one.
     if (source !== 'attached' && excluded.has(connector.id)) return;
     const { capabilities, ...rest } = connector;
     byId.set(connector.id, {
@@ -562,10 +571,7 @@ async function listEffectiveConnectors(
     });
   };
 
-  // 1. Workspace DEFAULTS (id asc) — first, so they win the dedupe.
-  for (const entry of await store.listDefaults(userId)) add(entry, 'default');
-
-  // 2. Per-agent ATTACHMENTS, in the agent's order. A malformed or dangling id
+  // 1. Per-agent ATTACHMENTS, in the agent's order. A malformed or dangling id
   //    is skipped: an attachment that resolves to nothing grants nothing.
   for (const rawId of attachmentIds) {
     if (byId.has(rawId)) continue;
@@ -579,7 +585,7 @@ async function listEffectiveConnectors(
     if (available !== null) add(available, 'attached');
   }
 
-  // 3. LEGACY OWNED rows keep their implicit attachment. A shared definition the
+  // 2. LEGACY OWNED rows keep their implicit attachment. A shared definition the
   //    user does not own, or any row created after explicit attachment landed,
   //    is discoverable but never attached implicitly.
   for (const entry of await store.listAvailable(userId)) {
@@ -728,20 +734,6 @@ async function upsertConnector(
   // account key. Checked on WRITE only (the read schema must keep parsing a legacy
   // row so its owner can open and fix it); @ax/mcp-oauth re-checks at `begin`.
   assertOwnClientSecretRefs(connectorId, capabilities);
-  // defaultAttached is an optional boolean — validate the type at the boundary
-  // (an arbitrary truthy value must not slip into the DB). Absent ⟹ undefined,
-  // which the store reads as "preserve existing on update / false on insert".
-  if (
-    input.defaultAttached !== undefined &&
-    typeof input.defaultAttached !== 'boolean'
-  ) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: 'defaultAttached must be a boolean if provided',
-    });
-  }
   // TASK-752 — read the live row's servers BEFORE the write, so a rename can be
   // told apart from an add (the namespace is a hash of the server name).
   const prior = await store.getByIdNotDeleted(userId, connectorId);
@@ -757,9 +749,6 @@ async function upsertConnector(
     keyMode,
     visibility,
     capabilities,
-    ...(input.defaultAttached !== undefined
-      ? { defaultAttached: input.defaultAttached }
-      : {}),
   });
   if (prior !== null) {
     await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);
@@ -997,8 +986,8 @@ async function resolveConnector(
   // though — it's the model-facing "how to use me" text the orchestrator folds
   // into the connector's SKILL.md body, and resolve is the only path that
   // reaches it for owner-owned / per-agent-attached connectors. Omitting it
-  // silently stripped every non-default connector's instructions (the agent
-  // saw only the generic "...MCP servers wired..." fallback).
+  // silently stripped every such connector's instructions (the agent saw only
+  // the generic "...MCP servers wired..." fallback).
   //
   // TASK-96 — reach-by-attachment: the derived credentialPlan maps the
   // connector's keyMode to the credential SCOPE each slot's key attaches to

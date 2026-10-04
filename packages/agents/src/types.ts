@@ -68,7 +68,9 @@ export interface Agent {
   connectorAttachments: string[];
   /**
    * TASK-739 — connector ids the owner removed from this agent although they
-   * reach it by another source (a default, or a legacy owned connector). The
+   * reach it by another source (a legacy owned connector; TASK-808 retired
+   * connector defaults, converting each into attachments except where an
+   * exclusion said it was not wanted). The
    * effective-connector union skips every id here in ALL sources. Opaque
    * connector-id slugs. Written only by agents:attach-connector (removes) and
    * agents:detach-connector with `exclude: true` (adds).
@@ -319,7 +321,7 @@ export interface ListPersonalOwnersOutput {
 // `changed` is false when the call was a no-op (already attached / already
 // absent and not newly excluded). `exclude` records the id in
 // `connectorExclusions` so a connector that reaches the agent by another
-// source (a default) stays removed.
+// source (a legacy-owned connector) stays removed.
 
 export interface AttachConnectorInput {
   actor: Actor;
@@ -347,7 +349,7 @@ export interface DetachConnectorOutput {
 // --- agents:can-manage-connectors (TASK-765, renamed TASK-803) ---------------
 //
 // Can `actor` change this agent's connectors — attach, detach, exclude a
-// default, or (TASK-798, asked by @ax/mcp-oauth) sign in ON the agent? The
+// legacy-owned connector, or (TASK-798, asked by @ax/mcp-oauth) sign in ON the agent? The
 // same predicate `agents:attach-connector` / `agents:detach-connector`
 // enforce, exposed so a caller can show the affordance only to someone it
 // will work for. (TASK-803: renamed from its TASK-765 name, which was about

@@ -82,11 +82,12 @@ export function createChatOrchestratorPlugin(
             'denied tools stay in the model\'s catalog (no disallowedTools); calls to them are still refused host-side on tool:pre-call',
         },
         {
-          // TASK-754 — a default-on connector copies its per-tool defaults on
-          // the agent's first session (the attach it never had).
+          // TASK-754 — a connector that reaches the agent without an attach
+          // (skill-referenced, legacy-owned) copies its per-tool defaults on
+          // the agent's first session.
           hook: 'tool-policy:snapshot-connector-for-agent',
           degradation:
-            "a connector that reaches the agent without an attach (a workspace default) is not copied, so the agent follows the connector's live per-tool defaults — a later loosening by its editor applies to it too",
+            "a connector that reaches the agent without an attach (skill-referenced or legacy-owned) is not copied, so the agent follows the connector's live per-tool defaults — a later loosening by its editor applies to it too",
         },
         {
           // TASK-806 — before proxy:open-session, a presence read over each
@@ -162,8 +163,7 @@ export function createChatOrchestratorPlugin(
       //
       // TASK-97 (connectors-first-class) adds the connector reads to the
       // conditionally-called category — `connectors:list-effective` (TASK-739,
-      // the agent's effective set; replaced list-defaults + list) and
-      // `connectors:resolve` (skill-referenced connectors). The orchestrator
+      // the agent's effective set) and `connectors:resolve` (skill-referenced connectors). The orchestrator
       // folds each connector's Capabilities into the sandbox the same way
       // skills do. Both are `bus.hasService(...)`-gated and NON-FATAL
       // (a throw/absent yields fewer connectors, never terminates the session),

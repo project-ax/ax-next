@@ -98,12 +98,6 @@ export interface ConnectorFormState {
   usageNote: string;
   keyMode: ConnectorKeyMode;
   visibility: ConnectorVisibility;
-  /**
-   * Default-on for every agent (the connector half of the admin Catalog). When
-   * true the connector flows into every agent's effective set via
-   * `connectors:list-defaults`. Admin-only curation control.
-   */
-  defaultAttached: boolean;
   /** The chosen backing mechanism — reshapes which fields the form edits. */
   mechanism: Mechanism;
   // MCP fields (mechanism === 'mcp').
@@ -143,7 +137,6 @@ export const emptyConnectorForm = (): ConnectorFormState => ({
   usageNote: '',
   keyMode: 'personal',
   visibility: 'shared',
-  defaultAttached: false,
   mechanism: 'mcp',
   transport: 'stdio',
   command: '',
@@ -228,7 +221,6 @@ export function formFromConnector(c: Connector): ConnectorFormState {
     usageNote: c.usageNote,
     keyMode: c.keyMode,
     visibility: c.visibility,
-    defaultAttached: c.defaultAttached,
     mechanism,
     transport: mcp?.transport ?? 'stdio',
     command: mcp?.command ?? '',
@@ -563,7 +555,6 @@ export function summaryToForm(c: ConnectorSummary): Partial<ConnectorFormState> 
     usageNote: c.usageNote,
     keyMode: c.keyMode,
     visibility: c.visibility,
-    defaultAttached: c.defaultAttached,
   };
 }
 

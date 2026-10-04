@@ -171,6 +171,19 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
             "a newly attached connector does not copy its per-tool defaults; the agent follows the connector's live defaults instead (a later loosening by the connector's editor then applies to it too)",
         },
         {
+          // TASK-808 — transitional: the boot-time conversion of legacy
+          // connector defaults into explicit attachments reads + clears the
+          // retired flag through these two.
+          hook: 'connectors:list-legacy-defaults',
+          degradation:
+            'legacy connector defaults are not converted into attachments (nothing to convert without @ax/connectors)',
+        },
+        {
+          hook: 'connectors:clear-legacy-default',
+          degradation:
+            'a converted legacy connector default keeps its flag, so the (idempotent) conversion re-runs on the next boot',
+        },
+        {
           hook: 'models:get-policy',
           degradation:
             "the model allow-list, the Default model and the runner rule fall back to the built-in list (today's behaviour)",
@@ -1090,8 +1103,8 @@ describe('agents:attach-connector / agents:detach-connector (TASK-739)', () => {
 
   it('agents:resolve carries connectorExclusions (not stripped by the returns schema)', async () => {
     const { h, agentId } = await seed();
-    await detach(h, { actor: owner, agentId, connectorId: 'a-default', exclude: true });
-    expect((await current(h, agentId)).connectorExclusions).toEqual(['a-default']);
+    await detach(h, { actor: owner, agentId, connectorId: 'legacy-conn', exclude: true });
+    expect((await current(h, agentId)).connectorExclusions).toEqual(['legacy-conn']);
   });
 
   it('detach removes; detach with exclude records an exclusion', async () => {
@@ -1316,7 +1329,7 @@ describe('agents: only the owner or an admin may change a team agent connectors 
     });
 
     // TASK-765's case, now through the one check: a member cannot undo the
-    // owner's removal of a default by attaching it.
+    // owner's exclusion of a legacy-owned connector by attaching it.
     it('SECURITY: a plain member cannot re-attach an excluded id; the exclusion survives', async () => {
       const { h, agentId } = await seedTeamAgent();
       await detach(h, { actor: teamAdmin, agentId, connectorId: 'personal-conn', exclude: true });
@@ -1397,10 +1410,10 @@ describe('agents: only the owner or an admin may change a team agent connectors 
     });
 
     // TASK-765's case, through the one check.
-    it('SECURITY: a plain member cannot exclude a default; nothing is recorded', async () => {
+    it('SECURITY: a plain member cannot exclude a connector; nothing is recorded', async () => {
       const { h, agentId } = await seedTeamAgent();
       await expect(
-        detach(h, { actor: member, agentId, connectorId: 'a-default', exclude: true }),
+        detach(h, { actor: member, agentId, connectorId: 'legacy-conn', exclude: true }),
       ).rejects.toMatchObject({ code: 'forbidden' });
       expect((await stored(h, agentId)).connectorExclusions).toEqual([]);
     });
@@ -1417,10 +1430,10 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       const ex = await detach(h, {
         actor: teamAdmin,
         agentId,
-        connectorId: 'a-default',
+        connectorId: 'legacy-conn',
         exclude: true,
       });
-      expect(ex.agent.connectorExclusions).toEqual(['a-default']);
+      expect(ex.agent.connectorExclusions).toEqual(['legacy-conn']);
     });
 
     it('a workspace admin (not a team member) may exclude', async () => {
@@ -1428,16 +1441,16 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       const out = await detach(h, {
         actor: workspaceAdmin,
         agentId,
-        connectorId: 'a-default',
+        connectorId: 'legacy-conn',
         exclude: true,
       });
-      expect(out.agent.connectorExclusions).toEqual(['a-default']);
+      expect(out.agent.connectorExclusions).toEqual(['legacy-conn']);
     });
 
     it('a non-member is forbidden by the ownership ACL', async () => {
       const { h, agentId } = await seedTeamAgent();
       await expect(
-        detach(h, { actor: outsider, agentId, connectorId: 'a-default', exclude: true }),
+        detach(h, { actor: outsider, agentId, connectorId: 'legacy-conn', exclude: true }),
       ).rejects.toMatchObject({ code: 'forbidden' });
     });
 
@@ -1455,7 +1468,7 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       const { h, agentId } = await seedTeamAgent();
       teamsFailsAfter(1, 'broken');
       await expect(
-        detach(h, { actor: member, agentId, connectorId: 'a-default', exclude: true }),
+        detach(h, { actor: member, agentId, connectorId: 'legacy-conn', exclude: true }),
       ).rejects.toThrow('teams db is down');
       okCalls = Infinity;
       expect((await stored(h, agentId)).connectorExclusions).toEqual([]);
@@ -1466,10 +1479,10 @@ describe('agents: only the owner or an admin may change a team agent connectors 
       const out = await detach(h, {
         actor: owner,
         agentId,
-        connectorId: 'a-default',
+        connectorId: 'legacy-conn',
         exclude: true,
       });
-      expect(out.agent.connectorExclusions).toEqual(['a-default']);
+      expect(out.agent.connectorExclusions).toEqual(['legacy-conn']);
       await expect(
         detach(h, { actor: outsider, agentId, connectorId: 'b-default', exclude: true }),
       ).rejects.toMatchObject({ code: 'forbidden' });

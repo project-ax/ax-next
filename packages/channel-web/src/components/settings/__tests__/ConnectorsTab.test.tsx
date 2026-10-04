@@ -18,7 +18,6 @@ const PRIVATE_CONN: ConnectorSummary = {
   usageNote: 'Ask the agent to read or update Notion pages.',
   keyMode: 'personal',
   visibility: 'private',
-  defaultAttached: false,
   createdAt: '2026-05-20T00:00:00Z',
   updatedAt: '2026-05-20T00:00:00Z',
 };
@@ -32,21 +31,6 @@ const SHARED_CONN: ConnectorSummary = {
   usageNote: 'Drive the sf CLI for our workflows.',
   keyMode: 'workspace',
   visibility: 'shared',
-  defaultAttached: false,
-  createdAt: '2026-05-20T00:00:00Z',
-  updatedAt: '2026-05-20T00:00:00Z',
-};
-
-// An admin default-on connector that is still visibility:'private'. TASK-110:
-// the user list must badge it "Catalog" via `defaultAttached`.
-const DEFAULT_ON_PRIVATE_CONN: ConnectorSummary = {
-  id: 'org-github',
-  name: 'Org GitHub',
-  description: 'The org GitHub, attached to every agent by default.',
-  usageNote: 'Read and write org repos.',
-  keyMode: 'workspace',
-  visibility: 'private',
-  defaultAttached: true,
   createdAt: '2026-05-20T00:00:00Z',
   updatedAt: '2026-05-20T00:00:00Z',
 };
@@ -74,7 +58,6 @@ describe('ConnectorsTab', () => {
     // connector. Default: a single api-key slot, account keyed off the id.
     vi.spyOn(connectorsLib, 'getConnector').mockImplementation(async (id: string) => {
       if (id === PRIVATE_CONN.id) return fullOf(PRIVATE_CONN);
-      if (id === DEFAULT_ON_PRIVATE_CONN.id) return fullOf(DEFAULT_ON_PRIVATE_CONN);
       return fullOf(SHARED_CONN);
     });
     // No stored credentials by default → every connector reads "not connected".
@@ -256,20 +239,6 @@ describe('ConnectorsTab', () => {
     expect(privateTile.textContent).not.toMatch(/Catalog/);
   });
 
-  it('badges an admin default-on connector "Catalog" even when its visibility is private (TASK-110)', async () => {
-    vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
-      PRIVATE_CONN,
-      DEFAULT_ON_PRIVATE_CONN,
-    ]);
-    render(<ConnectorsTab isAdmin={false} />);
-    await screen.findByText('Org GitHub');
-    const defaultTile = screen.getByTestId('connector-tile-org-github');
-    expect(defaultTile.textContent).toMatch(/Catalog/);
-    const privateTile = screen.getByTestId('connector-tile-my-notion');
-    expect(privateTile.textContent).not.toMatch(/Catalog/);
-    expect(screen.getAllByText('Catalog')).toHaveLength(1);
-  });
-
   it('keeps the default view mechanism-free (no transport/command/url/args)', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('My Notion');
@@ -433,7 +402,6 @@ describe('ConnectorsTab', () => {
     const tile = screen.getByTestId('connector-tile-company-salesforce');
     expect(within(tile).queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
     expect(within(tile).queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
-    expect(within(tile).queryByRole('button', { name: /set default/i })).not.toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
   });
 
@@ -453,31 +421,9 @@ describe('ConnectorsTab', () => {
     ).toBeInTheDocument();
   });
 
-  it('a non-admin sees NO Edit/Delete on an admin default-on (catalog) connector', async () => {
-    vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
-      PRIVATE_CONN,
-      DEFAULT_ON_PRIVATE_CONN,
-    ]);
-    render(<ConnectorsTab isAdmin={false} />);
-    await screen.findByText('Org GitHub');
-    const defaultTile = screen.getByTestId('connector-tile-org-github');
-    expect(
-      within(defaultTile).queryByRole('button', { name: /^edit$/i }),
-    ).toBeNull();
-    expect(
-      within(defaultTile).queryByRole('button', { name: /^delete$/i }),
-    ).toBeNull();
-    // …but the user's own private connector remains editable.
-    const privateTile = screen.getByTestId('connector-tile-my-notion');
-    expect(
-      within(privateTile).getByRole('button', { name: /^edit$/i }),
-    ).toBeInTheDocument();
-  });
-
-  it('a non-admin gets NO admin-only controls (set-default / Test)', async () => {
+  it('a non-admin gets NO admin-only controls (Test)', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('My Notion');
-    expect(screen.queryByRole('button', { name: /set default/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^test$/i })).toBeNull();
   });
 
@@ -508,15 +454,16 @@ describe('ConnectorsTab', () => {
 
   // --- admin inline curation (TASK-127) ------------------------------------
 
-  it('shows admin curation controls (New + per-row Edit/Delete/set-default/Test) for an admin', async () => {
+  it('shows admin curation controls (New + per-row Edit/Delete/Test) for an admin', async () => {
     render(<ConnectorsTab isAdmin />);
     await screen.findByText('My Notion');
     expect(screen.getByRole('button', { name: /new connector/i })).toBeInTheDocument();
     const tile = screen.getByTestId('connector-tile-my-notion');
     expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
-    expect(within(tile).getByRole('button', { name: /set default/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^test$/i })).toBeInTheDocument();
+    // The connector "default" concept is gone: no per-row default toggle.
+    expect(within(tile).queryByRole('button', { name: /default/i })).toBeNull();
   });
 
   it('admin "New connector" opens the create form', async () => {
@@ -533,24 +480,6 @@ describe('ConnectorsTab', () => {
     fireEvent.click(within(tile).getByRole('button', { name: /^edit$/i }));
     const nameInput = await screen.findByLabelText(/service name/i);
     await waitFor(() => expect(nameInput).toHaveValue('My Notion'));
-  });
-
-  it('admin set-default toggles defaultAttached via patchConnector and refreshes', async () => {
-    const patch = vi
-      .spyOn(connectorsLib, 'patchConnector')
-      .mockResolvedValue(fullOf(PRIVATE_CONN));
-    render(<ConnectorsTab isAdmin />);
-    await screen.findByText('My Notion');
-    const tile = screen.getByTestId('connector-tile-my-notion');
-    fireEvent.click(within(tile).getByRole('button', { name: /set default/i }));
-    await waitFor(() =>
-      // The admin variant writes via the /admin/connectors route base (TASK-129).
-      expect(patch).toHaveBeenCalledWith(
-        'my-notion',
-        { defaultAttached: true },
-        '/admin/connectors',
-      ),
-    );
   });
 
   it('admin Delete opens a styled confirm and deletes on confirm', async () => {

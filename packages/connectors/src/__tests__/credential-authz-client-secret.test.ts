@@ -72,7 +72,6 @@ function fakeStore(
   };
   const store = {
     listForUser: fail,
-    listDefaults: fail,
     getByIdNotDeleted: fail,
     listAvailable: fail,
     upsert: fail,

@@ -13,7 +13,6 @@ const connector: Connector = {
   usageNote: 'Keep instructions',
   keyMode: 'personal',
   visibility: 'shared',
-  defaultAttached: true,
   createdAt: '',
   updatedAt: '',
   capabilities: {

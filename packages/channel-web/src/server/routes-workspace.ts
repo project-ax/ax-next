@@ -260,7 +260,7 @@ interface ResolvedAgent {
   mcpConfigIds?: string[];
   skillAttachments?: Array<{ skillId?: string }>;
   connectorAttachments?: string[];
-  /** TASK-739 — connectors removed from THIS agent (defaults / legacy-owned). */
+  /** TASK-739 — connectors removed from THIS agent (legacy-owned). */
   connectorExclusions?: string[];
   visibility?: 'personal' | 'team';
   /** Which runner the host spawns for this agent (an id, e.g. `claude-sdk`). */
@@ -1434,11 +1434,7 @@ interface AgentsCanManageConnectorsOutput {
   allowed: boolean;
 }
 
-const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = [
-  'default',
-  'attached',
-  'legacy-owned',
-];
+const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = ['attached', 'legacy-owned'];
 
 /** Same slug rule @ax/connectors and @ax/agents enforce; checked here so a
  *  malformed id is a 400 before any hook runs. */
@@ -6578,10 +6574,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * list (TASK-739, connectors-rail slice 6).
      *
      * The list is `connectors:list-effective` — the SAME union a session opens
-     * with (workspace defaults ∪ this agent's attachments ∪ the caller's own
-     * legacy connectors, minus this agent's exclusions) — so the rail cannot
-     * show a different set than the agent actually gets. Read under the
-     * caller, as a session opened by the caller would be.
+     * with (this agent's attachments ∪ the caller's own legacy connectors,
+     * minus this agent's exclusions) — so the rail cannot show a different
+     * set than the agent actually gets. Read under the caller, as a session
+     * opened by the caller would be.
      */
     async connectors(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authActorOr401(bus, initCtx, req, res);
@@ -6871,14 +6867,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      *
      * What removing means depends on where the connector came from, and the
      * server works that out from the same effective list the tab drew:
-     * an `attached` one is detached; a workspace `default` or the caller's own
-     * `legacy-owned` one is EXCLUDED from this agent (the connector, and every
-     * other agent using it, are untouched — product decision 4). A connector
+     * an `attached` one is detached; the caller's own `legacy-owned` one is
+     * EXCLUDED from this agent (the connector, and every other agent using
+     * it, are untouched — product decision 4). A connector
      * that is not in this agent's list is a 404, never a silent exclusion.
      *
      * Removing anything from a TEAM agent takes it away from every member, so
      * it is the agent's owner (a team admin) or a workspace admin only
-     * (TASK-765 for defaults, every connector since TASK-798). @ax/agents
+     * (every connector, TASK-798). @ax/agents
      * enforces that inside `agents:detach-connector`; its `forbidden` is a
      * 403 here, and nothing is cleaned up. The GET's `removable` is only the
      * same answer shown ahead of time.

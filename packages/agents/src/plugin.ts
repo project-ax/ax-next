@@ -9,6 +9,7 @@ import {
 import { sql, type Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
 import { snapshotNewlyAttachedConnectors } from './connector-snapshot.js';
+import { convertLegacyConnectorDefaults } from './legacy-default-conversion.js';
 import { listAuthoredSkills } from './authored-skills.js';
 import { projectAuthoredBundle } from './authored-caps.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
@@ -169,6 +170,19 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           hook: 'tool-policy:snapshot-connector-for-agent',
           degradation:
             "a newly attached connector does not copy its per-tool defaults; the agent follows the connector's live defaults instead (a later loosening by the connector's editor then applies to it too)",
+        },
+        {
+          // TASK-808 — transitional: the boot-time conversion of legacy
+          // connector defaults into explicit attachments reads + clears the
+          // retired flag through these two.
+          hook: 'connectors:list-legacy-defaults',
+          degradation:
+            'legacy connector defaults are not converted into attachments (nothing to convert without @ax/connectors)',
+        },
+        {
+          hook: 'connectors:clear-legacy-default',
+          degradation:
+            'a converted legacy connector default keeps its flag, so the (idempotent) conversion re-runs on the next boot',
         },
         {
           hook: 'models:get-policy',
@@ -388,7 +402,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           // TASK-798 — on a team agent whatever is attached reaches every
           // member's runs, so only its owner (a team admin) or a workspace admin
           // may attach. This one check also covers TASK-765's "a member must not
-          // undo the owner's removal of a default": attaching drops the id from
+          // undo the owner's exclusion": attaching drops the id from
           // `connectorExclusions`, and only someone who may exclude gets here.
           await assertConnectorsManageAllowed(
             existing,
@@ -421,7 +435,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       );
 
       // TASK-739 — detach ONE connector; `exclude` also hides it from the
-      // agent's other sources (a default). On a team agent either one changes
+      // agent's other source (a legacy-owned connector — TASK-808 retired
+      // connector defaults). On a team agent either one changes
       // what every member's runs reach, so both are the owner's (a team
       // admin's) or a workspace admin's call — TASK-765 for an exclusion,
       // widened to every detach by TASK-798. One check, below.
@@ -592,6 +607,23 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           return undefined;
         },
       );
+
+      // TASK-808 — convert any legacy connector defaults into explicit
+      // attachments. LAST, so our own hooks are registered; the kernel inits
+      // producers of our declared optional calls (@ax/connectors,
+      // @ax/tool-policy) first, so they are live too. Awaited for determinism;
+      // never fails boot (the conversion logs and returns on any error).
+      try {
+        await convertLegacyConnectorDefaults({
+          bus,
+          store: localStore,
+          logger: initCtx.logger,
+        });
+      } catch (err) {
+        initCtx.logger.warn('agents_legacy_default_conversion_failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
     },
 
     async shutdown() {
@@ -920,7 +952,7 @@ async function isTeamMember(
 
 /**
  * TASK-765 / TASK-798 — may `actor` change which connectors `agent` reaches
- * (attach, detach, exclude a default, sign in ON the agent)? On a team agent
+ * (attach, detach, exclude a legacy-owned connector, sign in ON the agent)? On a team agent
  * that changes what every member's runs reach — and a sign-in on it decides
  * whose account they all act as — so it is a decision about the whole team,
  * not about the actor's own use of the agent:

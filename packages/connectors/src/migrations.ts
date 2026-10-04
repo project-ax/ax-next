@@ -18,11 +18,15 @@ import { sql, type Generated, type Kysely } from 'kysely';
  *     (it never reaches `connectors:resolve`, which reads only the live table)
  *     until a human approves it at the capability wall and it flips `active`.
  *
- * `default_attached` (TASK-97) flags a connector as a workspace DEFAULT — it
- * flows into every agent's effective connector set the same way a
- * `default_attached` skill does (mirrors `skills_v1_skills.default_attached`).
- * The orchestrator reads it via `connectors:list-defaults`. Added as an
- * idempotent in-place `ADD COLUMN IF NOT EXISTS` (greenfield — no v1→v2 split).
+ * `default_attached` (TASK-97) once flagged a connector as the owner's DEFAULT
+ * (effective on every agent that owner could chat with, no attachment needed).
+ * "Set default" is retired (TASK-808): NOTHING writes the column any more and no
+ * code path treats it as reach. It is kept — no destructive migration — only so
+ * the transitional `connectors:list-legacy-defaults` / `connectors:clear-legacy-default`
+ * hooks can let `@ax/agents` convert each still-flagged row into explicit
+ * attachments at boot and then clear it. Drop the column once every database has
+ * been through one boot of that conversion. Added as an idempotent in-place
+ * `ADD COLUMN IF NOT EXISTS` (greenfield — no v1→v2 split).
  *
  * No FK to auth/agents/skills tables — a cross-plugin FK would require a shared
  * schema migration, which violates I4. Ownership is enforced at hook time by
@@ -63,10 +67,11 @@ export async function runConnectorsMigration<DB>(
       WHERE deleted_at IS NULL
   `.execute(db);
 
-  // TASK-97 — workspace-default flag. A default-attached connector flows into
-  // every agent's effective connector set (the orchestrator reads these via
-  // `connectors:list-defaults`). Idempotent ADD COLUMN; NOT NULL DEFAULT false
-  // so every pre-existing row is "not a default" until explicitly flagged.
+  // TASK-97 — the retired workspace-default flag (see the header: TASK-808 kept
+  // the column, only the conversion hooks read it). Idempotent ADD COLUMN;
+  // NOT NULL DEFAULT false so an upsert that omits it writes "not a default".
+  // It stays so a database that still holds flagged rows keeps them until
+  // `@ax/agents` converts them to attachments.
   await sql`
     ALTER TABLE connectors_v1_connectors
       ADD COLUMN IF NOT EXISTS default_attached BOOLEAN NOT NULL DEFAULT false
@@ -74,7 +79,7 @@ export async function runConnectorsMigration<DB>(
 
   // Existing definitions retain the legacy implicit owner attachment. New
   // definitions are marked by the store and require an explicit agent/skill
-  // attachment unless an admin deliberately sets default_attached.
+  // attachment.
   await sql`
     ALTER TABLE connectors_v1_connectors
       ADD COLUMN IF NOT EXISTS requires_attachment BOOLEAN NOT NULL DEFAULT false
@@ -134,8 +139,12 @@ export interface ConnectorsRow {
   key_mode: string;
   visibility: string;
   capabilities: unknown;
-  /** TASK-97 — workspace-default flag (see migration). */
-  default_attached: boolean;
+  /**
+   * TASK-97, retired by TASK-808 — see the migration header. `Generated` so no
+   * insert has to name it (the DB default is false); only the transitional
+   * `listLegacyDefaults` / `clearLegacyDefault` store methods touch it.
+   */
+  default_attached: Generated<boolean>;
   requires_attachment: Generated<boolean>;
   deleted_at: Date | null;
   created_at: Date;

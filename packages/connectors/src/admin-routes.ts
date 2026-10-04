@@ -82,7 +82,7 @@ interface AgentsResolveInputLike {
 // All endpoints require auth:require-user (401 on miss). The `/admin/connectors*`
 // bundle (mode 'admin') is ADMIN-ONLY: a signed-in non-admin gets 403 on every one
 // of its routes, exactly like the other `/admin/*` surfaces (TASK-698) — it is the
-// curation surface (shared / default-on / workspace-keyed connectors, the Test
+// curation surface (shared / workspace-keyed connectors, the Test
 // probe), and before the gate it was a bypass of the `/settings/connectors`
 // rejections. The `/settings/connectors*` bundle (mode 'user') stays open to any
 // signed-in user. Connectors are
@@ -310,12 +310,12 @@ export interface AdminRouteDeps {
  *
  *   - `'admin'` — the folded Connector registry (`/admin/connectors`). The actor
  *     may curate the workspace catalog: set `visibility: 'shared'` and
- *     `defaultAttached: true`. Owner is still forced from the session.
+ *     `keyMode: 'workspace'`. Owner is still forced from the session.
  *   - `'user'`  — user authoring (`/settings/connectors`). The actor may only
- *     ever create/edit their OWN PRIVATE connectors. Admin-only fields
- *     (`visibility: 'shared'`, `defaultAttached: true`) are REJECTED server-side
- *     (400 — not silently dropped), `visibility` is forced `'private'`, and a
- *     catalog/shared connector (one already `shared`/default-on) is READ-ONLY:
+ *     ever create/edit their OWN connectors. Admin-only fields
+ *     (`keyMode: 'workspace'`) are REJECTED server-side (400 — not silently
+ *     dropped), and a catalog/shared connector (one already `shared` with a
+ *     workspace key) is READ-ONLY:
  *     editing or deleting it through the user surface 403s. This is the
  *     server-side enforcement of "catalog/shared connectors are read-only for
  *     non-admins" — never UI-only.
@@ -329,11 +329,26 @@ export interface AdminRouteDeps {
  */
 export type ConnectorRouteMode = 'admin' | 'user';
 
-/** Shared reads grant no writes; workspace credentials/defaults remain admin-curated. */
+/** Shared reads grant no writes; workspace credentials remain admin-curated. */
 function isReadOnly(c: Connector, mode: ConnectorRouteMode): boolean {
   return c.canEdit === false ||
-    (mode === 'user' && (c.defaultAttached === true ||
-      (c.visibility === 'shared' && c.keyMode === 'workspace')));
+    (mode === 'user' && c.visibility === 'shared' && c.keyMode === 'workspace');
+}
+
+/**
+ * TASK-808 — "Set default" is gone. For one release a write that still carries
+ * the field (a stale client, a pinned tab, a script) fails LOUDLY instead of
+ * being silently dropped, whatever the value: `false` is as stale as `true`
+ * because the field no longer means anything. Both modes, POST and PATCH.
+ * Returns the 400 message, else null.
+ */
+function rejectRemovedFields(body: unknown): string | null {
+  // The body is untrusted JSON: only an object can carry the field (and `in`
+  // throws on a primitive, which must stay a normal validation path).
+  if (typeof body === 'object' && body !== null && 'defaultAttached' in body) {
+    return 'defaultAttached is no longer supported: add connectors to each agent instead';
+  }
+  return null;
 }
 
 /**
@@ -343,9 +358,6 @@ function isReadOnly(c: Connector, mode: ConnectorRouteMode): boolean {
  * forced so a tampered client body surfaces as a clear rejection.
  */
 function rejectAdminOnlyFields(raw: Record<string, unknown>): string | null {
-  if (raw.defaultAttached === true) {
-    return 'defaultAttached is admin-only';
-  }
   // keyMode:'workspace' means "an admin supplies ONE shared GLOBAL company key".
   // SECURITY (purge-on-delete): a workspace connector derives a GLOBAL credential
   // ref (account:<id>, owner-independent), so deleting it tombstones the SHARED
@@ -485,6 +497,11 @@ export function createConnectorRouteHandlers(
       }
       // Force userId from the authenticated actor — a client cannot create a
       // connector owned by someone else. Strip any client-supplied userId.
+      const removed = rejectRemovedFields(parsed.value);
+      if (removed !== null) {
+        res.status(400).json({ error: removed });
+        return;
+      }
       const raw = (parsed.value ?? {}) as Record<string, unknown>;
       if (mode === 'user') {
         const rejected = rejectAdminOnlyFields(raw);
@@ -514,7 +531,6 @@ export function createConnectorRouteHandlers(
         }
       }
       raw.visibility ??= existing?.visibility ?? 'shared';
-      raw.defaultAttached ??= existing?.defaultAttached ?? false;
       const input = { ...raw, userId: actor.id } as unknown as UpsertInput;
       try {
         const out = await deps.bus.call<UpsertInput, UpsertOutput>(
@@ -544,6 +560,11 @@ export function createConnectorRouteHandlers(
         res.status(parsed.status).json({ error: parsed.message });
         return;
       }
+      const removed = rejectRemovedFields(parsed.value);
+      if (removed !== null) {
+        res.status(400).json({ error: removed });
+        return;
+      }
       // PATCH requires a live owned definition. Missing/private foreign ids
       // return 404; a readable shared foreign definition is rejected below.
       let existing: Connector;
@@ -568,8 +589,8 @@ export function createConnectorRouteHandlers(
       delete patchRaw.userId;
       delete patchRaw.connectorId;
       delete patchRaw.id;
-      // Sharing a definition grants no authority to write global credentials
-      // or enable automatic attachment. Those fields remain admin-only.
+      // Sharing a definition grants no authority to write global credentials.
+      // That field remains admin-only.
       if (mode === 'user') {
         const rejected = rejectAdminOnlyFields(patchRaw);
         if (rejected !== null) {
@@ -584,7 +605,6 @@ export function createConnectorRouteHandlers(
         keyMode: existing.keyMode,
         visibility: existing.visibility,
         capabilities: existing.capabilities,
-        defaultAttached: existing.defaultAttached,
         ...patchRaw,
         // Re-assert the immutable identity + owner AFTER the spread so a stray
         // patch field can't rename or owner-hijack.

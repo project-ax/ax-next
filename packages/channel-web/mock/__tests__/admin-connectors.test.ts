@@ -180,8 +180,8 @@ describe('mock admin connectors', () => {
         name: 'Google Drive',
         keyMode: 'personal',
         visibility: 'private',
-        defaultAttached: false,
       });
+      expect(body.connector).not.toHaveProperty('defaultAttached');
       expect(body.connector.capabilities.allowedHosts).toEqual(['www.googleapis.com']);
     } finally {
       await close();
@@ -387,7 +387,7 @@ describe('mock user connectors (/settings/connectors)', () => {
     }
   });
 
-  it('POST defaults a new connector to shared with automatic attachment off', async () => {
+  it('POST defaults a new connector to shared and requires an explicit attachment', async () => {
     const { url, close } = await startUserServer(store);
     try {
       const res = await fetch(`${url}/settings/connectors`, {
@@ -398,7 +398,8 @@ describe('mock user connectors (/settings/connectors)', () => {
       await expectStatus(res, 201);
       const body = (await res.json()) as { connector: { visibility: string } };
       expect(body.connector.visibility).toBe('shared');
-      expect(body.connector).toMatchObject({ defaultAttached: false, requiresAttachment: true });
+      expect(body.connector).toMatchObject({ requiresAttachment: true });
+      expect(body.connector).not.toHaveProperty('defaultAttached');
     } finally {
       await close();
     }
@@ -421,15 +422,50 @@ describe('mock user connectors (/settings/connectors)', () => {
     }
   });
 
-  it('POST rejects defaultAttached:true (admin-only) with 400', async () => {
-    const { url, close } = await startUserServer(store);
+  it.each([true, false])(
+    'POST rejects a body carrying defaultAttached:%s with 400 on both bundles (the flag is retired)',
+    async (value) => {
+      const { url, close } = await startUserServer(store);
+      try {
+        for (const [path, cookie] of [
+          ['/settings/connectors', ALICE],
+          ['/admin/connectors', ADMIN2],
+        ] as const) {
+          const res = await fetch(`${url}${path}`, {
+            method: 'POST',
+            headers: { cookie, 'content-type': 'application/json' },
+            body: JSON.stringify(upsertBody({ defaultAttached: value })),
+          });
+          await expectStatus(res, 400);
+          expect(await res.json()).toEqual({
+            error: 'defaultAttached is no longer supported: add connectors to each agent instead',
+          });
+        }
+        // Nothing was stored by either rejected write.
+        const list = await fetch(`${url}/settings/connectors`, { headers: { cookie: ALICE } });
+        expect(await list.json()).toEqual({ connectors: [] });
+      } finally {
+        await close();
+      }
+    },
+  );
+
+  it('PATCH rejects a body carrying defaultAttached with 400 and leaves the row alone', async () => {
+    const { url, close } = await startServer(store);
     try {
-      const res = await fetch(`${url}/settings/connectors`, {
+      await fetch(`${url}/admin/connectors`, {
         method: 'POST',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ defaultAttached: true })),
+        headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody()),
       });
-      await expectStatus(res, 400);
+      const patch = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed', defaultAttached: true }),
+      });
+      await expectStatus(patch, 400);
+      const get = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
+      expect((await get.json()).connector.name).toBe('Google Drive');
     } finally {
       await close();
     }

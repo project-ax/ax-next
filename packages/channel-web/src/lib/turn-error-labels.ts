@@ -102,7 +102,7 @@ export const ERROR_LABELS: Record<string, string> = {
   'connector-needs-reconnect':
     'One of this agent’s connectors needs you to sign in again. Open Connectors, reconnect it, then retry.',
   // TASK-796 — the reconnect line's sibling for a connector nobody has signed
-  // in to yet (a default-on connector reaches every agent this way). "Sign in",
+  // in to yet (an attached connector whose key nobody has added). "Sign in",
   // never "reconnect": there was never a connection to restore. The rail marks
   // that row "Not signed in yet" with Sign in / Add key on it (TASK-795), so
   // "sign in" covers both and the sentence points there.

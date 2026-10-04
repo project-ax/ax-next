@@ -10,7 +10,7 @@ import {
   type Visibility,
 } from './types.js';
 import type { ConnectorDatabase, ConnectorsRow } from './migrations.js';
-import { availableConnectors, scopedConnectors } from './scope.js';
+import { availableConnectors } from './scope.js';
 
 const PLUGIN_NAME = '@ax/connectors';
 type StoredConnectorRow = Selectable<ConnectorsRow>;
@@ -167,9 +167,6 @@ function rowToConnector(row: StoredConnectorRow): Connector {
     keyMode: validateKeyMode(row.key_mode),
     visibility: validateVisibility(row.visibility),
     capabilities: validateCapabilities(row.capabilities),
-    // Coerce to a real boolean — a NULL from a row written before the column
-    // existed (greenfield, so unlikely, but cheap defense) reads as false.
-    defaultAttached: row.default_attached === true,
     requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -186,10 +183,6 @@ function rowToSummary(
     usageNote: row.usage_note,
     keyMode: validateKeyMode(row.key_mode),
     visibility: validateVisibility(row.visibility),
-    // TASK-110 — surface the workspace-default flag on the summary so the user
-    // list can badge an admin default-on connector as "Catalog". Same NULL-safe
-    // coercion as rowToConnector (a pre-column NULL reads as false).
-    defaultAttached: row.default_attached === true,
     requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -241,6 +234,12 @@ export interface AvailableConnector {
 // Store.
 // ---------------------------------------------------------------------------
 
+/** A row still carrying the retired default flag (TASK-808). */
+export interface LegacyDefault {
+  ownerUserId: string;
+  connectorId: string;
+}
+
 export interface UpsertArgs {
   userId: string;
   connectorId: string;
@@ -250,27 +249,23 @@ export interface UpsertArgs {
   keyMode: KeyMode;
   visibility: Visibility;
   capabilities: Capabilities;
-  /**
-   * TASK-97 — workspace-default flag. `undefined` ⟹ PRESERVE the existing row's
-   * flag on update (and default to false on insert). A caller that means to
-   * clear it passes `false` explicitly. This keeps a plain content re-upsert
-   * from silently un-defaulting a connector an admin flagged.
-   */
-  defaultAttached?: boolean;
 }
 
 export interface ConnectorStore {
   /** Owned and unambiguous shared definitions, newest-updated first. */
   listForUser(userId: string): Promise<ConnectorSummary[]>;
   /**
-   * TASK-97 — the owner's DEFAULT-attached connectors, FULL (capabilities
-   * included), sorted by id ascending (stable, matches skills:list-defaults).
-   * The orchestrator unions these into every agent's effective connector set.
-   * Each entry carries its row owner (`ownerUserId`, the same shape
-   * `getAvailableById` returns) so callers can derive owner-keyed values — the
-   * connector tool namespace — without re-deriving ownership.
+   * TASK-808, TRANSITIONAL — every LIVE row still carrying the retired
+   * `default_attached` flag, across ALL owners, ordered by (owner, connector id).
+   * Identities only. Nothing but the `@ax/agents` boot conversion reads this.
    */
-  listDefaults(userId: string): Promise<AvailableConnector[]>;
+  listLegacyDefaults(): Promise<LegacyDefault[]>;
+  /**
+   * TASK-808, TRANSITIONAL — flip one (owner, connector) row's retired flag off.
+   * True iff this call changed it (so a second call is false). Deliberately
+   * leaves `updated_at` alone: it is bookkeeping, not a user edit.
+   */
+  clearLegacyDefault(ownerUserId: string, connectorId: string): Promise<boolean>;
   /** Full connector by id for the owner; null if absent / tombstoned. */
   getByIdNotDeleted(
     userId: string,
@@ -378,10 +373,12 @@ export function createConnectorStore(
         args.capabilities,
       )}::jsonb`;
 
-      // On UPDATE, only set default_attached when the caller passed it
-      // explicitly — otherwise PRESERVE the stored flag (a content re-upsert
-      // must not silently un-default a connector an admin flagged). On INSERT
-      // the absent flag defaults to false (a fresh connector is not a default).
+      // TASK-808 — the retired `default_attached` flag is never written from a
+      // caller: an INSERT leaves it to the column default (false) and an edit of
+      // a live row leaves it exactly as it was (the boot conversion still has to
+      // see it). The one exception is `created`, which includes RESURRECTING a
+      // tombstoned row: that is a brand-new connector from the owner's view, so a
+      // stale flag from its previous life is reset rather than revived.
       const updateSet = {
         name: args.name,
         description: args.description,
@@ -393,10 +390,7 @@ export function createConnectorStore(
         // connector under the same id is allowed.
         deleted_at: null,
         updated_at: now,
-        ...(created ? { requires_attachment: true, default_attached: args.defaultAttached ?? false } : {}),
-        ...(args.defaultAttached !== undefined
-          ? { default_attached: args.defaultAttached }
-          : {}),
+        ...(created ? { requires_attachment: true, default_attached: false } : {}),
       };
 
       const row = await db
@@ -410,7 +404,6 @@ export function createConnectorStore(
           key_mode: args.keyMode,
           visibility: args.visibility,
           capabilities: capabilitiesJson,
-          default_attached: args.defaultAttached ?? false,
           requires_attachment: true,
           deleted_at: null,
           created_at: now,
@@ -424,18 +417,33 @@ export function createConnectorStore(
       return { connector: rowToConnector(row), created };
     },
 
-    async listDefaults(userId) {
-      // Scoped to the owner + non-tombstoned (the scope helper bakes both in),
-      // then narrowed to default-flagged rows. Sorted by connector_id ascending
-      // so the union order is stable (matches skills:list-defaults' compareById).
-      const rows = await scopedConnectors(db, { userId })
+    async listLegacyDefaults() {
+      // Deliberately NOT owner-scoped: the conversion runs at boot with no
+      // session user and must see every owner's flagged rows. Identities only —
+      // no capabilities, no spec — so nothing here can be mistaken for reach.
+      const rows = await db
+        .selectFrom('connectors_v1_connectors')
+        .select(['owner_user_id', 'connector_id'])
         .where('default_attached', '=', true)
+        .where('deleted_at', 'is', null)
+        .orderBy('owner_user_id', 'asc')
         .orderBy('connector_id', 'asc')
         .execute();
       return rows.map((r) => ({
-        connector: rowToConnector(r),
         ownerUserId: r.owner_user_id,
+        connectorId: r.connector_id,
       }));
+    },
+
+    async clearLegacyDefault(ownerUserId, connectorId) {
+      const result = await db
+        .updateTable('connectors_v1_connectors')
+        .set({ default_attached: false })
+        .where('owner_user_id', '=', ownerUserId)
+        .where('connector_id', '=', connectorId)
+        .where('default_attached', '=', true)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
     },
 
     async softDelete(userId, connectorId) {

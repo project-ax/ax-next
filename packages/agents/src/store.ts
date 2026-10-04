@@ -256,7 +256,9 @@ function validateMcpConfigIds(value: unknown): string[] {
 const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const CONNECTOR_ID_MAX = 128;
 const CONNECTOR_ATTACHMENTS_MAX = 50;
-// TASK-739 — exclusions hide defaults / legacy-owned connectors; bounded so a
+// TASK-739 — exclusions hide legacy-owned connectors (TASK-808 retired connector
+// defaults; an old exclusion of one is kept and simply matches nothing — the
+// boot-time conversion skips an agent that excluded the default). Bounded so a
 // caller can't grow the row without limit.
 const CONNECTOR_EXCLUSIONS_MAX = 100;
 
