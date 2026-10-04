@@ -274,16 +274,31 @@ describe('authorizeAgentAccountRead — the connector must be on the agent (TASK
   });
 
   it('DENIES an agents:resolve FAILURE too, but says so at warn (an outage must not look like "no credential")', async () => {
-    const { bus } = fakeBus(() => {
-      throw new Error('agents db down');
-    });
-    const { store } = fakeStore(async () => SHARED);
-    const { ctx, lines } = ctxWithLog();
-    expect(await authorizeAgentAccountRead(store, bus, ctx, read)).toEqual({ allowed: false });
-    expect(lines).toContainEqual({
-      msg: 'connectors_agent_credential_check_failed',
-      bindings: expect.objectContaining({ ref: 'account:linear', error: 'agents db down' }),
-    });
+    // Both shapes an outage can arrive in: a raw throw, and what the real
+    // HookBus.call turns a raw throw into (a PluginError with code 'unknown').
+    // A guard keyed on "is it a PluginError" / "has a code" would pass the
+    // first and silently swallow the second.
+    const failures = [
+      new Error('agents db down'),
+      new PluginError({
+        code: 'unknown',
+        plugin: '@ax/agents',
+        hookName: 'agents:resolve',
+        message: "service hook 'agents:resolve' threw: agents db down",
+      }),
+    ];
+    for (const failure of failures) {
+      const { bus } = fakeBus(() => {
+        throw failure;
+      });
+      const { store } = fakeStore(async () => SHARED);
+      const { ctx, lines } = ctxWithLog();
+      expect(await authorizeAgentAccountRead(store, bus, ctx, read)).toEqual({ allowed: false });
+      expect(lines).toContainEqual({
+        msg: 'connectors_agent_credential_check_failed',
+        bindings: expect.objectContaining({ ref: 'account:linear', error: failure.message }),
+      });
+    }
   });
 
   it('a refusal (forbidden / not-found) is an ordinary deny, NOT a warn', async () => {
