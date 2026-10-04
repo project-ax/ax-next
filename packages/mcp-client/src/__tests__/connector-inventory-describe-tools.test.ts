@@ -655,6 +655,192 @@ describe('connectors:describe-tools', () => {
     });
   });
 
+  // TASK-817 — the server refused a stored, unexpired OAuth token with 401
+  // (revoked, or the provider forgot it). The clock-based resolve cannot know
+  // that, so the check tells the vault (`rejected: true`) and lists once more
+  // with whatever it answers. A renewal the authorization server refuses
+  // surfaces as the resolver's reconnect error, i.e. needs-auth here and the
+  // stored "sign-in expired" marker for the rail.
+  describe('a 401 on a stored OAuth token (TASK-817)', () => {
+    const ok: ListOutcome = {
+      kind: 'ok',
+      dropped: 0,
+      tools: [{ name: 'search', title: 'Search', description: 'd', readOnly: true, outward: false }],
+    };
+    const refused: ListOutcome = { kind: 'needs-auth', rejected: true };
+    const credGets = (t: ReturnType<typeof setup>) =>
+      t.calls.filter((c) => c.hook === 'credentials:get').map((c) => c.input);
+
+    it('asks the vault to renew the refused token and lists again with the renewed one', async () => {
+      const t = setup({
+        credential: (input) => ((input as { rejected?: boolean }).rejected === true ? 'tok-renewed' : 'tok-refused'),
+        list: async ({ headers }) => (headers.Authorization === 'Bearer tok-renewed' ? ok : refused),
+      });
+      const out = await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(out.status).toBe('ok');
+      expect(out.tools.map((x) => x.toolKey)).toEqual([`mcp.${NS}.search`]);
+      expect(credGets(t)).toEqual([
+        { ref: 'account:linear', userId: 'u1' },
+        { ref: 'account:linear', userId: 'u1', rejected: true },
+      ]);
+      expect(t.list).toHaveBeenCalledTimes(2);
+      expect(t.list.mock.calls[1]![0]).toEqual({
+        url: 'https://mcp.linear.app/mcp',
+        headers: { Authorization: 'Bearer tok-renewed' },
+      });
+    });
+
+    it('a renewal the authorization server refuses (reconnect error) answers needs-auth and lists no more', async () => {
+      const t = setup({
+        credential: (input) => {
+          if ((input as { rejected?: boolean }).rejected !== true) return 'tok-refused';
+          const dead = new Error('refresh token rejected; reconnect required');
+          dead.name = 'NeedsReconnectError';
+          throw new PluginError({ code: 'unknown', plugin: '@ax/mcp-oauth', message: 'wrapped', cause: dead });
+        },
+        list: async () => refused,
+      });
+      const out = await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(out.status).toBe('needs-auth');
+      expect(t.list).toHaveBeenCalledTimes(1);
+      expect(t.store.rows.size).toBe(1);
+    });
+
+    it('a renewal that blips answers needs-auth (the server WAS asked) instead of throwing', async () => {
+      const t = setup({
+        credential: (input) => {
+          if ((input as { rejected?: boolean }).rejected !== true) return 'tok-refused';
+          throw new PluginError({ code: 'unknown', plugin: 'credentials-store-db', message: 'db down tok-refused' });
+        },
+        list: async () => refused,
+      });
+      const out = await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+      expect(out.status).toBe('needs-auth');
+      expect(t.list).toHaveBeenCalledTimes(1);
+      // No token material in the logs.
+      expect(t.logLines.join('\n')).not.toMatch(/tok-refused|tok-renewed|Bearer/);
+    });
+
+    it('a renewed token that is refused too is needs-auth after exactly one more listing (no loop)', async () => {
+      const t = setup({
+        credential: (input) => ((input as { rejected?: boolean }).rejected === true ? 'tok-renewed' : 'tok-refused'),
+        list: async () => refused,
+      });
+      expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('needs-auth');
+      expect(t.list).toHaveBeenCalledTimes(2);
+      expect(credGets(t)).toHaveLength(2);
+      expect(t.logLines.join('\n')).not.toMatch(/tok-refused|tok-renewed|Bearer/);
+    });
+
+    it('a 403 (accepted but not allowed) renews nothing', async () => {
+      const t = setup({ list: async () => ({ kind: 'needs-auth' }) });
+      expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('needs-auth');
+      expect(credGets(t)).toHaveLength(1);
+      expect(t.list).toHaveBeenCalledTimes(1);
+    });
+
+    it('a 401 on a server that only got an api-key renews nothing (a key cannot be renewed)', async () => {
+      const t = setup({
+        resolve: () =>
+          connector({
+            capabilities: {
+              credentials: [{ slot: 'key', kind: 'api-key', headerName: 'X-Api-Key', server: 'main' }],
+              mcpServers: [{ name: 'main', transport: 'http', url: 'https://mcp.example.com/mcp' }],
+            },
+            credentialPlan: [{ slot: 'key', ref: 'account:linear:key' }],
+          }),
+        list: async () => refused,
+      });
+      expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('needs-auth');
+      expect(credGets(t)).toEqual([{ ref: 'account:linear:key', userId: 'u1' }]);
+      expect(t.list).toHaveBeenCalledTimes(1);
+    });
+
+    it('renews only the token that was sent: two OAuth slots on one server renew the one in Authorization', async () => {
+      const t = setup({
+        resolve: () =>
+          connector({
+            capabilities: {
+              credentials: [
+                { slot: 'a', kind: 'oauth', server: 'main' },
+                { slot: 'b', kind: 'oauth', server: 'main' },
+              ],
+              mcpServers: [{ name: 'main', transport: 'http', url: 'https://a.example.com/mcp' }],
+            },
+            credentialPlan: [
+              { slot: 'a', ref: 'account:linear:a' },
+              { slot: 'b', ref: 'account:linear:b' },
+            ],
+          }),
+        list: async () => refused,
+      });
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(credGets(t).filter((c) => (c as { rejected?: boolean }).rejected === true)).toEqual([
+        { ref: 'account:linear:b', userId: 'u1', rejected: true },
+      ]);
+    });
+
+    it('a key slot that writes its own Authorization over the bearer renews nothing', async () => {
+      const t = setup({
+        resolve: () =>
+          connector({
+            capabilities: {
+              credentials: [
+                { slot: 'a', kind: 'oauth', server: 'main' },
+                { slot: 'k', kind: 'api-key', headerName: 'Authorization', server: 'main' },
+              ],
+              mcpServers: [{ name: 'main', transport: 'http', url: 'https://a.example.com/mcp' }],
+            },
+            credentialPlan: [
+              { slot: 'a', ref: 'account:linear:a' },
+              { slot: 'k', ref: 'account:linear:k' },
+            ],
+          }),
+        list: async () => refused,
+      });
+      await t.run({ userId: 'u1', connectorId: 'linear' });
+      expect(credGets(t)).toHaveLength(2);
+      expect(t.list).toHaveBeenCalledTimes(1);
+    });
+
+    it('renews only the refused server: an OK sibling server is listed once', async () => {
+      const t = setup({
+        resolve: () =>
+          connector({
+            capabilities: {
+              credentials: [
+                { slot: 'a', kind: 'oauth', server: 'main' },
+                { slot: 'b', kind: 'oauth', server: 'second' },
+              ],
+              mcpServers: [
+                { name: 'main', transport: 'http', url: 'https://a.example.com/mcp' },
+                { name: 'second', transport: 'http', url: 'https://b.example.com/mcp' },
+              ],
+            },
+            credentialPlan: [
+              { slot: 'a', ref: 'account:linear:a' },
+              { slot: 'b', ref: 'account:linear:b' },
+            ],
+            toolNamespaces: [
+              { server: 'main', toolNamespace: NS },
+              { server: 'second', toolNamespace: NS2 },
+            ],
+          }),
+        credential: (input) =>
+          (input as { rejected?: boolean }).rejected === true ? 'tok-renewed' : `tok(${(input as { ref: string }).ref})`,
+        list: async ({ url, headers }) =>
+          url.startsWith('https://a.') && headers.Authorization !== 'Bearer tok-renewed' ? refused : ok,
+      });
+      expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('ok');
+      expect(credGets(t)).toEqual([
+        { ref: 'account:linear:a', userId: 'u1' },
+        { ref: 'account:linear:b', userId: 'u1' },
+        { ref: 'account:linear:a', userId: 'u1', rejected: true },
+      ]);
+      expect(t.list).toHaveBeenCalledTimes(3);
+    });
+  });
+
   it('rejects malformed input', async () => {
     const t = setup();
     await expect(t.run({ userId: '', connectorId: 'linear' })).rejects.toMatchObject({ code: 'invalid-payload' });

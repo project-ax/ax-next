@@ -170,8 +170,19 @@ describe('listServerTools', () => {
     if (out.kind === 'ok') expect(out.tools).toHaveLength(3);
   });
 
-  it.each([401, 403])('maps HTTP %s to needs-auth', async (status) => {
-    const server = fakeMcpServer({ status });
+  // TASK-817 — only a 401 says "the credential you sent was refused" (a 403
+  // is a credential that was accepted but may not do this), so only a 401 is
+  // marked `rejected`, which is what lets the caller renew a token.
+  it('maps HTTP 401 to needs-auth, marked rejected', async () => {
+    const server = fakeMcpServer({ status: 401 });
+    expect(await listServerTools({ url: URL_OK, headers: {}, baseFetch: server.baseFetch })).toEqual({
+      kind: 'needs-auth',
+      rejected: true,
+    });
+  });
+
+  it('maps HTTP 403 to needs-auth, not marked rejected', async () => {
+    const server = fakeMcpServer({ status: 403 });
     expect(await listServerTools({ url: URL_OK, headers: {}, baseFetch: server.baseFetch })).toEqual({
       kind: 'needs-auth',
     });

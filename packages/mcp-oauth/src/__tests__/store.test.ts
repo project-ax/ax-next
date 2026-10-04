@@ -390,6 +390,24 @@ describe('createMcpOAuthStore', () => {
       expect(await store.listNeedsReconnect('u2', 'team-1', ['gmail'])).toEqual({ personal: [], shared: [] });
       expect(await store.listNeedsReconnect('u2', 'team-2', ['slack'])).toEqual({ personal: [], shared: ['slack'] });
     });
+
+    // TASK-817 — the resolver's single-owner read.
+    it('hasNeedsReconnect answers for exactly one owner + connector', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markNeedsReconnect(u('u1'), 'gmail');
+      await store.markNeedsReconnect(a('team-1'), 'slack');
+      expect(await store.hasNeedsReconnect(u('u1'), 'gmail')).toBe(true);
+      expect(await store.hasNeedsReconnect(u('u1'), 'slack')).toBe(false);
+      expect(await store.hasNeedsReconnect(u('u2'), 'gmail')).toBe(false);
+      expect(await store.hasNeedsReconnect(a('team-1'), 'slack')).toBe(true);
+      // A user marker is not an agent marker, and the other way round.
+      expect(await store.hasNeedsReconnect(a('u1'), 'gmail')).toBe(false);
+      expect(await store.hasNeedsReconnect(u('team-1'), 'slack')).toBe(false);
+      await store.clearNeedsReconnect(u('u1'), 'gmail');
+      expect(await store.hasNeedsReconnect(u('u1'), 'gmail')).toBe(false);
+    });
   });
 
   describe('purgeExpiredPending', () => {

@@ -438,6 +438,46 @@ describe('when the tool list cannot be read', () => {
     expect(screen.queryByText(/Connected/)).toBeNull();
   });
 
+  // TASK-817 — the tool read is where a provider's 401 on a stored token is
+  // first seen; the check that saw it may have just written the "sign-in
+  // expired" marker. So a needs-auth read under a row the list still calls
+  // healthy re-reads the list once, and the row (and its Reconnect) catch up.
+  it('a needs-auth tool read under a healthy row re-reads the list once; the row turns to Sign-in expired with Reconnect', async () => {
+    const list = vi.mocked(workspaceApi.connectors);
+    list.mockReset();
+    list
+      .mockResolvedValueOnce({ shared: false, connectorsSupported: true, manageable: true, connectors: ROWS })
+      .mockResolvedValue({
+        shared: false,
+        connectorsSupported: true,
+        manageable: true,
+        connectors: [{ ...ROWS[0]!, health: 'needs-reconnect' }],
+      });
+    toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
+    renderTab();
+    await openDetails();
+    expect(await screen.findByText('Sign-in expired')).toBeTruthy();
+    expect(list).toHaveBeenCalledTimes(2);
+    const trigger = screen.getByRole('button', { name: 'Actions for Linear' });
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: 'Reconnect' })).toBeTruthy();
+  });
+
+  it('re-reads the list at most once per tool read when the row stays healthy', async () => {
+    const list = vi.mocked(workspaceApi.connectors);
+    list.mockReset();
+    list.mockResolvedValue({ shared: false, connectorsSupported: true, manageable: true, connectors: ROWS });
+    toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
+    renderTab();
+    await openDetails();
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    // Give any further effect a chance to fire: it must not.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Sign-in needed')).toBeTruthy();
+  });
+
   it('a needs-auth tool list without the marker says sign-in is needed, never "expired"', async () => {
     toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
     renderTab();
