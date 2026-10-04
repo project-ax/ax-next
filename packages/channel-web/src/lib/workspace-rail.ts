@@ -38,10 +38,13 @@ export interface AgentRailState {
  *   the caller's own `GET /api/workspace/agents/:id` read. Optional: outside
  *   the agent view there is no detail to follow, and the roster word below
  *   still applies.
+ * @param busy whether the caller has a turn in flight (TASK-818): streaming,
+ *   or the finished turn's re-read not yet landed. Optional, like `detailWord`.
  */
 export function useAgentRail(
   agentId: string | null,
   detailWord: AgentRunState | null = null,
+  busy = false,
 ): AgentRailState {
   const [rail, setRail] = useState<AgentRailData | null>(null);
   const [loading, setLoading] = useState(agentId !== null);
@@ -102,22 +105,38 @@ export function useAgentRail(
    * either one re-reads. When both move they usually land in separate renders
    * (the detail re-read and the roster refresh are two fetches), so a
    * finished turn costs up to two extra reads; one when they land together.
+   *
+   * And the caller's own turn, because even two words can both sit still
+   * (TASK-818). The phone sheet mounts when Details is opened, which can be
+   * mid-turn: its mount read says "Working on your request", while the detail
+   * was read before the server marked the agent working and is re-read after
+   * it stopped (resting -> resting), and so is the roster. Nothing above
+   * moved, and the line stayed until a reload. The turn starting and the
+   * finished turn's re-read landing (`busy` flipping) are transitions the
+   * caller always sees, so each one re-reads: the start so an open panel can
+   * pick up the new turn, the finish so it cannot keep a turn that is over.
    */
   const rosterWord =
     useOptionalWorkspace()?.board?.agents.find((a) => a.id === agentId)?.state ?? null;
-  const lastWords = useRef({ agentId, rosterWord, detailWord });
+  const lastWords = useRef({ agentId, rosterWord, detailWord, busy });
 
   useEffect(load, [load]);
 
   useEffect(() => {
     const last = lastWords.current;
-    lastWords.current = { agentId, rosterWord, detailWord };
-    // A new agent is the effect above's read; only a change of word for the
-    // SAME agent is this one's.
+    lastWords.current = { agentId, rosterWord, detailWord, busy };
+    // A new agent is the effect above's read; only a change of word (or of
+    // turn) for the SAME agent is this one's.
     if (last.agentId !== agentId) return;
-    if (last.rosterWord === rosterWord && last.detailWord === detailWord) return;
+    if (
+      last.rosterWord === rosterWord &&
+      last.detailWord === detailWord &&
+      last.busy === busy
+    ) {
+      return;
+    }
     load();
-  }, [agentId, rosterWord, detailWord, load]);
+  }, [agentId, rosterWord, detailWord, busy, load]);
 
   const revoke = useCallback(
     async (ref: GrantRef): Promise<'revoked' | 'already-gone' | 'failed'> => {

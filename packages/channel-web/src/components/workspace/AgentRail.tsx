@@ -105,7 +105,7 @@ export function AgentRailContent({
   counts,
 }: Props) {
   const { agent, past } = detail;
-  const { rail, loading, error, revoke, refresh } = useAgentRail(agent.id, agent.state);
+  const { rail, loading, error, revoke, refresh } = useAgentRail(agent.id, agent.state, busy);
   const [localTab, setLocalTab] = useState<AgentTab>(tab);
   const active = onTab ? tab : localTab;
   const [revoking, setRevoking] = useState<ReadonlySet<string>>(new Set());
@@ -555,13 +555,24 @@ function RightNow({
   error: string | null;
 }) {
   const line = rail?.activity.activity ?? null;
+  /*
+    The word agrees with the line under it (TASK-818). Both are the same server
+    signal (the server calls an agent working exactly when it has an activity
+    line), but they are read at different moments, and the rail's read can be
+    the newer one: a panel opened mid-turn. "Resting" over "Working on your
+    request" is two answers at once; when this card HAS a line, the agent is
+    working. Only "resting" yields: waiting and stopped are stronger claims the
+    line does not contradict.
+  */
+  const word =
+    agent.state === 'resting' && line !== null ? 'working' : agent.state;
   return (
     <>
       <Card className="rounded-md bg-muted shadow-none">
         <CardContent className="flex flex-col gap-2 p-3.5">
           <div className="flex items-center gap-2 text-[12.5px] font-medium">
-            <StateDot state={agent.state} />
-            {stateWord(agent.state)}
+            <StateDot state={word} />
+            {stateWord(word)}
           </div>
           <div className="text-[13px]">{line?.phrase ?? ''}</div>
           {line !== null && (

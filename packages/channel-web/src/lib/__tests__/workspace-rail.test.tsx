@@ -125,6 +125,75 @@ describe('useAgentRail', () => {
     await waitFor(() => expect(result.current.rail.rail?.activity.activity).toBeNull());
   });
 
+  /*
+    TASK-818 — the phone sheet mounts mid-turn (Details opened on Activity
+    right after the first send). Its mount read says "Working on your
+    request", but neither word ever moves: the detail was read before the
+    server marked the agent working and is re-read after it stopped, and the
+    roster goes resting -> resting. The turn finishing (busy true -> false) is
+    the one transition this panel can still see, so it re-reads on that.
+  */
+  it('re-reads the rail when the turn finishes even though neither word changed', async () => {
+    boardMock.mockResolvedValue({ agents: [agent('resting')] });
+    railMock.mockResolvedValue(
+      rail({
+        activity: {
+          status: 'ok',
+          activity: railActivity({ phrase: 'Working on your request', source: 'trigger' }),
+        },
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ busy }: { busy: boolean }) => ({
+        rail: useAgentRail('a1', 'resting', busy),
+        ws: useWorkspace(),
+      }),
+      { wrapper, initialProps: { busy: true } },
+    );
+    await waitFor(() => expect(result.current.ws.board?.agents[0]?.state).toBe('resting'));
+    await waitFor(() =>
+      expect(result.current.rail.rail?.activity.activity?.phrase).toBe(
+        'Working on your request',
+      ),
+    );
+
+    // The reply landed and its re-read settled: still resting everywhere.
+    railMock.mockResolvedValue(rail());
+    await act(async () => {
+      await result.current.ws.refresh();
+    });
+    rerender({ busy: false });
+
+    await waitFor(() => expect(result.current.rail.rail?.activity.activity).toBeNull());
+  });
+
+  // The second message: the panel is already open, so the turn STARTING is
+  // the moment it can learn the agent is working again.
+  it('re-reads the rail when a turn starts', async () => {
+    railMock.mockResolvedValue(rail());
+    const { result, rerender } = renderHook(
+      ({ busy }: { busy: boolean }) => useAgentRail('a1', 'resting', busy),
+      { initialProps: { busy: false } },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(railMock).toHaveBeenCalledTimes(1);
+
+    railMock.mockResolvedValue(
+      rail({
+        activity: {
+          status: 'ok',
+          activity: railActivity({ phrase: 'Working on your request', source: 'trigger' }),
+        },
+      }),
+    );
+    rerender({ busy: true });
+    await waitFor(() =>
+      expect(result.current.rail?.activity.activity?.phrase).toBe('Working on your request'),
+    );
+    expect(railMock).toHaveBeenCalledTimes(2);
+  });
+
   it('does not re-read when a roster refresh leaves its agent word unchanged', async () => {
     boardMock.mockResolvedValue({ agents: [agent('resting')] });
     railMock.mockResolvedValue(rail());
