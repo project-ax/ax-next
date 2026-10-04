@@ -356,6 +356,23 @@ interface SerializedConfig {
   url?: string;
 }
 
+/** Seed a row owned by `ownerId` straight into storage — the shape a
+ *  non-admin's server has if they created it before TASK-848's admin gate. */
+async function seedOwnedConfig(
+  stack: BootedStack,
+  id: string,
+  ownerId: string | null,
+): Promise<void> {
+  const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+  await saveConfig(stack.harness.bus, ctx, {
+    id,
+    enabled: true,
+    transport: 'streamable-http',
+    url: `https://mcp.example.com/${id}`,
+    ownerId,
+  });
+}
+
 function makeBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'fs',
@@ -402,6 +419,91 @@ describe('@ax/mcp-client admin routes', () => {
     });
     expect(r.status).toBe(401);
     expect(r.body).toEqual({ error: 'unauthenticated' });
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-848 — every write (and the outbound /test probe) needs a workspace
+  // admin. A host MCP server's tools reach every wildcard-scoped agent in the
+  // org, so letting any signed-in user register one was an org-wide hole.
+  // Each non-admin case below uses the caller's OWN row where one applies,
+  // because ownership alone used to be enough.
+  // -------------------------------------------------------------------------
+
+  it('POST by a non-admin → 403 and nothing is stored (TASK-848)', async () => {
+    // Bootstrap the admin first: auth's bootstrap path expects an empty user table.
+    const cookieA = await signIn(stack);
+    const { cookie: cookieB } = await mintSecondUserCookie();
+    const r = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie: cookieB,
+      body: makeBody({ id: 'sneaky' }),
+    });
+    expect(r.status).toBe(403);
+    expect(r.body).toEqual({ error: 'forbidden' });
+    const get = await http(stack.port, 'GET', '/admin/mcp-servers/sneaky', {
+      cookie: cookieA,
+    });
+    expect(get.status).toBe(404);
+  });
+
+  it('PATCH of the non-admin’s OWN row → 403, row unchanged (TASK-848)', async () => {
+    const { cookie: cookieB, userId: userB } = await mintSecondUserCookie();
+    await seedOwnedConfig(stack, 'b-legacy', userB);
+    const r = await http(stack.port, 'PATCH', '/admin/mcp-servers/b-legacy', {
+      cookie: cookieB,
+      body: { url: 'https://evil.example.com/mcp' },
+    });
+    expect(r.status).toBe(403);
+    expect(r.body).toEqual({ error: 'forbidden' });
+    const get = await http(stack.port, 'GET', '/admin/mcp-servers/b-legacy', {
+      cookie: cookieB,
+    });
+    expect(get.status).toBe(200);
+    expect((get.body as { config: SerializedConfig }).config.url).toBe(
+      'https://mcp.example.com/b-legacy',
+    );
+  });
+
+  it('DELETE of the non-admin’s OWN row → 403, row kept (TASK-848)', async () => {
+    const { cookie: cookieB, userId: userB } = await mintSecondUserCookie();
+    await seedOwnedConfig(stack, 'b-legacy-del', userB);
+    const r = await http(stack.port, 'DELETE', '/admin/mcp-servers/b-legacy-del', {
+      cookie: cookieB,
+    });
+    expect(r.status).toBe(403);
+    const get = await http(stack.port, 'GET', '/admin/mcp-servers/b-legacy-del', {
+      cookie: cookieB,
+    });
+    expect(get.status).toBe(200);
+  });
+
+  it('POST :id/test of the non-admin’s OWN row → 403, no outbound connect (TASK-848)', async () => {
+    const { cookie: cookieB, userId: userB } = await mintSecondUserCookie();
+    await seedOwnedConfig(stack, 'b-legacy-test', userB);
+    // No fake transport is registered for this id: if the handler reached
+    // the connect step it would answer 200 {ok:false}, not 403.
+    const r = await http(stack.port, 'POST', '/admin/mcp-servers/b-legacy-test/test', {
+      cookie: cookieB,
+    });
+    expect(r.status).toBe(403);
+  });
+
+  it('an admin may update and delete a row another user owns (TASK-848)', async () => {
+    const cookieA = await signIn(stack);
+    const { userId: userB } = await mintSecondUserCookie();
+    await seedOwnedConfig(stack, 'b-owned', userB);
+    const patch = await http(stack.port, 'PATCH', '/admin/mcp-servers/b-owned', {
+      cookie: cookieA,
+      body: { enabled: false, ownerId: 'hijack' },
+    });
+    expect(patch.status).toBe(200);
+    const cfg = (patch.body as { config: SerializedConfig }).config;
+    expect(cfg.enabled).toBe(false);
+    // The stored owner survives; a client-supplied ownerId is ignored.
+    expect(cfg.ownerId).toBe(userB);
+    const del = await http(stack.port, 'DELETE', '/admin/mcp-servers/b-owned', {
+      cookie: cookieA,
+    });
+    expect(del.status).toBe(204);
   });
 
   it('POST /admin/mcp-servers with cookie → 201 + ownerId stamped to caller', async () => {
@@ -494,19 +596,19 @@ describe('@ax/mcp-client admin routes', () => {
     });
     expect(aCreate.status).toBe(201);
 
-    const { cookie: cookieB } = await mintSecondUserCookie();
-    const bCreate = await http(stack.port, 'POST', '/admin/mcp-servers', {
-      cookie: cookieB,
-      body: makeBody({ id: 'beta' }),
-    });
-    expect(bCreate.status).toBe(201);
+    // TASK-848: a non-admin can no longer POST, so B's row is a LEGACY one
+    // (created before the admin gate) seeded straight into storage.
+    const { cookie: cookieB, userId: userB } = await mintSecondUserCookie();
+    await seedOwnedConfig(stack, 'beta', userB);
 
+    // A is a workspace admin: admins manage every host MCP server, so A
+    // sees B's legacy row too (that is how an admin finds and removes one).
     const aList = await http(stack.port, 'GET', '/admin/mcp-servers', {
       cookie: cookieA,
     });
     expect(aList.status).toBe(200);
     const aIds = (aList.body as { configs: SerializedConfig[] }).configs.map((c) => c.id);
-    expect(aIds.sort()).toEqual(['alpha']);
+    expect(aIds.sort()).toEqual(['alpha', 'beta']);
 
     const bList = await http(stack.port, 'GET', '/admin/mcp-servers', {
       cookie: cookieB,
@@ -682,7 +784,7 @@ describe('@ax/mcp-client admin routes', () => {
     expect((r.body as { error: string }).error).toMatch(/reserved/);
   });
 
-  it('PATCH other user’s config → 404', async () => {
+  it('PATCH other user’s config by a non-admin → 403 (TASK-848 admin gate)', async () => {
     const cookieA = await signIn(stack);
     await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie: cookieA,
@@ -693,10 +795,11 @@ describe('@ax/mcp-client admin routes', () => {
       cookie: cookieB,
       body: { enabled: false },
     });
-    expect(r.status).toBe(404);
+    expect(r.status).toBe(403);
+    expect(r.body).toEqual({ error: 'forbidden' });
   });
 
-  it('PATCH admin-global config → 403 (read-visible but not write-allowed)', async () => {
+  it('PATCH admin-global config by an admin → 200 (TASK-848: admins manage every row)', async () => {
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
     await saveConfig(stack.harness.bus, ctx, {
       id: 'global-shared',
@@ -710,7 +813,11 @@ describe('@ax/mcp-client admin routes', () => {
       cookie,
       body: { enabled: false },
     });
-    expect(r.status).toBe(403);
+    expect(r.status).toBe(200);
+    const cfg = (r.body as { config: SerializedConfig }).config;
+    expect(cfg.enabled).toBe(false);
+    // ownerId is re-asserted from the stored row, never from the caller.
+    expect(cfg.ownerId).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -733,7 +840,7 @@ describe('@ax/mcp-client admin routes', () => {
     expect(get.status).toBe(404);
   });
 
-  it('DELETE other user’s config → 404', async () => {
+  it('DELETE other user’s config by a non-admin → 403 (TASK-848 admin gate)', async () => {
     const cookieA = await signIn(stack);
     await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie: cookieA,
@@ -743,7 +850,12 @@ describe('@ax/mcp-client admin routes', () => {
     const r = await http(stack.port, 'DELETE', '/admin/mcp-servers/a-only-del', {
       cookie: cookieB,
     });
-    expect(r.status).toBe(404);
+    expect(r.status).toBe(403);
+    // Still there for the admin who owns it.
+    const still = await http(stack.port, 'GET', '/admin/mcp-servers/a-only-del', {
+      cookie: cookieA,
+    });
+    expect(still.status).toBe(200);
   });
 
   it('DELETE own config purges every declared header credential', async () => {
@@ -875,7 +987,7 @@ describe('@ax/mcp-client admin routes', () => {
     });
   });
 
-  it('POST :id/test (other user’s config) → 404', async () => {
+  it('POST :id/test (other user’s config) by a non-admin → 403', async () => {
     const cookieA = await signIn(stack);
     await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie: cookieA,
@@ -885,7 +997,7 @@ describe('@ax/mcp-client admin routes', () => {
     const r = await http(stack.port, 'POST', '/admin/mcp-servers/a-only-test/test', {
       cookie: cookieB,
     });
-    expect(r.status).toBe(404);
+    expect(r.status).toBe(403);
   });
 
   it('POST :id/test (connection failure) → 200 ok:false with sanitized error', async () => {
