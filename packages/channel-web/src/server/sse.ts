@@ -482,13 +482,33 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // continuation never rendered until the next send. A turn-end that names
     // no reqId (a turn run dark, with no stream to address) keeps the old
     // conversation-only match, so nothing that used to close us now hangs.
-    deps.bus.subscribe<{ reqId?: string; reason?: string; saveRefused?: unknown }>(
+    //
+    // TASK-785 — OR when the turn-end lists this stream's reqId in
+    // `foldedReqIds`. A message sent mid-reply can be folded into the running
+    // turn; that turn answers it and ends under its OWN reqId, so this stream
+    // never sees a turn-end naming it and used to hang until chat:end. The
+    // runner names the folded ids on the turn-ends of the turn that answered
+    // them. Still conversation-scoped above, and the list is runner-written
+    // (untrusted), so only a real array of exact matches counts.
+    deps.bus.subscribe<{
+      reqId?: string;
+      reason?: string;
+      saveRefused?: unknown;
+      foldedReqIds?: unknown;
+    }>(
       'chat:turn-end',
       turnEndSubKey,
       async (ctx, payload) => {
         if (ctx.conversationId !== conversationId) return undefined;
         const endedReqId = payload?.reqId;
-        if (typeof endedReqId === 'string' && endedReqId.length > 0 && endedReqId !== reqId) {
+        const folded = payload?.foldedReqIds;
+        const foldedHere = Array.isArray(folded) && folded.includes(reqId);
+        if (
+          !foldedHere &&
+          typeof endedReqId === 'string' &&
+          endedReqId.length > 0 &&
+          endedReqId !== reqId
+        ) {
           return undefined;
         }
         // TASK-720 — the host refused this turn's end-of-turn save and the
