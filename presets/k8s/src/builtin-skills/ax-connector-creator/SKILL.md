@@ -56,8 +56,7 @@ Figure out:
   - **CLI tool** — a binary fetched via `npx` / `uvx` / `pip` (e.g. the
     Salesforce `sf` CLI, GitLab `glab`). Fill: `packages` + usually `hosts`
     (the CLI's network reach) + a `slot`.
-  - **MCP server** — a service speaking MCP, over `http` (a URL) or `stdio` (a
-    local binary). Fill: `mcpServers`.
+  - **MCP server** — a service speaking MCP over `http` (a URL). Fill: `mcpServers`. Local (stdio) MCP servers are not supported.
   - A connector can mix these, but most are one mechanism.
 - **Whose key?** This is the `keyMode`, and it's important:
   - `personal` — each user supplies **their own** key the first time they use
@@ -191,7 +190,7 @@ connector_propose({
 })
 ```
 
-(Mechanism details — transport, url, command, args — live *inside* each
+(Mechanism details — transport, url — live *inside* each
 `mcpServers` entry, never as top-level connector fields.)
 
 ## A connector vs. a skill

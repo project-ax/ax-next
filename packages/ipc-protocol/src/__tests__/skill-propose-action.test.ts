@@ -38,6 +38,18 @@ describe('TASK-74 skill.propose IPC schemas', () => {
       expect(r.success).toBe(true);
     });
 
+    it('accepts an http MCP server in the capability proposal and rejects a stdio one', () => {
+      const withMcp = (mcp: Record<string, unknown>) =>
+        SkillProposeRequestSchema.safeParse({
+          ...validReq,
+          capabilityProposal: { ...emptyCaps, mcpServers: [mcp] },
+        });
+      const http = { name: 'srv', transport: 'http', url: 'https://mcp.example.com', allowedHosts: [], credentials: [] };
+      const stdio = { name: 'srv', transport: 'stdio', command: 'npx', allowedHosts: [], credentials: [] };
+      expect(withMcp(http).success).toBe(true);
+      expect(withMcp(stdio).success).toBe(false);
+    });
+
     it('accepts up to 16 extra files', () => {
       const files = Array.from({ length: 16 }, (_, i) => ({
         path: `scripts/f${i}.py`,

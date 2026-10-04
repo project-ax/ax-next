@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { CapabilitiesSchema } from '../index.js';
 import type {
   Capabilities,
   SkillCapabilities,
@@ -44,7 +45,7 @@ describe('neutral Capabilities export (shared with @ax/connectors)', () => {
     const slot: CapabilitySlot = { slot: 'API_KEY', kind: 'api-key' };
     const mcp: McpServerSpec = {
       name: 'srv',
-      transport: 'stdio',
+      transport: 'http',
       allowedHosts: [],
       credentials: [slot],
     };
@@ -61,5 +62,13 @@ describe('neutral Capabilities export (shared with @ax/connectors)', () => {
     expect(caps.mcpServers[0]?.name).toBe('srv');
     expect(caps.packages.npm).toEqual([]);
     expect(caps.services).toEqual([]);
+  });
+
+  it('CapabilitiesSchema accepts an http MCP server and rejects a stdio one', () => {
+    const base = { allowedHosts: [], credentials: [], packages: { npm: [], pypi: [] }, services: [] };
+    const http = { name: 'srv', transport: 'http', url: 'https://mcp.example.com', allowedHosts: [], credentials: [] };
+    const stdio = { name: 'srv', transport: 'stdio', command: 'npx', allowedHosts: [], credentials: [] };
+    expect(CapabilitiesSchema.safeParse({ ...base, mcpServers: [http] }).success).toBe(true);
+    expect(CapabilitiesSchema.safeParse({ ...base, mcpServers: [stdio] }).success).toBe(false);
   });
 });

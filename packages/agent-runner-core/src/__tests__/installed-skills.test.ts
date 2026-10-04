@@ -278,37 +278,8 @@ describe('materializeInstalledSkillsFromEnv', () => {
   // Phase B (capabilities.mcpServers) — materialize a per-skill `.mcp.json`
   // alongside SKILL.md; the claude-sdk runner loads it into `query()`'s
   // `mcpServers` (TASK-760 — the SDK never reads it). Empty / absent mcpServers must NOT create
-  // the file. http and stdio transports produce different JSON shapes.
+  // the file.
   // -------------------------------------------------------------------------
-
-  it('writes .mcp.json alongside SKILL.md when the skill declares mcpServers', async () => {
-    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      {
-        id: 'github',
-        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
-        mcpServers: [
-          {
-            name: 'github',
-            transport: 'stdio',
-            command: 'npx',
-            args: ['-y', 'pkg'],
-            env: {},
-            allowedHosts: [],
-            credentials: [],
-          },
-        ],
-      },
-    ]);
-    await materializeInstalledSkillsFromEnv();
-    const mcpJson = JSON.parse(
-      await fs.readFile(path.join(tmpRoot, 'skills', 'github', '.mcp.json'), 'utf8'),
-    );
-    expect(mcpJson.mcpServers.github).toEqual({
-      command: 'npx',
-      args: ['-y', 'pkg'],
-      env: {},
-    });
-  });
 
   it('does NOT write .mcp.json when the skill has no mcpServers', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
@@ -349,26 +320,34 @@ describe('materializeInstalledSkillsFromEnv', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Transport-specific invariants + array caps (Phase B follow-up).
+  // Transport invariants (Phase B follow-up).
   //
   // validateMcpEntry is the runner's trust-boundary defense. A buggy or
-  // compromised host could otherwise smuggle a cross-contaminated entry
-  // (stdio with url, http with command, etc.) or an unbounded args/env
-  // through to .mcp.json. These tests pin the rejection paths.
+  // compromised host could otherwise smuggle a stdio entry, or an http entry
+  // carrying the removed stdio-only fields, through to .mcp.json. These tests
+  // pin the rejection paths.
   // -------------------------------------------------------------------------
 
-  it('throws when stdio mcpServers entry is missing command', async () => {
+  it('throws when an mcpServers entry uses stdio (no longer supported)', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'github',
         files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [
-          { name: 'github', transport: 'stdio', allowedHosts: [], credentials: [] },
+          {
+            name: 'github',
+            transport: 'stdio',
+            command: 'npx',
+            args: ['-y', 'pkg'],
+            env: {},
+            allowedHosts: [],
+            credentials: [],
+          },
         ],
       },
     ]);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
-      /stdio.*missing required 'command'/,
+      /'github' uses stdio, which is no longer supported/,
     );
   });
 
@@ -384,28 +363,6 @@ describe('materializeInstalledSkillsFromEnv', () => {
     ]);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
       /http.*missing required 'url'/,
-    );
-  });
-
-  it('throws when stdio mcpServers entry also sets url (cross-contamination)', async () => {
-    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      {
-        id: 'github',
-        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
-        mcpServers: [
-          {
-            name: 'github',
-            transport: 'stdio',
-            command: 'npx',
-            url: 'https://evil.example.com',
-            allowedHosts: [],
-            credentials: [],
-          },
-        ],
-      },
-    ]);
-    await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
-      /stdio.*must not set 'url'/,
     );
   });
 
@@ -428,51 +385,6 @@ describe('materializeInstalledSkillsFromEnv', () => {
     ]);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
       /http.*must not set 'command'/,
-    );
-  });
-
-  it('throws when mcpServers entry args has more than 32 entries', async () => {
-    const tooMany = Array.from({ length: 33 }, (_, i) => `a${i}`);
-    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      {
-        id: 'github',
-        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
-        mcpServers: [
-          {
-            name: 'github',
-            transport: 'stdio',
-            command: 'npx',
-            args: tooMany,
-            allowedHosts: [],
-            credentials: [],
-          },
-        ],
-      },
-    ]);
-    await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
-      /too many args/,
-    );
-  });
-
-  it('throws when mcpServers entry has an arg longer than 256 chars', async () => {
-    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      {
-        id: 'github',
-        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
-        mcpServers: [
-          {
-            name: 'github',
-            transport: 'stdio',
-            command: 'npx',
-            args: ['x'.repeat(257)],
-            allowedHosts: [],
-            credentials: [],
-          },
-        ],
-      },
-    ]);
-    await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
-      /arg over 256 chars/,
     );
   });
 });

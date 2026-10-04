@@ -1202,7 +1202,7 @@ real cluster.
 
 A skill that declares `capabilities.mcpServers` produces a per-skill
 `.mcp.json` next to `SKILL.md` inside the runner. The Claude SDK
-auto-discovers the file, spawns the bundled MCP server in the sandbox,
+auto-discovers the file, connects to the remote (http) MCP server it names,
 and exposes its tools to the model. Validates the orchestrator → sandbox
 → runner materialization wiring end-to-end.
 
@@ -1210,10 +1210,12 @@ and exposes its tools to the model. Validates the orchestrator → sandbox
 
 Same as the Phase 1 skill-install scenario above (clean `kind ax-next-dev`
 cluster, an admin account, and a test agent). The MCP server used here is
-`@modelcontextprotocol/server-everything`, a no-credentials reference
-server that prints a few demo tools — it's fetched via `npx -y` at session
-start, so the runner pod needs outbound network reach to npm (already true
-on the goldenpath kind cluster).
+a remote, no-credentials streamable-HTTP server. `https://mcp.example.com`
+below is a placeholder: swap in the URL of a server you can reach, such as
+a deployment of the `@modelcontextprotocol/server-everything` reference
+server, which exposes a few demo tools. stdio MCP servers (a command the
+sandbox spawns) are no longer supported, so there is nothing to `npx`; the
+runner pod only needs outbound network reach to that URL.
 
 ### Walk
 
@@ -1221,19 +1223,18 @@ on the goldenpath kind cluster).
    ```yaml
    ---
    name: everything
-   description: Bundles the @modelcontextprotocol/server-everything demo MCP server.
+   description: Points at a remote demo MCP server.
    capabilities:
      mcpServers:
        - name: everything
-         transport: stdio
-         command: npx
-         args: ['-y', '@modelcontextprotocol/server-everything']
+         transport: http
+         url: https://mcp.example.com
    ---
    Use this skill to demonstrate that MCP-bundled tools land in the session.
    ```
    The preview pane should show the skill name `everything`, no
    allowedHosts chips, no credential slot chips, and an MCP-server chip
-   `everything (stdio: npx)`. Click Install.
+   `everything (http)`. Click Install.
 2. Navigate to Admin → Agents → test agent → Skills section. Attach the
    `everything` skill. No credential bindings are needed (the skill
    declares zero `capabilities.credentials`). Save.
@@ -1253,9 +1254,8 @@ on the goldenpath kind cluster).
    {
      "mcpServers": {
        "everything": {
-         "command": "npx",
-         "args": ["-y", "@modelcontextprotocol/server-everything"],
-         "env": {}
+         "url": "https://mcp.example.com",
+         "type": "http"
        }
      }
    }
@@ -1281,8 +1281,7 @@ on the goldenpath kind cluster).
 
 ```bash
 # Detach + delete the test skill + delete the test agent via the admin UI.
-# The MCP server binary was npx-fetched into the pod's npm cache; pod
-# teardown removes it.
+# The MCP server is remote, so there is nothing to clean up in the pod.
 ```
 
 ## Scenario: Skill versioning + refresh (Phase C — sourceUrl)

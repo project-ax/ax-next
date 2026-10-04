@@ -29,11 +29,9 @@ function validBaseInput(): unknown {
         files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [
           {
-            name: 'github',
-            transport: 'stdio',
-            command: 'npx',
-            args: ['-y', 'pkg'],
-            env: {},
+            name: 'remote',
+            transport: 'http',
+            url: 'https://mcp.example.com',
             allowedHosts: [],
             credentials: [],
           },
@@ -65,11 +63,9 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
     // rejection cases.
     const result = OpenSessionInputSchema.safeParse(
       withMcpServer({
-        name: 'GitHub',
-        transport: 'stdio',
-        command: 'npx',
-        args: [],
-        env: {},
+        name: 'Remote',
+        transport: 'http',
+        url: 'https://mcp.example.com',
         allowedHosts: [],
         credentials: [],
       }),
@@ -77,14 +73,12 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects an mcpServers entry whose transport is neither stdio nor http', () => {
+  it('rejects an mcpServers entry whose transport is not http', () => {
     const result = OpenSessionInputSchema.safeParse(
       withMcpServer({
-        name: 'github',
+        name: 'remote',
         transport: 'websocket',
-        command: 'npx',
-        args: [],
-        env: {},
+        url: 'https://mcp.example.com',
         allowedHosts: [],
         credentials: [],
       }),
@@ -92,33 +86,12 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects an mcpServers entry whose args array has more than 32 entries', () => {
-    // 33 single-char entries trips the .max(32) on the array.
-    const args = Array.from({ length: 33 }, (_, i) => `a${i}`);
+  it('rejects a stdio mcpServers entry (transport removed)', () => {
     const result = OpenSessionInputSchema.safeParse(
       withMcpServer({
-        name: 'github',
+        name: 'local',
         transport: 'stdio',
         command: 'npx',
-        args,
-        env: {},
-        allowedHosts: [],
-        credentials: [],
-      }),
-    );
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects an mcpServers entry whose individual arg string is longer than 256 chars', () => {
-    // .max(256) on the per-string length — a 257-char arg trips it.
-    const longArg = 'x'.repeat(257);
-    const result = OpenSessionInputSchema.safeParse(
-      withMcpServer({
-        name: 'github',
-        transport: 'stdio',
-        command: 'npx',
-        args: [longArg],
-        env: {},
         allowedHosts: [],
         credentials: [],
       }),
@@ -132,10 +105,8 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
     // surface is the array length.
     const tooMany = Array.from({ length: 9 }, (_, i) => ({
       name: `srv-${i}`,
-      transport: 'stdio' as const,
-      command: 'npx',
-      args: [],
-      env: {},
+      transport: 'http' as const,
+      url: 'https://mcp.example.com',
       allowedHosts: [],
       credentials: [],
     }));
@@ -148,45 +119,11 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Transport-specific invariants (.refine on McpServerSchema). The base
-  // schema's optional command/url fields let the structural type
-  // accept malformed shapes — the .refine pins the transport contract:
-  //   stdio → command required (non-empty), url forbidden
-  //   http  → url required, command/args/env forbidden
-  // Without these tests, a future refine regression would silently expand
-  // the wire surface (e.g. accept a stdio entry with no command and pass
-  // it to the runner pod which then writes a broken .mcp.json).
+  // Transport invariants (http only). An entry needs a url and must not carry
+  // the removed stdio-only command/args/env fields. Without these tests, a
+  // regression would silently expand the wire surface (e.g. pass a command
+  // through to the runner pod, which then writes a broken .mcp.json).
   // -------------------------------------------------------------------------
-
-  it('rejects a stdio mcpServers entry that is missing command', () => {
-    const result = OpenSessionInputSchema.safeParse(
-      withMcpServer({
-        name: 'github',
-        transport: 'stdio',
-        // command omitted
-        args: [],
-        env: {},
-        allowedHosts: [],
-        credentials: [],
-      }),
-    );
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects a stdio mcpServers entry with an empty command', () => {
-    const result = OpenSessionInputSchema.safeParse(
-      withMcpServer({
-        name: 'github',
-        transport: 'stdio',
-        command: '',
-        args: [],
-        env: {},
-        allowedHosts: [],
-        credentials: [],
-      }),
-    );
-    expect(result.success).toBe(false);
-  });
 
   it('rejects an http mcpServers entry that is missing url', () => {
     const result = OpenSessionInputSchema.safeParse(
@@ -194,22 +131,6 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
         name: 'remote',
         transport: 'http',
         // url omitted
-        allowedHosts: [],
-        credentials: [],
-      }),
-    );
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects a stdio mcpServers entry that also sets url (cross-contamination)', () => {
-    const result = OpenSessionInputSchema.safeParse(
-      withMcpServer({
-        name: 'github',
-        transport: 'stdio',
-        command: 'npx',
-        url: 'https://evil.example.com',
-        args: [],
-        env: {},
         allowedHosts: [],
         credentials: [],
       }),

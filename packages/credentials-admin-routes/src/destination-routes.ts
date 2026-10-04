@@ -34,7 +34,7 @@ import { validateProviderKey } from './provider-validator.js';
 //
 // The :destinationKind URL param must match destination.kind in the body
 // (400 otherwise). This guards against routing confusion where a client
-// sends a mcp-env body to the provider endpoint.
+// sends an account body to the provider endpoint.
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/credentials-admin-routes/destinations';
@@ -69,10 +69,6 @@ export function refForDestination(dest: Destination): string {
       assertNoColon('skillId', dest.skillId);
       assertNoColon('slot', dest.slot);
       return `skill:${dest.skillId}:${dest.slot}`;
-    case 'mcp-env':
-      assertNoColon('serverId', dest.serverId);
-      assertNoColon('envName', dest.envName);
-      return `mcp:${dest.serverId}:env:${dest.envName}`;
     case 'mcp-header':
       assertNoColon('serverId', dest.serverId);
       assertNoColon('headerName', dest.headerName);
@@ -125,13 +121,6 @@ const DestinationSchema = z.discriminatedUnion('kind', [
       kind: z.literal('skill-slot'),
       skillId: z.string().min(1).max(128),
       slot: z.string().min(1).max(64),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('mcp-env'),
-      serverId: z.string().min(1).max(64),
-      envName: z.string().min(1).max(64),
     })
     .strict(),
   z
@@ -259,7 +248,7 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     const data = result.data;
 
     // URL param guard: destination.kind must match the :destinationKind route
-    // param so a client can't accidentally route a mcp-env payload to the
+    // param so a client can't accidentally route an account payload to the
     // provider endpoint and get a silently wrong ref.
     if (data.destination.kind !== req.params.destinationKind) {
       res

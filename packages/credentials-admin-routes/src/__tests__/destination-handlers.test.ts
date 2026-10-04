@@ -262,6 +262,61 @@ describe('destination credential handlers', () => {
     expect(out.credentials.find((c) => c.ref === 'provider:nope')).toBeUndefined();
   });
 
+  it('POST /admin: rejects a removed mcp-env destination with 400 and stores nothing', async () => {
+    // stdio MCP servers were removed (2026-10-04); `mcp-env` only ever held a
+    // stdio server's env secret. The kind is gone from the schema, so a client
+    // still sending it gets a validation error before any credential is written.
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'mcp-env' },
+        body: {
+          destination: { kind: 'mcp-env', serverId: 'gh', envName: 'GH_TOKEN' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('secret').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(out.credentials.find((c) => c.ref === 'mcp:gh:env:GH_TOKEN')).toBeUndefined();
+  });
+
+  it('DELETE /admin: rejects a removed mcp-env destination with 400', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.destroy(
+      mkReq({
+        params: { destinationKind: 'mcp-env' },
+        body: {
+          destination: { kind: 'mcp-env', serverId: 'gh', envName: 'GH_TOKEN' },
+          scope: 'global',
+          ownerId: null,
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+  });
+
   it('POST /admin: computes deterministic ref for skill-slot destination', async () => {
     const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
@@ -324,7 +379,7 @@ describe('destination credential handlers', () => {
 
     await handlers.create(
       mkReq({
-        params: { destinationKind: 'mcp-env' }, // route says mcp-env
+        params: { destinationKind: 'mcp-header' }, // route says mcp-header
         body: {
           destination: { kind: 'provider', provider: 'anthropic' }, // body says provider
           scope: 'global',
@@ -743,7 +798,7 @@ describe('destination credential handlers', () => {
 
     await handlers.destroy(
       mkReq({
-        params: { destinationKind: 'mcp-env' }, // route says mcp-env
+        params: { destinationKind: 'mcp-header' }, // route says mcp-header
         body: {
           destination: { kind: 'provider', provider: 'anthropic' }, // body says provider
           scope: 'global',

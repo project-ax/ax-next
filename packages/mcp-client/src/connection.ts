@@ -210,7 +210,7 @@ export class McpConnection {
     } catch (err) {
       this._state = 'unhealthy';
       // Best-effort cleanup: if we built a transport before failing, try
-      // to close it so we don't leak an open socket / subprocess. Ignore
+      // to close it so we don't leak an open socket. Ignore
       // errors — we're already on the failure path.
       if (this.transport !== undefined) {
         try {
@@ -331,7 +331,7 @@ export class McpConnection {
       // the transport might have errored out. We've already committed to
       // the 'closed' state and we don't rethrow (callers in `finally`
       // blocks shouldn't have to guard against it), but a failed close
-      // can mean a wedged transport or stuck subprocess. Log a warning
+      // can mean a wedged transport. Log a warning
       // so operators can see it rather than silently swallowing.
       this.opts.ctx.logger.warn('mcp_disconnect_close_failed', {
         serverId: this.serverId,

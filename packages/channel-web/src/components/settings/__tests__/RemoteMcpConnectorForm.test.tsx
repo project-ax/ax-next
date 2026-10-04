@@ -676,25 +676,13 @@ describe('remote connector editor', () => {
       ).toHaveLength(1);
     });
   });
-  it.each(['api', 'cli', 'stdio'] as const)(
+  it.each(['api', 'cli'] as const)(
     'keeps the %s connector editor reachable without converting it to remote MCP',
     async (mechanism) => {
       // A redundant fetch must not leave Save operating on summary-only data.
       stallRepeatedConnectorLoad = true;
       fixture.capabilities.credentials = [];
-      fixture.capabilities.mcpServers =
-        mechanism === 'stdio'
-          ? [
-              {
-                name: 'local',
-                transport: 'stdio',
-                command: 'node',
-                args: ['server.js'],
-                allowedHosts: [],
-                credentials: [],
-              },
-            ]
-          : [];
+      fixture.capabilities.mcpServers = [];
       fixture.capabilities.packages = {
         npm: mechanism === 'cli' ? ['example-cli'] : [],
         pypi: [],
@@ -712,6 +700,17 @@ describe('remote connector editor', () => {
       expect(connectorReads).toBe(1);
     },
   );
+
+  it('opens a connector with several http MCP servers in the remote form', async () => {
+    // With stdio gone every MCP server is http; a multi-server connector still
+    // routes to the remote form (the Server URL field is shown).
+    fixture.capabilities.mcpServers = [
+      { name: 'remote', transport: 'http', url: 'https://mcp.example.com/a', allowedHosts: [], credentials: [] },
+      { name: 'second', transport: 'http', url: 'https://mcp.example.com/b', allowedHosts: [], credentials: [] },
+    ];
+    render(<ConnectorEditDialog {...props()} />);
+    expect(await screen.findByLabelText('Server URL')).toBeInTheDocument();
+  });
 });
 
 describe('tool permissions (TASK-737)', () => {

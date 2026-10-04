@@ -138,7 +138,6 @@ function destinationService(d: Destination): string | undefined {
       return d.service;
     case 'skill-slot':
       return d.skillId;
-    case 'mcp-env':
     case 'mcp-header':
       return d.serverId;
     case 'routine-hmac':
@@ -163,7 +162,6 @@ function humanDestination(d: Destination): string {
       return label;
     case 'skill-slot':
       return `the ${label} skill`;
-    case 'mcp-env':
     case 'mcp-header':
       return `the ${label} server`;
     case 'routine-hmac':

@@ -19,7 +19,7 @@ import type { ToolNamespaceEntry } from './tool-namespace.js';
  * register the same `connectors:*` service hooks with these exact shapes.
  *
  * Mechanism-agnostic by construction: a connector's BACKING mechanism (MCP
- * over http/stdio, a CLI package, a direct API) lives ONLY inside the
+ * over http, a CLI package, a direct API) lives ONLY inside the
  * `Capabilities` spec (allowedHosts / credentials / mcpServers / packages).
  * The connector's own first-class fields — `keyMode` / `visibility` /
  * `usageNote` — are storage-agnostic, so no `transport` / `command` / `stdio`
@@ -123,10 +123,7 @@ const CapabilitySlotSchema = z.discriminatedUnion('kind', [
 
 const McpServerSpecSchema = z.object({
   name: z.string(),
-  transport: z.union([z.literal('stdio'), z.literal('http')]),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
+  transport: z.literal('http'),
   url: z.string().optional(),
   allowedHosts: z.array(z.string()),
   credentials: z.array(CapabilitySlotSchema),
@@ -562,7 +559,7 @@ export interface InstallAuthoredInput {
   slots: AuthoredConnectorSlot[];
   /** CLI/binary backing (public registries). Defaults to empty. */
   packages?: { npm?: string[]; pypi?: string[] };
-  /** MCP backing (http/stdio). Defaults to empty. */
+  /** MCP backing (http). Defaults to empty. */
   mcpServers?: McpServerSpec[];
   /** Light "how to use me" blurb. Defaults to ''. */
   usageNote?: string;

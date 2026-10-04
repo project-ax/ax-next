@@ -28,7 +28,7 @@
 // `client.callTool('read_file', ...)` on the right connection.
 //
 // Every descriptor is marked `executesIn: 'host'` — MCP tools run on the
-// host side (the plugin forwards calls out over stdio/http/sse), never in
+// host side (the plugin forwards calls out over streamable-http/sse), never in
 // the sandbox.
 // ---------------------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-import type { CapabilitySlot, Connector, KeyMode } from './types.js';
+import type { Capabilities, CapabilitySlot, Connector, KeyMode } from './types.js';
 
 // ---------------------------------------------------------------------------
 // TASK-96 — reach-by-attachment + connector keyMode connect flow (design Phase 3).
@@ -129,7 +129,9 @@ function scopeForKeyMode(keyMode: KeyMode): Extract<CredentialScope, 'user' | 'g
  * `account:<service>:<slot>` ref per slot, fixing the prior collision where two
  * slots that fall back to the same service tag overwrote each other on one row.
  */
-export function deriveCredentialPlan(connector: Connector): CredentialPlanEntry[] {
+export function deriveCredentialPlan(
+  connector: Pick<Connector, 'id' | 'keyMode'> & { capabilities: Pick<Capabilities, 'credentials'> },
+): CredentialPlanEntry[] {
   const scope = scopeForKeyMode(connector.keyMode);
   const isMulti = connector.capabilities.credentials.filter((slot) => slot.kind !== 'api-key' || !slot.headerName).length >= 2;
   return connector.capabilities.credentials.map((slot) => {

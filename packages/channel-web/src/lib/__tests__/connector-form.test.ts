@@ -36,13 +36,13 @@ const baseConnector = (over: Partial<Connector> = {}): Connector => ({
 });
 
 describe('connector-form helpers', () => {
-  it('emptyConnectorForm is a shared, personal MCP/stdio form', () => {
+  it('emptyConnectorForm is a shared, personal MCP form with no url yet', () => {
     const f = emptyConnectorForm();
     expect(f.keyMode).toBe('personal');
     expect(f.visibility).toBe('shared');
     expect(f).not.toHaveProperty('defaultAttached');
     expect(f.mechanism).toBe('mcp');
-    expect(f.transport).toBe('stdio');
+    expect(f.url).toBe('');
     expect(f.credentialSlots).toEqual([]);
     expect(f.packageRegistry).toBe('npm');
     expect(f.packageName).toBe('');
@@ -75,7 +75,6 @@ describe('connector-form helpers', () => {
       ...emptyConnectorForm(),
       name: 'Linear (OAuth)',
       mechanism: 'mcp',
-      transport: 'http',
       url: 'https://mcp.linear.app/mcp',
       visibility: 'shared',
       // The author toggled the slot to oauth + named it + scoped it, but never
@@ -103,7 +102,6 @@ describe('connector-form helpers', () => {
       ...emptyConnectorForm(),
       name: 'Multi',
       mechanism: 'mcp',
-      transport: 'http',
       url: 'https://a.example.com/mcp',
       credentialSlots: [
         { slot: 'TOK', description: '', kind: 'oauth', server: 'explicit-srv', scopes: '' },
@@ -126,9 +124,8 @@ describe('connector-form helpers', () => {
         mcpServers: [
           {
             name: 'gdrive',
-            transport: 'stdio',
-            command: 'mcp-gdrive',
-            args: ['--flag', 'x'],
+            transport: 'http',
+            url: 'https://mcp.example.com/gdrive',
             allowedHosts: [],
             credentials: [],
           },
@@ -139,16 +136,14 @@ describe('connector-form helpers', () => {
     expect(f.mechanism).toBe('mcp');
     expect(f.keyMode).toBe('workspace');
     expect(f.visibility).toBe('shared');
-    expect(f.transport).toBe('stdio');
-    expect(f.command).toBe('mcp-gdrive');
-    expect(f.args).toBe('--flag x');
+    expect(f.url).toBe('https://mcp.example.com/gdrive');
     expect(f.allowedHosts).toBe('drive.googleapis.com');
     expect(f.credentialSlots).toEqual([
       { slot: 'token', description: '', kind: 'api-key' },
     ]);
   });
 
-  it('formFromConnector infers http MCP and reads the url', () => {
+  it('formFromConnector reads the url of a bare http MCP connector', () => {
     const c = baseConnector({
       capabilities: {
         ...emptyCapabilities(),
@@ -165,7 +160,6 @@ describe('connector-form helpers', () => {
     });
     const f = formFromConnector(c);
     expect(f.mechanism).toBe('mcp');
-    expect(f.transport).toBe('http');
     expect(f.url).toBe('https://mcp.example.com');
   });
 
@@ -219,14 +213,12 @@ describe('connector-form helpers', () => {
 
   // --- capabilitiesFromForm per mechanism ---------------------------------
 
-  it('mcp/stdio builds the leading mcp server, no packages', () => {
+  it('mcp builds the leading http server, unions typed hosts with the url host, no packages', () => {
     const f: ConnectorFormState = {
       ...emptyConnectorForm(),
       name: 'GDrive',
       mechanism: 'mcp',
-      transport: 'stdio',
-      command: 'mcp-gdrive',
-      args: 'a b',
+      url: ' https://mcp.example.com/gdrive ',
       allowedHosts: 'drive.googleapis.com, www.googleapis.com',
       credentialSlots: [{ slot: 'token', description: '', kind: 'api-key' }],
     };
@@ -234,28 +226,48 @@ describe('connector-form helpers', () => {
     expect(caps.allowedHosts).toEqual([
       'drive.googleapis.com',
       'www.googleapis.com',
+      'mcp.example.com',
     ]);
     expect(caps.credentials).toEqual([{ slot: 'token', kind: 'api-key' }]);
-    expect(caps.mcpServers).toHaveLength(1);
-    expect(caps.mcpServers[0]!.transport).toBe('stdio');
-    expect(caps.mcpServers[0]!.command).toBe('mcp-gdrive');
-    expect(caps.mcpServers[0]!.args).toEqual(['a', 'b']);
+    expect(caps.mcpServers).toEqual([
+      {
+        name: 'gdrive',
+        transport: 'http',
+        url: 'https://mcp.example.com/gdrive',
+        allowedHosts: [],
+        credentials: [],
+      },
+    ]);
     expect(caps.packages).toEqual({ npm: [], pypi: [] });
   });
 
-  it('mcp/http builds the leading mcp server with a url', () => {
+  it('mcp with a blank url builds no leading server', () => {
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'Blank',
+      mechanism: 'mcp',
+      url: '   ',
+    };
+    expect(capabilitiesFromForm(f).mcpServers).toEqual([]);
+  });
+
+  it('mcp/http builds the leading mcp server with a url (and nothing else about how to start it)', () => {
     const f: ConnectorFormState = {
       ...emptyConnectorForm(),
       name: 'Remote',
       mechanism: 'mcp',
-      transport: 'http',
       url: 'https://mcp.example.com',
     };
     const caps = capabilitiesFromForm(f);
-    expect(caps.mcpServers).toHaveLength(1);
-    expect(caps.mcpServers[0]!.transport).toBe('http');
-    expect(caps.mcpServers[0]!.url).toBe('https://mcp.example.com');
-    expect(caps.mcpServers[0]!.command).toBeUndefined();
+    expect(caps.mcpServers).toEqual([
+      {
+        name: 'remote',
+        transport: 'http',
+        url: 'https://mcp.example.com',
+        allowedHosts: [],
+        credentials: [],
+      },
+    ]);
   });
 
   it('direct-api builds top-level hosts + credentials, no mcp server, no packages', () => {
@@ -330,9 +342,8 @@ describe('connector-form helpers', () => {
       mcpServers: [
         {
           name: 'old',
-          transport: 'stdio' as const,
-          command: 'old-cmd',
-          args: [],
+          transport: 'http' as const,
+          url: 'https://old.example.com/mcp',
           allowedHosts: [],
           credentials: [],
         },
@@ -355,9 +366,8 @@ describe('connector-form helpers', () => {
       mcpServers: [
         {
           name: 'leading',
-          transport: 'stdio' as const,
-          command: 'lead',
-          args: [],
+          transport: 'http' as const,
+          url: 'https://lead.example/mcp',
           allowedHosts: [],
           credentials: [],
         },
@@ -385,17 +395,15 @@ describe('connector-form helpers', () => {
     expect(caps.packages).toEqual({ npm: ['tool'], pypi: [] });
   });
 
-  it('mcp edit PRESERVES inner env/hosts/creds + beyond-first server + beyond-first package', () => {
+  it('mcp edit PRESERVES inner hosts/creds + beyond-first server + beyond-first package', () => {
     const base = {
       ...emptyCapabilities(),
       packages: { npm: ['@org/cli', '@org/extra'], pypi: [] },
       mcpServers: [
         {
           name: 'gdrive',
-          transport: 'stdio' as const,
-          command: 'old',
-          args: [],
-          env: { FOO: 'bar' },
+          transport: 'http' as const,
+          url: 'https://old.example/mcp',
           allowedHosts: ['inner.example'],
           credentials: [{ slot: 'inner', kind: 'api-key' as const }],
         },
@@ -412,15 +420,14 @@ describe('connector-form helpers', () => {
       ...emptyConnectorForm(),
       name: 'GDrive',
       mechanism: 'mcp',
-      transport: 'stdio',
-      command: 'new-cmd',
+      url: 'https://new.example/mcp',
       baseCapabilities: base,
     };
     const caps = capabilitiesFromForm(f);
-    // leading server's command overlaid, but env + inner fields preserved
-    expect(caps.mcpServers[0]!.command).toBe('new-cmd');
-    expect(caps.mcpServers[0]!.env).toEqual({ FOO: 'bar' });
+    // leading server's url overlaid, but its inner fields preserved
+    expect(caps.mcpServers[0]!.url).toBe('https://new.example/mcp');
     expect(caps.mcpServers[0]!.allowedHosts).toEqual(['inner.example']);
+    expect(caps.mcpServers[0]!.credentials).toEqual([{ slot: 'inner', kind: 'api-key' }]);
     // beyond-first server untouched
     expect(caps.mcpServers[1]!.name).toBe('second');
     // packages: the LEADING package is dropped (it belongs to the cli mechanism,
@@ -510,7 +517,7 @@ describe('connector-form helpers', () => {
       capabilities: {
         ...emptyCapabilities(),
         mcpServers: [
-          { name: 'gdrive', transport: 'stdio', command: 'mcp-gdrive', args: [], allowedHosts: [], credentials: [] },
+          { name: 'gdrive', transport: 'http', url: 'https://mcp.example.com/gdrive', allowedHosts: [], credentials: [] },
         ],
         services: [
           { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
@@ -518,9 +525,9 @@ describe('connector-form helpers', () => {
       },
     });
     const f = formFromConnector(c);
-    // Edit something unrelated (the command), submit.
-    const caps = capabilitiesFromForm({ ...f, command: 'mcp-gdrive-v2' });
-    expect(caps.mcpServers[0]!.command).toBe('mcp-gdrive-v2');
+    // Edit something unrelated (the url), submit.
+    const caps = capabilitiesFromForm({ ...f, url: 'https://mcp.example.com/gdrive-v2' });
+    expect(caps.mcpServers[0]!.url).toBe('https://mcp.example.com/gdrive-v2');
     expect(caps.services).toEqual([
       { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
     ]);
@@ -676,14 +683,6 @@ describe('STARTER_SERVICE_EXAMPLES (TASK-159)', () => {
 });
 
 describe('endpointChangedServers (TASK-758)', () => {
-  const stdio = (name: string, command: string, args?: string[]) => ({
-    name,
-    transport: 'stdio' as const,
-    command,
-    ...(args !== undefined && { args }),
-    allowedHosts: [],
-    credentials: [],
-  });
   const http = (name: string, url: string) => ({
     name,
     transport: 'http' as const,
@@ -692,19 +691,15 @@ describe('endpointChangedServers (TASK-758)', () => {
     credentials: [],
   });
 
-  it('names a kept-name server whose command, args, url or transport changed', () => {
-    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'y', ['1'])])).toEqual(['a']);
-    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'x', ['2'])])).toEqual(['a']);
+  it('names a kept-name server whose url changed', () => {
     expect(endpointChangedServers([http('a', 'https://one/')], [http('a', 'https://two/')])).toEqual(['a']);
-    expect(endpointChangedServers([stdio('a', 'x')], [http('a', 'https://one/')])).toEqual(['a']);
   });
 
-  it('ignores unchanged, added, removed and renamed servers, and no-args vs empty args', () => {
-    expect(endpointChangedServers([stdio('a', 'x', ['1'])], [stdio('a', 'x', ['1'])])).toEqual([]);
-    expect(endpointChangedServers([stdio('a', 'x')], [stdio('a', 'x', [])])).toEqual([]);
-    expect(endpointChangedServers([stdio('a', 'x')], [stdio('b', 'y')])).toEqual([]);
-    expect(endpointChangedServers([], [stdio('a', 'x')])).toEqual([]);
-    expect(endpointChangedServers([stdio('a', 'x')], [])).toEqual([]);
+  it('ignores unchanged, added, removed and renamed servers', () => {
+    expect(endpointChangedServers([http('a', 'https://one/')], [http('a', 'https://one/')])).toEqual([]);
+    expect(endpointChangedServers([http('a', 'https://one/')], [http('b', 'https://two/')])).toEqual([]);
+    expect(endpointChangedServers([], [http('a', 'https://one/')])).toEqual([]);
+    expect(endpointChangedServers([http('a', 'https://one/')], [])).toEqual([]);
   });
 });
 

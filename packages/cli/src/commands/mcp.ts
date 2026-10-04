@@ -129,9 +129,8 @@ export async function runMcpCommand(opts: RunMcpOptions): Promise<number> {
           return 0;
         }
         for (const c of configs) {
-          const target = c.transport === 'stdio' ? c.command : c.url;
           const status = c.enabled ? 'enabled' : 'disabled';
-          out(`${c.id}\t${status}\t${c.transport}\t${target}`);
+          out(`${c.id}\t${status}\t${c.transport}\t${c.url}`);
         }
         return 0;
       } catch (e) {

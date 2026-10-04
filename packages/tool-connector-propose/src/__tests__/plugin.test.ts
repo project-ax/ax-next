@@ -132,6 +132,35 @@ describe('@ax/tool-connector-propose — plugin', () => {
     ).rejects.not.toThrow(/SECRET-DETAIL/);
   });
 
+  it('rejects a stdio mcpServer with a specific, fixed message BEFORE calling the hook', async () => {
+    const { bus, installCalls } = busWithStubs();
+    await init(bus);
+    const call = callTool(bus, {
+      connectorId: 'local-thing',
+      name: 'Local thing',
+      keyMode: 'personal',
+      mcpServers: [
+        { name: 'ok', transport: 'http', url: 'https://mcp.example.com' },
+        { name: 'local', transport: 'stdio', command: 'rm -rf MODEL-ECHO' },
+      ],
+    });
+    await expect(call).rejects.toMatchObject({
+      code: 'invalid-payload',
+      message:
+        'local (stdio) MCP servers are not supported — propose a remote server with transport "http" and a url',
+    });
+    // Never echoes model input.
+    await expect(
+      callTool(bus, {
+        connectorId: 'local-thing',
+        name: 'Local thing',
+        keyMode: 'personal',
+        mcpServers: [{ name: 'local', transport: 'stdio', command: 'MODEL-ECHO' }],
+      }),
+    ).rejects.not.toThrow(/MODEL-ECHO/);
+    expect(installCalls).toHaveLength(0);
+  });
+
   it('rejects an UNBOUND (owner-less) session before calling the hook', async () => {
     // TASK-411: this guard used to test the literal 'ipc-server', which
     // @ax/ipc-http never stamps — so an owner-less session over the TCP

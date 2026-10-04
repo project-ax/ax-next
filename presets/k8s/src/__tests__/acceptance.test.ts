@@ -2923,7 +2923,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   //     handler (purgeMcpCredentials). That route requires the full
   //     http-server stack and is independently covered by
   //     mcp-client/__tests__/admin-routes.test.ts. Here we use
-  //     credentials:delete directly for the mcp-env row so the final
+  //     credentials:delete directly for an `mcp:<id>:env:<name>` row so the final
   //     list assertion still holds.
   //     CONSTRAINT: not exercisable via bus.call alone.
   //
@@ -3102,7 +3102,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           ref: 'provider:anthropic',
           kind: 'api-key', payload: credPayload,
         });
-        // Row C: global mcp-env
+        // Row C: a global `mcp:<id>:env:<name>` row
         await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
           scope: 'global', ownerId: null,
           ref: 'mcp:task21-srv:env:API-KEY',
@@ -3170,7 +3170,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // Task 15 wires purge inside the HTTP DELETE /admin/mcp-servers/:id
         // handler; that requires the full http-server stack and is covered by
         // mcp-client/__tests__/admin-routes.test.ts. Here we call
-        // credentials:delete directly to clear the mcp-env row.
+        // credentials:delete directly to clear an `mcp:<id>:env:<name>` row.
         await bus.call<CredentialsDeleteInput, void>('credentials:delete', ctx, {
           scope: 'global', ownerId: null, ref: 'mcp:task21-srv:env:API-KEY',
         });

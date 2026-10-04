@@ -1191,55 +1191,6 @@ describe('sandbox:open-session', () => {
   // a runner-only fix can't silently fix-by-coincidence here.
   // ---------------------------------------------------------------------
 
-  it('writes .mcp.json next to SKILL.md when a skill declares stdio mcpServers (Phase B)', async () => {
-    const ws = await mkWorkspace();
-    const h = await makeHarness();
-    const ctx = h.ctx();
-    const result = await h.bus.call<unknown, OpenSessionResult>(
-      'sandbox:open-session',
-      ctx,
-      {
-        sessionId: 'mcp-stdio-1',
-        workspaceRoot: ws,
-        runnerBinary: ECHO_STUB,
-        installedSkills: [
-          {
-            id: 'github',
-            files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
-            mcpServers: [
-              {
-                name: 'github',
-                transport: 'stdio',
-                command: 'npx',
-                args: ['-y', 'pkg'],
-                env: { TOKEN: 'x' },
-                allowedHosts: [],
-                credentials: [],
-              },
-            ],
-          },
-        ],
-      },
-    );
-    const line = await readFirstStdoutLine(result);
-    const parsed = JSON.parse(line) as Record<string, string | null>;
-    const ccd = parsed.CLAUDE_CONFIG_DIR as string;
-    const mcpJsonPath = path.join(ccd, 'skills', 'github', '.mcp.json');
-
-    const mcpJson = JSON.parse(await fs.readFile(mcpJsonPath, 'utf8')) as {
-      mcpServers: Record<string, unknown>;
-    };
-    expect(mcpJson.mcpServers.github).toEqual({
-      command: 'npx',
-      args: ['-y', 'pkg'],
-      env: { TOKEN: 'x' },
-    });
-
-    await result.handle.kill();
-    await result.handle.exited;
-    await fs.rm(ws, { recursive: true, force: true });
-  });
-
   it('does NOT write .mcp.json when the skill has empty mcpServers (Phase B)', async () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();
@@ -1297,10 +1248,8 @@ describe('sandbox:open-session', () => {
             mcpServers: [
               {
                 name: 'github',
-                transport: 'stdio',
-                command: 'npx',
-                args: [],
-                env: {},
+                transport: 'http',
+                url: 'https://mcp.example.com',
                 allowedHosts: [],
                 credentials: [],
               },
@@ -1325,21 +1274,21 @@ describe('sandbox:open-session', () => {
   // ---------------------------------------------------------------------
   // Transport-specific invariants on the wire schema (Phase B follow-up).
   //
-  // McpServerSchema's .refine() pins:
-  //   stdio → command required (non-empty), url forbidden
+  // McpServerSchema pins (http only):
+  //   stdio → rejected (transport removed)
   //   http  → url required, command/args/env forbidden
   // These tests go through bus.call so the PluginError(invalid-payload)
   // code path is also exercised end-to-end at the sandbox boundary.
   // ---------------------------------------------------------------------
 
-  it('rejects a stdio mcpServers entry that is missing command (Phase B)', async () => {
+  it('rejects a stdio mcpServers entry (Phase B, transport removed)', async () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();
     const ctx = h.ctx();
     let caught: unknown;
     try {
       await h.bus.call('sandbox:open-session', ctx, {
-        sessionId: 'mcp-stdio-no-cmd',
+        sessionId: 'mcp-stdio-rejected',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
         installedSkills: [
@@ -1350,7 +1299,7 @@ describe('sandbox:open-session', () => {
               {
                 name: 'github',
                 transport: 'stdio',
-                // command omitted
+                command: 'npx',
                 allowedHosts: [],
                 credentials: [],
               },
@@ -1385,41 +1334,6 @@ describe('sandbox:open-session', () => {
                 name: 'remote',
                 transport: 'http',
                 // url omitted
-                allowedHosts: [],
-                credentials: [],
-              },
-            ],
-          },
-        ],
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('invalid-payload');
-    await fs.rm(ws, { recursive: true, force: true });
-  });
-
-  it('rejects a stdio mcpServers entry that also sets url (Phase B, cross-contamination)', async () => {
-    const ws = await mkWorkspace();
-    const h = await makeHarness();
-    const ctx = h.ctx();
-    let caught: unknown;
-    try {
-      await h.bus.call('sandbox:open-session', ctx, {
-        sessionId: 'mcp-stdio-with-url',
-        workspaceRoot: ws,
-        runnerBinary: ECHO_STUB,
-        installedSkills: [
-          {
-            id: 'github',
-            files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
-            mcpServers: [
-              {
-                name: 'github',
-                transport: 'stdio',
-                command: 'npx',
-                url: 'https://evil.example.com',
                 allowedHosts: [],
                 credentials: [],
               },

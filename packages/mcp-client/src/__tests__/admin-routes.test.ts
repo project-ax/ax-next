@@ -352,20 +352,16 @@ interface SerializedConfig {
   enabled: boolean;
   transport: string;
   ownerId: string | null;
-  credentialRefs?: Record<string, string>;
   headerCredentialRefs?: Record<string, string>;
   url?: string;
-  command?: string;
-  args?: string[];
 }
 
 function makeBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'fs',
     enabled: true,
-    transport: 'stdio',
-    command: 'mcp-server-filesystem',
-    args: ['/tmp'],
+    transport: 'streamable-http',
+    url: 'https://mcp.example.com/fs',
     ...overrides,
   };
 }
@@ -417,7 +413,7 @@ describe('@ax/mcp-client admin routes', () => {
     expect(r.status).toBe(201);
     const cfg = (r.body as { config: SerializedConfig }).config;
     expect(cfg.id).toBe('created-by-a');
-    expect(cfg.transport).toBe('stdio');
+    expect(cfg.transport).toBe('streamable-http');
     expect(typeof cfg.ownerId).toBe('string');
     expect(cfg.ownerId).not.toBeNull();
   });
@@ -426,10 +422,24 @@ describe('@ax/mcp-client admin routes', () => {
     const cookie = await signIn(stack);
     const r = await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie,
-      body: makeBody({ env: { TOKEN: 'ghp_xxx' } }),
+      body: makeBody({ headerCredentialRefs: { TOKEN: 'ghp_xxx' } }),
     });
     expect(r.status).toBe(400);
     expect((r.body as { error: string }).error).toMatch(/inline secret/i);
+  });
+
+  it('POST refuses a stdio config with 400 and the migration hint, and stores nothing', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: makeBody({ id: 'old-stdio', transport: 'stdio', command: 'npx', args: ['-y', 'x'] }),
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/no longer supported/);
+    const list = await http(stack.port, 'GET', '/admin/mcp-servers', { cookie });
+    expect(
+      (list.body as { configs: SerializedConfig[] }).configs.map((c) => c.id),
+    ).not.toContain('old-stdio');
   });
 
   it('POST refuses an id in the reserved connector-namespace form with 400 (TASK-752)', async () => {
@@ -466,7 +476,7 @@ describe('@ax/mcp-client admin routes', () => {
     const huge = 'a'.repeat(ADMIN_BODY_MAX_BYTES + 1024);
     const r = await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie,
-      body: makeBody({ args: [huge] }),
+      body: makeBody({ padding: huge }),
     });
     expect(r.status).toBe(413);
   });
@@ -513,9 +523,8 @@ describe('@ax/mcp-client admin routes', () => {
     await saveConfig(stack.harness.bus, ctx, {
       id: 'global-shared',
       enabled: true,
-      transport: 'stdio',
-      command: 'mcp-server-shared',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://mcp.example.com/shared',
       ownerId: null,
     });
     const cookie = await signIn(stack);
@@ -563,15 +572,14 @@ describe('@ax/mcp-client admin routes', () => {
       body: {
         id: 'with-cred',
         enabled: true,
-        transport: 'stdio',
-        command: 'fake',
-        args: [],
+        transport: 'streamable-http',
+        url: 'https://mcp.example.com/fake',
         // Use 'authKey' rather than 'api_key' / 'token' — both of those
         // match rejectInlineSecrets' SECRET_LIKE name set even on a
-        // credentialRefs map (the inline-secret guard inspects KEY names
-        // recursively to catch e.g. {env:{TOKEN:'…'}} mistakes; the
+        // headerCredentialRefs map (the inline-secret guard inspects KEY
+        // names recursively to catch mistakes like {TOKEN:'…'}; the
         // tradeoff is that ref maps can't use those exact key names).
-        credentialRefs: { authKey: 'cred-foo' },
+        headerCredentialRefs: { authKey: 'cred-foo' },
       },
     });
     expect(create.status).toBe(201);
@@ -628,6 +636,28 @@ describe('@ax/mcp-client admin routes', () => {
     expect(cfg.ownerId).not.toBeNull();
   });
 
+  it('PATCH an http config to transport stdio → 400 "no longer supported", row unchanged', async () => {
+    const cookie = await signIn(stack);
+    const create = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: makeBody({ id: 'stay-remote' }),
+    });
+    expect(create.status).toBe(201);
+    const r = await http(stack.port, 'PATCH', '/admin/mcp-servers/stay-remote', {
+      cookie,
+      body: { transport: 'stdio', command: 'npx', args: ['-y', 'x'] },
+    });
+    expect(r.status).toBeGreaterThanOrEqual(400);
+    expect(r.status).toBeLessThan(500);
+    expect((r.body as { error: string }).error).toMatch(/no longer supported/);
+    const got = await http(stack.port, 'GET', '/admin/mcp-servers/stay-remote', { cookie });
+    expect(got.status).toBe(200);
+    const cfg = (got.body as { config: SerializedConfig }).config;
+    expect(cfg.transport).toBe('streamable-http');
+    expect((cfg as { url?: string }).url).toBe('https://mcp.example.com/fs');
+    expect(cfg).not.toHaveProperty('command');
+  });
+
   it('PATCH of a legacy row whose id is now reserved → 400, not 500 (TASK-752)', async () => {
     const cookie = await signIn(stack);
     // Learn the caller's user id from a normal create.
@@ -671,9 +701,8 @@ describe('@ax/mcp-client admin routes', () => {
     await saveConfig(stack.harness.bus, ctx, {
       id: 'global-shared',
       enabled: true,
-      transport: 'stdio',
-      command: 'shared',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://mcp.example.com/shared',
       ownerId: null,
     });
     const cookie = await signIn(stack);
@@ -717,37 +746,32 @@ describe('@ax/mcp-client admin routes', () => {
     expect(r.status).toBe(404);
   });
 
-  it('DELETE own config purges every declared env+header credential', async () => {
-    // Seed a stdio server config with two env vars treated as credential slots.
+  it('DELETE own config purges every declared header credential', async () => {
+    // Seed an http server config with two header slots.
     const { cookie, userId } = await signInWithUser(stack);
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId });
 
-    // Create the server config with env vars declared as credential slots.
     const createR = await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie,
-      body: {
+      body: makeBody({
         id: 'gh-del',
-        enabled: true,
-        transport: 'stdio',
-        command: 'mcp-github',
-        args: [],
-        env: { GH_TOKEN: '', GH_HOST: '' },
-      },
+        headerCredentialRefs: { Authorization: 'unused-a', 'X-Gh-Host': 'unused-b' },
+      }),
     });
     expect(createR.status).toBe(201);
 
-    // Set credentials for both env var slots.
+    // Set credentials for both header slots.
     await stack.harness.bus.call('credentials:set', ctx, {
       scope: 'global',
       ownerId: null,
-      ref: 'mcp:gh-del:env:GH_TOKEN',
+      ref: 'mcp:gh-del:header:Authorization',
       kind: 'api-key',
       payload: new TextEncoder().encode('token-value'),
     });
     await stack.harness.bus.call('credentials:set', ctx, {
       scope: 'global',
       ownerId: null,
-      ref: 'mcp:gh-del:env:GH_HOST',
+      ref: 'mcp:gh-del:header:X-Gh-Host',
       kind: 'api-key',
       payload: new TextEncoder().encode('host-value'),
     });
@@ -757,8 +781,8 @@ describe('@ax/mcp-client admin routes', () => {
       credentials: Array<{ ref: string }>;
     };
     const beforeRefs = before.credentials.map((c) => c.ref);
-    expect(beforeRefs).toContain('mcp:gh-del:env:GH_TOKEN');
-    expect(beforeRefs).toContain('mcp:gh-del:env:GH_HOST');
+    expect(beforeRefs).toContain('mcp:gh-del:header:Authorization');
+    expect(beforeRefs).toContain('mcp:gh-del:header:X-Gh-Host');
 
     // Delete the server config.
     const del = await http(stack.port, 'DELETE', '/admin/mcp-servers/gh-del', { cookie });
@@ -769,61 +793,56 @@ describe('@ax/mcp-client admin routes', () => {
       credentials: Array<{ ref: string }>;
     };
     const afterRefs = after.credentials.map((c) => c.ref);
-    expect(afterRefs).not.toContain('mcp:gh-del:env:GH_TOKEN');
-    expect(afterRefs).not.toContain('mcp:gh-del:env:GH_HOST');
+    expect(afterRefs).not.toContain('mcp:gh-del:header:Authorization');
+    expect(afterRefs).not.toContain('mcp:gh-del:header:X-Gh-Host');
     // Sanity: filter by prefix yields nothing.
     expect(afterRefs.filter((r) => r.startsWith('mcp:gh-del:'))).toHaveLength(0);
   });
 
-  it('PATCH own config deletes credentials for dropped env names', async () => {
-    // Seed a stdio server with two env vars, then re-save with only one.
+  it('PATCH own config deletes credentials for dropped header names', async () => {
+    // Seed an http server with two header slots, then re-save with only one.
     const { cookie, userId } = await signInWithUser(stack);
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId });
 
-    // Create server with two env slots.
     const createR = await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie,
-      body: {
+      body: makeBody({
         id: 'gh-patch',
-        enabled: true,
-        transport: 'stdio',
-        command: 'mcp-github',
-        args: [],
-        env: { GH_TOKEN: '', LEGACY: '' },
-      },
+        headerCredentialRefs: { Authorization: 'unused-a', 'X-Legacy': 'unused-b' },
+      }),
     });
     expect(createR.status).toBe(201);
 
-    // Set credentials for both env var slots.
+    // Set credentials for both header slots.
     await stack.harness.bus.call('credentials:set', ctx, {
       scope: 'global',
       ownerId: null,
-      ref: 'mcp:gh-patch:env:GH_TOKEN',
+      ref: 'mcp:gh-patch:header:Authorization',
       kind: 'api-key',
       payload: new TextEncoder().encode('token-value'),
     });
     await stack.harness.bus.call('credentials:set', ctx, {
       scope: 'global',
       ownerId: null,
-      ref: 'mcp:gh-patch:env:LEGACY',
+      ref: 'mcp:gh-patch:header:X-Legacy',
       kind: 'api-key',
       payload: new TextEncoder().encode('legacy-value'),
     });
 
-    // Re-save config dropping LEGACY but keeping GH_TOKEN.
+    // Re-save config dropping X-Legacy but keeping Authorization.
     const patchR = await http(stack.port, 'PATCH', '/admin/mcp-servers/gh-patch', {
       cookie,
-      body: { env: { GH_TOKEN: '' } },
+      body: { headerCredentialRefs: { Authorization: 'unused-a' } },
     });
     expect(patchR.status).toBe(200);
 
-    // LEGACY must be purged, GH_TOKEN must survive.
+    // X-Legacy must be purged, Authorization must survive.
     const after = (await stack.harness.bus.call('credentials:list', ctx, {})) as {
       credentials: Array<{ ref: string }>;
     };
     const afterRefs = after.credentials.map((c) => c.ref);
-    expect(afterRefs).not.toContain('mcp:gh-patch:env:LEGACY');
-    expect(afterRefs).toContain('mcp:gh-patch:env:GH_TOKEN');
+    expect(afterRefs).not.toContain('mcp:gh-patch:header:X-Legacy');
+    expect(afterRefs).toContain('mcp:gh-patch:header:Authorization');
   });
 
   // -------------------------------------------------------------------------
@@ -843,7 +862,7 @@ describe('@ax/mcp-client admin routes', () => {
     const cookie = await signIn(stack);
     await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie,
-      body: makeBody({ id: 'alive', transport: 'stdio', command: 'x', args: [] }),
+      body: makeBody({ id: 'alive' }),
     });
     const r = await http(stack.port, 'POST', '/admin/mcp-servers/alive/test', {
       cookie,

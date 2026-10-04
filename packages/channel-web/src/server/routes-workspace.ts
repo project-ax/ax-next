@@ -7167,8 +7167,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         },
         status,
         checkedAt,
-        // A server that cannot be listed from the host (stdio) answers with
-        // none of its tools; saying "this is all of them" would be a lie.
+        // Every connector server is http, so the host can list each one. A
+        // server can still come back with none of its tools (an empty list, or
+        // one the name checks and size limits cut down to nothing), and saying
+        // "this is all of them" would be a lie.
         possiblyIncomplete: status === 'ok' && namespaces.some((ns) => !listedNamespaces.has(ns)),
         tools,
       } satisfies AgentConnectorToolsRead);

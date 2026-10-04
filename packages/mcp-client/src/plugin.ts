@@ -57,6 +57,7 @@ import {
 } from './connector-inventory/store.js';
 import { isReservedServerId, loadConfigs, type McpServerConfig } from './config.js';
 import { McpConnection } from './connection.js';
+import { sweepStdioConfigs } from './stdio-sweep.js';
 import { namespaceTools } from './tool-names.js';
 import {
   createTransport,
@@ -75,10 +76,9 @@ interface HandlerEntry {
 export interface CreateMcpClientPluginOptions {
   /**
    * Test seam: override transport construction. Production callers should
-   * leave this undefined so `createTransport` (stdio / streamable-http /
-   * sse) is used. Tests inject pre-linked `InMemoryTransport` pairs so they
-   * can exercise the full plugin without spawning subprocesses or opening
-   * sockets.
+   * leave this undefined so `createTransport` (streamable-http / sse) is
+   * used. Tests inject pre-linked `InMemoryTransport` pairs so they can
+   * exercise the full plugin without opening sockets.
    */
   transportFactory?: (opts: {
     config: McpServerConfig;
@@ -220,6 +220,10 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
           createInventoryToolTitles(store),
         );
       }
+
+      // stdio MCP servers were removed (2026-10-04); retire stored ones before
+      // loading so none is ever spawned on the host.
+      await sweepStdioConfigs(bus, initCtx);
 
       // A row whose id is in the reserved connector-namespace form (TASK-752)
       // predates the reservation. Never connect it — its tools would land in a

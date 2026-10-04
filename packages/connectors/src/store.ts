@@ -120,10 +120,14 @@ export function validateVisibility(value: unknown): Visibility {
  * (single source of truth in @ax/skills-parser, re-declared as zod locally per
  * I2). Used at every store ingress AND egress — we never trust the JSONB column
  * blindly (I5 / J2). The untrusted backing-mechanism vocabulary (transport /
- * command / url / mcpServers) lives ONLY inside this opaque spec; it is stored
+ * url / mcpServers) lives ONLY inside this opaque spec; it is stored
  * verbatim and never interpreted by the store.
  */
 export function validateCapabilities(value: unknown): Capabilities {
+  const servers = (value as { mcpServers?: unknown } | null)?.mcpServers;
+  if (Array.isArray(servers) && servers.some((s) => (s as { transport?: unknown } | null)?.transport === 'stdio')) {
+    throw invalid('Local (stdio) MCP servers are no longer supported. Use a remote MCP server URL.');
+  }
   const parsed = CapabilitiesSchema.safeParse(value);
   if (!parsed.success) {
     throw invalid(
@@ -135,7 +139,7 @@ export function validateCapabilities(value: unknown): Capabilities {
   const headerCounts = new Map<string, number>();
   for (const slot of caps.credentials as CapabilitySlot[]) {
     if (slot.kind !== 'api-key' || !slot.headerName) continue;
-    if (!slot.server || !caps.mcpServers.some((server) => server.name === slot.server && server.transport === 'http')) {
+    if (!slot.server || !caps.mcpServers.some((server) => server.name === slot.server)) {
       throw invalid('A request header must name a remote MCP server.');
     }
     const key = `${slot.server}:${slot.headerName.toLowerCase()}`;

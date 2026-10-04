@@ -56,8 +56,8 @@ function assertSafeRelPath(p: unknown): asserts p is string {
 }
 
 // Phase B (capabilities.mcpServers) — translate the parsed McpServerSpec
-// into the Anthropic SDK's `.mcp.json` shape. stdio: { command, args, env }.
-// http: { url, type: 'http' }. The Claude SDK does NOT discover a skill
+// into the Anthropic SDK's `.mcp.json` shape: { url, type: 'http', headers? }
+// (http only — stdio was removed). The Claude SDK does NOT discover a skill
 // dir's `.mcp.json` on its own — measured against CLI 2.1.119 it reads
 // `.mcp.json` only from the project scope (cwd upward, and only with the
 // `'project'` setting source, which Phase 3 dropped) and from plugin roots.
@@ -72,27 +72,9 @@ function assertSafeRelPath(p: unknown): asserts p is string {
 // translation local to each materializer avoids a cross-plugin coupling.
 // End-to-end loading is pinned against the real SDK binary by the claude-sdk
 // runner's `connector-mcp-real-sdk.e2e.test.ts` (TASK-760).
-function toMcpJsonShape(s: {
-  transport: 'stdio' | 'http';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  url?: string;
-  headers?: Record<string, string>;
-}): unknown {
-  if (s.transport === 'stdio') {
-    return { command: s.command, args: s.args ?? [], env: s.env ?? {} };
-  }
+function toMcpJsonShape(s: { url: string; headers?: Record<string, string> }): unknown {
   return { url: s.url, type: 'http', ...(s.headers ? { headers: s.headers } : {}) };
 }
-
-// Symmetric with the manifest parser + sandbox schemas: 32 entries per array,
-// 256 chars per string. Defense in depth — the host already validated upstream
-// but the runner re-checks at its trust boundary.
-const MCP_ARGS_MAX = 32;
-const MCP_ARG_LEN_MAX = 256;
-const MCP_ENV_MAX = 32;
-const MCP_ENV_LEN_MAX = 256;
 
 // Defense-in-depth validation of an mcpServers entry. The sandbox-k8s zod
 // schema already enforced this upstream, but the runner re-checks at the
@@ -113,22 +95,15 @@ const MCP_ENV_LEN_MAX = 256;
 // Exported solely so that drift test can drive it; it is a pure function (no
 // I/O), so exporting grants no runtime capability.
 //
-// Two KNOWN, intentional divergences from `McpServerSchema` (encoded as
-// non-`core` vectors in the fixture, NOT treated as drift):
-//   1. This validator ignores `allowedHosts` / `credentials` — they don't
-//      affect the `.mcp.json` shape the runner emits (only name/transport/
-//      command/args/env/url do), so it neither reads nor validates them.
-//   2. This validator additionally caps env to ≤32 entries and ≤256-char keys
-//      and values; `McpServerSchema`'s `z.record(z.string(), z.string())` caps
-//      neither. The runner is the LAST gate, so being stricter is the safe
-//      direction (a follow-up may tighten the schema to match).
+// One KNOWN, intentional divergence from `McpServerSchema` (encoded as a
+// non-`core` vector in the fixture, NOT treated as drift): this validator
+// ignores `allowedHosts` / `credentials` — they don't affect the `.mcp.json`
+// shape the runner emits (only name/url/headers do), so it neither reads nor
+// validates them.
 export function validateMcpEntry(value: unknown): {
   name: string;
-  transport: 'stdio' | 'http';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  url?: string;
+  transport: 'http';
+  url: string;
   headers?: Record<string, string>;
 } {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -138,88 +113,30 @@ export function validateMcpEntry(value: unknown): {
   if (typeof v['name'] !== 'string' || !SKILL_ID_RE.test(v['name'])) {
     throw new Error(`mcpServers entry has invalid name '${String(v['name'])}'`);
   }
-  if (v['transport'] !== 'stdio' && v['transport'] !== 'http') {
+  if (v['transport'] === 'stdio') {
+    throw new Error(`mcpServers entry '${v['name']}' uses stdio, which is no longer supported`);
+  }
+  if (v['transport'] !== 'http') {
     throw new Error(`mcpServers entry '${v['name']}' has invalid transport`);
   }
-  const out: {
-    name: string;
-    transport: 'stdio' | 'http';
-    command?: string;
-    args?: string[];
-    env?: Record<string, string>;
-    url?: string;
-    headers?: Record<string, string>;
-  } = { name: v['name'], transport: v['transport'] };
-  if (v['command'] !== undefined) {
-    if (typeof v['command'] !== 'string' || v['command'].length === 0) {
-      throw new Error(`mcpServers entry '${v['name']}' command must be non-empty string`);
+  for (const key of ['command', 'args', 'env'] as const) {
+    if (v[key] !== undefined) {
+      throw new Error(`mcpServers entry '${v['name']}' (http) must not set '${key}'`);
     }
-    out.command = v['command'];
   }
-  if (v['args'] !== undefined) {
-    if (!Array.isArray(v['args'])) {
-      throw new Error(`mcpServers entry '${v['name']}' args must be string[]`);
-    }
-    if (v['args'].length > MCP_ARGS_MAX) {
-      throw new Error(
-        `mcpServers entry '${v['name']}' has too many args (max ${MCP_ARGS_MAX})`,
-      );
-    }
-    if (
-      !v['args'].every(
-        (a): a is string => typeof a === 'string' && a.length <= MCP_ARG_LEN_MAX,
-      )
-    ) {
-      throw new Error(
-        `mcpServers entry '${v['name']}' has an arg over ${MCP_ARG_LEN_MAX} chars or non-string`,
-      );
-    }
-    out.args = v['args'] as string[];
+  if (typeof v['url'] !== 'string') {
+    throw new Error(`mcpServers entry '${v['name']}' (http) is missing required 'url'`);
   }
-  if (v['env'] !== undefined) {
-    if (
-      typeof v['env'] !== 'object' ||
-      v['env'] === null ||
-      Array.isArray(v['env'])
-    ) {
-      throw new Error(`mcpServers entry '${v['name']}' env must be Record<string,string>`);
-    }
-    const envEntries = Object.entries(v['env'] as Record<string, unknown>);
-    if (envEntries.length > MCP_ENV_MAX) {
-      throw new Error(
-        `mcpServers entry '${v['name']}' env has too many entries (max ${MCP_ENV_MAX})`,
-      );
-    }
-    for (const [k, val] of envEntries) {
-      if (k.length > MCP_ENV_LEN_MAX) {
-        throw new Error(
-          `mcpServers entry '${v['name']}' env key length must be ≤ ${MCP_ENV_LEN_MAX}`,
-        );
-      }
-      if (typeof val !== 'string') {
-        throw new Error(`mcpServers entry '${v['name']}' env must be Record<string,string>`);
-      }
-      if (val.length > MCP_ENV_LEN_MAX) {
-        throw new Error(
-          `mcpServers entry '${v['name']}' env value length must be ≤ ${MCP_ENV_LEN_MAX}`,
-        );
-      }
-    }
-    out.env = v['env'] as Record<string, string>;
+  try {
+    new URL(v['url']);
+  } catch {
+    throw new Error(`mcpServers entry '${v['name']}' url is not a valid URL`);
   }
-  if (v['url'] !== undefined) {
-    if (typeof v['url'] !== 'string') {
-      throw new Error(`mcpServers entry '${v['name']}' url must be a string`);
-    }
-    try {
-      // URL constructor throws on malformed input — matches the upstream zod
-      // .url() guard.
-      new URL(v['url']);
-    } catch {
-      throw new Error(`mcpServers entry '${v['name']}' url is not a valid URL`);
-    }
-    out.url = v['url'];
-  }
+  const out: { name: string; transport: 'http'; url: string; headers?: Record<string, string> } = {
+    name: v['name'],
+    transport: 'http',
+    url: v['url'],
+  };
 
   if (v['headers'] !== undefined) {
     const headers = v['headers'];
@@ -230,40 +147,6 @@ export function validateMcpEntry(value: unknown): {
       if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/.test(name) || typeof value !== 'string' || !/^(Bearer )?ax-cred:[a-f0-9]{32}$/.test(value)) throw new Error('MCP headers must contain credential placeholders');
     }
     out.headers = headers as Record<string, string>;
-  }
-
-  // Transport-specific invariants — symmetric with the sandbox schemas'
-  // .refine(). stdio requires a non-empty command and forbids url; http
-  // requires url and forbids the stdio-only fields. Without these the runner
-  // would happily JSON-encode a cross-contaminated .mcp.json that the SDK
-  // either silently misinterprets or fails on at spawn time.
-  if (v['transport'] === 'stdio') {
-    if (out.command === undefined) {
-      throw new Error(
-        `mcpServers entry '${v['name']}' (stdio) is missing required 'command'`,
-      );
-    }
-    if (out.url !== undefined) {
-      throw new Error(
-        `mcpServers entry '${v['name']}' (stdio) must not set 'url'`,
-      );
-    }
-  } else {
-    // transport === 'http'
-    if (out.url === undefined) {
-      throw new Error(
-        `mcpServers entry '${v['name']}' (http) is missing required 'url'`,
-      );
-    }
-    if (
-      out.command !== undefined ||
-      out.args !== undefined ||
-      out.env !== undefined
-    ) {
-      throw new Error(
-        `mcpServers entry '${v['name']}' (http) must not set 'command', 'args', or 'env'`,
-      );
-    }
   }
 
   return out;

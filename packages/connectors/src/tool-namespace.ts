@@ -111,21 +111,12 @@ type ServerSpec = Capabilities['mcpServers'][number];
 
 /**
  * The fields that say WHICH server this is. A server whose name changed but
- * whose endpoint did not is the same server, renamed. Credentials, env and
+ * whose endpoint did not is the same server, renamed. Credentials and
  * allowed hosts are configuration of that server, not its identity, so an edit
  * that changes them alongside the name is still a rename.
  */
 function endpointOf(spec: ServerSpec): string {
-  return JSON.stringify([
-    spec.transport,
-    spec.url ?? null,
-    spec.command ?? null,
-    // TASK-758 — no `args` and `args: []` start the same process. Without this
-    // an editor that always writes the list (the stdio dialog does) "changed
-    // the endpoint" of every server saved without one, and wiped its tool
-    // permissions on a save that changed nothing.
-    spec.args ?? [],
-  ]);
+  return JSON.stringify([spec.transport, spec.url ?? null]);
 }
 
 /** First spec per name — a duplicated name derives one namespace anyway. */

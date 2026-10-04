@@ -13,7 +13,6 @@
 //      sign-in → `needs-auth`; a credential that could not be READ (a vault
 //      blip) → the call throws `credential-unavailable` and stores nothing
 //      (TASK-756), so a blip is never reported as a sign-in problem.
-//      stdio servers can't be listed host-side → `unknown`.
 //   5. Store (a failed write is logged and the answer held in memory, so
 //      the cooldown still sees it — TASK-773), and fire `connectors:tools-discovered` when an `ok` inventory
 //      differs from the last `ok` one.
@@ -82,7 +81,7 @@ interface ResolvedSlot {
 }
 interface ResolvedServer {
   name: string;
-  transport: 'stdio' | 'http';
+  transport: 'http';
   url?: string;
 }
 interface ResolvedConnector {
@@ -226,7 +225,6 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       | { server: ResolvedServer; ns: string; url: string; headers: Record<string, string> };
     const planned: Planned[] = [];
     for (const server of connector.capabilities.mcpServers) {
-      if (server.transport !== 'http') continue; // stdio: not listable host-side
       anyHttp = true;
       const ns = nsByServer.get(server.name) ?? '';
       if (!TOOL_NAMESPACE_RE.test(ns)) {

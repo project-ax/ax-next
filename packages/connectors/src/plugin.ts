@@ -38,11 +38,9 @@ import {
   registerUserConnectorRoutes,
 } from './admin-routes.js';
 import { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
-import {
-  assertOwnClientSecretRefs,
-  namesOAuthClientSecretRef,
-  oauthClientSecretRefFor,
-} from './oauth-client-secret-ref.js';
+import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
+import { purgeConnectorState } from './purge.js';
+import { sweepStdioConnectors } from './stdio-sweep.js';
 import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
 import {
   type ResetToolNamespacesInputLike,
@@ -80,7 +78,6 @@ import {
   type ClearAuthoredInput,
   type ClearAuthoredOutput,
   type Connector,
-  type ConnectorDeletedEvent,
   type ConnectorToolNamespacesChangedEvent,
   type DeleteInput,
   type DeleteOutput,
@@ -295,6 +292,10 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       );
       db = shared as Kysely<ConnectorDatabase>;
       await runConnectorsMigration(db);
+      // stdio MCP servers were removed (2026-10-04). Sweep stored ones BEFORE any
+      // service is registered: the narrowed schema refuses them, and one such
+      // row would make every list over its owner throw.
+      await sweepStdioConnectors(db, bus, initCtx);
       const localStore = createConnectorStore(db);
       _store = localStore;
       const localAuthored = createAuthoredConnectorsStore(db);
@@ -1005,88 +1006,14 @@ async function deleteConnector(
   // returns null once the row is tombstoned.
   const connector = await store.getByIdNotDeleted(userId, connectorId);
   const deleted = await store.softDelete(userId, connectorId);
-
-  // Purge the connector's OWN stored key(s) so a secret never lingers with no UI
-  // home. Soft-dep: only attempted when credentials:delete is present (a preset
-  // without @ax/credentials still deletes the connector). The purge targets ONLY
-  // the deleted connector's derived refs, at the scope it declares.
-  //
-  // SECURITY (invariant #5): a per-user ref (scope:'user', ownerId:userId) is
-  // unambiguously the deleting caller's own — always safe to purge. A GLOBAL ref
-  // (scope:'global', shared company key, owner-independent) is purged ONLY when
-  // the caller is authorized (input.purgeGlobal — routes pass actor.isAdmin).
-  // Gating the PURGE here, not just the HTTP create route, closes EVERY path to
-  // a non-admin global-credential wipe (incl. the authored-connector approve
-  // path, which promotes a draft straight through connectors:upsert). Each
-  // failure is logged + swallowed so a credential hiccup never wedges the delete.
-  if (connector !== null && bus.hasService('credentials:delete')) {
-    const purgeGlobal = input.purgeGlobal === true;
-    // TASK-797 — the connector's OAuth client secret is not a plan slot, but it
-    // is the connector's own key too: the editor stores it at the author's user
-    // scope, or at global for an admin's shared connector. Purge it from both
-    // (global under the same purgeGlobal gate), or a later connector with the
-    // same id would silently inherit it.
-    const clientSecretRef = oauthClientSecretRefFor(connectorId);
-    const ownsClientSecret = namesOAuthClientSecretRef(connector.capabilities, clientSecretRef);
-    // Only a SHARED connector's secret is ever read at global (credential-authz),
-    // so only a shared connector's delete may purge it there: a private
-    // connector that happens to share the id must not wipe the shared one's.
-    const purgeEntries: Array<{ scope: 'user' | 'global'; ref: string }> = [
-      ...deriveCredentialPlan(connector),
-      ...(ownsClientSecret ? [{ scope: 'user' as const, ref: clientSecretRef }] : []),
-      ...(ownsClientSecret && connector.visibility === 'shared'
-        ? [{ scope: 'global' as const, ref: clientSecretRef }]
-        : []),
-    ];
-    for (const entry of purgeEntries) {
-      if (entry.scope === 'global' && !purgeGlobal) {
-        // Unauthorized to purge a shared/company key — leave it intact. (An admin
-        // delete passes purgeGlobal:true; a non-admin's never does.)
-        ctx.logger.info('connectors_delete_skipped_global_purge', {
-          connectorId,
-          ref: entry.ref,
-        });
-        continue;
-      }
-      const ownerId = entry.scope === 'user' ? userId : null;
-      try {
-        await bus.call('credentials:delete', ctx, {
-          scope: entry.scope,
-          ownerId,
-          ref: entry.ref,
-        });
-      } catch (err) {
-        ctx.logger.warn('connectors_delete_credential_purge_failed', {
-          connectorId,
-          ref: entry.ref,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
-
-  // Announce the removal so other plugins reclaim state keyed on this connector's
-  // tool namespaces (@ax/tool-policy purges its per-tool verdict rows). Fired
-  // AFTER the credential purge, and only when a LIVE row was actually removed
-  // (`deleted` + a loaded `connector`) — a delete of an absent / already-deleted
-  // connector announces nothing. The namespaces are derived from `userId`, the
-  // row owner (both queries above filter owner_user_id = userId), so they match
-  // what `connectors:resolve` handed out. Best-effort: HookBus.fire isolates
-  // subscriber throws, and a fire failure must never fail an already-committed
-  // delete.
+  // Reclaim the connector's keys and announce the removal (purge.ts) — only when
+  // a LIVE row was actually removed here. A delete of an absent / already-deleted
+  // connector (or one that lost a race to a concurrent delete) purges and
+  // announces nothing.
   if (deleted && connector !== null) {
-    const event: ConnectorDeletedEvent = {
-      connectorId,
-      toolNamespaces: deriveToolNamespaces(userId, connector),
-    };
-    try {
-      await bus.fire('connectors:deleted', ctx, event);
-    } catch (err) {
-      ctx.logger.warn('connectors_deleted_event_failed', {
-        connectorId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
+    await purgeConnectorState(bus, ctx, userId, connector, {
+      purgeGlobal: input.purgeGlobal === true,
+    });
   }
 
   return { deleted };

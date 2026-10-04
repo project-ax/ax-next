@@ -116,23 +116,16 @@ async function lockDirsReadOnly(dir: string): Promise<void> {
   await fs.chmod(dir, 0o555);
 }
 
-// Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape.
-// stdio: { command, args, env }. http: { url, type: 'http' }. The SDK accepts
-// either at top level under the `mcpServers` map. The SDK does NOT discover
+// Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape:
+// { url, type: 'http', headers? } (http only — stdio was removed). The SDK
+// accepts it at top level under the `mcpServers` map. The SDK does NOT discover
 // a skill dir's `.mcp.json` by itself (no setting source reads it); the
 // claude-sdk runner loads it from $CLAUDE_CONFIG_DIR/skills/*/ and passes it
 // as `query()`'s `mcpServers` (TASK-760, `projected-mcp-servers.ts`).
 function toMcpJsonShape(s: {
-  transport: 'stdio' | 'http';
-  command?: string | undefined;
-  args?: string[] | undefined;
-  env?: Record<string, string> | undefined;
   url?: string | undefined;
   headers?: Record<string, string> | undefined;
 }): unknown {
-  if (s.transport === 'stdio') {
-    return { command: s.command, args: s.args ?? [], env: s.env ?? {} };
-  }
   return { url: s.url, type: 'http', ...(s.headers ? { headers: s.headers } : {}) };
 }
 

@@ -40,13 +40,14 @@ const unusedBus: BusLike = {
   },
 };
 
-function stdioConfig(id = 'fake'): McpServerConfig {
+// The transport is injected through `transportFactory` (an InMemoryTransport
+// pair), so the config's transport label and URL are never dialed.
+function httpConfig(id = 'fake'): McpServerConfig {
   return {
     id,
     enabled: true,
-    transport: 'stdio',
-    command: 'not-a-real-command',
-    args: [],
+    transport: 'streamable-http',
+    url: 'https://mcp.example.com',
   };
 }
 
@@ -108,7 +109,7 @@ describe('McpConnection — MCP_SERVER_UNAVAILABLE on in-flight failure', () => 
       async close() {},
     };
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => ({ close: async () => {} }) as unknown as McpClientTransport,
@@ -142,7 +143,7 @@ describe('McpConnection — MCP_SERVER_UNAVAILABLE on in-flight failure', () => 
       async close() {},
     };
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => ({ close: async () => {} }) as unknown as McpClientTransport,
@@ -179,7 +180,7 @@ describe('McpConnection — MCP_SERVER_UNAVAILABLE on in-flight failure', () => 
       async close() {},
     };
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => ({ close: async () => {} }) as unknown as McpClientTransport,
@@ -220,7 +221,7 @@ describe('McpConnection — MCP_SERVER_UNAVAILABLE on in-flight failure', () => 
       async close() {},
     };
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => ({ close: async () => {} }) as unknown as McpClientTransport,
@@ -264,7 +265,7 @@ describe('McpConnection — reconnect backoff', () => {
     };
     let isInitialConnect = true;
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => {
@@ -348,7 +349,7 @@ describe('McpConnection — reconnect backoff', () => {
     let callShouldSucceed = false;
 
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => {
@@ -421,7 +422,7 @@ describe('McpConnection — reconnect backoff', () => {
       async close() {},
     };
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => {
@@ -470,7 +471,7 @@ describe('McpConnection — reconnect backoff', () => {
       async close() {},
     };
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => {
@@ -511,7 +512,7 @@ describe('McpConnection — real SDK on closed transport', () => {
     vi.useRealTimers();
     const { clientTransport, dispose } = await makeLinkedServer();
     const conn = new McpConnection({
-      config: stdioConfig(),
+      config: httpConfig(),
       bus: unusedBus,
       ctx: ctx(),
       transportFactory: async () => clientTransport,

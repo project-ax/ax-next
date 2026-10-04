@@ -60,13 +60,22 @@ async function makeBus(): Promise<HookBus> {
 // when the input doesn't supply it. Tests that round-trip through parseConfig
 // or saveConfig/loadConfigs see the normalized value back, so we declare
 // ownerId here too.
-const validStdio: McpServerConfig = {
+const validFs: McpServerConfig = {
+  id: 'fs',
+  enabled: true,
+  transport: 'streamable-http',
+  url: 'https://mcp.example.com/fs',
+  ownerId: null,
+};
+
+// What a pre-removal database (or an old `ax mcp add` payload) looks like.
+// stdio MCP servers spawned a process on the host; they are gone.
+const legacyStdio = {
   id: 'fs',
   enabled: true,
   transport: 'stdio',
   command: 'mcp-server-filesystem',
   args: ['/tmp'],
-  ownerId: null,
 };
 
 const validHttp: McpServerConfig = {
@@ -86,11 +95,6 @@ const validSse: McpServerConfig = {
 };
 
 describe('McpServerConfigSchema', () => {
-  it('parses a valid stdio config unchanged', () => {
-    const parsed = parseConfig(validStdio);
-    expect(parsed).toEqual(validStdio);
-  });
-
   it('parses a valid streamable-http config unchanged', () => {
     const parsed = parseConfig(validHttp);
     expect(parsed).toEqual(validHttp);
@@ -101,10 +105,37 @@ describe('McpServerConfigSchema', () => {
     expect(parsed).toEqual(validSse);
   });
 
-  it('rejects a stdio config missing `command`', () => {
+  it('rejects a stdio config with the migration hint', () => {
     expect(() =>
-      parseConfig({ id: 'fs', enabled: true, transport: 'stdio', args: [] }),
-    ).toThrow();
+      parseConfig({ id: 'x', enabled: true, transport: 'stdio', command: 'npx', args: [] }),
+    ).toThrow(/no longer supported/);
+  });
+
+  it('names the supported transports in the stdio rejection, as an invalid-payload PluginError', () => {
+    const err = (() => {
+      try {
+        parseConfig(legacyStdio);
+      } catch (e) {
+        return e;
+      }
+      return undefined;
+    })();
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err).toMatchObject({ code: 'invalid-payload' });
+    expect((err as PluginError).message).toContain('streamable-http');
+    expect((err as PluginError).message).toContain('sse');
+  });
+
+  it('rejects stdio with the migration hint even when the payload also carries other stdio-only fields', () => {
+    // env / credentialRefs used to be valid stdio fields; the hint, not a
+    // strict-mode "unrecognized key" or inline-secret error, is what the
+    // caller needs to see.
+    expect(() =>
+      parseConfig({ ...legacyStdio, env: { GH_TOKEN: '' }, credentialRefs: { GH_TOKEN: 'x' } }),
+    ).toThrow(/no longer supported/);
+    expect(() => parseConfig({ ...legacyStdio, password: 'hunter2' })).toThrow(
+      /no longer supported/,
+    );
   });
 
   it('rejects an http config missing `url`', () => {
@@ -121,13 +152,13 @@ describe('McpServerConfigSchema', () => {
 
   it('rejects an id with a space', () => {
     expect(() =>
-      parseConfig({ ...validStdio, id: 'has space' }),
+      parseConfig({ ...validFs, id: 'has space' }),
     ).toThrow();
   });
 
   it('rejects an uppercase id', () => {
     expect(() =>
-      parseConfig({ ...validStdio, id: 'UPPERCASE' }),
+      parseConfig({ ...validFs, id: 'UPPERCASE' }),
     ).toThrow();
   });
 
@@ -150,7 +181,7 @@ describe('McpServerConfigSchema', () => {
 
   it('rejects a top-level inline `password` field', () => {
     expect(() =>
-      parseConfig({ ...validStdio, password: 'hunter2' }),
+      parseConfig({ ...validFs, password: 'hunter2' }),
     ).toThrow(PluginError);
   });
 
@@ -160,11 +191,11 @@ describe('McpServerConfigSchema', () => {
     ).toThrow(PluginError);
   });
 
-  it('rejects an inline `token` nested inside env', () => {
+  it('rejects an inline `token` nested inside headerCredentialRefs', () => {
     expect(() =>
       parseConfig({
-        ...validStdio,
-        env: { TOKEN: 'ghp_xxx' },
+        ...validFs,
+        headerCredentialRefs: { TOKEN: 'ghp_xxx' },
       }),
     ).toThrow(PluginError);
   });
@@ -190,9 +221,8 @@ describe('McpServerConfigSchema', () => {
     const a: Record<string, unknown> = {
       id: 'x',
       enabled: true,
-      transport: 'stdio',
-      command: 'foo',
-      args: [],
+      transport: 'streamable-http',
+      url: 'https://x.example/mcp',
     };
     a.self = a;
     // We don't care whether it parses or rejects — only that it returns
@@ -203,11 +233,34 @@ describe('McpServerConfigSchema', () => {
 });
 
 describe('storage I/O', () => {
-  it('saveConfig + loadConfigs round-trips a stdio config', async () => {
+  it('saveConfig + loadConfigs round-trips an http config', async () => {
     const bus = await makeBus();
-    await saveConfig(bus, ctx(), validStdio);
+    await saveConfig(bus, ctx(), validFs);
     const loaded = await loadConfigs(bus, ctx());
-    expect(loaded).toEqual([validStdio]);
+    expect(loaded).toEqual([validFs]);
+  });
+
+  it('saveConfig refuses a stdio config and writes nothing', async () => {
+    const bus = await makeBus();
+    await expect(saveConfig(bus, ctx(), legacyStdio)).rejects.toThrow(/no longer supported/);
+    expect(await loadConfigs(bus, ctx())).toEqual([]);
+  });
+
+  it('loadConfigs skips a leftover stdio row (and keeps the rest) instead of failing the load', async () => {
+    const bus = await makeBus();
+    await saveConfig(bus, ctx(), validHttp);
+    // Hand-write a stdio row the way a pre-removal database holds it.
+    const enc = new TextEncoder();
+    await bus.call('storage:set', ctx(), {
+      key: 'mcp-server:fs',
+      value: enc.encode(JSON.stringify(legacyStdio)),
+    });
+    await bus.call('storage:set', ctx(), {
+      key: 'mcp-server-index',
+      value: enc.encode(JSON.stringify(['github', 'fs'])),
+    });
+    const loaded = await loadConfigs(bus, ctx());
+    expect(loaded.map((c) => c.id)).toEqual(['github']);
   });
 
   it('loadConfigs returns [] when index is absent', async () => {
@@ -218,7 +271,7 @@ describe('storage I/O', () => {
 
   it('deleteConfig removes the config from subsequent loads', async () => {
     const bus = await makeBus();
-    await saveConfig(bus, ctx(), validStdio);
+    await saveConfig(bus, ctx(), validFs);
     await saveConfig(bus, ctx(), validHttp);
     await deleteConfig(bus, ctx(), 'fs');
     const loaded = await loadConfigs(bus, ctx());
@@ -228,21 +281,21 @@ describe('storage I/O', () => {
   it('saveConfig refuses an id in the reserved connector-namespace form and writes nothing (TASK-752)', async () => {
     const bus = await makeBus();
     for (const id of ['c5e0235982f', 'c0123456789', 'cabcdef0123']) {
-      const err = await saveConfig(bus, ctx(), { ...validStdio, id }).catch((e: unknown) => e);
+      const err = await saveConfig(bus, ctx(), { ...validFs, id }).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(PluginError);
       expect(err).toMatchObject({ code: 'reserved-id' });
     }
     expect(await loadConfigs(bus, ctx())).toEqual([]);
     // Near misses stay legal: wrong length, non-hex, other prefix, a suffix.
     for (const id of ['c5e0235982', 'c5e0235982f0', 'c5e0235982g', 'd5e0235982f', 'cabcdefabcd-x']) {
-      await expect(saveConfig(bus, ctx(), { ...validStdio, id })).resolves.toMatchObject({ id });
+      await expect(saveConfig(bus, ctx(), { ...validFs, id })).resolves.toMatchObject({ id });
     }
   });
 
   it('saveConfig with the same id updates (no duplicate index entry)', async () => {
     const bus = await makeBus();
-    await saveConfig(bus, ctx(), validStdio);
-    const updated: McpServerConfig = { ...validStdio, args: ['/tmp', '/var'] };
+    await saveConfig(bus, ctx(), validFs);
+    const updated: McpServerConfig = { ...validFs, url: 'https://mcp.example.com/fs2' };
     await saveConfig(bus, ctx(), updated);
     const loaded = await loadConfigs(bus, ctx());
     expect(loaded).toHaveLength(1);

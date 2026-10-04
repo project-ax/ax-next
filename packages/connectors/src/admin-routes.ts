@@ -213,8 +213,8 @@ function handleHookError(err: unknown, res: RouteResponse): void {
 //                 secret value; we only check whether a row at the derived
 //                 `(scope, ref)` exists).
 //   unreachable — the config is malformed: an MCP-backed connector whose
-//                 leading server declares neither a `url` (http) nor a
-//                 `command` (stdio), so it can't connect to anything.
+//                 leading server declares no `url`, so it can't connect to
+//                 anything.
 //   reachable   — required slots filled + config sane (covers CLI/package and
 //                 direct-API connectors, which need only slot presence).
 //
@@ -281,17 +281,13 @@ export async function probeConnector(
     }
   }
 
-  // Config sanity: an MCP-backed connector must give its leading server a way to
-  // reach something — an http `url` or a stdio `command`. A connector with no
-  // mcpServers is CLI/package/direct-API backed and passes this check (its reach
-  // is the allowedHosts + the now-verified slots).
+  // Config sanity: an MCP-backed connector's leading server must have a url.
+  // A connector with no mcpServers is CLI/package/direct-API backed and passes
+  // (its reach is the allowedHosts + the now-verified slots).
   const leadServer = connector.capabilities.mcpServers[0];
   if (leadServer !== undefined) {
-    const hasUrl = typeof leadServer.url === 'string' && leadServer.url.trim().length > 0;
-    const hasCommand =
-      typeof leadServer.command === 'string' && leadServer.command.trim().length > 0;
-    if (!hasUrl && !hasCommand) {
-      return { status: 'unreachable', detail: 'MCP server has no url or command' };
+    if (typeof leadServer.url !== 'string' || leadServer.url.trim().length === 0) {
+      return { status: 'unreachable', detail: 'MCP server has no url' };
     }
   }
 

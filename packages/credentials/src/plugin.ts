@@ -6,7 +6,7 @@ import { z, type ZodType } from 'zod';
 
 const PLUGIN_NAME = '@ax/credentials';
 // `:` is the separator for deterministic destination refs
-// (provider:anthropic, skill:<id>:<slot>, mcp:<id>:env:<name>, etc.).
+// (provider:anthropic, skill:<id>:<slot>, mcp:<id>:header:<name>, etc.).
 // The full ref including separators is one opaque string from the
 // store's POV — refs are never parsed back out. See refs.ts.
 const REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,191}$/;

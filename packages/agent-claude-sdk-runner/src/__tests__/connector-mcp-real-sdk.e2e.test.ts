@@ -51,6 +51,9 @@ type Sse = (event: string, data: unknown) => void;
 
 let server: http.Server;
 let baseUrl: string;
+/** The probe connector: a local streamable-HTTP MCP server (stdio is not supported). */
+let mcpServer: http.Server;
+let mcpUrl: string;
 let tmp: string;
 let cfg: string;
 /** Tool names the CLI offered on each agent-loop model call, in order. */
@@ -66,22 +69,34 @@ beforeEach(async () => {
   bodies = [];
   callTool = null;
 
-  // The probe connector server: one tool, `ping` → `pong-from-connector`.
-  await fs.writeFile(path.join(tmp, 'probe-mcp.mjs'), `
-    import { createInterface } from 'node:readline';
-    createInterface({ input: process.stdin }).on('line', line => {
-      const req = JSON.parse(line);
-      if (req.id === undefined) return;
-      const result = req.method === 'initialize'
-        ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'probe', version: '1' } }
-        : req.method === 'tools/list'
+  // The probe connector server: one tool, `ping` → `pong-from-connector`,
+  // spoken over streamable HTTP (plain JSON responses, no SSE stream).
+  mcpServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c: Buffer) => (body += c.toString('utf8')));
+    req.on('end', () => {
+      if (req.method !== 'POST') {
+        res.writeHead(405).end();
+        return;
+      }
+      const rpc = JSON.parse(body) as { id?: number; method?: string; params?: { protocolVersion?: string } };
+      if (rpc.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      const result = rpc.method === 'initialize'
+        ? { protocolVersion: rpc.params?.protocolVersion ?? '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'probe', version: '1' } }
+        : rpc.method === 'tools/list'
         ? { tools: [{ name: 'ping', description: 'Return pong', inputSchema: { type: 'object', properties: {} } }] }
-        : req.method === 'tools/call'
+        : rpc.method === 'tools/call'
         ? { content: [{ type: 'text', text: 'pong-from-connector' }] }
         : {};
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result }) + '\\n');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result }));
     });
-  `);
+  });
+  await new Promise<void>((r) => mcpServer.listen(0, '127.0.0.1', r));
+  mcpUrl = `http://127.0.0.1:${(mcpServer.address() as { port: number }).port}/mcp`;
   // What materializeInstalledSkillsFromEnv writes for a connector entry.
   const bundle = path.join(cfg, 'skills', 'connector-probe');
   await fs.mkdir(bundle, { recursive: true });
@@ -92,7 +107,7 @@ beforeEach(async () => {
   await fs.writeFile(
     path.join(bundle, '.mcp.json'),
     JSON.stringify({
-      mcpServers: { [NS]: { command: process.execPath, args: [path.join(tmp, 'probe-mcp.mjs')], env: {} } },
+      mcpServers: { [NS]: { type: 'http', url: mcpUrl } },
     }),
   );
 
@@ -149,6 +164,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await new Promise<void>((r) => server.close(() => r()));
+  await new Promise<void>((r) => mcpServer.close(() => r()));
   await fs.rm(tmp, { recursive: true, force: true });
 });
 

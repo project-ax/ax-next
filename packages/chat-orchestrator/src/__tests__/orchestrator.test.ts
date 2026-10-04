@@ -3185,10 +3185,7 @@ describe('chat-orchestrator', () => {
       // turns undefined into an empty array on the wire.
       mcpServers?: Array<{
         name: string;
-        transport: 'stdio' | 'http';
-        command?: string;
-        args?: string[];
-        env?: Record<string, string>;
+        transport: 'http';
         url?: string;
         allowedHosts: string[];
         credentials: Array<{ slot: string; kind: 'api-key' }>;

@@ -28,10 +28,15 @@ const EXECUTE_HOOK = `tool:execute:${CONNECTOR_PROPOSE_TOOL_NAME}` as const;
 const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const KEY_MODES = new Set(['personal', 'workspace']);
 
+/** Model-visible reject for a stdio MCP server spec. Fixed text; never echoes input. */
+const STDIO_REJECT_MESSAGE =
+  'local (stdio) MCP servers are not supported — propose a remote server with transport "http" and a url';
+
 // The mechanism-agnostic flat draft args the model proposes. Backing-mechanism
-// vocabulary (transport/command/url) stays INSIDE each mcpServers spec — never a
-// first-class field (design boundary review). Forwarded as-is to the hook, which
-// assembles + validates the canonical Capabilities.
+// vocabulary (transport/url) stays INSIDE each mcpServers spec — never a
+// first-class field (design boundary review). Every spec is remote http.
+// Forwarded as-is to the hook, which assembles + validates the canonical
+// Capabilities.
 interface ConnectorProposeInput {
   connectorId: string;
   name: string;
@@ -104,6 +109,19 @@ function normalizeInput(raw: unknown): ConnectorProposeInput {
   // missing field becomes an empty default rather than a type error downstream.
   const hosts = Array.isArray(input.hosts) ? (input.hosts as string[]) : [];
   const slots = Array.isArray(input.slots) ? (input.slots as unknown[]) : [];
+
+  // Stdio MCP servers were removed 2026-10-04. The hook rejects them too, but
+  // its structural rejects all collapse to the generic "draft is invalid" below
+  // (I9), so the model would never learn WHICH field to fix. Catch it here with
+  // a fixed, host-written message that never echoes the model's input.
+  if (
+    Array.isArray(input.mcpServers) &&
+    input.mcpServers.some(
+      (s) => (s as { transport?: unknown } | null)?.transport === 'stdio',
+    )
+  ) {
+    rejectInput(STDIO_REJECT_MESSAGE);
+  }
 
   const out: ConnectorProposeInput = { connectorId, name, hosts, slots, keyMode };
   if (input.packages !== undefined) out.packages = input.packages;

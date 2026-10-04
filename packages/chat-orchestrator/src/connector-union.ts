@@ -54,10 +54,7 @@ import type { ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 // forwards it verbatim into the sandbox; the sandbox schemas re-validate.
 export interface ConnectorMcpServerSpec {
   name: string;
-  transport: 'stdio' | 'http';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
+  transport: 'http';
   url?: string;
   headers?: Record<string, string>;
   allowedHosts: string[];
