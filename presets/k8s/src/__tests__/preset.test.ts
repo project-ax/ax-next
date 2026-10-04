@@ -39,10 +39,9 @@ import {
 // Real end-to-end exercise lives in Task 20's CI acceptance test (postgres
 // testcontainer + mocked k8s).
 //
-// Dynamic-hook caveat: a few plugins (mcp-client, ipc-http, tool-
-// dispatcher) register hooks dynamically at runtime — `tool:execute:${name}`
-// service hooks aren't enumerable until MCP servers connect or tool
-// descriptors get registered. That's why those hooks are NOT in any
+// Dynamic-hook caveat: a few plugins (ipc-http, tool-dispatcher, the host
+// tool plugins) register hooks dynamically at runtime — `tool:execute:${name}`
+// service hooks aren't enumerable until tool descriptors get registered. That's why those hooks are NOT in any
 // manifest's `calls` list either: callers look them up via
 // `bus.hasService()` rather than declaring them statically. So the
 // "calls satisfied by registers" check is bounded to the static surface,
@@ -536,9 +535,24 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:inventory-status-batch',
       'connectors:inventory-tool-titles',
     ]);
-    expect(mcp!.manifest.calls).toEqual(
-      expect.arrayContaining(['database:get-instance', 'connectors:resolve', 'agents:resolve', 'credentials:get']),
-    );
+    // TASK-792: host MCP servers are retired, so the manifest is pinned
+    // EXACTLY — no `tool:register`, no `http:register-route` /
+    // `auth:require-user` (the /admin/mcp-servers routes are gone). The boot
+    // sweep needs storage:list-prefix + storage:delete; credentials:list /
+    // credentials:delete are optional (ordering only).
+    expect(mcp!.manifest.calls).toEqual([
+      'storage:list-prefix',
+      'storage:delete',
+      'database:get-instance',
+      'connectors:resolve',
+      'agents:resolve',
+      'credentials:get',
+    ]);
+    expect(mcp!.manifest.optionalCalls?.map((c) => c.hook)).toEqual([
+      'credentials:list',
+      'credentials:delete',
+    ]);
+    expect(mcp!.manifest.subscribes).toEqual(['agents:deleted']);
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
     expect(registered.has('connectors:resolve')).toBe(true);
     expect(registered.has('agents:resolve')).toBe(true);

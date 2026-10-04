@@ -71,8 +71,9 @@ export interface ToolDescriptor {
    * email'` or `'Sent 3 replies'`. Authored in the tool's manifest, in-repo,
    * and reviewed in the same diff as the tool — deliberately NOT the
    * model-facing `description` field, which is written to steer an LLM and,
-   * for an MCP tool, is third-party text. MCP-sourced descriptors never set
-   * this (see `@ax/mcp-client`'s `tool-names.ts`). Max 40 characters.
+   * for an MCP tool, is third-party text. Only first-party host tool
+   * plugins register descriptors (host MCP servers were retired in TASK-792).
+   * Max 40 characters.
    *
    * Must match @ax/ipc-protocol's ToolDescriptorSchema and @ax/mcp-client's
    * two descriptor gates.

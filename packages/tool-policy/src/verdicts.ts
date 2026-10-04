@@ -100,10 +100,10 @@ export interface ConnectorToolKey {
 /**
  * `mcp.<toolNamespace>.<tool>` → its parts, or `null` when the key is not a
  * connector tool key. ONLY the host-minted `c<10 hex>` namespace qualifies:
- * an admin-configured host MCP server (`@ax/mcp-client`, `mcp.<serverId>.x`)
- * shares the `mcp.` keyspace but is not a connector and has no connector
- * ceiling (it gets `implicitMcpCeiling`'s fixed `hold` instead). That split relies on mcp-client refusing a `c<10 hex>` server id
- * (TASK-752); otherwise an admin server could pass for a connector here.
+ * any other `mcp.<segment>.x` key is not a connector and has no connector
+ * ceiling (it gets `implicitMcpCeiling`'s fixed `hold` instead). Host MCP
+ * servers (`@ax/mcp-client`'s `mcp.<serverId>.x`) were retired in TASK-792, so
+ * no first-party plugin mints a non-connector `mcp.` name any more.
  */
 export function parseConnectorToolKey(key: unknown): ConnectorToolKey | null {
   if (typeof key !== 'string' || key.length > MAX_TOOL_KEY_CHARS) return null;
@@ -195,8 +195,9 @@ export function isMcpSpelled(toolName: unknown): toolName is string {
  *     ignored. The "nobody chose → hold" rule for these lives in
  *     `layeredVerdict` (a MISSING OVERRIDE is held), because putting it here
  *     would also cap what a person may choose.
- *   - every OTHER MCP-spelled name — an admin-configured host MCP server's
- *     `mcp.<serverId>.<tool>`, an unlifted `mcp__<server>__<tool>`, a
+ *   - every OTHER MCP-spelled name — a non-connector `mcp.<segment>.<tool>`
+ *     (host MCP servers were retired in TASK-792), an unlifted
+ *     `mcp__<server>__<tool>`, a
  *     malformed or over-long key: `hold`, always, whatever `agentSourced`
  *     says. None of these has a per-tool default anybody could have set, so
  *     there is nothing that could have reviewed what the tool does, and a

@@ -1,19 +1,12 @@
 // ---------------------------------------------------------------------------
-// Plugin init wiring tests (Task 13).
+// @ax/mcp-client plugin wiring.
 //
-// These exercise the centerpiece of `@ax/mcp-client`: on init, the plugin
-// reads MCP server configs from storage, spawns an `McpConnection` per
-// enabled config, lists tools, namespaces them, and registers both
-// `tool:register` (declarative) and `tool:execute:${namespacedName}`
-// (dynamic service hooks) so the dispatcher + IPC layer can route tool
-// calls to the right MCP server.
-//
-// Boot shape mirrors `@ax/credentials`'s plugin test: an in-memory storage
-// plugin + credentials plugin + tool-dispatcher + the plugin under test,
-// run through `bootstrap()` so manifest / graph validation happens for real.
-// The transport layer is replaced via the `transportFactory` test seam —
-// each enabled config maps to a pre-linked InMemoryTransport paired with
-// a real `Server` on the other side.
+// Host MCP servers were retired 2026-10-04 (TASK-792). The plugin now does
+// two things: a boot sweep that hard-deletes stored `mcp-server:<id>` rows
+// (and their `mcp:<id>:` credentials), and the opt-in connector tool
+// inventory (covered by the connector-inventory-* suites). These tests pin
+// the manifest and prove, through a real `bootstrap()`, that a stored legacy
+// row is gone after boot and nothing MCP-shaped is registered.
 // ---------------------------------------------------------------------------
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -23,31 +16,22 @@ import {
   makeAgentContext,
   type AgentContext,
   type Plugin,
-  type ToolCall,
   type ToolDescriptor,
 } from '@ax/core';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createToolDispatcherPlugin } from '../tool-dispatcher-plugin.js';
 import { createMcpClientPlugin } from '../plugin.js';
-import { saveConfig } from '../config.js';
-import type { McpClientTransport } from '../transports.js';
 
 const TEST_KEY_HEX = '42'.repeat(32);
+const enc = new TextEncoder();
 
 function ctx(): AgentContext {
   return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
-// Minimal in-memory storage plugin — mirrors the credentials test shape.
-function memStoragePlugin(): Plugin {
-  const store = new Map<string, Uint8Array>();
+/** In-memory storage plugin with the full storage surface the sweep and the vault use. */
+function memStoragePlugin(store: Map<string, Uint8Array>): Plugin {
   return {
     manifest: {
       name: 'mem-storage',
@@ -57,44 +41,36 @@ function memStoragePlugin(): Plugin {
         'storage:set',
         'storage:list-prefix',
         'storage:delete-prefix',
+        'storage:delete',
       ],
       calls: [],
       subscribes: [],
     },
     async init({ bus }) {
-      bus.registerService(
+      bus.registerService<{ key: string }, { value: Uint8Array | undefined }>(
         'storage:get',
         'mem-storage',
-        async (_ctx, input) => {
-          const { key } = input as { key: string };
-          return { value: store.get(key) };
-        },
+        async (_c, { key }) => ({ value: store.get(key) }),
       );
-      bus.registerService(
+      bus.registerService<{ key: string; value: Uint8Array }, void>(
         'storage:set',
         'mem-storage',
-        async (_ctx, input) => {
-          const { key, value } = input as { key: string; value: Uint8Array };
+        async (_c, { key, value }) => {
           store.set(key, value);
         },
       );
-      bus.registerService(
-        'storage:list-prefix',
-        'mem-storage',
-        async (_ctx, input) => {
-          const { prefix } = input as { prefix: string };
-          const entries: Array<{ key: string; value: Uint8Array }> = [];
-          for (const [k, v] of store.entries()) {
-            if (k.startsWith(prefix)) entries.push({ key: k, value: v });
-          }
-          return { entries };
-        },
-      );
-      bus.registerService(
+      bus.registerService<
+        { prefix: string },
+        { entries: Array<{ key: string; value: Uint8Array }> }
+      >('storage:list-prefix', 'mem-storage', async (_c, { prefix }) => ({
+        entries: [...store.entries()]
+          .filter(([k]) => k.startsWith(prefix))
+          .map(([key, value]) => ({ key, value })),
+      }));
+      bus.registerService<{ prefix: string }, { deleted: number }>(
         'storage:delete-prefix',
         'mem-storage',
-        async (_ctx, input) => {
-          const { prefix } = input as { prefix: string };
+        async (_c, { prefix }) => {
           let deleted = 0;
           for (const k of [...store.keys()]) {
             if (k.startsWith(prefix)) {
@@ -105,46 +81,40 @@ function memStoragePlugin(): Plugin {
           return { deleted };
         },
       );
+      bus.registerService<{ key: string }, { deleted: number }>(
+        'storage:delete',
+        'mem-storage',
+        async (_c, { key }) => ({ deleted: store.delete(key) ? 1 : 0 }),
+      );
     },
   };
 }
 
-interface FakeServerHandle {
-  clientTransport: McpClientTransport;
-  /** Close the underlying server — flips the client into unhealthy on next call. */
-  dispose: () => Promise<void>;
-}
-
-async function makeFakeMcpServer(opts: {
-  tools: Array<{ name: string; description?: string; inputSchema: object }>;
-  callResult?: (name: string, args: unknown) => unknown;
-}): Promise<FakeServerHandle> {
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const server = new Server(
-    { name: 'fake-mcp', version: '0.0.0' },
-    { capabilities: { tools: {} } },
-  );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: opts.tools }));
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const fn =
-      opts.callResult ??
-      ((_name: string, args: unknown) => ({
-        content: [
-          { type: 'text' as const, text: String((args as { text?: unknown })?.text ?? '') },
-        ],
-      }));
-    return fn(req.params.name, req.params.arguments) as {
-      content: Array<{ type: 'text'; text: string }>;
-    };
-  });
-  await server.connect(serverTransport);
+/** Records every route anyone tries to mount. */
+function recordingHttpPlugin(paths: string[]): Plugin {
   return {
-    clientTransport: clientTransport as unknown as McpClientTransport,
-    dispose: async () => {
-      await server.close();
+    manifest: {
+      name: 'recording-http',
+      version: '0.0.0',
+      registers: ['http:register-route'],
+      calls: [],
+      subscribes: [],
+    },
+    async init({ bus }) {
+      bus.registerService<{ path: string }, { unregister: () => void }>(
+        'http:register-route',
+        'recording-http',
+        async (_c, { path }) => {
+          paths.push(path);
+          return { unregister: () => {} };
+        },
+      );
     },
   };
 }
+
+const SWEEP_DEGRADATION =
+  'boot sweep deletes retired host MCP server rows without purging their mcp:<id>: credentials';
 
 describe('@ax/mcp-client plugin', () => {
   beforeEach(() => {
@@ -154,318 +124,72 @@ describe('@ax/mcp-client plugin', () => {
     delete process.env.AX_CREDENTIALS_KEY;
   });
 
-  it('registers namespaced tools for each enabled MCP server on init', async () => {
-    const bus = new HookBus();
-    const storage = memStoragePlugin();
-
-    // Stand up two fake servers BEFORE bootstrapping so the transportFactory
-    // has linked pairs ready to hand out.
-    const serverA = await makeFakeMcpServer({
-      tools: [
-        {
-          name: 'echo',
-          description: 'echoes',
-          inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
-        },
-        {
-          name: 'reverse',
-          description: 'reverses',
-          inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
-        },
+  it('manifest (default): storage sweep calls, optional credentials, nothing registered', () => {
+    expect(createMcpClientPlugin().manifest).toEqual({
+      name: '@ax/mcp-client',
+      version: '0.0.0',
+      registers: [],
+      calls: ['storage:list-prefix', 'storage:delete'],
+      optionalCalls: [
+        { hook: 'credentials:list', degradation: SWEEP_DEGRADATION },
+        { hook: 'credentials:delete', degradation: SWEEP_DEGRADATION },
       ],
+      subscribes: [],
     });
-    const serverB = await makeFakeMcpServer({
-      tools: [
-        {
-          name: 'ping',
-          description: 'pings',
-          inputSchema: { type: 'object' },
-        },
+  });
+
+  it('manifest (connectorToolInventory): adds the inventory hooks and nothing host-server shaped', () => {
+    expect(createMcpClientPlugin({ connectorToolInventory: true }).manifest).toEqual({
+      name: '@ax/mcp-client',
+      version: '0.0.0',
+      registers: [
+        'connectors:describe-tools',
+        'connectors:inventory-status-batch',
+        'connectors:inventory-tool-titles',
       ],
-    });
-
-    // Bootstrap storage + credentials first so saveConfig can write.
-    await bootstrap({
-      bus,
-      plugins: [storage, createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
-      config: {},
-    });
-
-    // Seed two enabled configs pointing at serverA + serverB respectively.
-    await saveConfig(bus, ctx(), {
-      id: 'a',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'b',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-
-    // Now init the dispatcher + MCP client — the plugin will call loadConfigs
-    // and, for each config, ask the transportFactory for a transport.
-    const dispatcher = createToolDispatcherPlugin();
-    await dispatcher.init({ bus, config: undefined });
-    const byId = new Map<string, McpClientTransport>([
-      ['a', serverA.clientTransport],
-      ['b', serverB.clientTransport],
-    ]);
-    const mcp = createMcpClientPlugin({
-      transportFactory: async ({ config }) => {
-        const t = byId.get(config.id);
-        if (t === undefined) throw new Error(`no fake transport for ${config.id}`);
-        return t;
-      },
-    });
-    await mcp.init({ bus, config: undefined });
-
-    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
-      'tool:list',
-      ctx(),
-      {},
-    );
-    const names = listed.tools.map((t) => t.name).sort();
-    expect(names).toEqual(['mcp.a.echo', 'mcp.a.reverse', 'mcp.b.ping']);
-
-    // executesIn + schema + description preserved verbatim.
-    for (const d of listed.tools) {
-      expect(d.executesIn).toBe('host');
-    }
-    const echo = listed.tools.find((t) => t.name === 'mcp.a.echo')!;
-    expect(echo.description).toBe('echoes');
-    expect(echo.inputSchema).toEqual({
-      type: 'object',
-      properties: { text: { type: 'string' } },
-    });
-
-    await serverA.dispose();
-    await serverB.dispose();
-  });
-
-  it('tool:execute:${namespacedName} routes to the right MCP server and returns { output }', async () => {
-    const bus = new HookBus();
-    const serverA = await makeFakeMcpServer({
-      tools: [
-        {
-          name: 'echo',
-          inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
-        },
+      calls: [
+        'storage:list-prefix',
+        'storage:delete',
+        'database:get-instance',
+        'connectors:resolve',
+        'agents:resolve',
+        // describe-tools spends the connector's credential plan.
+        'credentials:get',
       ],
-      callResult: (_name, args) => ({
-        content: [
-          { type: 'text' as const, text: `A:${String((args as { text?: unknown })?.text ?? '')}` },
-        ],
-      }),
+      optionalCalls: [
+        { hook: 'credentials:list', degradation: SWEEP_DEGRADATION },
+        { hook: 'credentials:delete', degradation: SWEEP_DEGRADATION },
+      ],
+      subscribes: ['agents:deleted'],
     });
-    const serverB = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-      callResult: (_name, args) => ({
-        content: [
-          { type: 'text' as const, text: `B:${String((args as { text?: unknown })?.text ?? '')}` },
-        ],
-      }),
-    });
-
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
-      config: {},
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'a',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'b',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
-
-    const byId = new Map([
-      ['a', serverA.clientTransport],
-      ['b', serverB.clientTransport],
-    ]);
-    await createMcpClientPlugin({
-      transportFactory: async ({ config }) => byId.get(config.id)!,
-    }).init({ bus, config: undefined });
-
-    // Same remote tool name on both servers — namespacing keeps them distinct.
-    const call: ToolCall = { id: 'c1', name: 'mcp.a.echo', input: { text: 'hello' } };
-    const resA = await bus.call<ToolCall, { output: unknown }>(
-      'tool:execute:mcp.a.echo',
-      ctx(),
-      call,
-    );
-    expect(resA.output).toMatchObject({
-      content: [{ type: 'text', text: 'A:hello' }],
-    });
-
-    const callB: ToolCall = { id: 'c2', name: 'mcp.b.echo', input: { text: 'hello' } };
-    const resB = await bus.call<ToolCall, { output: unknown }>(
-      'tool:execute:mcp.b.echo',
-      ctx(),
-      callB,
-    );
-    expect(resB.output).toMatchObject({
-      content: [{ type: 'text', text: 'B:hello' }],
-    });
-
-    await serverA.dispose();
-    await serverB.dispose();
   });
 
-  it('disabled configs contribute zero tools', async () => {
-    const bus = new HookBus();
-    const serverA = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-    });
-    // serverB configured-disabled: plugin should not connect to it, so we
-    // don't even hand it a linked transport — if the plugin tries to pull
-    // one, transportFactory throws and the assertion catches that.
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
-      config: {},
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'a',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'disabled-one',
-      enabled: false,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
-    await createMcpClientPlugin({
-      transportFactory: async ({ config }) => {
-        if (config.id !== 'a') {
-          throw new Error(`transportFactory should not be called for '${config.id}'`);
-        }
-        return serverA.clientTransport;
-      },
-    }).init({ bus, config: undefined });
-
-    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
-      'tool:list',
-      ctx(),
-      {},
-    );
-    expect(listed.tools.map((t) => t.name)).toEqual(['mcp.a.echo']);
-
-    await serverA.dispose();
-  });
-
-  it('never connects a stored server whose id is in the reserved connector-namespace form (TASK-752)', async () => {
-    const bus = new HookBus();
-    const serverA = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-    });
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
-      config: {},
-    });
-    await saveConfig(bus, ctx(), { id: 'a', enabled: true, transport: 'streamable-http', url: 'https://example.test/mcp' });
-    // A row written before the reservation existed — saveConfig would now
-    // refuse it, so it goes straight to storage.
-    const reserved = 'c5e0235982f';
-    const enc = new TextEncoder();
-    await bus.call('storage:set', ctx(), {
-      key: `mcp-server:${reserved}`,
-      value: enc.encode(
-        JSON.stringify({ id: reserved, enabled: true, transport: 'streamable-http', url: 'https://example.test/mcp' }),
-      ),
-    });
-    await bus.call('storage:set', ctx(), {
-      key: 'mcp-server-index',
-      value: enc.encode(JSON.stringify(['a', reserved])),
-    });
-
-    // Hand the reserved row a WORKING server too: a connect failure is
-    // swallowed at init, so a throwing factory could not tell "skipped" from
-    // "tried and failed". Record every id the plugin tries to connect.
-    const serverR = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-    });
-    const attempted: string[] = [];
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
-    await createMcpClientPlugin({
-      transportFactory: async ({ config }) => {
-        attempted.push(config.id);
-        return config.id === 'a' ? serverA.clientTransport : serverR.clientTransport;
-      },
-    }).init({ bus, config: undefined });
-
-    expect(attempted).toEqual(['a']);
-    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
-      'tool:list',
-      ctx(),
-      {},
-    );
-    expect(listed.tools.map((t) => t.name)).toEqual(['mcp.a.echo']);
-
-    await serverA.dispose();
-    await serverR.dispose();
-  });
-
-  it('init retires a stored stdio server: never connected, row deleted, env credential purged, http server still wired', async () => {
-    const bus = new HookBus();
-    const serverA = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-    });
-    // A WORKING server behind the stdio row's id: a connect failure is swallowed
-    // at init, so a throwing factory could not tell "swept" from "tried and
-    // failed". Record every id the plugin tries to connect instead.
-    const serverOld = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-    });
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
-      config: {},
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'a',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-    // A pre-removal row goes straight to storage (saveConfig now refuses it),
-    // together with the env credential slot it declared.
-    const enc = new TextEncoder();
-    const dec = new TextDecoder();
-    await bus.call('storage:set', ctx(), {
-      key: 'mcp-server:old',
-      value: enc.encode(
+  it('boot sweeps a stored legacy host server: row, index and its credentials gone; no mcp.* tools; no admin route', async () => {
+    const store = new Map<string, Uint8Array>();
+    store.set('mcp-server-index', enc.encode(JSON.stringify(['legacy'])));
+    store.set(
+      'mcp-server:legacy',
+      enc.encode(
         JSON.stringify({
-          id: 'old',
+          id: 'legacy',
           enabled: true,
-          transport: 'stdio',
-          command: 'npx',
-          args: ['-y', 'some-mcp-server'],
-          env: { GH_TOKEN: '' },
+          transport: 'streamable-http',
+          url: 'https://mcp.example.test/mcp',
+          headers: { Authorization: { credentialRef: 'mcp:legacy:header:Authorization' } },
         }),
       ),
+    );
+
+    // Seed the vault on a separate bus over the SAME backing map, so the
+    // credential exists before the real boot below.
+    const seedBus = new HookBus();
+    await bootstrap({
+      bus: seedBus,
+      plugins: [memStoragePlugin(store), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      config: {},
     });
-    await bus.call('storage:set', ctx(), {
-      key: 'mcp-server-index',
-      value: enc.encode(JSON.stringify(['a', 'old'])),
-    });
-    for (const ref of ['mcp:old:env:GH_TOKEN', 'mcp:a:header:Authorization']) {
-      await bus.call('credentials:set', ctx(), {
+    for (const ref of ['mcp:legacy:header:Authorization', 'mcp:legacyx:header:A']) {
+      await seedBus.call('credentials:set', ctx(), {
         scope: 'global',
         ownerId: null,
         ref,
@@ -474,314 +198,53 @@ describe('@ax/mcp-client plugin', () => {
       });
     }
 
-    const attempted: string[] = [];
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
-    await createMcpClientPlugin({
-      transportFactory: async ({ config }) => {
-        attempted.push(config.id);
-        return config.id === 'a' ? serverA.clientTransport : serverOld.clientTransport;
-      },
-    }).init({ bus, config: undefined });
-
-    // The stdio server was never connected (so never spawned) ...
-    expect(attempted).toEqual(['a']);
-    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
-      'tool:list',
-      ctx(),
-      {},
-    );
-    expect(listed.tools.map((t) => t.name)).toEqual(['mcp.a.echo']);
-    // ... its row is gone and the index lists only the surviving server ...
-    const row = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
-      'storage:get',
-      ctx(),
-      { key: 'mcp-server:old' },
-    );
-    expect(row.value?.length ?? 0).toBe(0);
-    const idx = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
-      'storage:get',
-      ctx(),
-      { key: 'mcp-server-index' },
-    );
-    expect(JSON.parse(dec.decode(idx.value!))).toEqual(['a']);
-    // ... and only ITS env credential was purged; the http server's slot stays.
-    const { credentials } = await bus.call<Record<string, never>, { credentials: Array<{ ref: string }> }>(
-      'credentials:list',
-      ctx(),
-      {},
-    );
-    const refs = credentials.map((c) => c.ref);
-    expect(refs).not.toContain('mcp:old:env:GH_TOKEN');
-    expect(refs).toContain('mcp:a:header:Authorization');
-
-    await serverA.dispose();
-    await serverOld.dispose();
-  });
-
-  it('tool:execute returns a MCP_SERVER_UNAVAILABLE tool-error result when the server dies', async () => {
+    // Real boot. mcp-client is listed FIRST: its optionalCalls edge on
+    // credentials:list/delete must still order its init after @ax/credentials,
+    // or the purge would silently be skipped.
+    const routes: string[] = [];
     const bus = new HookBus();
-    const serverA = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-    });
-
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
-      config: {},
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'a',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
-    await createMcpClientPlugin({
-      transportFactory: async () => serverA.clientTransport,
-    }).init({ bus, config: undefined });
-
-    // Kill the server so the underlying callTool errors out.
-    await serverA.dispose();
-
-    const call: ToolCall = { id: 'c', name: 'mcp.a.echo', input: { text: 'hi' } };
-    const res = await bus.call<ToolCall, { output: unknown }>(
-      'tool:execute:mcp.a.echo',
-      ctx(),
-      call,
-    );
-    // Shape the model sees: isError:true + a text content describing the
-    // outage. Matches the pattern tool-error results use elsewhere (so
-    // providers that already render isError get this for free).
-    expect(res.output).toMatchObject({
-      isError: true,
-      content: [
-        {
-          type: 'text',
-          text: expect.stringMatching(/unavailable/i),
-        },
+      plugins: [
+        createMcpClientPlugin(),
+        createToolDispatcherPlugin(),
+        recordingHttpPlugin(routes),
+        memStoragePlugin(store),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
       ],
-    });
-    const text = (res.output as { content: Array<{ text: string }> }).content[0]!.text;
-    expect(text).toContain("'a'");
-  });
-
-  it('one server failing to connect does not prevent other servers from coming up', async () => {
-    const bus = new HookBus();
-    const serverGood = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-    });
-
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
-    await saveConfig(bus, ctx(), {
-      id: 'broken',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'good',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
 
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
+    expect(store.has('mcp-server:legacy')).toBe(false);
+    expect(store.has('mcp-server-index')).toBe(false);
 
-    // Swallow stdout warnings emitted by the default logger during init so
-    // the test output isn't polluted with the expected `mcp_init_connect_failed`
-    // record.
-    const origWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = (() => true) as typeof process.stdout.write;
-    try {
-      await createMcpClientPlugin({
-        transportFactory: async ({ config }) => {
-          if (config.id === 'broken') {
-            return {
-              async start() {
-                throw new Error('boom');
-              },
-              async send() {},
-              async close() {},
-            } as unknown as McpClientTransport;
-          }
-          return serverGood.clientTransport;
-        },
-      }).init({ bus, config: undefined });
-    } finally {
-      process.stdout.write = origWrite;
-    }
+    const { credentials } = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >('credentials:list', ctx(), {});
+    expect(credentials.map((c) => c.ref)).toEqual(['mcp:legacyx:header:A']);
 
-    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
+    const { tools } = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
       'tool:list',
       ctx(),
       {},
     );
-    expect(listed.tools.map((t) => t.name)).toEqual(['mcp.good.echo']);
-
-    // And the healthy server's tool actually works.
-    const call: ToolCall = { id: 'c', name: 'mcp.good.echo', input: { text: 'ok' } };
-    const res = await bus.call<ToolCall, { output: unknown }>(
-      'tool:execute:mcp.good.echo',
-      ctx(),
-      call,
-    );
-    expect(res.output).toMatchObject({
-      content: [{ type: 'text', text: 'ok' }],
-    });
-
-    await serverGood.dispose();
+    expect(tools.filter((t) => t.name.startsWith('mcp.'))).toEqual([]);
+    expect(routes.filter((p) => p.startsWith('/admin/mcp-servers'))).toEqual([]);
+    expect(routes).toEqual([]);
   });
 
-  it('warns at init when a streamable-http config uses plain http://', async () => {
+  it('boots without a credentials plugin and still deletes the row', async () => {
+    const store = new Map<string, Uint8Array>([
+      ['mcp-server:legacy', enc.encode('{"id":"legacy","transport":"sse","url":"https://x.test"}')],
+    ]);
     const bus = new HookBus();
-
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      plugins: [createMcpClientPlugin(), memStoragePlugin(store)],
       config: {},
     });
-    await saveConfig(bus, ctx(), {
-      id: 'plain',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'http://example.invalid/mcp',
-    });
-
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
-
-    // Capture stdout so we can assert the warn log was emitted. The connect
-    // itself is expected to fail (we reject in transportFactory) — that's
-    // fine; the warn fires BEFORE connect(), so it's still on the tape.
-    const captured: string[] = [];
-    const origWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk: unknown) => {
-      captured.push(typeof chunk === 'string' ? chunk : String(chunk));
-      return true;
-    }) as typeof process.stdout.write;
-    try {
-      await createMcpClientPlugin({
-        transportFactory: async () => {
-          throw new Error('unreachable — warn should still fire');
-        },
-      }).init({ bus, config: undefined });
-    } finally {
-      process.stdout.write = origWrite;
-    }
-
-    const matched = captured.filter((line) => /plain HTTP|cleartext/i.test(line));
-    expect(matched.length).toBeGreaterThan(0);
-  });
-
-  it('does NOT warn when a streamable-http config uses https://', async () => {
-    const bus = new HookBus();
-    const serverA = await makeFakeMcpServer({
-      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
-    });
-
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
-      config: {},
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'secure',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
-
-    const captured: string[] = [];
-    const origWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk: unknown) => {
-      captured.push(typeof chunk === 'string' ? chunk : String(chunk));
-      return true;
-    }) as typeof process.stdout.write;
-    try {
-      await createMcpClientPlugin({
-        transportFactory: async () => serverA.clientTransport,
-      }).init({ bus, config: undefined });
-    } finally {
-      process.stdout.write = origWrite;
-    }
-
-    const matched = captured.filter((line) => /plain HTTP|cleartext/i.test(line));
-    expect(matched).toEqual([]);
-
-    await serverA.dispose();
-  });
-
-  // TASK-229 T1: `activityPhrase` is authored in-repo per tool and reviewed
-  // in the same diff — MCP tool text is third-party and must never reach it.
-  // `McpToolDescriptor` (connection.ts) only declares name/description/
-  // inputSchema, and `namespaceTools` (tool-names.ts) builds the registered
-  // ToolDescriptor by copying exactly those fields plus executesIn — so even
-  // a spec-violating server that stuffs an extra `activityPhrase` key into
-  // its listTools() response cannot get it onto the registered descriptor.
-  // This test proves that end-to-end through the real MCP SDK transport.
-  it('an MCP server advertising activityPhrase cannot get it onto the registered descriptor', async () => {
-    const bus = new HookBus();
-    const serverA = await makeFakeMcpServer({
-      tools: [
-        {
-          name: 'echo',
-          description: 'echoes',
-          inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
-          // Spec-violating extra field — a hostile/careless MCP server
-          // trying to smuggle display text onto the descriptor.
-          activityPhrase: 'Reading email',
-        } as unknown as { name: string; description?: string; inputSchema: object },
-      ],
-    });
-
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
-      config: {},
-    });
-    await saveConfig(bus, ctx(), {
-      id: 'a',
-      enabled: true,
-      transport: 'streamable-http',
-      url: 'https://example.test/mcp',
-    });
-
-    await createToolDispatcherPlugin().init({ bus, config: undefined });
-    await createMcpClientPlugin({
-      transportFactory: async () => serverA.clientTransport,
-    }).init({ bus, config: undefined });
-
-    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
-      'tool:list',
-      ctx(),
-      {},
-    );
-    const echo = listed.tools.find((t) => t.name === 'mcp.a.echo');
-    expect(echo).toBeDefined();
-    expect(echo?.activityPhrase).toBeUndefined();
-
-    await serverA.dispose();
-  });
-
-  it('manifest declares the expected calls and no static registers', async () => {
-    const plugin = createMcpClientPlugin();
-    expect(plugin.manifest).toMatchObject({
-      name: '@ax/mcp-client',
-      version: '0.0.0',
-      registers: [],
-      calls: expect.arrayContaining([
-        'tool:register',
-        'storage:get',
-        'storage:set',
-        'credentials:get',
-      ]),
-      subscribes: [],
-    });
+    expect(store.size).toBe(0);
   });
 });

@@ -8,13 +8,13 @@ import type { ToolDescriptor } from '@ax/core';
 // `tool:list` time so the calling agent sees only the tools its frozen
 // agentConfig.allowedTools / mcpConfigIds permit.
 //
-// MCP namespacing pattern: every MCP-sourced tool has a name shaped like
-// `mcp.${serverId}.${toolName}` — owned by `@ax/mcp-client/src/tool-names.ts`
-// (`buildNamespacedName`). We extract the `serverId` segment by hand here
-// rather than importing across plugins (invariant I2), but the prefix and
-// separator must stay in lockstep with mcp-client. If mcp-client ever
-// changes the format, the contract test in mcp-client + the cross-tenant
-// integration test in tool-dispatcher together flag the drift.
+// MCP namespacing pattern: an MCP-sourced tool has a name shaped like
+// `mcp.${serverId}.${toolName}`. The host MCP servers that registered such
+// names (`tool-names.ts` / `buildNamespacedName`) were retired 2026-10-04
+// (TASK-792), so no plugin registers `mcp.*` catalog names any more —
+// connector tools run in the sandbox from the projected `.mcp.json`. The
+// filter below stays as a defence: should an `mcp.*` descriptor ever reach
+// the catalog, it is still scoped by `mcpConfigIds`, never passed as native.
 //
 // Defensive bias: malformed `mcp.*` names (no second segment, empty
 // configId) are dropped, not retained as natives. An attacker who manages
