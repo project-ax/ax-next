@@ -400,8 +400,9 @@ first.
 When does the flag actually do anything? Honestly, most of the time it doesn't.
 The chart's Secret is lookup-stable (`templates/hook-secret.yaml`): if the live
 `ax-next-secrets` Secret already holds a key, an in-place `helm upgrade` keeps that
-value and **ignores** `--set` for all three. The flags are load-bearing only when
-there's no live Secret for the chart to read:
+value and **ignores** `--set` for it (each of the three keys is checked on its
+own). The flags are load-bearing only when there's no live key for the chart to
+read:
 
 - the **first install** of a cluster (Step 6, or a migration's
   [Step M6](#step-m6--install-with-the-same-chart));

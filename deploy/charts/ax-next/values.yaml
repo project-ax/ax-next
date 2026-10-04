@@ -628,9 +628,9 @@ onboarding:
 # auth knob is `auth.secret` below.
 #
 # `AX_AUTH_SECRET` (read by @ax/auth-better) is the stable secret used
-# for OAuth state signing and at-rest OAuth-token encryption. Normally
-# you DON'T supply it — leave `auth.secret` empty and the chart generates
-# 32 bytes of entropy at first install, stashing it in the
+# for OAuth state signing and at-rest OAuth-token encryption. Leave
+# `auth.secret` empty and the chart generates 32 bytes of entropy at
+# first install, stashing it in the
 # `<release>-secrets` Secret under the `auth-secret` key. A `lookup` guard
 # keeps it stable across `helm upgrade`, so we never regenerate it out
 # from under you.
@@ -639,16 +639,18 @@ onboarding:
 # already encrypted with the old value becomes undecryptable — users have
 # to re-link their providers. We're paranoid about this for good reason.
 #
-# `auth.secret` — the escape hatch for when you NEED to pin the value:
-# standing up a brand-new cluster against an EXISTING database (e.g. a
-# cluster migration). A fresh cluster has no in-cluster Secret to look up,
-# so it'd otherwise generate a NEW auth-secret and orphan every OAuth
+# `auth.secret` pins the value to one you keep backed up off-cluster.
+# It's load-bearing whenever there's no in-cluster Secret to look up — a
+# brand-new cluster against an EXISTING database (e.g. a cluster
+# migration), an offline render, a restore. Without it, a fresh cluster
+# would generate a NEW auth-secret and orphan every OAuth
 # token the old cluster encrypted → broken logins. Set
 # `--set auth.secret=$OLD_AUTH_SECRET` (the DECODED value, same as
 # `credentials.key`) and the new cluster reuses the old secret. Precedence:
 # an existing in-cluster `auth-secret` always wins (so this is a no-op on
-# an upgrade — by design); otherwise this value is used; otherwise one is
-# generated. See deploy/GKE.md Step M4.
+# an upgrade — by design, and why passing it every time is harmless);
+# otherwise this value is used; otherwise one is generated. deploy/GKE.md
+# Step 4b pins it on every install and upgrade; Step M4 is the migration.
 #
 # Prefer your GitOps tooling provision it out-of-band? You can also point
 # the `secretKeyRef` in `templates/host/deployment.yaml` at your own
