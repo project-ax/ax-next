@@ -701,8 +701,9 @@ describe('remote connector editor', () => {
     },
   );
 
-  it('opens a connector whose lead MCP server is NOT first-listed http in the remote form', async () => {
-    // Routing keys on "has any MCP server", not on mcpServers[0].transport.
+  it('opens a connector with several http MCP servers in the remote form', async () => {
+    // With stdio gone every MCP server is http; a multi-server connector still
+    // routes to the remote form (the Server URL field is shown).
     fixture.capabilities.mcpServers = [
       { name: 'remote', transport: 'http', url: 'https://mcp.example.com/a', allowedHosts: [], credentials: [] },
       { name: 'second', transport: 'http', url: 'https://mcp.example.com/b', allowedHosts: [], credentials: [] },
