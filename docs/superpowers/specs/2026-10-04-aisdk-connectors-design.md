@@ -115,11 +115,15 @@ connectConnectorTools(opts: {
   (best-effort), and contribute no tools.
 - Boot latency is bounded by one timeout, not N.
 
+A tool whose `inputSchema` is not `type: "object"` never reaches us: the SDK's
+`ListToolsResultSchema` (zod, `type: z.literal('object')`) rejects the whole
+`tools/list` response, so that connector is dropped like any other list failure
+(found while planning; pinned by a test).
+
 **Per listed tool**, skip with a log line (never rename or mangle) when any of
 these holds:
 - `mcp__<ns>__<tool>` fails `^[a-zA-Z0-9_-]{1,64}$`. That's the Anthropic
   limit, and OpenAI-compatible providers use the same pattern.
-- `inputSchema.type !== 'object'`.
 - The name is a duplicate within the same server's list. Otherwise
   `mergeToolSets` would kill the boot.
 - The canonical `mcp.<ns>.<tool>` is in `disallowed`. This is TASK-736's F4,
@@ -215,7 +219,8 @@ become false and are replaced:
 |---|---|
 | Malformed / symlinked / oversized `.mcp.json`, bad key, invalid entry | loader skips + logs; other connectors unaffected |
 | Connect / list throws or exceeds 10s | that connector's tools absent; stderr line; Skill note for its bundle |
-| Illegal/over-long name, non-object schema, duplicate, denied, over cap | that tool skipped + logged |
+| Illegal/over-long name, duplicate, denied, over cap | that tool skipped + logged |
+| A listed tool with a non-object `inputSchema` | SDK rejects the whole list → that connector dropped + logged |
 | `callTool` `isError: true` | thrown → `tool-error`, `is_error` on persisted result, turn continues |
 | Transport error / server crash / 5-min timeout / Stop | thrown → failed tool call, turn continues |
 | Policy deny / hold | unchanged `wrapWithPolicy` behaviour (text result / latch) |
@@ -237,7 +242,7 @@ become false and are replaced:
 3. **`connector-tools.test.ts`.** Most cases run against `startMcpHttpServerStub()`
    (echo/crash). A small inline streamable-HTTP server (built with the SDK's
    `McpServer`) covers `isError`, header capture, a 70-char tool name, a
-   duplicate name and a non-object schema. Cases:
+   duplicate name, pagination, a 401, and a non-object schema (whole connector dropped). Cases:
    - tools are keyed `mcp__<ns>__<tool>`;
    - a fake `ToolPolicy` sees `mcp.<ns>.echo`;
    - echo round-trips;
