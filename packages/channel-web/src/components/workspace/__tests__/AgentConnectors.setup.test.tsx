@@ -150,7 +150,7 @@ async function menuItems(name: string) {
 }
 
 function list(rows: AgentConnectorRow[], shared = false) {
-  connectorsMock.mockResolvedValue({ connectors: rows, shared, connectorsSupported: true, manageable: true });
+  connectorsMock.mockResolvedValue({ connectors: rows, shared, connectorsSupported: true, manageable: true, sharedCredentials: shared });
 }
 
 beforeEach(() => {

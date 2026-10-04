@@ -43,7 +43,7 @@ function read(
   connectors: AgentConnectorRow[],
   over: Partial<AgentConnectorsRead> = {},
 ): AgentConnectorsRead {
-  return { connectors, shared: false, manageable: true, connectorsSupported: true, ...over };
+  return { connectors, shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true, ...over };
 }
 
 const GMAIL = row({ id: 'gmail', name: 'Gmail', health: 'needs-sign-in', setup: 'sign-in' });

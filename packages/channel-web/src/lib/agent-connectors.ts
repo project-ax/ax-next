@@ -47,13 +47,20 @@ export interface AgentConnectorsState {
   /** The agent is a team agent (Reconnect asks before signing in for everyone). */
   shared: boolean;
   /**
-   * TASK-798 — this person may add, sign in on the agent for, and remove its
-   * connectors (always on their own agent; on a team agent only its owner or
-   * a workspace admin). False until the list is read, and whenever the
-   * server didn't say: offering what the server would refuse is worse than
-   * briefly offering nothing.
+   * TASK-798 — this person may add and remove its connectors (always on
+   * their own agent; on a team agent only its owner or a workspace admin).
+   * False until the list is read, and whenever the server didn't say:
+   * offering what the server would refuse is worse than briefly offering
+   * nothing.
    */
   manageable: boolean;
+  /**
+   * TASK-813 — this person may sign in, or add a team key, ON this team
+   * agent: only an admin of the team that owns it (a workspace admin who
+   * isn't one may not). Always false on a personal agent. Same "false until
+   * the server said so" rule as `manageable`.
+   */
+  sharedCredentials: boolean;
   /**
    * TASK-761 — false when this agent's runner gets no connector tools at all
    * (aisdk), so the tab says so instead of offering setup that can't apply.
@@ -73,6 +80,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
   const [retrying, setRetrying] = useState<ReadonlySet<string>>(new Set());
   const [shared, setShared] = useState(false);
   const [manageable, setManageable] = useState(false);
+  const [sharedCredentials, setSharedCredentials] = useState(false);
   const [connectorsSupported, setConnectorsSupported] = useState(true);
   // Only the newest read for the newest agent lands — switching agents fast
   // must never paint one agent's connectors under another's name.
@@ -90,6 +98,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
         setRetrying(new Set());
         setShared(false);
         setManageable(false);
+        setSharedCredentials(false);
         setConnectorsSupported(true);
       }
       void (async () => {
@@ -99,6 +108,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
           setConnectors(out.connectors);
           setShared(out.shared === true);
           setManageable(out.manageable === true);
+          setSharedCredentials(out.sharedCredentials === true);
           // Only an explicit false hides setup: an older server that never
           // sent the flag keeps today's behaviour.
           setConnectorsSupported(out.connectorsSupported !== false);
@@ -201,6 +211,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
     remove,
     shared,
     manageable,
+    sharedCredentials,
     connectorsSupported,
     retrying,
     retry,

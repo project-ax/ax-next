@@ -100,7 +100,7 @@ function connectorRow(over: Partial<AgentConnectorRow>): AgentConnectorRow {
 }
 
 function connectorsRead(connectors: AgentConnectorRow[]): AgentConnectorsRead {
-  return { connectors, shared: false, manageable: true, connectorsSupported: true };
+  return { connectors, shared: false, manageable: true, sharedCredentials: false, connectorsSupported: true };
 }
 
 const quill: WorkspaceAgent = {

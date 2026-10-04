@@ -130,7 +130,7 @@ beforeEach(() => {
   vi.mocked(workspaceApi.abilities).mockResolvedValue({
     abilities: { webSearch: true, readPages: true, runCode: true },
   });
-  vi.mocked(workspaceApi.connectors).mockResolvedValue({ shared: false, connectorsSupported: true, manageable: true, connectors: ROWS });
+  vi.mocked(workspaceApi.connectors).mockResolvedValue({ shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false, connectors: ROWS });
   toolsMock.mockResolvedValue(read());
 });
 
@@ -179,7 +179,7 @@ describe('a member on a team agent (TASK-798)', () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: true,
       connectorsSupported: true,
-      manageable: false,
+      manageable: false, sharedCredentials: false,
       connectors,
     });
   }
@@ -222,7 +222,7 @@ describe('a member on a team agent (TASK-798)', () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: true,
       connectorsSupported: true,
-      manageable: true,
+      manageable: true, sharedCredentials: true,
       connectors: [{ ...ROWS[0]!, health: 'needs-sign-in', setup: 'sign-in', removable: true }],
     });
     renderTab();
@@ -441,7 +441,7 @@ describe('when the tool list cannot be read', () => {
     // that answers needs-auth may be a connector nobody has signed in to.
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
-      connectorsSupported: true, manageable: true,
+      connectorsSupported: true, manageable: true, sharedCredentials: false,
       connectors: [{ ...ROWS[0]!, health: 'needs-reconnect' }],
     });
     toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
@@ -454,7 +454,7 @@ describe('when the tool list cannot be read', () => {
   it('says a connector a session cannot fully load could not load — never "Connected" (TASK-745)', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
-      connectorsSupported: true, manageable: true,
+      connectorsSupported: true, manageable: true, sharedCredentials: false,
       connectors: [{ ...ROWS[0]!, health: 'not-loaded' }],
     });
     toolsMock.mockResolvedValue(read({ status: 'ok' }));
@@ -472,11 +472,11 @@ describe('when the tool list cannot be read', () => {
     const list = vi.mocked(workspaceApi.connectors);
     list.mockReset();
     list
-      .mockResolvedValueOnce({ shared: false, connectorsSupported: true, manageable: true, connectors: ROWS })
+      .mockResolvedValueOnce({ shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false, connectors: ROWS })
       .mockResolvedValue({
         shared: false,
         connectorsSupported: true,
-        manageable: true,
+        manageable: true, sharedCredentials: false,
         connectors: [{ ...ROWS[0]!, health: 'needs-reconnect' }],
       });
     toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
@@ -493,7 +493,7 @@ describe('when the tool list cannot be read', () => {
   it('re-reads the list at most once per tool read when the row stays healthy', async () => {
     const list = vi.mocked(workspaceApi.connectors);
     list.mockReset();
-    list.mockResolvedValue({ shared: false, connectorsSupported: true, manageable: true, connectors: ROWS });
+    list.mockResolvedValue({ shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false, connectors: ROWS });
     toolsMock.mockResolvedValue(read({ status: 'needs-auth', tools: [] }));
     renderTab();
     await openDetails();
@@ -633,7 +633,7 @@ describe("an agent whose model can't use connectors (TASK-761)", () => {
   it('says so in the details view too', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
-      connectorsSupported: false, manageable: true,
+      connectorsSupported: false, manageable: true, sharedCredentials: false,
       connectors: ROWS,
     });
     toolsMock.mockResolvedValue(read());

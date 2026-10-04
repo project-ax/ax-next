@@ -13,15 +13,22 @@
  *     stay as they are.
  *
  * Who may change a TEAM agent's connectors (TASK-798): only the agent's owner
- * (a team admin) or a workspace admin may add one, sign in ON the agent, or
- * remove one. The server answers `manageable` (and each row's `removable`,
- * the same answer) and enforces it; for everyone else the rail simply does
- * not offer those actions — no "+ Add", no "Add connector", no Remove, no
- * Sign in (the row's setup is `ask-owner`: "Ask the agent’s owner to sign
- * in"), and no Reconnect for the team's shared sign-in ("Team sign-in
- * expired. Ask the agent’s owner to sign in again."). What stays theirs:
- * Add key (it stores their own key), Sign in again for their own expired
- * sign-in, Retry, View details, and Edit for a connector they may edit.
+ * (a team admin) or a workspace admin may add or remove one. The server
+ * answers `manageable` (and each row's `removable`, the same answer) and
+ * enforces it; for everyone else the rail simply does not offer those actions
+ * — no "+ Add", no "Add connector", no Remove.
+ *
+ * Who may put a credential ON a team agent (TASK-813) is narrower: only an
+ * admin of the team that owns it (`sharedCredentials`) — a workspace admin
+ * who is not one may still add and remove connectors, but not sign in for the
+ * team. Everyone else gets no Sign in (the row's setup is `ask-owner`: "Ask
+ * the agent’s owner to sign in") and no Reconnect for the team's shared
+ * sign-in ("Team sign-in expired. Ask the agent’s owner to sign in again.").
+ * The team's admins also get **Add team key** on a row that says `teamKey`: a
+ * key stored on the agent that everyone using it uses unless they've added
+ * their own (`TeamKeyDialog`). What stays everyone's: Add key (it stores their
+ * own key), Sign in again for their own expired sign-in, Retry, View details,
+ * and Edit for a connector they may edit.
  *
  * Connector health (TASK-741, slice 8): a row whose sign-in was rejected or
  * whose server could not be reached gets ONE red `CircleAlert` right after its
@@ -134,6 +141,7 @@ import {
   SETUP_REASON,
   SETUP_UNKNOWN_REASON,
 } from './ConnectorDetails';
+import { TeamKeyDialog } from './TeamKeyDialog';
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
 const HEALTH_REASON: Record<
@@ -147,7 +155,7 @@ const HEALTH_REASON: Record<
 /** TASK-798 — a team agent's shared sign-in, for someone who can't redo it. */
 const TEAM_SIGN_IN_ASK_OWNER = 'Team sign-in expired. Ask the agent’s owner to sign in again.';
 
-function healthReason(row: AgentConnectorRow, manageable: boolean): string {
+function healthReason(row: AgentConnectorRow, sharedCredentials: boolean): string {
   if (row.health === 'needs-sign-in') {
     return row.setup !== undefined ? SETUP_REASON[row.setup] : SETUP_UNKNOWN_REASON;
   }
@@ -157,8 +165,9 @@ function healthReason(row: AgentConnectorRow, manageable: boolean): string {
       : 'Couldn’t load it. Ask a workspace admin to fix it.';
   }
   // TASK-756 — a team agent's shared sign-in is the team's, not this person's.
+  // TASK-813 — only the team's admins may redo it.
   if (row.health === 'needs-reconnect' && row.sharedSignIn === true) {
-    return manageable ? 'Team sign-in expired' : TEAM_SIGN_IN_ASK_OWNER;
+    return sharedCredentials ? 'Team sign-in expired' : TEAM_SIGN_IN_ASK_OWNER;
   }
   return row.health === 'ok' ? '' : HEALTH_REASON[row.health];
 }
@@ -219,6 +228,7 @@ export function AgentConnectors({
     remove,
     shared,
     manageable,
+    sharedCredentials,
     connectorsSupported,
     retrying,
     retry,
@@ -241,6 +251,8 @@ export function AgentConnectors({
   // this agent, or the Settings key dialog.
   const [firstSignIn, setFirstSignIn] = useState<AgentConnectorRow | null>(null);
   const [addingKey, setAddingKey] = useState<AgentConnectorRow | null>(null);
+  // TASK-813 — a team admin adding the key everyone on this agent uses.
+  const [addingTeamKey, setAddingTeamKey] = useState<AgentConnectorRow | null>(null);
 
   /** The row's first-time setup, from the menu or the details view. */
   function onSetUp(row: AgentConnectorRow) {
@@ -272,7 +284,7 @@ export function AgentConnectors({
         text:
           shared && !sharedSignIn
             ? `${row.name} is reachable, but your sign-in expired. Choose Sign in again to fix it.`
-            : sharedSignIn && !manageable
+            : sharedSignIn && !sharedCredentials
               ? `${row.name} is reachable, but its team sign-in expired. Ask the agent’s owner to sign in again.`
               : `${row.name} is reachable, but its sign-in expired. Choose Reconnect to sign in again.`,
       });
@@ -356,10 +368,14 @@ export function AgentConnectors({
       agentName={name}
       busy={removing.has(row.id) || retrying.has(row.id)}
       personalSignIn={personalExpiry(row, shared)}
-      canReconnect={manageable || row.sharedSignIn !== true}
+      canReconnect={sharedCredentials || row.sharedSignIn !== true}
       onReconnect={() => {
         setNotice(null);
         setReconnecting(row);
+      }}
+      onAddTeamKey={() => {
+        setNotice(null);
+        setAddingTeamKey(row);
       }}
       onSignInAgain={() => {
         setNotice(null);
@@ -427,7 +443,7 @@ export function AgentConnectors({
                   <span className="min-w-0 truncate text-[13px]">{row.name}</span>
                   {row.health !== 'ok' && (
                     <HealthIcon
-                      reason={healthReason(row, manageable)}
+                      reason={healthReason(row, sharedCredentials)}
                       tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
                     />
                   )}
@@ -608,6 +624,23 @@ export function AgentConnectors({
           }}
         />
       )}
+      {addingTeamKey !== null && (
+        <TeamKeyDialog
+          agentId={agentId}
+          agentName={name}
+          connectorId={addingTeamKey.id}
+          connectorName={addingTeamKey.name}
+          isAdmin={isAdmin}
+          open
+          onOpenChange={(open) => {
+            if (!open) setAddingTeamKey(null);
+          }}
+          onSaved={() => {
+            setAddingTeamKey(null);
+            refresh();
+          }}
+        />
+      )}
       {editing !== null && (
         <ConnectorEditDialog
           target={editing}
@@ -730,6 +763,7 @@ function RowMenu({
   personalSignIn,
   canReconnect,
   onReconnect,
+  onAddTeamKey,
   onSignInAgain,
   onRetry,
   onSetUp,
@@ -743,11 +777,14 @@ function RowMenu({
   /** TASK-774 — the fix is this person's own sign-in, not Reconnect. */
   personalSignIn: boolean;
   /**
-   * TASK-798 — false for a team agent's shared sign-in when this person may
-   * not sign in on the agent: the server would refuse, so it isn't offered.
+   * TASK-798 / TASK-813 — false for a team agent's shared sign-in when this
+   * person may not sign in on the agent (not the team's admin): the server
+   * would refuse, so it isn't offered.
    */
   canReconnect: boolean;
   onReconnect: () => void;
+  /** TASK-813 — "Add team key", on a row that says `teamKey`. */
+  onAddTeamKey: () => void;
   onSignInAgain: () => void;
   onRetry: () => void;
   /** TASK-795 — Sign in / Add key on a `needs-sign-in` row. */
@@ -819,6 +856,18 @@ function RowMenu({
         <DropdownMenuItem onSelect={onEdit}>
           <Pencil aria-hidden="true" />
           Edit connector
+        </DropdownMenuItem>
+      ),
+    });
+  }
+  // TASK-813 — only the team's admins see it; the server decides again.
+  if (row.teamKey === true) {
+    groups.push({
+      key: 'team-key',
+      item: (
+        <DropdownMenuItem onSelect={onAddTeamKey}>
+          <KeyRound aria-hidden="true" />
+          Add team key
         </DropdownMenuItem>
       ),
     });
