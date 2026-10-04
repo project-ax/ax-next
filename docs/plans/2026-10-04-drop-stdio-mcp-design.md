@@ -91,7 +91,7 @@ contents.
 - `connectors/src/tool-namespace.ts` `endpointOf` and the channel-web mirror
   (`lib/connector-form.ts:318-330`): drop `command`/`args`. The namespace hash never included the
   transport, so existing namespaces and verdicts are unchanged.
-- `skill-broker/src/tools/capability-freshness.ts:389-396`: drop `command`/`args`/`env` from the
+- `skill-broker/src/tools/capability-freshness.ts:389-396`: **left unchanged**. It hashes `command`/`args`/`env` into a digest compared against stored digests, so dropping those keys would mark every approved skill stale. For http entries they hash as empty values, which is harmless.
   digest.
 
 ### D. CLI
