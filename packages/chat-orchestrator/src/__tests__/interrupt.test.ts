@@ -108,7 +108,7 @@ function servicesFor(world: World, opts: { withConversations?: boolean } = {}): 
       runnerEndpoint: 'unix:///tmp/m.sock',
       handle: makeHandle(),
     }),
-    'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+    'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
     'proxy:close-session': async () => ({}),
   };
   if (withConversations) {

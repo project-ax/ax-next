@@ -93,6 +93,13 @@ export const ERROR_LABELS: Record<string, string> = {
   // `components/admin/StorageTab.tsx`.
   'chat:start:storage-full':
     'Your storage is full, so nothing new can be saved right now. Ask an admin for more room, then try again.',
+  // TASK-784 — the runner exited with its fatal code before the turn ended:
+  // it never booted far enough to talk to the host (a bad environment, a
+  // refused connection). The specifics are in the host log, never here — the
+  // runner's own error text is untrusted and stays server-side. A retry spawns
+  // a fresh runner, so that comes first; a repeat is an admin's to look into.
+  'runner-boot-failed':
+    'The agent couldn’t start up. Retry to continue. If it keeps happening, ask an admin to take a look.',
   // TASK-713 — the agent couldn't start because one of its connectors' sign-ins
   // is dead (the service rejected it, or it can't be renewed). Unlike a generic
   // stop, the person can fix this themselves: the agent's Connectors tab

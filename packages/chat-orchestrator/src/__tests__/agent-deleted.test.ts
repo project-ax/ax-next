@@ -125,7 +125,7 @@ async function makeWorld(o: {
       if (fake === undefined) throw new Error(`test setup: no fake handle for ${sessionId}`);
       return { runnerEndpoint: 'unix:///tmp/m.sock', handle: fake.handle };
     },
-    'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+    'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
     'proxy:close-session': async (c: unknown) => {
       proxyClosed.push((c as { sessionId: string }).sessionId);
       return {};

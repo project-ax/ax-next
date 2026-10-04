@@ -17,7 +17,12 @@ import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createMcpClientPlugin } from '@ax/mcp-client';
-import { encodeScript, stubRunnerPath, type StubRunnerScript } from '@ax/test-harness';
+import {
+  encodeScript,
+  stubRunnerPath,
+  TEST_PROXY_AUTH_TOKEN,
+  type StubRunnerScript,
+} from '@ax/test-harness';
 
 import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 
@@ -293,6 +298,7 @@ interface OpenSessionOutput {
   proxyEndpoint: string;
   caCertPem: string;
   envMap: Record<string, string>;
+  proxyAuthToken: string;
 }
 
 function createMultiTenantProxyPlugin(opts: {
@@ -339,6 +345,7 @@ function createMultiTenantProxyPlugin(opts: {
             proxyEndpoint: 'tcp://127.0.0.1:1',
             caCertPem: DUMMY_CA_PEM,
             envMap: { AX_TEST_STUB_SCRIPT: encoded },
+            proxyAuthToken: TEST_PROXY_AUTH_TOKEN,
           };
         },
       );

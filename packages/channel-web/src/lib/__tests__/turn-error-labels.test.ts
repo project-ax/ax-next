@@ -166,3 +166,16 @@ describe('turnErrorText — the provider key AND a connector are both missing (T
     expect(text).not.toContain('provider-key-missing');
   });
 });
+
+describe('turnErrorText — the runner failed to boot (TASK-784)', () => {
+  it('says the agent could not start, not the generic "stopped unexpectedly" line', () => {
+    const text = turnErrorText('runner-boot-failed');
+    expect(text).not.toBe(DEFAULT_TURN_ERROR);
+    expect(text).toMatch(/couldn’t start/);
+    expect(text).toMatch(/Retry/);
+  });
+
+  it('never prints the reason code', () => {
+    expect(turnErrorText('runner-boot-failed')).not.toContain('runner-boot-failed');
+  });
+});

@@ -28,6 +28,7 @@ import {
   startTestContainer,
   stopPostgresContainer,
   stubRunnerPath,
+  TEST_PROXY_AUTH_TOKEN,
   type StubRunnerScript,
 } from '@ax/test-harness';
 
@@ -260,6 +261,7 @@ function createScriptedProxyPlugin(state: { script: StubRunnerScript }): Plugin 
         proxyEndpoint: 'tcp://127.0.0.1:1',
         caCertPem: DUMMY_CA_PEM,
         envMap: { AX_TEST_STUB_SCRIPT: encodeScript(state.script) },
+        proxyAuthToken: TEST_PROXY_AUTH_TOKEN,
       }));
       bus.registerService('proxy:close-session', name, async () => ({}));
     },
