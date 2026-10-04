@@ -204,6 +204,7 @@ describe('deleting an agent through agents:delete leaves nothing of it in the da
         // @ax/attachments declares blob hooks; no bytes move here.
         'blob:put': async () => ({}),
         'blob:get': async () => ({}),
+        'blob:stat': async () => ({ found: false }),
       },
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),

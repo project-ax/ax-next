@@ -612,6 +612,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
       'GET /settings/storage',
       'GET /admin/storage',
       'PUT /admin/storage/limits',
+      'POST /admin/storage/ref-holders/forget',
     ]);
   });
 
@@ -850,7 +851,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     expect(await ledger(USER_A)).toEqual([]);
 
     sweepAgents = [{ agentId, ownerUserId: USER_A }];
-    expect(await live().diskQuota.reconcile()).toEqual({ measured: 1, failed: 0 });
+    expect(await live().diskQuota.reconcile()).toEqual({ measured: 1, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
     const backfilled = await ledgerRow(USER_A, `workspace:${agentId}`);
     expect(backfilled?.bytes).toBe(await workspaceUsage(ctx));
     expect(backfilled?.bytes).toBeGreaterThan(150_000);
@@ -859,7 +860,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
     // the next sweep.
     await rawApply('legacy/new.bin', first.version);
     expect((await ledgerRow(USER_A, `workspace:${agentId}`))?.bytes).toBe(backfilled?.bytes);
-    expect(await live().diskQuota.reconcile()).toEqual({ measured: 1, failed: 0 });
+    expect(await live().diskQuota.reconcile()).toEqual({ measured: 1, failed: 0, blobsReleased: 0, blobReleaseAborted: false });
     const repaired = await ledgerRow(USER_A, `workspace:${agentId}`);
     expect(repaired?.bytes).toBe(await workspaceUsage(ctx));
     expect(repaired!.bytes).toBeGreaterThan(backfilled!.bytes);
@@ -896,7 +897,7 @@ describe('@ax/preset-k8s disk quota canary (real git + blob store + postgres)', 
           { agentId: 'dq-agt-sw-ok1', ownerUserId: USER_A },
           { agentId: 'dq-agt-sw-ok2', ownerUserId: USER_A },
         ];
-        expect(await live().diskQuota.reconcile()).toEqual({ measured: 2, failed: 1 });
+        expect(await live().diskQuota.reconcile()).toEqual({ measured: 2, failed: 1, blobsReleased: 0, blobReleaseAborted: false });
       } finally {
         await fs.chmod(badDir, 0o755);
       }

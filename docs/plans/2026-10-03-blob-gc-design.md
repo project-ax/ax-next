@@ -115,10 +115,14 @@ first sweep has nothing to compare against. A static test pins the expected set
 long before anything is ever deleted.
 
 **Static guard.** A test in the canary/preset suite loads the prod preset and
-asserts that every plugin whose manifest `calls` `blob:put` also `subscribes`
-`blob:collect-refs`. The exception list is exactly `@ax/ipc-core`, which puts on
-the runner's behalf; the runner's references are the rows `@ax/attachments`
-writes. A new blob writer that forgets to become a holder fails CI before it can
+asserts that every plugin whose manifest `calls` or `optionalCalls` names
+`blob:put` also `subscribes` `blob:collect-refs`. The exception list is exactly
+`@ax/ipc-http`, which puts on the runner's behalf; the runner's references are
+the rows `@ax/attachments` writes. (TASK-776 correction: this said
+`@ax/ipc-core`, which is a library, not a plugin. The preset loads
+`@ax/ipc-http`, whose manifest spreads ipc-core's dispatcher dependencies, and
+it lists `blob:put` under `optionalCalls`, so a guard that read only `calls`
+would never have seen it.) A new blob writer that forgets to become a holder fails CI before it can
 cause a delete.
 
 **Trust note.** A `fire` transform subscriber can rewrite or drop earlier
@@ -350,8 +354,8 @@ idempotent, and the next sweep starts over.
 ## Security note (three threat models)
 
 - **Sandbox escape / capability.** The runner gains nothing. It cannot call
-  retire or purge: neither is an IPC action, and `@ax/ipc-core`'s manifest does
-  not list them. IPC `blob.get` can now restore a retired blob. That gives the
+  retire or purge: neither is an IPC action, and `@ax/ipc-http`'s manifest (spread from
+  `@ax/ipc-core`'s dispatcher dependencies) does not list them. IPC `blob.get` can now restore a retired blob. That gives the
   runner no new reach: it could already read any blob whose sha it knows, and
   restoring only undoes a not-yet-final delete.
 - **Prompt injection / untrusted input.** The model can only influence

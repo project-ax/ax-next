@@ -766,6 +766,94 @@ describe('@ax/preset-k8s wiring', () => {
     expect(plugins.map((p) => p.manifest.name)).toContain('@ax/chat-orchestrator');
   });
 
+  // -------------------------------------------------------------------------
+  // TASK-776 (blob GC design D2): every blob WRITER is a blob:collect-refs
+  // HOLDER. The ledger release (and later the byte GC) asks holders which shas
+  // they still reference; a plugin that stores blob shas in its own rows but
+  // never answers would have its references read as "nobody holds this". This
+  // guard makes a new writer that forgets to become a holder fail CI first.
+  //
+  // `optionalCalls` counts too: @ax/ipc-http declares blob:put there. The one
+  // exception is @ax/ipc-http itself, which puts on the RUNNER's behalf; the
+  // runner's references are the rows @ax/attachments writes
+  // (artifacts:publish-blob, attachments:commit).
+  // -------------------------------------------------------------------------
+  const BLOB_WRITER_HOLDER_EXCEPTIONS = ['@ax/ipc-http'];
+
+  function writesBlobs(p: { manifest: { calls: string[]; optionalCalls?: Array<{ hook: string }> } }): boolean {
+    return (
+      p.manifest.calls.includes('blob:put') ||
+      (p.manifest.optionalCalls ?? []).some((c) => c.hook === 'blob:put')
+    );
+  }
+
+  function blobWritersThatAreNotHolders(
+    plugins: ReadonlyArray<{
+      manifest: {
+        name: string;
+        calls: string[];
+        optionalCalls?: Array<{ hook: string }>;
+        subscribes: string[];
+      };
+    }>,
+  ): string[] {
+    return plugins
+      .filter(writesBlobs)
+      .filter((p) => !BLOB_WRITER_HOLDER_EXCEPTIONS.includes(p.manifest.name))
+      .filter((p) => !p.manifest.subscribes.includes('blob:collect-refs'))
+      .map((p) => p.manifest.name);
+  }
+
+  it('every plugin that writes blobs answers blob:collect-refs (TASK-776)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    expect(blobWritersThatAreNotHolders(plugins)).toEqual([]);
+    // The holders this preset is expected to have, so a writer that quietly
+    // stops calling blob:put (and so drops out of the guard) shows up here.
+    expect(
+      plugins
+        .filter((p) => p.manifest.subscribes.includes('blob:collect-refs'))
+        .map((p) => p.manifest.name)
+        .sort(),
+    ).toEqual(['@ax/attachments', '@ax/branding', '@ax/skills']);
+    // The exception must still be real: loaded, and still a blob writer. An
+    // exception for a plugin that no longer exists is a hole for its successor.
+    for (const name of BLOB_WRITER_HOLDER_EXCEPTIONS) {
+      const p = plugins.find((x) => x.manifest.name === name);
+      expect(p, `${name} is in the exception list but not loaded`).toBeDefined();
+      expect(writesBlobs(p!), `${name} no longer writes blobs; drop the exception`).toBe(true);
+    }
+  });
+
+  it('the holder guard catches a blob writer that is not a holder (TASK-776)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const viaCalls = {
+      manifest: {
+        name: '@ax/test/blob-writer',
+        version: '0.0.0',
+        registers: [],
+        calls: ['blob:put'],
+        subscribes: [],
+      },
+    };
+    const viaOptional = {
+      manifest: {
+        name: '@ax/test/optional-blob-writer',
+        version: '0.0.0',
+        registers: [],
+        calls: [],
+        optionalCalls: [{ hook: 'blob:put', degradation: 'none' }],
+        subscribes: [],
+      },
+    };
+    expect(blobWritersThatAreNotHolders([...plugins, viaCalls, viaOptional])).toEqual([
+      '@ax/test/blob-writer',
+      '@ax/test/optional-blob-writer',
+    ]);
+    // ...and stops complaining once it subscribes.
+    const holder = { manifest: { ...viaCalls.manifest, subscribes: ['blob:collect-refs'] } };
+    expect(blobWritersThatAreNotHolders([...plugins, holder])).toEqual([]);
+  });
+
   it('loads @ax/disk-quota next to BOTH gates it depends on: workspace:pre-apply and blob:put (TASK-690)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const quota = plugins.find((p) => p.manifest.name === '@ax/disk-quota');
