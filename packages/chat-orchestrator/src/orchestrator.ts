@@ -36,6 +36,8 @@ import {
   stampConnectorHeaders,
   connectorCredentialEnvName,
   connectorLabel,
+  connectorSetFingerprint,
+  type ResolvedConnectorForOrch,
   ConnectorServiceCollisionError,
   type FoldConnectorResult,
 } from './connector-union.js';
@@ -1296,6 +1298,7 @@ export function createOrchestrator(
   onConnectorProposed(ctx: AgentContext, event: ConnectorProposedLike): Promise<void>;
   onSystemPromptAugmentChanged(ctx: AgentContext, payload: unknown): void;
   onAgentDeleted(ctx: AgentContext, payload: unknown): Promise<void>;
+  onConnectorDeleted(ctx: AgentContext, payload: unknown): void;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -1572,7 +1575,7 @@ export function createOrchestrator(
     augmentGenBySession.delete(sessionId);
     skippedConnectorRefsBySession.delete(sessionId);
     rotationFailedSessions.delete(sessionId);
-    connectorSelectionBySession.delete(sessionId);
+    forgetSessionConnectors(sessionId);
   }
 
   // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the
@@ -1735,7 +1738,7 @@ export function createOrchestrator(
     if (entry.graceTimer !== null) { clearTimeout(entry.graceTimer); entry.graceTimer = null; }
   }
 
-  function armReapTimer(ctx: AgentContext): void {
+  function armReapTimer(ctx: AgentContext, delayMs: number = idleWindowMs): void {
     const sessionId = ctx.sessionId;
     const entry = warmSessions.get(sessionId);
     // No warm handle (e.g. routed into a session this host process didn't
@@ -1765,7 +1768,7 @@ export function createOrchestrator(
         void entry.handle.kill().catch(() => undefined);
       }, idleGraceMs);
       entry.graceTimer.unref?.();
-    }, idleWindowMs);
+    }, delayMs);
     entry.idleTimer.unref?.();
   }
 
@@ -1853,14 +1856,41 @@ export function createOrchestrator(
   // detached one stays callable in this one until the session idles out.
   // Compared against the agent row `agents:resolve` returns on EVERY invoke, so
   // every write to the row's attachments / exclusions is seen without a change
-  // event, and nothing here depends on which replica took the write. NOT seen:
-  // changes that leave the row alone — a connector deleted or its capabilities
-  // edited, or the owner's legacy-owned set changing. Those still wait for the
-  // warm session to idle out.
+  // event, and nothing here depends on which replica took the write.
+  //
+  // TASK-833 — the row cannot see a connector DELETED, its capabilities EDITED,
+  // or the owner's legacy-owned set changing. So the session also records a
+  // fingerprint of the connectors it actually FOLDED at spawn, and a routed
+  // turn re-resolves the same set (the row's attachments / exclusions plus the
+  // skill-referenced ids it folded) and compares — one `connectors:list-
+  // effective` read per warm turn, asked only when nothing cheaper already
+  // retires the session. A resolve fault yields fewer connectors, so it reads
+  // as "changed" and costs one extra re-spawn, never a stale connector.
   // Only sessions this process spawned have an entry; one it did not spawn is
   // already retired as `host-session-lost` in keepalive mode. Same lifetime as
   // `augmentGenBySession`.
-  const connectorSelectionBySession = new Map<string, string>();
+  interface SessionConnectorState {
+    /** TASK-811 — the agent row's connector selection at spawn. */
+    selectionKey: string;
+    /** TASK-833 — `connectorSetFingerprint` of every connector resolved at spawn. */
+    fingerprint: string;
+    /** Skill-referenced connector ids the spawn resolved (re-resolved per turn). */
+    skillConnectorIds: string[];
+    /** Connector id → its tool namespaces, for matching `connectors:deleted`. */
+    connectors: Map<string, Set<string>>;
+  }
+  const connectorStateBySession = new Map<string, SessionConnectorState>();
+
+  // TASK-833 — sessions that folded a connector which has since been DELETED
+  // (`connectors:deleted`). The delete purged the connector's stored key, but a
+  // live credential-proxy session keeps the value it resolved at open and goes
+  // on substituting it until the session closes. So a marked session is reaped
+  // the moment it is idle (now, or as soon as its in-flight turn ends) — the
+  // runner exits and the exit watcher closes the proxy session — and if a
+  // message beats the reaper it is retired at routing instead. Same lifetime +
+  // single-replica posture as `rotationFailedSessions`; the fingerprint compare
+  // above is the replica-independent backstop.
+  const connectorDeletedSessions = new Set<string>();
 
   /** Order-insensitive key for the agent row's connector selection. */
   function connectorSelectionKey(agent: AgentRecord): string {
@@ -1868,9 +1898,105 @@ export function createOrchestrator(
     return JSON.stringify([norm(agent.connectorAttachments), norm(agent.connectorExclusions)]);
   }
 
+  function recordSessionConnectors(
+    sessionId: string,
+    agent: AgentRecord,
+    connectors: readonly ResolvedConnectorForOrch[],
+    skillConnectorIds: Iterable<string>,
+  ): void {
+    const byId = new Map<string, Set<string>>();
+    for (const c of connectors) {
+      const ns = byId.get(c.id) ?? new Set<string>();
+      for (const e of c.toolNamespaces ?? []) {
+        if (typeof e?.toolNamespace === 'string') ns.add(e.toolNamespace);
+      }
+      byId.set(c.id, ns);
+    }
+    connectorStateBySession.set(sessionId, {
+      selectionKey: connectorSelectionKey(agent),
+      fingerprint: connectorSetFingerprint(connectors),
+      skillConnectorIds: [...new Set(skillConnectorIds)],
+      connectors: byId,
+    });
+  }
+
+  function forgetSessionConnectors(sessionId: string): void {
+    connectorStateBySession.delete(sessionId);
+    connectorDeletedSessions.delete(sessionId);
+  }
+
   function connectorSelectionChanged(sessionId: string, agent: AgentRecord): boolean {
-    const atSpawn = connectorSelectionBySession.get(sessionId);
-    return atSpawn !== undefined && atSpawn !== connectorSelectionKey(agent);
+    const atSpawn = connectorStateBySession.get(sessionId);
+    return atSpawn !== undefined && atSpawn.selectionKey !== connectorSelectionKey(agent);
+  }
+
+  /** TASK-833 — true when the agent's connectors no longer resolve to what this session folded. */
+  async function foldedConnectorsChanged(
+    ctx: AgentContext,
+    sessionId: string,
+    agent: AgentRecord,
+  ): Promise<boolean> {
+    const atSpawn = connectorStateBySession.get(sessionId);
+    if (atSpawn === undefined) return false;
+    const effective = await resolveEffectiveConnectors(
+      bus,
+      ctx,
+      agent.connectorAttachments ?? [],
+      agent.connectorExclusions ?? [],
+    );
+    const skillReferenced = await resolveSkillReferencedConnectors(
+      bus,
+      ctx,
+      atSpawn.skillConnectorIds,
+      new Set(effective.map((c) => c.id)),
+    );
+    return connectorSetFingerprint([...effective, ...skillReferenced]) !== atSpawn.fingerprint;
+  }
+
+  // TASK-833 — `connectors:deleted` (fired by @ax/connectors after the row is
+  // gone and its stored key purged). Marks every session that folded that
+  // connector, and reaps the idle ones now. A session mid-turn is not
+  // interrupted: `onTurnEnd` reaps it as soon as the turn ends.
+  //
+  // Connector ids are not unique across owners, so the event's tool namespaces
+  // (derived from the row OWNER) must match what the session was handed. A
+  // connector with no MCP servers has no namespaces to compare, so the id
+  // alone decides — at worst an idle session re-spawns once.
+  //
+  // Never throws: the delete has already committed.
+  function onConnectorDeleted(ctx: AgentContext, payload: unknown): void {
+    const p = payload as { connectorId?: unknown; toolNamespaces?: unknown } | null | undefined;
+    const connectorId = p?.connectorId;
+    if (typeof connectorId !== 'string' || connectorId.length === 0) return;
+    const deletedNs = new Set<string>();
+    if (Array.isArray(p?.toolNamespaces)) {
+      for (const e of p.toolNamespaces as Array<{ toolNamespace?: unknown } | null>) {
+        if (typeof e?.toolNamespace === 'string') deletedNs.add(e.toolNamespace);
+      }
+    }
+    let marked = 0;
+    let reaped = 0;
+    for (const [sessionId, state] of connectorStateBySession) {
+      const sessionNs = state.connectors.get(connectorId);
+      if (sessionNs === undefined) continue;
+      const sameConnector =
+        deletedNs.size === 0 ||
+        sessionNs.size === 0 ||
+        [...deletedNs].some((ns) => sessionNs.has(ns));
+      if (!sameConnector) continue;
+      connectorDeletedSessions.add(sessionId);
+      marked += 1;
+      const entry = warmSessions.get(sessionId);
+      // Idle = the reaper is armed (a turn ended and none has started). A grace
+      // timer already running means a reap is under way.
+      if (entry !== undefined && entry.idleTimer !== null) {
+        armReapTimer({ ...ctx, sessionId }, 0);
+        reaped += 1;
+      }
+    }
+    if (marked > 0) {
+      ctx.logger.info('connector_deleted_sessions_retired', { connectorId, marked, reaped });
+    }
   }
 
   function isAugmentStale(sessionId: string, agentId: string): boolean {
@@ -2166,8 +2292,17 @@ export function createOrchestrator(
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             const rotationFailed = rotationFailedSessions.has(candidate);
-            // TASK-811 — a connector attached / detached since this session spawned.
-            const connectorsChanged = connectorSelectionChanged(candidate, agent);
+            // TASK-811 — a connector attached / detached since this session
+            // spawned. TASK-833 — or one it folded was deleted (marked by
+            // `connectors:deleted`), or no longer resolves to what it folded
+            // (edited, deleted unheard, legacy set changed): that last check
+            // reads the connector store, so it is asked only when nothing
+            // cheaper already retires the session.
+            const connectorsChanged =
+              connectorDeletedSessions.has(candidate) ||
+              connectorSelectionChanged(candidate, agent) ||
+              (!(skillsDirty || augmentStale || hostSessionMissing || rotationFailed) &&
+                (await foldedConnectorsChanged(ctx, candidate, agent)));
             const connectorSignedIn =
               !(
                 skillsDirty ||
@@ -2202,6 +2337,10 @@ export function createOrchestrator(
               //
               // TASK-811: and when a connector was attached to or detached from
               // the agent mid-chat. The fresh spawn folds the new set.
+              //
+              // TASK-833: and when a connector it folded was deleted or edited.
+              // Terminating closes its proxy session, so a deleted connector's
+              // key stops being substituted no later than this turn.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
                 reason: hostSessionMissing
@@ -2232,7 +2371,7 @@ export function createOrchestrator(
               augmentGenBySession.delete(candidate);
               skippedConnectorRefsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
-              connectorSelectionBySession.delete(candidate);
+              forgetSessionConnectors(candidate);
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
               } catch (err) {
@@ -3325,7 +3464,9 @@ export function createOrchestrator(
       );
       handle = opened.handle;
       augmentGenBySession.set(sessionId, augmentGenAtSpawn);
-      connectorSelectionBySession.set(sessionId, connectorSelectionKey(agent));
+      // TASK-811/833 — every connector resolved for this spawn, skipped ones
+      // included (a skipped connector's edit or delete matters as much).
+      recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
       if (connectorSignIn.skipped.length > 0) {
         skippedConnectorRefsBySession.set(
           sessionId,
@@ -3360,7 +3501,7 @@ export function createOrchestrator(
             augmentGenBySession.delete(sessionId);
             skippedConnectorRefsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
-            connectorSelectionBySession.delete(sessionId);
+            forgetSessionConnectors(sessionId);
             if (proxyOpened) {
               void bus
                 .call<ProxyCloseSessionInput, Record<string, never>>(
@@ -3646,7 +3787,7 @@ export function createOrchestrator(
         augmentGenBySession.delete(ctx.sessionId);
         skippedConnectorRefsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);
-        connectorSelectionBySession.delete(ctx.sessionId);
+        forgetSessionConnectors(ctx.sessionId);
       }
     }
   }
@@ -3738,7 +3879,8 @@ export function createOrchestrator(
       // Idempotent across the two turn-ends one user message emits.
       resolveWaiterFor(payload?.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
       resolveFoldedWaiters(ctx.sessionId, payload?.foldedReqIds);
-      armReapTimer(ctx);
+      // TASK-833 — a session holding a since-deleted connector is reaped now.
+      armReapTimer(ctx, connectorDeletedSessions.has(ctx.sessionId) ? 0 : idleWindowMs);
       return;
     }
 
@@ -4250,6 +4392,7 @@ export function createOrchestrator(
     onConnectorProposed,
     onSystemPromptAugmentChanged,
     onAgentDeleted,
+    onConnectorDeleted,
   };
 }
 

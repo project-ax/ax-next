@@ -547,6 +547,260 @@ describe('TASK-811: connector attach/detach mid-chat reaches the warm session ne
   });
 });
 
+// TASK-833 — the TASK-811 key only sees the agent row. A connector DELETED, or
+// its capabilities EDITED, leaves the row alone, so a warm session kept the old
+// connector (and, for a delete, the proxy kept substituting the purged key)
+// until the session idled out. The orchestrator now also compares the
+// connectors the session FOLDED at spawn with what the agent resolves to on the
+// next turn, and a `connectors:deleted` reaps a session holding that connector
+// as soon as it is idle — which closes its credential-proxy session.
+describe('TASK-833: connector delete / edit mid-chat reaches the warm session', () => {
+  type Caps = {
+    allowedHosts: string[];
+    credentials: Array<{ slot: string; kind: 'api-key' }>;
+    mcpServers: Array<{
+      name: string; transport: 'http'; url: string; allowedHosts: string[];
+      credentials: Array<{ slot: string; kind: 'api-key' }>;
+    }>;
+  };
+  type Effective = {
+    summary: { id: string; name?: string; usageNote?: string };
+    capabilities: Caps;
+    toolNamespaces: Array<{ server: string; toolNamespace: string }>;
+  };
+  const LINEAR_NS = 'c0123456789';
+  function linear(url = 'https://mcp.linear.app/mcp'): Effective {
+    return {
+      summary: { id: 'linear', name: 'Linear' },
+      capabilities: {
+        allowedHosts: ['mcp.linear.app'],
+        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+        mcpServers: [{
+          name: 'linear', transport: 'http', url, allowedHosts: ['mcp.linear.app'],
+          credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+        }],
+      },
+      toolNamespaces: [{ server: 'linear', toolNamespace: LINEAR_NS }],
+    };
+  }
+  /** Same content, every object's keys in reverse order (a fresh DB read may differ). */
+  function reorderKeys<T>(v: T): T {
+    if (Array.isArray(v)) return v.map(reorderKeys) as T;
+    if (v !== null && typeof v === 'object') {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>).reverse().map(([k, x]) => [k, reorderKeys(x)]),
+      ) as T;
+    }
+    return v;
+  }
+
+  async function setup() {
+    const state = { effective: [linear()] as Effective[] };
+    const agentRow = { ...TEST_AGENT, connectorAttachments: ['linear'], connectorExclusions: [] as string[] };
+    const conv = { activeSessionId: null as string | null };
+    const live = new Set<string>();
+    const handles = [makeHandle(), makeHandle()];
+    let opens = 0;
+    const queued: Array<{ sessionId: string; type: string }> = [];
+    const terminated: string[] = [];
+    const proxyOpens: Array<{ sessionId: string; credentialKeys: string[] }> = [];
+    const proxyCloses: string[] = [];
+    const logs: Array<Record<string, unknown>> = [];
+
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({ agent: { ...agentRow } }),
+      'connectors:list-effective': async () => ({
+        connectors: state.effective.map((c) => structuredClone(c)),
+      }),
+      'session:queue-work': async (_c, input: unknown) => {
+        const i = input as { sessionId: string; entry: { type: string } };
+        queued.push({ sessionId: i.sessionId, type: i.entry.type });
+        return { cursor: 0 };
+      },
+      'session:terminate': async (_c, input: unknown) => {
+        const sid = (input as { sessionId: string }).sessionId;
+        terminated.push(sid);
+        live.delete(sid);
+        return {};
+      },
+      'session:is-alive': async (_c, input: unknown) => ({
+        alive: live.has((input as { sessionId: string }).sessionId),
+      }),
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return { conversation: {
+          conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent',
+          activeSessionId: conv.activeSessionId, activeReqId: null,
+        } };
+      },
+      'conversations:bind-session': async (_c, input: unknown) => {
+        const i = input as { sessionId: string };
+        conv.activeSessionId = i.sessionId;
+        live.add(i.sessionId);
+        return undefined;
+      },
+      'sandbox:open-session': async () => {
+        const hk = handles[opens]!;
+        opens += 1;
+        return { runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle };
+      },
+      'proxy:open-session': async (_c, input: unknown) => {
+        const i = input as { sessionId: string; credentials: Record<string, unknown> };
+        proxyOpens.push({ sessionId: i.sessionId, credentialKeys: Object.keys(i.credentials) });
+        return { proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) };
+      },
+      'proxy:close-session': async (_c, input: unknown) => {
+        proxyCloses.push((input as { sessionId: string }).sessionId);
+        return {};
+      },
+    };
+
+    const h = await createTestHarness({
+      services,
+      plugins: [createChatOrchestratorPlugin({
+        runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
+        // A long idle window: a reap observed inside a test is never the
+        // ordinary idle-out.
+        keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 5,
+      })],
+    });
+
+    const mkCtx = (sessionId: string, reqId: string) =>
+      makeAgentContext({
+        sessionId, agentId: 'test-agent', userId: 'test-user',
+        conversationId: 'conv-1', reqId,
+        logger: createLogger({
+          reqId,
+          writer: (line: string) => { logs.push(JSON.parse(line) as Record<string, unknown>); },
+        }),
+      });
+
+    const turn = async (sessionId: string, reqId: string, beforeTurnEnd?: () => Promise<void>) => {
+      if (beforeTurnEnd === undefined) {
+        fireTurnEnd(h.bus, sessionId, reqId);
+      } else {
+        setImmediate(() => {
+          void beforeTurnEnd().then(() => fireTurnEnd(h.bus, sessionId, reqId));
+        });
+      }
+      return h.bus.call<unknown, AgentOutcome>('agent:invoke', mkCtx(sessionId, reqId),
+        { message: { role: 'user', content: 'hi' } });
+    };
+
+    const deleteConnector = (connectorId: string, toolNamespace: string) =>
+      h.bus.fire('connectors:deleted', mkCtx('admin-delete', 'req-delete'), {
+        connectorId,
+        toolNamespaces: [{ server: 'linear', toolNamespace }],
+      });
+
+    // Let the reaper's zero-delay idle timer, its grace kill and the exited
+    // watcher's proxy close all run.
+    const settle = () => new Promise((r) => setTimeout(r, 50));
+
+    return {
+      state, h, handles, turn, deleteConnector, settle,
+      get opens() { return opens; },
+      queued, terminated, proxyOpens, proxyCloses, logs,
+    };
+  }
+
+  it('the spawn hands the connector credential to the proxy (fixture sanity)', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    expect(t.proxyOpens).toHaveLength(1);
+    expect(t.proxyOpens[0]!.credentialKeys.some((k) => k.includes('linear'))).toBe(true);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('editing an attached connector mid-chat retires the warm session at the next turn', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    t.state.effective = [linear('https://mcp.linear.app/v2/mcp')];
+    const out2 = await t.turn('s-2', 'req-2');
+    expect(out2).toEqual({ kind: 'complete', messages: [] });
+    expect(t.opens).toBe(2);
+    expect(t.terminated).toContain('s-1');
+    expect(t.queued.filter((q) => q.sessionId === 's-1' && q.type === 'user-message')).toHaveLength(1);
+    expect(t.logs.find((l) => l.msg === 'stale_session_respawn'))
+      .toMatchObject({ sessionId: 's-1', reason: 'connectors-changed' });
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('an unchanged connector (re-read with its keys in another order) keeps the warm session', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    t.state.effective = [reorderKeys(linear())];
+    await t.turn('s-2', 'req-2');
+    expect(t.opens).toBe(1);
+    expect(t.terminated).not.toContain('s-1');
+    expect(t.queued.filter((q) => q.sessionId === 's-1' && q.type === 'user-message')).toHaveLength(2);
+    expect(t.logs.find((l) => l.msg === 'stale_session_respawn')).toBeUndefined();
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('deleting a connector reaps an IDLE warm session at once — its proxy session (and the key) is closed', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    expect(t.proxyCloses).not.toContain('s-1');
+
+    // The delete purges the vault row and announces itself; the connector no
+    // longer resolves.
+    t.state.effective = [];
+    await t.deleteConnector('linear', LINEAR_NS);
+    await t.settle();
+
+    // No next turn needed: the session is reaped and its proxy session — the
+    // only place the purged key still lived — is closed.
+    expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
+    expect(t.handles[0]!.state.kills).toBeGreaterThanOrEqual(1);
+    expect(t.proxyCloses).toContain('s-1');
+
+    // The next turn spawns fresh, without the deleted connector's credential.
+    await t.turn('s-2', 'req-2');
+    expect(t.opens).toBe(2);
+    expect(t.queued.filter((q) => q.sessionId === 's-1' && q.type === 'user-message')).toHaveLength(1);
+    expect(t.proxyOpens.at(-1)!.credentialKeys.some((k) => k.includes('linear'))).toBe(false);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('deleting a connector DURING a turn reaps the session as soon as that turn ends', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1', async () => {
+      t.state.effective = [];
+      await t.deleteConnector('linear', LINEAR_NS);
+    });
+    await t.settle();
+    // Not the ordinary 60s idle-out: the reap ran right after the turn.
+    expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
+    expect(t.proxyCloses).toContain('s-1');
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('a deleted connector the session never folded (another owner\'s, same id) does not reap it', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    await t.deleteConnector('linear', 'cfedcba9876');
+    await t.settle();
+    expect(t.queued.filter((q) => q.type === 'cancel')).toHaveLength(0);
+    expect(t.proxyCloses).not.toContain('s-1');
+    await t.turn('s-2', 'req-2');
+    expect(t.opens).toBe(1);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('a delete that misses the reap (say, another replica took it) still retires the session at the next turn', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    t.state.effective = []; // deleted, but this process never heard the event
+    await t.turn('s-2', 'req-2');
+    expect(t.opens).toBe(2);
+    expect(t.terminated).toContain('s-1');
+    expect(t.queued.filter((q) => q.sessionId === 's-1' && q.type === 'user-message')).toHaveLength(1);
+    expect(t.proxyOpens.at(-1)!.credentialKeys.some((k) => k.includes('linear'))).toBe(false);
+    for (const hk of t.handles) hk.forceExit();
+  });
+});
+
 // TASK-785 — a message sent while a reply is still running can be FOLDED into
 // that running turn by the model's CLI: one turn answers both, and it ends
 // under the running message's reqId. The folded message never gets a turn-end
