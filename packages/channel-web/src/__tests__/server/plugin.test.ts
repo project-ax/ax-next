@@ -913,7 +913,22 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'agents:can-manage-connectors',
           degradation:
-            'the Connectors tab offers no Add, Remove or team Sign in, and Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin',
+            'the Connectors tab offers no Add or Remove, and Add on a team agent answers 503 connectors-unavailable to anyone but a workspace admin',
+        },
+        {
+          hook: 'agents:can-set-shared-credential',
+          degradation:
+            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and PUT …/connectors/:connectorId/team-key answers 503 connectors-unavailable',
+        },
+        {
+          hook: 'credentials:authorize-agent:account',
+          degradation:
+            'PUT …/connectors/:connectorId/team-key answers 503 connectors-unavailable (whether the agent\'s users could read the key cannot be checked)',
+        },
+        {
+          hook: 'credentials:set',
+          degradation:
+            'PUT …/connectors/:connectorId/team-key answers 503 credentials-unavailable (a team key cannot be saved)',
         },
         {
           hook: 'connectors:get',
