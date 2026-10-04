@@ -40,11 +40,11 @@ export interface UsageLimits {
   dailySpendUsd: number;
   fleetDailySpendUsd: number;
   turnsPerHour: number;
-  /** What the host charges for a turn that reports no usage. Read-only here. */
+  /** What the host charges for a turn that reports no usage, or that ends abnormally. */
   assumedTurnCostUsd: number;
 }
 
-/** What the tab may change. The assumed turn cost is deliberately not editable. */
+/** What the tab may change. The workspace cap and the assumed turn cost are optional; omitted means unchanged. */
 export interface UsageLimitsInput {
   dailySpendUsd: number;
   turnsPerHour: number;
