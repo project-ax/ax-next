@@ -6,6 +6,7 @@ import {
 } from './image-validation.js';
 import {
   parseRecord,
+  parseRecordStrict,
   serializeRecord,
   toWire,
   type BrandingRecord,
@@ -73,6 +74,24 @@ export async function readBrandingRecord(
     { key: STORAGE_KEY },
   );
   return parseRecord(out.value);
+}
+
+/**
+ * The stored record read STRICTLY, for the `blob:collect-refs` holder: `undefined`
+ * when nothing is stored, a throw when something is stored that cannot be read.
+ * `readBrandingRecord` forgives a corrupt row (so the public GET never 500s);
+ * that is exactly wrong here, where "unreadable" must not become "no logos".
+ */
+export async function readBrandingRecordStrict(
+  bus: HookBus,
+  ctx: AgentContext,
+): Promise<BrandingRecord | undefined> {
+  const out = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+    'storage:get',
+    ctx,
+    { key: STORAGE_KEY },
+  );
+  return parseRecordStrict(out.value);
 }
 
 export function createBrandingHandlers(deps: {

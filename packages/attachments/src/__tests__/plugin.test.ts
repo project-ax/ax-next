@@ -28,6 +28,11 @@ async function makeHarness(
     services: {
       'blob:put': async () => ({ sha256: 'a'.repeat(64), size: 0 }),
       'blob:get': async () => ({ found: false }) as const,
+      // D10: artifacts:publish-blob stats the sha before it writes a row.
+      'blob:stat': async (_ctx: unknown, input: unknown) =>
+        (input as { sha256: string }).sha256 === 'a'.repeat(64)
+          ? { size: 1 }
+          : ({ found: false } as const),
       'conversations:get': async () => ({
         conversation: {
           conversationId: 'mock-conv',
@@ -86,12 +91,15 @@ describe('@ax/attachments plugin manifest', () => {
     expect(plugin.manifest.calls).toContain('database:get-instance');
     expect(plugin.manifest.calls).toContain('blob:put');
     expect(plugin.manifest.calls).toContain('blob:get');
+    // TASK-776 (D10): artifacts:publish-blob refuses a sha the store lacks.
+    expect(plugin.manifest.calls).toContain('blob:stat');
     expect(plugin.manifest.calls).toContain('conversations:get');
     // The git path is removed (acceptance criterion).
     expect(plugin.manifest.calls).not.toContain('workspace:apply');
     expect(plugin.manifest.calls).not.toContain('workspace:read');
-    // TASK-718: the one subscription — drop a purged conversation's metadata rows.
-    expect(plugin.manifest.subscribes).toEqual(['conversations:purged']);
+    // TASK-718: drop a purged conversation's metadata rows. TASK-776: answer
+    // blob:collect-refs (it stores shas in its own rows, so it is a holder).
+    expect(plugin.manifest.subscribes).toEqual(['conversations:purged', 'blob:collect-refs']);
   });
 });
 
@@ -161,5 +169,42 @@ describe('@ax/attachments plugin init / shutdown', () => {
 
     // Close — janitor must stop within the close timeout (default 10s).
     await harness.close();
+  });
+});
+
+describe('@ax/attachments artifacts:publish-blob wiring (D10)', () => {
+  const publish = (sha256: string) => ({
+    conversationId: 'c-1',
+    sha256,
+    path: 'workspace/report.pdf',
+    displayName: 'report.pdf',
+    mediaType: 'application/pdf',
+    size: 1,
+  });
+
+  it('publishes a sha the blob store holds', async () => {
+    const harness = await makeHarness();
+    const out = await harness.bus.call<unknown, { artifactId: string }>(
+      'artifacts:publish-blob',
+      harness.ctx(),
+      publish('a'.repeat(64)),
+    );
+    expect(out.artifactId).toMatch(/^[a-f0-9]{32}$/);
+  });
+
+  it('refuses a sha the blob store does not hold, and leaves no row behind', async () => {
+    const harness = await makeHarness();
+    await expect(
+      harness.bus.call('artifacts:publish-blob', harness.ctx(), publish('b'.repeat(64))),
+    ).rejects.toMatchObject({ code: 'not-found', plugin: '@ax/attachments' });
+    const { db } = await harness.bus.call<unknown, { db: Kysely<unknown> }>(
+      'database:get-instance',
+      harness.ctx(),
+      {},
+    );
+    const rows = await sql<{ n: string }>`
+      SELECT count(*)::text AS n FROM attachments_v1_artifacts
+    `.execute(db);
+    expect(rows.rows[0]!.n).toBe('0');
   });
 });

@@ -268,6 +268,23 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       PRIMARY KEY (owner_user_id, agent_id, skill_id)
     )
   `.execute(db);
+
+  // TASK-776 (blob-gc design D7): this plugin answers `blob:collect-refs` with
+  // `WHERE bundle_tree_sha = ANY($1)` over a batch of up to 1000 candidate shas,
+  // once per sweep batch, on each of the four tables that carry a bundle pointer.
+  // Without an index that is a full scan of each table every time. Additive:
+  // IF NOT EXISTS, no data change. (`skills_v1_skill_files` carries no sha.)
+  for (const table of [
+    'skills_v1_skills',
+    'skills_v1_user_skills',
+    'skills_v1_authored',
+    'skills_v1_catalog_requests',
+  ]) {
+    await sql`
+      CREATE INDEX IF NOT EXISTS ${sql.id(`${table}_bundle_tree_sha_idx`)}
+        ON ${sql.table(table)} (bundle_tree_sha)
+    `.execute(db);
+  }
 }
 
 /**

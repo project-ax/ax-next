@@ -80,6 +80,12 @@ async function makeHarness(): Promise<{ harness: TestHarness; ws: BlobFakeState 
         if (bytes === undefined) return { found: false } as const;
         return { bytes };
       },
+      'blob:stat': async (_ctx, input: unknown) => {
+        const { sha256 } = input as { sha256: string };
+        const bytes = ws.blobs.get(sha256);
+        if (bytes === undefined) return { found: false } as const;
+        return { size: bytes.length };
+      },
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

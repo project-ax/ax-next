@@ -1,4 +1,5 @@
 import { sql, type Kysely } from 'kysely';
+import type { BlobRef } from '@ax/core';
 import type { AttachmentsDatabase } from './migrations.js';
 
 export interface TempInsert {
@@ -108,6 +109,18 @@ export interface AttachmentsStore {
   purgeForConversations(
     conversationIds: string[],
   ): Promise<{ files: number; artifacts: number }>;
+
+  // --- TASK-776: blob:collect-refs holder ---
+  /**
+   * Which of `shas` do committed uploads or published artifacts still point at,
+   * and for whom? One entry per ROW (so two users holding the same bytes give two
+   * entries; the caller merges them), from both tables, with the row's owner.
+   *
+   * Reads every row, whatever state its conversation is in: a soft-deleted
+   * conversation can come back, so it still holds its files. Throws on a query
+   * failure — the holder turns that into `ok: false`, never into "no refs".
+   */
+  blobRefs(shas: string[]): Promise<BlobRef[]>;
 }
 
 // Postgres caps one statement at 65535 bind parameters. The plugin already caps
@@ -372,6 +385,26 @@ export function createAttachmentsStore(
         }
         return { files, artifacts };
       });
+    },
+
+    async blobRefs(shas) {
+      if (shas.length === 0) return [];
+      // `= ANY(array)` rather than IN (...): one bind parameter however many
+      // candidates there are, and it uses the sha256 indexes from the migration.
+      const files = await db
+        .selectFrom('attachments_v1_files')
+        .select(['sha256', 'user_id'])
+        .where(sql<boolean>`sha256 = ANY(${shas}::text[])`)
+        .execute();
+      const artifacts = await db
+        .selectFrom('attachments_v1_artifacts')
+        .select(['sha256', 'user_id'])
+        .where(sql<boolean>`sha256 = ANY(${shas}::text[])`)
+        .execute();
+      return [...files, ...artifacts].map((r) => ({
+        sha256: r.sha256,
+        userIds: [r.user_id],
+      }));
     },
   };
 }

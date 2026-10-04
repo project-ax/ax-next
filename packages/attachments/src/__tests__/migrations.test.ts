@@ -38,6 +38,8 @@ afterEach(async () => {
     const k = opened.pop()!;
     try {
       await k.schema.dropTable('attachments_v1_temps').ifExists().execute();
+      await k.schema.dropTable('attachments_v1_files').ifExists().execute();
+      await k.schema.dropTable('attachments_v1_artifacts').ifExists().execute();
     } catch {
       // drained pool — ignore
     }
@@ -97,4 +99,19 @@ describe('runAttachmentsMigration', () => {
     const indexes = result.rows.map((r) => r.indexname);
     expect(indexes.some((n) => n.includes('expires_at'))).toBe(true);
   });
+
+  // TASK-776 (blob-gc design D7): @ax/attachments answers `blob:collect-refs`
+  // with one `WHERE sha256 = ANY($1)` per table, once per sweep batch. Without
+  // these indexes that is a full scan of each table on every batch.
+  it.each(['attachments_v1_files', 'attachments_v1_artifacts'])(
+    'indexes %s.sha256 for the blob:collect-refs holder lookup',
+    async (table) => {
+      const db = makeKysely();
+      await runAttachmentsMigration(db);
+      const result = await sql<{ indexdef: string }>`
+        SELECT indexdef FROM pg_indexes WHERE tablename = ${table}
+      `.execute(db);
+      expect(result.rows.some((r) => /\(sha256\)/.test(r.indexdef))).toBe(true);
+    },
+  );
 });

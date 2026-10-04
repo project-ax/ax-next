@@ -1,6 +1,16 @@
-import { type Plugin, makeAgentContext } from '@ax/core';
+import {
+  BLOB_COLLECT_REFS_HOOK,
+  answerBlobCollectRefs,
+  makeAgentContext,
+  type BlobRef,
+  type Plugin,
+} from '@ax/core';
 import { z } from 'zod';
-import { readBrandingRecord, registerBrandingRoutes } from './routes.js';
+import {
+  readBrandingRecord,
+  readBrandingRecordStrict,
+  registerBrandingRoutes,
+} from './routes.js';
 
 const PLUGIN_NAME = '@ax/branding';
 
@@ -21,6 +31,10 @@ const BrandingGetOutputSchema = z.object({ name: z.string().min(1).nullable() })
 // `settings:branding`) and the logo bytes via blob:*. Registers
 // `branding:get` so other plugins can show the product name (e.g. the OAuth
 // client name AX presents on third-party consent screens).
+//
+// It is also a `blob:collect-refs` holder (TASK-776): the light/dark logo
+// pointers in the record are the only blob shas it stores, so it answers "which
+// of these do you still reference" from that one record.
 // ---------------------------------------------------------------------------
 
 export function createBrandingPlugin(): Plugin {
@@ -44,7 +58,9 @@ export function createBrandingPlugin(): Plugin {
         'blob:get',
         'blob:delete',
       ],
-      subscribes: [],
+      // `blob:collect-refs`: the logo pointers are blob shas. If we did not
+      // answer, a sweep would read the silence as "no one holds these logos".
+      subscribes: [BLOB_COLLECT_REFS_HOOK],
     },
 
     async init({ bus }) {
@@ -81,6 +97,25 @@ export function createBrandingPlugin(): Plugin {
         }
         throw err;
       }
+
+      // Answer from the record, read STRICTLY. `answerBlobCollectRefs` turns a
+      // throw into `ok: false`, so a record we cannot read (or storage being
+      // down) stops the sweep instead of reading as "no logos". A logo is held
+      // for nobody in particular, so `userIds` is `[]`: the bytes are kept and no
+      // ledger charge is released for them.
+      bus.subscribe<unknown>(BLOB_COLLECT_REFS_HOOK, PLUGIN_NAME, async (ctx, payload) =>
+        answerBlobCollectRefs(payload, PLUGIN_NAME, async (candidates): Promise<BlobRef[]> => {
+          const record = await readBrandingRecordStrict(bus, ctx);
+          if (record === undefined) return [];
+          const refs: BlobRef[] = [];
+          for (const pointer of [record.light, record.dark]) {
+            if (pointer !== null && candidates.includes(pointer.sha256)) {
+              refs.push({ sha256: pointer.sha256, userIds: [] });
+            }
+          }
+          return refs;
+        }),
+      );
     },
 
     async shutdown() {

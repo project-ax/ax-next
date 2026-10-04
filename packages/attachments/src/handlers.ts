@@ -33,6 +33,10 @@ interface BlobGetInput {
   sha256: string;
 }
 type BlobGetOutput = { bytes: Uint8Array } | { found: false };
+interface BlobStatInput {
+  sha256: string;
+}
+type BlobStatOutput = { size: number } | { found: false };
 import {
   DEFAULT_MAX_FILE_BYTES,
   DEFAULT_MAX_PENDING_BYTES_PER_USER,
@@ -279,6 +283,7 @@ export function createListForConversationHandler(deps: ListForConversationDeps) 
 
 export interface PublishArtifactBlobDeps {
   store: AttachmentsStore;
+  bus: HookBus;
 }
 
 /**
@@ -287,12 +292,32 @@ export interface PublishArtifactBlobDeps {
  * scoped to the conversation and path: identical bytes can be published under
  * different names or in different conversations without a primary-key clash.
  * Idempotent on (conversationId, path); blob deduplication still uses sha256.
+ *
+ * The row is only written once `blob:stat` confirms the store holds the sha
+ * (TASK-776, blob-gc design D10). Without that, a runner could publish a row
+ * for bytes that were never put or have since been purged, and the person gets
+ * a download link that 404s. It does NOT check that THIS runner put the sha: a
+ * sha256 cannot be guessed, so a runner that can name one already has the
+ * bytes, and referencing identical bytes is the same as dedup. A `blob:stat`
+ * failure propagates — "could not check" must never turn into "assume it is
+ * there".
  */
 export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) {
   return async function publishArtifactBlob(
     ctx: AgentContext,
     input: ArtifactsPublishBlobInput,
   ): Promise<ArtifactsPublishBlobOutput> {
+    const stat = await deps.bus.call<BlobStatInput, BlobStatOutput>('blob:stat', ctx, {
+      sha256: input.sha256,
+    });
+    if ('found' in stat && stat.found === false) {
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        hookName: 'artifacts:publish-blob',
+        message: 'artifact bytes are not in the blob store',
+      });
+    }
     const artifactId = createHash('sha256')
       .update(JSON.stringify([input.conversationId, input.path]))
       .digest('hex').slice(0, 32);

@@ -125,6 +125,15 @@ export async function runAttachmentsMigration<DB>(
       ON attachments_v1_files (conversation_id)
   `.execute(db);
 
+  // TASK-776 (blob-gc design D7): this plugin answers `blob:collect-refs` with
+  // `WHERE sha256 = ANY($1)` over a batch of up to 1000 candidate shas, once per
+  // sweep batch. Without an index that is a full table scan every time.
+  // Additive: IF NOT EXISTS, no data change.
+  await sql`
+    CREATE INDEX IF NOT EXISTS attachments_v1_files_sha256_idx
+      ON attachments_v1_files (sha256)
+  `.execute(db);
+
   // Published artifacts. Same shape; separate namespace + lifecycle (outbound).
   await sql`
     CREATE TABLE IF NOT EXISTS attachments_v1_artifacts (
@@ -144,5 +153,11 @@ export async function runAttachmentsMigration<DB>(
   await sql`
     CREATE INDEX IF NOT EXISTS attachments_v1_artifacts_conversation_id_idx
       ON attachments_v1_artifacts (conversation_id)
+  `.execute(db);
+
+  // Same reason as attachments_v1_files_sha256_idx above.
+  await sql`
+    CREATE INDEX IF NOT EXISTS attachments_v1_artifacts_sha256_idx
+      ON attachments_v1_artifacts (sha256)
   `.execute(db);
 }
