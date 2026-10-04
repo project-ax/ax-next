@@ -39,11 +39,21 @@ function headerNamesOf(cfg: McpServerConfig): string[] {
 // http-server's req/res surface so the plugin stays I2-clean (no @ax/*
 // cross-imports beyond @ax/core).
 //
-// All endpoints require auth:require-user (401 on miss). Read-scoping rule:
-// a config is visible to user U iff `ownerId === U.id` OR `ownerId === null`
-// (admin-global). Writes (PATCH/DELETE) require ownership — `ownerId` MUST
-// equal the calling user's id; admin-global rows return 403 (we'd need an
-// `is_admin` gate before allowing edits, deferred to Task 11+).
+// All endpoints require auth:require-user (401 on miss).
+//
+// Writes — POST, PATCH, DELETE — and the outbound POST /:id/test probe
+// require a WORKSPACE ADMIN (403 `forbidden` otherwise, before the row is
+// even looked up, so a non-admin learns nothing about which ids exist).
+// TASK-848: a host MCP server's tools land in the one global tool catalog,
+// and a wildcard-scoped agent (every product agent today) sees that whole
+// catalog — so a server registered by any signed-in user reached every
+// user's agents, and pointed the host at a URL of that user's choosing.
+// Ownership is not authority here; admin is. Admins manage every row,
+// including admin-global (`ownerId === null`) rows and rows a non-admin
+// created before the gate existed.
+//
+// Read-scoping rule: an admin sees every row; anyone else sees a config iff
+// `ownerId === U.id` OR `ownerId === null` (admin-global).
 //
 // Responses NEVER include resolved credential values. The schema's
 // `credentialRefs` (and `headerCredentialRefs`) carry credential IDs;
@@ -90,12 +100,17 @@ export interface RouteResponse {
 
 // --- helpers --------------------------------------------------------------
 
+interface AuthedUser {
+  id: string;
+  isAdmin: boolean;
+}
+
 async function requireUser(
   bus: HookBus,
   ctx: AgentContext,
   req: RouteRequest,
   res: RouteResponse,
-): Promise<{ id: string; isAdmin: boolean } | null> {
+): Promise<AuthedUser | null> {
   try {
     const result = await bus.call<
       { req: RouteRequest },
@@ -109,6 +124,29 @@ async function requireUser(
     }
     throw err;
   }
+}
+
+/**
+ * /admin/mcp-servers write gate (TASK-848). 401 → unauthenticated; 403 →
+ * authenticated but not a workspace admin. Mirrors the per-plugin
+ * `requireAdmin` the other /admin route plugins carry (branding, blob-gc,
+ * credentials-admin-routes, …) — duplicated rather than imported, per the
+ * no-cross-plugin-imports invariant. Fails closed: anything but an explicit
+ * `isAdmin === true` is refused.
+ */
+async function requireAdmin(
+  bus: HookBus,
+  ctx: AgentContext,
+  req: RouteRequest,
+  res: RouteResponse,
+): Promise<AuthedUser | null> {
+  const actor = await requireUser(bus, ctx, req, res);
+  if (actor === null) return null;
+  if (actor.isAdmin !== true) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return actor;
 }
 
 interface ParsedBody<T> {
@@ -138,29 +176,14 @@ function parseAndValidateBody(
 }
 
 /**
- * Visibility predicate for reads. Admin-global rows (`ownerId === null`)
- * are visible to all authenticated users. Owned rows are visible only to
- * the owner. Foreign-owned rows are NOT visible — we return 404 (not 403)
- * because "this row exists but isn't yours" leaks more than "no such
- * row" and we don't need that distinction at this layer.
+ * Visibility predicate for reads. Admins see every row (they manage them
+ * all — see the header). For everyone else, admin-global rows
+ * (`ownerId === null`) are visible and owned rows only to their owner.
+ * Foreign-owned rows are NOT visible — we return 404 (not 403) because
+ * "this row exists but isn't yours" leaks more than "no such row".
  */
-function canRead(
-  cfg: McpServerConfig,
-  actorId: string,
-): boolean {
-  return cfg.ownerId === null || cfg.ownerId === actorId;
-}
-
-/**
- * Write predicate. Owned rows: only the owner can edit. Admin-global rows
- * cannot be edited via this API yet (we'd need an `is_admin` gate before
- * allowing it; deferred per Task 10 spec). Returns false → 403.
- */
-function canWrite(
-  cfg: McpServerConfig,
-  actorId: string,
-): boolean {
-  return cfg.ownerId !== null && cfg.ownerId === actorId;
+function canRead(cfg: McpServerConfig, actor: AuthedUser): boolean {
+  return actor.isAdmin === true || cfg.ownerId === null || cfg.ownerId === actor.id;
 }
 
 /**
@@ -296,9 +319,9 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
   };
 
   return {
-    /** POST /admin/mcp-servers */
+    /** POST /admin/mcp-servers — workspace admin only (TASK-848) */
     async create(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
+      const actor = await requireAdmin(deps.bus, ctx, req, res);
       if (actor === null) return;
       const parsed = parseAndValidateBody(req.body);
       if (!parsed.ok) {
@@ -353,10 +376,10 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
       const all = await loadConfigs(deps.bus, ctx);
-      // Read-scope: only the user's own configs + admin-global. Filter
-      // BEFORE serializing so a foreign-owned config never reaches the
+      // Read-scope: admins see every row; anyone else only their own
+      // configs + admin-global. Filter BEFORE serializing so a foreign-owned config never reaches the
       // wire. (Invariant I7 / Acceptance scenario 6.)
-      const visible = all.filter((c) => canRead(c, actor.id));
+      const visible = all.filter((c) => canRead(c, actor));
       res.status(200).json({
         configs: visible.map(serializeConfig),
       });
@@ -381,7 +404,7 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
         }
         throw err;
       }
-      if (cfg === null || !canRead(cfg, actor.id)) {
+      if (cfg === null || !canRead(cfg, actor)) {
         // 404 not 403 — "doesn't exist" is the safer leak (matches the
         // cross-tenant rule in Task 10 spec).
         res.status(404).json({ error: 'not-found' });
@@ -390,10 +413,9 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
       res.status(200).json({ config: serializeConfig(cfg) });
     },
 
-    /** PATCH /admin/mcp-servers/:id — owner only */
+    /** PATCH /admin/mcp-servers/:id — workspace admin only (TASK-848) */
     async update(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
-      if (actor === null) return;
+      if ((await requireAdmin(deps.bus, ctx, req, res)) === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
         res.status(400).json({ error: 'missing-id' });
@@ -416,17 +438,6 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
       }
       if (existing === null) {
         res.status(404).json({ error: 'not-found' });
-        return;
-      }
-      if (!canRead(existing, actor.id)) {
-        // Owned by someone else → 404 (same leak posture as GET).
-        res.status(404).json({ error: 'not-found' });
-        return;
-      }
-      if (!canWrite(existing, actor.id)) {
-        // Read-visible (admin-global) but not write-allowed. 403 is
-        // accurate here because the row is known to exist.
-        res.status(403).json({ error: 'forbidden' });
         return;
       }
       // Merge: caller may patch any field except `id` and `ownerId`. We
@@ -492,10 +503,9 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
       res.status(200).json({ config: serializeConfig(saved) });
     },
 
-    /** DELETE /admin/mcp-servers/:id — owner only */
+    /** DELETE /admin/mcp-servers/:id — workspace admin only (TASK-848) */
     async destroy(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
-      if (actor === null) return;
+      if ((await requireAdmin(deps.bus, ctx, req, res)) === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
         res.status(400).json({ error: 'missing-id' });
@@ -513,14 +523,6 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
       }
       if (existing === null) {
         res.status(404).json({ error: 'not-found' });
-        return;
-      }
-      if (!canRead(existing, actor.id)) {
-        res.status(404).json({ error: 'not-found' });
-        return;
-      }
-      if (!canWrite(existing, actor.id)) {
-        res.status(403).json({ error: 'forbidden' });
         return;
       }
       // Capture the declared header names before the row is tombstoned.
@@ -544,10 +546,10 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
       res.status(204).end();
     },
 
-    /** POST /admin/mcp-servers/:id/test — owner-or-admin-global */
+    /** POST /admin/mcp-servers/:id/test — workspace admin only (TASK-848):
+     *  it opens an outbound connection from the host to the row's URL. */
     async test(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await requireUser(deps.bus, ctx, req, res);
-      if (actor === null) return;
+      if ((await requireAdmin(deps.bus, ctx, req, res)) === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
         res.status(400).json({ error: 'missing-id' });
@@ -567,14 +569,6 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
         res.status(404).json({ error: 'not-found' });
         return;
       }
-      if (!canRead(existing, actor.id)) {
-        res.status(404).json({ error: 'not-found' });
-        return;
-      }
-      // Admin-global configs can be /test'd by anyone authenticated
-      // (read-scoped). Owner-only would lock a global config that can
-      // never be edited but should still be diagnosable. Owned configs
-      // are still owner-only — canRead already enforces that.
       const testDeps: TestDeps = {
         bus: busAsBusLike,
         ctx,
