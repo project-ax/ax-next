@@ -1311,6 +1311,12 @@ describe('agent connector routes', () => {
         attachCalls.push(i as Record<string, unknown>);
         return { agent: {}, changed: true };
       });
+      // Everything BELOW the ask would say yes (a connector with no credential
+      // slots), so only the missing-hook branch itself can produce this 503 —
+      // without it the attach would land and this reads 200.
+      bus.registerService('connectors:get', 'connectors', async () => ({
+        connector: { id: 'linear', name: 'Linear', keyMode: 'user', capabilities: { credentials: [] } },
+      }));
       const r = await attach({ connectorId: 'linear' });
       expect(r.statusCode).toBe(503);
       expect(r.body).toEqual({ error: 'connectors-unavailable' });
