@@ -901,35 +901,68 @@ function isNeedsReconnect(err: unknown): boolean {
 // walk and authz gates `credentials:get` uses (one shared `findRow`), but it
 // never resolves, refreshes or touches the network. If any connector ref has
 // no row for this caller, the person can fix it: sign in on the Connectors
-// tab. Provider keys and skill slots are never asked about, so a missing
-// provider key still reads as `proxy-open-failed`.
+// tab. A missing provider key with every connector signed in is never asked
+// about, so it still reads as `proxy-open-failed`.
+//
+// TASK-802 — when a connector IS missing, the agent's own refs (the model
+// provider key) get the same one-shot question, because that failure was
+// being hidden: the person signed in, retried, and met the key failure on the
+// second turn. Both missing is its own reason, so the sentence can name both.
+// The key is asked about only AFTER a connector came back missing, so a
+// provider-only failure costs no extra read and a successful open costs none.
 //
 // Order matters: a rejected-refresh (`NeedsReconnectError`) is checked FIRST
 // and wins — its token row still exists, but the caller learns "reconnect",
 // never both. A presence read that throws, or no `credentials:has` at all,
 // counts as present (logged by error NAME only — never a message, which can
-// carry provider text), so the turn falls back to `proxy-open-failed`: the
-// cheaper wrong answer than sending someone to sign in to a connector that
-// is fine. Nothing here runs on a successful open.
+// carry provider text), so a failed connector read falls back to
+// `proxy-open-failed` and a failed key read to plain `connector-needs-sign-in`:
+// the cheaper wrong answer than sending someone to sign in to a connector that
+// is fine, or telling them a key is missing that is not. Nothing here runs on
+// a successful open.
 // ---------------------------------------------------------------------------
 
 /** Turn-error reason: a connector was never signed in; sign in, then retry. */
 const CONNECTOR_NEEDS_SIGN_IN = 'connector-needs-sign-in';
 
+/**
+ * Turn-error reason (TASK-802): the model-provider key is missing AND a
+ * connector was never signed in. Different people fix the two (an admin owns
+ * the key), so the client says both rather than only the half checked first.
+ */
+const PROVIDER_KEY_AND_CONNECTOR_SIGN_IN = 'provider-key-missing-connector-needs-sign-in';
+
 /** Owner tag `foldConnectorCaps` stamps on a connector's credential slots. */
 const CONNECTOR_SLOT_OWNER_PREFIX = 'connector:';
 
-async function connectorSignInMissing(
-  bus: HookBus,
-  ctx: AgentContext,
+/** Owner tag for the agent's own credential slots — the model-provider key. */
+const AGENT_SLOT_OWNER = '<agent.requiredCredentials>';
+
+/** The distinct refs of the slots whose owner tag `owned` accepts. */
+function refsOwnedBy(
   creds: Readonly<Record<string, { ref: string }>>,
   slotOwners: ReadonlyMap<string, string>,
-): Promise<boolean> {
-  if (!bus.hasService('credentials:has')) return false;
+  owned: (owner: string) => boolean,
+): Set<string> {
   const refs = new Set<string>();
   for (const [envName, cred] of Object.entries(creds)) {
-    if (slotOwners.get(envName)?.startsWith(CONNECTOR_SLOT_OWNER_PREFIX) === true) refs.add(cred.ref);
+    const owner = slotOwners.get(envName);
+    if (owner !== undefined && owned(owner)) refs.add(cred.ref);
   }
+  return refs;
+}
+
+/**
+ * True when `credentials:has` says at least one of `refs` has no row for this
+ * caller. A read that throws counts as present (see the block above); only the
+ * error NAME is logged, under `failureEvent`.
+ */
+async function anyRefAbsent(
+  bus: HookBus,
+  ctx: AgentContext,
+  refs: ReadonlySet<string>,
+  failureEvent: string,
+): Promise<boolean> {
   if (refs.size === 0) return false;
   const answers = await Promise.all(
     [...refs].map(async (ref) => {
@@ -941,7 +974,7 @@ async function connectorSignInMissing(
         );
         return r?.present === false;
       } catch (err) {
-        ctx.logger.warn('connector_sign_in_check_failed', {
+        ctx.logger.warn(failureEvent, {
           name: err instanceof Error ? err.name : 'unknown',
         });
         return false;
@@ -949,6 +982,25 @@ async function connectorSignInMissing(
     }),
   );
   return answers.some((missing) => missing);
+}
+
+/**
+ * The reason a failed open reads as when a connector is the person's to sign
+ * in to; `undefined` when it is not (the caller keeps `proxy-open-failed`).
+ */
+async function signInReason(
+  bus: HookBus,
+  ctx: AgentContext,
+  creds: Readonly<Record<string, { ref: string }>>,
+  slotOwners: ReadonlyMap<string, string>,
+): Promise<string | undefined> {
+  if (!bus.hasService('credentials:has')) return undefined;
+  const connectorRefs = refsOwnedBy(creds, slotOwners, (o) => o.startsWith(CONNECTOR_SLOT_OWNER_PREFIX));
+  if (!(await anyRefAbsent(bus, ctx, connectorRefs, 'connector_sign_in_check_failed'))) return undefined;
+  const keyRefs = refsOwnedBy(creds, slotOwners, (o) => o === AGENT_SLOT_OWNER);
+  return (await anyRefAbsent(bus, ctx, keyRefs, 'provider_key_check_failed'))
+    ? PROVIDER_KEY_AND_CONNECTOR_SIGN_IN
+    : CONNECTOR_NEEDS_SIGN_IN;
 }
 
 // ---------------------------------------------------------------------------
@@ -2660,7 +2712,7 @@ export function createOrchestrator(
     // Track slot ownership (now keyed by the NAMESPACED env name for skill slots,
     // the bare name for trusted base creds) — purely diagnostic / idempotence.
     const slotOwners = new Map<string, string>(
-      [...trustedBareNames].map((slot) => [slot, '<agent.requiredCredentials>']),
+      [...trustedBareNames].map((slot) => [slot, AGENT_SLOT_OWNER]),
     );
 
     // TASK-86 — ordered (highest precedence first) skill-slot descriptors driving
@@ -3084,9 +3136,7 @@ export function createOrchestrator(
         kind: 'terminated',
         reason: isNeedsReconnect(err)
           ? CONNECTOR_NEEDS_RECONNECT
-          : (await connectorSignInMissing(bus, ctx, unionedCreds, slotOwners))
-            ? CONNECTOR_NEEDS_SIGN_IN
-            : 'proxy-open-failed',
+          : ((await signInReason(bus, ctx, unionedCreds, slotOwners)) ?? 'proxy-open-failed'),
         error: err,
       };
       // TASK-22 — credential resolution failure at session-open. This is the
