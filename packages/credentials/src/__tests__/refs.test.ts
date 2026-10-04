@@ -13,11 +13,6 @@ describe('refForDestination', () => {
       kind: 'skill-slot', skillId: 'linear-tracker', slot: 'LINEAR_TOKEN',
     })).toBe('skill:linear-tracker:LINEAR_TOKEN');
   });
-  it('computes mcp-header ref', () => {
-    expect(refForDestination({
-      kind: 'mcp-header', serverId: 'gh', headerName: 'Authorization',
-    })).toBe('mcp:gh:header:Authorization');
-  });
   it('computes routine-hmac ref', () => {
     expect(refForDestination({
       kind: 'routine-hmac', agentId: 'agt-1', routinePath: '.ax/routines/cron.md',
@@ -35,8 +30,6 @@ describe('refForDestination', () => {
       { kind: 'provider', provider: 'an:thropic' as 'anthropic' },
       { kind: 'skill-slot', skillId: 'a:b', slot: 'SLOT' },
       { kind: 'skill-slot', skillId: 'ok', slot: 'A:B' },
-      { kind: 'mcp-header', serverId: 'srv:1', headerName: 'X' },
-      { kind: 'mcp-header', serverId: 'ok', headerName: 'X:Y' },
       { kind: 'routine-hmac', agentId: 'a:b', routinePath: '.ax/r.md' },
       { kind: 'routine-hmac', agentId: 'ok', routinePath: 'has:colon' },
     ];
