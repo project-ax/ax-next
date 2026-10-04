@@ -28,6 +28,17 @@
 // Extraction keys on the `# ax-merge-freshness: <name>` marker line and requires exactly
 // one block per name, so a deleted or duplicated block reddens instead of vacuously
 // passing.
+//
+// MUTANTS RUN against the committed doc, 2026-10-04, bash+zsh (36 tests): check reads
+// local `main` -> 4 red; check drops the fetch -> 6 red; STALE arm exits 0 -> 2 red;
+// verify drops the tree comparison -> 2 red (evil merge); drops the main-parent ancestry
+// -> 2 red; drops its fetch -> 2 red; merge loses --match-head-commit -> 1 red. Two
+// mutants SURVIVE by design, each covered by a later gate in the same block: dropping
+// the parent-count check (a non-two-parent head still fails "neither parent is PRE" or
+// the tree check), and dropping the record's hex check (the 40-char length check
+// still rejects every non-sha record, and the value is only ever used quoted). A
+// third, dropping `cat-file -e`, survived the first run (merge-base fails on a missing
+// object anyway); the missing-head case now pins the actionable message, which kills it.
 // ---------------------------------------------------------------------------------
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -280,6 +291,8 @@ for (const shell of SHELLS) {
     it('a head missing from the clone is UNDECIDED, never STALE or FRESH', () => {
       const { code, out } = run(shell, check, WORK, MISSING);
       expect(out, out).toMatch(/FRESHNESS-UNDECIDED/);
+      // The actionable reason, not merge-base's bare rc: the reader must fetch the branch.
+      expect(out).toMatch(/not in this clone/);
       expect(out).not.toMatch(/BASE-FRESH|BASE-STALE/);
       expect(code).not.toBe(0);
     });
