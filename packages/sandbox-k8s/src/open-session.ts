@@ -318,10 +318,9 @@ export function createOpenSession(deps: OpenSessionDeps) {
                   : {}),
                 // TASK-52: thread the per-session egress-attribution token
                 // through to pod-spec (stamped as AX_PROXY_TOKEN). A dropped
-                // field here silently disables k8s-side attribution.
-                ...(input.proxyConfig.proxyAuthToken !== undefined
-                  ? { proxyAuthToken: input.proxyConfig.proxyAuthToken }
-                  : {}),
+                // field here silently disables k8s-side attribution. Required
+                // since TASK-784 (the schema rejects a config without it).
+                proxyAuthToken: input.proxyConfig.proxyAuthToken,
               },
             }
           : {}),
