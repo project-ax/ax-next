@@ -308,6 +308,12 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // Cleared each time "+ New agent…" opens the flow — someone who walked away
   // from an add attempt should not find its name waiting the next time.
   const [lastAgentName, setLastAgentName] = useState('');
+  // (TASK-791) The agent this flow has ALREADY created, kept across "Change
+  // name" — which unmounts `FirstRunAutoCreate`, and with it the id it held.
+  // Handed back on the next submit so that create RENAMES this agent instead
+  // of making a second one. Cleared when the flow finishes, when Cancel has
+  // deleted it, and when "+ New agent…" opens a fresh flow.
+  const [flowAgentId, setFlowAgentId] = useState<string | null>(null);
   // The new agent the workspace still has to greet. `WorkspaceShell` sends
   // the kickoff itself once it has the id.
   const [kickoffAgentId, setKickoffAgentId] = useState<string | null>(null);
@@ -366,14 +372,25 @@ const AppContent = ({ user }: { user: AuthUser }) => {
         <FirstRunAutoCreate
           agentName={bootstrapAgentName}
           mode={isFirstRun ? 'first-run' : 'add'}
+          // (TASK-791) Set once an earlier mount's create succeeded, so the
+          // next submit renames that agent rather than creating another.
+          existingAgentId={flowAgentId}
+          onCreated={setFlowAgentId}
           // (TASK-689) The way out of a failed create. First run: back to the
           // name card, name kept (`lastAgentName`), and still no
           // `createAgentOpen` — first run never sets it. Adding: back to the
           // workspace, by the same `setCreateAgentOpen(false)` a Cancel on the
           // name card uses, so the focus restore treats the two identically.
+          //
+          // (TASK-791) First run keeps `flowAgentId`: "Change name" renames
+          // it. Adding only calls this after Cancel has DELETED that agent
+          // (or there never was one), so the id is dropped.
           onBack={() => {
             setBootstrapAgentName(null);
-            if (!isFirstRun) setCreateAgentOpen(false);
+            if (!isFirstRun) {
+              setFlowAgentId(null);
+              setCreateAgentOpen(false);
+            }
           }}
           // A bare agent that is never greeted never introduces itself, which
           // is the conversational half of the create flow — so the new id goes
@@ -382,6 +399,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
           onDone={(agentId) => {
             // Before the close below, so the close effect sees it (TASK-533).
             createdAgentId.current = agentId;
+            setFlowAgentId(null);
             setCreateAgentOpen(false);
             setBootstrapAgentName(null);
             setKickoffAgentId(agentId);
@@ -447,6 +465,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
             onCreateAgent={() => {
               setBootstrapAgentName(null);
               setLastAgentName('');
+              setFlowAgentId(null);
               setCreateAgentOpen(true);
             }}
             kickoffAgentId={kickoffAgentId}

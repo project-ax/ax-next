@@ -17,6 +17,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
+import * as hydrate from '../lib/hydrate-agents';
 import type { WorkspaceShellProps } from '../components/workspace/WorkspaceShell';
 
 vi.mock('../lib/bootstrap-status', () => ({
@@ -468,5 +469,198 @@ describe('the name card in both flows (TASK-689)', () => {
     // Still first run: nothing to fall back to.
     expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
     expect(screen.queryByRole('button', { name: /^cancel$/i })).toBeNull();
+  });
+});
+
+/**
+ * TASK-791 — the failure card AFTER the agent was created, through the real
+ * `App`, because the bug crossed a remount: "Change name" unmounts
+ * `FirstRunAutoCreate`, and the id it held went with it.
+ *
+ * OLD: "Change name" → resubmit POSTed `/api/agents/bootstrap` a second time
+ * (two agents), and the add-flow Cancel went back with the half-made agent
+ * still on the server. Owner decision 2026-10-03: rename it, or delete it.
+ *
+ * The create succeeds and the hand-off after it (the component's hydrate)
+ * fails once — the only way to reach this card with an agent on the server.
+ */
+describe('the failure card once the agent exists (TASK-791)', () => {
+  type Call = { method: string; url: string; body: unknown };
+
+  function installRecordingFetch(opts: {
+    agents: 'none' | 'one';
+    deleteStatus?: number;
+  }) {
+    const calls: Call[] = [];
+    const state = { created: false, name: '' };
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
+      calls.push({ method, url, body });
+      if (url.includes('/api/agents/bootstrap')) {
+        state.created = true;
+        state.name = (body as { displayName: string }).displayName;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            agent: { agentId: 'a-new', displayName: state.name, visibility: 'personal' },
+          }),
+        };
+      }
+      if (url.startsWith('/admin/agents/') && method === 'PATCH') {
+        state.name = (body as { displayName: string }).displayName;
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      if (url.startsWith('/admin/agents/') && method === 'DELETE') {
+        const status = opts.deleteStatus ?? 204;
+        if (status === 204) state.created = false;
+        return { ok: status < 300, status, json: async () => ({}) };
+      }
+      if (url.includes('/api/chat/agents')) {
+        const list = [
+          ...(opts.agents === 'one'
+            ? [{ agentId: 'a1', displayName: 'Scout', visibility: 'personal' }]
+            : []),
+          ...(state.created
+            ? [{ agentId: 'a-new', displayName: state.name, visibility: 'personal' }]
+            : []),
+        ];
+        return { ok: true, status: 200, json: async () => list };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    return {
+      calls,
+      state,
+      writes: () => calls.filter((c) => c.method !== 'GET'),
+    };
+  }
+
+  /** The component's hand-off hydrate fails ONCE; App's own boot load is untouched. */
+  function failFirstHandOff() {
+    const real = hydrate.hydrateAgentsOnce;
+    let failed = false;
+    return vi.spyOn(hydrate, 'hydrateAgentsOnce').mockImplementation(async () => {
+      if (!failed) {
+        failed = true;
+        throw new Error('hand-off blip');
+      }
+      return real();
+    });
+  }
+
+  const nameField = () => screen.getByLabelText(/agent name/i);
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('first run: Change name → resubmit RENAMES the same agent, never POSTs a second', async () => {
+    const flow = installRecordingFetch({ agents: 'none' });
+    failFirstHandOff();
+    setLocation('/workspace');
+    mockGetSession.mockResolvedValue(ALICE);
+    render(<App />);
+    await screen.findByText('Welcome to ax');
+    fireEvent.change(nameField(), { target: { value: 'Scout' } });
+    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /change name/i }));
+    await screen.findByText('Welcome to ax');
+    fireEvent.change(nameField(), { target: { value: 'Quill' } });
+    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
+
+    await waitFor(() => expect(lastWorkspaceShellProps?.kickoffAgentId).toBe('a-new'));
+    expect(flow.writes().map((c) => [c.method, c.url, c.body])).toEqual([
+      ['POST', '/api/agents/bootstrap', { displayName: 'Scout' }],
+      ['PATCH', '/admin/agents/a-new', { displayName: 'Quill' }],
+    ]);
+  });
+
+  it('adding: Cancel DELETEs the agent this flow made and returns to the workspace', async () => {
+    const flow = installRecordingFetch({ agents: 'one' });
+    failFirstHandOff();
+    setLocation('/workspace');
+    mockGetSession.mockResolvedValue(ALICE);
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+    act(() => {
+      lastWorkspaceShellProps?.onCreateAgent?.();
+    });
+    await screen.findByText('New agent');
+    fireEvent.change(nameField(), { target: { value: 'Quill' } });
+    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
+
+    expect(await screen.findByText(/Cancel removes Quill/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+    expect(flow.writes().map((c) => [c.method, c.url])).toEqual([
+      ['POST', '/api/agents/bootstrap'],
+      ['DELETE', '/admin/agents/a-new'],
+    ]);
+    // Never the agent that was already there.
+    expect(flow.calls.some((c) => c.url.includes('/admin/agents/a1'))).toBe(false);
+    expect(lastWorkspaceShellProps?.kickoffAgentId ?? null).toBeNull();
+  });
+
+  it('adding: a failed DELETE keeps the card — the person is not told it is gone', async () => {
+    installRecordingFetch({ agents: 'one', deleteStatus: 500 });
+    failFirstHandOff();
+    setLocation('/workspace');
+    mockGetSession.mockResolvedValue(ALICE);
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+    act(() => {
+      lastWorkspaceShellProps?.onCreateAgent?.();
+    });
+    await screen.findByText('New agent');
+    fireEvent.change(nameField(), { target: { value: 'Quill' } });
+    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText(/We couldn't remove Quill just now/)).toBeTruthy();
+    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
+  });
+
+  it('adding: Cancel when the create itself failed sends no write besides the failed POST', async () => {
+    // The control: nothing exists, so there is nothing to delete.
+    const calls: Call[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      calls.push({ method: (init?.method ?? 'GET').toUpperCase(), url, body: undefined });
+      if (url.includes('/api/agents/bootstrap')) {
+        return { ok: false, status: 500, json: async () => ({}) };
+      }
+      if (url.includes('/api/chat/agents')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ agentId: 'a1', displayName: 'Scout', visibility: 'personal' }],
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    }) as unknown as typeof fetch;
+    setLocation('/workspace');
+    mockGetSession.mockResolvedValue(ALICE);
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+    act(() => {
+      lastWorkspaceShellProps?.onCreateAgent?.();
+    });
+    await screen.findByText('New agent');
+    fireEvent.change(nameField(), { target: { value: 'Quill' } });
+    fireEvent.click(screen.getByRole('button', { name: /create agent/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy());
+    expect(calls.filter((c) => c.method !== 'GET').map((c) => [c.method, c.url])).toEqual([
+      ['POST', '/api/agents/bootstrap'],
+    ]);
   });
 });

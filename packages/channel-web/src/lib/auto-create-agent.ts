@@ -33,3 +33,39 @@ export async function autoCreateBareAgent(displayName: string): Promise<CreatedA
   const body = (await res.json()) as { agent: CreatedAgent };
   return body.agent;
 }
+
+/*
+  TASK-791 — the two ways out of a create whose agent ALREADY EXISTS.
+
+  Both use the ordinary agent routes (`PATCH` / `DELETE /admin/agents/:id`),
+  so the server's `agents:update` / `agents:delete` run their ownership check
+  and a delete fires `agents:deleted` for every per-agent cleanup subscriber.
+  Through `lib/http.ts` rather than `lib/admin.ts`'s raw-`fetch` twins for the
+  same reason as the create above: a dead session must trip the 401 latch.
+
+  Callers pass ONLY the id this flow's own bootstrap POST returned — never an
+  id picked from a list.
+*/
+const agentPath = (agentId: string): string => `/admin/agents/${encodeURIComponent(agentId)}`;
+
+/** Give the agent this flow already created the name the person just typed. */
+export async function renameCreatedAgent(agentId: string, displayName: string): Promise<void> {
+  const path = agentPath(agentId);
+  const res = await httpFetch(path, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+    body: JSON.stringify({ displayName }),
+  });
+  if (!res.ok) throw new HttpError(path, res.status);
+}
+
+/** Remove the half-made agent this flow created, so Cancel leaves nothing behind. */
+export async function discardCreatedAgent(agentId: string): Promise<void> {
+  const path = agentPath(agentId);
+  const res = await httpFetch(path, {
+    method: 'DELETE',
+    headers: { 'x-requested-with': 'ax-admin' },
+  });
+  // 404 means it is already gone, which is all Cancel wanted.
+  if (!res.ok && res.status !== 404) throw new HttpError(path, res.status);
+}

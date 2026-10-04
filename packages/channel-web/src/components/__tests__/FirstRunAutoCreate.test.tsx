@@ -424,3 +424,200 @@ describe('FirstRunAutoCreate — retry never creates a second agent (TASK-709)',
     expect(create).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * TASK-791 — the two ways out of the failure card once the agent EXISTS.
+ *
+ * "Change name" used to call `onBack` and forget the id, so the next submit
+ * POSTed a second agent; "Cancel" (adding) left the half-made agent behind.
+ * Owner decision (2026-10-03): Change name renames that agent, Cancel deletes
+ * it. Each test says what it does against the old component.
+ *
+ * The failure-after-create is made by failing the hand-off once (the hydrate),
+ * the same lever the TASK-709 suite above uses.
+ */
+describe('FirstRunAutoCreate — once the agent exists (TASK-791)', () => {
+  beforeEach(() => {
+    agentStoreActions.resetForTest();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const createdThenHandOffFails = () => {
+    const create = vi
+      .spyOn(autoCreate, 'autoCreateBareAgent')
+      .mockResolvedValueOnce({ agentId: 'made', displayName: 'Scout', visibility: 'personal' })
+      .mockResolvedValueOnce({ agentId: 'second', displayName: 'Scout', visibility: 'personal' });
+    const hyd = vi
+      .spyOn(hydrate, 'hydrateAgentsOnce')
+      .mockRejectedValueOnce(new Error('hand-off blip'))
+      .mockResolvedValue();
+    return { create, hyd };
+  };
+
+  it('reports the new id the moment the create returns', async () => {
+    // OLD: no `onCreated` — the id died with this mount.
+    createdThenHandOffFails();
+    const onCreated = vi.fn();
+    render(
+      <FirstRunAutoCreate
+        agentName="Scout"
+        mode="first-run"
+        onCreated={onCreated}
+        onBack={vi.fn()}
+        onDone={vi.fn()}
+      />,
+    );
+    await screen.findByRole('button', { name: /try again/i });
+    expect(onCreated).toHaveBeenCalledTimes(1);
+    expect(onCreated).toHaveBeenCalledWith('made');
+  });
+
+  it('given an existing agent, renames it and finishes on it — never POSTs', async () => {
+    // OLD: no `existingAgentId`, so this mount POSTed a second agent.
+    const create = vi.spyOn(autoCreate, 'autoCreateBareAgent');
+    const rename = vi.spyOn(autoCreate, 'renameCreatedAgent').mockResolvedValue();
+    vi.spyOn(hydrate, 'hydrateAgentsOnce').mockResolvedValue();
+    const onDone = vi.fn();
+    render(
+      <FirstRunAutoCreate
+        agentName="Quill"
+        mode="first-run"
+        existingAgentId="made"
+        onBack={vi.fn()}
+        onDone={onDone}
+      />,
+    );
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith('made'));
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(rename).toHaveBeenCalledWith('made', 'Quill');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('a failed rename shows the failure card; Try again renames again, still no POST', async () => {
+    const create = vi.spyOn(autoCreate, 'autoCreateBareAgent');
+    const rename = vi
+      .spyOn(autoCreate, 'renameCreatedAgent')
+      .mockRejectedValueOnce(new Error('rename blip'))
+      .mockResolvedValueOnce();
+    vi.spyOn(hydrate, 'hydrateAgentsOnce').mockResolvedValue();
+    const onDone = vi.fn();
+    render(
+      <FirstRunAutoCreate
+        agentName="Quill"
+        mode="first-run"
+        existingAgentId="made"
+        onBack={vi.fn()}
+        onDone={onDone}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /try again/i }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith('made'));
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('first run: "Change name" after the create goes back WITHOUT deleting anything', async () => {
+    // A control: the old component passes this too. It pins that the new
+    // delete stays add-only — the agent is kept so the next submit can
+    // rename it.
+    createdThenHandOffFails();
+    const discard = vi.spyOn(autoCreate, 'discardCreatedAgent').mockResolvedValue();
+    const onBack = vi.fn();
+    render(
+      <FirstRunAutoCreate agentName="Scout" mode="first-run" onBack={onBack} onDone={vi.fn()} />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /change name/i }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(discard).not.toHaveBeenCalled();
+  });
+
+  it('adding: Cancel after the create deletes THAT agent, then goes back', async () => {
+    // OLD: Cancel called onBack straight away and the agent stayed.
+    createdThenHandOffFails();
+    let finishDelete: () => void = () => {};
+    const discard = vi.spyOn(autoCreate, 'discardCreatedAgent').mockReturnValue(
+      new Promise<void>((r) => {
+        finishDelete = r;
+      }),
+    );
+    const onBack = vi.fn();
+    render(<FirstRunAutoCreate agentName="Scout" mode="add" onBack={onBack} onDone={vi.fn()} />);
+
+    // Says what Cancel will do before anyone clicks it.
+    await screen.findByText(/Cancel removes Scout/);
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(discard).toHaveBeenCalledWith('made'));
+    // Not gone yet: going back before the delete lands would be a claim we
+    // cannot back up.
+    expect(onBack).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /removing/i })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: /try again/i })).toHaveProperty('disabled', true);
+
+    finishDelete();
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
+    expect(discard).toHaveBeenCalledTimes(1);
+  });
+
+  it('adding: Escape after the create deletes too — it is the same Cancel', async () => {
+    createdThenHandOffFails();
+    const discard = vi.spyOn(autoCreate, 'discardCreatedAgent').mockResolvedValue();
+    const onBack = vi.fn();
+    render(<FirstRunAutoCreate agentName="Scout" mode="add" onBack={onBack} onDone={vi.fn()} />);
+    await screen.findByRole('button', { name: /^cancel$/i });
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
+    expect(discard).toHaveBeenCalledWith('made');
+  });
+
+  it('adding: a refresh that fails AFTER the delete still goes back', async () => {
+    // The delete worked; a throwing refresh used to strand the card on a
+    // disabled "Removing…" with no way out.
+    vi.spyOn(autoCreate, 'autoCreateBareAgent').mockResolvedValueOnce({
+      agentId: 'made',
+      displayName: 'Scout',
+      visibility: 'personal',
+    });
+    vi.spyOn(hydrate, 'hydrateAgentsOnce').mockRejectedValue(new Error('refresh blip'));
+    const discard = vi.spyOn(autoCreate, 'discardCreatedAgent').mockResolvedValue();
+    const onBack = vi.fn();
+    render(<FirstRunAutoCreate agentName="Scout" mode="add" onBack={onBack} onDone={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
+    expect(discard).toHaveBeenCalledWith('made');
+  });
+
+  it('adding: a failed delete keeps the card up and says so', async () => {
+    createdThenHandOffFails();
+    vi.spyOn(autoCreate, 'discardCreatedAgent').mockRejectedValue(new Error('nope'));
+    const onBack = vi.fn();
+    render(<FirstRunAutoCreate agentName="Scout" mode="add" onBack={onBack} onDone={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText(/We couldn't remove Scout just now/)).toBeTruthy();
+    expect(onBack).not.toHaveBeenCalled();
+    // Still a way out: Cancel is back, enabled.
+    expect(screen.getByRole('button', { name: /^cancel$/i })).toHaveProperty('disabled', false);
+  });
+
+  it('adding: Cancel when the create itself failed deletes nothing', async () => {
+    // The control: no agent exists, so nothing to remove and no warning copy.
+    vi.spyOn(autoCreate, 'autoCreateBareAgent').mockRejectedValue(new Error('boom'));
+    const discard = vi.spyOn(autoCreate, 'discardCreatedAgent').mockResolvedValue();
+    const onBack = vi.fn();
+    render(<FirstRunAutoCreate agentName="Scout" mode="add" onBack={onBack} onDone={vi.fn()} />);
+    await screen.findByRole('button', { name: /^cancel$/i });
+    expect(screen.queryByText(/Cancel removes/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(discard).not.toHaveBeenCalled();
+  });
+});

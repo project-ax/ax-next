@@ -1,8 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { SetupShell } from '../setup/SetupShell';
-import { autoCreateBareAgent } from '../../lib/auto-create-agent';
+import {
+  autoCreateBareAgent,
+  discardCreatedAgent,
+  renameCreatedAgent,
+} from '../../lib/auto-create-agent';
 import { hydrateAgentsOnce } from '../../lib/hydrate-agents';
 import { agentStoreActions } from '../../lib/agent-store';
 import { logRequestFailure } from '../../lib/http';
@@ -34,14 +38,30 @@ import { logRequestFailure } from '../../lib/http';
  * again" used to POST again, making a second agent with the same name while
  * the first one never got its kickoff. Once the POST has returned an id we
  * keep it, and a retry only re-runs the hand-off.
+ *
+ * The two ways out of the failure card respect that id too (TASK-791). "Change
+ * name" unmounts us, so the id has to outlive this mount: `onCreated` hands it
+ * to the caller, which passes it back as `existingAgentId`, and the next mount
+ * RENAMES that agent instead of POSTing a second one. "Cancel" (adding only)
+ * deletes the agent this flow made, so walking away leaves nothing behind.
  */
 export function FirstRunAutoCreate({
   agentName,
   mode,
+  existingAgentId = null,
+  onCreated,
   onBack,
   onDone,
 }: {
   agentName: string;
+  /**
+   * An agent an EARLIER mount of this flow already created — set only when
+   * "Change name" brought the person back here after the create succeeded.
+   * This mount renames it to `agentName` instead of creating another.
+   */
+  existingAgentId?: string | null;
+  /** Called the moment the create returns an id, so the caller can keep it. */
+  onCreated?: (agentId: string) => void;
   /**
    * Which flow this is. The two used to share one failure card, which told
    * someone adding their fifth agent that we were setting up their "first"
@@ -52,7 +72,9 @@ export function FirstRunAutoCreate({
    * The way out of a failed create: first run goes back to the name card
    * ("Change name"), adding goes back to the workspace ("Cancel"). Only ever
    * offered on the failure card — going back while the POST is still running
-   * would abandon a create that may yet succeed.
+   * would abandon a create that may yet succeed. When adding, Cancel first
+   * deletes the agent this flow created (if any) and only calls this once the
+   * delete has worked.
    */
   onBack: () => void;
   // Hands back the new agent's id: the workspace's send is explicit about
@@ -63,11 +85,53 @@ export function FirstRunAutoCreate({
   const ran = useRef(false);
   // Set the moment the bootstrap POST returns. Never cleared: a retry must not
   // create the agent twice (TASK-709).
-  const createdAgentId = useRef<string | null>(null);
+  const createdAgentId = useRef<string | null>(existingAgentId);
+  // An agent from an earlier mount still carries the name the person changed
+  // away from. Cleared once the rename lands, so a retry after a later
+  // hand-off failure does not rename again.
+  const needsRename = useRef(existingAgentId !== null);
   const [err, setErr] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [discarding, setDiscarding] = useState(false);
   const isAdd = mode === 'add';
   const failed = err !== null;
+  // Whether this flow has an agent on the server. Read at render time from the
+  // ref: every render that matters here follows the `setErr` that came after
+  // the ref was written.
+  const hasCreatedAgent = createdAgentId.current !== null;
+
+  // Cancel (adding only). Before anything exists there is nothing to undo.
+  // Once an agent exists, Cancel deletes THAT agent — the id this flow's own
+  // create returned, never one picked from a list — and only then goes back.
+  // If the delete fails we stay on the card and say so: going back would
+  // leave the agent behind while telling the person it was gone.
+  const cancel = useCallback(async () => {
+    const agentId = createdAgentId.current;
+    if (agentId === null) {
+      onBack();
+      return;
+    }
+    setDiscarding(true);
+    try {
+      await discardCreatedAgent(agentId);
+    } catch (e) {
+      logRequestFailure(e, 'agent-bootstrap-discard');
+      setDiscarding(false);
+      setErr(
+        `We couldn't remove ${agentName} just now. Press Cancel again in a moment, or Try again to finish setting it up instead.`,
+      );
+      return;
+    }
+    // The create may have put it in the agent list; take it back out. The
+    // delete already worked, so a failed refresh must not strand the person
+    // on a disabled "Removing…" card.
+    try {
+      await hydrateAgentsOnce();
+    } catch (e) {
+      logRequestFailure(e, 'agent-bootstrap-discard-refresh');
+    }
+    onBack();
+  }, [agentName, onBack]);
 
   // Escape is the same "out" as Cancel, but only when adding and only once the
   // create has failed. First run has nothing to go back to that Escape should
@@ -81,15 +145,19 @@ export function FirstRunAutoCreate({
   // made the CI test flaky (the test's keydown landed in the gap). Layout
   // effects run inside the commit, so "the card is visible" now implies
   // "Escape works".
+  //
+  // Escape runs the same `cancel` as the button, delete included: the card
+  // says Cancel removes the agent, and Escape is offered as Cancel. Not while a
+  // delete is already in flight — that would send a second one.
   useLayoutEffect(() => {
-    if (!isAdd || !failed) return;
+    if (!isAdd || !failed || discarding) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing) return;
-      onBack();
+      void cancel();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isAdd, failed, onBack]);
+  }, [isAdd, failed, discarding, cancel]);
 
   useEffect(() => {
     if (ran.current) return;
@@ -104,6 +172,14 @@ export function FirstRunAutoCreate({
         if (agentId === null) {
           agentId = (await autoCreateBareAgent(agentName)).agentId;
           createdAgentId.current = agentId;
+          // Same reasoning: the caller keeps the id past this mount, so a
+          // "Change name" that unmounts us cannot lose it (TASK-791).
+          onCreated?.(agentId);
+        } else if (needsRename.current) {
+          // "Change name" after the agent existed: rename it, never POST a
+          // second one (TASK-791).
+          await renameCreatedAgent(agentId, agentName);
+          needsRename.current = false;
         }
         if (cancelled) return;
         // Select + hydrate so the App-level gate flips (agent list no longer
@@ -157,10 +233,13 @@ export function FirstRunAutoCreate({
     return () => {
       cancelled = true;
     };
-    // `attempt` is a dep so "Try again" (which resets `ran` + bumps `attempt`)
-    // re-runs the effect — without a second POST once `createdAgentId` is set. `agentName` and `onDone` are intentionally omitted —
-    // they're stable for the lifetime of this mount, and the `ran` ref already
-    // guards against re-creation.
+    // `attempt` is a dep so "Try again" (which resets `ran` and bumps
+    // `attempt`) re-runs the effect. Once `createdAgentId` is set, that re-run
+    // does not POST again.
+    //
+    // `agentName`, `onCreated` and `onDone` are left out on purpose. They are
+    // stable for the lifetime of this mount, and the `ran` ref already guards
+    // against a second create.
   }, [attempt]);
 
   if (err !== null) {
@@ -180,12 +259,25 @@ export function FirstRunAutoCreate({
           {/* TASK-689: the card used to offer only "Try again". When the
               failure is not a blip that is a trap, and here `App.tsx`'s gate
               has replaced the workspace, so the page had no other exit. */}
+          {/* TASK-791: Cancel deletes the agent once one exists, so say so
+              BEFORE the click rather than surprising anyone after it. */}
+          {isAdd && hasCreatedAgent && (
+            <p className="text-sm text-muted-foreground">
+              Cancel removes {agentName}, so you won't be left with a half-finished agent.
+            </p>
+          )}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={onBack}>
-              {isAdd ? 'Cancel' : 'Change name'}
+            <Button
+              type="button"
+              variant="outline"
+              disabled={discarding}
+              onClick={isAdd ? () => void cancel() : onBack}
+            >
+              {isAdd ? (discarding ? 'Removing…' : 'Cancel') : 'Change name'}
             </Button>
             <Button
               type="button"
+              disabled={discarding}
               onClick={() => {
                 ran.current = false;
                 setErr(null);
