@@ -492,6 +492,8 @@ interface TurnEndPayload {
   reason?: string;
   contentBlocks?: ContentBlock[];
   role?: 'user' | 'assistant' | 'tool';
+  /** TASK-785 — runner-written, untrusted; read only as exact string matches. */
+  foldedReqIds?: unknown;
 }
 
 // session:terminate fire payload — host-internal observation. The session
@@ -1034,8 +1036,17 @@ async function handleTurnEndClearReqId(
   if (conversationId === undefined) return;
   const reqId = payload.reqId;
   if (typeof reqId !== 'string' || reqId.length === 0) return;
+  // TASK-785 — a message folded into this turn (sent while it ran) is answered
+  // here and never gets a turn-end of its own, yet it is usually the bound
+  // active_req_id: it was posted last. Clear it too, or a reload reattaches to
+  // a stream that never ends. Same compare-and-clear, so a listed id that is
+  // not the bound one (or is from anywhere else) changes nothing.
+  const folded = Array.isArray(payload.foldedReqIds)
+    ? payload.foldedReqIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [];
   try {
     await store.clearActiveReqId(conversationId, reqId);
+    for (const id of folded) await store.clearActiveReqId(conversationId, id);
   } catch (err) {
     ctx.logger.warn('conversations_clear_active_req_id_failed', {
       conversationId,
