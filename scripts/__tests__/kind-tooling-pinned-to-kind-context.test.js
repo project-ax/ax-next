@@ -217,11 +217,29 @@ let kubeconfigWithoutKind;
 // (tab-separated, one line per call) and pretends to succeed. `kubectl config
 // get-contexts` answers from FAKE_KUBE_CONTEXTS; `kubectl get` answers `{}` so the
 // Makefile's `jq -e` probes read "no dev mount present".
+//
+// The context list is written ONE LINE AT A TIME with a pause between lines, and a write
+// that finds the reader gone is recorded in SHIM_EPIPE_LOG and ends the stand-in with 141,
+// which is what SIGPIPE does to a real kubectl. That pins TASK-825: the guards used to read
+// the list with `grep -q`, which exits at the first match; when the match was not the LAST
+// line, the next write hit a closed pipe, and under the Makefile's `-o pipefail` (GNU make
+// honours .SHELLFLAGS; macOS's make 3.81 does not) the guard refused a context that was
+// there. Bash flushes its stdout per line, so the old one-shot printf raced on a loaded CI
+// runner; the pause turns that race into a certainty, so a guard that stops reading early
+// fails here every time, on every OS (the EPIPE record does not depend on pipefail).
 const SHIM = `#!/usr/bin/env bash
 name=$(basename "$0")
 { printf '%s' "$name"; for a in "$@"; do printf '\\t%s' "$a"; done; printf '\\n'; } >> "$SHIM_LOG"
 case "$name:$*" in
-  kubectl:*"config get-contexts"*) printf '%s\\n' "$FAKE_KUBE_CONTEXTS" ;;
+  kubectl:*"config get-contexts"*)
+    trap '' PIPE
+    first=1
+    while IFS= read -r ctx; do
+      [ "$first" = 1 ] || sleep 0.2
+      first=0
+      printf '%s\\n' "$ctx" || { cat >> "$SHIM_EPIPE_LOG" <<< "kubectl config get-contexts: reader closed the pipe before $ctx"; exit 141; }
+    done <<< "$FAKE_KUBE_CONTEXTS"
+    ;;
   kubectl:*" get "*) echo '{}' ;;
 esac
 exit 0
@@ -270,16 +288,25 @@ afterAll(() => {
   if (sandbox) rmSync(sandbox, { recursive: true, force: true });
 });
 
-/** Run `make <args>` in the repo root; returns the exit status, the output, and every recorded CLI call. */
+/**
+ * Run `make <args>` in the repo root; returns the exit status, the output, every recorded CLI
+ * call, every write the kubectl stand-in made into a closed pipe, and `diag`: the output plus
+ * what the guard saw (PATH head, which kubectl it resolved, the context list it was answered),
+ * so a failing assertion explains itself instead of needing a re-run to diagnose.
+ */
 function runMake(args, { withKind, contexts }) {
-  const log = join(sandbox, `calls-${Math.random().toString(36).slice(2)}.log`);
+  const id = Math.random().toString(36).slice(2);
+  const log = join(sandbox, `calls-${id}.log`);
+  const epipeLog = join(sandbox, `epipe-${id}.log`);
   writeFileSync(log, '');
+  writeFileSync(epipeLog, '');
   const env = {
     ...process.env,
     PATH: `${shimDir}:${process.env.PATH}`,
     KUBECONFIG: withKind ? kubeconfigWithKind : kubeconfigWithoutKind,
     HOME: sandbox, // never read ~/.kube/config
     SHIM_LOG: log,
+    SHIM_EPIPE_LOG: epipeLog,
     // What the stand-in kubectl answers to `config get-contexts`: the default is "the fake prod
     // one, plus kind when `withKind`"; `contexts` overrides it for a case that needs an odd list.
     FAKE_KUBE_CONTEXTS: contexts
@@ -297,7 +324,19 @@ function runMake(args, { withKind, contexts }) {
       const [tool, ...argv] = l.split('\t');
       return { tool, argv };
     });
-  return { status: r.status, output: `${r.stdout}\n${r.stderr}`, calls };
+  const brokenPipes = readFileSync(epipeLog, 'utf8').split('\n').filter(Boolean);
+  const output = `${r.stdout}\n${r.stderr}`;
+  const resolved = spawnSync('bash', ['-c', 'command -v kubectl'], { env, encoding: 'utf8' });
+  const diag = [
+    output,
+    '--- what the guard saw ---',
+    `PATH head: ${env.PATH.split(':').slice(0, 3).join(':')}`,
+    `kubectl resolves to: ${resolved.stdout.trim() || `(nothing; status ${resolved.status})`} (stand-in: ${join(shimDir, 'kubectl')})`,
+    `get-contexts answer: ${JSON.stringify(env.FAKE_KUBE_CONTEXTS)}`,
+    `writes into a closed pipe: ${brokenPipes.length ? brokenPipes.join(' | ') : 'none'}`,
+    `recorded calls: ${calls.map(describeCall).join(' | ') || 'none'}`,
+  ].join('\n');
+  return { status: r.status, output, calls, brokenPipes, diag };
 }
 
 const pinFlag = { kubectl: '--context', helm: '--kube-context' };
@@ -320,8 +359,9 @@ const KIND_TARGETS = [
 
 describe('kind targets act on kind even when the default context is something else', () => {
   it.each(KIND_TARGETS)('make %s: every kubectl/helm call names %s', (target, verbs) => {
-    const { status, output, calls } = runMake([target], { withKind: true });
-    expect(status, output).toBe(0);
+    const { status, calls, brokenPipes, diag } = runMake([target], { withKind: true });
+    expect(status, diag).toBe(0);
+    expect(brokenPipes, diag).toEqual([]);
     expect(unpinned(calls, KIND_CONTEXT).map(describeCall)).toEqual([]);
     const seen = calls.filter(isCluster).flatMap((c) => c.argv);
     for (const v of verbs) expect(seen, `${target} never ran a kubectl "${v}"`).toContain(v);
@@ -345,6 +385,19 @@ describe('kind targets act on kind even when the default context is something el
     expect(status).not.toBe(0);
     expect(output).toContain('REFUSING');
     expect(calls.filter((c) => !(c.tool === 'kubectl' && c.argv.includes('get-contexts'))).map(describeCall)).toEqual([]);
+  });
+
+  it('accepts the kind context when it is NOT the last one listed: the guard reads the whole list (TASK-825)', () => {
+    // A guard that quits reading at the first match closes the pipe on kubectl; under the
+    // Makefile's pipefail that SIGPIPE turns into a refusal of a context that IS there.
+    const { status, calls, brokenPipes, diag } = runMake(['rollout'], {
+      withKind: true,
+      contexts: [KIND_CONTEXT, FAKE_PROD_CONTEXT, 'some-other-context'],
+    });
+    expect(status, diag).toBe(0);
+    expect(brokenPipes, diag).toEqual([]);
+    expect(unpinned(calls, KIND_CONTEXT).map(describeCall)).toEqual([]);
+    expect(calls.filter(isCluster).flatMap((c) => c.argv)).toContain('rollout');
   });
 
   it('under make -j, dev-fast still refuses before it builds anything', () => {
@@ -390,8 +443,11 @@ describe('gke-deploy names its cluster explicitly and never follows the default 
   });
 
   it('with a context given, every kubectl/helm call names exactly that context', () => {
-    const { status, output, calls } = runMake(gkeArgs(FAKE_PROD_CONTEXT), { withKind: true });
-    expect(status, output).toBe(0);
+    // The requested context is the FIRST line of the list here, so this is also the case that
+    // caught TASK-825: a guard that stops reading at the first match leaves the rest unread.
+    const { status, calls, brokenPipes, diag } = runMake(gkeArgs(FAKE_PROD_CONTEXT), { withKind: true });
+    expect(status, diag).toBe(0);
+    expect(brokenPipes, diag).toEqual([]);
     expect(unpinned(calls, FAKE_PROD_CONTEXT).map(describeCall)).toEqual([]);
     const seen = calls.filter(isCluster).flatMap((c) => c.argv);
     expect(seen).toContain('upgrade');
@@ -421,8 +477,12 @@ describe('gke-deploy names its cluster explicitly and never follows the default 
 
   it('an odd but LEGAL context name (a space, a quote) reaches kubectl and helm as ONE argument', () => {
     const odd = "my cluster's context";
-    const { status, output, calls } = runMake(gkeArgs(odd), { withKind: true, contexts: [FAKE_PROD_CONTEXT, odd] });
-    expect(status, output).toBe(0);
+    const { status, calls, brokenPipes, diag } = runMake(gkeArgs(odd), {
+      withKind: true,
+      contexts: [FAKE_PROD_CONTEXT, odd],
+    });
+    expect(status, diag).toBe(0);
+    expect(brokenPipes, diag).toEqual([]);
     expect(unpinned(calls, odd).map(describeCall)).toEqual([]);
   });
 
