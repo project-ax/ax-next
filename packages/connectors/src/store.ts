@@ -120,7 +120,7 @@ export function validateVisibility(value: unknown): Visibility {
  * (single source of truth in @ax/skills-parser, re-declared as zod locally per
  * I2). Used at every store ingress AND egress — we never trust the JSONB column
  * blindly (I5 / J2). The untrusted backing-mechanism vocabulary (transport /
- * command / url / mcpServers) lives ONLY inside this opaque spec; it is stored
+ * url / mcpServers) lives ONLY inside this opaque spec; it is stored
  * verbatim and never interpreted by the store.
  */
 export function validateCapabilities(value: unknown): Capabilities {

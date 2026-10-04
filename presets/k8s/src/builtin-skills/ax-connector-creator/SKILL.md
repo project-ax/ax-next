@@ -190,7 +190,7 @@ connector_propose({
 })
 ```
 
-(Mechanism details — transport, url, command, args — live *inside* each
+(Mechanism details — transport, url — live *inside* each
 `mcpServers` entry, never as top-level connector fields.)
 
 ## A connector vs. a skill
