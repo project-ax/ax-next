@@ -1108,7 +1108,7 @@ export interface AgentConnectorRow {
   /**
    * The caller may remove it from this agent. Since TASK-798 this is the
    * agent-wide {@link AgentConnectorsRead.manageable} answer for every row
-   * (attached or default alike); the server still decides on the DELETE.
+   * (attached or legacy-owned alike); the server still decides on the DELETE.
    */
   removable: boolean;
 }

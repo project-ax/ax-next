@@ -1,5 +1,4 @@
 import { makeAgentContext, PluginError, type HookBus, type Logger } from '@ax/core';
-import { teamConnectorRole } from './connector-manage.js';
 import { validateConnectorId, type AgentStore } from './store.js';
 import type { Agent } from './types.js';
 
@@ -7,22 +6,24 @@ import type { Agent } from './types.js';
 // TASK-808 — convert legacy connector defaults into explicit attachments.
 //
 // A connector "default" (`default_attached` on the @ax/connectors row) used to
-// reach every session its OWNER ran, on any agent that owner could chat with.
-// The flag is gone from the product; this one-shot conversion, run at the end
-// of agents init, turns each remaining flagged row into attachments on the
-// agents where the owner could have attached it themselves:
+// reach every session its OWNER ran, and nobody else's (`listDefaults` was
+// owner-scoped and `list-effective` ran as the session user). The flag is gone
+// from the product; this one-shot conversion, run at the end of agents init,
+// turns each remaining flagged row into attachments on the OWNER'S PERSONAL
+// AGENTS — the only place an agent-wide attachment reproduces exactly the reach
+// the default had.
 //
-//   - the owner's personal agents;
-//   - team agents where the owner is a team admin (TASK-798's rule — an
-//     attachment there reaches every member's runs, so we only do what the
-//     owner could have done by hand). A plain-member team agent is skipped
-//     with a log line; a team the owner is not in is not a target at all.
+// Team agents are never targets. An attachment there reaches every member's
+// runs, which is wider than the default ever was (only the owner's sessions),
+// and would hand members a connector with no attach consent — the very thing
+// the default is being removed for (invariant #5). The owner re-adds it from
+// the rail where they want it.
 //
 // Per connector: attach (row-locked, idempotent) → snapshot its per-tool
 // defaults with `onlyIfNotCopied` (an agent that already got verdict rows from
 // the orchestrator's first-session copy keeps them) → clear the flag. The clear
 // happens only when nothing TRANSIENT went wrong; deterministic skips (excluded,
-// 50-cap, not team admin) are logged and do not block it. So a crash or a
+// 50-cap) are logged and do not block it. So a crash or a
 // thrown hook leaves the flag set and the next boot retries — the attach is a
 // no-op the second time and the snapshot copies nothing new.
 //
@@ -129,42 +130,10 @@ async function convertOne(
     logger.warn(`${EVENT}skipped`, { ownerUserId, connectorId, agentId, reason });
   };
 
-  // 1. Targets: the owner's personal agents + team agents the owner administers.
-  const targets: Agent[] = [];
-  const roleByTeam = new Map<string, 'admin' | 'member' | 'none'>();
-  for (const agent of agents) {
-    if (agent.visibility === 'personal') {
-      if (agent.ownerType === 'user' && agent.ownerId === ownerUserId) targets.push(agent);
-      continue;
-    }
-    if (agent.ownerType !== 'team') continue;
-    let role = roleByTeam.get(agent.ownerId);
-    if (role === undefined) {
-      try {
-        // `teams:is-member` is a runtime-only peer (not a declared call), so
-        // @ax/teams may simply not be initialized yet. teamConnectorRole reads
-        // `no-service` as "not a member", which here would silently drop the
-        // team agent AND clear the flag. Treat it as transient instead: keep
-        // the flag so the next boot finishes the job.
-        if (!bus.hasService('teams:is-member')) {
-          throw new Error('teams:is-member is not registered');
-        }
-        role = await teamConnectorRole(bus, ctx, agent.ownerId, ownerUserId);
-      } catch (err) {
-        failed = true;
-        logger.warn(`${EVENT}team_lookup_failed`, {
-          ownerUserId,
-          connectorId,
-          agentId: agent.id,
-          err: errMessage(err),
-        });
-        continue;
-      }
-      roleByTeam.set(agent.ownerId, role);
-    }
-    if (role === 'admin') targets.push(agent);
-    else if (role === 'member') skip(agent.id, 'not-team-admin');
-  }
+  // 1. Targets: the owner's personal agents only (see the header).
+  const targets = agents.filter(
+    (a) => a.visibility === 'personal' && a.ownerType === 'user' && a.ownerId === ownerUserId,
+  );
 
   // Namespaces depend only on the connector record — resolve once, lazily.
   let namespaces: string[] | undefined;

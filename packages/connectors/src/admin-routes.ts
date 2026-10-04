@@ -82,7 +82,7 @@ interface AgentsResolveInputLike {
 // All endpoints require auth:require-user (401 on miss). The `/admin/connectors*`
 // bundle (mode 'admin') is ADMIN-ONLY: a signed-in non-admin gets 403 on every one
 // of its routes, exactly like the other `/admin/*` surfaces (TASK-698) — it is the
-// curation surface (shared / default-on / workspace-keyed connectors, the Test
+// curation surface (shared / workspace-keyed connectors, the Test
 // probe), and before the gate it was a bypass of the `/settings/connectors`
 // rejections. The `/settings/connectors*` bundle (mode 'user') stays open to any
 // signed-in user. Connectors are

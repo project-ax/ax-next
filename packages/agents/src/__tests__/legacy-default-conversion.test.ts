@@ -38,8 +38,6 @@ interface World {
   /** `${teamId}/${userId}` → role. Absent = not a member. */
   teamRoles: Record<string, 'admin' | 'member'>;
   listHook: 'present' | 'absent' | 'throws';
-  /** Whether `teams:is-member` is registered at all (a preset that inits teams late, or not at all). */
-  teamsHook: 'present' | 'absent';
   /** How many upcoming clear calls throw before one succeeds. */
   clearThrows: number;
   /** How many upcoming snapshot calls throw before one succeeds. */
@@ -56,7 +54,6 @@ function freshWorld(): World {
     legacy: [],
     teamRoles: {},
     listHook: 'present',
-    teamsHook: 'present',
     clearThrows: 0,
     snapshotThrows: 0,
     snapshotCalls: [],
@@ -106,7 +103,6 @@ async function boot(): Promise<TestHarness> {
       return { cleared: world.legacy.length < before };
     },
   };
-  if (world.teamsHook === 'absent') delete services['teams:is-member'];
   if (world.listHook !== 'absent') {
     services['connectors:list-legacy-defaults'] = async () => {
       if (world.listHook === 'throws') throw new Error('connectors table locked');
@@ -252,7 +248,7 @@ const O = 'owner-o';
 const OTHER = 'someone-else';
 
 describe('legacy connector-default conversion (agents init)', () => {
-  it("attaches to the owner's personal agents and team agents the owner administers; snapshots with onlyIfNotCopied as the owner; clears the flag", async () => {
+  it("attaches to the owner's personal agents only — never a team agent, even one the owner administers; snapshots with onlyIfNotCopied as the owner; clears the flag", async () => {
     world.teamRoles = { [`t-admin/${O}`]: 'admin', [`t-other/${OTHER}`]: 'admin' };
     let h = await boot();
     const personal = await newAgent(h, O, { name: 'Mine' });
@@ -264,12 +260,14 @@ describe('legacy connector-default conversion (agents init)', () => {
     h = await reboot();
 
     expect((await row(personal)).attachments).toEqual(['linear']);
-    expect((await row(teamAdmin)).attachments).toEqual(['linear']);
+    // An attachment on a team agent would reach every member — wider than the
+    // default ever was (only the owner's sessions). Not a target.
+    expect((await row(teamAdmin)).attachments).toEqual([]);
     expect((await row(othersPersonal)).attachments).toEqual([]);
     expect((await row(nonMemberTeam)).attachments).toEqual([]);
 
-    // Snapshot ran as the real owner, with onlyIfNotCopied, for both targets.
-    expect(world.snapshotCalls).toHaveLength(2);
+    // Snapshot ran as the real owner, with onlyIfNotCopied, for the one target.
+    expect(world.snapshotCalls).toHaveLength(1);
     for (const call of world.snapshotCalls) {
       expect(call.userId).toBe(O);
       expect(call.input).toMatchObject({
@@ -279,7 +277,7 @@ describe('legacy connector-default conversion (agents init)', () => {
       });
     }
     expect(world.snapshotCalls.map((c) => c.input.agentId).sort()).toEqual(
-      [personal, teamAdmin].sort(),
+      [personal],
     );
     // Resolved as the owner too — never a synthetic actor.
     expect(world.resolveCalls.every((c) => c.userId === O && c.ctxUserId === O)).toBe(true);
@@ -287,7 +285,7 @@ describe('legacy connector-default conversion (agents init)', () => {
     expect(world.clearCalls).toEqual([{ ownerUserId: O, connectorId: 'linear' }]);
     expect(world.legacy).toEqual([]);
 
-    // A non-member's team agent is simply not a target — no skip line for it.
+    // Team agents are not targets at all — no skip line for them.
     expect(conversionLogs('agents_legacy_default_skipped')).toEqual([]);
     const summary = conversionLogs('agents_legacy_default_converted');
     expect(summary).toHaveLength(1);
@@ -295,7 +293,7 @@ describe('legacy connector-default conversion (agents init)', () => {
       level: 'info',
       ownerUserId: O,
       connectorId: 'linear',
-      attached: 2,
+      attached: 1,
       cleared: true,
     });
 
@@ -416,23 +414,6 @@ describe('legacy connector-default conversion (agents init)', () => {
     expect(world.snapshotCalls.map((c) => c.input.agentId)).toEqual([roomy]);
   });
 
-  it('a team agent where the owner is only a plain member is skipped with a log line', async () => {
-    world.teamRoles = { [`t1/${O}`]: 'member' };
-    let h = await boot();
-    const teamAgent = await newAgent(h, O, { teamId: 't1' });
-
-    world.legacy = [{ ownerUserId: O, connectorId: 'linear' }];
-    h = await reboot();
-
-    expect((await row(teamAgent)).attachments).toEqual([]);
-    expect(world.snapshotCalls).toEqual([]);
-    expect(conversionLogs('agents_legacy_default_skipped')).toEqual([
-      expect.objectContaining({ agentId: teamAgent, connectorId: 'linear', reason: 'not-team-admin' }),
-    ]);
-    // A deterministic skip does not block the clear.
-    expect(world.legacy).toEqual([]);
-  });
-
   it('several owners/connectors convert independently', async () => {
     let h = await boot();
     const mine = await newAgent(h, O);
@@ -475,47 +456,5 @@ describe('legacy connector-default conversion (agents init)', () => {
     expect(conversionLogs('agents_legacy_default_list_failed')).toEqual([
       expect.objectContaining({ level: 'warn' }),
     ]);
-  });
-
-  it('a teams lookup failure (not no-service) is transient: flag kept, boot ok', async () => {
-    world.teamRoles = { [`t1/${O}`]: 'admin' };
-    let h = await boot();
-    const teamAgent = await newAgent(h, O, { teamId: 't1' });
-    world.legacy = [{ ownerUserId: O, connectorId: 'linear' }];
-    // Make the teams lookup blow up on the next boot.
-    world.teamRoles = new Proxy({} as Record<string, 'admin' | 'member'>, {
-      get() {
-        throw new Error('teams db down');
-      },
-    });
-    h = await reboot();
-    expect(h.bus.hasService('agents:resolve')).toBe(true);
-    expect((await row(teamAgent)).attachments).toEqual([]);
-    expect(world.legacy).toHaveLength(1);
-    expect(world.clearCalls).toEqual([]);
-  });
-
-  it('teams:is-member not registered while a team agent exists: transient — flag kept, personal agents still attached', async () => {
-    world.teamRoles = { [`t1/${O}`]: 'admin' };
-    let h = await boot();
-    const personal = await newAgent(h, O);
-    const teamAgent = await newAgent(h, O, { teamId: 't1' });
-    world.legacy = [{ ownerUserId: O, connectorId: 'linear' }];
-    world.teamsHook = 'absent';
-    h = await reboot();
-    expect((await row(personal)).attachments).toEqual(['linear']);
-    expect((await row(teamAgent)).attachments).toEqual([]);
-    // We cannot tell "not a member" from "teams not loaded yet", so the flag
-    // stays and the next boot (with teams) finishes the job.
-    expect(world.legacy).toHaveLength(1);
-    expect(world.clearCalls).toEqual([]);
-    expect(conversionLogs('agents_legacy_default_team_lookup_failed')).toEqual([
-      expect.objectContaining({ agentId: teamAgent, connectorId: 'linear' }),
-    ]);
-
-    world.teamsHook = 'present';
-    h = await reboot();
-    expect((await row(teamAgent)).attachments).toEqual(['linear']);
-    expect(world.legacy).toEqual([]);
   });
 });
