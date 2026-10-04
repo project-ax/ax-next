@@ -1034,7 +1034,7 @@ describe('copyConnectorDefaultsForSession (TASK-754)', () => {
         { server: 'c', toolNamespace: 'cabcdef0123' },
       ]),
       // Nothing to copy: no namespace, or none of the host-minted shape.
-      connector('stdio-only', []),
+      connector('cli-only', []),
       connector('bad', [{ server: 'x', toolNamespace: 'mcp.evil' }, null]),
     ]);
     expect(calls).toEqual([

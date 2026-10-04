@@ -29,9 +29,10 @@ const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const KEY_MODES = new Set(['personal', 'workspace']);
 
 // The mechanism-agnostic flat draft args the model proposes. Backing-mechanism
-// vocabulary (transport/command/url) stays INSIDE each mcpServers spec — never a
-// first-class field (design boundary review). Forwarded as-is to the hook, which
-// assembles + validates the canonical Capabilities.
+// vocabulary (transport/url) stays INSIDE each mcpServers spec — never a
+// first-class field (design boundary review). Every spec is remote http.
+// Forwarded as-is to the hook, which assembles + validates the canonical
+// Capabilities.
 interface ConnectorProposeInput {
   connectorId: string;
   name: string;

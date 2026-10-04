@@ -94,7 +94,8 @@ export const CONNECTOR_PROPOSE_DESCRIPTOR: ToolDescriptor = {
       mcpServers: {
         type: 'array',
         items: { type: 'object' },
-        description: 'MCP backing (transport/command/url inside each spec). Optional.',
+        description:
+          'Remote MCP backing — [{ name, transport: "http", url, allowedHosts, credentials }]. Optional.',
       },
       usageNote: {
         type: 'string',
