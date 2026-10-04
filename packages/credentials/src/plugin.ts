@@ -62,6 +62,15 @@ export function validateOwnerIdForScope(
 export interface CredentialsGetInput {
   ref: string;
   userId: string;
+  /**
+   * TASK-817 — the caller presented the value this ref last resolved to and
+   * the service it was meant for refused it (e.g. HTTP 401). The kind's
+   * resolver is told so (`CredentialsResolveInput.rejected`) and may mint a
+   * new value instead of handing back the refused one; a kind with no
+   * resolver (api-key) has nothing to renew and answers as usual. Only a
+   * literal `true` counts.
+   */
+  rejected?: boolean;
 }
 
 export type CredentialsGetOutput = string;
@@ -132,6 +141,13 @@ export interface CredentialsResolveInput {
    */
   scope: CredentialScope;
   ownerId: string | null;
+  /**
+   * TASK-817 — present (and `true`) only when the `credentials:get` caller
+   * said the value it last got was refused by the service it was presented
+   * to. A resolver that can renew (an OAuth refresh) should, rather than
+   * answer the stored value again.
+   */
+  rejected?: true;
 }
 
 export interface CredentialsResolveOutput {
@@ -607,6 +623,8 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // the original (userId, ref) mutex but corrected for the cross-user
       // case the precedence chain introduced. (I7.)
       const inflight = new Map<string, Promise<string>>();
+      /** TASK-817 — the in-flight reads that were asked to renew a refused value. */
+      const renewing = new WeakSet<Promise<string>>();
 
       function mutexKey(scope: CredentialScope, ownerId: string | null, ref: string): string {
         return `${scope}:${ownerId ?? ''}:${ref}`;
@@ -619,13 +637,21 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         ref: string,
         userId: string,
         env: ReturnType<typeof unwrapEnvelope>,
+        rejected: boolean,
       ): Promise<string> {
         const subService = `credentials:resolve:${env.kind}`;
         if (bus.hasService(subService)) {
           const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
             subService,
             ctx,
-            { payload: env.payload, userId, ref, scope, ownerId },
+            {
+              payload: env.payload,
+              userId,
+              ref,
+              scope,
+              ownerId,
+              ...(rejected ? { rejected: true as const } : {}),
+            },
           );
           if (out.refreshed !== undefined) {
             // Re-store under the SAME scope+ownerId we resolved from.
@@ -806,7 +832,12 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         return typeof v === 'string' && v.length > 0 ? v : undefined;
       }
 
-      async function doResolve(ctx: AgentContext, userId: string, ref: string): Promise<string> {
+      async function doResolve(
+        ctx: AgentContext,
+        userId: string,
+        ref: string,
+        rejected: boolean,
+      ): Promise<string> {
         // user -> agent -> global -> envFallback -> not-found. The walk (and
         // its `account:` gates) is findRow; it runs OUTSIDE the inflight mutex.
         const found = await findRow(ctx, userId, ref);
@@ -814,14 +845,35 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           // Found the row. Mutex on the RESOLVED tuple so concurrent
           // callers landing here share one resolver Promise.
           const key = mutexKey(found.scope, found.ownerId, ref);
-          const existing = inflight.get(key);
+          let existing = inflight.get(key);
+          if (rejected) {
+            // TASK-817 — a caller whose value was just refused must not be
+            // handed the answer of an ordinary read already in flight (that
+            // is the refused value). Nor may it run BESIDE that read: two
+            // refreshes of one refresh token at once can make a rotating
+            // authorization server reject the second as reuse. So: wait for
+            // it to settle, then renew. Another rejected read in flight is
+            // exactly what this caller wants, so share that one.
+            while (existing !== undefined && !renewing.has(existing)) {
+              const settled = existing;
+              await settled.then(
+                () => undefined,
+                () => undefined,
+              );
+              existing = inflight.get(key);
+              // Its owner has not cleared the slot yet: it is done all the same.
+              if (existing === settled) existing = undefined;
+            }
+          }
           if (existing !== undefined) return existing;
-          const p = resolveFromRow(ctx, found.scope, found.ownerId, ref, userId, found.env);
+          const p = resolveFromRow(ctx, found.scope, found.ownerId, ref, userId, found.env, rejected);
+          if (rejected) renewing.add(p);
           inflight.set(key, p);
           try {
             return await p;
           } finally {
-            inflight.delete(key);
+            // Only our own slot: a rejected read may have taken it over.
+            if (inflight.get(key) === p) inflight.delete(key);
           }
         }
         // None of the v2 scopes had it. Fall through to env fallback —
@@ -841,7 +893,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         async (ctx, input) => {
           const ref = validateRef(input.ref);
           const userId = validateUserId(input.userId);
-          return doResolve(ctx, userId, ref);
+          return doResolve(ctx, userId, ref, input.rejected === true);
         },
         { returns: CredentialsGetOutputSchema },
       );
