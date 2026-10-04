@@ -43,7 +43,7 @@
  * the uncaughtException path.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as net from 'node:net';
 import { startProxyListener, type ProxyListener } from '../listener.js';
 import { SharedCredentialRegistry } from '../registry.js';
@@ -78,6 +78,12 @@ function mintCA(): CAKeyPair {
     cert: forge.pki.certificateToPem(cert),
   };
 }
+
+/**
+ * How long a test waits for all four CONNECTs to reach the window it is about
+ * to race. A bound, not a sleep: it returns as soon as the count is reached.
+ */
+const WINDOW_WAIT = { timeout: 5_000, interval: 10 };
 
 let listener: ProxyListener | undefined;
 let upstreamServer: net.Server | undefined;
@@ -196,10 +202,11 @@ describe('proxy listener — shutdown-race', () => {
     }
 
     // Let the proxies receive their requests and enter the resolveAndCheck await.
-    await new Promise((r) => setTimeout(r, 100));
     // Non-vacuity: every CONNECT really got past authentication + the allowlist
-    // gate and is parked inside the resolver.
-    expect(resolverCalls).toBe(4);
+    // gate and is parked inside the resolver. Polled, not a fixed sleep: a
+    // loaded CI runner can take longer than any fixed delay to get all four
+    // there (TASK-782 saw 3/4 after a fixed 200ms, twice in a row).
+    await vi.waitFor(() => expect(resolverCalls).toBe(4), WINDOW_WAIT);
 
     // Force a TCP RST from each client side so the proxy's inbound sockets
     // have read-side errors queued in the kernel.
@@ -254,10 +261,9 @@ describe('proxy listener — shutdown-race', () => {
     }
 
     // Wait for proxy → upstream tls.connect() to reach mid-handshake state.
-    await new Promise((r) => setTimeout(r, 200));
     // Non-vacuity: the proxy really dialled the hanging upstream for all 4
     // tunnels (i.e. authentication + the allowlist gate let them through).
-    expect(upstreamSockets.length).toBe(4);
+    await vi.waitFor(() => expect(upstreamSockets.length).toBe(4), WINDOW_WAIT);
 
     listener.stop();
 
@@ -307,9 +313,8 @@ describe('proxy listener — shutdown-race', () => {
       clients.push(client);
     }
 
-    await new Promise((r) => setTimeout(r, 150));
     // Non-vacuity: the raw-tunnel net.connect() reached the hanging upstream.
-    expect(upstreamSockets.length).toBe(4);
+    await vi.waitFor(() => expect(upstreamSockets.length).toBe(4), WINDOW_WAIT);
 
     listener.stop();
 

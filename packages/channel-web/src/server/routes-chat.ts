@@ -7,6 +7,7 @@ import {
   type AgentMessage,
   type HookBus,
 } from '@ax/core';
+import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import {
   ApproveAuthoredSkillRequest,
@@ -86,18 +87,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/channel-web';
-
-/**
- * The PluginError code `connectors:upsert` throws (and the `error` the
- * connector routes answer, 503) when an endpoint change couldn't first reset
- * that server's tool permissions (TASK-758). The canonical spelling is
- * `TOOL_PERMISSIONS_RESET_FAILED` in `@ax/connectors` (`src/tool-permissions.ts`)
- * — rename it there and this copy and the client's (`lib/connectors.ts`) must
- * follow, or both approve surfaces quietly fall back to the generic message.
- * Spelled here rather than imported — I2 keeps this file to @ax/core — and
- * pinned against the client's copy by the route test.
- */
-const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
 
 // --- duck-typed request/response (mirrors @ax/http-server's HttpRequest /
 // HttpResponse minus the import — Invariant I2) ----------------------------

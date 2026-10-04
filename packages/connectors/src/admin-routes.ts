@@ -5,6 +5,7 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
+import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
 import type {
   ClearAuthoredInput,
   ClearAuthoredOutput,
@@ -26,7 +27,6 @@ import { deriveToolNamespaces } from './tool-namespace.js';
 import {
   parseToolPermissionsBody,
   shapeInventory,
-  TOOL_PERMISSIONS_RESET_FAILED,
   type DescribeToolsInputLike,
   type DescribeToolsOutputLike,
   type GetConnectorDefaultsInputLike,

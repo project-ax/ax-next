@@ -5,6 +5,7 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
+import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
 import { type Kysely } from 'kysely';
 import {
   runConnectorsMigration,
@@ -44,7 +45,6 @@ import {
 } from './oauth-client-secret-ref.js';
 import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
 import {
-  TOOL_PERMISSIONS_RESET_FAILED,
   type ResetToolNamespacesInputLike,
   type SetCeilingSourcesInputLike,
   type SetCeilingSourcesOutputLike,

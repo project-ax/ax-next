@@ -36,6 +36,7 @@
 // A connector's declared services ride its opaque `capabilities` fill, exactly
 // like mcpServers/packages.
 import type { ServiceDescriptor } from '@ax/skills-parser';
+import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
 
 /** Re-export so consumers in channel-web (the form, the dialog) reference one
  *  descriptor type. */
@@ -43,7 +44,6 @@ export type { ServiceDescriptor };
 
 /** Which owner-scoped route bundle a call targets (TASK-129). */
 export type ConnectorRouteBase = '/admin/connectors' | '/settings/connectors';
-
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -218,10 +218,12 @@ export async function patchConnector(
  * the connector's servers have an admin ceiling — same refusal, same retry,
  * so the copy names neither cause.
  *
- * Canonical spelling: `TOOL_PERMISSIONS_RESET_FAILED` in `@ax/connectors`
- * (`src/tool-permissions.ts`); `server/routes-chat.ts` carries a third copy.
+ * Defined once in `@ax/core/error-codes` (TASK-782) — the producer
+ * (`@ax/connectors`) and `server/routes-chat.ts` import the same constant, so
+ * the code the server answers and the code this file keys on cannot drift.
+ * Re-exported here so the editors keep one import site.
  */
-export const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
+export { TOOL_PERMISSIONS_RESET_FAILED };
 
 /** What the editors say for {@link TOOL_PERMISSIONS_RESET_FAILED}. */
 export const TOOL_PERMISSIONS_RESET_FAILED_MESSAGE =

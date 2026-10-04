@@ -69,15 +69,6 @@ export interface SetCeilingSourcesOutputLike {
   toolNamespaces: string[];
 }
 
-/**
- * The `PluginError` code `connectors:upsert` throws when an edit points a
- * kept-name server at a new endpoint and its tool permissions could not be
- * reset first (TASK-758). Nothing was saved. The routes answer it as a 503
- * with this exact string as `error`, which is what the editors key their
- * message on.
- */
-export const TOOL_PERMISSIONS_RESET_FAILED = 'tool-permissions-reset-failed';
-
 /** Upper bound on rows per save. Mirrors tool-policy's own per-write cap. */
 export const MAX_TOOL_PERMISSION_ROWS = 500;
 
