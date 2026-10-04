@@ -48,6 +48,14 @@ const CLOSE_TIMEOUT_MS = 5_000;
  * Anthropic `^[a-zA-Z0-9_-]{1,64}$`; OpenAI-compatible endpoints use the same.
  */
 export const MODEL_TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+/**
+ * Cap on a thrown call error's text. The MCP SDK embeds the whole HTTP
+ * response body in its errors (`Error POSTing to endpoint: <body>`), and that
+ * text flows to postToolUse, the live chunk, the model and the transcript.
+ */
+export const MAX_ERROR_CHARS = 4096;
+/** Cap on an untrusted string quoted in a log line (it is also JSON-escaped). */
+const MAX_LOGGED_CHARS = 200;
 
 export interface ConnectConnectorToolsOptions {
   /** From `loadProjectedMcpServers`, keyed by host-minted toolNamespace. */
@@ -81,6 +89,18 @@ interface ListedTool {
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function clip(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}… [truncated]` : s;
+}
+
+/**
+ * An upstream-authored string, made safe for one stderr line: bounded, and
+ * JSON-escaped so an embedded newline can't forge a second log line.
+ */
+function quoteUntrusted(s: string): string {
+  return JSON.stringify(s.slice(0, MAX_LOGGED_CHARS));
 }
 
 /** Reject with the signal's reason the moment it aborts, whatever `p` does. */
@@ -159,7 +179,7 @@ export async function connectConnectorTools(
   const entries = Object.keys(opts.servers);
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
-      log(`${entries[i]}: could not load this connector's tools: ${errText(r.reason)}`);
+      log(`${entries[i]}: could not load this connector's tools: ${quoteUntrusted(errText(r.reason))}`);
       return;
     }
     const { ns, server, client, tools: listed, truncated } = r.value;
@@ -173,16 +193,16 @@ export async function connectConnectorTools(
       const modelName = `mcp__${ns}__${t.name}`;
       const policyName = `mcp.${ns}.${t.name}`;
       if (!MODEL_TOOL_NAME_RE.test(modelName)) {
-        log(`${ns}: tool '${t.name}' skipped — '${modelName}' is not a valid model tool name (^[a-zA-Z0-9_-]{1,64}$)`);
+        log(`${ns}: tool ${quoteUntrusted(t.name)} skipped — not a valid model tool name once prefixed (^[a-zA-Z0-9_-]{1,64}$)`);
         continue;
       }
       if (seen.has(t.name)) {
-        log(`${ns}: tool '${t.name}' skipped — duplicate name in this connector's list`);
+        log(`${ns}: tool ${quoteUntrusted(t.name)} skipped — duplicate name in this connector's list`);
         continue;
       }
       seen.add(t.name);
       if (denied.has(policyName)) {
-        log(`${ns}: tool '${t.name}' not offered — denied for this agent`);
+        log(`${ns}: tool ${quoteUntrusted(t.name)} not offered — denied for this agent`);
         continue;
       }
       const toolName = t.name;
@@ -199,16 +219,25 @@ export async function connectConnectorTools(
             onToolFailure: opts.onToolFailure,
           },
           async (input, ctx) => {
-            const res = await client.callTool({ name: toolName, arguments: input }, undefined, {
-              ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}),
-              timeout: callTimeoutMs,
-              resetTimeoutOnProgress: true,
-              maxTotalTimeout: MAX_CALL_TOTAL_MS,
-              // The SDK only sends a progressToken — and only resets the
-              // timeout on progress — when a handler is registered. Without
-              // this no-op, `resetTimeoutOnProgress` is inert.
-              onprogress: () => {},
-            });
+            let res: unknown;
+            try {
+              res = await client.callTool({ name: toolName, arguments: input }, undefined, {
+                ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}),
+                timeout: callTimeoutMs,
+                resetTimeoutOnProgress: true,
+                maxTotalTimeout: MAX_CALL_TOTAL_MS,
+                // The SDK only sends a progressToken — and only resets the
+                // timeout on progress — when a handler is registered. Without
+                // this no-op, `resetTimeoutOnProgress` is inert.
+                onprogress: () => {},
+              });
+            } catch (err) {
+              // Stop: rethrow untouched so the abort is recognised as one.
+              if (ctx.abortSignal?.aborted === true) throw err;
+              // Otherwise the SDK's message may carry a whole upstream HTTP
+              // body (measured: 1 MB). Bound it before it leaves this process.
+              throw new Error(`connector tool '${toolName}' failed: ${clip(errText(err), MAX_ERROR_CHARS)}`);
+            }
             const text = renderMcpResult(res as { content?: unknown; structuredContent?: unknown });
             // Parity with host-tools / the claude-sdk runner: a tool that
             // reported its own failure is a FAILED tool call (is_error on the

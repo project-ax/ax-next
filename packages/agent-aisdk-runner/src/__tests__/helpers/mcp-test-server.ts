@@ -41,6 +41,13 @@ export async function startMcpTestServer(opts: {
   pageSize?: number;
   /** Answer EVERY request with this bare status instead of speaking MCP. */
   status?: number;
+  /**
+   * Answer requests for ONE JSON-RPC method (e.g. `tools/call`, `tools/list`)
+   * with this HTTP status + raw body instead of speaking MCP — every other
+   * method is answered normally. Models a server whose error page is huge
+   * and attacker-authored.
+   */
+  methodError?: { method: string; status: number; body: string };
 }): Promise<McpTestServer> {
   const seenHeaders: IncomingHttpHeaders[] = [];
   const listed = opts.tools.map((t) => ({
@@ -81,6 +88,11 @@ export async function startMcpTestServer(opts: {
     req.on('end', () => {
       void (async () => {
         const body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString('utf-8')) : undefined;
+        const me = opts.methodError;
+        if (me !== undefined && (body as { method?: unknown } | undefined)?.method === me.method) {
+          res.writeHead(me.status, { 'content-type': 'text/plain' }).end(me.body);
+          return;
+        }
         const transport = new StreamableHTTPServerTransport({});
         const server = makeServer();
         res.on('close', () => {

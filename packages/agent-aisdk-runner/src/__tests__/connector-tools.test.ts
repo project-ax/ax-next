@@ -3,6 +3,7 @@ import { startMcpHttpServerStub } from '@ax/test-harness';
 import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import {
   connectConnectorTools,
+  MAX_ERROR_CHARS,
   MAX_TOOLS_PER_CONNECTOR,
   type ConnectorTools,
 } from '../tools/connector-tools.js';
@@ -56,7 +57,10 @@ const exec = (ct: ConnectorTools, name: string, input: unknown, signal?: AbortSi
     ...(signal ? { abortSignal: signal } : {}),
   });
 
-async function testServer(tools: TestTool[], extra: { pageSize?: number; status?: number } = {}) {
+async function testServer(
+  tools: TestTool[],
+  extra: Omit<Parameters<typeof startMcpTestServer>[0], 'tools'> = {},
+) {
   const s = await startMcpTestServer({ tools, ...extra });
   cleanups.push(() => s.close());
   return s;
@@ -262,6 +266,47 @@ describe('connectConnectorTools', () => {
     const ct = await connect({ [NS]: { url: stub.url, bundle: 'b' } });
     await ct.close();
     await ct.close();
+  });
+
+  it('a call that fails with a huge HTTP error body is clipped before it reaches the model / transcript', async () => {
+    const huge = ('A'.repeat(99) + '\n').repeat(10_000); // ~1 MB with newlines
+    const s = await testServer([{ name: 'ping' }], {
+      methodError: { method: 'tools/call', status: 500, body: huge },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    const err = await exec(ct, `mcp__${NS}__ping`, {}).then(
+      () => { throw new Error('expected the call to fail'); },
+      (e: unknown) => e as Error,
+    );
+    expect(err.message.length).toBeLessThanOrEqual(MAX_ERROR_CHARS + 200);
+    expect(err.message).toContain('[truncated]');
+    expect(err.message).toContain(`connector tool 'ping' failed`);
+    // postToolUse saw the clipped text too, never the 1 MB body.
+    for (const call of ct.policy.postToolUse.mock.calls) {
+      expect(JSON.stringify(call).length).toBeLessThan(MAX_ERROR_CHARS * 2 + 1_000);
+    }
+  });
+
+  it('a list failure with a huge, newline-laden body logs ONE bounded, escaped line', async () => {
+    const body = 'x'.repeat(150_000) + '\nrunner: FORGED LINE\n' + 'y'.repeat(150_000);
+    const s = await testServer([{ name: 'ping' }], {
+      methodError: { method: 'tools/list', status: 502, body },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { connectTimeoutMs: 2_000 });
+    expect(ct.tools).toEqual({});
+    const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.length).toBeLessThanOrEqual(600);
+    expect(mine[0]).not.toContain('\n');
+    expect(ct.logs.join('\n')).not.toMatch(/^runner: FORGED LINE/m);
+  });
+
+  it('skip lines JSON-escape the untrusted tool name', async () => {
+    const s = await testServer([{ name: 'evil\nrunner: FORGED' }, { name: 'fine' }]);
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    expect(Object.keys(ct.tools)).toEqual([`mcp__${NS}__fine`]);
+    for (const l of ct.logs) expect(l).not.toContain('\n');
+    expect(ct.logs.join('\n')).toContain('"evil\\nrunner: FORGED"');
   });
 
   it('no servers → no tools, no logs', async () => {
