@@ -188,17 +188,26 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     return makeAgentContext({ sessionId: 'mcp-oauth', agentId: '@ax/mcp-oauth', userId });
   }
 
-  /** TASK-711 — see the call in `begin`. Fails closed to "store on the signer". */
+  /**
+   * TASK-711 — see the call in `begin`. Fails closed to "store on the signer".
+   *
+   * TASK-788 — asks with `purpose: 'store'`: the shared-definition question
+   * only, NOT "is the connector attached to this agent?". The Add-connector
+   * flow signs in before it attaches, so requiring the attachment here would
+   * store every such team sign-in on the signer. Reading the token back (the
+   * vault's question, no `purpose`) still requires the attachment.
+   */
   async function mayStoreOnAgent(userId: string, agentId: string, connectorId: string): Promise<boolean> {
     if (bus.hasService?.(AUTHORIZE_AGENT_ACCOUNT_HOOK) !== true) return false;
     try {
       const out = await bus.call<
-        { userId: string; agentId: string; ref: string },
+        { userId: string; agentId: string; ref: string; purpose: 'store' },
         { allowed: boolean }
       >(AUTHORIZE_AGENT_ACCOUNT_HOOK, ctxFor(userId), {
         userId,
         agentId,
         ref: `account:${connectorId}`,
+        purpose: 'store',
       });
       return out.allowed === true;
     } catch (err) {

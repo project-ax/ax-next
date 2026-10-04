@@ -26,7 +26,6 @@ import {
   validateOptionalText,
   validateSlotName,
   validateVisibility,
-  type AvailableConnector,
   type ConnectorStore,
 } from './store.js';
 import {
@@ -38,6 +37,8 @@ import {
   registerUserConnectorRoutes,
 } from './admin-routes.js';
 import { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
+import { listEffectiveConnectors } from './effective-connectors.js';
+import { requireUserId } from './input-guards.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
 import { purgeConnectorState } from './purge.js';
 import { sweepStdioConnectors } from './stdio-sweep.js';
@@ -93,8 +94,6 @@ import {
   type ClearLegacyDefaultOutput,
   type ListEffectiveInput,
   type ListEffectiveOutput,
-  type EffectiveConnectorEntry,
-  type EffectiveConnectorSource,
   type ListInput,
   type ListLegacyDefaultsInput,
   type ListLegacyDefaultsOutput,
@@ -129,10 +128,13 @@ const PLUGIN_NAME = '@ax/connectors';
 //     migration on init and can't function without a postgres instance. (This
 //     is why it is wired into the k8s preset ONLY — the local CLI registers no
 //     `database:get-instance` provider; see card Clarifications.)
-//   - No `agents:resolve` gate (yet): connectors are owner-scoped by
-//     `owner_user_id` (ctx-independent ownership in this foundation slice — the
-//     hook input carries the `userId`). The agent-attachment ACL lands with the
-//     orchestrator-union phase, not here.
+//   - No `agents:resolve` gate on the `connectors:*` hooks: connectors are
+//     owner-scoped by `owner_user_id` (the hook input carries the `userId`).
+//   - `agents:resolve` IS called — undeclared, `bus.hasService`-guarded — by
+//     the agent-scope credential gate (TASK-788, credential-authz.ts) to read
+//     the agent's attachments. Declaring it (calls OR optionalCalls) would
+//     close a plugin call-graph cycle: @ax/agents declares `connectors:resolve`
+//     as an optionalCall, and bootstrap refuses any preset loading both.
 // ---------------------------------------------------------------------------
 
 /**
@@ -212,7 +214,9 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         'credentials:authorize-global:account',
         // TASK-711 — the agent-scope twin: may this user read the credential
         // stored ON an agent for an `account:` ref (and so, may a team-agent
-        // sign-in be stored there)? See credential-authz.ts.
+        // sign-in be stored there)? TASK-788: a read also needs the connector
+        // on the agent (asks the undeclared `agents:resolve`, see above).
+        // See credential-authz.ts.
         'credentials:authorize-agent:account',
       ],
       // database:get-instance is hard — we run our own migration on init.
@@ -420,7 +424,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       bus.registerService<AuthorizeAgentInput, AuthorizeAgentOutput>(
         'credentials:authorize-agent:account',
         PLUGIN_NAME,
-        async (ctx, input) => authorizeAgentAccountRead(localStore, ctx, input),
+        async (ctx, input) => authorizeAgentAccountRead(localStore, bus, ctx, input),
         { returns: AuthorizeAgentOutputSchema },
       );
 
@@ -497,18 +501,6 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
 // Hook handlers.
 // ---------------------------------------------------------------------------
 
-function requireUserId(value: unknown, hookName: string, field = 'userId'): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: `${field} must be a non-empty string`,
-    });
-  }
-  return value;
-}
-
 async function listConnectors(
   store: ConnectorStore,
   input: ListInput,
@@ -531,87 +523,6 @@ async function clearLegacyDefault(
   const ownerUserId = requireUserId(input.ownerUserId, hookName, 'ownerUserId');
   const connectorId = validateConnectorId(input.connectorId);
   return { cleared: await store.clearLegacyDefault(ownerUserId, connectorId) };
-}
-
-/** Upper bound on the per-agent id lists `connectors:list-effective` accepts.
- *  The agent store caps attachments at 50 and exclusions at 100; this is a
- *  looser boundary guard against an unbounded loop of store reads. */
-const EFFECTIVE_ID_LIST_MAX = 200;
-
-function optionalIdList(value: unknown, field: string): string[] {
-  if (value === undefined) return [];
-  if (
-    !Array.isArray(value) ||
-    value.length > EFFECTIVE_ID_LIST_MAX ||
-    !value.every((v): v is string => typeof v === 'string')
-  ) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName: 'connectors:list-effective',
-      message: `${field} must be an array of at most ${EFFECTIVE_ID_LIST_MAX} strings if provided`,
-    });
-  }
-  return value;
-}
-
-/**
- * TASK-739 — an agent's effective connector set. See `ListEffectiveInput` for
- * the union contract. Every source reads the user's LIVE rows only, so a
- * pending authored draft or a tombstoned connector contributes nothing.
- */
-async function listEffectiveConnectors(
-  store: ConnectorStore,
-  input: ListEffectiveInput,
-): Promise<ListEffectiveOutput> {
-  const userId = requireUserId(input.userId, 'connectors:list-effective');
-  const attachmentIds = optionalIdList(input.attachmentIds, 'attachmentIds');
-  const excluded = new Set(optionalIdList(input.exclusions, 'exclusions'));
-
-  const byId = new Map<string, EffectiveConnectorEntry>();
-  const add = (
-    { connector, ownerUserId }: AvailableConnector,
-    source: EffectiveConnectorSource,
-  ): void => {
-    if (byId.has(connector.id)) return;
-    // An exclusion hides a connector the agent got IMPLICITLY (a legacy-owned
-    // row). An explicit attachment always wins: `agents:attach-connector`
-    // clears the exclusion anyway, and an admin re-attaching through the
-    // wholesale list must not be masked by a stale one.
-    if (source !== 'attached' && excluded.has(connector.id)) return;
-    const { capabilities, ...rest } = connector;
-    byId.set(connector.id, {
-      summary: { ...rest, canEdit: ownerUserId === userId },
-      source,
-      capabilities,
-      // Same derivation as connectors:resolve — the ROW owner, not the caller.
-      toolNamespaces: deriveToolNamespaces(ownerUserId, connector),
-    });
-  };
-
-  // 1. Per-agent ATTACHMENTS, in the agent's order. A malformed or dangling id
-  //    is skipped: an attachment that resolves to nothing grants nothing.
-  for (const rawId of attachmentIds) {
-    if (byId.has(rawId)) continue;
-    let connectorId: string;
-    try {
-      connectorId = validateConnectorId(rawId);
-    } catch {
-      continue;
-    }
-    const available = await store.getAvailableById(userId, connectorId);
-    if (available !== null) add(available, 'attached');
-  }
-
-  // 2. LEGACY OWNED rows keep their implicit attachment. A shared definition the
-  //    user does not own, or any row created after explicit attachment landed,
-  //    is discoverable but never attached implicitly.
-  for (const entry of await store.listAvailable(userId)) {
-    if (entry.connector.canEdit === false || entry.connector.requiresAttachment === true) continue;
-    add(entry, 'legacy-owned');
-  }
-
-  return { connectors: [...byId.values()] };
 }
 
 /** `connectors:inventory-tool-titles`' own per-call id cap (@ax/mcp-client). */

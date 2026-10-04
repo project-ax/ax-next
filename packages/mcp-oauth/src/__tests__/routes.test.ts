@@ -1069,11 +1069,14 @@ describe('mcp-oauth begin route', () => {
     expect(store.putPending).toHaveBeenCalledTimes(1);
     const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
     expect(pending.credScope).toBe('agent');
-    // The vault's own agent-scope read question, asked for the signer.
+    // The vault's agent-scope question, asked for the signer — as the WRITE-scope
+    // question (TASK-788): a sign-in can precede the attachment, so it must not
+    // ask the read question (which also requires the connector on the agent).
     expect(authz).toHaveBeenCalledWith({
       userId: OK_USER.user.id,
       agentId: 'agent-1',
       ref: 'account:conn-1',
+      purpose: 'store',
     });
   });
 
