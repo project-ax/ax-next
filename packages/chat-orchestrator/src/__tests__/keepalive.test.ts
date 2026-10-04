@@ -456,7 +456,9 @@ describe('TASK-811: connector attach/detach mid-chat reaches the warm session ne
         opens += 1;
         return { runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle };
       },
-      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+      // TASK-840 — #920 made proxyAuthToken required: an open without one is
+      // refused before the sandbox opens, so no session would spawn at all.
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
       'proxy:close-session': async () => ({}),
     };
 
