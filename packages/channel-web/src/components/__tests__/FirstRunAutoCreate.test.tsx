@@ -520,7 +520,9 @@ describe('FirstRunAutoCreate — once the agent exists (TASK-791)', () => {
   });
 
   it('first run: "Change name" after the create goes back WITHOUT deleting anything', async () => {
-    // The agent is kept so the next submit can rename it.
+    // A control: the old component passes this too. It pins that the new
+    // delete stays add-only — the agent is kept so the next submit can
+    // rename it.
     createdThenHandOffFails();
     const discard = vi.spyOn(autoCreate, 'discardCreatedAgent').mockResolvedValue();
     const onBack = vi.fn();
@@ -568,6 +570,24 @@ describe('FirstRunAutoCreate — once the agent exists (TASK-791)', () => {
     await screen.findByRole('button', { name: /^cancel$/i });
 
     fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
+    expect(discard).toHaveBeenCalledWith('made');
+  });
+
+  it('adding: a refresh that fails AFTER the delete still goes back', async () => {
+    // The delete worked; a throwing refresh used to strand the card on a
+    // disabled "Removing…" with no way out.
+    vi.spyOn(autoCreate, 'autoCreateBareAgent').mockResolvedValueOnce({
+      agentId: 'made',
+      displayName: 'Scout',
+      visibility: 'personal',
+    });
+    vi.spyOn(hydrate, 'hydrateAgentsOnce').mockRejectedValue(new Error('refresh blip'));
+    const discard = vi.spyOn(autoCreate, 'discardCreatedAgent').mockResolvedValue();
+    const onBack = vi.fn();
+    render(<FirstRunAutoCreate agentName="Scout" mode="add" onBack={onBack} onDone={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^cancel$/i }));
 
     await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
     expect(discard).toHaveBeenCalledWith('made');

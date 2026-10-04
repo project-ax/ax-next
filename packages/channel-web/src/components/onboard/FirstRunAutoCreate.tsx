@@ -122,8 +122,14 @@ export function FirstRunAutoCreate({
       );
       return;
     }
-    // The create may have put it in the agent list; take it back out.
-    await hydrateAgentsOnce();
+    // The create may have put it in the agent list; take it back out. The
+    // delete already worked, so a failed refresh must not strand the person
+    // on a disabled "Removing…" card.
+    try {
+      await hydrateAgentsOnce();
+    } catch (e) {
+      logRequestFailure(e, 'agent-bootstrap-discard-refresh');
+    }
     onBack();
   }, [agentName, onBack]);
 
