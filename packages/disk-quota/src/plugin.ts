@@ -60,8 +60,12 @@ const SUBSCRIBED = [
 //     docs/plans/2026-10-03-blob-gc-design.md). The same periodic sweep runs a
 //     blob pass: `blob:<sha>` rows older than the grace window (`graceMs` in
 //     `settings:disk-quota`, default 24 h) are offered, in batches of at most
-//     1000 shas, to every holder through `blob:collect-refs`, and an (owner,
-//     sha) row goes when no holder attributes that sha to that owner. It FAILS
+//     1000 shas, to every holder through `blob:collect-refs`. An (owner, sha)
+//     row goes when no holder attributes that sha to that owner AND the bytes
+//     stay paid for: if others hold the sha, only while one of them is still
+//     charged for it; if nobody holds it, only once `blob:stat` confirms the
+//     bytes are gone (no `blob:stat`, or any doubt, keeps the charge). So the
+//     pass never leaves bytes that still exist charged to nobody. It FAILS
 //     CLOSED against a persisted roster of holders (a holder that failed,
 //     threw or is no longer loaded aborts the pass with nothing released) and
 //     needs none of the workspace sweep's optional hooks.
@@ -185,6 +189,11 @@ export function createDiskQuotaPlugin(config: DiskQuotaPluginConfig = {}): DiskQ
         {
           hook: 'auth:get-user',
           degradation: 'The admin storage view shows user ids instead of display names and emails.',
+        },
+        {
+          hook: 'blob:stat',
+          degradation:
+            "Charges for files nobody references any more are kept, because the sweep cannot confirm the bytes are gone; they count toward their owner's storage limit until a blob store answers.",
         },
       ],
       subscribes: [...SUBSCRIBED],

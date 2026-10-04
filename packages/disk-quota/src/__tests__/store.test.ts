@@ -290,6 +290,21 @@ describe('the blob pass queries', () => {
     });
   });
 
+  describe('chargedOwners', () => {
+    it('lists every (owner, sha) blob row for these shas, fresh or stale, and nothing else', async () => {
+      await store.upsertUsage('alice', `blob:${A}`, 'blob', 1);
+      await store.upsertUsage('bob', `blob:${A}`, 'blob', 1);
+      await store.upsertUsage('carol', `blob:${B}`, 'blob', 1);
+      await store.upsertUsage('dave', `blob:${A}`, 'workspace', 1); // wrong kind: not a charge for A
+      await age('alice', `blob:${A}`); // stale; bob's stays fresh
+      expect(await store.chargedOwners([A, C])).toEqual([
+        { ownerId: 'alice', sha256: A },
+        { ownerId: 'bob', sha256: A },
+      ]);
+      expect(await store.chargedOwners([])).toEqual([]);
+    });
+  });
+
   describe('staleBlobRows + releaseBlobRows', () => {
     it('lists (owner, sha) per stale row, and releases exactly the rows asked for', async () => {
       await store.upsertUsage('alice', `blob:${A}`, 'blob', 1);

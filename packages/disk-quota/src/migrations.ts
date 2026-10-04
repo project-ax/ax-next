@@ -11,9 +11,13 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *   - the periodic sweep's BLOB PASS (design D6) drops an `(owner,
  *     blob:<sha>)` row once the row is older than the grace window AND every
  *     holder answering `blob:collect-refs` agrees that owner no longer holds
- *     that sha. Per owner, not per sha: someone else holding the same bytes
- *     keeps their own charge. Any doubt (a holder that failed, a holder that
- *     went missing) releases nothing.
+ *     that sha AND the bytes stay paid for: a sha others hold goes only while
+ *     one of them still has a row for it; a sha nobody holds goes only once
+ *     `blob:stat` says its bytes are gone. Per owner, not per sha: someone
+ *     else holding the same bytes keeps their own charge. Bytes that still
+ *     exist are never left charged to nobody. Any doubt (a holder that failed,
+ *     a holder that went missing, a `blob:stat` that cannot answer) releases
+ *     nothing.
  *
  * Tables:
  *   disk_quota_v1_usage — one row per (owner, source). `source` is

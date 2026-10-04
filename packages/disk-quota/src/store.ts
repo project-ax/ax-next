@@ -56,6 +56,12 @@ export interface DiskQuotaStore {
   /** Every (owner, sha) blob row for these shas last written before `cutoff`. */
   staleBlobRows(shas: readonly string[], cutoff: Date): Promise<BlobRow[]>;
   /**
+   * Every (owner, sha) blob row for these shas, of ANY age: who is still
+   * paying for those bytes. The blob pass releases one owner's share of
+   * shared bytes only while a listed holder is still charged for them.
+   */
+  chargedOwners(shas: readonly string[]): Promise<BlobRow[]>;
+  /**
    * Delete these `(owner, blob:<sha>)` rows, but only those STILL older than
    * `cutoff`: the age is re-checked inside the DELETE, so a re-put that
    * landed between the select and now (it refreshes `updated_at`) keeps its
@@ -188,6 +194,19 @@ export function createDiskQuotaStore(db: Kysely<DiskQuotaDatabase>): DiskQuotaSt
         FROM disk_quota_v1_usage
         WHERE kind = 'blob'
           AND updated_at < ${cutoff}
+          AND source = ANY(${sources}::text[])
+        ORDER BY source, owner_id
+      `.execute(db);
+      return res.rows.map((r) => ({ ownerId: r.owner_id, sha256: r.source.slice('blob:'.length) }));
+    },
+
+    async chargedOwners(shas) {
+      if (shas.length === 0) return [];
+      const sources = shas.map((s) => `blob:${s}`);
+      const res = await sql<{ owner_id: string; source: string }>`
+        SELECT owner_id, source
+        FROM disk_quota_v1_usage
+        WHERE kind = 'blob'
           AND source = ANY(${sources}::text[])
         ORDER BY source, owner_id
       `.execute(db);

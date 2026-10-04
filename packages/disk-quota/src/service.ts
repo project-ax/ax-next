@@ -5,6 +5,7 @@ import {
   makeAgentContext,
   readBlobCollectRefsAnswers,
   type AgentContext,
+  type BlobHolding,
   type HookBus,
   type Logger,
 } from '@ax/core';
@@ -29,7 +30,11 @@ import type { BlobRow, DiskQuotaStore } from './store.js';
 //                         workspace, then the BLOB PASS (releaseBlobs).
 //   releaseBlobs        — drop an (owner, blob:<sha>) charge once it is past
 //                         the grace window and no holder says that owner
-//                         still holds the sha (design D6). Fails CLOSED.
+//                         still holds the sha (design D6), but never so that
+//                         bytes that still exist end up charged to nobody: a
+//                         sha held by others goes only while one of them is
+//                         charged for it, a sha held by nobody only once
+//                         `blob:stat` says its bytes are gone. Fails CLOSED.
 //
 // Error posture is deliberately lopsided (the same as @ax/usage-limits):
 //   - The GATES fail CLOSED. HookBus.fire isolates a throwing subscriber and
@@ -110,6 +115,8 @@ export interface DiskQuotaService {
 export const OWNER_CACHE_MAX = 5000;
 /** The sweep measures this many agents at once. */
 export const SWEEP_CONCURRENCY = 2;
+/** The blob pass asks `blob:stat` about this many unheld shas at once. */
+export const BLOB_STAT_CONCURRENCY = 8;
 
 /**
  * A user id that names a person the ledger can be charged to. The empty id and
@@ -519,13 +526,94 @@ export function createDiskQuotaService(deps: {
   }
 
   /**
+   * Of the shas nobody holds, the ones whose bytes the blob store says are
+   * GONE (`blob:stat` answered exactly `{ found: false }`). Anything else (a
+   * size, an odd answer, a throw, no `blob:stat` at all) means "maybe still
+   * there", and that sha keeps its charge. Never throws.
+   */
+  async function bytesGone(ctx: AgentContext, shas: readonly string[]): Promise<Set<string>> {
+    const gone = new Set<string>();
+    if (shas.length === 0) return gone;
+    if (!bus.hasService('blob:stat')) {
+      log(ctx, 'info', 'disk_quota_blob_release_unverifiable', { shas: shas.length });
+      return gone;
+    }
+    let failed = 0;
+    await mapBounded(shas, BLOB_STAT_CONCURRENCY, async (sha256) => {
+      try {
+        const out = await bus.call<{ sha256: string }, unknown>('blob:stat', ctx, { sha256 });
+        if (
+          out !== null &&
+          typeof out === 'object' &&
+          (out as Record<string, unknown>).found === false &&
+          !('size' in out)
+        ) {
+          gone.add(sha256);
+        }
+      } catch (err) {
+        failed++;
+        log(ctx, 'debug', 'disk_quota_blob_stat_failed', { sha256, err });
+      }
+    });
+    if (failed > 0) log(ctx, 'warn', 'disk_quota_blob_stat_failed', { failed, of: shas.length });
+    return gone;
+  }
+
+  /**
+   * Which of these stale rows may go. Per sha:
+   *   1. held for nobody in particular (some ref with `userIds: []`): none;
+   *   2. held by named people U: the row of an owner outside U goes ONLY IF
+   *      someone in U is still charged for that sha (a row of any age);
+   *      otherwise every row stays, because the bytes exist and someone has to
+   *      keep paying for them;
+   *   3. held by nobody: the rows go ONLY IF the bytes are confirmed gone
+   *      (`blob:stat` says `{ found: false }`; see bytesGone).
+   *
+   * The invariant: this pass never leaves bytes that still exist charged to
+   * nobody. A charge for unreferenced bytes is given back only once the bytes
+   * are gone (the later byte GC's purge), and one owner's share of shared bytes
+   * is released only while someone listed is still charged for them. Without
+   * this, upload to the limit, drop every reference, wait out the grace window
+   * and repeat would grow the shared volume without bound.
+   */
+  async function releasableRows(
+    ctx: AgentContext,
+    rows: readonly BlobRow[],
+    held: ReadonlyMap<string, BlobHolding>,
+  ): Promise<BlobRow[]> {
+    const shas = [...new Set(rows.map((r) => r.sha256))];
+    const unheld = shas.filter((s) => !held.has(s));
+    const shared = shas.filter((s) => {
+      const h = held.get(s);
+      if (h === undefined || h.unattributed) return false;
+      return rows.some((r) => r.sha256 === s && !h.userIds.has(r.ownerId));
+    });
+    const payers = new Map<string, Set<string>>();
+    for (const r of await store.chargedOwners(shared)) {
+      let set = payers.get(r.sha256);
+      if (set === undefined) payers.set(r.sha256, (set = new Set()));
+      set.add(r.ownerId);
+    }
+    const gone = await bytesGone(ctx, unheld);
+    return rows.filter((r) => {
+      const h = held.get(r.sha256);
+      if (h === undefined) return gone.has(r.sha256);
+      if (h.unattributed || h.userIds.has(r.ownerId)) return false;
+      const charged = payers.get(r.sha256);
+      return charged !== undefined && [...h.userIds].some((u) => charged.has(u));
+    });
+  }
+
+  /**
    * The blob pass (design D6). Takes this plugin's own `blob:<sha>` rows last
    * written before `now - graceMs`, in batches of at most
    * BLOB_COLLECT_REFS_MAX_CANDIDATES shas, asks every holder about each batch
-   * through `blob:collect-refs`, and drops the (owner, sha) rows no holder
-   * attributes to that owner. Someone else holding the same bytes keeps their
-   * own charge; a sha held for nobody in particular (`userIds: []`) releases
-   * nothing at all.
+   * through `blob:collect-refs`, and drops the (owner, sha) rows the release
+   * rule allows (releasableRows): an owner no holder lists loses their charge
+   * while a listed holder is still charged for the same bytes; a sha held for
+   * nobody in particular (`userIds: []`) releases nothing at all; a sha held
+   * by nobody is released only once `blob:stat` confirms its bytes are gone.
+   * The pass never leaves bytes that still exist charged to nobody.
    *
    * FAILS CLOSED: a vetoed fire, a holder answering `ok: false`, an answer that
    * cannot be read, or a roster member that did not answer (it threw, or its
@@ -554,12 +642,7 @@ export function createDiskQuotaService(deps: {
         if (shas.length === 0) break;
 
         const rows = await store.staleBlobRows(shas, cutoff);
-        const release: BlobRow[] = rows.filter((r) => {
-          const held = outcome.held.get(r.sha256);
-          if (held === undefined) return true;
-          if (held.unattributed) return false;
-          return !held.userIds.has(r.ownerId);
-        });
+        const release = await releasableRows(ctx, rows, outcome.held);
         if (release.length > 0) released += await store.releaseBlobRows(release, cutoff);
         if (shas.length < BLOB_COLLECT_REFS_MAX_CANDIDATES) break;
         after = shas[shas.length - 1];

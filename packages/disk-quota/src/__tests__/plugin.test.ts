@@ -113,6 +113,7 @@ describe('manifest', () => {
       'agents:resolve',
       'agents:list-personal-owners',
       'auth:get-user',
+      'blob:stat',
     ]);
     for (const c of m.optionalCalls ?? []) expect(c.degradation.length).toBeGreaterThan(20);
   });

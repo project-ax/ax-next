@@ -91,6 +91,14 @@ function makeWorld(
     storageGetThrows?: boolean;
     /** Where the injected clock starts (ms since epoch). */
     startAt?: number;
+    /**
+     * The blob store's `blob:stat`. Default: registered; every sha in
+     * `storedShas` (none unless given) answers `{ size }`, every other sha
+     * `{ found: false }` (the bytes are gone). `false` leaves `blob:stat`
+     * unregistered; a function replaces the answer.
+     */
+    blobStat?: false | ((sha256: string) => Promise<unknown>);
+    storedShas?: Iterable<string>;
   } = {},
 ): World {
   const bus = new HookBus();
@@ -113,6 +121,15 @@ function makeWorld(
   );
   for (const [hook, handler] of Object.entries(opts.services ?? {})) {
     bus.registerService(hook, 'test', handler as never);
+  }
+  if (opts.blobStat !== false) {
+    const stored = new Set(opts.storedShas ?? []);
+    const stat =
+      opts.blobStat ??
+      (async (sha256: string) => (stored.has(sha256) ? { size: 4096 } : { found: false }));
+    bus.registerService<{ sha256: string }, unknown>('blob:stat', 'test', async (_c, { sha256 }) =>
+      stat(sha256),
+    );
   }
 
   const lines: Line[] = [];
@@ -195,6 +212,9 @@ const failingStore: DiskQuotaStore = {
     throw new Error('db down');
   },
   async forgetRefHolder() {
+    throw new Error('db down');
+  },
+  async chargedOwners() {
     throw new Error('db down');
   },
 };
@@ -1190,6 +1210,87 @@ describe('the blob pass (reconcile releases blob charges nobody holds)', () => {
     expect(await rows()).toEqual(['bob blob:a']);
     expect(await realStore.usageFor('alice')).toEqual({ workspaceBytes: 0, fileBytes: 0 });
     expect(w.lines.some((l) => l.msg === 'disk_quota_blob_release_done')).toBe(true);
+  });
+
+  it('QUOTA BYPASS: a sha nobody holds whose bytes STILL EXIST keeps its charge', async () => {
+    // Upload to the limit, drop every reference, wait out the grace window:
+    // the bytes are still on the volume, so the charge must stay with someone.
+    const w = blobWorld({ storedShas: [S] });
+    holder(w, '@ax/attachments', () => []);
+    await charge('alice', S);
+    await charge('bob', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a', 'bob blob:a']);
+  });
+
+  it('a sha nobody holds is released once blob:stat says the bytes are gone', async () => {
+    const statted: string[] = [];
+    const w = blobWorld({
+      blobStat: async (sha) => {
+        statted.push(sha);
+        return sha === T ? { size: 4096 } : { found: false };
+      },
+    });
+    holder(w, '@ax/attachments', () => []);
+    await charge('alice', S);
+    await charge('bob', S);
+    await charge('alice', T);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 2, blobReleaseAborted: false });
+    expect(statted.sort()).toEqual([S, T]);
+    expect(await rows()).toEqual(['alice blob:b']);
+  });
+
+  it('FAIL CLOSED: blob:stat throwing, or answering anything but { found: false }, keeps the charge; the pass goes on', async () => {
+    const U = 'c'.repeat(64);
+    const V = 'd'.repeat(64);
+    const w = blobWorld({
+      blobStat: async (sha) => {
+        if (sha === S) throw new Error('volume unreadable');
+        if (sha === T) return { found: true };
+        if (sha === U) return {};
+        return { found: false };
+      },
+    });
+    holder(w, '@ax/attachments', () => []);
+    for (const sha of [S, T, U, V]) await charge('alice', sha);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a', 'alice blob:b', 'alice blob:c']);
+  });
+
+  it('FAIL CLOSED: without blob:stat, a sha nobody holds is never released; held shas still are', async () => {
+    const w = blobWorld({ blobStat: false });
+    holder(w, '@ax/attachments', () => [{ sha256: T, userIds: ['bob'] }]);
+    await charge('alice', S);
+    await charge('alice', T);
+    await charge('bob', T);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a', 'bob blob:b']);
+  });
+
+  it("keeps A's charge when the only holder of the sha (B) is not charged for it", async () => {
+    // B references A's bytes through dedup but never paid for them: releasing
+    // A would leave bytes that exist charged to nobody.
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => [{ sha256: S, userIds: ['bob'] }]);
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 0, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['alice blob:a']);
+  });
+
+  it("releases A when a listed holder's own charge is still FRESH (a charge of any age counts)", async () => {
+    const w = blobWorld();
+    holder(w, '@ax/attachments', () => [{ sha256: S, userIds: ['bob'] }]);
+    await charge('alice', S);
+    w.clock.advance(25 * HOUR);
+    // The db stamps bob's row with its own now(): inside the grace window.
+    await charge('bob', S);
+    expect(await w.svc.reconcile()).toMatchObject({ blobsReleased: 1, blobReleaseAborted: false });
+    expect(await rows()).toEqual(['bob blob:a']);
   });
 
   it('runs even though the workspace sweep is skipped (its optional hooks are absent)', async () => {
