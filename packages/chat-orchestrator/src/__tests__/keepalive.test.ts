@@ -617,10 +617,6 @@ describe('TASK-785: a folded message\'s agent:invoke waiter resolves on the turn
       void p.then(() => { settled.done = true; }, () => { settled.done = true; });
       return { p, settled };
     };
-    const until = async (cond: () => boolean): Promise<void> => {
-      for (let i = 0; i < 500 && !cond(); i += 1) await new Promise((r) => setImmediate(r));
-      expect(cond()).toBe(true);
-    };
     const turnEnd = (sessionId: string, payload: Record<string, unknown>) =>
       h.bus.fire('chat:turn-end',
         makeAgentContext({ sessionId, agentId: 'a', userId: 'u', reqId: 'ipc-fresh',
@@ -635,7 +631,10 @@ describe('TASK-785: a folded message\'s agent:invoke waiter resolves on the turn
     // Two messages into the warm s-1: req-3 lands while req-2's reply runs.
     const second = invoke('s-1', 'conv-1', 'req-2');
     const third = invoke('s-1', 'conv-1', 'req-3');
-    await until(() => ['req-x', 'req-2', 'req-3'].every((r) => queuedReqIds.includes(r)));
+    await vi.waitFor(
+      () => expect(queuedReqIds).toEqual(expect.arrayContaining(['req-x', 'req-2', 'req-3'])),
+      { timeout: 2_000, interval: 5 },
+    );
 
     // The CLI folds req-3 into req-2's turn: ONE turn-end, named after req-2.
     // A runner-written list naming another session's message, or an id no one
@@ -648,7 +647,7 @@ describe('TASK-785: a folded message\'s agent:invoke waiter resolves on the turn
     expect(await Promise.race([third.p, stillWaiting])).toEqual({ kind: 'complete', messages: [] });
 
     // s-2's turn is untouched — it ends on its own turn-end, not s-1's list.
-    for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 50));
     expect(other.settled.done).toBe(false);
     await turnEnd('s-2', { reqId: 'req-x' });
     expect(await other.p).toEqual({ kind: 'complete', messages: [] });
