@@ -1,5 +1,6 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import { deriveCredentialPlan } from './credential-plan.js';
+import { namesOAuthClientSecretRef, oauthClientSecretRefFor } from './oauth-client-secret-ref.js';
 import type { ConnectorStore } from './store.js';
 import type {
   AuthorizeAgentInput,
@@ -33,6 +34,9 @@ import type {
 //      was written, so a workspace-keyed row that a non-admin managed to author
 //      (the un-gated admin route, the model-authored approve path, legacy data)
 //      still gets nothing.
+//
+// ONE EXCEPTION: `account:<id>:OAUTH_CLIENT_SECRET` (a connector's OAuth client
+// secret) never takes this path; it has its own rule below (TASK-797).
 //
 // FAIL CLOSED. Anything unexpected is a deny: unparseable ref, no connector,
 // personal keyMode, no `auth:get-user` provider, no such user, a throwing lookup.
@@ -89,6 +93,11 @@ export async function authorizeGlobalAccountRead(
   const connectorId = connectorIdOfAccountRef(ref);
   if (connectorId === null) return deny('not-a-connector-ref');
 
+  // TASK-797 — a client-secret ref is decided by its own rule, and ONLY by it.
+  if (ref === oauthClientSecretRefFor(connectorId)) {
+    return authorizeGlobalClientSecretRead(store, bus, ctx, userId, connectorId, ref, deny);
+  }
+
   try {
     const available = await store.getAvailableById(userId, connectorId);
     if (available === null) return deny('no-such-connector');
@@ -109,6 +118,85 @@ export async function authorizeGlobalAccountRead(
     );
     if (owner === null || owner === undefined || owner.isAdmin !== true) {
       return deny('owner-not-admin');
+    }
+    return { allowed: true };
+  } catch (err) {
+    ctx.logger.warn('connectors_global_credential_check_failed', {
+      plugin: PLUGIN_NAME,
+      ref,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { allowed: false };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TASK-797 — who may read a connector's OAuth CLIENT SECRET at global scope.
+//
+// THE GAP THIS CLOSES. A custom-client OAuth connector pins a client id and a
+// client secret. The editor stored the secret at the AUTHOR's user scope, and
+// @ax/mcp-oauth's `begin` reads it as the person signing in, so only the
+// author could ever sign in (`400 oauth_client_secret_unavailable` for
+// everyone else). An admin's shared connector now stores it at global scope
+// instead, and this rule decides who may read it there.
+//
+// THE RULE. A global read of `account:<id>:OAUTH_CLIENT_SECRET` is allowed iff
+// ALL of these hold for the REQUESTING user:
+//
+//   1. the connector this user resolves for `<id>` is the ONE live SHARED
+//      definition with that id (`getSoleSharedById`, TASK-711's predicate) —
+//      not a private one (theirs or anyone's), and not one of two sharers,
+//   2. one of its OAuth slots names EXACTLY this ref as `clientSecretRef`,
+//   3. the ref is NOT also a credential-plan ref of that connector. The plan is
+//      what the credential proxy injects into the sandbox; a connector that
+//      named a slot `OAUTH_CLIENT_SECRET` would otherwise hand the secret to a
+//      runner. The secret is used host-side only, against the token endpoint.
+//   4. the connector's owner is an ADMIN, checked at read time (a demoted
+//      admin's secret closes again).
+//
+// The secret is deliberately NOT in `deriveCredentialPlan`: that plan is also
+// the connect-flow prompt list, the attach credential gate and the
+// describe-tools slot resolver, none of which may ever see it.
+//
+// WHO CALLS. Only @ax/mcp-oauth reads this ref. The bus cannot prove that:
+// `AgentContext` carries no caller identity and `HookBus.call` records none,
+// so a plugin cannot be pinned here. Rule 3 plus the proxy fold (which drops
+// an `OAUTH_CLIENT_SECRET` slot) are what keep the value out of the sandbox.
+//
+// FAIL CLOSED, like the rules around it. Nothing here reads, returns or logs a
+// secret value.
+// ---------------------------------------------------------------------------
+
+async function authorizeGlobalClientSecretRead(
+  store: ConnectorStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+  connectorId: string,
+  ref: string,
+  deny: (reason: string) => AuthorizeGlobalOutput,
+): Promise<AuthorizeGlobalOutput> {
+  try {
+    const shared = await store.getSoleSharedById(userId, connectorId);
+    if (shared === null) return deny('client-secret-not-the-shared-connector');
+    const { connector, ownerUserId } = shared;
+
+    if (!namesOAuthClientSecretRef(connector.capabilities, ref)) {
+      return deny('client-secret-ref-mismatch');
+    }
+
+    if (deriveCredentialPlan(connector).some((entry) => entry.ref === ref)) {
+      return deny('client-secret-ref-is-a-slot');
+    }
+
+    if (!bus.hasService('auth:get-user')) return deny('no-auth-provider');
+    const owner = await bus.call<{ userId: string }, AuthUserLike | null>(
+      'auth:get-user',
+      ctx,
+      { userId: ownerUserId },
+    );
+    if (owner === null || owner === undefined || owner.isAdmin !== true) {
+      return deny('client-secret-owner-not-admin');
     }
     return { allowed: true };
   } catch (err) {

@@ -18,9 +18,15 @@ import {
   getOAuthClientMetadata,
   type OAuthDiscovery,
 } from '@/lib/connectors-oauth';
-import { setDestinationCredential, refForDestination } from '@/lib/credentials';
+import {
+  deleteDestinationCredential,
+  myCredentials,
+  setDestinationCredential,
+  refForDestination,
+} from '@/lib/credentials';
 import {
   OAUTH_CLIENT_SECRET_SLOT,
+  clientSecretScope,
   newHeaderSlot,
 } from '@/lib/connector-credential-slots';
 import {
@@ -129,6 +135,19 @@ export function RemoteMcpConnectorForm({
   >('loading');
   const [copied, setCopied] = useState(false);
   const [editingClientSecret, setEditingClientSecret] = useState(false);
+  // Where the client secret is stored (see `clientSecretScope`). A new
+  // connector is created shared.
+  const secretScope = clientSecretScope({
+    isAdmin,
+    keyMode,
+    visibility: connector?.visibility ?? 'shared',
+  });
+  // What the connector pointed at when this form opened. Stays put while the
+  // draft's own reference changes (Remove clears it).
+  const [savedClientSecretRef] = useState(draft.clientSecretRef);
+  // An admin's secret saved before it moved to the workspace is still in their
+  // own scope. It can't be moved without being typed again.
+  const [needsMigration, setNeedsMigration] = useState(false);
   const [newId] = useState(
     () =>
       `${connectorIdFromName(connector?.name ?? 'remote').slice(0, 48)}-${crypto.randomUUID().slice(0, 8)}`,
@@ -262,6 +281,36 @@ export function RemoteMcpConnectorForm({
       stale = true;
     };
   }, []);
+  const movesSecretToWorkspace =
+    Boolean(connector) &&
+    secretScope === 'global' &&
+    keyMode === 'personal' &&
+    Boolean(savedClientSecretRef);
+  useEffect(() => {
+    if (!movesSecretToWorkspace) return;
+    let stale = false;
+    // A convenience, never a gate: if we can't tell, say nothing and let the
+    // save go ahead as usual.
+    void myCredentials.list().then(
+      (rows) => {
+        if (stale || !Array.isArray(rows)) return;
+        if (
+          rows.some(
+            (row) =>
+              typeof row === 'object' &&
+              row !== null &&
+              row.scope === 'user' &&
+              row.ref === savedClientSecretRef,
+          )
+        )
+          setNeedsMigration(true);
+      },
+      () => {},
+    );
+    return () => {
+      stale = true;
+    };
+  }, [movesSecretToWorkspace, savedClientSecretRef]);
   useEffect(() => {
     setDestinationConfirmed(false);
     if (!host) {
@@ -351,9 +400,16 @@ export function RemoteMcpConnectorForm({
         await setDestinationCredential({
           destination,
           slot: { kind: 'api-key' },
-          scope,
+          scope: { scope: secretScope, ownerId: null },
           payload: draft.clientSecret,
         });
+        // Only once the workspace copy is stored: if this fails the save
+        // fails, and a retry writes the same copy again and tries again.
+        if (needsMigration)
+          await deleteDestinationCredential({
+            destination,
+            scope: { scope: 'user', ownerId: null },
+          });
         clientSecretRef = refForDestination(destination);
       }
       for (const header of draft.headers) {
@@ -388,6 +444,10 @@ export function RemoteMcpConnectorForm({
           base,
         );
       update('clientSecret', '');
+      // The connector now names the stored copy. A retry (say, of tool
+      // permissions below) must not point it back at the one it replaced.
+      update('clientSecretRef', clientSecretRef);
+      setNeedsMigration(false);
       const toolChanges = addressChanged ? [] : toolPermissions.changes;
       if (connector && toolChanges.length) {
         try {
@@ -621,7 +681,9 @@ export function RemoteMcpConnectorForm({
                                 (optional)
                               </span>
                             </FieldLabel>
-                            {draft.clientSecretRef && !editingClientSecret ? (
+                            {draft.clientSecretRef &&
+                            !editingClientSecret &&
+                            !needsMigration ? (
                               <div className="flex min-h-10 flex-wrap items-center gap-2">
                                 <span className="flex-1 text-sm text-muted-foreground">
                                   Saved securely
@@ -658,6 +720,23 @@ export function RemoteMcpConnectorForm({
                                 }
                               />
                             )}
+                            {needsMigration &&
+                              Boolean(draft.clientSecretRef) &&
+                              !draft.clientSecret && (
+                                <Alert>
+                                  <AlertDescription>
+                                    Re-enter the client secret so others can sign in
+                                  </AlertDescription>
+                                </Alert>
+                              )}
+                            {secretScope === 'user' &&
+                              keyMode === 'personal' &&
+                              !isAdmin && (
+                                <FieldDescription>
+                                  Only you can sign in to this connector because it
+                                  uses your OAuth app.
+                                </FieldDescription>
+                              )}
                           </Field>
                           <Field className="gap-2">
                             <FieldTitle>Redirect URL</FieldTitle>

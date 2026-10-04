@@ -395,9 +395,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // A pinned client secret is dereferenced with `credentials:get` and posted to
     // an authorization server the connector's AUTHOR picked, so the ref may name
     // only this connector's own account key (TASK-712). Refuse anything else BEFORE
-    // any vault call: `begin`'s placeholder agentId (see ctxFor) happens to stop the
-    // vault's agent-scope step today, but that is an accident this must not lean on.
-    // Same truthiness as the dereference below (`''` = no pinned secret).
+    // any vault call. Since TASK-797 the dereference walks user -> global (no agent
+    // step), so this check is the ONLY thing standing between an author-chosen ref
+    // and a global row. Same truthiness as the dereference below (`''` = no pinned
+    // secret).
     if (slot.clientSecretRef && !isOwnClientSecretRef(connectorId, slot.clientSecretRef)) {
       logger.warn('mcp_oauth_begin_client_secret_ref_rejected', { connectorId });
       res.status(400).json({ error: 'oauth_client_secret_ref_not_allowed' });
@@ -416,10 +417,20 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     if (slot.clientId) {
       let clientSecret: string | undefined;
       if (slot.clientSecretRef) {
+        // TASK-797 — read user -> global, with NO agent step (agentId ''), the
+        // same convention as the `status` probe. A client secret is stored at the
+        // author's user scope, or at global for an admin's SHARED connector so
+        // every signer can use it (@ax/connectors' credential-authz decides who
+        // may read it there); it is never stored on an agent. With the
+        // placeholder agentId the agent step ran first, and for a shared
+        // connector it threw on the vault's ownerId grammar before the walk
+        // reached global. The value is used only below, against the provider's
+        // token endpoint, and never logged or returned.
+        const secretCtx = makeAgentContext({ sessionId: 'mcp-oauth', agentId: '', userId: user.id });
         try {
           clientSecret = await bus.call<{ ref: string; userId: string }, string>(
             'credentials:get',
-            ctxFor(user.id),
+            secretCtx,
             { ref: slot.clientSecretRef, userId: user.id },
           );
         } catch (err) {
