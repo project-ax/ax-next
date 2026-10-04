@@ -362,6 +362,11 @@ async function unaccidentalHandlers(s: Stack, agentIdForVault: string) {
         input,
       );
     },
+    // TASK-798 — begin's team-agent owner-or-admin check fails closed when the
+    // hook is absent, so show it the real answer for THAT hook. Every other
+    // optional hook stays invisible, exactly as before this wrapper knew of it.
+    hasService: (hook: string) =>
+      hook === 'agents:can-exclude-connector' && s.h.bus.hasService(hook),
   };
   const handlers = createMcpOAuthRouteHandlers({
     bus: wrapped as never,
