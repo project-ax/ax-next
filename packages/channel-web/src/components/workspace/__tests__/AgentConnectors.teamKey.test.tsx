@@ -2,7 +2,7 @@
  * TASK-813 — team keys, and who may sign in ON a team agent.
  *
  * Pinned:
- *   - "Add team key" is on a row's `⋯` menu only when the row says `teamKey`;
+ *   - "Team key" is on a row's `⋯` menu only when the row says `teamKey`;
  *   - the dialog saves through the REAL `workspaceApi.setTeamKey`: one PUT to
  *     the agent's team-key route with the slot and the base64 key, and never a
  *     write to the personal (`/settings/…`) or company (`/admin/…`) key routes;
@@ -39,6 +39,8 @@ vi.mock('@/lib/workspace-api', async () => {
       setToolVerdict: vi.fn(),
       // The real client: the PUT it builds is what's under test.
       setTeamKey: actual.workspaceApi.setTeamKey,
+      getTeamKeys: vi.fn(),
+      removeTeamKey: vi.fn(),
     },
   };
 });
@@ -154,7 +156,7 @@ async function menuItems(name: string) {
 
 async function openTeamKey(name: string) {
   const menu = await openMenu(name);
-  fireEvent.click(within(menu).getByRole('menuitem', { name: 'Add team key' }));
+  fireEvent.click(within(menu).getByRole('menuitem', { name: 'Team key' }));
   return screen.findByRole('dialog');
 }
 
@@ -171,24 +173,25 @@ beforeEach(() => {
     abilities: { webSearch: true, readPages: true, runCode: true },
   });
   getConnectorMock.mockImplementation(async (id) => (id === 'acme' ? TWO_KEYS : LINEAR));
+  vi.mocked(workspaceApi.getTeamKeys).mockResolvedValue([]);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('Add team key (TASK-813)', () => {
+describe('Team key (TASK-813)', () => {
   it('is on the menu only for a row that says teamKey; Add key-less rows keep their menu', async () => {
     list([row({ teamKey: true }), row({ id: 'gmail', name: 'Gmail' })]);
     renderTab();
     expect(await menuItems('Linear')).toEqual([
       'View details',
-      'Add team key',
+      'Team key',
       'Remove from Quill',
     ]);
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
-    expect(await menuItems('Gmail')).not.toContain('Add team key');
+    expect(await menuItems('Gmail')).not.toContain('Team key');
   });
 
   it('saves through the team-key PUT — slot + base64 key — and never the personal or company routes', async () => {
@@ -196,7 +199,7 @@ describe('Add team key (TASK-813)', () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ saved: true }), { status: 200 }));
     renderTab();
     const dialog = await openTeamKey('Linear');
-    expect(within(dialog).getByRole('heading', { name: 'Add team key' })).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Team key' })).toBeTruthy();
     expect(
       within(dialog).getByText(/Everyone using Quill will use this key for Linear, unless they’ve added their own\./),
     ).toBeTruthy();
@@ -204,7 +207,7 @@ describe('Add team key (TASK-813)', () => {
     expect(within(dialog).getByRole('note')).toBeTruthy();
     await waitFor(() => expect(getConnectorMock).toHaveBeenCalledWith('linear', '/settings/connectors'));
     // Only the api-key slot: not the sign-in, not the OAuth client secret.
-    const inputs = await within(dialog).findAllByLabelText(/api key/i);
+    const inputs = await within(dialog).findAllByLabelText(/^(replace )?api key$/i);
     expect(inputs).toHaveLength(1);
     expect(within(dialog).getByText('LINEAR_API_KEY')).toBeTruthy();
     expect(within(dialog).queryByText('OAUTH_CLIENT_SECRET')).toBeNull();
@@ -231,7 +234,7 @@ describe('Add team key (TASK-813)', () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ saved: true }), { status: 200 }));
     renderTab();
     const dialog = await openTeamKey('Acme');
-    const inputs = await within(dialog).findAllByLabelText(/api key/i);
+    const inputs = await within(dialog).findAllByLabelText(/^(replace )?api key$/i);
     expect(inputs).toHaveLength(2);
     fireEvent.change(inputs[0]!, { target: { value: 'k1' } });
     fireEvent.submit(inputs[0]!.closest('form')!);
@@ -239,7 +242,7 @@ describe('Add team key (TASK-813)', () => {
     expect(screen.getByRole('dialog')).toBeTruthy();
     expect(connectorsMock).toHaveBeenCalledTimes(1);
 
-    const second = within(dialog).getAllByLabelText(/api key/i)[1]!;
+    const second = within(dialog).getAllByLabelText(/^(replace )?api key$/i)[1]!;
     fireEvent.change(second, { target: { value: 'k2' } });
     fireEvent.submit(second.closest('form')!);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -256,12 +259,30 @@ describe('Add team key (TASK-813)', () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
     renderTab();
     const dialog = await openTeamKey('Linear');
-    const input = (await within(dialog).findAllByLabelText(/api key/i))[0]!;
+    const input = (await within(dialog).findAllByLabelText(/^(replace )?api key$/i))[0]!;
     fireEvent.change(input, { target: { value: 'lin_team_1' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(await within(dialog).findByText(TEAM_KEY_FORBIDDEN)).toBeTruthy();
     expect(screen.getByRole('dialog')).toBeTruthy();
     expect(connectorsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('removing a saved team key re-reads the list and keeps the dialog open (TASK-854)', async () => {
+    list([row({ teamKey: true })]);
+    vi.mocked(workspaceApi.getTeamKeys).mockResolvedValue([{ slot: 'LINEAR_API_KEY', saved: true }]);
+    vi.mocked(workspaceApi.removeTeamKey).mockResolvedValue(undefined);
+    renderTab();
+    const dialog = await openTeamKey('Linear');
+    expect(await within(dialog).findByText('Key saved')).toBeTruthy();
+    expect(connectorsMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove key' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    expect(await within(dialog).findByText('No key')).toBeTruthy();
+    expect(workspaceApi.removeTeamKey).toHaveBeenCalledWith('a-quill', 'linear', 'LINEAR_API_KEY');
+    await waitFor(() => expect(connectorsMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    // Nothing went near the personal or company key routes.
+    expect(keyWrites()).toEqual([]);
   });
 
   it('a connector that won’t load says so, with no key form', async () => {
@@ -270,7 +291,7 @@ describe('Add team key (TASK-813)', () => {
     renderTab();
     const dialog = await openTeamKey('Linear');
     expect(await within(dialog).findByText('We couldn’t open Linear just now. Please try again.')).toBeTruthy();
-    expect(within(dialog).queryByLabelText(/api key/i)).toBeNull();
+    expect(within(dialog).queryByLabelText(/^(replace )?api key$/i)).toBeNull();
   });
 });
 

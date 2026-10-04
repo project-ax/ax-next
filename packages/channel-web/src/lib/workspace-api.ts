@@ -486,7 +486,7 @@ async function req<T>(
 }
 
 /** TASK-813 — the team-key refusals a person can act on. */
-export const TEAM_KEY_FORBIDDEN = 'Only the team’s admins can add a team key.';
+export const TEAM_KEY_FORBIDDEN = 'Only the team’s admins can add or remove a team key.';
 export const TEAM_KEY_UNAVAILABLE =
   'A team key can’t be used for this connector. Each person can still add their own key.';
 export const TEAM_KEY_INVALID = 'That key didn’t look right. Check it and paste it again.';
@@ -513,6 +513,47 @@ async function teamKeyRefusal(res: Response): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/** TASK-854 — one team-key slot and whether a key is saved for it. Never the key. */
+export interface TeamKeySlot {
+  slot: string;
+  saved: boolean;
+}
+
+function teamKeyUrl(agentId: string, connectorId: string): string {
+  return `/api/workspace/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/team-key`;
+}
+
+/**
+ * One call to `…/connectors/:connectorId/team-key` (TASK-813/854).
+ *
+ * Not `req()`: a secret rides in the PUT body, so a transport exception is
+ * replaced by a bare `HttpError` (the original may carry request details),
+ * and nothing here logs anything but the route and status. A refusal wears
+ * {@link teamKeyRefusal}'s sentence. Answers the ok `Response`.
+ */
+async function teamKeyCall(
+  agentId: string,
+  connectorId: string,
+  method: 'GET' | 'PUT' | 'DELETE',
+  body?: Record<string, string>,
+): Promise<Response> {
+  const url = teamKeyUrl(agentId, connectorId);
+  const route = url.slice('/api/workspace'.length);
+  let res: Response;
+  try {
+    res = await httpFetch(url, {
+      method,
+      ...(method === 'GET' ? {} : { headers: writeHeaders }),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch {
+    throw new HttpError(url, 0);
+  }
+  if (res.ok) return res;
+  console.warn(`[workspace] ${method} ${route} → ${res.status}`);
+  throw new HttpError(url, res.status, await teamKeyRefusal(res));
 }
 
 export interface RouteProposal {
@@ -994,22 +1035,38 @@ export const workspaceApi = {
     slot: string,
     payload: string,
   ): Promise<void> => {
-    const route =
-      `/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/team-key`;
-    const url = `/api/workspace${route}`;
-    let res: Response;
-    try {
-      res = await httpFetch(url, {
-        method: 'PUT',
-        headers: writeHeaders,
-        body: JSON.stringify({ slot, payloadB64: utf8Base64(payload) }),
-      });
-    } catch {
-      throw new HttpError(url, 0);
+    await teamKeyCall(agentId, connectorId, 'PUT', {
+      slot,
+      payloadB64: utf8Base64(payload),
+    });
+  },
+
+  /**
+   * TASK-854 — which of this connector's team-key slots have a key saved.
+   * Presence only: the server answers `{ slot, saved }` per slot and nothing
+   * else, and only those two fields are kept even if more arrive. A body that
+   * isn't that shape is a failure — never read as "no keys".
+   */
+  getTeamKeys: async (agentId: string, connectorId: string): Promise<TeamKeySlot[]> => {
+    const res = await teamKeyCall(agentId, connectorId, 'GET');
+    const body = (await res.json().catch(() => null)) as { slots?: unknown } | null;
+    if (body === null || !Array.isArray(body.slots)) {
+      throw new HttpError(teamKeyUrl(agentId, connectorId), 502);
     }
-    if (res.ok) return;
-    console.warn(`[workspace] ${route} → ${res.status}`);
-    throw new HttpError(url, res.status, await teamKeyRefusal(res));
+    return body.slots.flatMap((s: unknown) => {
+      const e = s as { slot?: unknown; saved?: unknown } | null;
+      return e !== null && typeof e.slot === 'string' && typeof e.saved === 'boolean'
+        ? [{ slot: e.slot, saved: e.saved }]
+        : [];
+    });
+  },
+
+  /**
+   * TASK-854 — remove this team agent's key for one slot. The server derives
+   * the vault ref itself; only the slot name is sent. Idempotent.
+   */
+  removeTeamKey: async (agentId: string, connectorId: string, slot: string): Promise<void> => {
+    await teamKeyCall(agentId, connectorId, 'DELETE', { slot });
   },
 
   /**

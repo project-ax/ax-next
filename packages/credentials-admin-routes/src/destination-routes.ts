@@ -255,7 +255,8 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     // route (channel-web), which asks @ax/agents. Being a workspace admin is
     // not enough, so this admin route refuses that one combination outright
     // rather than becoming a second door around the team-admin check.
-    // Provider / other refs at agent scope, and deletes, are unchanged.
+    // Provider / other refs at agent scope are unchanged; deletes refuse the
+    // same combination (TASK-854, `doDelete`).
     if (scope === 'agent' && data.destination.kind === 'account') {
       res.status(403).json({ error: 'team-key-via-agent' });
       return;
@@ -359,6 +360,15 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
 
     const scope = forceUser !== null ? ('user' as const) : data.scope;
     const ownerId = forceUser !== null ? forceUser.id : data.ownerId;
+
+    // TASK-854 — the delete twin of the create refusal above: removing a team
+    // agent's team key is the team admins' call too, through the agent's own
+    // team-key route. A workspace admin is refused here before the vault is
+    // touched, so this route is not a second door for removing it either.
+    if (scope === 'agent' && data.destination.kind === 'account') {
+      res.status(403).json({ error: 'team-key-via-agent' });
+      return;
+    }
 
     let ref: string;
     try {

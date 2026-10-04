@@ -918,7 +918,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'agents:can-set-shared-credential',
           degradation:
-            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and PUT …/connectors/:connectorId/team-key answers 503 connectors-unavailable',
+            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and PUT, GET and DELETE …/connectors/:connectorId/team-key answer 503 connectors-unavailable',
         },
         {
           hook: 'credentials:authorize-agent:account',
@@ -929,6 +929,16 @@ describe('@ax/channel-web server plugin (integration)', () => {
           hook: 'credentials:set',
           degradation:
             'PUT …/connectors/:connectorId/team-key answers 503 credentials-unavailable (a team key cannot be saved)',
+        },
+        {
+          hook: 'credentials:list',
+          degradation:
+            'GET …/connectors/:connectorId/team-key answers 503 credentials-unavailable (whether a team key is saved cannot be read)',
+        },
+        {
+          hook: 'credentials:delete',
+          degradation:
+            'DELETE …/connectors/:connectorId/team-key answers 503 credentials-unavailable (a team key cannot be removed)',
         },
         {
           hook: 'connectors:get',
