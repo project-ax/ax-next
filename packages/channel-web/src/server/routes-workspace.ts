@@ -7545,9 +7545,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         res.status(503).json({ error: 'connectors-unavailable' });
         return;
       }
+      // TASK-820 — get-connector-defaults is what tells this route whether a
+      // tool is agent-sourced, i.e. whether the team Allow below owes the
+      // manage check. Without it the route cannot know, and not knowing must
+      // be a refusal, not a write: fail closed up front, as the GET does.
       if (
         !bus.hasService('tool-policy:set-agent-override') ||
-        !bus.hasService('tool-policy:list-agent-overrides')
+        !bus.hasService('tool-policy:list-agent-overrides') ||
+        !bus.hasService('tool-policy:get-connector-defaults')
       ) {
         res.status(503).json({ error: 'tool-permissions-unavailable' });
         return;
@@ -7596,20 +7601,18 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // runs, so lifting a tool above Ask first there takes the TASK-798
       // authority (workspace admin, or the team's admins). Ask first and Deny
       // stay open to members, as before. A fault in the check is a 5xx, never
-      // a quiet yes; a missing check is a no.
+      // a quiet yes; a missing manage check is a no, and a missing
+      // get-connector-defaults was already a 503 above (TASK-820).
       if (verdict === 'allow' && agent.visibility === 'team' && !actor.isAdmin) {
-        let sourced = false;
-        if (bus.hasService('tool-policy:get-connector-defaults')) {
-          const out = await bus.call<GetConnectorDefaultsInput, GetConnectorDefaultsOutput>(
-            'tool-policy:get-connector-defaults',
-            ctx,
-            { connectorId, toolNamespaces: [keyNamespace] },
-          );
-          // An answer we can't read counts as agent-sourced: the manage check
-          // then runs, which is the closed direction (the GET caps the same way).
-          const list: unknown = out?.agentSourcedNamespaces;
-          sourced = !Array.isArray(list) || (list as unknown[]).includes(keyNamespace);
-        }
+        const out = await bus.call<GetConnectorDefaultsInput, GetConnectorDefaultsOutput>(
+          'tool-policy:get-connector-defaults',
+          ctx,
+          { connectorId, toolNamespaces: [keyNamespace] },
+        );
+        // An answer we can't read counts as agent-sourced: the manage check
+        // then runs, which is the closed direction (the GET caps the same way).
+        const list: unknown = out?.agentSourcedNamespaces;
+        const sourced = !Array.isArray(list) || (list as unknown[]).includes(keyNamespace);
         if (sourced) {
           const mayManage =
             bus.hasService('agents:can-manage-connectors') &&
