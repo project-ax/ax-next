@@ -6541,6 +6541,57 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       expect(counters.terminates).not.toContain('s-1');
     });
 
+    // Review finding (TASK-806): a multi-ref connector skipped because ONE ref
+    // is absent must not re-spawn on every turn just because its OTHER ref is
+    // present — only a previously-absent ref turning present counts.
+    it('a multi-ref connector with one ref present and one still absent stays warm (no respawn loop)', async () => {
+      const present = new Set(['account:multi:A']);
+      const hasCalls: string[] = [];
+      const { h, counters } = await makeKeepaliveHarness({
+        'connectors:list-effective': async () => ({
+          connectors: [
+            {
+              summary: { id: 'multi', name: 'Multi' },
+              source: 'default',
+              capabilities: {
+                allowedHosts: ['multi.example.com'],
+                credentials: [
+                  { slot: 'A', kind: 'api-key' },
+                  { slot: 'B', kind: 'api-key' },
+                ],
+                mcpServers: [],
+              },
+            },
+          ],
+        }),
+        'credentials:has': async (_c: unknown, input: unknown) => {
+          const ref = (input as { ref: string }).ref;
+          hasCalls.push(ref);
+          return { present: present.has(ref) };
+        },
+      } as Record<string, ServiceHandler>);
+      for (const reqId of ['req-1', 'req-2', 'req-3']) {
+        fireTurnEnd(h.bus, 's-1', reqId);
+        await h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId }),
+          { message: { role: 'user', content: 'hi' } },
+        );
+      }
+      expect(counters.opens).toBe(1);
+      expect(counters.terminates).not.toContain('s-1');
+      // Then the missing ref is added → the next turn re-spawns.
+      present.add('account:multi:B');
+      fireTurnEnd(h.bus, 's-1', 'req-4');
+      await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-4' }),
+        { message: { role: 'user', content: 'hi' } },
+      );
+      expect(counters.opens).toBe(2);
+      expect(hasCalls).toContain('account:multi:B');
+    });
+
     it('a session that skipped nothing never asks on the routed turn', async () => {
       const vault = { signedIn: true, hasCalls: [] as string[] };
       const counters = await twoTurns(vault, () => undefined);

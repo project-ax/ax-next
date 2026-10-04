@@ -472,8 +472,8 @@ export interface ConnectorSignInPartition {
   /** Connectors this caller can use: folded into the session as before. */
   kept: ResolvedConnectorForOrch[];
   /** Connectors with at least one credential this caller has never set up,
-   *  with the refs that were checked (re-asked on a routed turn so a sign-in
-   *  re-spawns the session). */
+   *  with the refs that came back ABSENT (re-asked on a routed turn so a
+   *  sign-in re-spawns the session). */
   skipped: Array<{ connector: ResolvedConnectorForOrch; refs: string[] }>;
 }
 
@@ -506,8 +506,13 @@ export async function partitionConnectorsBySignIn(
   const verdicts = await Promise.all(
     connectors.map(async (connector) => {
       const refs = [...new Set(connectorCredentialSlots(connector).map((s) => s.ref))];
-      const absent = await Promise.all(refs.map((ref) => refAbsent(bus, ctx, ref)));
-      return { connector, refs, skip: absent.some((a) => a) };
+      const absentFlags = await Promise.all(refs.map((ref) => refAbsent(bus, ctx, ref)));
+      // Only the ABSENT refs are remembered: the routed-turn re-check retires
+      // the session when one of them turns present. A sibling ref that was
+      // already present must not count, or a half-set-up multi-slot connector
+      // would re-spawn the session on every turn.
+      const absentRefs = refs.filter((_, i) => absentFlags[i] === true);
+      return { connector, refs: absentRefs, skip: absentRefs.length > 0 };
     }),
   );
   const partition: ConnectorSignInPartition = { kept: [], skipped: [] };

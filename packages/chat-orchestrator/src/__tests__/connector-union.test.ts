@@ -1137,7 +1137,7 @@ describe('partitionConnectorsBySignIn (TASK-806)', () => {
     });
     const out = await partitionConnectorsBySignIn(bus, ctx(), [conn('a'), conn('b', 2)]);
     expect(out.kept.map((c) => c.id)).toEqual(['a']);
-    expect(out.skipped).toEqual([{ connector: conn('b', 2), refs: ['account:b:S0', 'account:b:S1'] }]);
+    expect(out.skipped).toEqual([{ connector: conn('b', 2), refs: ['account:b:S1'] }]);
     expect(new Set(asked.map((a) => a.userId))).toEqual(new Set(['u']));
   });
 
