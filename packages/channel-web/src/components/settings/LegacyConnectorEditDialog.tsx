@@ -11,10 +11,10 @@
  * Command-line tool — reshapes the visible fields (the old "Advanced — how it
  * connects" disclosure is GONE). The form logic lives in `lib/connector-form`,
  * the one source of truth (invariant #4):
- *   - MCP server   → transport (stdio command+args / http url) + secrets.
+ *   - MCP server   → an http url + secrets (headers).
  *   - Direct API   → allowed hosts + key(s) (proxy-injected).
  *   - Command-line → an npm/pypi package + allowed hosts + env secrets.
- * The backing-mechanism vocabulary (transport / command / url / packages) never
+ * The backing-mechanism vocabulary (transport / url / packages) never
  * becomes a first-class field — it is assembled into the opaque `capabilities`
  * spec on submit (invariant #1).
  *
@@ -23,7 +23,7 @@
  * id — each connector owns its own key, no share-by-service).
  *
  * SECURITY (invariant #5): EVERY field is browser-supplied and UNTRUSTED — hosts,
- * commands, package names, credential SLOT NAMES (never values). They flow to the
+ * URLs, package names, credential SLOT NAMES (never values). They flow to the
  * owner-scoped `/admin/connectors` routes, which force the owner from the session
  * and validate the opaque `capabilities` against the canonical schema
  * server-side; nothing here is trusted. The Command-line path declares an
@@ -64,7 +64,6 @@ import {
   STARTER_SERVICE_EXAMPLES,
   type ConnectorFormState,
   type Mechanism,
-  type Transport,
   type PackageRegistry,
 } from '@/lib/connector-form';
 import {
@@ -129,9 +128,7 @@ export interface ConnectorEditDialogProps {
 
 /** Per-mechanism "what the secrets are" label (truthful per the design). */
 function secretsLabel(form: ConnectorFormState): string {
-  if (form.mechanism === 'mcp') {
-    return form.transport === 'stdio' ? 'Secrets (env vars)' : 'Secrets (headers)';
-  }
+  if (form.mechanism === 'mcp') return 'Secrets (headers)';
   if (form.mechanism === 'cli') return 'Secrets (env vars)';
   return 'API key(s)';
 }
@@ -492,8 +489,7 @@ export function LegacyConnectorEditDialog({
     hosts: string[];
   } | null>(null);
   const [discoveryRetry, setDiscoveryRetry] = useState(0);
-  const discoveryUrl = open && form.mechanism === 'mcp' && form.transport === 'http'
-    ? form.url.trim() : '';
+  const discoveryUrl = open && form.mechanism === 'mcp' ? form.url.trim() : '';
   const validDiscoveryUrl = (() => {
     try {
       const url = new URL(discoveryUrl);
@@ -567,8 +563,8 @@ export function LegacyConnectorEditDialog({
     };
   }, [open, target, base, connector]);
 
-  // TASK-758 — a saved server that keeps its name but gets a new command,
-  // args or URL loses its tool permissions on save (the server resets them to
+  // TASK-758 — a saved server that keeps its name but gets a new URL
+  // loses its tool permissions on save (the server resets them to
   // Ask first), so say so before Save. Compared on what Save would actually
   // send, against what was loaded; a new connector has nothing to lose.
   const endpointChanged =
@@ -850,68 +846,21 @@ export function LegacyConnectorEditDialog({
             {form.mechanism === 'mcp' && (
               <>
                 <div className="flex flex-col gap-2">
-                  <Label htmlFor="connector-transport">Transport</Label>
-                  <Select
-                    value={form.transport}
-                    onValueChange={(v) =>
-                      setForm((f) => ({ ...f, transport: v as Transport }))
+                  <Label htmlFor="connector-url">URL</Label>
+                  <Input
+                    id="connector-url"
+                    type="text"
+                    placeholder="https://..."
+                    value={form.url}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, url: e.target.value }))
                     }
-                  >
-                    <SelectTrigger id="connector-transport">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="stdio">stdio (local binary)</SelectItem>
-                      <SelectItem value="http">http (remote server)</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  />
                 </div>
-
-                {form.transport === 'stdio' ? (
-                  <>
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="connector-command">Command</Label>
-                      <Input
-                        id="connector-command"
-                        type="text"
-                        placeholder="e.g. mcp-gdrive"
-                        value={form.command}
-                        onChange={(e) =>
-                          setForm((f) => ({ ...f, command: e.target.value }))
-                        }
-                      />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="connector-args">Args (space-separated)</Label>
-                      <Input
-                        id="connector-args"
-                        type="text"
-                        placeholder="optional"
-                        value={form.args}
-                        onChange={(e) =>
-                          setForm((f) => ({ ...f, args: e.target.value }))
-                        }
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    <Label htmlFor="connector-url">URL</Label>
-                    <Input
-                      id="connector-url"
-                      type="text"
-                      placeholder="https://..."
-                      value={form.url}
-                      onChange={(e) =>
-                        setForm((f) => ({ ...f, url: e.target.value }))
-                      }
-                    />
-                  </div>
-                )}
                 {endpointChanged && (
                   <Alert role="note" data-testid="endpoint-change-resets-tools">
                     <AlertDescription>
-                      Changing how this server starts resets its tool permissions.
+                      Changing this server’s address resets its tool permissions.
                       Every tool goes back to asking first, and choices people made
                       for their own agents are cleared too. Once it’s saved, you can
                       choose again.
@@ -964,57 +913,55 @@ export function LegacyConnectorEditDialog({
 
             {/* OAuth metadata and token endpoints can live on different hosts
                 than the MCP server. Keep their reach explicit and editable. */}
-            {(form.mechanism !== 'mcp' || form.transport === 'http') && (
-              <FieldGroup>
-                <Field>
-                  <FieldLabel htmlFor="connector-hosts">
-                    Allowed hosts (comma-separated)
-                  </FieldLabel>
-                  <Input
-                    id="connector-hosts"
-                    type="text"
-                    placeholder="e.g. api.stripe.com"
-                    value={form.allowedHosts}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, allowedHosts: e.target.value }))
-                    }
-                  />
-                  {form.mechanism === 'mcp' && (
-                    <FieldDescription>
-                      The server’s host is included automatically. OAuth hosts
-                      discovered below are added when you save. Enter any other
-                      hosts this connector needs here.
-                    </FieldDescription>
-                  )}
-                </Field>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="connector-hosts">
+                  Allowed hosts (comma-separated)
+                </FieldLabel>
+                <Input
+                  id="connector-hosts"
+                  type="text"
+                  placeholder="e.g. api.stripe.com"
+                  value={form.allowedHosts}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, allowedHosts: e.target.value }))
+                  }
+                />
                 {form.mechanism === 'mcp' && (
-                  <Field>
-                    <FieldTitle>OAuth hosts from MCP metadata</FieldTitle>
-                    <div role="status" aria-live="polite" className="min-w-0">
-                      {discoveringHosts ? (
-                        <FieldDescription>Discovering OAuth hosts…</FieldDescription>
-                      ) : currentDiscovery?.status === 'ready' ? (
-                        <>
-                          <ul className="flex flex-col gap-1 text-sm">
-                            {discoveredHosts.map((host) => <li key={host} className="break-all">{host}</li>)}
-                          </ul>
-                          <FieldDescription>These hosts will be included in the allowlist when you save.</FieldDescription>
-                        </>
-                      ) : currentDiscovery?.status === 'error' ? (
-                        <>
-                          <FieldDescription>Could not discover OAuth hosts. Check the URL, retry, or enter the hosts manually above.</FieldDescription>
-                          <Button type="button" variant="outline" size="sm" onClick={() => setDiscoveryRetry((n) => n + 1)}>
-                            Retry discovery
-                          </Button>
-                        </>
-                      ) : (
-                        <FieldDescription>Enter a public HTTPS MCP URL to discover its OAuth hosts.</FieldDescription>
-                      )}
-                    </div>
-                  </Field>
+                  <FieldDescription>
+                    The server’s host is included automatically. OAuth hosts
+                    discovered below are added when you save. Enter any other
+                    hosts this connector needs here.
+                  </FieldDescription>
                 )}
-              </FieldGroup>
-            )}
+              </Field>
+              {form.mechanism === 'mcp' && (
+                <Field>
+                  <FieldTitle>OAuth hosts from MCP metadata</FieldTitle>
+                  <div role="status" aria-live="polite" className="min-w-0">
+                    {discoveringHosts ? (
+                      <FieldDescription>Discovering OAuth hosts…</FieldDescription>
+                    ) : currentDiscovery?.status === 'ready' ? (
+                      <>
+                        <ul className="flex flex-col gap-1 text-sm">
+                          {discoveredHosts.map((host) => <li key={host} className="break-all">{host}</li>)}
+                        </ul>
+                        <FieldDescription>These hosts will be included in the allowlist when you save.</FieldDescription>
+                      </>
+                    ) : currentDiscovery?.status === 'error' ? (
+                      <>
+                        <FieldDescription>Could not discover OAuth hosts. Check the URL, retry, or enter the hosts manually above.</FieldDescription>
+                        <Button type="button" variant="outline" size="sm" onClick={() => setDiscoveryRetry((n) => n + 1)}>
+                          Retry discovery
+                        </Button>
+                      </>
+                    ) : (
+                      <FieldDescription>Enter a public HTTPS MCP URL to discover its OAuth hosts.</FieldDescription>
+                    )}
+                  </div>
+                </Field>
+              )}
+            </FieldGroup>
 
             {/* Structured credential-slot rows. */}
             <div className="flex flex-col gap-3">

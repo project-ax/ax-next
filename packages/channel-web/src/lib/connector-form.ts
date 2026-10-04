@@ -10,14 +10,13 @@
  * MCP server / Direct API / Command-line tool — that reshapes which slice of the
  * opaque `capabilities` it edits. The "Advanced — how it connects" disclosure is
  * gone. `mechanism` is a FORM-ONLY enum, NEVER a stored connector field: the
- * backing-mechanism vocabulary (transport / command / url / mcp / packages) stays
+ * backing-mechanism vocabulary (transport / url / mcp / packages) stays
  * inside the opaque `ConnectorCapabilities` spec (invariant #1). On edit the
  * mechanism is INFERRED from the loaded capabilities (packages → cli; leading
  * mcpServer → mcp; else direct-api).
  *
- *   - MCP server   → builds the leading `mcpServers[0]` (stdio command+args, or
- *                    http url); credential slots are its secrets (env for stdio,
- *                    headers for http — a UI label difference only).
+ *   - MCP server   → builds the leading `mcpServers[0]` (an http url); credential
+ *                    slots are its secrets (headers).
  *   - Direct API   → no mcpServer, no packages; top-level `allowedHosts` +
  *                    credential slots (the proxy-injected key(s)).
  *   - Command-line → `packages.{npm|pypi}` (a single leading package) +
@@ -26,7 +25,7 @@
  *
  * Round-trip discipline: `capabilitiesFromForm` MERGES onto the loaded
  * connector's original capabilities so un-surfaced fill — beyond-first mcpServers
- * / packages, the leading server's inner env/hosts/creds — is PRESERVED on edit,
+ * / packages, the leading server's inner hosts/creds — is PRESERVED on edit,
  * never wiped. Switching mechanism CLEARS the now-irrelevant LEADING fill (the
  * leading mcpServer for non-MCP; the leading package for non-CLI) while leaving
  * beyond-first entries untouched.
@@ -49,8 +48,6 @@ import {
   type ConnectorOAuthSlot,
   type ServiceDescriptor,
 } from './connectors';
-
-export type Transport = 'stdio' | 'http';
 
 /** Which backing mechanism the form is shaping. FORM-ONLY — never stored. */
 export type Mechanism = 'mcp' | 'direct-api' | 'cli';
@@ -101,9 +98,6 @@ export interface ConnectorFormState {
   /** The chosen backing mechanism — reshapes which fields the form edits. */
   mechanism: Mechanism;
   // MCP fields (mechanism === 'mcp').
-  transport: Transport;
-  command: string;
-  args: string; // space-separated
   url: string;
   // Command-line fields (mechanism === 'cli'). A single leading package.
   packageRegistry: PackageRegistry;
@@ -124,7 +118,7 @@ export interface ConnectorFormState {
   /**
    * The loaded connector's full capabilities (empty for a new connector). The
    * form edits the LEADING slice for the chosen mechanism; beyond-first
-   * mcpServers / packages and the leading server's inner env/hosts/creds are
+   * mcpServers / packages and the leading server's inner hosts/creds are
    * carried here and MERGED on submit, never wiped.
    */
   baseCapabilities: ConnectorCapabilities;
@@ -138,9 +132,6 @@ export const emptyConnectorForm = (): ConnectorFormState => ({
   keyMode: 'personal',
   visibility: 'shared',
   mechanism: 'mcp',
-  transport: 'stdio',
-  command: '',
-  args: '',
   url: '',
   packageRegistry: 'npm',
   packageName: '',
@@ -222,9 +213,6 @@ export function formFromConnector(c: Connector): ConnectorFormState {
     keyMode: c.keyMode,
     visibility: c.visibility,
     mechanism,
-    transport: mcp?.transport ?? 'stdio',
-    command: mcp?.command ?? '',
-    args: (mcp?.args ?? []).join(' '),
     url: mcp?.url ?? '',
     packageRegistry: pkg.registry,
     packageName: pkg.name,
@@ -280,9 +268,9 @@ function rowsToSlots(
   return result;
 }
 
-/** Build the leading MCP server, overlaying transport/command/args/url onto any
- *  existing leading server so its un-surfaced inner fields (env, inner hosts /
- *  credentials) survive. */
+/** Build the leading MCP server, overlaying the http url onto any existing
+ *  leading server so its un-surfaced inner fields (inner hosts / credentials)
+ *  survive. */
 function buildLeadingMcpServer(
   form: ConnectorFormState,
   existing: ConnectorMcpServerSpec | undefined,
@@ -295,29 +283,17 @@ function buildLeadingMcpServer(
     name: existing?.name || form.connectorId || connectorIdFromName(form.name),
     allowedHosts: existing?.allowedHosts ?? [],
     credentials: existing?.credentials ?? [],
-    ...(existing?.env !== undefined ? { env: existing.env } : {}),
-    transport: form.transport,
-    ...(form.transport === 'stdio'
-      ? {
-          command: form.command.trim(),
-          args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
-        }
-      : { url: form.url.trim() }),
+    transport: 'http',
+    url: form.url.trim(),
   };
 }
 
 /**
  * WHICH server a spec is — the same fields the server compares
- * (`@ax/connectors` `endpointOf`, TASK-755): transport, url, command, args. No
- * args and an empty arg list start the same process, so they compare equal.
+ * (`@ax/connectors` `endpointOf`, TASK-755): transport, url.
  */
 function endpointOf(spec: ConnectorMcpServerSpec): string {
-  return JSON.stringify([
-    spec.transport,
-    spec.url ?? null,
-    spec.command ?? null,
-    spec.args ?? [],
-  ]);
+  return JSON.stringify([spec.transport, spec.url ?? null]);
 }
 
 /**
@@ -369,9 +345,7 @@ export function capabilitiesFromForm(
   // cleared one.
   let mcpServers = base.mcpServers.slice(1);
   if (form.mechanism === 'mcp') {
-    const hasMcp =
-      (form.transport === 'http' && form.url.trim().length > 0) ||
-      (form.transport === 'stdio' && form.command.trim().length > 0);
+    const hasMcp = form.url.trim().length > 0;
     if (hasMcp) {
       mcpServers = [buildLeadingMcpServer(form, base.mcpServers[0]), ...mcpServers];
     }

@@ -37,9 +37,9 @@ const connector: Connector = {
         credentials: [],
       },
       {
-        name: 'local',
-        transport: 'stdio',
-        command: 'node',
+        name: 'second',
+        transport: 'http',
+        url: 'https://mcp.example.com/second',
         allowedHosts: [],
         credentials: [],
       },

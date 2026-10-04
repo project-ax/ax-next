@@ -57,10 +57,7 @@ interface CapabilitySlot {
 
 interface McpServerSpec {
   name: string;
-  transport: 'stdio' | 'http';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
+  transport: 'http';
   url?: string;
   allowedHosts: string[];
   credentials: CapabilitySlot[];

@@ -7,7 +7,7 @@ export interface McpServer {
   id: string;
   name: string;
   url: string;
-  transport: 'http' | 'stdio' | 'sse' | 'streamable-http';
+  transport: 'http' | 'sse' | 'streamable-http';
   created_at: number;
   updated_at: number;
 }
@@ -15,11 +15,7 @@ export interface McpServer {
 export interface McpServerInput {
   name?: string;
   url?: string;
-  transport?: 'http' | 'stdio' | 'sse' | 'streamable-http';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  credentialRefs?: Record<string, string>;
+  transport?: 'http' | 'sse' | 'streamable-http';
   headerCredentialRefs?: Record<string, string>;
 }
 
@@ -30,16 +26,6 @@ export interface McpServerInput {
  * via cross-package imports (CLAUDE.md invariant 2).
  */
 export type McpServerConfig =
-  | {
-      id: string;
-      enabled: boolean;
-      transport: 'stdio';
-      command: string;
-      args: string[];
-      env?: Record<string, string>;
-      credentialRefs?: Record<string, string>;
-      ownerId: string | null;
-    }
   | {
       id: string;
       enabled: boolean;
@@ -94,7 +80,7 @@ function newMcpId(): string {
   return `mcp-${ts}-${rand}`;
 }
 
-const VALID_TRANSPORTS = new Set(['http', 'stdio', 'sse', 'streamable-http']);
+const VALID_TRANSPORTS = new Set(['http', 'sse', 'streamable-http']);
 
 export function adminMcpServersMiddleware(
   store: Store,
@@ -124,10 +110,6 @@ export function adminMcpServersMiddleware(
       const body = (await readJsonBody(req)) as McpServerInput;
       if (!body.name || !body.transport || !VALID_TRANSPORTS.has(body.transport)) {
         send(res, 400, { error: 'missing or invalid fields' });
-        return true;
-      }
-      if (body.transport === 'stdio' && !body.command) {
-        send(res, 400, { error: 'missing command for stdio transport' });
         return true;
       }
       if ((body.transport === 'http' || body.transport === 'sse' || body.transport === 'streamable-http') && !body.url) {

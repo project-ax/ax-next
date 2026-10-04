@@ -6,10 +6,10 @@ import * as oauthLib from '@/lib/connectors-oauth';
 import type { ConnectorSummary, Connector } from '@/lib/connectors';
 
 /**
- * TASK-758 — the stdio (legacy) editor says, before Save, that a new command
- * or args resets the server's tool permissions; and when the server refuses
- * the save because that reset failed, it says so plainly instead of the
- * generic "couldn't save".
+ * TASK-758 — the legacy editor says, before Save, that a new server URL
+ * resets the server's tool permissions; and when the server refuses the save
+ * because that reset failed, it says so plainly instead of the generic
+ * "couldn't save".
  */
 
 const SUMMARY: ConnectorSummary = {
@@ -23,7 +23,9 @@ const SUMMARY: ConnectorSummary = {
   updatedAt: '2026-06-01T00:00:00Z',
 };
 
-function full(args?: string[]): Connector {
+const URL_SAVED = 'https://mcp.example.com/gdrive';
+
+function full(): Connector {
   return {
     ...SUMMARY,
     capabilities: {
@@ -31,9 +33,8 @@ function full(args?: string[]): Connector {
       mcpServers: [
         {
           name: 'gdrive',
-          transport: 'stdio',
-          command: 'mcp-gdrive',
-          ...(args !== undefined && { args }),
+          transport: 'http',
+          url: URL_SAVED,
           allowedHosts: [],
           credentials: [],
         },
@@ -55,9 +56,9 @@ async function openEditor(connector: Connector) {
       onSaved={() => {}}
     />,
   );
-  const command = await screen.findByLabelText(/^command$/i);
-  await waitFor(() => expect(command).toHaveValue('mcp-gdrive'));
-  return { command, args: screen.getByLabelText(/^args/i) };
+  const url = await screen.findByLabelText(/^url$/i);
+  await waitFor(() => expect(url).toHaveValue(URL_SAVED));
+  return { url };
 }
 
 describe('LegacyConnectorEditDialog — endpoint change resets tool permissions (TASK-758)', () => {
@@ -67,35 +68,23 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
       auth: 'oauth',
       clientRegistration: { cimd: false, dcr: true },
     });
-    vi.spyOn(connectorsLib, 'patchConnector').mockResolvedValue(full(['--x']));
+    vi.spyOn(connectorsLib, 'patchConnector').mockResolvedValue(full());
     vi.spyOn(connectorsLib, 'createConnector').mockResolvedValue(full());
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it('no warning while the command and args are what was saved', async () => {
-    await openEditor(full(['--read-only']));
+  it('no warning while the URL is what was saved', async () => {
+    await openEditor(full());
     expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
   });
 
-  it('warns when the command changes, and the warning goes away when it is put back', async () => {
-    const { command } = await openEditor(full(['--read-only']));
-    fireEvent.change(command, { target: { value: 'mcp-gdrive-v2' } });
+  it('warns when the URL changes, and the warning goes away when it is put back', async () => {
+    const { url } = await openEditor(full());
+    fireEvent.change(url, { target: { value: 'https://mcp.example.com/gdrive-v2' } });
     expect(await screen.findByTestId(WARNING)).toHaveTextContent(
       /resets its tool permissions.*asking first/i,
     );
-    fireEvent.change(command, { target: { value: 'mcp-gdrive' } });
-    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
-  });
-
-  it('warns when the args change', async () => {
-    const { args } = await openEditor(full(['--read-only']));
-    fireEvent.change(args, { target: { value: '--read-write' } });
-    expect(await screen.findByTestId(WARNING)).toBeInTheDocument();
-  });
-
-  it('a server saved with no args is not "changed" by the empty args box', async () => {
-    const { args } = await openEditor(full());
-    expect(args).toHaveValue('');
+    fireEvent.change(url, { target: { value: URL_SAVED } });
     expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
   });
 
@@ -104,7 +93,7 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
       <LegacyConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
     );
     fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'X' } });
-    fireEvent.change(screen.getByLabelText(/^command$/i), { target: { value: 'mcp-x' } });
+    fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://mcp.example.com/x' } });
     expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
   });
 
@@ -113,7 +102,7 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
       new Error(connectorsLib.TOOL_PERMISSIONS_RESET_FAILED),
     );
     const onSaved = vi.fn();
-    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(full(['--read-only']));
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(full());
     render(
       <LegacyConnectorEditDialog
         target={SUMMARY}
@@ -123,10 +112,13 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
         onSaved={onSaved}
       />,
     );
-    const command = await screen.findByLabelText(/^command$/i);
-    await waitFor(() => expect(command).toHaveValue('mcp-gdrive'));
-    fireEvent.change(command, { target: { value: 'mcp-gdrive-v2' } });
-    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    const url = await screen.findByLabelText(/^url$/i);
+    await waitFor(() => expect(url).toHaveValue(URL_SAVED));
+    fireEvent.change(url, { target: { value: 'https://mcp.example.com/gdrive-v2' } });
+    // Save waits for the new URL's host discovery to settle.
+    const save = screen.getByRole('button', { name: /^save$/i });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
     expect(await screen.findByRole('alert')).toHaveTextContent(
       connectorsLib.TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
     );

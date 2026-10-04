@@ -88,6 +88,39 @@ describe('mock admin mcp-servers', () => {
     }
   });
 
+  it('admin POST refuses the retired stdio transport (remote servers only)', async () => {
+    const { url, close } = await startServer(store);
+    try {
+      const res = await fetch(`${url}/api/admin/mcp-servers`, {
+        method: 'POST',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'local', transport: 'stdio', command: 'node' }),
+      });
+      await expectStatus(res, 400);
+      expect(store.collection<McpServer>('mcp-servers').list()).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
+  it('admin PATCH refuses switching a server to the retired stdio transport', async () => {
+    store
+      .collection<McpServer>('mcp-servers')
+      .upsert({ id: 'm1', name: 'a', url: 'https://mcp.example.com/a', transport: 'streamable-http', created_at: 1, updated_at: 2 });
+    const { url, close } = await startServer(store);
+    try {
+      const res = await fetch(`${url}/api/admin/mcp-servers/m1`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ transport: 'stdio' }),
+      });
+      await expectStatus(res, 400);
+      expect(store.collection<McpServer>('mcp-servers').get('m1')?.transport).toBe('streamable-http');
+    } finally {
+      await close();
+    }
+  });
+
   it('admin PATCH updates mcp server', async () => {
     store
       .collection<McpServer>('mcp-servers')

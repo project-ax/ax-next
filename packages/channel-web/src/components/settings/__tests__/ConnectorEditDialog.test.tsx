@@ -24,16 +24,8 @@ const FULL: Connector = {
     ...connectorsLib.emptyCapabilities(),
     allowedHosts: ['drive.googleapis.com'],
     credentials: [{ slot: 'token', kind: 'api-key' }],
-    mcpServers: [
-      {
-        name: 'gdrive',
-        transport: 'stdio',
-        command: 'mcp-gdrive',
-        args: [],
-        allowedHosts: [],
-        credentials: [],
-      },
-    ],
+    // A Direct-API connector: a host + a key, no MCP server.
+    mcpServers: [],
   },
 };
 
@@ -69,8 +61,6 @@ describe('ConnectorEditDialog', () => {
   async function httpDraft(url = gmailUrl) {
     render(<ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />);
     fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Gmail' } });
-    fireEvent.click(screen.getByRole('combobox', { name: /transport/i }));
-    fireEvent.click(await screen.findByRole('option', { name: /http/i }));
     fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: url } });
   }
 
@@ -104,7 +94,7 @@ describe('ConnectorEditDialog', () => {
 
   it('discovers an existing HTTP connector on edit and preserves its other server and OAuth client configuration', async () => {
     const oauthSlot: ConnectorOAuthSlot = { slot: 'GMAIL_OAUTH', kind: 'oauth', server: 'gmail', clientId: 'dedicated-client', clientSecretRef: 'account:gmail:oauth-client-secret' };
-    const secondServer = { name: 'other', transport: 'stdio' as const, command: 'mcp-other', allowedHosts: [], credentials: [] };
+    const secondServer = { name: 'other', transport: 'http' as const, url: 'https://mcp.example.com/other', allowedHosts: [], credentials: [] };
     const existing: Connector = { ...FULL, id: 'gmail', name: 'Gmail', capabilities: {
       ...connectorsLib.emptyCapabilities(), allowedHosts: ['custom.example.com'], credentials: [oauthSlot],
       mcpServers: [{ name: 'gmail', transport: 'http', url: gmailUrl, allowedHosts: [], credentials: [] }, secondServer],
@@ -261,7 +251,7 @@ describe('ConnectorEditDialog', () => {
     ).toBeNull();
   });
 
-  it('MCP is the default mechanism and shows transport + command', async () => {
+  it('MCP is the default mechanism and shows the server URL (no transport, command or args)', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -272,13 +262,16 @@ describe('ConnectorEditDialog', () => {
       />,
     );
     await screen.findByLabelText(/service name/i);
-    expect(screen.getByLabelText(/transport/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/^command$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^url$/i)).toBeInTheDocument();
+    // Local (stdio) servers are gone: there is nothing to pick or type for one.
+    expect(screen.queryByLabelText(/transport/i)).toBeNull();
+    expect(screen.queryByLabelText(/^command$/i)).toBeNull();
+    expect(screen.queryByLabelText(/^args/i)).toBeNull();
     // No package picker in MCP mode.
     expect(screen.queryByLabelText(/package name/i)).toBeNull();
   });
 
-  it('Direct API hides transport + package picker', async () => {
+  it('Direct API hides the server URL + package picker', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -290,7 +283,7 @@ describe('ConnectorEditDialog', () => {
     );
     await screen.findByLabelText(/service name/i);
     fireEvent.click(screen.getByRole('radio', { name: /direct api/i }));
-    expect(screen.queryByLabelText(/transport/i)).toBeNull();
+    expect(screen.queryByLabelText(/^url$/i)).toBeNull();
     expect(screen.queryByLabelText(/package name/i)).toBeNull();
     expect(screen.getByLabelText(/allowed hosts/i)).toBeInTheDocument();
   });
@@ -298,8 +291,6 @@ describe('ConnectorEditDialog', () => {
   it('lets an HTTP MCP connector save the hosts needed for Google OAuth', async () => {
     render(<ConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />);
     fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Gmail' } });
-    fireEvent.click(screen.getByRole('combobox', { name: /transport/i }));
-    fireEvent.click(await screen.findByRole('option', { name: /http/i }));
     fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://gmailmcp.googleapis.com/mcp/v1' } });
     await waitFor(() => expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled());
     fireEvent.change(screen.getByLabelText(/allowed hosts/i), {

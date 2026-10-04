@@ -165,30 +165,11 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
   });
 
   // TASK-132 — the per-slot field's mechanism hint MUST be truthful per mechanism
-  // (it tells the user where their secret actually lands: an env var, an HTTP
-  // header, or a request-auth field). A connector's mechanism is connector-level
-  // — keyed off the single leading mcpServer's transport (the same model the
-  // admin Connector registry form edits), or Direct API when there's no MCP
-  // backing at all.
+  // (it tells the user where their secret actually lands: an HTTP header or a
+  // request-auth field). A connector's mechanism is connector-level — keyed off
+  // the single leading mcpServer's transport (the same model the admin Connector
+  // registry form edits), or Direct API when there's no MCP backing at all.
   describe('mechanismHint — truthful per mechanism', () => {
-    it('stdio MCP → "env var"', () => {
-      const c = connector({
-        capabilities: {
-          ...emptyCapabilities(),
-          mcpServers: [
-            {
-              name: 's',
-              transport: 'stdio',
-              command: 'foo',
-              allowedHosts: [],
-              credentials: [],
-            },
-          ],
-        },
-      });
-      expect(mechanismHint(c)).toBe('env var');
-    });
-
     it('http MCP → "header"', () => {
       const c = connector({
         capabilities: {
