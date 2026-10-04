@@ -395,6 +395,7 @@ export function AgentConnectors({
           onEdit={() => void onEdit(open)}
           onRemove={() => setConfirming(open)}
           onSetUp={() => onSetUp(open)}
+          onHealthStale={refresh}
         />
       ) : (
       <>

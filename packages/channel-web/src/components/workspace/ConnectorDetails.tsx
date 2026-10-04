@@ -103,6 +103,13 @@ interface Props {
    * the `⋯` menu opens.
    */
   onSetUp?: () => void;
+  /**
+   * TASK-817 — the tool read came back needs-auth while the list still calls
+   * this row healthy: re-read the list. That read is where a provider's 401
+   * on a stored token is first seen, and the check behind it may just have
+   * written the "sign-in expired" marker the list's health comes from.
+   */
+  onHealthStale?: () => void;
 }
 
 /**
@@ -136,6 +143,7 @@ export function ConnectorDetails({
   onRemove,
   unsupported = false,
   onSetUp,
+  onHealthStale,
 }: Props) {
   const state = useConnectorTools(agentId, row.id);
   const { data, status } = state;
@@ -152,6 +160,15 @@ export function ConnectorDetails({
     seenHealth.current = row.health;
     reload(true);
   }, [row.health, reload]);
+  // TASK-817 — at most once per tool read, so a connector that stays
+  // needs-auth without a marker (nobody signed in, a 403) never loops.
+  const nudged = useRef<typeof data>(null);
+  useEffect(() => {
+    if (data === null || nudged.current === data) return;
+    if (data.status !== 'needs-auth' || row.health !== 'ok') return;
+    nudged.current = data;
+    onHealthStale?.();
+  }, [data, row.health, onHealthStale]);
   return (
     <div className="flex min-h-full flex-col">
       <div className="-ml-2 mb-3 flex items-center justify-between gap-2">

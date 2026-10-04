@@ -1781,6 +1781,9 @@ function connectorsNotLoaded(out: ConnectorsListEffectiveOutput): Set<string> {
  * NOT read as "sign-in expired" — it is also what a connector nobody has signed
  * in to yet reports, and telling that person their sign-in expired would be
  * wrong; only the marker the token resolver writes on a rejected refresh says so.
+ * (TASK-817: that includes the renewal a tool check asks for when the provider
+ * answers 401 to a stored, unexpired token — so a provider-side revocation
+ * lands here too, as needs-reconnect, never as a parallel state.)
  *
  * TASK-795 — `needs-sign-in` (no credential present along the vault's lookup
  * order) sits between the two: below a rejected sign-in, which is the more
