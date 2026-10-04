@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PluginError } from '@ax/core';
-import { BlobStore, blobPath } from '../store.js';
+import { BlobStore, blobPath, type BlobListResult } from '../store.js';
 
 const sha256Hex = (bytes: Uint8Array): string =>
   createHash('sha256').update(Buffer.from(bytes)).digest('hex');
@@ -176,6 +176,330 @@ describe('BlobStore (content-addressed fs store)', () => {
       await expect(store.delete('x')).rejects.toMatchObject({
         code: 'invalid-payload',
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// list — the GC's enumeration seam (blob:list, TASK-777). Walks the two shard
+// levels in sorted order, so pages come back ascending by sha with a cursor
+// (`next`) the caller feeds back as `after`.
+// ---------------------------------------------------------------------------
+
+/** Put `count` distinct tiny blobs, a batch at a time (real fs, so keep it brisk). */
+async function seedBlobs(store: BlobStore, count: number, tag: string): Promise<string[]> {
+  const shas: string[] = [];
+  const batch = 50;
+  for (let start = 0; start < count; start += batch) {
+    const end = Math.min(start + batch, count);
+    const done = await Promise.all(
+      Array.from({ length: end - start }, (_, k) =>
+        store.put(new TextEncoder().encode(`${tag}-${start + k}`)),
+      ),
+    );
+    for (const d of done) shas.push(d.sha256);
+  }
+  return shas.sort();
+}
+
+/**
+ * Page through the store the way a caller does: feed each `next` back as
+ * `after` until it is absent. Returns every page so tests can assert on shape.
+ */
+async function drain(
+  store: BlobStore,
+  limit: number,
+  start?: string,
+): Promise<BlobListResult[]> {
+  const pages: BlobListResult[] = [];
+  let after = start;
+  for (;;) {
+    const page: BlobListResult = await store.list(
+      after === undefined ? { state: 'live', limit } : { state: 'live', limit, after },
+    );
+    pages.push(page);
+    if (page.next === undefined) return pages;
+    after = page.next;
+    if (pages.length > 100) throw new Error('list did not terminate');
+  }
+}
+
+describe('BlobStore.list', () => {
+  let root: string;
+  let store: BlobStore;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(join(tmpdir(), 'ax-blob-list-test-'));
+    store = new BlobStore(root);
+    await store.ensureRoot();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('returns { items: [] } for an empty store (and no `next` key)', async () => {
+    const page = await store.list({ state: 'live', limit: 10 });
+    expect(page).toEqual({ items: [] });
+    expect('next' in page).toBe(false);
+  });
+
+  it('returns { items: [] } when the root directory does not exist yet', async () => {
+    const ghost = new BlobStore(join(root, 'never-created'));
+    expect(await ghost.list({ state: 'live', limit: 10 })).toEqual({ items: [] });
+  });
+
+  it('lists stored blobs ascending by sha with their sizes', async () => {
+    const payloads = ['alpha', 'bravo-bravo', 'c', '', 'delta delta delta'].map((t) =>
+      new TextEncoder().encode(t),
+    );
+    for (const p of payloads) await store.put(p);
+    const expected = payloads
+      .map((p) => ({ sha256: sha256Hex(p), size: p.length }))
+      .sort((a, b) => (a.sha256 < b.sha256 ? -1 : 1));
+
+    const page = await store.list({ state: 'live', limit: 100 });
+
+    expect(page.items).toEqual(expected);
+    expect('next' in page).toBe(false);
+  });
+
+  it('`after` excludes itself and everything before it', async () => {
+    const shas = await seedBlobs(store, 40, 'after');
+    const pivot = shas[17]!;
+
+    const page = await store.list({ state: 'live', limit: 100, after: pivot });
+
+    expect(page.items.map((i) => i.sha256)).toEqual(shas.slice(18));
+    expect(page.items.every((i) => i.sha256 > pivot)).toBe(true);
+  });
+
+  it('`after` need not name a stored blob (a cursor from a since-deleted blob still pages)', async () => {
+    const shas = await seedBlobs(store, 20, 'ghost-cursor');
+    const ghost = shas[9]!;
+    await store.delete(ghost);
+
+    const page = await store.list({ state: 'live', limit: 100, after: ghost });
+
+    expect(page.items.map((i) => i.sha256)).toEqual(shas.slice(10));
+  });
+
+  it('sets `next` to the last sha iff the page is full', async () => {
+    const shas = await seedBlobs(store, 5, 'next');
+
+    const full = await store.list({ state: 'live', limit: 5 });
+    expect(full.items).toHaveLength(5);
+    expect(full.next).toBe(shas[4]);
+
+    const partial = await store.list({ state: 'live', limit: 6 });
+    expect(partial.items).toHaveLength(5);
+    expect('next' in partial).toBe(false);
+
+    const small = await store.list({ state: 'live', limit: 2 });
+    expect(small.items.map((i) => i.sha256)).toEqual(shas.slice(0, 2));
+    expect(small.next).toBe(shas[1]);
+  });
+
+  it('never returns temp files, .retired/, non-hex dirs, stray files, or misplaced shas', async () => {
+    const real = await store.put(new TextEncoder().encode('the one real blob'));
+    const sha = real.sha256;
+    const shard = join(root, sha.slice(0, 2), sha.slice(2, 4));
+
+    // An in-flight put: `<sha>.tmp.<pid>.<uuid>` right next to a real blob.
+    await fs.writeFile(join(shard, `${sha}.tmp.123.0f0e0d0c-aaaa-bbbb-cccc-000000000000`), 'x');
+    // A temp file for a sha that has no final file yet.
+    const lonely = 'ab'.repeat(32);
+    await fs.mkdir(join(root, 'ab', 'ab'), { recursive: true });
+    await fs.writeFile(join(root, 'ab', 'ab', `${lonely}.tmp.9.uuid`), 'x');
+    // The retired namespace (a later card fills it) lives under the same root.
+    const gone = 'cd'.repeat(32);
+    await fs.mkdir(join(root, '.retired', 'cd', 'cd'), { recursive: true });
+    await fs.writeFile(join(root, '.retired', 'cd', 'cd', gone), 'x');
+    // Non-hex directories and stray files at every level.
+    await fs.mkdir(join(root, 'lost+found'), { recursive: true });
+    await fs.writeFile(join(root, 'lost+found', 'junk'), 'x');
+    await fs.mkdir(join(root, 'ZZ', 'zz'), { recursive: true });
+    await fs.writeFile(join(root, 'README'), 'x');
+    await fs.writeFile(join(root, 'ee'), 'a FILE named like a shard dir');
+    await fs.mkdir(join(root, 'ff', 'ff'), { recursive: true });
+    await fs.writeFile(join(root, 'ff', 'stray-file'), 'x');
+    await fs.mkdir(join(root, 'ff', 'GG'), { recursive: true });
+    await fs.writeFile(join(root, 'ff', 'ff', 'not-a-sha'), 'x');
+    // Uppercase hex is not a sha here either.
+    await fs.writeFile(join(root, 'ff', 'ff', 'F'.repeat(64)), 'x');
+    // A well-formed sha filed under the WRONG shard.
+    await fs.writeFile(join(root, 'ff', 'ff', 'ab'.repeat(32)), 'x');
+
+    const page = await store.list({ state: 'live', limit: 100 });
+
+    expect(page.items).toEqual([{ sha256: sha, size: real.size }]);
+  });
+
+  it("`state: 'retired'` is empty for now, even when live blobs exist", async () => {
+    // A later card (TASK-778) adds the retired namespace; until then there is
+    // nothing retired to list.
+    await seedBlobs(store, 5, 'retired');
+    const page = await store.list({ state: 'retired', limit: 10 });
+    expect(page).toEqual({ items: [] });
+    expect('next' in page).toBe(false);
+  });
+
+  it('skips an entry that vanishes between readdir and stat (ENOENT)', async () => {
+    const shas = await seedBlobs(store, 6, 'vanish');
+    const victim = shas[2]!;
+    const realStat = fs.stat.bind(fs) as (...a: unknown[]) => Promise<unknown>;
+    vi.spyOn(fs, 'stat').mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (String(p) === blobPath(root, victim)) {
+        return Promise.reject(Object.assign(new Error('gone'), { code: 'ENOENT' }));
+      }
+      return realStat(p, ...rest);
+    }) as unknown as typeof fs.stat);
+
+    const page = await store.list({ state: 'live', limit: 100 });
+
+    expect(page.items.map((i) => i.sha256)).toEqual(shas.filter((s) => s !== victim));
+  });
+
+  it('propagates a stat error that is not ENOENT', async () => {
+    await seedBlobs(store, 3, 'eacces');
+    vi.spyOn(fs, 'stat').mockRejectedValue(
+      Object.assign(new Error('nope'), { code: 'EACCES' }),
+    );
+    await expect(store.list({ state: 'live', limit: 10 })).rejects.toMatchObject({
+      code: 'EACCES',
+    });
+  });
+
+  it('does not even read shard directories that sort before `after` (cheap paging)', async () => {
+    // List never checks content, so lay out shards by hand: 3 first-level
+    // shards x 4 second-level shards, one sha-shaped file each. Several `bb`
+    // under one `aa` is what makes the second-level skip observable.
+    const shaIn = (aa: string, bb: string): string => aa + bb + '0'.repeat(60);
+    const layout: string[] = [];
+    for (const aa of ['10', '20', '30']) {
+      for (const bb of ['00', '40', '80', 'c0']) {
+        await fs.mkdir(join(root, aa, bb), { recursive: true });
+        await fs.writeFile(join(root, aa, bb, shaIn(aa, bb)), 'x');
+        layout.push(shaIn(aa, bb));
+      }
+    }
+    const pivot = shaIn('20', '40');
+    const readSpy = vi.spyOn(fs, 'readdir');
+
+    const page = await store.list({ state: 'live', limit: 1000, after: pivot });
+
+    expect(page.items.map((i) => i.sha256)).toEqual(layout.filter((s) => s > pivot));
+    const read = readSpy.mock.calls.map((c) => String(c[0]).slice(root.length));
+    // Whole `10/` is behind the cursor, and so is `20/00`; `20/40` is the
+    // cursor's own shard (read, then filtered), and everything after it is read.
+    expect(read).toEqual(['', '/20', '/20/40', '/20/80', '/20/c0', '/30', '/30/00', '/30/40', '/30/80', '/30/c0']);
+  });
+
+  it('never walks into .retired/ or other non-shard directories', async () => {
+    await seedBlobs(store, 5, 'no-retired-walk');
+    await fs.mkdir(join(root, '.retired', 'cd', 'cd'), { recursive: true });
+    await fs.mkdir(join(root, 'lost+found'), { recursive: true });
+    await fs.mkdir(join(root, 'ZZ', 'zz'), { recursive: true });
+    const readSpy = vi.spyOn(fs, 'readdir');
+
+    await store.list({ state: 'live', limit: 100 });
+
+    const read = readSpy.mock.calls.map((c) => String(c[0]).slice(root.length));
+    expect(read.length).toBeGreaterThan(1);
+    expect(read.filter((d) => /\.retired|lost\+found|ZZ/.test(d))).toEqual([]);
+  });
+
+  it('sorts for itself — it does not lean on the order the filesystem returns entries', async () => {
+    // Crowd one shard so the third level has real work to sort, then make
+    // readdir answer in REVERSE at every level, whatever the host fs does.
+    const crowded = Array.from({ length: 12 }, (_, i) => 'abcd' + i.toString(16).padStart(2, '0') + '0'.repeat(58));
+    await fs.mkdir(join(root, 'ab', 'cd'), { recursive: true });
+    for (const sha of [...crowded].reverse()) await fs.writeFile(join(root, 'ab', 'cd', sha), 'x');
+    const others = await seedBlobs(store, 40, 'reverse-readdir');
+    const expected = [...crowded, ...others].sort();
+    const realReaddir = fs.readdir.bind(fs) as (...a: unknown[]) => Promise<unknown[]>;
+    vi.spyOn(fs, 'readdir').mockImplementation((async (...a: unknown[]) =>
+      (await realReaddir(...a)).reverse()) as unknown as typeof fs.readdir);
+
+    const page = await store.list({ state: 'live', limit: 1000 });
+
+    expect(page.items.map((i) => i.sha256)).toEqual(expected);
+  });
+
+  describe('input validation (before touching the disk)', () => {
+    it.each([
+      ['limit 0', { state: 'live', limit: 0 }],
+      ['limit 1001', { state: 'live', limit: 1001 }],
+      ['limit -1', { state: 'live', limit: -1 }],
+      ['limit 1.5', { state: 'live', limit: 1.5 }],
+      ['limit NaN', { state: 'live', limit: Number.NaN }],
+      ['limit as a string', { state: 'live', limit: '10' }],
+      ['limit missing', { state: 'live' }],
+      ['uppercase after', { state: 'live', limit: 10, after: 'A'.repeat(64) }],
+      ['short after', { state: 'live', limit: 10, after: 'abc' }],
+      ['long after', { state: 'live', limit: 10, after: 'a'.repeat(65) }],
+      ['after with a path', { state: 'live', limit: 10, after: '../'.repeat(21) + 'a' }],
+      ['null after', { state: 'live', limit: 10, after: null }],
+      ["state 'x'", { state: 'x', limit: 10 }],
+      ['state missing', { limit: 10 }],
+    ])('rejects %s with invalid-payload', async (_name, input) => {
+      const readSpy = vi.spyOn(fs, 'readdir');
+      await expect(
+        store.list(input as unknown as Parameters<BlobStore['list']>[0]),
+      ).rejects.toMatchObject({ code: 'invalid-payload', plugin: '@ax/blob-store-fs' });
+      expect(readSpy).not.toHaveBeenCalled();
+    });
+
+    it('accepts the limit boundaries 1 and 1000', async () => {
+      await seedBlobs(store, 3, 'bounds');
+      expect((await store.list({ state: 'live', limit: 1 })).items).toHaveLength(1);
+      expect((await store.list({ state: 'live', limit: 1000 })).items).toHaveLength(3);
+    });
+
+    it("validates a 'retired' request too (the stub gets no free pass)", async () => {
+      await expect(store.list({ state: 'retired', limit: 0 })).rejects.toMatchObject({
+        code: 'invalid-payload',
+      });
+    });
+  });
+
+  describe('paging at scale (2,500 real blobs)', () => {
+    let bigRoot: string;
+    let big: BlobStore;
+    let all: string[];
+
+    beforeAll(async () => {
+      bigRoot = await fs.mkdtemp(join(tmpdir(), 'ax-blob-list-big-'));
+      big = new BlobStore(bigRoot);
+      await big.ensureRoot();
+      all = await seedBlobs(big, 2500, 'big');
+    }, 120_000);
+
+    afterAll(async () => {
+      await fs.rm(bigRoot, { recursive: true, force: true });
+    });
+
+    it('pages 1000 / 1000 / 500; the last page has no `next`; no duplicates', async () => {
+      const pages = await drain(big, 1000);
+
+      expect(pages.map((p) => p.items.length)).toEqual([1000, 1000, 500]);
+      expect(pages[0]!.next).toBe(pages[0]!.items[999]!.sha256);
+      expect(pages[1]!.next).toBe(pages[1]!.items[999]!.sha256);
+      expect('next' in pages[2]!).toBe(false);
+      const seen = pages.flatMap((p) => p.items.map((i) => i.sha256));
+      expect(seen).toEqual(all);
+      expect(new Set(seen).size).toBe(2500);
+    });
+
+    it('an exact multiple ends with an EMPTY final page (1000, 1000, then nothing)', async () => {
+      // Resume after the 500th sha: exactly 2,000 blobs remain.
+      const pages = await drain(big, 1000, all[499]);
+
+      expect(pages.map((p) => p.items.length)).toEqual([1000, 1000, 0]);
+      expect(pages[1]!.next).toBe(all[2499]);
+      expect('next' in pages[2]!).toBe(false);
+      expect(pages.flatMap((p) => p.items.map((i) => i.sha256))).toEqual(all.slice(500));
     });
   });
 });

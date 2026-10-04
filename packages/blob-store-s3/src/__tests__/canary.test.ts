@@ -5,6 +5,8 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import {
   createBlobStoreS3PluginWithClient,
   type BlobGetOutput,
+  type BlobListInput,
+  type BlobListOutput,
   type BlobPutInput,
   type BlobPutOutput,
 } from '../plugin.js';
@@ -84,5 +86,18 @@ describe('canary: @ax/blob-store-s3 blob:put → blob:get round-trip', () => {
     });
     expect(second.sha256).toBe(first.sha256);
     expect(fake.calls.map((c) => c.name)).toEqual(['HeadObject']);
+  });
+
+  it('a put blob shows up in blob:list (the GC enumeration seam is reachable)', async () => {
+    const ctx = h.ctx();
+    const bytes = new TextEncoder().encode('list canary');
+    const put = await h.bus.call<BlobPutInput, BlobPutOutput>('blob:put', ctx, { bytes });
+
+    const page = await h.bus.call<BlobListInput, BlobListOutput>('blob:list', ctx, {
+      state: 'live',
+      limit: 10,
+    });
+
+    expect(page).toEqual({ items: [{ sha256: put.sha256, size: bytes.length }] });
   });
 });

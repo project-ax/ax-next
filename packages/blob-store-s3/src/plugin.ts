@@ -86,6 +86,25 @@ export interface BlobDeleteInput {
 }
 export type BlobDeleteOutput = Record<string, never>;
 
+/**
+ * One page of blobs, ascending by sha256 — the GC's enumeration seam.
+ * `after` is the cursor (the previous page's `next`), exclusive; `limit` is an
+ * integer 1..1000. `next` is present iff the page holds exactly `limit` items,
+ * and then it is the last item's sha256 — so a final page can be empty, and
+ * callers loop until `next` is absent. `state: 'retired'` lists blobs that were
+ * retired but not yet deleted; no backend has that namespace yet, so it is
+ * empty for now (TASK-778).
+ */
+export interface BlobListInput {
+  state: 'live' | 'retired';
+  after?: string;
+  limit: number;
+}
+export interface BlobListOutput {
+  items: Array<{ sha256: string; size: number }>;
+  next?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Runtime `returns` contracts (ARCH-13 drift-guard pattern). Each schema is a
 // per-registration in-process shape assertion. They co-locate with this
@@ -112,6 +131,14 @@ export const BlobStatOutputSchema = z.union([
 ]) as unknown as ZodType<BlobStatOutput>;
 
 export const BlobDeleteOutputSchema = z.object({}) as unknown as ZodType<BlobDeleteOutput>;
+
+// `next` is `.optional()` so a final page parses without growing the key. The
+// cast is the same one the other schemas use: under exactOptionalPropertyTypes
+// zod infers `next?: string | undefined`, which is looser than the interface.
+export const BlobListOutputSchema = z.object({
+  items: z.array(z.object({ sha256: z.string(), size: z.number() })),
+  next: z.string().optional(),
+}) as unknown as ZodType<BlobListOutput>;
 
 /**
  * Build the S3Client from the plugin config. Credentials are passed ONLY when
@@ -163,7 +190,14 @@ function blobStoreS3Plugin(store: S3BlobStore): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['blob:put', 'blob:put-internal', 'blob:get', 'blob:stat', 'blob:delete'],
+      registers: [
+        'blob:put',
+        'blob:put-internal',
+        'blob:get',
+        'blob:stat',
+        'blob:delete',
+        'blob:list',
+      ],
       calls: [],
       subscribes: [],
     },
@@ -201,12 +235,19 @@ function blobStoreS3Plugin(store: S3BlobStore): Plugin {
         },
         { returns: BlobDeleteOutputSchema },
       );
+
+      bus.registerService<BlobListInput, BlobListOutput>(
+        'blob:list',
+        PLUGIN_NAME,
+        async (_ctx, input) => store.list(input),
+        { returns: BlobListOutputSchema },
+      );
     },
   };
 }
 
 /**
- * Production factory: build the S3 client from config and register the four
+ * Production factory: build the S3 client from config and register the
  * `blob:*` hooks. This is the SECOND backend behind the storage-agnostic
  * `blob:*` surface (TASK-65 / @ax/blob-store-fs is the first); the k8s preset
  * registers exactly one of the two per deployment.
