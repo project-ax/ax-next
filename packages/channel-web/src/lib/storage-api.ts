@@ -1,9 +1,18 @@
 /**
- * Storage wire client (TASK-690). Three routes, all in `@ax/disk-quota`:
+ * Storage wire client (TASK-690, TASK-777). Four routes, in two plugins.
+ *
+ * `@ax/disk-quota`:
  *
  *   GET /settings/storage         the signed-in person's own usage (anyone)
  *   GET /admin/storage            the two limits and the biggest owners (admin)
  *   PUT /admin/storage/limits     change the two limits (admin)
+ *
+ * `@ax/blob-gc` (report-only: nothing is removed yet):
+ *
+ *   GET /admin/storage/cleanup    how many files nobody uses any more, and how
+ *                                 much room they take (admin). The body also
+ *                                 carries the sweep settings; the tab reads
+ *                                 none of that, so this client keeps none of it.
  *
  * Posture mirrors `lib/usage-admin.ts`:
  *  - `credentials: 'include'` so the auth cookie flows.
@@ -83,6 +92,25 @@ export interface AdminStorage {
   owners: StorageOwner[];
   ownerCount: number;
   totalBytes: number;
+}
+
+/**
+ * The last finished sweep's answer to "what could be cleaned up?", cut down to
+ * what the Storage tab shows. Nothing has been removed: these are the files
+ * that WOULD go once removal is switched on.
+ */
+export interface UnusedFilesReport {
+  /** When that sweep finished (an ISO time). */
+  at: string;
+  /** How many files nobody uses any more. */
+  wouldRetire: number;
+  /** How much room they take, in bytes. */
+  wouldRetireBytes: number;
+}
+
+/** `report` is `null` until the first sweep has finished (they run hourly). */
+export interface UnusedFiles {
+  report: UnusedFilesReport | null;
 }
 
 /**
@@ -166,6 +194,15 @@ function isAdminStorage(body: unknown): body is AdminStorage {
   );
 }
 
+function isUnusedFilesReport(v: unknown): v is UnusedFilesReport {
+  return (
+    isRecord(v) &&
+    typeof v['at'] === 'string' &&
+    isNumber(v['wouldRetire']) &&
+    isNumber(v['wouldRetireBytes'])
+  );
+}
+
 export async function fetchMyStorage(): Promise<MyStorage> {
   const res = await fetch('/settings/storage', { credentials: 'include' });
   if (!res.ok) throw await failure(res);
@@ -182,6 +219,27 @@ export async function fetchAdminStorage(): Promise<AdminStorage> {
   const body: unknown = await res.json();
   if (!isAdminStorage(body)) throw unexpected(res);
   return body;
+}
+
+export async function fetchUnusedFiles(): Promise<UnusedFiles> {
+  const res = await fetch('/admin/storage/cleanup', { credentials: 'include' });
+  if (!res.ok) throw await failure(res);
+  const body: unknown = await res.json();
+  // `report` is `null` or a report. A body with no `report` at all is not the
+  // contract, and "nothing found yet" would be a false thing to say about it.
+  if (!isRecord(body)) throw unexpected(res);
+  const report = body['report'];
+  if (report === null) return { report: null };
+  if (!isUnusedFilesReport(report)) throw unexpected(res);
+  // Only what the line shows rides on: the rest of the body (settings, the
+  // per-holder counts) is not ours to depend on.
+  return {
+    report: {
+      at: report.at,
+      wouldRetire: report.wouldRetire,
+      wouldRetireBytes: report.wouldRetireBytes,
+    },
+  };
 }
 
 export async function putStorageLimits(

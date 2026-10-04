@@ -21,6 +21,7 @@ import {
   type MyStorage,
   type StorageOwner,
   type StorageStatus,
+  type UnusedFilesReport,
 } from './storage-api';
 
 // ---------------------------------------------------------------------------
@@ -115,6 +116,41 @@ export function ownerSubline(o: OwnerName): string | null {
 export function ownersSummary(t: { ownerCount: number; totalBytes: number }): string {
   const who = t.ownerCount === 1 ? 'person or team' : 'people and teams';
   return `${t.ownerCount.toLocaleString('en-US')} ${who}, ${formatBytes(t.totalBytes)} in total`;
+}
+
+// ---------------------------------------------------------------------------
+// Files nobody uses any more (TASK-777)
+// ---------------------------------------------------------------------------
+
+/**
+ * Before the first sweep has finished there is no count, and "0" would be a
+ * claim. Say we have not looked.
+ */
+export const UNUSED_FILES_NOT_CHECKED = 'Files no longer used by anyone: not checked yet.';
+
+/**
+ * The check itself failed. Short and quiet on purpose: this line is a side
+ * note, and the admin has nothing to do about it, so no reason and no retry.
+ */
+export const UNUSED_FILES_FAILED = "We couldn't check for files no longer in use just now.";
+
+/**
+ * The admin's one line about files nobody uses any more: "Files no longer used
+ * by anyone: 12 (120.6 KB). Not removed yet."
+ *
+ * REPORT-ONLY. Nothing is removed; the count is what a cleanup would take, so
+ * the sentence ends by saying so rather than leaving an admin to wonder. "Not
+ * removed yet" is a statement of what has not happened, not advice, which is
+ * why this one is allowed the word that the notices above are not.
+ *
+ * `null` is "no sweep has finished yet". The count is grouped ("1,234") the way
+ * `ownersSummary` groups its own.
+ */
+export function unusedFilesLine(
+  report: Pick<UnusedFilesReport, 'wouldRetire' | 'wouldRetireBytes'> | null,
+): string {
+  if (report === null) return UNUSED_FILES_NOT_CHECKED;
+  return `Files no longer used by anyone: ${report.wouldRetire.toLocaleString('en-US')} (${formatBytes(report.wouldRetireBytes)}). Not removed yet.`;
 }
 
 /**

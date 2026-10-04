@@ -11,6 +11,8 @@ import {
   STORAGE_FULL_ROUTINE_SAVE,
   STORAGE_FULL_RULES,
   STORAGE_FULL_SEND,
+  UNUSED_FILES_FAILED,
+  UNUSED_FILES_NOT_CHECKED,
   WARN_PERCENT_INVALID,
   breakdownRows,
   failureMessage,
@@ -22,6 +24,7 @@ import {
   ownersSummary,
   shareOfLimit,
   statusLabel,
+  unusedFilesLine,
   usageLine,
 } from '../storage-copy';
 
@@ -310,5 +313,67 @@ describe('failureMessage', () => {
     const text = failureMessage('We could not.', new StorageHttpError(400, 'constructor'));
     expect(text).not.toContain('function');
     expect(text).toContain('We could not.');
+  });
+});
+
+/*
+  TASK-777: the one line an admin sees about files nobody uses any more. It is
+  REPORT-ONLY: nothing has been removed, and the sentence says so, in the
+  passive ("Not removed yet.") because nobody is being told to do anything. It
+  is not in the `sentences` table above on purpose: that table forbids "remov"
+  to catch ADVICE ("remove some files"), and this is the opposite, a statement
+  of what has not happened.
+*/
+describe('unusedFilesLine', () => {
+  const report = (wouldRetire: number, wouldRetireBytes: number) => ({ wouldRetire, wouldRetireBytes });
+
+  it('says how many files and how much room, and that none are gone yet', () => {
+    expect(unusedFilesLine(report(12, 123_456))).toBe(
+      'Files no longer used by anyone: 12 (120.6 KB). Not removed yet.',
+    );
+    expect(unusedFilesLine(report(3, 5 * GB))).toBe(
+      'Files no longer used by anyone: 3 (5 GB). Not removed yet.',
+    );
+  });
+
+  it('reads the same for one file as for many, and groups big counts', () => {
+    expect(unusedFilesLine(report(1, 2048))).toBe(
+      'Files no longer used by anyone: 1 (2 KB). Not removed yet.',
+    );
+    expect(unusedFilesLine(report(1234567, MB))).toBe(
+      'Files no longer used by anyone: 1,234,567 (1 MB). Not removed yet.',
+    );
+  });
+
+  it('says zero as zero, not as nothing', () => {
+    expect(unusedFilesLine(report(0, 0))).toBe(
+      'Files no longer used by anyone: 0 (0 B). Not removed yet.',
+    );
+  });
+
+  it('says it has not looked yet, rather than "0", before the first sweep finishes', () => {
+    expect(unusedFilesLine(null)).toBe('Files no longer used by anyone: not checked yet.');
+    expect(unusedFilesLine(null)).toBe(UNUSED_FILES_NOT_CHECKED);
+    expect(unusedFilesLine(null)).not.toMatch(/\d/);
+  });
+
+  const lines: Array<[string, string]> = [
+    ['with a report', unusedFilesLine(report(12, 123_456))],
+    ['with no report yet', UNUSED_FILES_NOT_CHECKED],
+    ['when the check fails', UNUSED_FILES_FAILED],
+  ];
+
+  it.each(lines)('%s uses no jargon', (_name, text) => {
+    expect(text).not.toMatch(/\b(git|repos?|repository|blobs?|gc|sweep|ledger|holders?|bytes?|disk|volume|sha|retire[sd]?|orphans?|quota)\b/i);
+  });
+
+  it.each(lines)('%s never tells anyone to delete or clean up anything', (_name, text) => {
+    // "Not removed yet." is the only place "remov" may appear: it says what has
+    // NOT happened. Anything imperative would be advice we cannot stand behind.
+    expect(text.replace('Not removed yet.', '')).not.toMatch(/\b(delet|remov|clear|clean|free up|free some|make (some )?space|tidy|purge)/i);
+  });
+
+  it('the failure sentence says what we could not do, and nothing about why', () => {
+    expect(UNUSED_FILES_FAILED).toBe("We couldn't check for files no longer in use just now.");
   });
 });
