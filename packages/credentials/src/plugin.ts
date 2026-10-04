@@ -243,6 +243,9 @@ export interface CredentialsAuthorizeAgentInput {
   agentId: string;
   /** The full credential ref, e.g. `account:linear`. */
   ref: string;
+  // No `purpose` field, on purpose: the vault always asks the READ question,
+  // which (TASK-788) also requires the connector to be attached to the agent.
+  // Only @ax/mcp-oauth's write-scope decision passes `purpose: 'store'`.
 }
 
 export interface CredentialsAuthorizeAgentOutput {

@@ -661,6 +661,13 @@ export interface AuthorizeAgentInput {
   userId: string;
   agentId: string;
   ref: string;
+  /**
+   * TASK-788 — absent (or anything but `'store'`) asks the READ question,
+   * which also requires the connector to be effective on the agent for this
+   * user. `'store'` asks only "may a sign-in be stored on this agent?" — the
+   * shared-definition half — because a sign-in can precede the attachment.
+   */
+  purpose?: 'read' | 'store';
 }
 export interface AuthorizeAgentOutput {
   allowed: boolean;

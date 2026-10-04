@@ -1,5 +1,6 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import { deriveCredentialPlan } from './credential-plan.js';
+import { listEffectiveConnectors } from './effective-connectors.js';
 import { namesOAuthClientSecretRef, oauthClientSecretRefFor } from './oauth-client-secret-ref.js';
 import type { ConnectorStore } from './store.js';
 import type {
@@ -230,15 +231,33 @@ async function authorizeGlobalClientSecretRead(
 // definition (the user's own or anyone's), two shared definitions with one id,
 // or no definition at all is a deny.
 //
-// THE SAME RULE PICKS THE WRITE SCOPE. @ax/mcp-oauth calls this hook when a
+// THE SAME SHARED-DEFINITION RULE PICKS THE WRITE SCOPE. @ax/mcp-oauth calls this hook when a
 // team-agent sign-in starts: allowed => store the token on the agent, denied =>
 // store it on the signer (user scope). One predicate for both halves, so the
 // writer never stores a token on an agent that no reader may then read.
 //
-// Deliberately NOT checked: that the connector is attached to `agentId`. The
-// shared definition is the same one for every member, so reading its agent
-// credential through it can only send it where the team's connector points.
-// `agentId` is carried for a future (attachment-aware) provider.
+// TASK-788 — AND, for a READ, the connector must be EFFECTIVE on `agentId`
+// for this user: the same union a session on that agent folds
+// (`listEffectiveConnectors` over the agent's attachments and exclusions, read
+// through `agents:resolve`). Detach a connector from a team agent and the
+// sign-in still stored on the agent stops resolving for everyone; it can never
+// ride into a session that does not carry the connector. `agents:resolve` also
+// re-proves that this user may use the agent at all (its own access check).
+//
+// `agents:resolve` is called but deliberately NOT declared in this plugin's
+// manifest: @ax/agents already declares `connectors:resolve` (and the TASK-808
+// legacy-default hooks) as optionalCalls, so a declared edge back would close a
+// plugin call-graph cycle (connectors -> agents -> connectors) and bootstrap
+// would refuse every preset that loads both. It is `bus.hasService`-guarded:
+// with no @ax/agents loaded, no agent-scope `account:` credential is readable.
+//
+// THE WRITE-SCOPE QUESTION SKIPS THE ATTACHMENT HALF. @ax/mcp-oauth asks with
+// `purpose: 'store'` when a team-agent sign-in starts, and the Add-connector
+// flow signs in BEFORE it attaches (it attaches only once the sign-in worked).
+// Requiring the attachment there would land every such sign-in on the signer
+// instead of the team. Storing on the agent grants nothing by itself: the
+// token is only READ through this hook without `purpose`, which requires the
+// attachment. Any other `purpose` value is treated as a read (fail closed).
 //
 // FAIL CLOSED, exactly like the global rule above. Nothing here reads,
 // returns or logs a secret value.
@@ -246,6 +265,7 @@ async function authorizeGlobalClientSecretRead(
 
 export async function authorizeAgentAccountRead(
   store: ConnectorStore,
+  bus: HookBus,
   ctx: AgentContext,
   input: AuthorizeAgentInput,
 ): Promise<AuthorizeAgentOutput> {
@@ -273,6 +293,47 @@ export async function authorizeAgentAccountRead(
   try {
     const shared = await store.getSoleSharedById(userId, connectorId);
     if (shared === null) return deny('not-the-shared-connector');
+
+    // TASK-788 — only the exact value 'store' skips the attachment half.
+    if (input.purpose === 'store') return { allowed: true };
+
+    if (!bus.hasService('agents:resolve')) return deny('no-agents-provider');
+    let agent: AgentAttachmentsLike | null;
+    try {
+      const out = await bus.call<{ agentId: string; userId: string }, { agent?: unknown }>(
+        'agents:resolve',
+        ctx,
+        { agentId, userId },
+      );
+      agent = (out?.agent ?? null) as AgentAttachmentsLike | null;
+    } catch (err) {
+      // not-found / forbidden (this user may not use the agent) or a failure:
+      // either way nothing on the agent is this user's to read. A refusal is an
+      // ordinary deny; anything else is an outage and must not pass as "no
+      // credential", so it is also logged at warn (the vault only sees a deny).
+      const code = (err as { code?: unknown } | null)?.code;
+      if (code !== 'forbidden' && code !== 'not-found') {
+        ctx.logger.warn('connectors_agent_credential_check_failed', {
+          plugin: PLUGIN_NAME,
+          ref,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return deny('agent-not-resolvable');
+    }
+    if (agent === null || typeof agent !== 'object') return deny('agent-not-resolvable');
+    const attachmentIds = stringList(agent.connectorAttachments);
+    const exclusions = stringList(agent.connectorExclusions);
+    if (attachmentIds === null || exclusions === null) return deny('agent-lists-malformed');
+
+    const { connectors } = await listEffectiveConnectors(store, {
+      userId,
+      attachmentIds,
+      exclusions,
+    });
+    if (!connectors.some((entry) => entry.summary.id === connectorId)) {
+      return deny('not-effective-on-agent');
+    }
     return { allowed: true };
   } catch (err) {
     ctx.logger.warn('connectors_agent_credential_check_failed', {
@@ -282,4 +343,18 @@ export async function authorizeAgentAccountRead(
     });
     return { allowed: false };
   }
+}
+
+interface AgentAttachmentsLike {
+  connectorAttachments?: unknown;
+  connectorExclusions?: unknown;
+}
+
+/** An array of strings, or null (malformed). Absent counts as empty. */
+function stringList(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every((v): v is string => typeof v === 'string')) {
+    return null;
+  }
+  return value;
 }
