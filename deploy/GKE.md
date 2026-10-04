@@ -388,10 +388,31 @@ export AX_AUTH_SECRET=$(gcloud secrets versions access latest \
   --secret=ax-next-auth-secret --project=$PROJECT_ID)
 ```
 
-Then pass `--set auth.secret="$AX_AUTH_SECRET"` on the Step 6 install (and every
-`helm upgrade`, after the [Step 4c](#4c-before-every-upgrade-check-the-backup-matches-the-live-cluster)
-check), right alongside the other two keys. Leave it off and the chart
-generates one — but then it lives **only** in-cluster, and you're back to the
+**One rule for this deploy: pass all three keys from Secret Manager on every
+install and every upgrade** — `credentials.key`, `http.cookieKey` *and*
+`auth.secret` — the same three `--set` flags you'll see in
+[Step 6](#step-6--edit-the-overlay-and-install) and
+[Step M6](#step-m6--install-with-the-same-chart). Before any upgrade of a cluster
+that already has keys, run the
+[Step 4c](#4c-before-every-upgrade-check-the-backup-matches-the-live-cluster) check
+first.
+
+When does the flag actually do anything? Honestly, most of the time it doesn't.
+The chart's Secret is lookup-stable (`templates/hook-secret.yaml`): if the live
+`ax-next-secrets` Secret already holds a key, an in-place `helm upgrade` keeps that
+value and **ignores** `--set` for it (each of the three keys is checked on its
+own). The flags are load-bearing only when there's no live key for the chart to
+read:
+
+- the **first install** of a cluster (Step 6, or a migration's
+  [Step M6](#step-m6--install-with-the-same-chart));
+- an **offline render** — GitOps or `helm template`, where `lookup` comes back
+  empty (see the rules below);
+- a **restore** after losing the namespace or the Secret.
+
+We pass them anyway, every time, because then the one moment they matter is just
+the same command you always run. Leave `auth.secret` off a first install and the
+chart generates one — but then it lives **only** in-cluster, and you're back to the
 `kubectl`-and-pray recovery path the moment you need a fresh cluster.
 
 The rules:
@@ -472,11 +493,19 @@ upgrade**:
 
   Same shape for the other two keys (swap the Secret key and the Secret Manager
   name). Then re-run the `export` lines above so your shell holds the fixed value.
-- **The usual culprit is a skipped `base64 -d`.** A 32-byte key is 44 characters
-  of base64. If the backup is about 60 characters, it's holding the base64 *of*
-  the base64: the right key, encoded one time too many. That's exactly what we
-  found on 2026-09-29 (a backup taken straight from `.data.auth-secret` without
-  decoding it).
+- **The usual culprit is a skipped `base64 -d`**: the backup holds the base64
+  *of* the key — the right key, encoded one time too many. That's exactly what
+  we found on 2026-09-29 (a backup taken straight from `.data.auth-secret`
+  without decoding it). You can spot it by length, but the right length depends
+  on the key:
+
+  | Key | Correct backup | Double-encoded |
+  | --- | --- | --- |
+  | `credentials-key`, `auth-secret` | 44 chars (base64) | 60 chars |
+  | `http-cookie-key` | 64 chars (hex) | 88 chars |
+
+  (`http-cookie-key` is hex, not base64 — it came from `openssl rand -hex 32` in
+  Step 4b — so don't hold it to the 44/60 numbers.)
 
 Why bother, if the upgrade is in place? Honest answer: on an **in-place**
 `helm upgrade` the chart reuses whatever key the live Secret already holds and
@@ -1374,10 +1403,15 @@ EOF
 ### Step M6 — Install with the same chart
 
 Identical to [Step 6](#step-6--edit-the-overlay-and-install) — same overlay, same
-gitignored `gke-values.local.yaml`, same keys, plus the **one cluster-migration
-extra**: `--set auth.secret="$AX_AUTH_SECRET"` to carry over the OAuth-token
-encryption secret (Step M4). On a normal fresh install you'd omit it and let the
-chart generate one. The chart is otherwise cluster-agnostic, so nothing else in
+gitignored `gke-values.local.yaml`, same three keys — including
+`--set auth.secret="$AX_AUTH_SECRET"`, exactly as Step 6 passes it (that's the
+[Step 4b](#4b-the-encryption--cookie-keys-read-this-twice) rule: every install,
+every upgrade). On an in-place upgrade those flags are ignored, because the chart
+reuses the live Secret. **Here they are not**: the new cluster has no
+`ax-next-secrets` yet, so this command is what writes it. Helm refuses to install
+without the other two keys, but a missing `auth.secret` fails **silently**: the
+chart generates a fresh one that can't decrypt anyone's stored OAuth tokens (see
+the Step M4 callout). The chart is otherwise cluster-agnostic, so nothing else in
 your values changes for Standard.
 
 ```bash
