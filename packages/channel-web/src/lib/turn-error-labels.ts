@@ -93,6 +93,14 @@ export const ERROR_LABELS: Record<string, string> = {
   // `components/admin/StorageTab.tsx`.
   'chat:start:storage-full':
     'Your storage is full, so nothing new can be saved right now. Ask an admin for more room, then try again.',
+  // TASK-713 — the agent couldn't start because one of its connectors' sign-ins
+  // is dead (the service rejected it, or it can't be renewed). Unlike a generic
+  // stop, the person can fix this themselves: the agent's Connectors tab
+  // already marks that connector and offers Reconnect (or, on a team agent
+  // whose expired sign-in is their own, "Sign in again" — TASK-774), so the
+  // sentence points there and uses the lower-case verb that covers both.
+  'connector-needs-reconnect':
+    'One of this agent’s connectors needs you to sign in again. Open Connectors, reconnect it, then retry.',
 };
 
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's

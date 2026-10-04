@@ -1,4 +1,5 @@
-import { reject, PluginError } from '@ax/core';
+import { reject, PluginError, HookBus, makeAgentContext } from '@ax/core';
+import { ServerError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMcpOAuthRouteHandlers } from '../routes.js';
 import type { McpOAuthRouteDeps } from '../routes.js';
@@ -1979,6 +1980,46 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
     await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
     expect(state.status).toBe(500);
     expect(state.json).toEqual({ error: 'status_check_failed' });
+  });
+
+  // TASK-713: a TRANSIENT refresh failure (the AS answered `server_error`) is
+  // rethrown by the resolver as the SDK's OAuthError, whose message is the AS's
+  // free-text error_description. Built through a REAL HookBus so the wrapper is
+  // the production one: PluginError{code:'unknown', message:"… threw: <description>"}.
+  // The probe-failure log must carry the name + stable codes, never that text.
+  it('TASK-713. transient refresh failure → 500, and the log carries names + codes but NOT the error_description', async () => {
+    const DESCRIPTION = 'upstream said: user alice@example.com token family 7f3a revoked-ish';
+    const realBus = new HookBus();
+    realBus.registerService('credentials:resolve:mcp-oauth', '@ax/mcp-oauth', async () => {
+      throw new ServerError(DESCRIPTION);
+    });
+    let wrapped: unknown;
+    try {
+      await realBus.call('credentials:resolve:mcp-oauth', makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }), {});
+    } catch (err) {
+      wrapped = err;
+    }
+    // Precondition: the production wrapper really does embed the description.
+    expect(wrapped).toBeInstanceOf(PluginError);
+    expect((wrapped as Error).message).toContain(DESCRIPTION);
+
+    const { deps, logger } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture(),
+      'credentials:get': () => {
+        throw wrapped;
+      },
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    expect(state.status).toBe(500);
+    expect(state.json).toEqual({ error: 'status_check_failed' });
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(logger.error.mock.calls[0]).toEqual([
+      'mcp_oauth_status_probe_failed',
+      { connectorId: 'conn-1', name: 'PluginError', code: 'unknown', causeName: 'ServerError', causeCode: 'server_error' },
+    ]);
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain('alice@example.com');
   });
 
   it('Task4.6. missing connectorId → 400', async () => {
