@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { ConnectorDatabase } from './migrations.js';
 
 /**
@@ -92,4 +92,28 @@ export function scopedAuthoredConnectorsByUser(
     .selectFrom('connectors_v1_authored')
     .selectAll('connectors_v1_authored')
     .where('owner_user_id', '=', scope.userId);
+}
+
+/**
+ * Does the JSONB `column` declare any `mcpServers` entry with `transport:
+ * 'stdio'`? Matches the RAW JSONB (stdio MCP servers were removed 2026-10-04 and
+ * the narrowed schema no longer parses such rows). Lax jsonpath: a missing or
+ * non-array `mcpServers`, or a non-object document, simply does not match.
+ */
+export function hasStdioMcpServer(column: 'capabilities' | 'capability_proposal') {
+  return sql<boolean>`jsonb_path_exists(${sql.ref(column)}, '$.mcpServers[*] ? (@.transport == "stdio")')`;
+}
+
+/**
+ * DELIBERATELY UNSCOPED — every owner's live AND tombstoned connector rows that
+ * declare a stdio MCP server. The ONLY caller is the boot-time system sweep
+ * (stdio-sweep.ts), which runs as `system` during plugin init and hard-deletes
+ * these rows; no request path may use it. Routed through this file so the bare
+ * cross-tenant read stays where lint I7 can see it.
+ */
+export function stdioConnectorRowsForSystemSweep(db: Kysely<ConnectorDatabase>) {
+  return db
+    .selectFrom('connectors_v1_connectors')
+    .select(['owner_user_id', 'connector_id', 'key_mode', 'visibility', 'capabilities', 'deleted_at'])
+    .where(hasStdioMcpServer('capabilities'));
 }
