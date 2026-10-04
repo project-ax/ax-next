@@ -1471,6 +1471,28 @@ interface CredentialsSetInput {
   kind: 'api-key';
   payload: Uint8Array;
 }
+/**
+ * Structural mirrors of @ax/credentials' `credentials:list` (metadata only —
+ * never a value) and `credentials:delete` — no import (I2). TASK-854 reads
+ * and removes a team key with them, always at scope `agent`.
+ */
+interface CredentialsListInput {
+  scope: 'agent';
+  ownerId: string;
+}
+interface CredentialsListRow {
+  scope: string;
+  ownerId: string | null;
+  ref: string;
+}
+interface CredentialsListOutput {
+  credentials: CredentialsListRow[];
+}
+interface CredentialsDeleteInput {
+  scope: 'agent';
+  ownerId: string;
+  ref: string;
+}
 
 const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = ['attached', 'legacy-owned'];
 
@@ -1589,9 +1611,7 @@ const STRICT_BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
  * (a client-chosen `ref` is refused, not ignored). The error strings never
  * carry any part of the body.
  */
-function readTeamKeyBody(
-  raw: Buffer,
-): { ok: true; slot: string; payload: Uint8Array } | { ok: false; error: string } {
+function readTeamKeyBody(raw: Buffer): TeamKeyBodyResult<{ slot: string; payload: Uint8Array }> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw.toString('utf-8')) as unknown;
@@ -1620,7 +1640,53 @@ function readTeamKeyBody(
   }
   const payload = new Uint8Array(Buffer.from(payloadB64, 'base64'));
   if (payload.length === 0) return { ok: false, error: 'invalid-key' };
-  return { ok: true, slot, payload };
+  return { ok: true, value: { slot, payload } };
+}
+
+/**
+ * TASK-854 — the team-key DELETE body, `{ slot }` and nothing else (a
+ * client-chosen `ref` is refused, not ignored), with the PUT's slot rule.
+ */
+function readTeamKeySlotBody(raw: Buffer): TeamKeyBodyResult<{ slot: string }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.toString('utf-8')) as unknown;
+  } catch {
+    return { ok: false, error: 'invalid-json' };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'invalid-body' };
+  }
+  const fields = parsed as Record<string, unknown>;
+  if (Object.keys(fields).some((k) => k !== 'slot')) {
+    return { ok: false, error: 'invalid-body' };
+  }
+  const { slot } = fields;
+  if (typeof slot !== 'string' || slot.length === 0 || slot.length > 64) {
+    return { ok: false, error: 'invalid-body' };
+  }
+  return { ok: true, value: { slot } };
+}
+
+/** TASK-854 — the team-key GET has no body; whatever came is not read. */
+function noTeamKeyBody(): TeamKeyBodyResult<null> {
+  return { ok: true, value: null };
+}
+
+/** TASK-854 — a team-key route's body reader: the value, or a 400 error string. */
+type TeamKeyBodyResult<B> = { ok: true; value: B } | { ok: false; error: string };
+
+/** TASK-854 — what the shared team-key gate hands a route that passed it. */
+interface TeamKeyGate<B> {
+  actor: { id: string; isAdmin: boolean };
+  agentId: string;
+  connectorId: string;
+  ctx: AgentContext;
+  /** The connector's api-key plan entries — the slots a team key can fill. */
+  checks: ConnectorCredentialCheck[];
+  body: B;
+  /** Log a check fault by error name and answer 503 `team-key-check-failed`. */
+  failed: (step: string, err: unknown) => void;
 }
 
 async function attachCredentialGate(
@@ -4060,6 +4126,124 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       });
       return false;
     }
+  }
+
+  /**
+   * TASK-813 / TASK-854 — the checks every team-key route (PUT, GET, DELETE
+   * …/connectors/:connectorId/team-key) runs, in order, before it touches the
+   * vault. Each fails closed and answers the response itself; `null` means it
+   * did, and the route stops.
+   *
+   *   1. signed in (401), an agent id (400 `missing-agent-id`), a connector id
+   *      (400 `invalid-connector`), the agent resolves under the caller (404);
+   *   2. a team agent (409 `not-a-team-agent` — a personal agent's keys live
+   *      on the person);
+   *   3. `agents:can-set-shared-credential` says yes: only an admin of the
+   *      owning team, with no workspace-admin bypass (403 `forbidden`; agent
+   *      gone → 404 `agent-not-found`; absent → 503 `connectors-unavailable`,
+   *      faulting → 503 `team-key-check-failed`, logged by error name);
+   *   4. the route's body, via `readBody` (400 with its error string);
+   *   5. the connector exists for the caller (404 `connector-not-found`) and
+   *      spends a per-person key (`keyMode: workspace` → 409
+   *      `team-key-unavailable`).
+   *
+   * Hands back the connector's api-key plan entries (`checks`) — the only
+   * slots a team key can fill, each with its server-side ref; an OAuth slot
+   * or the admin's OAuth client secret is never one — plus a `failed` that
+   * logs a check fault by error name and answers 503.
+   */
+  async function teamKeyGate<B>(
+    req: RouteRequest,
+    res: RouteResponse,
+    readBody: (raw: Buffer) => TeamKeyBodyResult<B>,
+  ): Promise<TeamKeyGate<B> | null> {
+    const actor = await authActorOr401(bus, initCtx, req, res);
+    if (actor === null) return null;
+    const agentId = req.params.agentId ?? '';
+    if (agentId.length === 0) {
+      res.status(400).json({ error: 'missing-agent-id' });
+      return null;
+    }
+    const connectorId = req.params.connectorId ?? '';
+    if (!isConnectorId(connectorId)) {
+      res.status(400).json({ error: 'invalid-connector' });
+      return null;
+    }
+    const agent = await resolveAgentOr404(bus, initCtx, agentId, actor.id, res);
+    if (agent === null) return null;
+    if (agent.visibility !== 'team') {
+      res.status(409).json({ error: 'not-a-team-agent' });
+      return null;
+    }
+    const failed = (step: string, err: unknown): void => {
+      initCtx.logger.warn('workspace_team_key_check_failed', {
+        agentId,
+        connectorId,
+        step,
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+      res.status(503).json({ error: 'team-key-check-failed' });
+    };
+    if (!bus.hasService('agents:can-set-shared-credential')) {
+      res.status(503).json({ error: 'connectors-unavailable' });
+      return null;
+    }
+    let allowed: boolean;
+    try {
+      allowed = await askCanSetSharedCredential(agentId, actor);
+    } catch (err) {
+      if (err instanceof PluginError && err.code === 'not-found') {
+        res.status(404).json({ error: 'agent-not-found' });
+        return null;
+      }
+      failed('permission', err);
+      return null;
+    }
+    if (!allowed) {
+      res.status(403).json({ error: 'forbidden' });
+      return null;
+    }
+
+    const body = readBody(req.body);
+    if (!body.ok) {
+      res.status(400).json({ error: body.error });
+      return null;
+    }
+
+    if (!bus.hasService('connectors:get')) {
+      res.status(503).json({ error: 'connectors-unavailable' });
+      return null;
+    }
+    const ctx = agentWorkspaceCtx(agentId, actor.id);
+    let connector: Connector;
+    try {
+      const out = await bus.call<{ userId: string; connectorId: string }, { connector: Connector }>(
+        'connectors:get',
+        ctx,
+        { userId: actor.id, connectorId },
+      );
+      connector = out.connector;
+    } catch (err) {
+      if (err instanceof PluginError && err.code === 'not-found') {
+        res.status(404).json({ error: 'connector-not-found' });
+        return null;
+      }
+      failed('connector', err);
+      return null;
+    }
+    if (connector?.keyMode === 'workspace') {
+      res.status(409).json({ error: 'team-key-unavailable' });
+      return null;
+    }
+    return {
+      actor,
+      agentId,
+      connectorId,
+      ctx,
+      checks: credentialChecks(connector).filter((c) => !c.signIn),
+      body: body.value,
+      failed,
+    };
   }
 
   /**
@@ -6937,28 +7121,19 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * PUT /api/workspace/agents/:agentId/connectors/:connectorId/team-key
      * `{ slot, payloadB64 }` — save a TEAM key (TASK-813): an agent-scope
      * api-key every member of this team agent uses unless they add their own.
+     * Saving over a saved key replaces it (TASK-854).
      *
      * Only an admin of the team that owns the agent may, per
      * `agents:can-set-shared-credential` — a workspace admin who is not one is
      * refused like a member. Every check runs, in order, before the vault is
      * written, and each fails closed:
      *
-     *   1. signed in (401), a connector id (400), the agent resolves under the
-     *      caller (404);
-     *   2. a team agent (409 `not-a-team-agent` — a personal agent's keys live
-     *      on the person);
-     *   3. the permission hook says yes (403 `forbidden`; absent → 503
-     *      `connectors-unavailable`, faulting → 503 `team-key-check-failed`,
-     *      logged by error name);
-     *   4. a well-formed body: `slot` + strict base64 `payloadB64` ≤ 16 KiB
+     *   1–5. the shared team-key gate ({@link teamKeyGate}), with a
+     *      well-formed body — `slot` + strict base64 `payloadB64` ≤ 16 KiB
      *      that decodes to something (400 `invalid-json` / `invalid-body` /
-     *      `invalid-key`);
-     *   5. the connector exists for the caller (404 `connector-not-found`),
-     *      spends a per-person key (`keyMode: workspace` → 409
-     *      `team-key-unavailable`), and `slot` is one of its api-key slots (400
-     *      `unknown-slot`). The ref comes from the connector's credential plan
-     *      — never from the client — and an OAuth slot or the admin's OAuth
-     *      client secret is not a team key;
+     *      `invalid-key`) — checked after the permission and before the
+     *      connector, and `slot` one of the connector's api-key slots (400
+     *      `unknown-slot`);
      *   6. the vault would let the agent's users READ that ref from the agent
      *      (`credentials:authorize-agent:account`, TASK-788): a key nobody can
      *      use is not saved (409 `team-key-unavailable`; absent or faulting →
@@ -6969,85 +7144,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * echoed; errors are logged by name only.
      */
     async setTeamKey(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await authActorOr401(bus, initCtx, req, res);
-      if (actor === null) return;
-      const agentId = req.params.agentId ?? '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'missing-agent-id' });
-        return;
-      }
-      const connectorId = req.params.connectorId ?? '';
-      if (!isConnectorId(connectorId)) {
-        res.status(400).json({ error: 'invalid-connector' });
-        return;
-      }
-      const agent = await resolveAgentOr404(bus, initCtx, agentId, actor.id, res);
-      if (agent === null) return;
-      if (agent.visibility !== 'team') {
-        res.status(409).json({ error: 'not-a-team-agent' });
-        return;
-      }
-      const failed = (step: string, err: unknown): void => {
-        initCtx.logger.warn('workspace_team_key_check_failed', {
-          agentId,
-          connectorId,
-          step,
-          name: err instanceof Error ? err.name : 'unknown',
-        });
-        res.status(503).json({ error: 'team-key-check-failed' });
-      };
-      if (!bus.hasService('agents:can-set-shared-credential')) {
-        res.status(503).json({ error: 'connectors-unavailable' });
-        return;
-      }
-      let allowed: boolean;
-      try {
-        allowed = await askCanSetSharedCredential(agentId, actor);
-      } catch (err) {
-        if (err instanceof PluginError && err.code === 'not-found') {
-          res.status(404).json({ error: 'agent-not-found' });
-          return;
-        }
-        failed('permission', err);
-        return;
-      }
-      if (!allowed) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-      }
-
-      const body = readTeamKeyBody(req.body);
-      if (!body.ok) {
-        res.status(400).json({ error: body.error });
-        return;
-      }
-
-      if (!bus.hasService('connectors:get')) {
-        res.status(503).json({ error: 'connectors-unavailable' });
-        return;
-      }
-      const ctx = agentWorkspaceCtx(agentId, actor.id);
-      let connector: Connector;
-      try {
-        const out = await bus.call<{ userId: string; connectorId: string }, { connector: Connector }>(
-          'connectors:get',
-          ctx,
-          { userId: actor.id, connectorId },
-        );
-        connector = out.connector;
-      } catch (err) {
-        if (err instanceof PluginError && err.code === 'not-found') {
-          res.status(404).json({ error: 'connector-not-found' });
-          return;
-        }
-        failed('connector', err);
-        return;
-      }
-      if (connector?.keyMode === 'workspace') {
-        res.status(409).json({ error: 'team-key-unavailable' });
-        return;
-      }
-      const check = credentialChecks(connector).find((c) => !c.signIn && c.slot === body.slot);
+      const gate = await teamKeyGate(req, res, readTeamKeyBody);
+      if (gate === null) return;
+      const { actor, agentId, connectorId, ctx, failed } = gate;
+      const check = gate.checks.find((c) => c.slot === gate.body.slot);
       if (check === undefined) {
         res.status(400).json({ error: 'unknown-slot' });
         return;
@@ -7085,7 +7185,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           ownerId: agentId,
           ref,
           kind: 'api-key',
-          payload: body.payload,
+          payload: gate.body.payload,
         });
       } catch (err) {
         initCtx.logger.warn('workspace_team_key_save_failed', {
@@ -7098,6 +7198,95 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       initCtx.logger.info('workspace_team_key_saved', { agentId, connectorId });
       res.status(200).json({ saved: true });
+    },
+
+    /**
+     * GET /api/workspace/agents/:agentId/connectors/:connectorId/team-key —
+     * is a TEAM key saved (TASK-854)? `{ slots: [{ slot, saved }] }`, one
+     * entry per api-key slot a team key can fill, in the connector's order.
+     *
+     * Behind the same team-key gate as the PUT ({@link teamKeyGate}): only an
+     * admin of the owning team may ask — a workspace admin who is not one is
+     * refused like a member, before the vault is read. Then `credentials:list`
+     * at scope `agent` for this agent (absent → 503 `credentials-unavailable`,
+     * faulting → 503 `team-key-check-failed`, logged by error name). `saved`
+     * is whether a row exists under the slot's plan ref; the response carries
+     * the slot name and that boolean only — never a ref, kind, date or value.
+     */
+    async getTeamKeys(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const gate = await teamKeyGate(req, res, noTeamKeyBody);
+      if (gate === null) return;
+      const { agentId, ctx, failed } = gate;
+      if (!bus.hasService('credentials:list')) {
+        res.status(503).json({ error: 'credentials-unavailable' });
+        return;
+      }
+      let rows: ReadonlyArray<CredentialsListRow>;
+      try {
+        const out = await bus.call<CredentialsListInput, CredentialsListOutput>('credentials:list', ctx, {
+          scope: 'agent',
+          ownerId: agentId,
+        });
+        rows = Array.isArray(out?.credentials) ? out.credentials : [];
+      } catch (err) {
+        failed('list', err);
+        return;
+      }
+      const saved = new Set(
+        rows.filter((r) => r?.scope === 'agent' && r.ownerId === agentId).map((r) => r.ref),
+      );
+      res.status(200).json({
+        slots: gate.checks.map((c) => ({ slot: c.slot, saved: saved.has(c.ref) })),
+      });
+    },
+
+    /**
+     * DELETE /api/workspace/agents/:agentId/connectors/:connectorId/team-key
+     * `{ slot }` — remove a TEAM key (TASK-854). Members then need their own
+     * key for this connector.
+     *
+     * Behind the same team-key gate as the PUT ({@link teamKeyGate}), with a
+     * body of `{ slot }` and nothing else (400 `invalid-json` /
+     * `invalid-body`) and `slot` one of the connector's api-key slots (400
+     * `unknown-slot`). The ref comes from the connector's credential plan —
+     * never from the client. No readability question is asked: removing a
+     * key only takes access away.
+     *
+     * Then `credentials:delete` at scope `agent` (absent → 503
+     * `credentials-unavailable`). Idempotent: no saved key is still 200
+     * `{ removed: true }`. A failure there is a 502 `team-key-not-removed`,
+     * logged by error name only.
+     */
+    async removeTeamKey(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const gate = await teamKeyGate(req, res, readTeamKeySlotBody);
+      if (gate === null) return;
+      const { agentId, connectorId, ctx } = gate;
+      const check = gate.checks.find((c) => c.slot === gate.body.slot);
+      if (check === undefined) {
+        res.status(400).json({ error: 'unknown-slot' });
+        return;
+      }
+      if (!bus.hasService('credentials:delete')) {
+        res.status(503).json({ error: 'credentials-unavailable' });
+        return;
+      }
+      try {
+        await bus.call<CredentialsDeleteInput, unknown>('credentials:delete', ctx, {
+          scope: 'agent',
+          ownerId: agentId,
+          ref: check.ref,
+        });
+      } catch (err) {
+        initCtx.logger.warn('workspace_team_key_remove_failed', {
+          agentId,
+          connectorId,
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+        res.status(502).json({ error: 'team-key-not-removed' });
+        return;
+      }
+      initCtx.logger.info('workspace_team_key_removed', { agentId, connectorId });
+      res.status(200).json({ removed: true });
     },
 
     /**
@@ -8376,6 +8565,18 @@ export async function registerWorkspaceRoutes(
       method: 'PUT',
       path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-key',
       handler: handlers.setTeamKey as unknown as RouteHandler,
+    },
+    {
+      // TASK-854 — is a team key saved (per slot, a boolean only)? Team admins only.
+      method: 'GET',
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-key',
+      handler: handlers.getTeamKeys as unknown as RouteHandler,
+    },
+    {
+      // TASK-854 — remove a team key. Team admins only.
+      method: 'DELETE',
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-key',
+      handler: handlers.removeTeamKey as unknown as RouteHandler,
     },
     {
       // TASK-741 — the row menu's "Retry": one forced check of one connector.

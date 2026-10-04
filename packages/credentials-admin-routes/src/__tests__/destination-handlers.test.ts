@@ -924,6 +924,82 @@ describe('destination credential handlers', () => {
     expect((bodyOf() as { error: string }).error).toMatch(/destination\.kind/);
   });
 
+  // TASK-854 — the delete twin of the TASK-813 create refusal: removing a
+  // team agent's team key is the team admins' call, through the agent's own
+  // team-key route. A workspace admin must not remove it here either.
+  it('SECURITY: DELETE /admin refuses an account key at agent scope (403) and the team key survives', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const seedCtx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' });
+    await bus.call('credentials:set', seedCtx, {
+      scope: 'agent',
+      ownerId: 'team-agent-1',
+      ref: 'account:linear',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('lin-secret'),
+    });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.destroy(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'linear' },
+          scope: 'agent',
+          ownerId: 'team-agent-1',
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(403);
+    expect(bodyOf()).toEqual({ error: 'team-key-via-agent' });
+    const out = await bus.call<Record<string, never>, { credentials: Array<{ scope: string; ownerId: string | null; ref: string }> }>(
+      'credentials:list',
+      seedCtx,
+      {},
+    );
+    expect(
+      out.credentials.find(
+        (c) => c.scope === 'agent' && c.ownerId === 'team-agent-1' && c.ref === 'account:linear',
+      ),
+    ).toBeDefined();
+  });
+
+  it('DELETE /admin: a non-account key at agent scope is still removed (204)', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const seedCtx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' });
+    await bus.call('credentials:set', seedCtx, {
+      scope: 'agent',
+      ownerId: 'agent-1',
+      ref: 'skill:my-skill:apiKey',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('secret'),
+    });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.destroy(
+      mkReq({
+        params: { destinationKind: 'skill-slot' },
+        body: {
+          destination: { kind: 'skill-slot', skillId: 'my-skill', slot: 'apiKey' },
+          scope: 'agent',
+          ownerId: 'agent-1',
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(204);
+    const out = await bus.call<Record<string, never>, { credentials: Array<{ ref: string }> }>(
+      'credentials:list',
+      seedCtx,
+      {},
+    );
+    expect(out.credentials.find((c) => c.ref === 'skill:my-skill:apiKey')).toBeUndefined();
+  });
+
   it('DELETE /admin: non-admin gets 403', async () => {
     const bus = await makeBus({ id: 'alice', isAdmin: false });
     const handlers = createDestinationHandlers({ bus });

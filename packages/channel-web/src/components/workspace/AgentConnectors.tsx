@@ -24,7 +24,7 @@
  * team. Everyone else gets no Sign in (the row's setup is `ask-owner`: "Ask
  * the agent’s owner to sign in") and no Reconnect for the team's shared
  * sign-in ("Team sign-in expired. Ask the agent’s owner to sign in again.").
- * The team's admins also get **Add team key** on a row that says `teamKey`: a
+ * The team's admins also get **Team key** on a row that says `teamKey`: a
  * key stored on the agent that everyone using it uses unless they've added
  * their own (`TeamKeyDialog`). What stays everyone's: Add key (it stores their
  * own key), Sign in again for their own expired sign-in, Retry, View details,
@@ -640,6 +640,8 @@ export function AgentConnectors({
             setAddingTeamKey(null);
             refresh();
           }}
+          // TASK-854 — a removed team key can change the row's setup: re-read.
+          onRemoved={refresh}
         />
       )}
       {editing !== null && (
@@ -784,7 +786,7 @@ function RowMenu({
    */
   canReconnect: boolean;
   onReconnect: () => void;
-  /** TASK-813 — "Add team key", on a row that says `teamKey`. */
+  /** TASK-813 — "Team key" (add, replace, remove — TASK-854), on a row that says `teamKey`. */
   onAddTeamKey: () => void;
   onSignInAgain: () => void;
   onRetry: () => void;
@@ -868,7 +870,7 @@ function RowMenu({
       item: (
         <DropdownMenuItem onSelect={onAddTeamKey}>
           <KeyRound aria-hidden="true" />
-          Add team key
+          Team key
         </DropdownMenuItem>
       ),
     });
