@@ -682,6 +682,42 @@ describe('mcp-oauth begin route', () => {
     expect((state.json as { error: string }).error).toBe('oauth_discovery_failed');
   });
 
+  // TASK-783 — the begin 502 body is a fixed sentence. It used to be the
+  // thrown error's message, which for a registration / metadata failure is
+  // authorization-server text (provider-controlled, unbounded).
+  it.each(['discover', 'ensureClient', 'buildAuthorization'] as const)(
+    'a %s failure → 502 body carries no upstream text (TASK-783)',
+    async (step) => {
+      const UPSTREAM = 'error_description=<script>provider-authored text</script>';
+      const flow = fakeFlow({
+        [step]: vi.fn(async () => {
+          throw new Error(`server said: ${UPSTREAM}`);
+        }),
+      });
+      const { deps } = makeDeps(
+        {
+          'auth:require-user': () => OK_USER,
+          'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+          'connectors:get': () => connectorFixture(),
+        },
+        { flow },
+      );
+      const handlers = createMcpOAuthRouteHandlers(deps);
+      const { res, state } = fakeRes();
+      await handlers.begin(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+        res,
+      );
+      expect(state.status).toBe(502);
+      const body = state.json as { error: string; message: string };
+      expect(body.error).toBe('oauth_discovery_failed');
+      expect(body.message).toBe(
+        "Couldn't start sign-in with this service. Try again in a moment. If it keeps happening, ask an admin to check the connector's address.",
+      );
+      expect(JSON.stringify(body)).not.toContain('provider-authored');
+    },
+  );
+
   it('resolves a pinned clientSecretRef via credentials:get', async () => {
     const getSecret = vi.fn(() => 'pinned-secret');
     const flow = fakeFlow();
