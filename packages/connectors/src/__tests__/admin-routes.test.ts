@@ -505,6 +505,75 @@ describe('admin connector routes', () => {
     expect(captured.status).toBe(400);
   });
 
+  describe('stdio MCP servers are rejected (invalid-payload -> 400)', () => {
+    const STDIO_MSG =
+      'Local (stdio) MCP servers are no longer supported. Use a remote MCP server URL.';
+    function stdioCaps(): Capabilities {
+      return {
+        ...mcpCaps(),
+        mcpServers: [
+          { name: 'local', transport: 'stdio', command: 'mcp-local', args: [] },
+        ],
+      } as unknown as Capabilities;
+    }
+
+    it('POST create with a stdio mcpServer -> 400 carrying the message; nothing stored', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'userA', isAdmin: true };
+      const { res, captured } = makeRes();
+      await handlers.create(
+        makeReq({
+          body: {
+            connectorId: 'local',
+            name: 'Local',
+            keyMode: 'personal',
+            visibility: 'private',
+            capabilities: stdioCaps(),
+          },
+        }),
+        res,
+      );
+      expect(captured.status).toBe(400);
+      expect(JSON.stringify(captured.body)).toContain(STDIO_MSG);
+      const { res: gRes, captured: gCap } = makeRes();
+      await handlers.show(makeReq({ params: { id: 'local' } }), gRes);
+      expect(gCap.status).toBe(404);
+    });
+
+    it('PATCH update to a stdio mcpServer -> 400 carrying the message; row unchanged', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'userA', isAdmin: true };
+      await handlers.create(
+        makeReq({
+          body: {
+            connectorId: 'gdrive',
+            name: 'Drive',
+            keyMode: 'personal',
+            visibility: 'private',
+            capabilities: mcpCaps(),
+          },
+        }),
+        makeRes().res,
+      );
+      const { res, captured } = makeRes();
+      await handlers.update(
+        makeReq({ params: { id: 'gdrive' }, body: { capabilities: stdioCaps() } }),
+        res,
+      );
+      expect(captured.status).toBe(400);
+      expect(JSON.stringify(captured.body)).toContain(STDIO_MSG);
+      const { res: gRes, captured: gCap } = makeRes();
+      await handlers.show(makeReq({ params: { id: 'gdrive' } }), gRes);
+      expect(gCap.status).toBe(200);
+      const servers = (gCap.body as { connector: { capabilities: Capabilities } }).connector
+        .capabilities.mcpServers;
+      expect(servers).toHaveLength(1);
+      expect(servers[0]).toMatchObject({ transport: 'http', url: 'https://mcp.example.com/gdrive' });
+    });
+  });
+
   // --- connector Test probe (TASK-108) ------------------------------------
   //
   // POST /admin/connectors/:id/test → 200 { status, detail? } where status is
