@@ -298,10 +298,16 @@ handoff on the first try.** The shapes:
   back"*. **You must relay it**, and a builder waiting on a "hung" reviewer may be waiting
   on a report you are already holding.
 
+- a builder **stalled** (the 600s watchdog fired) or stopped at "waiting on CI" with no
+  handoff — 3 times on 2026-10-03.
+
 **Every one delivered in full on ONE `SendMessage` naming the fields. NEVER re-dispatch** —
 the work is done and only delivery failed; re-dispatching discards it (one such agent had
 a 2-hour build behind it). Ask with the explicit **field list**, not "please report", and
 say that an honestly-labelled partial beats a confident summary of unchecked work.
+**That `SendMessage` is the FIRST recovery step for a stalled builder too**, before any
+re-dispatch or §7a preserve-and-resume: a short message asking for *only* the handoff
+fields. It recovered all 3 stalls on 2026-10-03, and none needed a re-dispatch.
 
 **A handoff that admits a gap is worth more than a tidy one.** A builder that disclosed its
 reviewer never reached the CI figures earned a focused second pass that found a real error;
@@ -426,6 +432,22 @@ else
   esac
 fi
 ```
+
+**A `CodeQL` rollup that fails in ~3s while every `Analyze (…)` job passed is a NEW
+code-scanning alert, not a flake.** The rollup reports alert results, not job health, so a
+re-run will not clear it. Look it up with
+`gh api "repos/project-ax/ax-next/code-scanning/alerts?ref=refs/pull/<n>/merge&state=open"`
+and hand it back to the builder to fix in code (or rebut with evidence). **Never dismiss
+it.** On PR #888 (2026-10-03) the alert came from a new test that copied
+`rejectUnauthorized: false` from older tests.
+
+**After merging a PR that adds a guard test, update the branches it scans.** Run
+`gh pr update-branch <m>` on every open PR in the guard's scope before you merge it, so
+its CI runs *against* the guard. A PR whose last CI predates the guard can merge green
+without the guard ever seeing it. Example: the channel-web manifest guard
+(`manifest-declarations.test.ts`) in #877 checks that channel-web declares every
+`hasService`-gated hook it calls, so any open PR that touched those calls needed the
+update first.
 
 **`MERGE-OK #<n>` is the gate.** Its absence halts the queue; a `⚠ cleanup` line never
 does. Leave the local branch + worktree alone during the run — a lingering one is
@@ -656,7 +678,9 @@ about a gate that believed a claim without checking its scope:
 Phase 5 › dispatch contract). The reason orchestrator-dispatched passes returned where
 builder-spawned ones "hung" was the dispatch shape, not the diff — a named teammate
 cannot hand its findings back (TASK-268). Name the diff range (the whole branch for Q1,
-the post-review delta for Q2) and the builder's worktree path. Merge only once it
+the post-review delta for Q2) and the builder's worktree path, and tell it to `cd` there
+and run every command there (a reviewer once ran its first pass in the shared main
+checkout, 2026-10-03). Merge only once it
 returns and its actionable findings are addressed (hand fixes back to the builder, or
 file them as follow-up cards if they are non-blocking).
 
@@ -935,7 +959,8 @@ in-flight, and any walk-filed follow-ups.
 | "This untagged To Do card looks ready, I'll dispatch it" | Un-triaged cards pass the triage gate first — ID assigned, walk-tagged, underspec routed to Needs Input. Never dispatch a card with no `triaged … clean` row. |
 | "Re-invoked after a crash — I'll just start dispatching" | Run the §7 reconcile **first**: orphaned In Progress / In Review cards (PR → merge queue; no PR → reset to To Do) before draining, or they wedge slots forever. |
 | "No PR, so the branch is empty — sweep it" | The watchdog fires on **silence, not failure**, so "no PR" says nothing about how far the builder got. Run `scripts/auto-ship-sweep-gate.sh <branch>` (§7a); only exit 0 authorizes the delete. And a *clean* tree is not an empty one — 3 of 2026-09-20's 4 saves had `git status --porcelain` EMPTY and 2–15 commits (merged as #653/#654/#656). Preserve ⇒ re-dispatch as a **RESUME**, not a restart. |
-| "An In-Progress card looks stuck, I'll re-dispatch it" | Only on a **run-start** wake (no live agents). On a board-change/agent-done wake those agents are live — reconciling would double-dispatch. |
+| "An In-Progress card looks stuck, I'll re-dispatch it" | Only on a **run-start** wake (no live agents). On a board-change/agent-done wake those agents are live — reconciling would double-dispatch. A stalled builder gets a `SendMessage` asking for only the handoff fields first; that recovered 3 of 3 on 2026-10-03. |
+| "CodeQL failed in 3 seconds — flake, re-run it" | All `Analyze` jobs green + a fast rollup fail = a new code-scanning alert. Look it up, fix or rebut, never dismiss (Merge queue). |
 | "The agent didn't mention its heartbeat, so it was fine" | `progress:` is a REQUIRED handoff field for the same reason `reviewer:` is: nothing machine-reads the progress block, so silence is indistinguishable from a heartbeat that was dead all run (it was, for every builder, on 2026-08-23). A missing or `FAILED-*` value never blocks the merge — journal it. |
 | "I'll poll the board myself each minute" | That burns model tokens. The background poller is model-token-free (it still spends ~1 GraphQL pt/poll — see §5; never `gh project item-list`, that's ~102 pt) and re-invokes you on change. |
 | "This walk card is ready, I'll yolo-ship it" | `(walk)` cards run via the serialized k8s-acceptance-loop, never yolo-ship. |

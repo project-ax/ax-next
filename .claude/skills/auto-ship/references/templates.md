@@ -62,6 +62,12 @@ afford — heed it rather than dispatching and hoping.
 >   `git rev-parse --show-toplevel` is NOT the primary checkout, and NEVER
 >   `git checkout -b`, commit, or `git switch` in the shared main checkout (it would
 >   clobber the orchestrator and sibling agents). Create your branch in the worktree.
+>   **Run every command there:** start each Bash call with `cd <your worktree root>`
+>   (a subagent's cwd can reset between calls), and **every subagent you spawn —
+>   `ax-code-reviewer` included — must be told the same in its prompt: "`cd <worktree
+>   path>` and run every command there."** Naming the path is not enough. On 2026-10-03
+>   a builder's reviewer ran its whole first pass in the SHARED main checkout, so it
+>   reviewed the wrong tree.
 > - **A fresh worktree has no `node_modules` and no `dist/` — run
 >   `pnpm install --frozen-lockfile && pnpm build` before your first test run.** The
 >   worktree carries tracked files only, and both of those are gitignored, so they are
@@ -167,7 +173,8 @@ afford — heed it rather than dispatching and hoping.
 >   contract, TASK-268). A `name` makes it an interactive teammate whose final text is
 >   never delivered to you — that, not diff size, is what every past "hang" was. Do not
 >   use `isolation: "worktree"` for a reviewer either: it would get a fresh worktree and
->   review the wrong tree. Name your worktree path in the prompt. **If it goes silent,
+>   review the wrong tree. Name your worktree path in the prompt and tell it to `cd`
+>   there and run every command there (see the first bullet). **If it goes silent,
 >   `SendMessage` it for its findings BEFORE re-dispatching** — the review is usually
 >   already written, and re-dispatching first doubles the stall. **Reviewers are slow
 >   and slow is not dead:** measured 2026-08-23, reviews holding 4 and 7.5 min of work
@@ -200,6 +207,23 @@ afford — heed it rather than dispatching and hoping.
 >   yourself, afterwards) — auto-ship's review gate routes on those labels and orders
 >   an independent pass over the delta rather than guessing. Labelling your own commit
 >   `new:` is the correct, expected answer; it is not a confession.
+> - **Pre-PR: if you added, renamed, or removed a hook** (any `registers` / `calls` /
+>   `optionalCalls` / `subscribes` entry), `git grep` the hook name and update the
+>   exact-list pins before you open the PR. Local gates missed these three times on
+>   2026-10-03. The two that keep biting:
+>   `presets/k8s/src/__tests__/preset.test.ts` (per-plugin `manifest.registers` /
+>   `calls` / `optionalCalls` `.toEqual` lists; `pnpm --filter @ax/preset-k8s test`)
+>   and the mcp-oauth hook stubs, the `captureRouteServices` map in
+>   `packages/mcp-oauth/src/__tests__/e2e.test.ts` plus the manifest pin in
+>   `plugin.test.ts` (`pnpm --filter @ax/mcp-oauth test`). The e2e suite needs Docker.
+>   If local Docker is too slow to run it, say so in your handoff rather than skipping
+>   it without a word.
+> - **A `CodeQL` check that fails in ~3s while every `Analyze (…)` job passes is a NEW
+>   code-scanning alert your PR introduced.** It is not a flake, and a re-run will not
+>   clear it. Look it up:
+>   `gh api "repos/project-ax/ax-next/code-scanning/alerts?ref=refs/pull/<PR>/merge&state=open"`.
+>   Then fix it in code, or rebut it with evidence in the handoff. **Never dismiss it.**
+>   (2026-10-03: a new test copied `rejectUnauthorized: false` from older tests.)
 > - Otherwise follow yolo-ship exactly: worktree, self-answering brainstorm,
 >   written plan, subagent-driven TDD, build+test+lint gate, local review,
 >   open PR, drive CI green.
