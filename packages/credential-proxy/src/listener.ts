@@ -1288,8 +1288,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       clientSocket.on('error', cleanup);
       // The http server's sockets are half-open: a client FIN emits 'end' but
       // never 'close'. Before the tunnel exists, a client FIN means it gave
-      // up, so tear down (and audit) now instead of waiting out the OS connect
-      // timeout on a black-holed upstream. After establishment 'end' is a
+      // up, so tear down (and audit) now instead of waiting out the connect
+      // timer below on a black-holed upstream. After establishment 'end' is a
       // legitimate half-close that pipe() forwards upstream — leave it alone.
       clientSocket.once('end', () => {
         if (!established) cleanup();
