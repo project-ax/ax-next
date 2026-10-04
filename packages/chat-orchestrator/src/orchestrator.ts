@@ -1273,7 +1273,7 @@ export function createOrchestrator(
 ): {
   runAgentInvoke(ctx: AgentContext, input: AgentInvokeInput): Promise<AgentOutcome>;
   onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): Promise<void>;
-  onTurnEnd(ctx: AgentContext, payload?: { reqId?: string }): void;
+  onTurnEnd(ctx: AgentContext, payload?: { reqId?: string; foldedReqIds?: unknown }): void;
   onSessionTerminate(ctx: AgentContext, payload: { sessionId?: string }): Promise<void>;
   applyCapabilityGrant(
     ctx: AgentContext,
@@ -1468,6 +1468,31 @@ export function createOrchestrator(
       return resolvedReqId;
     }
     return undefined;
+  }
+
+  // TASK-785 — a message sent while a reply is still running can be FOLDED
+  // into that running turn by the model's CLI: the turn answers both and ends
+  // under the running message's reqId, so the folded message never gets a
+  // turn-end of its own and its waiter would sit out the whole chat timeout
+  // (then fire a chat-run-timeout turn-error at a reply that already arrived).
+  // The runner lists folded reqIds on the turn-ends of the turn that answered
+  // them; resolve those waiters too.
+  //
+  // Exact reqIds only, and only waiters registered to THIS session: the list is
+  // runner-written and untrusted, and a runner must not be able to end another
+  // session's turn by naming its reqId. No session-FIFO fallback either — an id
+  // nobody waits on (already settled, or never ours) resolves nothing.
+  function resolveFoldedWaiters(sessionId: string, foldedReqIds: unknown): void {
+    if (!Array.isArray(foldedReqIds)) return;
+    const ours = reqIdsBySession.get(sessionId);
+    if (ours === undefined) return;
+    for (const folded of foldedReqIds) {
+      if (typeof folded !== 'string' || !ours.has(folded)) continue;
+      const deferred = waitersByReqId.get(folded);
+      if (deferred !== undefined && !deferred.settled) {
+        deferred.resolve({ kind: 'complete', messages: [] });
+      }
+    }
   }
 
   // Fault A — signal the channel SSE that a turn ended abnormally (the
@@ -3661,7 +3686,10 @@ export function createOrchestrator(
     cancelledSessions.delete(ctx.sessionId);
   }
 
-  function onTurnEnd(ctx: AgentContext, payload?: { reqId?: string }): void {
+  function onTurnEnd(
+    ctx: AgentContext,
+    payload?: { reqId?: string; foldedReqIds?: unknown },
+  ): void {
     // I10 — rotate proxy credentials BEFORE the one-shot cancel, so that any
     // tool-call follow-ups inside the same turn (model→tool→model) pick up
     // the refreshed token. api-key-only sessions skip rotation: their kind
@@ -3709,6 +3737,7 @@ export function createOrchestrator(
       // runner WARM (no cancel), and arm the idle reaper (Task 5).
       // Idempotent across the two turn-ends one user message emits.
       resolveWaiterFor(payload?.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
+      resolveFoldedWaiters(ctx.sessionId, payload?.foldedReqIds);
       armReapTimer(ctx);
       return;
     }

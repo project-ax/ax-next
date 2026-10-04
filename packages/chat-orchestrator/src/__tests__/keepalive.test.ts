@@ -3,7 +3,7 @@ import {
   HookBus, makeAgentContext, createLogger,
   type AgentOutcome, type ServiceHandler,
 } from '@ax/core';
-import { createTestHarness } from '@ax/test-harness';
+import { createTestHarness, TEST_PROXY_AUTH_TOKEN } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
 
 const TEST_AGENT = {
@@ -544,5 +544,114 @@ describe('TASK-811: connector attach/detach mid-chat reaches the warm session ne
     expect(r.terminated).not.toContain('s-1');
     expect(r.queued.filter((q) => q.sessionId === 's-1' && q.type === 'user-message')).toHaveLength(2); // both turns
     expect(r.logs.find((l) => l.msg === 'stale_session_respawn')).toBeUndefined();
+  });
+});
+
+// TASK-785 — a message sent while a reply is still running can be FOLDED into
+// that running turn by the model's CLI: one turn answers both, and it ends
+// under the running message's reqId. The folded message never gets a turn-end
+// of its own, so its agent:invoke waiter used to wait out the whole chat
+// timeout and then fire a chat-run-timeout turn-error at a reply that had
+// already arrived. The runner names folded messages in `foldedReqIds`; the
+// orchestrator resolves their waiters too — but only waiters of the session
+// that sent the turn-end, because the list is runner-written (untrusted).
+describe('TASK-785: a folded message\'s agent:invoke waiter resolves on the turn-end that answered it', () => {
+  it('resolves the folded waiter, and never one from another session', async () => {
+    const conv: Record<string, { activeSessionId: string | null }> = {
+      'conv-1': { activeSessionId: null },
+      'conv-2': { activeSessionId: null },
+    };
+    const live = new Set<string>();
+    const handles = [makeHandle(), makeHandle()];
+    let opens = 0;
+    const queuedReqIds: string[] = [];
+
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
+      'session:queue-work': async (_c, input: unknown) => {
+        const i = input as { entry: { type: string; reqId?: string } };
+        if (i.entry.type === 'user-message' && i.entry.reqId !== undefined) {
+          queuedReqIds.push(i.entry.reqId);
+        }
+        return { cursor: 0 };
+      },
+      'session:terminate': async () => ({}),
+      'session:is-alive': async (_c, input: unknown) => ({
+        alive: live.has((input as { sessionId: string }).sessionId),
+      }),
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return { conversation: {
+          conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent',
+          activeSessionId: conv[i.conversationId]!.activeSessionId, activeReqId: null,
+        } };
+      },
+      'conversations:bind-session': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; sessionId: string };
+        conv[i.conversationId]!.activeSessionId = i.sessionId;
+        live.add(i.sessionId);
+        return undefined;
+      },
+      'sandbox:open-session': async () => {
+        const hk = handles[opens]!;
+        opens += 1;
+        return { runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle };
+      },
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: TEST_PROXY_AUTH_TOKEN }),
+      'proxy:close-session': async () => ({}),
+    };
+
+    // Long enough that a waiter left to time out cannot settle inside the test.
+    const h = await createTestHarness({
+      services,
+      plugins: [createChatOrchestratorPlugin({
+        runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 30_000,
+        keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+      })],
+    });
+    const invoke = (sessionId: string, conversationId: string, reqId: string) => {
+      const settled = { done: false };
+      const p = h.bus.call<unknown, AgentOutcome>('agent:invoke',
+        ctxWith({ sessionId, conversationId, reqId }),
+        { message: { role: 'user', content: reqId } });
+      void p.then(() => { settled.done = true; }, () => { settled.done = true; });
+      return { p, settled };
+    };
+    const until = async (cond: () => boolean): Promise<void> => {
+      for (let i = 0; i < 500 && !cond(); i += 1) await new Promise((r) => setImmediate(r));
+      expect(cond()).toBe(true);
+    };
+    const turnEnd = (sessionId: string, payload: Record<string, unknown>) =>
+      h.bus.fire('chat:turn-end',
+        makeAgentContext({ sessionId, agentId: 'a', userId: 'u', reqId: 'ipc-fresh',
+          logger: createLogger({ reqId: 'ipc-fresh', writer: () => undefined }) }),
+        { reason: 'user-message-wait', ...payload });
+
+    // conv-1 warms up on s-1.
+    fireTurnEnd(h.bus, 's-1', 'req-1');
+    await invoke('s-1', 'conv-1', 'req-1').p;
+    // conv-2 runs on its own session s-2; its turn is still going.
+    const other = invoke('s-2', 'conv-2', 'req-x');
+    // Two messages into the warm s-1: req-3 lands while req-2's reply runs.
+    const second = invoke('s-1', 'conv-1', 'req-2');
+    const third = invoke('s-1', 'conv-1', 'req-3');
+    await until(() => ['req-x', 'req-2', 'req-3'].every((r) => queuedReqIds.includes(r)));
+
+    // The CLI folds req-3 into req-2's turn: ONE turn-end, named after req-2.
+    // A runner-written list naming another session's message, or an id no one
+    // waits on, must not reach past this session.
+    await turnEnd('s-1', { reqId: 'req-2', foldedReqIds: ['req-3', 'req-x', 'req-unknown'] });
+
+    expect(await second.p).toEqual({ kind: 'complete', messages: [] });
+    // Before the fix this waited out the 30 s chat timeout; read it as such.
+    const stillWaiting = new Promise((r) => setTimeout(() => r('still waiting'), 1_000));
+    expect(await Promise.race([third.p, stillWaiting])).toEqual({ kind: 'complete', messages: [] });
+
+    // s-2's turn is untouched — it ends on its own turn-end, not s-1's list.
+    for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+    expect(other.settled.done).toBe(false);
+    await turnEnd('s-2', { reqId: 'req-x' });
+    expect(await other.p).toEqual({ kind: 'complete', messages: [] });
+    for (const hk of handles) hk.forceExit();
   });
 });
