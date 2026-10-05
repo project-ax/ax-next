@@ -257,6 +257,10 @@ describe('proxy listener — MITM CONNECT client closes before the upstream conn
     expect(upstreamSockets).toHaveLength(1);
     expect(audits).toHaveLength(0);
 
+    // No explicit RST needed here (unlike the test above): tearing down an
+    // active inner TLS session aborts the proxy's client side, which reaches
+    // cleanup() through 'error'/'close'. Were it a bare half-close, this test
+    // would hang rather than pass — it cannot pass vacuously.
     inner.destroy();
     raw.destroy();
     await untilAudited(audits);
