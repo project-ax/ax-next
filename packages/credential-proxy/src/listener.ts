@@ -893,31 +893,37 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     activeSockets.add(clientTls);
     activeSockets.add(targetTls);
 
-    // Track upstream TLS handshake failure separately so the cleanup audit
-    // doesn't double-log a 200 over the actual 502.
-    let tlsFailed = false;
+    // ONE terminal audit row per tunnel, first writer wins (TASK-873). Four
+    // paths can end a MITM tunnel — an upstream error (502 tls_error), a
+    // metered refusal, a canary block, and cleanup()'s 200/502 — and they can
+    // interleave: a refusal audits synchronously, then an upstream write error
+    // it raced (write-after-end is emitted on the NEXT tick) reaches the error
+    // handler. Each path used to guard only against the one it sat next to, so
+    // that interleaving wrote two rows for one CONNECT. Every terminal row goes
+    // through this gate instead; the teardown each path does is unchanged.
+    let terminalAudited = false;
+    const auditTerminal = (entry: ProxyAuditEntry): void => {
+      if (terminalAudited) return;
+      terminalAudited = true;
+      audit(stampSession(entry, callerSession));
+    };
+
     targetTls.on('error', (err) => {
-      if (!tlsFailed) {
-        tlsFailed = true;
-        audit(stampSession({
-          action: 'proxy_request',
-          method: 'CONNECT',
-          url: target,
-          status: 502,
-          requestBytes: head.length,
-          responseBytes: 0,
-          durationMs: Date.now() - startTime,
-          blocked: `tls_error: ${err.message}`,
-        }, callerSession));
-      }
+      auditTerminal({
+        action: 'proxy_request',
+        method: 'CONNECT',
+        url: target,
+        status: 502,
+        requestBytes: head.length,
+        responseBytes: 0,
+        durationMs: Date.now() - startTime,
+        blocked: `tls_error: ${err.message}`,
+      });
     });
 
     let requestBytes = 0;
     let responseBytes = 0;
     let credentialInjected = false;
-    // Set once a metered tunnel's refusal has been audited, so the close that
-    // follows it does not log a second, misleading 200 for the same tunnel.
-    let refusalAudited = false;
 
     // canaryTokens are computed once per connection — sessions don't change
     // mid-tunnel under our model.
@@ -941,8 +947,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // head it will not forward). Answer in the provider's own error shape so the
     // SDK on the other end shows the message and, for a 429, retries, then close.
     const refuseMetered = (denied: { status: number; reason: string; message: string }) => {
-      refusalAudited = true;
-      audit(stampSession({
+      // The refusal is this tunnel's audit row; the close it causes must not add a 200.
+      auditTerminal({
         action: 'proxy_request',
         method: 'CONNECT',
         url: target,
@@ -951,7 +957,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         responseBytes,
         durationMs: Date.now() - startTime,
         blocked: `provider_call_refused: ${denied.reason}`,
-      }, callerSession));
+      });
       clientTls.write(refusalResponse(denied.status, denied.message));
       clientTls.end();
       targetTls.destroy();
@@ -962,8 +968,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // the SAME 403 audit + tears down the tunnel. Never logs the decoded value.
     const blockCanary = () => {
       // The 403 below is this tunnel's audit entry; the close it causes must not add a 200.
-      refusalAudited = true;
-      audit(stampSession({
+      auditTerminal({
         action: 'proxy_request',
         method: 'CONNECT',
         url: target,
@@ -972,7 +977,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         responseBytes: 0,
         durationMs: Date.now() - startTime,
         blocked: 'canary_detected',
-      }, callerSession));
+      });
       // Send a 403 over the TLS channel before tearing down.
       clientTls.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
       clientTls.end();
@@ -1042,10 +1047,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // request is charged as unmeasured, never as free).
       metered?.end();
 
-      // No second row if a TLS handshake error already logged 502, or a
-      // refusal already logged its own status.
-      if (tlsFailed || refusalAudited) return;
-
+      // An upstream error or a refusal may already have written this tunnel's
+      // row; auditTerminal() then drops whichever row cleanup() writes below.
       if (!established) {
         // The client gave up before the upstream connect + handshake finished.
         // Audit what really happened, in the bypass path's not-established
@@ -1053,7 +1056,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         // reason (not a policy block). `requestBytes` is what the client sent
         // US; no `credentialInjected`, because nothing reached the upstream —
         // writes to a TLS socket are held until its handshake completes.
-        audit(stampSession({
+        auditTerminal({
           action: 'proxy_request',
           method: 'CONNECT',
           url: target,
@@ -1061,11 +1064,11 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           requestBytes,
           responseBytes: 0,
           durationMs: Date.now() - startTime,
-        }, callerSession));
+        });
         return;
       }
 
-      audit(stampSession({
+      auditTerminal({
         action: 'proxy_request',
         method: 'CONNECT',
         url: target,
@@ -1076,7 +1079,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         // Omit `credentialInjected` when false to satisfy
         // exactOptionalPropertyTypes — only present when substitution fired.
         ...(credentialInjected ? { credentialInjected: true as const } : {}),
-      }, callerSession));
+      });
     };
 
     clientTls.on('close', cleanup);
