@@ -3351,6 +3351,75 @@ describe('chat-orchestrator', () => {
     }
   });
 
+  // TASK-878 — the bound gives up the WAIT, not the call: a close that fails
+  // after the bound is still reported, flagged afterTimeout, code-only.
+  it('a close that fails after the bound is still logged (afterTimeout, name/code only)', async () => {
+    const CLOSE_BOUND_MS = 250;
+    const SECRET_TEXT = 'late-failure-text-that-must-not-be-logged';
+    const proxy = buildProxyHooks();
+    let failClose: ((e: Error) => void) | undefined;
+    proxy.services['proxy:close-session'] = () =>
+      new Promise((_resolve, reject) => { failClose = reject; });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        fireTurnEndAndChatEnd(busRef, sessionId, ctx.reqId);
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
+          proxyCloseTimeoutMs: CLOSE_BOUND_MS,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const lines: Array<Record<string, unknown>> = [];
+    const ctx = makeAgentContext({
+      sessionId: 'close-late-fail',
+      agentId: 'a',
+      userId: 'u',
+      logger: createLogger({
+        reqId: 'close-late-fail',
+        writer: (l: string) => lines.push(JSON.parse(l) as Record<string, unknown>),
+      }),
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const settled: { out?: AgentOutcome } = {};
+      void h.bus
+        .call<unknown, AgentOutcome>('agent:invoke', ctx, { message: { role: 'user', content: 'hi' } })
+        .then((o) => { settled.out = o; });
+      const tick = () => new Promise<void>((r) => setImmediate(r));
+      const until = async (cond: () => boolean): Promise<void> => {
+        const deadline = Date.now() + 5_000;
+        while (!cond() && Date.now() < deadline) await tick();
+      };
+      await until(() => failClose !== undefined);
+      vi.advanceTimersByTime(CLOSE_BOUND_MS);
+      await until(() => settled.out !== undefined);
+      expect(settled.out?.kind).toBe('complete');
+      expect(lines.some((l) => l.msg === 'proxy_close_session_failed')).toBe(false);
+
+      failClose!(new Error(SECRET_TEXT));
+      await until(() => lines.some((l) => l.msg === 'proxy_close_session_failed'));
+      expect(lines.find((l) => l.msg === 'proxy_close_session_failed')).toMatchObject({
+        sessionId: 'close-late-fail', phase: 'invoke-end', afterTimeout: true, name: 'PluginError',
+      });
+      expect(JSON.stringify(lines)).not.toContain(SECRET_TEXT);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   for (const bad of [-1, Number.NaN]) {
     it(`refuses proxyCloseTimeoutMs=${bad} at init`, async () => {
       await expect(createTestHarness({
