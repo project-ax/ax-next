@@ -129,6 +129,40 @@ const StatusBatchOutputSchema = z.object({
 }) as unknown as z.ZodType<StatusBatchOutput>;
 
 /**
+ * `mcp-oauth:remove-shared-sign-in` (TASK-858). A team admin removes the
+ * sign-in a team agent's members SHARE for one connector. Boundary review:
+ * `{agentId, connectorId}` → `{removed: true}` names no storage or transport;
+ * an alternate impl (a vault that tracks sign-in health itself) answers the
+ * same shape, and no payload field is backend-specific.
+ *
+ * It is a hook of its own — not a bare `credentials:delete` from the caller —
+ * because this plugin writes that row AND owns the agent's "sign-in expired"
+ * marker: deleting the row alone would leave the marker behind, and the rail
+ * would go on saying "Team sign-in expired" for a sign-in that no longer exists.
+ * A hook that only CLEARED the marker would be worse: a capability to re-trust a
+ * rejected, unexpired token (TASK-817). Delete-then-clear is bundled so that
+ * cannot be asked for.
+ *
+ * Never touches a user-scope row or marker: a person's own sign-in is theirs.
+ */
+export interface RemoveSharedSignInInput {
+  agentId: string;
+  connectorId: string;
+}
+export interface RemoveSharedSignInOutput {
+  removed: true;
+}
+const RemoveSharedSignInInputSchema = z
+  .object({
+    agentId: z.string().min(1).max(256),
+    connectorId: z.string().min(1).max(128),
+  })
+  .strict();
+const RemoveSharedSignInOutputSchema = z.object({
+  removed: z.literal(true),
+}) as unknown as z.ZodType<RemoveSharedSignInOutput>;
+
+/**
  * Build the minimal {@link AuthorizationServerMetadata} the SDK's refresh helper
  * needs, WITHOUT re-discovery — the token endpoint was discovered + stored at
  * connect time and rides in the token blob, so a refresh-on-read must not pay
@@ -166,6 +200,10 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
   // When the routes are mounted they additionally call the connector/auth/
   // credentials hooks (mirrors how @ax/connectors conditionally extends `calls`).
   const calls: string[] = ['database:get-instance'];
+  // `credentials:resolve:mcp-oauth` is registered ALWAYS — harmless when
+  // @ax/credentials isn't loaded. `mcp-oauth:status-batch` (TASK-741) answers
+  // from this plugin's own table, so it is registered ALWAYS too.
+  const registers: string[] = ['credentials:resolve:mcp-oauth', 'mcp-oauth:status-batch'];
   if (mountRoutes) {
     calls.push(
       'http:register-route',
@@ -174,17 +212,19 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       'agents:resolve',
       'credentials:get',
       'credentials:set',
+      // TASK-858 — `mcp-oauth:remove-shared-sign-in` deletes the row the
+      // callback wrote, so it exists only where the routes (and so the vault
+      // they write to) are mounted.
+      'credentials:delete',
     );
+    registers.push('mcp-oauth:remove-shared-sign-in');
   }
 
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      // Registered ALWAYS — harmless when @ax/credentials isn't loaded.
-      // `mcp-oauth:status-batch` (TASK-741) answers from this plugin's own
-      // table, so it is registered ALWAYS too.
-      registers: ['credentials:resolve:mcp-oauth', 'mcp-oauth:status-batch'],
+      registers,
       calls,
       // The routes name AX on third-party consent screens after the operator's
       // branding when a branding plugin is loaded.
@@ -382,6 +422,53 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
               'mcp-oauth: mountRoutes requires publicOrigin (the OAuth redirect_uri + connector-return redirect are derived from it)',
           });
         }
+        // TASK-858 — remove a team agent's shared sign-in. The ORDER is the point:
+        // delete the vault row FIRST, then clear the agent's marker. Clearing first
+        // would, if the delete then failed, leave a marked-but-unexpired token with
+        // no marker: the resolver would trust it again (TASK-817) after the caller
+        // was told the removal failed. A failed delete therefore propagates and
+        // leaves the marker exactly as it was.
+        //
+        // `credentials:delete` of an absent row is not an error (the vault
+        // overwrites it with a tombstone), so removing twice is a quiet success.
+        // Scope is fixed to `agent`: this hook can never reach a person's own row.
+        bus.registerService<RemoveSharedSignInInput, RemoveSharedSignInOutput>(
+          'mcp-oauth:remove-shared-sign-in',
+          PLUGIN_NAME,
+          async (ctx, raw) => {
+            const parsed = RemoveSharedSignInInputSchema.safeParse(raw);
+            if (!parsed.success) {
+              throw new PluginError({
+                code: 'invalid-payload',
+                plugin: PLUGIN_NAME,
+                hookName: 'mcp-oauth:remove-shared-sign-in',
+                message: 'invalid remove-shared-sign-in input',
+              });
+            }
+            const { agentId, connectorId } = parsed.data;
+            await bus.call<
+              { scope: 'agent'; ownerId: string; ref: string },
+              void
+            >('credentials:delete', ctx, {
+              scope: 'agent',
+              ownerId: agentId,
+              ref: `account:${connectorId}`,
+            });
+            // Best-effort, like the callback's own clear: the sign-in is already
+            // gone, and a stale marker only costs the wrong wording on the rail.
+            try {
+              await store.clearNeedsReconnect({ kind: 'agent', agentId }, connectorId);
+            } catch (err) {
+              ctx.logger.warn('mcp_oauth_needs_reconnect_clear_failed', {
+                connectorId,
+                name: err instanceof Error ? err.name : 'unknown',
+              });
+            }
+            return { removed: true };
+          },
+          { returns: RemoveSharedSignInOutputSchema },
+        );
+
         const unregs = await registerMcpOAuthRoutes(bus, initCtx, {
           bus,
           store,
