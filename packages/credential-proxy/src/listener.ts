@@ -1092,7 +1092,17 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // an HTTP server socket can emit end without close (half-open), leaving
     // the upstream and listener bookkeeping alive indefinitely. Forward FIN
     // so final response bytes can drain; destroy both sides on inactivity.
-    clientTls.on('end', () => targetTls.end());
+    //
+    // Before the upstream handshake completes there is nothing to forward the
+    // FIN to: ending a TCP-pending upstream emits nothing, so the exchange sat
+    // out the connect timer and was audited as a connect timeout; ending one
+    // mid-handshake made it fail with a `tls_error` the upstream never caused.
+    // A client FIN there means it gave up — tear down (and audit the
+    // not-established 502) now, as the bypass path does (TASK-786, TASK-872).
+    clientTls.on('end', () => {
+      if (!established) cleanup();
+      else targetTls.end();
+    });
     clientTls.setTimeout(meteredTunnelIdleMs, cleanup);
     targetTls.setTimeout(meteredTunnelIdleMs, cleanup);
 
