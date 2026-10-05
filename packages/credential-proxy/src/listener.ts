@@ -1036,6 +1036,12 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       metered?.onResponseBytes(chunk);
     });
 
+    // Set once the upstream TLS handshake completes. The client was told 200
+    // before the dial, so until then there is still no tunnel to the upstream,
+    // and a client that hangs up first must not be audited as one (TASK-861 —
+    // the bypass path's TASK-705 flag, for the MITM path).
+    let established = false;
+
     // Cleanup once — first close/error wins, downstream events become no-ops.
     let cleaned = false;
     const cleanup = () => {
@@ -1050,22 +1056,41 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // request is charged as unmeasured, never as free).
       metered?.end();
 
-      // Skip the 200 audit if a TLS handshake error already logged 502, or a
+      // No second row if a TLS handshake error already logged 502, or a
       // refusal already logged its own status.
-      if (!tlsFailed && !refusalAudited) {
+      if (tlsFailed || refusalAudited) return;
+
+      if (!established) {
+        // The client gave up before the upstream connect + handshake finished.
+        // Audit what really happened, in the bypass path's not-established
+        // shape: a 502 with nothing back from the upstream and no `blocked`
+        // reason (not a policy block). `requestBytes` is what the client sent
+        // US; no `credentialInjected`, because nothing reached the upstream —
+        // writes to a TLS socket are held until its handshake completes.
         audit(stampSession({
           action: 'proxy_request',
           method: 'CONNECT',
           url: target,
-          status: 200,
+          status: 502,
           requestBytes,
-          responseBytes,
+          responseBytes: 0,
           durationMs: Date.now() - startTime,
-          // Omit `credentialInjected` when false to satisfy
-          // exactOptionalPropertyTypes — only present when substitution fired.
-          ...(credentialInjected ? { credentialInjected: true as const } : {}),
         }, callerSession));
+        return;
       }
+
+      audit(stampSession({
+        action: 'proxy_request',
+        method: 'CONNECT',
+        url: target,
+        status: 200,
+        requestBytes,
+        responseBytes,
+        durationMs: Date.now() - startTime,
+        // Omit `credentialInjected` when false to satisfy
+        // exactOptionalPropertyTypes — only present when substitution fired.
+        ...(credentialInjected ? { credentialInjected: true as const } : {}),
+      }, callerSession));
     };
 
     clientTls.on('close', cleanup);
@@ -1098,7 +1123,10 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // into bindings that were never initialized — an uncaught error on the host.
     // 'secureConnect' and cleanup() only ever run from socket events, which
     // Node never emits synchronously, so both see it assigned.
-    targetTls.once('secureConnect', () => clearTimeout(connectTimer));
+    targetTls.once('secureConnect', () => {
+      established = true;
+      clearTimeout(connectTimer);
+    });
     const connectTimer = setTimeout(() => {
       targetTls.destroy(
         new Error(`upstream connect timed out after ${upstreamConnectTimeoutMs}ms`),
