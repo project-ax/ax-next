@@ -14,6 +14,12 @@
  * clean 400 (one `invalid_target` audit row) — before any 200, before the
  * allowlist check, before DNS. An injected resolver that counts its calls is
  * the proof that nothing past the parse ran.
+ *
+ * TASK-874 extends the same parse step to the whole target: strict
+ * authority-form `host:port` / `[v6]:port` with the port REQUIRED (RFC 9110
+ * §9.3.6). `host:443:x` (which `split(':')` read as `host:443`), unbracketed
+ * IPv6 and a port-less target now get the same 400; a bracketed IPv6 literal,
+ * which `split(':')` mangled, now parses.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import * as net from 'node:net';
@@ -38,13 +44,25 @@ afterEach(() => {
   for (const c of clients.splice(0)) c.destroy();
 });
 
+/**
+ * Literal-IP hosts, allowlisted in their UNBRACKETED canonical spelling (the
+ * same spelling the HTTP forward path checks). Both are private, so a target
+ * that gets past the parse ends in the SSRF block's 403 — deterministic, and
+ * with no resolver call (literals skip DNS) and no dial.
+ */
+const V4_LITERAL = '127.0.0.1';
+const V6_LITERAL = '::1';
+/** `::ffff:127.0.0.1` in canonical (hex) form — what the parser hands the SSRF check. */
+const V6_MAPPED = '::ffff:7f00:1';
+
 function session(mode: 'mitm' | 'bypass'): Map<string, SessionConfig> {
+  const hosts = [HOST, V4_LITERAL, V6_LITERAL, V6_MAPPED];
   return new Map([
     [
       's1',
       {
-        allowlist: new Set([HOST]),
-        ...(mode === 'bypass' ? { bypassMITM: new Set([HOST]) } : {}),
+        allowlist: new Set(hosts),
+        ...(mode === 'bypass' ? { bypassMITM: new Set(hosts) } : {}),
         sessionId: 's1',
         userId: 'u1',
         proxyToken: tokenFor('s1'),
@@ -96,6 +114,25 @@ function connect(port: number, target: string): Promise<string> {
   });
 }
 
+/**
+ * TASK-874 — whole targets that are not strict authority-form `host:port`.
+ * Each is refused at the same parse step, with the same audited 400, before
+ * any lookup. (The full grammar table is in connect-target.test.ts; these are
+ * the shapes the old `split(':')` let through or mangled.)
+ */
+const BAD_TARGETS: Array<[string, string]> = [
+  ['an extra colon segment', `${HOST}:443:x`],
+  ['two ports', `${HOST}:443:443`],
+  ['an unbracketed IPv6', '::1:443'],
+  ['an empty host', ':443'],
+  ['a missing port (RFC 9110 requires it)', HOST],
+  ['a bracketed IPv6 with no port', '[::1]'],
+  ['a bracketed IPv6 with an extra segment', '[::1]:443:x'],
+  ['an IPv6 zone id', '[fe80::1%eth0]:443'],
+  ['userinfo', `user@${HOST}:443`],
+  ['an IPv4 shorthand the resolver would expand', '127.1:443'],
+];
+
 const BAD_PORTS: Array<[string, string]> = [
   ['zero', '0'],
   ['one past the top', '65536'],
@@ -111,10 +148,13 @@ const BAD_PORTS: Array<[string, string]> = [
 
 for (const mode of ['mitm', 'bypass'] as const) {
   describe(`CONNECT port validation — ${mode} path`, () => {
-    for (const [label, portStr] of BAD_PORTS) {
-      it(`refuses ${label} (${HOST}:${portStr}) with a clean 400 before any 200`, async () => {
+    const badTargets: Array<[string, string]> = [
+      ...BAD_PORTS.map(([label, portStr]): [string, string] => [label, `${HOST}:${portStr}`]),
+      ...BAD_TARGETS,
+    ];
+    for (const [label, target] of badTargets) {
+      it(`refuses ${label} (${JSON.stringify(target)}) with a clean 400 before any 200`, async () => {
         const { audits, lookups, port } = await start(mode);
-        const target = `${HOST}:${portStr}`;
 
         const response = await connect(port, target);
 
@@ -185,15 +225,31 @@ for (const mode of ['mitm', 'bypass'] as const) {
       expect(audits[0]).toMatchObject({ status: 407, blocked: 'proxy_auth_required' });
     });
 
-    it('still defaults a target with no port to 443 (unchanged)', async () => {
-      const { audits, lookups, port } = await start(mode);
+    // TASK-874: bracketed IPv6 used to be mangled by `split(':')` into the host
+    // `[` — refused as a 400 that told nobody why. Now the literal parses, is
+    // matched against the allowlist unbracketed, and reaches the SSRF check,
+    // which blocks loopback with a 403. Proof the parse let it through.
+    for (const [label, target, host] of [
+      ['a bracketed IPv6 literal', '[::1]:443', V6_LITERAL],
+      ['an uncompressed bracketed IPv6 (canonicalized)', '[0:0:0:0:0:0:0:1]:443', V6_LITERAL],
+      ['an IPv4-mapped IPv6 (canonical hex form still blocked)', '[::ffff:127.0.0.1]:443', V6_MAPPED],
+      ['an IPv4 literal', '127.0.0.1:443', V4_LITERAL],
+    ] as const) {
+      it(`lets ${label} (${target}) past the parse to the SSRF check`, async () => {
+        const { audits, lookups, port } = await start(mode);
 
-      const response = await connect(port, HOST);
+        const response = await connect(port, target);
 
-      expect(lookups).toEqual([HOST]);
-      expect(response).toMatch(/^HTTP\/1\.1 502 Bad Gateway\r\n/);
-      expect(audits).toHaveLength(1);
-      expect(audits[0]!.status).toBe(502);
-    });
+        // A literal skips DNS, so the resolver never runs — the 403 is the
+        // private-IP block on the canonical, unbracketed host.
+        expect(lookups).toEqual([]);
+        expect(response).toMatch(/^HTTP\/1\.1 403 Forbidden\r\n/);
+        expect(response).not.toContain('200 Connection Established');
+        expect(audits).toHaveLength(1);
+        expect(audits[0]).toMatchObject({ url: target, status: 403 });
+        expect(audits[0]!.blocked).toMatch(/^Blocked: /);
+        expect(audits[0]!.blocked).toContain(host);
+      });
+    }
   });
 }

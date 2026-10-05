@@ -47,6 +47,7 @@ import { existsSync, unlinkSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { resolveAndCheck, BlockedIPError, type Resolver } from './private-ip.js';
+import { parseConnectTarget } from './connect-target.js';
 import type { SharedCredentialRegistry } from './registry.js';
 import { generateDomainCert, type CAKeyPair } from './ca.js';
 import { RequestFramer, findCanaryHit } from './request-framer.js';
@@ -300,21 +301,6 @@ const METERED_TUNNEL_IDLE_MS = 15 * 60_000;
  * or the 15-minute idle timeout fires (MITM).
  */
 const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
-
-/**
- * The port of a CONNECT target (`host:port`), or `undefined` when it is not a
- * usable TCP port. A target with no `:port` at all keeps the historical 443
- * default. Otherwise the port must be 1–5 ASCII digits naming 1–65535 — not
- * `parseInt`, which reads `443abc` as 443, `-1` as -1 and `99999` as 99999.
- * Untrusted input (the agent writes the CONNECT line), so this is strict by
- * design (TASK-862).
- */
-function parseConnectPort(portStr: string | undefined): number | undefined {
-  if (portStr === undefined) return 443;
-  if (!/^[0-9]{1,5}$/.test(portStr)) return undefined;
-  const port = Number(portStr);
-  return port >= 1 && port <= 65535 ? port : undefined;
-}
 
 /**
  * The response a metered tunnel gives when it refuses a request (TASK-715): a
@@ -1194,15 +1180,16 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     }
     const callerSession = caller.session;
 
-    // Parse host:port from CONNECT target ("host:port"). The port is validated
-    // HERE, before the allowlist, DNS, or any `200 Connection Established`
-    // (TASK-862): an out-of-range port used to reach the dial, where `tls.connect`
-    // / `net.connect` throws ERR_SOCKET_BAD_PORT — on the MITM path AFTER the 200
-    // was written, so the client got a raw 502 inside an established tunnel.
-    const [hostname, portStr] = target.split(':');
-    const port = parseConnectPort(portStr);
+    // Parse the CONNECT target with the strict authority-form grammar
+    // (`host:port` / `[v6]:port`, port required — see connect-target.ts). It
+    // runs HERE, before the allowlist, DNS, or any `200 Connection Established`,
+    // and covers both the MITM and bypass paths. TASK-862: an out-of-range port
+    // used to reach the dial, where `tls.connect` / `net.connect` throws
+    // ERR_SOCKET_BAD_PORT — on the MITM path AFTER the 200 was written. TASK-874:
+    // `split(':')` read `host:443:x` as `host:443` and could not parse `[::1]:443`.
+    const parsed = parseConnectTarget(target);
 
-    if (!hostname || port === undefined) {
+    if (parsed === undefined) {
       clientSocket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
       clientSocket.end();
       audit(stampSession({
@@ -1217,6 +1204,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       }, callerSession));
       return;
     }
+    const { hostname, port } = parsed;
 
     try {
       // Allowlist gate (I2): the hostname must be in the CALLER's own
