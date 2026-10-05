@@ -833,12 +833,14 @@ interface OpenSessionInput {
     source?: 'routine' | 'user';
   };
   /**
-   * Per-session proxy blob. Populated only when @ax/credential-proxy is
-   * loaded; otherwise undefined and sandbox:open-session injects no
-   * proxy env, leaving the runner to fail at boot when no AX_PROXY_* is
-   * set. Presets that want a working runner load @ax/credential-proxy.
+   * Per-session proxy blob from `proxy:open-session`. REQUIRED (TASK-838):
+   * the sandbox backends' OpenSessionInputSchema refuses an input without
+   * one, because the runner cannot boot without the proxy env. The
+   * orchestrator never reaches sandbox:open-session without it — a preset
+   * missing @ax/credential-proxy ends the turn earlier with
+   * `proxy-not-loaded`.
    */
-  proxyConfig?: ProxyConfig;
+  proxyConfig: ProxyConfig;
   /**
    * Phase 1 (skill-install) — installed-skill SKILL.md files to materialize
    * inside the sandbox at $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md. The
