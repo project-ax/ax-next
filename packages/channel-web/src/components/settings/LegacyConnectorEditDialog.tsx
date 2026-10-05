@@ -793,7 +793,10 @@ export function LegacyConnectorEditDialog({
           {/* Whose key (keyMode) */}
           <div className="flex flex-col gap-2">
             <Label htmlFor="connector-keymode">Whose key</Label>
+            {/* TASK-827 — fixed once the connector exists; the server
+                refuses a change (400). */}
             <Select
+              disabled={target !== 'new'}
               value={form.keyMode}
               onValueChange={(v) =>
                 setForm((f) => ({ ...f, keyMode: v as ConnectorKeyMode }))
@@ -811,6 +814,11 @@ export function LegacyConnectorEditDialog({
                 </SelectItem>
               </SelectContent>
             </Select>
+            {target !== 'new' && (
+              <p className="text-sm text-muted-foreground">
+                To change whose key it uses, create a new connector.
+              </p>
+            )}
           </div>
 
           {/* Admin-only workspace fields. Hidden + forced off in the user variant. */}

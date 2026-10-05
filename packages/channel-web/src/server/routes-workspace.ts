@@ -1725,13 +1725,14 @@ async function attachCredentialGate(
     }
     return failed('connector', err);
   }
-  // A connector that spends the company key is admin-only to attach, and
-  // `agents:attach-connector` refuses it for anyone else. Refuse it HERE
-  // first, the same 403, so a non-admin's request never makes the host read
-  // the company key's presence on their behalf.
-  if (!actor.isAdmin && connector?.keyMode === 'workspace') {
-    return { ok: false, status: 403, error: 'forbidden' };
-  }
+  // TASK-827 — a shared-key connector (`keyMode: 'workspace'`) is one anyone
+  // may add to their own agent; the agent spends the admin's shared key. The
+  // presence check below reads it AS THIS PERSON, so the vault's read-time
+  // rule (credentials:authorize-global:account, TASK-697 — an admin-owned
+  // shared definition only) decides whether they may use it, exactly as it
+  // will at run time. A missing shared key is something only an admin can
+  // add, so a non-admin is told to ask one rather than to add a key.
+  const sharedKeyFromAdmin = !actor.isAdmin && connector?.keyMode === 'workspace';
   const checks = credentialChecks(connector);
   if (checks.length === 0) return { ok: true };
   if (!bus.hasService('credentials:get')) {
@@ -1753,12 +1754,20 @@ async function attachCredentialGate(
               error: 'connector-needs-sign-in',
               message: 'Sign in to this connector first, then add it.',
             }
-          : {
-              ok: false,
-              status: 409,
-              error: 'connector-needs-key',
-              message: 'Add the key this connector needs first, then add it.',
-            };
+          : sharedKeyFromAdmin
+            ? {
+                ok: false,
+                status: 409,
+                error: 'connector-needs-shared-key',
+                message:
+                  'This connector doesn’t have its shared key yet. Ask a workspace admin to add it.',
+              }
+            : {
+                ok: false,
+                status: 409,
+                error: 'connector-needs-key',
+                message: 'Add the key this connector needs first, then add it.',
+              };
       }
       return failed('credential', err);
     }
@@ -7294,11 +7303,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      *
      * One id per call, through `agents:attach-connector`, which is atomic
      * (two people attaching at once never lose either write) and which owns
-     * the workspace-connector rule: only an admin may attach a connector that
-     * spends the company's key, and (TASK-798) on a team agent only its owner
-     * (a team admin) or a workspace admin may attach at all. This route does
-     * not re-decide either; it passes the caller's identity and reports the
-     * hook's refusal as a 403. It does ASK @ax/agents the TASK-798 question up
+     * the rule (TASK-798) that on a team agent only its owner (a team admin)
+     * or a workspace admin may attach at all. A shared-key connector is one
+     * anyone may add (TASK-827). This route does not re-decide that; it
+     * passes the caller's identity and reports the hook's refusal as a 403. It does ASK @ax/agents the TASK-798 question up
      * front on a team agent, so a member's request never makes the host read
      * credential presence on their behalf before being refused. That ask
      * (TASK-803) is a 403 only for the hook's explicit `allowed: false`; a

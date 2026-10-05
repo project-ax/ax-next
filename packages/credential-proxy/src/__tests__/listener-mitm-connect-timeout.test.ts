@@ -59,6 +59,8 @@ const clients: net.Socket[] = [];
 const upstreamSockets: net.Socket[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   listener?.stop();
   listener = undefined;
   for (const c of clients.splice(0)) c.destroy();
@@ -241,17 +243,31 @@ describe('proxy listener — MITM CONNECT upstream connect-phase timeout (TASK-8
   });
 
   it('leaves an established MITM tunnel alone after the connect timeout has elapsed', async () => {
+    // TASK-865: this test owns the clock. It used to race the real one: the
+    // proxy's upstream TLS handshake had to finish inside a 150ms wall-clock
+    // window, and on a loaded CI runner an event-loop stall longer than that
+    // ran the connect timer (timers phase) before the handshake's I/O (poll
+    // phase) — a correct 502 `upstream connect timed out` on a tunnel that was
+    // never established, which the client saw as ECONNRESET. Reproduced 5/5 by
+    // busy-waiting 300ms right after the 200. With setTimeout/clearTimeout
+    // faked (and only those — socket I/O and Date stay real), the connect
+    // window cannot elapse until the test says so, and it says so only after
+    // the tunnel is provably established.
     const CONNECT_TIMEOUT_MS = 150;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const armed = vi.spyOn(globalThis, 'setTimeout');
     const leaf = generateDomainCert('127.0.0.1', ca);
-    // The upstream answers only long after the connect window, and only once
-    // asked — so the reply proves the tunnel outlived the window.
+    // The upstream answers only once asked AND only once the test has moved the
+    // clock past the connect window — so the reply proves the tunnel outlived it.
+    let answer: (() => void) | undefined;
+    let markRequestSeen!: () => void;
+    const upstreamGotRequest = new Promise<void>((r) => { markRequestSeen = r; });
     const slow = tlsCreate({ key: leaf.key, cert: leaf.cert }, (sock) => {
       sock.on('error', () => { /* teardown resets are fine */ });
       sock.once('data', () => {
-        setTimeout(
-          () => sock.end('HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nlate-reply'),
-          CONNECT_TIMEOUT_MS * 4,
-        );
+        answer = () =>
+          sock.end('HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nlate-reply');
+        markRequestSeen();
       });
     });
     servers.push(slow);
@@ -280,10 +296,8 @@ describe('proxy listener — MITM CONNECT upstream connect-phase timeout (TASK-8
       };
       raw.on('data', onData);
     });
-
-    const started = Date.now();
     const inner = tlsConnect({ socket: raw, servername: '127.0.0.1', ca: ca.cert });
-    const received = await new Promise<string>((resolve, reject) => {
+    const received = new Promise<string>((resolve, reject) => {
       let acc = '';
       inner.on('secureConnect', () => {
         inner.write('GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
@@ -294,12 +308,32 @@ describe('proxy listener — MITM CONNECT upstream connect-phase timeout (TASK-8
       inner.on('end', () => resolve(acc));
       inner.on('error', reject);
     });
+    // Awaited below, after the clock has moved; until then an early error must
+    // not surface as an unhandled rejection (it still fails the `await`).
+    received.catch(() => { /* observed by the await below */ });
+    // The upstream holding the request means the proxy's upstream TLS
+    // handshake finished: the tunnel is established.
+    await upstreamGotRequest;
+
+    // Guard against a vacuous pass: the listener's connect timer really was
+    // armed on OUR clock (were it on a real one, advancing below would prove
+    // nothing) — and the established handshake has already cleared it.
+    expect(armed.mock.calls.filter(([, ms]) => ms === CONNECT_TIMEOUT_MS)).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Now let the connect window elapse — four times over — with the tunnel open.
+    vi.advanceTimersByTime(CONNECT_TIMEOUT_MS * 4);
+    // Only after that does the upstream answer.
+    answer!();
+
+    const reply = await received;
     inner.destroy();
+    expect(reply).toContain('late-reply');
 
-    expect(received).toContain('late-reply');
-    expect(Date.now() - started).toBeGreaterThan(CONNECT_TIMEOUT_MS * 2);
-
-    await vi.waitFor(() => expect(audits.length).toBeGreaterThanOrEqual(1));
+    await new Promise<void>((resolve) => {
+      const check = () => (audits.length >= 1 ? resolve() : setImmediate(check));
+      check();
+    });
     expect(audits).toHaveLength(1);
     expect(audits[0]!.status).toBe(200);
     expect(audits[0]!.blocked).toBeUndefined();

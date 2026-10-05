@@ -14,7 +14,6 @@ import {
   validateNewAttachments,
   type NewAttachmentInput,
 } from './skill-attachments-validation.js';
-import { workspaceConnectorGrantViolation } from './connector-guard.js';
 import {
   DISPLAY_NAME_FORBIDDEN,
   DISPLAY_NAME_FORBIDDEN_MESSAGE,
@@ -411,9 +410,6 @@ function writeServiceError(res: RouteResponse, err: unknown): boolean {
   return false;
 }
 
-// The non-admin workspace-connector guard lives in ./connector-guard.ts (shared
-// with the agents:* connector hooks, which enforce it on every path).
-
 // --- handler factory -------------------------------------------------------
 
 /** Minimal local shape of @ax/teams' `teams:list-for-user` output (Invariant
@@ -714,10 +710,10 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
       // Owner-scoped (agent ownership enforced by the hook's assertWriteAllowed).
-      // The validator below rejects any credential binding, and the non-admin
-      // workspace-connector guard (after skill resolution) rejects granting a
-      // shared/global-keyed connector via a referenced skill — see the post-
-      // resolution check. Admins bypass that guard.
+      // The validator below rejects any credential binding. A skill that pulls
+      // in a shared-key connector is allowed for anyone (TASK-827): anyone may
+      // attach that connector directly, and reading its shared key is decided
+      // at read time (credentials:authorize-global:account, TASK-697).
       const agentId = req.params.id;
       if (typeof agentId !== 'string' || agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -749,9 +745,8 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
           // passed (user-wins on id collision). A non-admin attaches their OWN
           // user-scoped skills (from /settings/skills), so we must pass it or
           // those ids resolve to nothing → spurious skill-not-found. Passing it
-          // for admins too is a superset (global catalog + their own), and it
-          // lets the workspace-connector guard below see a user-scoped skill's
-          // referenced connectors. Mirrors the orchestrator's runtime resolve.
+          // for admins too is a superset (global catalog + their own). Mirrors
+          // the orchestrator's runtime resolve.
           const result = await deps.bus.call<
             { skillIds: string[]; ownerUserId: string },
             { skills: typeof resolvedSkills }
@@ -777,24 +772,6 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       if (!validation.ok) {
         res.status(400).json({ error: validation.message, code: validation.code });
         return;
-      }
-      // Non-admin owner-scoped guard: a referenced skill must not pull in a
-      // workspace (shared/global-keyed) connector — that would let the agent
-      // spend a company credential. Admins may attach any skill.
-      if (!actor.isAdmin) {
-        const referencedConnectors = [
-          ...new Set(resolvedSkills.flatMap((s) => s.connectors ?? [])),
-        ];
-        const violation = await workspaceConnectorGrantViolation(
-          deps.bus,
-          ctx,
-          actor.id,
-          referencedConnectors,
-        );
-        if (violation !== null) {
-          res.status(403).json({ error: violation });
-          return;
-        }
       }
       try {
         const out = await deps.bus.call<

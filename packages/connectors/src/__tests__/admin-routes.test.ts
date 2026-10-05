@@ -397,6 +397,41 @@ describe('admin connector routes', () => {
     ).toHaveLength(1);
   });
 
+  it('TASK-827: PATCH that switches keyMode is refused (400, clear message); the row keeps its mode', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'gdrive',
+          name: 'Drive',
+          keyMode: 'personal',
+          visibility: 'shared',
+          capabilities: mcpCaps(),
+        },
+      }),
+      makeRes().res,
+    );
+    const { res, captured } = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'gdrive' }, body: { keyMode: 'workspace' } }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toMatch(/create a new connector/i);
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'gdrive' } }), gRes);
+    expect((gCap.body as { connector: { keyMode: string } }).connector.keyMode).toBe('personal');
+    // Re-sending the SAME keyMode (the editors send the whole record) is fine.
+    const same = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'gdrive' }, body: { keyMode: 'personal', name: 'Drive 2' } }),
+      same.res,
+    );
+    expect(same.captured.status).toBe(200);
+  });
+
   it('DELETE removes an owned connector (204), then GET 404s', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
