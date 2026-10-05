@@ -749,6 +749,56 @@ describe('connectors:describe-tools', () => {
         expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('ok');
         expect(t.list).toHaveBeenCalledTimes(3);
       });
+
+      it('a re-check whose own credential read blips leaves B eligible for the next forced read', async () => {
+        // B's sign-in is seen (so the re-check runs), then the check's own
+        // read of it blips: nothing was listed, so trying again costs no probe.
+        let bReads = 0;
+        let bSignedIn = false;
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref !== 'account:other') return 'tok-123';
+            if (!bSignedIn) throw notFound();
+            bReads += 1;
+            if (bReads === 2) throw new PluginError({ code: 'unknown', plugin: 'credentials-store-db', message: 'db down' });
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        bSignedIn = true;
+        t.advance(5_000);
+        await expect(t.run({ userId: 'u1', connectorId: 'linear', force: true })).rejects.toMatchObject({
+          code: 'credential-unavailable',
+        });
+        expect(t.list).toHaveBeenCalledTimes(1);
+        t.advance(1_000);
+        expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('ok');
+        expect(t.list).toHaveBeenCalledTimes(3);
+      });
+
+      it('concurrent forced reads (two agents) after one sign-in make ONE re-check', async () => {
+        let bSignedIn = false;
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref === 'account:other' && !bSignedIn) throw notFound();
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true });
+        await t.store.put(
+          { userId: 'u1', agentId: 'agent-2', connectorId: 'linear' },
+          { status: 'needs-auth', tools: [], fingerprint: '', checkedAt: new Date(Date.parse('2026-10-02T11:59:59Z')) },
+        );
+        bSignedIn = true;
+        t.advance(5_000);
+        await Promise.all([
+          t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true }),
+          t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true }),
+        ]);
+        expect(t.list).toHaveBeenCalledTimes(3);
+      });
     });
 
     it('a blip on one server of a multi-server connector happens before ANY server is listed', async () => {
