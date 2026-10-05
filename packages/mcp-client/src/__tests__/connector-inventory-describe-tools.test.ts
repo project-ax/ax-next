@@ -573,6 +573,294 @@ describe('connectors:describe-tools', () => {
       expect(t.list).toHaveBeenCalledTimes(1);
     });
 
+    // TASK-841 — server A is signed in and listed (the window holds); the
+    // person signs in to server B a few seconds later. The details view's
+    // forced re-read must really check, or it shows "needs sign-in" for a
+    // connector the rail already calls ready.
+    describe('signing in to another server of a multi-server connector inside the window (TASK-841)', () => {
+      const twoServers = () =>
+        connector({
+          capabilities: {
+            credentials: [
+              { slot: 'a', kind: 'oauth', server: 'main' },
+              { slot: 'b', kind: 'oauth', server: 'second' },
+            ],
+            mcpServers: [
+              { name: 'main', transport: 'http', url: 'https://a.example/mcp' },
+              { name: 'second', transport: 'http', url: 'https://b.example/mcp' },
+            ],
+          },
+          credentialPlan: [
+            { slot: 'a', ref: 'account:linear', scope: 'user', service: 'linear' },
+            { slot: 'b', ref: 'account:other', scope: 'user', service: 'other' },
+          ],
+          toolNamespaces: [
+            { server: 'main', toolNamespace: NS },
+            { server: 'second', toolNamespace: NS2 },
+          ],
+        });
+      const notFound = () => new PluginError({ code: 'credential-not-found', plugin: 'credentials', message: 'x' });
+      const listedUrls = (t: ReturnType<typeof setup>) => t.list.mock.calls.map((c) => c[0].url);
+      const credGetsFor = (t: ReturnType<typeof setup>, ref: string) =>
+        t.calls.filter((c) => c.hook === 'credentials:get' && (c.input as { ref: string }).ref === ref).length;
+
+      it('a forced re-read after signing in to server B lists B and answers ok', async () => {
+        let bSignedIn = false;
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref === 'account:other' && !bSignedIn) throw notFound();
+            return 'tok-123';
+          },
+        });
+        expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('needs-auth');
+        expect(listedUrls(t)).toEqual(['https://a.example/mcp']);
+        bSignedIn = true;
+        t.advance(10_000);
+        const out = await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(out.status).toBe('ok');
+        expect(out.tools.map((x) => x.toolKey).sort()).toEqual([`mcp.${NS2}.search`, `mcp.${NS}.search`].sort());
+        expect(listedUrls(t)).toEqual(['https://a.example/mcp', 'https://a.example/mcp', 'https://b.example/mcp']);
+        // The stored row is the new answer, so an unforced read agrees.
+        expect((await t.run({ userId: 'u1', connectorId: 'linear' })).status).toBe('ok');
+        expect(t.list).toHaveBeenCalledTimes(3);
+      });
+
+      it('buys one check per newly signed-in server — more forced reads stay in the window', async () => {
+        let bSignedIn = false;
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref === 'account:other' && !bSignedIn) throw notFound();
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        bSignedIn = true;
+        t.advance(10_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(3);
+        // That check opened a new window: nothing new is signed in, so no probe.
+        for (let i = 0; i < 5; i += 1) {
+          t.advance(1_000);
+          await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        }
+        expect(t.list).toHaveBeenCalledTimes(3);
+        // Nor does signing out and back in to B buy another inside it.
+        bSignedIn = false;
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        bSignedIn = true;
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(3);
+        // The window runs from the check that listed B (t=10s), not from the
+        // first one (t=0): still held at t=38s, over at t=40s.
+        t.advance(CHECK_COOLDOWN_MS - 7_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(3);
+        t.advance(2_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(5);
+      });
+
+      it('while B is still not signed in, forced reads inside the window probe nothing', async () => {
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref === 'account:other') throw notFound();
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        for (let i = 0; i < 5; i += 1) {
+          t.advance(1_000);
+          expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('needs-auth');
+        }
+        expect(t.list).toHaveBeenCalledTimes(1);
+      });
+
+      it('a server whose sign-in was REJECTED (reconnect) is not re-read inside the window — no token renewals', async () => {
+        // Reading a rejected sign-in may call the authorization server (the
+        // resolver renews a marked token), so only a server with NOTHING
+        // stored is looked at again inside the window.
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref === 'account:other') {
+              const reconnect = new Error('refresh token rejected; reconnect required');
+              reconnect.name = 'NeedsReconnectError';
+              throw new PluginError({ code: 'unknown', plugin: 'credentials', message: 'x', cause: reconnect });
+            }
+            return 'tok-123';
+          },
+        });
+        expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('needs-auth');
+        const before = credGetsFor(t, 'account:other');
+        for (let i = 0; i < 3; i += 1) {
+          t.advance(1_000);
+          await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        }
+        expect(credGetsFor(t, 'account:other')).toBe(before);
+        expect(t.list).toHaveBeenCalledTimes(1);
+      });
+
+      it('a sign-in under ANOTHER agent of the same person is checked for that agent', async () => {
+        // The window is per (person, connector); the sign-in may be the agent's own.
+        const t = setup({
+          resolve: twoServers,
+          credential: (i, ctx) => {
+            if (i.ref === 'account:other' && ctx.agentId !== 'agent-2') throw notFound();
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true });
+        await t.store.put(
+          { userId: 'u1', agentId: 'agent-2', connectorId: 'linear' },
+          { status: 'needs-auth', tools: [], fingerprint: '', checkedAt: new Date(Date.parse('2026-10-02T11:59:59Z')) },
+        );
+        t.advance(1_000);
+        const out = await t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true });
+        expect(out.status).toBe('ok');
+        expect(t.list).toHaveBeenCalledTimes(3);
+        // Back on agent-1, B is still not signed in: nothing more to check.
+        await t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(3);
+      });
+
+      it('a credential blip on the re-check keeps B eligible: the next forced read checks', async () => {
+        let bState: 'absent' | 'blip' | 'ok' = 'absent';
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref === 'account:other') {
+              if (bState === 'absent') throw notFound();
+              if (bState === 'blip') throw new PluginError({ code: 'unknown', plugin: 'credentials-store-db', message: 'db down' });
+            }
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        bState = 'blip';
+        t.advance(5_000);
+        // A blip says nothing about the sign-in: answered from the row, nothing listed.
+        expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('needs-auth');
+        expect(t.list).toHaveBeenCalledTimes(1);
+        bState = 'ok';
+        t.advance(1_000);
+        expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('ok');
+        expect(t.list).toHaveBeenCalledTimes(3);
+      });
+
+      it('a re-check whose own credential read blips leaves B eligible for the next forced read', async () => {
+        // B's sign-in is seen (so the re-check runs), then the check's own
+        // read of it blips: nothing was listed, so trying again costs no probe.
+        let bReads = 0;
+        let bSignedIn = false;
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref !== 'account:other') return 'tok-123';
+            if (!bSignedIn) throw notFound();
+            bReads += 1;
+            if (bReads === 2) throw new PluginError({ code: 'unknown', plugin: 'credentials-store-db', message: 'db down' });
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        bSignedIn = true;
+        t.advance(5_000);
+        await expect(t.run({ userId: 'u1', connectorId: 'linear', force: true })).rejects.toMatchObject({
+          code: 'credential-unavailable',
+        });
+        expect(t.list).toHaveBeenCalledTimes(1);
+        t.advance(1_000);
+        expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('ok');
+        expect(t.list).toHaveBeenCalledTimes(3);
+      });
+
+      it('three servers: each sign-in buys one re-check, and a server already listed in the chain never re-arms one', async () => {
+        // A signed in; B and C not. The set of servers that may buy a
+        // re-check is {B, C} and only shrinks: A signing out and back in
+        // inside the chain buys nothing, because A was already listed.
+        const signedIn = new Set(['account:a']);
+        const t = setup({
+          resolve: () =>
+            connector({
+              capabilities: {
+                credentials: [
+                  { slot: 'a', kind: 'oauth', server: 'sa' },
+                  { slot: 'b', kind: 'oauth', server: 'sb' },
+                  { slot: 'c', kind: 'oauth', server: 'sc' },
+                ],
+                mcpServers: [
+                  { name: 'sa', transport: 'http', url: 'https://a.example/mcp' },
+                  { name: 'sb', transport: 'http', url: 'https://b.example/mcp' },
+                  { name: 'sc', transport: 'http', url: 'https://c.example/mcp' },
+                ],
+              },
+              credentialPlan: [
+                { slot: 'a', ref: 'account:a', scope: 'user', service: 'a' },
+                { slot: 'b', ref: 'account:b', scope: 'user', service: 'b' },
+                { slot: 'c', ref: 'account:c', scope: 'user', service: 'c' },
+              ],
+              toolNamespaces: [
+                { server: 'sa', toolNamespace: NS },
+                { server: 'sb', toolNamespace: NS2 },
+                { server: 'sc', toolNamespace: 'c99999aaaaa' },
+              ],
+            }),
+          credential: (i) => {
+            if (!signedIn.has(i.ref)) throw notFound();
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(listedUrls(t)).toEqual(['https://a.example/mcp']);
+        // A signs out while B signs in: the re-check lists B only.
+        signedIn.delete('account:a');
+        signedIn.add('account:b');
+        t.advance(5_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(listedUrls(t)).toEqual(['https://a.example/mcp', 'https://b.example/mcp']);
+        // A signs back in: it was listed in this chain, so no re-check.
+        signedIn.add('account:a');
+        t.advance(1_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(2);
+        // C signs in: its one re-check lists every signed-in server.
+        signedIn.add('account:c');
+        t.advance(1_000);
+        expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('ok');
+        expect(t.list).toHaveBeenCalledTimes(5);
+        // Nothing left to buy one.
+        t.advance(1_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(5);
+      });
+
+      it('concurrent forced reads (two agents) after one sign-in make ONE re-check', async () => {
+        let bSignedIn = false;
+        const t = setup({
+          resolve: twoServers,
+          credential: (i) => {
+            if (i.ref === 'account:other' && !bSignedIn) throw notFound();
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true });
+        await t.store.put(
+          { userId: 'u1', agentId: 'agent-2', connectorId: 'linear' },
+          { status: 'needs-auth', tools: [], fingerprint: '', checkedAt: new Date(Date.parse('2026-10-02T11:59:59Z')) },
+        );
+        bSignedIn = true;
+        t.advance(5_000);
+        await Promise.all([
+          t.run({ userId: 'u1', agentId: 'agent-1', connectorId: 'linear', force: true }),
+          t.run({ userId: 'u1', agentId: 'agent-2', connectorId: 'linear', force: true }),
+        ]);
+        expect(t.list).toHaveBeenCalledTimes(3);
+      });
+    });
+
     it('a blip on one server of a multi-server connector happens before ANY server is listed', async () => {
       const t = setup({
         resolve: () =>
