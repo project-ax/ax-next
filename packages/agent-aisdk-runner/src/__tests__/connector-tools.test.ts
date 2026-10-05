@@ -543,6 +543,40 @@ describe('connectConnectorTools — server drops the MCP session (TASK-839)', ()
     expect(inits(s)).toBe(2);
   });
 
+  it('a call whose 404 lands AFTER another call already reconnected reuses that connection', async () => {
+    const tracked = trackClients();
+    let n = 0;
+    let release: (() => void) | undefined;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: async (m) => {
+        // Hold the FIRST tools/call after the forget until the test releases it.
+        if (m === 'tools/call' && ++n === 1) {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        }
+        return undefined;
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await s.forgetSessions();
+    const late = exec(ct, `mcp__${NS}__echo`, { text: 'late' });
+    await vi.waitFor(() => expect(release).toBeDefined());
+    // A second call fails, reconnects and succeeds while the first is held.
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'early' })).resolves.toBe('early');
+    expect(inits(s)).toBe(2);
+    // The replaced boot client stays open while the held call still runs on it…
+    expect(tracked.connected).toHaveLength(2);
+    expect(tracked.closed.has(tracked.connected[0]!)).toBe(false);
+    release!();
+    await expect(late).resolves.toBe('late');
+    expect(inits(s)).toBe(2);
+    // …and is closed once that last call settles.
+    await vi.waitFor(() => expect(tracked.closed.has(tracked.connected[0]!)).toBe(true));
+    expect(tracked.closed.has(tracked.connected[1]!)).toBe(false);
+  });
+
   it('Stop during the reconnect aborts it promptly', async () => {
     let hangInit = false;
     const s = await testServer([echoTool], {

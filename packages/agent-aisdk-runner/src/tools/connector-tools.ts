@@ -148,6 +148,10 @@ function raceAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
 interface Connection {
   client: Client;
   transport: StreamableHTTPClientTransport;
+  /** Calls currently running on this connection. */
+  inflight: number;
+  /** Replaced by a reconnect: close it once its last in-flight call settles. */
+  retired: boolean;
 }
 
 function newConnection(server: ProjectedMcpServer, fetchImpl: typeof fetch | undefined): Connection {
@@ -156,7 +160,7 @@ function newConnection(server: ProjectedMcpServer, fetchImpl: typeof fetch | und
     ...(fetchImpl !== undefined ? { fetch: fetchImpl } : {}),
     ...(server.headers !== undefined ? { requestInit: { headers: server.headers } } : {}),
   });
-  return { client, transport };
+  return { client, transport, inflight: 0, retired: false };
 }
 
 /**
@@ -246,8 +250,13 @@ export async function connectConnectorTools(
   const denied = new Set(opts.disallowed);
   const tools: Record<string, Tool> = {};
   const loadedBundles = new Set<string>();
-  const sessions: ConnectorSession[] = [];
+  /** Every connection this module still has to close: current ones, and retired ones still draining. */
+  const open = new Set<Connection>();
   let closed = false;
+  const closeConn = (c: Connection): void => {
+    open.delete(c);
+    void c.client.close().catch(() => {});
+  };
 
   /**
    * One connector's current connection, replaceable when the server drops
@@ -276,11 +285,16 @@ export async function connectConnectorTools(
           }
           if (closed) {
             // The session ended while we reconnected: nobody will close this one later.
-            void fresh.client.close().catch(() => {});
+            closeConn(fresh);
             throw new Error('connector tools are closed');
           }
           session.conn = fresh;
-          void stale.client.close().catch(() => {});
+          open.add(fresh);
+          // Retire, don't kill: closing the client rejects EVERY request still
+          // pending on it ("Connection closed"), which is not a 404 and so
+          // would never be retried. Last call out closes it.
+          stale.retired = true;
+          if (stale.inflight === 0) closeConn(stale);
           log(`${ns}: the server dropped the MCP session; reconnected`);
           return fresh;
         })().finally(() => {
@@ -318,18 +332,27 @@ export async function connectConnectorTools(
               // this no-op, `resetTimeoutOnProgress` is inert.
               onprogress: () => {},
             });
+          const callOn = async (conn: Connection): Promise<unknown> => {
+            conn.inflight++;
+            try {
+              return await call(conn.client);
+            } finally {
+              conn.inflight--;
+              if (conn.retired && conn.inflight === 0 && open.has(conn)) closeConn(conn);
+            }
+          };
           let res: unknown;
           try {
             const conn = session.conn;
             try {
-              res = await call(conn.client);
+              res = await callOn(conn);
             } catch (err) {
               if (ctx.abortSignal?.aborted === true || !isSessionLost(err, conn)) throw err;
               // The reconnect is shared, so it is not aborted by THIS call's
               // Stop — but this call stops waiting for it at once.
               const renewed = session.renew(conn);
               const fresh = await (ctx.abortSignal !== undefined ? raceAbort(renewed, ctx.abortSignal) : renewed);
-              res = await call(fresh.client);
+              res = await callOn(fresh);
             }
           } catch (err) {
             // Stop: rethrow untouched so the abort is recognised as one.
@@ -406,7 +429,7 @@ export async function connectConnectorTools(
       continue;
     }
     Object.assign(tools, own);
-    sessions.push(session);
+    open.add(conn);
     loadedBundles.add(server.bundle);
   }
 
@@ -418,9 +441,14 @@ export async function connectConnectorTools(
       closed = true;
       let timer: NodeJS.Timeout | undefined;
       const finished = await Promise.race([
-        // Each connector's CURRENT client; a reconnect still in flight sees
-        // `closed` when it lands and closes its own client.
-        Promise.allSettled(sessions.map((s) => s.conn.client.close())).then(() => true),
+        // Current AND still-draining retired connections; a reconnect still
+        // in flight sees `closed` when it lands and closes its own client.
+        Promise.allSettled(
+          [...open].map((c) => {
+            open.delete(c);
+            return c.client.close();
+          }),
+        ).then(() => true),
         new Promise<false>((resolve) => {
           timer = setTimeout(() => resolve(false), CLOSE_TIMEOUT_MS);
           timer.unref();
