@@ -777,6 +777,66 @@ describe('connectors:describe-tools', () => {
         expect(t.list).toHaveBeenCalledTimes(3);
       });
 
+      it('three servers: each sign-in buys one re-check, and a server already listed in the chain never re-arms one', async () => {
+        // A signed in; B and C not. The set of servers that may buy a
+        // re-check is {B, C} and only shrinks: A signing out and back in
+        // inside the chain buys nothing, because A was already listed.
+        const signedIn = new Set(['account:a']);
+        const t = setup({
+          resolve: () =>
+            connector({
+              capabilities: {
+                credentials: [
+                  { slot: 'a', kind: 'oauth', server: 'sa' },
+                  { slot: 'b', kind: 'oauth', server: 'sb' },
+                  { slot: 'c', kind: 'oauth', server: 'sc' },
+                ],
+                mcpServers: [
+                  { name: 'sa', transport: 'http', url: 'https://a.example/mcp' },
+                  { name: 'sb', transport: 'http', url: 'https://b.example/mcp' },
+                  { name: 'sc', transport: 'http', url: 'https://c.example/mcp' },
+                ],
+              },
+              credentialPlan: [
+                { slot: 'a', ref: 'account:a', scope: 'user', service: 'a' },
+                { slot: 'b', ref: 'account:b', scope: 'user', service: 'b' },
+                { slot: 'c', ref: 'account:c', scope: 'user', service: 'c' },
+              ],
+              toolNamespaces: [
+                { server: 'sa', toolNamespace: NS },
+                { server: 'sb', toolNamespace: NS2 },
+                { server: 'sc', toolNamespace: 'c99999aaaaa' },
+              ],
+            }),
+          credential: (i) => {
+            if (!signedIn.has(i.ref)) throw notFound();
+            return 'tok-123';
+          },
+        });
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(listedUrls(t)).toEqual(['https://a.example/mcp']);
+        // A signs out while B signs in: the re-check lists B only.
+        signedIn.delete('account:a');
+        signedIn.add('account:b');
+        t.advance(5_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(listedUrls(t)).toEqual(['https://a.example/mcp', 'https://b.example/mcp']);
+        // A signs back in: it was listed in this chain, so no re-check.
+        signedIn.add('account:a');
+        t.advance(1_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(2);
+        // C signs in: its one re-check lists every signed-in server.
+        signedIn.add('account:c');
+        t.advance(1_000);
+        expect((await t.run({ userId: 'u1', connectorId: 'linear', force: true })).status).toBe('ok');
+        expect(t.list).toHaveBeenCalledTimes(5);
+        // Nothing left to buy one.
+        t.advance(1_000);
+        await t.run({ userId: 'u1', connectorId: 'linear', force: true });
+        expect(t.list).toHaveBeenCalledTimes(5);
+      });
+
       it('concurrent forced reads (two agents) after one sign-in make ONE re-check', async () => {
         let bSignedIn = false;
         const t = setup({
