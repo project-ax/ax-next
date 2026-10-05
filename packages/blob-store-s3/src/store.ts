@@ -28,7 +28,9 @@ import { PluginError } from '@ax/core';
 // live namespace into `<prefix>/retired/<aa>/<bb>/<sha>`, a read (`get` /
 // `stat`) that misses the live key moves it back, and `purge` deletes the
 // retired copy for good. S3 has no rename, so each move is CopyObject then
-// DeleteObject — two requests, not one atomic step (see SECURITY.md).
+// DeleteObject — two requests, not one atomic step (see SECURITY.md). The copy
+// always goes first, so a crash between them leaves both copies (never none);
+// @ax/blob-gc's sweep finds the sha in both listings and repairs it.
 //
 // The sha is a CONTENT hash, never a caller-supplied path. The strict regex
 // below defends against any key-injection: a caller can only ever name a

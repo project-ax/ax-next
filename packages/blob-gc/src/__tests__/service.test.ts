@@ -70,6 +70,15 @@ interface World {
   blobCalls: Array<{ hook: string; input: Record<string, unknown> }>;
   /** Make the next `blob:retire` calls throw. */
   failRetire: { on: boolean };
+  /**
+   * Make the backend die HALFWAY through a move, the way an S3 copy-then-delete
+   * does when the process is killed between its two requests: `retire` copies
+   * live -> retired and throws before deleting live; a restoring `stat` copies
+   * retired -> live and throws before deleting retired.
+   */
+  crash: { retire: boolean; restore: boolean };
+  /** Shas `blob:stat` answers `{ found: false }` for, moving nothing (a backend that lost a race). */
+  statMissing: Set<string>;
   lines: Line[];
   clock: { now: () => Date; advance(ms: number): void };
   put(sha: string, size?: number): Promise<void>;
@@ -83,6 +92,8 @@ function world(opts: { store?: BlobGcStore } = {}): World {
   const called: string[] = [];
   const blobCalls: Array<{ hook: string; input: Record<string, unknown> }> = [];
   const failRetire = { on: false };
+  const crash = { retire: false, restore: false };
+  const statMissing = new Set<string>();
   const track =
     <I, O>(hook: string, fn: (input: I) => Promise<O>) =>
     async (_ctx: unknown, input: I): Promise<O> => {
@@ -134,6 +145,10 @@ function world(opts: { store?: BlobGcStore } = {}): World {
       if (failRetire.on) throw new Error('disk on fire');
       const sha = sha256 as string;
       const size = backend.get(sha);
+      if (size !== undefined && crash.retire) {
+        retired.set(sha, size);
+        throw new Error('killed between CopyObject and DeleteObject');
+      }
       if (size !== undefined) {
         backend.delete(sha);
         retired.set(sha, size);
@@ -154,11 +169,16 @@ function world(opts: { store?: BlobGcStore } = {}): World {
     'test',
     backendHook('blob:stat', ({ sha256, restore }) => {
       const sha = sha256 as string;
+      if (statMissing.has(sha)) return { found: false };
       const live = backend.get(sha);
       if (live !== undefined) return { size: live };
       const ret = retired.get(sha);
       if (ret === undefined) return { found: false };
       if (restore !== false) {
+        if (crash.restore) {
+          backend.set(sha, ret);
+          throw new Error('killed between CopyObject and DeleteObject');
+        }
         retired.delete(sha);
         backend.set(sha, ret);
       }
@@ -206,6 +226,8 @@ function world(opts: { store?: BlobGcStore } = {}): World {
     called,
     blobCalls,
     failRetire,
+    crash,
+    statMissing,
     lines,
     clock,
     async put(sha, size = 100) {
@@ -792,8 +814,9 @@ describe('sweep (enforce): purge pass', () => {
 
   it('a blob a READ restored (no put, so the row still says retired) is not counted as purged and its row goes live', async () => {
     // Found by the enforce canary: blob:get restores behind the GC's back, so
-    // the row stays 'retired'. Purge then finds no retired copy; deleting the
-    // row would report bytes freed that are still on disk.
+    // the row stays 'retired'; deleting the row would report bytes freed that
+    // are still on disk. Since TASK-836 the next enforce sweep's discover step
+    // sees the live copy and revives the row (before the purge pass reaches it).
     const w = world();
     enforce(w);
     holder(w, '@ax/attachments', () => []);
@@ -885,6 +908,218 @@ describe('sweep (enforce): purge pass', () => {
   });
 });
 
+describe('sweep (enforce): a move that died halfway is repaired by the next sweep (TASK-836)', () => {
+  /** The process died before it could undo its row flip: no unmarkRetired ever runs. */
+  const killedStore = (): BlobGcStore => ({ ...realStore, unmarkRetired: async () => {} });
+  const repairedLines = (w: World) => w.lines.filter((l) => l.msg === 'blob_gc_residual_repaired');
+
+  it('RETIRE crash point (after the copy, before the live delete): next sweep keeps the live copy, drops the duplicate, then retires it cleanly', async () => {
+    const w = world({ store: killedStore() });
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 50);
+    w.clock.advance(25 * HOUR);
+    w.crash.retire = true;
+    expect(await w.svc.sweep()).toEqual({ outcome: 'failed' });
+    // The residual a killed copy-then-delete leaves: BOTH copies, row retired.
+    expect(await row(S)).toMatchObject({ state: 'retired' });
+    expect(w.backend.get(S)).toBe(50);
+    expect(w.retired.get(S)).toBe(50);
+
+    w.crash.retire = false;
+    w.clock.advance(HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ outcome: 'reported', report: { retired: 0 } });
+    // Repaired: one copy (the live one), and a row that says so.
+    expect(w.backend.get(S)).toBe(50);
+    expect(w.retired.has(S)).toBe(false);
+    const r = (await row(S))!;
+    expect(r).toMatchObject({ state: 'live', retired_at: null });
+    expect(r.last_put_at.toISOString()).toBe(w.clock.now().toISOString());
+    expect(sweepLine(w)!.bindings).toMatchObject({ repaired: 1 });
+    expect(repairedLines(w).map((l) => l.bindings)).toEqual([{ sha256: S }]);
+    // The duplicate went only after a stat confirmed a live copy.
+    expect(w.blobCalls.slice(-2)).toEqual([
+      { hook: 'blob:stat', input: { sha256: S, restore: true } },
+      { hook: 'blob:purge', input: { sha256: S } },
+    ]);
+
+    // A full grace window later the retire simply happens again, all the way.
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+    expect(w.backend.has(S)).toBe(false);
+    expect(w.retired.get(S)).toBe(50);
+    expect(await row(S)).toMatchObject({ state: 'retired' });
+    expect(sweepLine(w)!.bindings).toMatchObject({ repaired: 0 });
+  });
+
+  it('RETIRE that THREW after its copy (row reverted to live, both copies): next sweep drops the duplicate', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 50);
+    w.clock.advance(25 * HOUR);
+    w.crash.retire = true;
+    expect(await w.svc.sweep()).toEqual({ outcome: 'failed' });
+    expect(await row(S)).toMatchObject({ state: 'live' });
+    expect(w.backend.get(S)).toBe(50);
+    expect(w.retired.get(S)).toBe(50);
+
+    w.crash.retire = false;
+    w.clock.advance(HOUR);
+    // The claim refreshed its grace, so this sweep does not retire it either.
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 0 } });
+    expect(w.backend.get(S)).toBe(50);
+    expect(w.retired.has(S)).toBe(false);
+    expect(await row(S)).toMatchObject({ state: 'live' });
+    expect(sweepLine(w)!.bindings).toMatchObject({ repaired: 1 });
+  });
+
+  it("RESTORE crash point on the GC's own restore (a held blob, killed after the copy back): next sweep drops the retired duplicate", async () => {
+    const w = world();
+    enforce(w);
+    let holding = false;
+    holder(w, '@ax/attachments', (c) => (holding ? c.map((sha256) => ({ sha256, userIds: ['alice'] })) : []));
+    await w.put(S, 70);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+
+    holding = true;
+    w.crash.restore = true;
+    w.clock.advance(8 * DAY);
+    expect(await w.svc.sweep()).toEqual({ outcome: 'failed' });
+    expect(await row(S)).toMatchObject({ state: 'retired' });
+    expect(w.backend.get(S)).toBe(70);
+    expect(w.retired.get(S)).toBe(70);
+
+    w.crash.restore = false;
+    w.clock.advance(HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ outcome: 'reported' });
+    expect(w.backend.get(S)).toBe(70);
+    expect(w.retired.has(S)).toBe(false);
+    expect(await row(S)).toMatchObject({ state: 'live', retired_at: null });
+    expect(sweepLine(w)!.bindings).toMatchObject({ repaired: 1 });
+  });
+
+  it("RESTORE crash point on a reader's restore-on-miss: next sweep makes the row live and drops the duplicate", async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 30);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+
+    w.crash.restore = true;
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+    await expect(w.bus.call('blob:stat', ctx, { sha256: S })).rejects.toThrow('killed');
+    expect(w.backend.get(S)).toBe(30);
+    expect(w.retired.get(S)).toBe(30);
+
+    w.crash.restore = false;
+    w.clock.advance(HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ outcome: 'reported', report: { retired: 0, purged: 0 } });
+    expect(w.backend.get(S)).toBe(30);
+    expect(w.retired.has(S)).toBe(false);
+    expect(await row(S)).toMatchObject({ state: 'live' });
+    expect(sweepLine(w)!.bindings).toMatchObject({ repaired: 1 });
+  });
+
+  it('a live row whose ONLY copy is retired gets that copy restored, never purged first', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 12);
+    // A retire whose delete landed but whose answer was lost: row reverted, bytes moved.
+    w.backend.delete(S);
+    w.retired.set(S, 12);
+    expect(await w.svc.sweep()).toMatchObject({ outcome: 'reported' });
+    expect(w.backend.get(S)).toBe(12);
+    expect(w.retired.has(S)).toBe(false);
+    expect(await row(S)).toMatchObject({ state: 'live' });
+    expect(w.blobCalls.map((c) => c.hook)).toEqual(['blob:stat', 'blob:purge']);
+  });
+
+  it('never purges a retired copy unless the stat confirms a copy is still there', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 12);
+    w.backend.delete(S);
+    w.retired.set(S, 12);
+    w.statMissing.add(S);
+    expect(await w.svc.sweep()).toMatchObject({ outcome: 'reported' });
+    expect(blobHooks(w, 'blob:purge')).toEqual([]);
+    expect(w.retired.get(S)).toBe(12);
+    expect(sweepLine(w)!.bindings).toMatchObject({ repaired: 0 });
+  });
+
+  it('leaves a normal retired blob (retired copy only, row retired) alone', async () => {
+    const w = world();
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 9);
+    w.clock.advance(25 * HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 1 } });
+    const calls = w.blobCalls.length;
+    w.clock.advance(HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ report: { retired: 0, purged: 0 } });
+    expect(w.blobCalls.length).toBe(calls);
+    expect(await row(S)).toMatchObject({ state: 'retired' });
+    expect(w.retired.get(S)).toBe(9);
+    expect(sweepLine(w)!.bindings).toMatchObject({ repaired: 0 });
+  });
+
+  it('report mode never repairs: it touches no byte and no row', async () => {
+    const w = world({ store: killedStore() });
+    enforce(w);
+    holder(w, '@ax/attachments', () => []);
+    await w.put(S, 50);
+    w.clock.advance(25 * HOUR);
+    w.crash.retire = true;
+    expect(await w.svc.sweep()).toEqual({ outcome: 'failed' });
+    w.crash.retire = false;
+    setSettings(w, { mode: 'report' });
+    const calls = w.blobCalls.length;
+    const before = await row(S);
+    w.clock.advance(HOUR);
+    expect(await w.svc.sweep()).toMatchObject({ outcome: 'reported' });
+    expect(w.blobCalls.length).toBe(calls);
+    expect(await row(S)).toEqual(before);
+    expect(w.backend.get(S)).toBe(50);
+    expect(w.retired.get(S)).toBe(50);
+  });
+});
+
+describe('residual repair (store)', () => {
+  const t0 = new Date('2026-10-04T00:00:00.000Z');
+  const later = new Date(t0.getTime() + 25 * HOUR);
+
+  it('reviveListed flips only retired rows to live, with a fresh last_put_at', async () => {
+    await realStore.recordPut(S, 1, t0);
+    await realStore.recordPut(T, 2, t0);
+    expect(await realStore.markRetired(S, new Date(t0.getTime() + 1), t0)).toBe(true);
+    expect(await realStore.reviveListed([S, T, U], later)).toEqual([S]);
+    expect(await row(S)).toMatchObject({ state: 'live', retired_at: null });
+    expect((await row(S))!.last_put_at.toISOString()).toBe(later.toISOString());
+    expect((await row(T))!.last_put_at.toISOString()).toBe(t0.toISOString());
+    expect(await row(U)).toBeUndefined();
+    expect(await realStore.reviveListed([], later)).toEqual([]);
+  });
+
+  it('claimLive claims only live rows, and a claimed row can no longer be marked retired', async () => {
+    await realStore.recordPut(S, 1, t0);
+    await realStore.recordPut(T, 2, t0);
+    expect(await realStore.markRetired(T, new Date(t0.getTime() + 1), t0)).toBe(true);
+    expect(await realStore.claimLive([S, T, U], later)).toEqual([S]);
+    expect((await row(S))!.last_put_at.toISOString()).toBe(later.toISOString());
+    // A concurrent sweep's retire, whose cutoff predates the claim, must not flip it.
+    expect(await realStore.markRetired(S, new Date(later.getTime() - HOUR), later)).toBe(false);
+    expect(await row(S)).toMatchObject({ state: 'live' });
+    // Never backward.
+    expect(await realStore.claimLive([S], t0)).toEqual([S]);
+    expect((await row(S))!.last_put_at.toISOString()).toBe(later.toISOString());
+  });
+});
+
 describe('blob_gc_sweep line', () => {
   it('report mode: the documented fields, all-zero free counts', async () => {
     const w = world();
@@ -904,6 +1139,7 @@ describe('blob_gc_sweep line', () => {
         restored: 0,
         purged: 0,
         bytesPurged: 0,
+        repaired: 0,
       },
     });
     expect(reportLine(w)).toBeDefined();
@@ -930,6 +1166,7 @@ describe('blob_gc_sweep line', () => {
         restored: 0,
         purged: 0,
         bytesPurged: 0,
+        repaired: 0,
       },
     });
   });

@@ -34,6 +34,26 @@ export interface BlobGcStore {
    */
   discoverRetired(items: readonly BlobRowSummary[], at: Date): Promise<number>;
   /**
+   * Residual repair, live side: these shas were just LISTED in the backend's
+   * live namespace. Any whose row still says `retired` (a retire that died
+   * between its copy and its delete, a restore that died the same way, or a
+   * read that restored it) goes back to live: `retired_at = NULL`,
+   * `last_put_at` moved forward to `at` (never backward), so it gets a full
+   * grace window before it is retired again. Rows already live, and shas the
+   * table has never seen, are untouched. Resolves the shas it flipped.
+   */
+  reviveListed(shas: readonly string[], at: Date): Promise<string[]>;
+  /**
+   * Residual repair, retired side: these shas were just LISTED in the
+   * backend's RETIRED namespace. Claim every one whose row is LIVE by moving
+   * its `last_put_at` forward to `at` (never backward), and resolve the shas
+   * claimed. The claim is what makes deleting that retired copy safe: a retire
+   * flips the row first and only while `last_put_at < cutoff`, so once a row
+   * is claimed no retire (this sweep's, or a second sweep's that lost the
+   * lock) can start moving its live copy for a full grace window.
+   */
+  claimLive(shas: readonly string[], at: Date): Promise<string[]>;
+  /**
    * Enforce retire, step one: flip ONE row live -> retired (`retired_at =
    * at`), but only while it is still live AND last put before `cutoff`.
    * Resolves false when it did not flip (a re-put refreshed it after the
@@ -138,6 +158,34 @@ export function createBlobGcStore(db: Kysely<BlobGcDatabase>): BlobGcStore {
         .returning('sha256')
         .execute();
       return rows.length;
+    },
+
+    async reviveListed(shas, at) {
+      if (shas.length === 0) return [];
+      const rows = await db
+        .updateTable('blob_gc_v1_blobs')
+        .set({
+          state: 'live',
+          retired_at: null,
+          last_put_at: sql<Date>`GREATEST(last_put_at, ${at}::timestamptz)`,
+        })
+        .where('sha256', 'in', [...shas])
+        .where('state', '=', 'retired')
+        .returning('sha256')
+        .execute();
+      return rows.map((r) => r.sha256).sort();
+    },
+
+    async claimLive(shas, at) {
+      if (shas.length === 0) return [];
+      const rows = await db
+        .updateTable('blob_gc_v1_blobs')
+        .set({ last_put_at: sql<Date>`GREATEST(last_put_at, ${at}::timestamptz)` })
+        .where('sha256', 'in', [...shas])
+        .where('state', '=', 'live')
+        .returning('sha256')
+        .execute();
+      return rows.map((r) => r.sha256).sort();
     },
 
     async markRetired(sha256, cutoff, at) {
