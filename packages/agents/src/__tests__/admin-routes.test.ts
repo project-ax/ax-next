@@ -133,10 +133,9 @@ async function bootStack(
         }
         return { skills };
       },
-      // Owner-scoped connector resolve stub for the non-admin attachment guard.
-      // 'personal-conn' is the user's own (keyMode personal); 'workspace-conn' is
-      // a shared/global-keyed connector; anything else "isn't owned" (throws →
-      // treated as a runtime no-op by the guard).
+      // Owner-scoped connector resolve stub. 'personal-conn' is the user's own
+      // (keyMode personal); 'workspace-conn' is a shared-key connector, which
+      // anyone may attach since TASK-827; anything else "isn't owned" (throws).
       'connectors:resolve': async (
         _ctx: unknown,
         input: { userId: string; connectorId: string },
@@ -1154,9 +1153,9 @@ describe('@ax/agents admin routes', () => {
 
   // -------------------------------------------------------------------------
   // Non-admin OWNER attachment (owner-scoped): a user may attach their OWN
-  // PERSONAL connectors/skills to their OWN agents; a workspace (shared/
-  // global-keyed) connector — directly or pulled in by a skill — stays
-  // admin-only. The agent-ownership ACL is the hook's; this is the keyMode guard.
+  // connectors/skills to their OWN agents — since TASK-827 that includes a
+  // shared-key (workspace) connector, directly or pulled in by a skill. The
+  // agent-ownership ACL is the hook's.
   // -------------------------------------------------------------------------
 
   it('skill-attachments: a non-admin OWNER may attach their OWN user-scoped skill → 200', async () => {
@@ -1181,7 +1180,7 @@ describe('@ax/agents admin routes', () => {
     ]);
   });
 
-  it('SECURITY: a non-admin OWNER may NOT attach a skill that pulls in a workspace connector → 403', async () => {
+  it('TASK-827: a non-admin OWNER may attach a skill that pulls in a shared-key (workspace) connector → 200', async () => {
     const { cookie } = await mintSecondUserCookie();
     const created = await http(stack.port, 'POST', '/admin/agents', {
       cookie,
@@ -1195,8 +1194,13 @@ describe('@ax/agents admin routes', () => {
       `/admin/agents/${id}/skill-attachments`,
       { cookie, body: { skillAttachments: [{ skillId: 'ws-skill', credentialBindings: {} }] } },
     );
-    expect(r.status).toBe(403);
-    expect((r.body as { error: string }).error).toMatch(/workspace/i);
+    // Anyone may add a shared-key connector to their own agent (TASK-827), so a
+    // skill that pulls one in is no wider. Who may READ the shared key is
+    // decided at read time (credentials:authorize-global:account, TASK-697).
+    expect(r.status).toBe(200);
+    expect((r.body as { agent: SerializedAgent }).agent.skillAttachments).toEqual([
+      { skillId: 'ws-skill', credentialBindings: {} },
+    ]);
   });
   it('GET /admin/agents/models follows models:get-policy: its allowed list and its Default', async () => {
     await stack.harness.close({ onError: () => {} });

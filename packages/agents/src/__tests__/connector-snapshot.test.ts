@@ -178,13 +178,9 @@ describe('snapshot-on-attach (agents:attach-connector)', () => {
     );
     expect(await verdictOf(h, agentId, SEARCH)).toBe('allow');
     expect(await verdictOf(h, agentId, CREATE)).toBe('hold');
-    // Resolved as the agent's owner (who its sessions resolve as). The
-    // non-admin workspace-connector guard (TASK-739) resolves once more (as the
-    // actor — here also the owner) before the write.
-    expect(resolveCalls).toEqual([
-      { userId: OWNER.userId, connectorId: 'linear' },
-      { userId: OWNER.userId, connectorId: 'linear' },
-    ]);
+    // Resolved once, as the agent's owner (who its sessions resolve as). The
+    // attach hook no longer has a keyMode guard of its own (TASK-827).
+    expect(resolveCalls).toEqual([{ userId: OWNER.userId, connectorId: 'linear' }]);
   });
 
   it('a later TIGHTENING by the editor applies to an agent that already has the connector', async () => {
@@ -261,8 +257,8 @@ describe('snapshot-on-attach (agents:attach-connector)', () => {
     const agentId = await newAgent(h);
     const out = await attach(h, agentId, ['linear']);
     expect(out.agent.connectorAttachments).toEqual(['linear']);
-    // Only the workspace-connector guard's lookup (TASK-739) — no snapshot one.
-    expect(resolveCalls).toEqual([{ userId: OWNER.userId, connectorId: 'linear' }]);
+    // No snapshot lookup, and (TASK-827) no keyMode-guard lookup either.
+    expect(resolveCalls).toEqual([]);
   });
 });
 
