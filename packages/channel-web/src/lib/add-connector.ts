@@ -5,10 +5,11 @@
  *
  *   - **What's available?** The connectors this person may use
  *     (`listConnectors`) minus the ones the agent already has (the rail's own
- *     effective list). A non-admin never sees a connector that spends the
- *     company's key: they could not attach it (the server 403s) and could not
- *     key it (the shared key is admin-only), so listing it would be a row
- *     whose only action fails.
+ *     effective list). That includes shared-key connectors (`keyMode:
+ *     'workspace'`) for everyone (TASK-827): an admin adds the key once and
+ *     anyone may attach it. A non-admin can't read the shared key's presence,
+ *     so the row reads "Add" and the server's attach re-checks the key (409
+ *     when it's missing).
  *   - **What does each one need first?** A sign-in, a key, or nothing. This is
  *     only the row's BUTTON. The attach itself is still refused server-side
  *     for anything the caller may not attach, and nothing here grants access:
@@ -29,11 +30,9 @@ export type AddAction = 'sign-in' | 'key' | 'add';
 export function availableConnectors(
   catalog: readonly ConnectorSummary[],
   effectiveIds: ReadonlySet<string>,
-  isAdmin: boolean,
 ): ConnectorSummary[] {
   return catalog
     .filter((c) => !effectiveIds.has(c.id))
-    .filter((c) => isAdmin || c.keyMode !== 'workspace')
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -47,7 +46,13 @@ export interface AddActionContext {
   agentId: string;
   /** Credential presence (metadata only — never a secret value). */
   userCreds: readonly CredentialMeta[];
-  globalCreds: readonly CredentialMeta[];
+  /**
+   * Workspace (shared) key presence, or `null` when the caller can't read it
+   * (a non-admin). With `null` a shared key counts as present: the person
+   * couldn't add it anyway, and the server's attach refuses (409) when it is
+   * missing — so this never attaches a connector that can't work.
+   */
+  globalCreds: readonly CredentialMeta[] | null;
   /**
    * The sign-in already succeeded in this subview. The status read can lag
    * the callback, and a second "Sign in" right after a good one would read
@@ -84,6 +89,7 @@ export async function addActionFor(
     .filter((entry) => keySlots.has(entry.slot))
     .some((entry) => {
       const pool = entry.scope === 'user' ? ctx.userCreds : ctx.globalCreds;
+      if (pool === null) return false;
       return !pool.some((c) => c.ref === entry.ref && c.scope === entry.scope);
     });
   return missingKey ? 'key' : 'add';

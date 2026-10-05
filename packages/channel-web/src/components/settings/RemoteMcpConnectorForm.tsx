@@ -124,7 +124,14 @@ export function RemoteMcpConnectorForm({
   const [draft, setDraft] = useState(() => remoteDraft(connector));
   const [headersOpen, setHeadersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const keyMode = connector?.keyMode ?? 'personal';
+  // The connector's saved key mode. A new connector starts per-person; the
+  // effective `keyMode` (below, once the sign-in is known) may differ.
+  const savedKeyMode = connector?.keyMode ?? 'personal';
+  // TASK-827 — an admin adding a connector that doesn't sign in with OAuth
+  // picks whose key it uses. Fixed once created (the server refuses a change).
+  const [keyModeChoice, setKeyModeChoice] = useState<'personal' | 'workspace'>(
+    'personal',
+  );
   const base = isAdmin ? '/admin/connectors' : '/settings/connectors';
   // TASK-809 — a new connector that doesn't sign in with OAuth is added in two
   // steps in this one dialog: Add creates it, then its tools are listed here
@@ -141,9 +148,10 @@ export function RemoteMcpConnectorForm({
   const [editingClientSecret, setEditingClientSecret] = useState(false);
   // Where the client secret is stored (see `clientSecretScope`). A new
   // connector is created shared.
+  // Keyed on the SAVED mode: a new OAuth connector is always per-person.
   const secretScope = clientSecretScope({
     isAdmin,
-    keyMode,
+    keyMode: savedKeyMode,
     visibility: connector?.visibility ?? 'shared',
   });
   // What the connector pointed at when this form opened. Stays put while the
@@ -209,6 +217,14 @@ export function RemoteMcpConnectorForm({
       : 'none'
     : draft.signIn;
   const signInKnown = Boolean(discovered) || usingSavedSignIn;
+  // TASK-827 — only a new connector, only an admin, never OAuth.
+  const offerKeyModeChoice =
+    isAdmin && !connector && signInKnown && signIn !== 'oauth';
+  const keyMode: 'personal' | 'workspace' = connector
+    ? connector.keyMode
+    : offerKeyModeChoice
+      ? keyModeChoice
+      : 'personal';
   // TASK-809 — an OAuth connector has no admin tool permissions: each person
   // chooses per agent in the rail. So it never loads, shows or writes them.
   // (`signIn` falls back to the saved choice while discovery runs, so an
@@ -296,7 +312,7 @@ export function RemoteMcpConnectorForm({
   const movesSecretToWorkspace =
     Boolean(connector) &&
     secretScope === 'global' &&
-    keyMode === 'personal' &&
+    savedKeyMode === 'personal' &&
     Boolean(savedClientSecretRef);
   useEffect(() => {
     if (!movesSecretToWorkspace) return;
@@ -830,6 +846,53 @@ export function RemoteMcpConnectorForm({
                             </FieldDescription>
                           </Field>
                       </FieldGroup>
+                    )}
+                    {offerKeyModeChoice && (
+                      <FieldSet>
+                        <FieldLegend variant="label">Whose key</FieldLegend>
+                        <RadioGroup
+                          value={keyModeChoice}
+                          onValueChange={(value) =>
+                            setKeyModeChoice(
+                              value === 'workspace' ? 'workspace' : 'personal',
+                            )
+                          }
+                        >
+                          <Field orientation="horizontal">
+                            <RadioGroupItem
+                              value="workspace"
+                              id={fieldId('key-mode-workspace')}
+                            />
+                            <FieldContent>
+                              <FieldLabel htmlFor={fieldId('key-mode-workspace')}>
+                                One shared key for everyone
+                              </FieldLabel>
+                              <FieldDescription>
+                                You add the key once. Anyone can add this
+                                connector to their agent without a key.
+                              </FieldDescription>
+                            </FieldContent>
+                          </Field>
+                          <Field orientation="horizontal">
+                            <RadioGroupItem
+                              value="personal"
+                              id={fieldId('key-mode-personal')}
+                            />
+                            <FieldContent>
+                              <FieldLabel htmlFor={fieldId('key-mode-personal')}>
+                                Each person adds their own key
+                              </FieldLabel>
+                            </FieldContent>
+                          </Field>
+                        </RadioGroup>
+                      </FieldSet>
+                    )}
+                    {isAdmin && connector && signIn !== 'oauth' && (
+                      <FieldDescription>
+                        {keyMode === 'workspace'
+                          ? 'Everyone uses one shared key. To change this, create a new connector.'
+                          : 'Each person adds their own key. To change this, create a new connector.'}
+                      </FieldDescription>
                     )}
                     <div>
                   <Disclosure

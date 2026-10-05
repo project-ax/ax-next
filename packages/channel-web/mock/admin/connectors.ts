@@ -486,6 +486,12 @@ function connectorsMiddleware(
             return true;
           }
         }
+        // TASK-827 — whose key a connector uses is fixed once it exists
+        // (mirrors the real route). Re-sending the same value is fine.
+        if (body.keyMode !== undefined && body.keyMode !== existing.keyMode) {
+          send(res, 400, { error: "keyMode can't change on an existing connector" });
+          return true;
+        }
         const result = validateUpsert(body, existing);
         if (!result.ok) {
           send(res, 400, { error: result.message });

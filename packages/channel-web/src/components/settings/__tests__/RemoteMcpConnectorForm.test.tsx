@@ -1528,3 +1528,89 @@ describe('moving an admin’s own copy of the client secret to the workspace', (
     ]);
   });
 });
+
+describe('whose key (TASK-827)', () => {
+  const NO_SIGN_IN = { hosts: ['public.example.com'], auth: 'none' };
+  const addKeyHeader = () => {
+    fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
+    fireEvent.change(screen.getByLabelText('Header name'), {
+      target: { value: 'X-API-Key' },
+    });
+    fireEvent.change(screen.getByLabelText('Value'), {
+      target: { value: 'the-key' },
+    });
+  };
+
+  it('an admin adding an API-key connector can choose one shared key for everyone', async () => {
+    discovery = NO_SIGN_IN;
+    await openNew(true);
+    expect(screen.getByText('Whose key')).toBeVisible();
+    expect(
+      screen.getByText(
+        'You add the key once. Anyone can add this connector to their agent without a key.',
+      ),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole('radio', { name: 'One shared key for everyone' }));
+    addKeyHeader();
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[0]!.body.scope).toBe('global');
+    expect(writes[1]!.url).toBe('/admin/connectors');
+    expect(writes[1]!.body).toMatchObject({ keyMode: 'workspace', visibility: 'shared' });
+  });
+
+  it('defaults to each person adding their own key', async () => {
+    discovery = NO_SIGN_IN;
+    await openNew(true);
+    expect(
+      screen.getByRole('radio', { name: 'Each person adds their own key' }),
+    ).toBeChecked();
+    addKeyHeader();
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[0]!.body.scope).toBe('user');
+    expect(writes[1]!.body).toMatchObject({ keyMode: 'personal' });
+  });
+
+  it('never offers the choice for a server where people sign in with OAuth', async () => {
+    await openNew(true);
+    expect(screen.queryByText('Whose key')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('radio', { name: 'One shared key for everyone' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    await waitFor(() => expect(writes.length).toBeGreaterThan(0));
+    expect(writes.at(-1)!.body).toMatchObject({ keyMode: 'personal' });
+  });
+
+  it('never offers the choice to a non-admin', async () => {
+    discovery = NO_SIGN_IN;
+    await openNew(false);
+    expect(screen.queryByText('Whose key')).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  });
+
+  it.each([
+    ['workspace', 'Everyone uses one shared key. To change this, create a new connector.'],
+    ['personal', 'Each person adds their own key. To change this, create a new connector.'],
+  ] as const)(
+    'editing a %s connector shows the choice as one read-only line',
+    async (mode, line) => {
+      discovery = NO_SIGN_IN;
+      fixture.keyMode = mode;
+      await openEditor(true);
+      expect(screen.getByText(line)).toBeVisible();
+      expect(screen.queryByText('Whose key')).not.toBeInTheDocument();
+      expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    },
+  );
+
+  it('a non-admin editing sees no line about whose key it is', async () => {
+    discovery = NO_SIGN_IN;
+    await openEditor(false);
+    expect(
+      screen.queryByText(/To change this, create a new connector/),
+    ).not.toBeInTheDocument();
+  });
+});
