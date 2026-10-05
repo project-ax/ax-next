@@ -814,8 +814,9 @@ describe('sweep (enforce): purge pass', () => {
 
   it('a blob a READ restored (no put, so the row still says retired) is not counted as purged and its row goes live', async () => {
     // Found by the enforce canary: blob:get restores behind the GC's back, so
-    // the row stays 'retired'. Purge then finds no retired copy; deleting the
-    // row would report bytes freed that are still on disk.
+    // the row stays 'retired'; deleting the row would report bytes freed that
+    // are still on disk. Since TASK-836 the next enforce sweep's discover step
+    // sees the live copy and revives the row (before the purge pass reaches it).
     const w = world();
     enforce(w);
     holder(w, '@ax/attachments', () => []);
