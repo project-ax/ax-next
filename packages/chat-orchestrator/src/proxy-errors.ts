@@ -59,12 +59,22 @@ function nameOf(e: unknown): string {
  * A connector's sign-in is dead: the credential resolver threw an error NAMED
  * `NeedsReconnectError` (the OAuth refresh token was rejected, or there is
  * none). The person fixes it by reconnecting that connector.
+ *
+ * On a SEVERAL-failures open-session error (TASK-828) this answers for the
+ * FIRST failure only — the cause chain never visits the aggregate's `errors`.
+ * To ask about any failure, map over {@link credentialResolveFailures} first.
  */
 export function isNeedsReconnect(err: unknown): boolean {
   return causeChain(err).some((e) => e instanceof Error && e.name === 'NeedsReconnectError');
 }
 
-/** The vault had no row for the ref (`@ax/credentials`' `credential-not-found`). */
+/**
+ * The vault had no row for the ref (`@ax/credentials`' `credential-not-found`).
+ *
+ * On a SEVERAL-failures open-session error (TASK-828) this answers for the
+ * FIRST failure only — the cause chain never visits the aggregate's `errors`.
+ * To ask about any failure, map over {@link credentialResolveFailures} first.
+ */
 export function isCredentialNotFound(err: unknown): boolean {
   return causeChain(err).some((e) => codeOf(e) === 'credential-not-found');
 }
