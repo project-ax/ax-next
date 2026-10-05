@@ -59,12 +59,22 @@ function nameOf(e: unknown): string {
  * A connector's sign-in is dead: the credential resolver threw an error NAMED
  * `NeedsReconnectError` (the OAuth refresh token was rejected, or there is
  * none). The person fixes it by reconnecting that connector.
+ *
+ * On a SEVERAL-failures open-session error (TASK-828) this answers for the
+ * FIRST failure only — the cause chain never visits the aggregate's `errors`.
+ * To ask about any failure, map over {@link credentialResolveFailures} first.
  */
 export function isNeedsReconnect(err: unknown): boolean {
   return causeChain(err).some((e) => e instanceof Error && e.name === 'NeedsReconnectError');
 }
 
-/** The vault had no row for the ref (`@ax/credentials`' `credential-not-found`). */
+/**
+ * The vault had no row for the ref (`@ax/credentials`' `credential-not-found`).
+ *
+ * On a SEVERAL-failures open-session error (TASK-828) this answers for the
+ * FIRST failure only — the cause chain never visits the aggregate's `errors`.
+ * To ask about any failure, map over {@link credentialResolveFailures} first.
+ */
 export function isCredentialNotFound(err: unknown): boolean {
   return causeChain(err).some((e) => codeOf(e) === 'credential-not-found');
 }
@@ -82,6 +92,38 @@ export function failedCredentialEnvName(err: unknown): string | undefined {
     if (typeof envName === 'string') return envName;
   }
   return undefined;
+}
+
+/**
+ * Most per-credential failures we read out of one aggregate. An agent's merged
+ * credential set is a handful of slots; this only bounds a hostile/buggy array.
+ */
+const MAX_FAILURES = 64;
+
+/**
+ * The individual credential failures inside a failed `proxy:open-session`
+ * (TASK-828). Since TASK-828 the proxy tries EVERY ref and, when more than one
+ * fails, puts each per-credential `credential-resolve-failed` error in the
+ * `errors` of an `AggregateError` on the outer error's cause chain. Each
+ * returned element can be read with {@link failedCredentialEnvName},
+ * {@link isNeedsReconnect} and {@link isCredentialNotFound} on its own.
+ *
+ * Anything else — a single failure, or an error from a proxy that predates
+ * TASK-828 — is returned as the one failure it is: `[err]`.
+ */
+export function credentialResolveFailures(err: unknown): unknown[] {
+  // Only the proxy's own aggregate counts: the DIRECT cause of the OUTERMOST
+  // `credential-resolve-failed`. An AggregateError deeper down belongs to the
+  // resolver (Node's dialer throws one for a multi-address connect failure),
+  // and reading ITS errors as credential failures would drop the real
+  // classification — e.g. a NeedsReconnectError sitting above it.
+  const outer = causeChain(err).find((e) => codeOf(e) === 'credential-resolve-failed');
+  const agg = (outer as { cause?: unknown } | undefined)?.cause;
+  if (agg instanceof Error && agg.name === 'AggregateError') {
+    const errors = (agg as { errors?: unknown }).errors;
+    if (Array.isArray(errors) && errors.length > 0) return errors.slice(0, MAX_FAILURES);
+  }
+  return [err];
 }
 
 /**

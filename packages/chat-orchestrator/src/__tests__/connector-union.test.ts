@@ -18,6 +18,8 @@ import {
   connectorCredentialSlots,
   partitionConnectorsBySignIn,
   skippedConnectorsPromptLine,
+  reconnectDetail,
+  RECONNECT_NAMES_MAX,
   type ResolvedConnectorForOrch,
 } from '../connector-union.js';
 
@@ -1158,6 +1160,38 @@ describe('partitionConnectorsBySignIn (TASK-806)', () => {
     expect((await partitionConnectorsBySignIn(undef, ctx(), [conn('a')])).skipped).toEqual([]);
     const none = busWith({});
     expect((await partitionConnectorsBySignIn(none, ctx(), [conn('a')])).kept.map((c) => c.id)).toEqual(['a']);
+  });
+});
+
+describe('reconnectDetail (TASK-828)', () => {
+  const c = (id: string, name?: string) => ({ id, ...(name !== undefined ? { name } : {}) });
+
+  it('none → no detail line', () => {
+    expect(reconnectDetail([])).toBeUndefined();
+  });
+
+  it('one → the TASK-783 line, unchanged', () => {
+    expect(reconnectDetail([c('gmail', 'Gmail')])).toBe('Connector: Gmail');
+  });
+
+  it('two → both, in order, under the plural heading', () => {
+    expect(reconnectDetail([c('gmail', 'Gmail'), c('linear', 'Linear')])).toBe('Connectors: Gmail, Linear');
+  });
+
+  it('exactly the cap → all of them, no tail', () => {
+    expect(RECONNECT_NAMES_MAX).toBe(3);
+    expect(reconnectDetail([c('a', 'A'), c('b', 'B'), c('d', 'D')])).toBe('Connectors: A, B, D');
+  });
+
+  it('over the cap → the first three and "and N more"', () => {
+    const list = ['A', 'B', 'C', 'D', 'E'].map((n) => c(n.toLowerCase(), n));
+    expect(reconnectDetail(list)).toBe('Connectors: A, B, C and 2 more');
+  });
+
+  it('each name is sanitized and clamped; a nameless connector falls back to its id', () => {
+    const got = reconnectDetail([c('x1', `Evil\n\u202e${'y'.repeat(100)}`), c('plain-id')]) ?? '';
+    expect(got).not.toMatch(/[\n\u202e]/);
+    expect(got).toBe(`Connectors: Evil ${'y'.repeat(59)}…, plain-id`);
   });
 });
 

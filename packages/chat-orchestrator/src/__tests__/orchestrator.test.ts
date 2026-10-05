@@ -2574,30 +2574,48 @@ describe('chat-orchestrator', () => {
               cause,
               diagnosis: { envName },
             });
+          // TASK-828: every ref is tried; one failure throws its named error,
+          // several throw an outer named error (first one) whose cause is an
+          // AggregateError of them all — the real proxy's shape.
+          const failures: PluginError[] = [];
           for (const [envName, { ref }] of Object.entries(i.credentials)) {
             if (rejected.has(ref)) {
               const cause = new Error('refresh token rejected; reconnect required');
               cause.name = 'NeedsReconnectError';
-              throw named(
-                envName,
-                new PluginError({
-                  code: 'unknown',
-                  plugin: '@ax/mcp-oauth',
-                  message: "service hook 'credentials:resolve:mcp-oauth' threw: x",
-                  cause,
-                }),
+              failures.push(
+                named(
+                  envName,
+                  new PluginError({
+                    code: 'unknown',
+                    plugin: '@ax/mcp-oauth',
+                    message: "service hook 'credentials:resolve:mcp-oauth' threw: x",
+                    cause,
+                  }),
+                ),
+              );
+            } else if (!rows.has(ref)) {
+              failures.push(
+                named(
+                  envName,
+                  new PluginError({
+                    code: 'credential-not-found',
+                    plugin: '@ax/credentials',
+                    message: `no credential for ref='${ref}'`,
+                  }),
+                ),
               );
             }
-            if (!rows.has(ref)) {
-              throw named(
-                envName,
-                new PluginError({
-                  code: 'credential-not-found',
-                  plugin: '@ax/credentials',
-                  message: `no credential for ref='${ref}'`,
-                }),
-              );
-            }
+          }
+          const first = failures[0];
+          if (first !== undefined && failures.length === 1) throw first;
+          if (first !== undefined) {
+            throw new PluginError({
+              code: 'credential-resolve-failed',
+              plugin: '@ax/credential-proxy',
+              message: 'some session credentials could not be resolved',
+              cause: new AggregateError(failures, 'several', { cause: first.cause }),
+              diagnosis: { ...first.diagnosis },
+            });
           }
           return {
             proxyEndpoint: 'tcp://127.0.0.1:54321',
@@ -2800,6 +2818,75 @@ describe('chat-orchestrator', () => {
         { reqId: 'r-race-two', reason: 'connector-needs-reconnect', detail: 'Connector: Gmail' },
       ]);
       expect(mocks.calls.sandboxOpen).toBe(0);
+    });
+
+    // TASK-828 — every connector with a dead sign-in is named in ONE turn
+    // error, not just the first; the single-connector line is unchanged (above).
+    describe('TASK-828: several dead sign-ins are all named', () => {
+      const NOTION = oauthConnector('notion', 'c0789abcdef', 'Notion');
+      const SLACK = oauthConnector('slack', 'c0aaaabcdef', 'Slack');
+      const JIRA = oauthConnector('jira', 'c0bbbabcdef', 'Jira');
+
+      it('two dead sign-ins → the plural reason naming both, in order', async () => {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF, LINEAR_REF] });
+        const { outcome, turnErrors, mocks } = await invoke(vault, 'dead-two', { gmail: GMAIL, linear: LINEAR });
+        expect(outcome).toMatchObject({ kind: 'terminated', reason: 'connectors-need-reconnect' });
+        expect(turnErrors).toEqual([
+          { reqId: 'r-dead-two', reason: 'connectors-need-reconnect', detail: 'Connectors: Gmail, Linear' },
+        ]);
+        expect(mocks.calls.sandboxOpen).toBe(0);
+      });
+
+      it('a rejected refresh AND a vanished row are both "reconnect" and both named', async () => {
+        const vault = buildVaultHooks({
+          rows: [PROVIDER_REF],
+          rejected: [GMAIL_REF],
+          hasAnswers: { present: true },
+        });
+        const { turnErrors } = await invoke(vault, 'dead-mixed', { gmail: GMAIL, linear: LINEAR });
+        expect(turnErrors).toEqual([
+          { reqId: 'r-dead-mixed', reason: 'connectors-need-reconnect', detail: 'Connectors: Gmail, Linear' },
+        ]);
+      });
+
+      it('past the cap → the first three and "and N more"', async () => {
+        const vault = buildVaultHooks({
+          rows: [PROVIDER_REF],
+          rejected: [GMAIL_REF, LINEAR_REF, 'account:notion', 'account:slack', 'account:jira'],
+        });
+        const { turnErrors } = await invoke(vault, 'dead-many', {
+          gmail: GMAIL,
+          linear: LINEAR,
+          notion: NOTION,
+          slack: SLACK,
+          jira: JIRA,
+        });
+        expect(turnErrors).toEqual([
+          {
+            reqId: 'r-dead-many',
+            reason: 'connectors-need-reconnect',
+            detail: 'Connectors: Gmail, Linear, Notion and 2 more',
+          },
+        ]);
+      });
+
+      it('a missing PROVIDER key next to one dead connector → the connector is still named (it is the fixable part)', async () => {
+        const vault = buildVaultHooks({ rows: [], rejected: [GMAIL_REF] });
+        const { turnErrors } = await invoke(vault, 'dead-provider-too');
+        expect(turnErrors).toEqual([
+          { reqId: 'r-dead-provider-too', reason: 'connector-needs-reconnect', detail: 'Connector: Gmail' },
+        ]);
+      });
+
+      it('each name in the list is sanitized and clamped on its own', async () => {
+        const hostile = oauthConnector('gmail', 'c0123abcdef', `Gmail\n\u202eevil${'x'.repeat(200)}`);
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF], rejected: [GMAIL_REF, LINEAR_REF] });
+        const { turnErrors } = await invoke(vault, 'dead-hostile', { gmail: hostile, linear: LINEAR });
+        const detail = (turnErrors[0] as { detail?: string }).detail ?? '';
+        expect(detail).not.toMatch(/[\n\r\u202e]/);
+        // 'Connectors: ' + 64 code points + '…' + ', Linear'
+        expect(detail).toBe(`Connectors: Gmail evil${'x'.repeat(64 - 'Gmail evil'.length)}…, Linear`);
+      });
     });
 
     it('a hostile connector name reaches the turn-error detail as one clamped plain line', async () => {

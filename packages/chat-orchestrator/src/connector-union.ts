@@ -636,6 +636,32 @@ export function connectorLabel(connector: { id: string; name?: unknown }): strin
   return chars.length > SKIPPED_NAME_MAX ? `${chars.slice(0, SKIPPED_NAME_MAX).join('')}…` : chars.join('');
 }
 
+/** How many connector names a reconnect turn error lists before "and N more". */
+export const RECONNECT_NAMES_MAX = 3;
+
+/**
+ * TASK-828 — the turn error's detail line naming EVERY connector whose sign-in
+ * is dead, so a person fixes them all in one trip instead of one per retry.
+ *
+ * One connector → `Connector: Gmail` (TASK-783's line, unchanged). Several →
+ * `Connectors: Gmail, Linear, Notion and 2 more`, listing at most
+ * {@link RECONNECT_NAMES_MAX} — the line sits under a one-sentence label, and
+ * the Connectors tab (one click away) marks every one of them anyway. Each name
+ * goes through {@link connectorLabel} (control/format chars stripped, clamped),
+ * so the line stays one line of plain text; the browser renders it as a text
+ * node. Empty input → undefined (no detail line).
+ */
+export function reconnectDetail(
+  connectors: ReadonlyArray<{ id: string; name?: unknown }>,
+): string | undefined {
+  const first = connectors[0];
+  if (first === undefined) return undefined;
+  if (connectors.length === 1) return `Connector: ${connectorLabel(first)}`;
+  const listed = connectors.slice(0, RECONNECT_NAMES_MAX).map(connectorLabel).join(', ');
+  const rest = connectors.length - RECONNECT_NAMES_MAX;
+  return `Connectors: ${listed}${rest > 0 ? ` and ${rest} more` : ''}`;
+}
+
 /**
  * TASK-806 — the one line that tells the AGENT which connectors are off for
  * this chat, so it can say "sign in to Gmail first" instead of acting as if
