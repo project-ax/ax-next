@@ -28,11 +28,25 @@
 // silently miss its policy key and its UI label. A connector that would push
 // the session past its tool budget (`maxTools`, from MAX_TOOLS_PER_SESSION)
 // is dropped whole, in sorted-namespace order, with one log line.
+//
+// Session loss (TASK-839): a server that forgets our MCP session (restart,
+// eviction) answers HTTP 404 to a request carrying `mcp-session-id`, and the
+// SDK client never re-initializes on its own. So a call that fails that way
+// reconnects THAT connector once — fresh Client + transport, same proxy
+// fetch, bounded like the boot connect, shared by every call that hit the
+// same dead session — and retries once. The retry is safe: the server
+// refused the request at session lookup, before any tool ran. A failed
+// reconnect or retry is an ordinary failed tool call; the next call tries
+// again. The tool catalogue is NOT re-listed — it is fixed for the session.
+// 401/auth failures are deliberately not handled here.
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type JSONSchema7, type Tool } from 'ai';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { HoldLatch, ProjectedMcpServer, ToolPolicy } from '@ax/agent-runner-core';
 import { renderMcpResult } from './mcp-result.js';
@@ -130,16 +144,67 @@ function raceAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-async function connectAndList(
-  server: ProjectedMcpServer,
-  fetchImpl: typeof fetch | undefined,
-  timeoutMs: number,
-): Promise<{ client: Client; tools: ListedTool[]; truncated: boolean; morePages: boolean }> {
+/** One live MCP session with a connector: the client and the transport carrying its session id. */
+interface Connection {
+  client: Client;
+  transport: StreamableHTTPClientTransport;
+  /** Calls currently running on this connection. */
+  inflight: number;
+  /** Replaced by a reconnect: close it once its last in-flight call settles. */
+  retired: boolean;
+}
+
+function newConnection(server: ProjectedMcpServer, fetchImpl: typeof fetch | undefined): Connection {
   const client = new Client({ name: 'ax-aisdk-runner', version: '0.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(server.url), {
     ...(fetchImpl !== undefined ? { fetch: fetchImpl } : {}),
     ...(server.headers !== undefined ? { requestInit: { headers: server.headers } } : {}),
   });
+  return { client, transport, inflight: 0, retired: false };
+}
+
+/**
+ * The server no longer knows the session this connection's request carried
+ * (streamable-HTTP spec: 404 on a request with `mcp-session-id`). A 404 from
+ * a stateless server (no session id) is just a 404 — not retried.
+ */
+function isSessionLost(err: unknown, conn: Connection): boolean {
+  return err instanceof StreamableHTTPError && err.code === 404 && conn.transport.sessionId !== undefined;
+}
+
+/** A fresh connection (initialize handshake only), bounded like the boot connect. */
+async function reconnect(
+  server: ProjectedMcpServer,
+  fetchImpl: typeof fetch | undefined,
+  timeoutMs: number,
+): Promise<Connection> {
+  const conn = newConnection(server, fetchImpl);
+  const ac = new AbortController();
+  const timer = setTimeout(
+    () => ac.abort(new Error(`no answer within ${timeoutMs}ms`)),
+    timeoutMs,
+  );
+  try {
+    await raceAbort(
+      conn.client.connect(conn.transport as Transport, { signal: ac.signal, timeout: timeoutMs }),
+      ac.signal,
+    );
+    return conn;
+  } catch (err) {
+    await conn.client.close().catch(() => {});
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function connectAndList(
+  server: ProjectedMcpServer,
+  fetchImpl: typeof fetch | undefined,
+  timeoutMs: number,
+): Promise<{ conn: Connection; tools: ListedTool[]; truncated: boolean; morePages: boolean }> {
+  const conn = newConnection(server, fetchImpl);
+  const { client, transport } = conn;
   const ac = new AbortController();
   const timer = setTimeout(
     () => ac.abort(new Error(`no answer within ${timeoutMs}ms`)),
@@ -167,7 +232,7 @@ async function connectAndList(
     })();
     const { tools, morePages } = await raceAbort(work, ac.signal);
     const truncated = tools.length > MAX_TOOLS_PER_CONNECTOR;
-    return { client, tools: tools.slice(0, MAX_TOOLS_PER_CONNECTOR), truncated, morePages };
+    return { conn, tools: tools.slice(0, MAX_TOOLS_PER_CONNECTOR), truncated, morePages };
   } catch (err) {
     await client.close().catch(() => {});
     throw err;
@@ -185,9 +250,63 @@ export async function connectConnectorTools(
   const denied = new Set(opts.disallowed);
   const tools: Record<string, Tool> = {};
   const loadedBundles = new Set<string>();
-  const clients: Client[] = [];
+  /** Every connection this module still has to close: current ones, and retired ones still draining. */
+  const open = new Set<Connection>();
+  let closed = false;
+  const closeConn = (c: Connection): void => {
+    open.delete(c);
+    void c.client.close().catch(() => {});
+  };
 
-  const buildTool = (client: Client, t: ListedTool, policyName: string): Tool => {
+  /**
+   * One connector's current connection, replaceable when the server drops
+   * the session. `renew` is single-flight: every call that failed on the same
+   * dead connection waits on ONE reconnect.
+   */
+  interface ConnectorSession {
+    conn: Connection;
+    renew(stale: Connection): Promise<Connection>;
+  }
+  const makeSession = (ns: string, server: ProjectedMcpServer, first: Connection): ConnectorSession => {
+    let pending: Promise<Connection> | undefined;
+    const session: ConnectorSession = {
+      conn: first,
+      renew(stale) {
+        // Another call already replaced the dead connection: just use it.
+        if (session.conn !== stale) return Promise.resolve(session.conn);
+        if (pending !== undefined) return pending;
+        pending = (async () => {
+          let fresh: Connection;
+          try {
+            fresh = await reconnect(server, opts.fetch, timeoutMs);
+          } catch (err) {
+            log(`${ns}: the server dropped the MCP session and it could not reconnect: ${quoteUntrusted(errText(err))}`);
+            throw err;
+          }
+          if (closed) {
+            // The session ended while we reconnected: nobody will close this one later.
+            closeConn(fresh);
+            throw new Error('connector tools are closed');
+          }
+          session.conn = fresh;
+          open.add(fresh);
+          // Retire, don't kill: closing the client rejects EVERY request still
+          // pending on it ("Connection closed"), which is not a 404 and so
+          // would never be retried. Last call out closes it.
+          stale.retired = true;
+          if (stale.inflight === 0) closeConn(stale);
+          log(`${ns}: the server dropped the MCP session; reconnected`);
+          return fresh;
+        })().finally(() => {
+          pending = undefined;
+        });
+        return pending;
+      },
+    };
+    return session;
+  };
+
+  const buildTool = (session: ConnectorSession, t: ListedTool, policyName: string): Tool => {
     const toolName = t.name;
     return tool({
       description: t.description ?? '',
@@ -202,9 +321,8 @@ export async function connectConnectorTools(
           onToolFailure: opts.onToolFailure,
         },
         async (input, ctx) => {
-          let res: unknown;
-          try {
-            res = await client.callTool({ name: toolName, arguments: input }, undefined, {
+          const call = (client: Client): Promise<unknown> =>
+            client.callTool({ name: toolName, arguments: input }, undefined, {
               ...(ctx.abortSignal !== undefined ? { signal: ctx.abortSignal } : {}),
               timeout: callTimeoutMs,
               resetTimeoutOnProgress: true,
@@ -214,6 +332,28 @@ export async function connectConnectorTools(
               // this no-op, `resetTimeoutOnProgress` is inert.
               onprogress: () => {},
             });
+          const callOn = async (conn: Connection): Promise<unknown> => {
+            conn.inflight++;
+            try {
+              return await call(conn.client);
+            } finally {
+              conn.inflight--;
+              if (conn.retired && conn.inflight === 0 && open.has(conn)) closeConn(conn);
+            }
+          };
+          let res: unknown;
+          try {
+            const conn = session.conn;
+            try {
+              res = await callOn(conn);
+            } catch (err) {
+              if (ctx.abortSignal?.aborted === true || !isSessionLost(err, conn)) throw err;
+              // The reconnect is shared, so it is not aborted by THIS call's
+              // Stop — but this call stops waiting for it at once.
+              const renewed = session.renew(conn);
+              const fresh = await (ctx.abortSignal !== undefined ? raceAbort(renewed, ctx.abortSignal) : renewed);
+              res = await callOn(fresh);
+            }
           } catch (err) {
             // Stop: rethrow untouched so the abort is recognised as one.
             if (ctx.abortSignal?.aborted === true) throw err;
@@ -254,7 +394,8 @@ export async function connectConnectorTools(
       log(`${settledNs}: could not load this connector's tools: ${quoteUntrusted(errText(r.reason))}`);
       continue;
     }
-    const { ns, server, client, tools: listed, truncated, morePages } = r.value;
+    const { ns, server, conn, tools: listed, truncated, morePages } = r.value;
+    const session = makeSession(ns, server, conn);
     if (truncated) {
       log(`${ns}: lists more than ${MAX_TOOLS_PER_CONNECTOR} tools; only the first ${MAX_TOOLS_PER_CONNECTOR} are offered`);
     }
@@ -279,20 +420,19 @@ export async function connectConnectorTools(
         log(`${ns}: tool ${quoteUntrusted(t.name)} not offered — denied for this agent`);
         continue;
       }
-      own[modelName] = buildTool(client, t, policyName);
+      own[modelName] = buildTool(session, t, policyName);
     }
     const count = Object.keys(own).length;
     if (Object.keys(tools).length + count > maxTools) {
       log(`${ns}: not offered — its ${count} tools would exceed this session's tool budget (${maxTools})`);
-      void client.close().catch(() => {});
+      void conn.client.close().catch(() => {});
       continue;
     }
     Object.assign(tools, own);
-    clients.push(client);
+    open.add(conn);
     loadedBundles.add(server.bundle);
   }
 
-  let closed = false;
   return {
     tools,
     loadedBundles,
@@ -301,7 +441,14 @@ export async function connectConnectorTools(
       closed = true;
       let timer: NodeJS.Timeout | undefined;
       const finished = await Promise.race([
-        Promise.allSettled(clients.map((c) => c.close())).then(() => true),
+        // Current AND still-draining retired connections; a reconnect still
+        // in flight sees `closed` when it lands and closes its own client.
+        Promise.allSettled(
+          [...open].map((c) => {
+            open.delete(c);
+            return c.client.close();
+          }),
+        ).then(() => true),
         new Promise<false>((resolve) => {
           timer = setTimeout(() => resolve(false), CLOSE_TIMEOUT_MS);
           timer.unref();
