@@ -66,8 +66,12 @@ export const FAILURE_TTL_MS = 60 * 1000;
  * at the window's check, and has one now. Its sign-in finished inside the
  * window, so the answer we hold is stale by definition; one check is made and
  * it opens a new window. Each server buys that at most once while windows
- * chain (the set only shrinks), so a connector with N servers is checked at
- * most N + 1 times per window however hard a client pushes.
+ * chain (the set only shrinks), so one chain of windows holds at most N + 1
+ * CHECKS for a connector with N servers, however hard a client pushes — each
+ * check lists every server signed in at the time, and each re-check needs a
+ * real sign-in to land, which a client cannot manufacture. The price: a call
+ * inside the window now reads the vault once per server still without a
+ * sign-in (local row reads, no third party), where it used to read nothing.
  */
 export const CHECK_COOLDOWN_MS = 30 * 1000;
 const CHECK_COOLDOWN_MAX_KEYS = 1_000;
@@ -434,9 +438,11 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
 
   /**
    * TASK-841 — which of `absent` (servers that had nothing stored for their
-   * sign-in at the window's check) have a usable sign-in now. Reads ONLY
-   * those: for them `credentials:get` is one local row read until a sign-in
-   * lands, then a fresh token — whereas reading a REJECTED sign-in may ask
+   * sign-in at the window's check) have a usable sign-in now. Runs on every
+   * call inside the window while that set is non-empty. Reads ONLY those
+   * servers: with no row stored, `credentials:get` never reaches a resolver
+   * (a local scope walk that ends in `credential-not-found`), and once a
+   * sign-in lands it is a fresh token — whereas reading a REJECTED sign-in may ask
    * the authorization server to renew it, which is the kind of call the
    * window exists to bound. A blip reads as "not yet"; never throws.
    */
@@ -539,6 +545,9 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
         });
       }
     }
+    // A check of this same key already running is the answer. With `reCheck`
+    // set this cannot happen: a running check opened the current window with
+    // `absent: null`, so the re-check gate above answered from the row.
     const pending = inFlight.get(flightKey);
     if (pending !== undefined) return pending;
     const window = noteChecked(coolKey, at);
