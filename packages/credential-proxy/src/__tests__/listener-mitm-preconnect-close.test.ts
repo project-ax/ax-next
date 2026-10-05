@@ -277,3 +277,100 @@ describe('proxy listener — MITM CONNECT client closes before the upstream conn
     expect('credentialInjected' in entry!).toBe(false);
   });
 });
+
+/**
+ * TASK-872 — a plain client FIN (not an RST) before the upstream is established
+ * must tear the exchange down now, the way the bypass path has since TASK-786.
+ *
+ * The proxy's client socket is half-open, so a FIN surfaces as 'end', never
+ * 'close'. It used to be forwarded as `targetTls.end()` to an upstream that did
+ * not exist yet, which emits nothing — so the exchange sat out the whole
+ * connect window and was then audited `502 tls_error: upstream connect timed
+ * out`, a timeout that never happened. Once the upstream TCP connect had
+ * landed, ending it mid-handshake instead failed it with `tls_error: Client
+ * network socket disconnected …` — prompt, but blaming the upstream for the
+ * client's close. Both tests keep the clock faked and never advance it before
+ * the row lands, so the connect timer cannot produce it for them: on the
+ * unfixed code the first hangs and the second sees a `tls_error` reason.
+ */
+describe('proxy listener — MITM CONNECT client FIN before the upstream connects (TASK-872)', () => {
+  it('tears down on a client FIN while the upstream TCP connect is pending, without waiting out the connect timer', async () => {
+    const audits: ProxyAuditEntry[] = [];
+    const l = await startListener(BLACK_HOLE, audits);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const armed = vi.spyOn(globalThis, 'setTimeout');
+
+    const raw = await openTunnel(l.port, `${BLACK_HOLE}:443`);
+    expect(blackHoled.sockets).toHaveLength(1);
+    expect(armed.mock.calls.filter(([, ms]) => ms === CONNECT_TIMEOUT_MS)).toHaveLength(1);
+    expect(audits).toHaveLength(0);
+
+    // A clean half-close: FIN, no RST.
+    raw.end();
+    await untilAudited(audits);
+
+    expect(audits).toHaveLength(1);
+    const [entry] = audits;
+    expect(entry!.status).toBe(502);
+    // The client closed — this is not a timeout, nor any other upstream error.
+    expect(entry!.blocked).toBeUndefined();
+    expect(entry!.responseBytes).toBe(0);
+    expect(entry!.requestBytes).toBe(0);
+    expect('credentialInjected' in entry!).toBe(false);
+    expect(entry!.sessionId).toBe('s1');
+
+    // The upstream dial was aborted and the connect timer cleared, so letting
+    // the window elapse adds no second (timeout) row.
+    expect(blackHoled.sockets[0]!.destroyed).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(CONNECT_TIMEOUT_MS * 4);
+    await settle();
+    expect(audits).toHaveLength(1);
+  });
+
+  it('tears down on a client FIN after the client TLS handshake while the upstream TLS handshake is pending', async () => {
+    // Accepts TCP, never answers the ClientHello.
+    const silent = net.createServer((s) => {
+      upstreamSockets.push(s);
+      s.on('error', () => { /* proxy teardown may reset it */ });
+      s.resume();
+    });
+    servers.push(silent);
+    const upPort = await new Promise<number>((r) =>
+      silent.listen(0, '127.0.0.1', () => r((silent.address() as { port: number }).port)),
+    );
+
+    const audits: ProxyAuditEntry[] = [];
+    const l = await startListener('127.0.0.1', audits);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const raw = await openTunnel(l.port, `127.0.0.1:${upPort}`);
+    const inner = tlsConnect({ socket: raw, servername: '127.0.0.1', ca: ca.cert });
+    inner.on('error', () => { /* teardown resets are fine */ });
+    await new Promise<void>((resolve) => inner.once('secureConnect', () => resolve()));
+    // The proxy's upstream TCP connect has landed; only its handshake is stalled.
+    await new Promise<void>((resolve) => {
+      const check = () => (upstreamSockets.length >= 1 ? resolve() : setImmediate(check));
+      check();
+    });
+    expect(audits).toHaveLength(0);
+
+    // close_notify + FIN — a clean close, not an abort.
+    inner.end();
+    await untilAudited(audits);
+    await settle();
+
+    expect(audits).toHaveLength(1);
+    const [entry] = audits;
+    expect(entry!.status).toBe(502);
+    expect(entry!.blocked).toBeUndefined();
+    expect(entry!.responseBytes).toBe(0);
+    expect('credentialInjected' in entry!).toBe(false);
+    // The upstream half-handshake was torn down, not left for the timer.
+    await new Promise<void>((resolve) => {
+      const check = () => (upstreamSockets[0]!.destroyed ? resolve() : setImmediate(check));
+      check();
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
