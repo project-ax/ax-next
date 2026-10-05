@@ -226,13 +226,17 @@ describe('chat-orchestrator keepalive', () => {
     await flush();
     expect(rotates).toHaveLength(1);
 
-    // Turn 2 — routed into the warm session; rotation must fire again.
+    // Turn 2 — routed into the warm session. TASK-860 re-resolves once at
+    // routing (every warm session); the turn-end rotation must fire again too,
+    // which is what proves the I10 flag outlived turn 1's finally.
     fireTurnEnd(h.bus, 's-1', 'req-2');
     await h.bus.call<unknown, AgentOutcome>('agent:invoke',
       ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-2' }),
       { message: { role: 'user', content: 'again' } });
     await flush();
-    expect(rotates).toHaveLength(2);
+    // turn 1's turn-end + turn 2's routing + turn 2's turn-end. Without the
+    // flag surviving turn 1's finally, the last is missing (2).
+    expect(rotates).toHaveLength(3);
   });
 
   // TASK-783 — the warm path's deferred proxy close (on handle.exited) logs a
@@ -906,5 +910,209 @@ describe('TASK-785: a folded message\'s agent:invoke waiter resolves on the turn
     await turnEnd('s-2', { reqId: 'req-x' });
     expect(await other.p).toEqual({ kind: 'complete', messages: [] });
     for (const hk of handles) hk.forceExit();
+  });
+});
+
+// TASK-860 — TASK-833 retires a warm session whose connector was deleted or
+// edited, but re-entering a NEW api-key on an existing connector changes
+// neither: the connector shape is the same and nothing is deleted. The
+// credential proxy resolved the key once at open, and api-key slots were never
+// rotated (I10 rotates only refreshable kinds), so a warm session kept
+// injecting the OLD key until it idled out. The orchestrator now re-resolves
+// the session's credentials (`proxy:rotate-session`) before it routes a message
+// into a warm session; if that fails, the session is retired and the turn
+// spawns fresh.
+describe('TASK-860: a replaced api-key reaches the warm session on its next turn', () => {
+  const LINEAR = {
+    summary: { id: 'linear', name: 'Linear' },
+    capabilities: {
+      allowedHosts: ['mcp.linear.app'],
+      credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+      mcpServers: [{
+        name: 'linear', transport: 'http' as const, url: 'https://mcp.linear.app/mcp',
+        allowedHosts: ['mcp.linear.app'],
+        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+      }],
+    },
+    toolNamespaces: [{ server: 'linear', toolNamespace: 'c0123456789' }],
+  };
+
+  async function setup(opts: { rotateLoaded?: boolean } = {}) {
+    // The vault: what `credentials:get` would answer for a ref right now.
+    const vault = { version: 1, failing: false };
+    const resolve = (ref: string): string => {
+      if (vault.failing) throw new Error('credential store unavailable');
+      return `${ref}#key-v${vault.version}`;
+    };
+    // A model of the proxy's substitution table: envName -> the REAL value it
+    // injects. Open resolves every ref once; rotate re-resolves in place. (That
+    // the real proxy then substitutes ONLY the new value is pinned by
+    // credential-proxy's "proxy:rotate-session re-resolves credentials" test.)
+    const proxyTables = new Map<string, { refs: Record<string, string>; injected: Record<string, string> }>();
+    const conv = { activeSessionId: null as string | null };
+    const live = new Set<string>();
+    const handles = [makeHandle(), makeHandle()];
+    let opens = 0;
+    let rotates = 0;
+    const events: string[] = [];
+    // What the proxy would inject at the moment each user message reached a runner.
+    const injectedAtQueue: Array<{ sessionId: string; injected: string[] }> = [];
+    const terminated: string[] = [];
+    const logs: Array<Record<string, unknown>> = [];
+
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({
+        agent: { ...TEST_AGENT, connectorAttachments: ['linear'], connectorExclusions: [] },
+      }),
+      'connectors:list-effective': async () => ({ connectors: [structuredClone(LINEAR)] }),
+      'session:queue-work': async (_c, input: unknown) => {
+        const i = input as { sessionId: string; entry: { type: string } };
+        events.push(`queue:${i.entry.type}:${i.sessionId}`);
+        if (i.entry.type === 'user-message') {
+          injectedAtQueue.push({
+            sessionId: i.sessionId,
+            injected: Object.values(proxyTables.get(i.sessionId)?.injected ?? {}),
+          });
+        }
+        return { cursor: 0 };
+      },
+      'session:terminate': async (_c, input: unknown) => {
+        const sid = (input as { sessionId: string }).sessionId;
+        terminated.push(sid);
+        live.delete(sid);
+        return {};
+      },
+      'session:is-alive': async (_c, input: unknown) => ({
+        alive: live.has((input as { sessionId: string }).sessionId),
+      }),
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return { conversation: {
+          conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent',
+          activeSessionId: conv.activeSessionId, activeReqId: null,
+        } };
+      },
+      'conversations:bind-session': async (_c, input: unknown) => {
+        const i = input as { sessionId: string };
+        conv.activeSessionId = i.sessionId;
+        live.add(i.sessionId);
+        return undefined;
+      },
+      'sandbox:open-session': async () => {
+        const hk = handles[opens]!;
+        opens += 1;
+        return { runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle };
+      },
+      'proxy:open-session': async (_c, input: unknown) => {
+        const i = input as { sessionId: string; credentials: Record<string, { ref: string }> };
+        const refs = Object.fromEntries(Object.entries(i.credentials).map(([k, v]) => [k, v.ref]));
+        const injected = Object.fromEntries(Object.entries(refs).map(([k, ref]) => [k, resolve(ref)]));
+        proxyTables.set(i.sessionId, { refs, injected });
+        return { proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) };
+      },
+      'proxy:close-session': async (_c, input: unknown) => {
+        proxyTables.delete((input as { sessionId: string }).sessionId);
+        return {};
+      },
+    };
+    if (opts.rotateLoaded !== false) {
+      services['proxy:rotate-session'] = async (_c, input: unknown) => {
+        const sid = (input as { sessionId: string }).sessionId;
+        rotates += 1;
+        events.push(`rotate:${sid}`);
+        const table = proxyTables.get(sid);
+        if (table === undefined) throw new Error(`session ${sid} not open`);
+        for (const [k, ref] of Object.entries(table.refs)) table.injected[k] = resolve(ref);
+        return { envMap: {} };
+      };
+    }
+
+    const h = await createTestHarness({
+      services,
+      plugins: [createChatOrchestratorPlugin({
+        runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
+        keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 5,
+      })],
+    });
+
+    const mkCtx = (sessionId: string, reqId: string) =>
+      makeAgentContext({
+        sessionId, agentId: 'test-agent', userId: 'test-user',
+        conversationId: 'conv-1', reqId,
+        logger: createLogger({
+          reqId,
+          writer: (line: string) => { logs.push(JSON.parse(line) as Record<string, unknown>); },
+        }),
+      });
+
+    const turn = (sessionId: string, reqId: string) => {
+      fireTurnEnd(h.bus, sessionId, reqId);
+      return h.bus.call<unknown, AgentOutcome>('agent:invoke', mkCtx(sessionId, reqId),
+        { message: { role: 'user', content: 'hi' } });
+    };
+
+    return {
+      vault, handles, turn, events, injectedAtQueue, terminated, logs,
+      get opens() { return opens; },
+      get rotates() { return rotates; },
+    };
+  }
+
+  it('the next warm turn injects the NEW key and no longer the old one', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    const first = t.injectedAtQueue[0]!;
+    expect(first.injected.some((v) => v.includes('linear') && v.endsWith('#key-v1'))).toBe(true);
+
+    // The user re-enters the connector's key: same connector, same ref.
+    t.vault.version = 2;
+
+    const out2 = await t.turn('s-2', 'req-2');
+    expect(out2).toEqual({ kind: 'complete', messages: [] });
+    // Still the SAME warm session — a key change needs no re-spawn.
+    expect(t.opens).toBe(1);
+    expect(t.terminated).not.toContain('s-1');
+    const second = t.injectedAtQueue[1]!;
+    expect(second.sessionId).toBe('s-1');
+    expect(second.injected.some((v) => v.includes('linear') && v.endsWith('#key-v2'))).toBe(true);
+    expect(second.injected.filter((v) => v.endsWith('#key-v1'))).toEqual([]);
+    // ...and the re-resolve ran BEFORE the message reached the runner.
+    const idxRotate = t.events.indexOf('rotate:s-1');
+    const idxQueue = t.events.lastIndexOf('queue:user-message:s-1');
+    expect(idxRotate).toBeGreaterThanOrEqual(0);
+    expect(idxRotate).toBeLessThan(idxQueue);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('a re-resolve that fails at routing retires the warm session; the turn spawns fresh', async () => {
+    const t = await setup();
+    await t.turn('s-1', 'req-1');
+    // Fails for the warm session's re-resolve only: the fresh spawn's own
+    // proxy:open-session resolves again and succeeds.
+    t.vault.failing = true;
+    t.events.length = 0;
+    const origPush = t.events.push.bind(t.events);
+    t.events.push = (...items: string[]) => {
+      if (items.some((e) => e.startsWith('rotate:'))) queueMicrotask(() => { t.vault.failing = false; });
+      return origPush(...items);
+    };
+    const out2 = await t.turn('s-2', 'req-2');
+    expect(out2).toEqual({ kind: 'complete', messages: [] });
+    expect(t.terminated).toContain('s-1');
+    expect(t.opens).toBe(2);
+    expect(t.events).not.toContain('queue:user-message:s-1');
+    expect(t.logs.find((l) => l.msg === 'stale_session_respawn'))
+      .toMatchObject({ sessionId: 's-1', reason: 'credential-rotation-failed' });
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('without proxy:rotate-session loaded, routing is unchanged (no retire)', async () => {
+    const t = await setup({ rotateLoaded: false });
+    await t.turn('s-1', 'req-1');
+    await t.turn('s-2', 'req-2');
+    expect(t.opens).toBe(1);
+    expect(t.rotates).toBe(0);
+    expect(t.terminated).not.toContain('s-1');
+    for (const hk of t.handles) hk.forceExit();
   });
 });

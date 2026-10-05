@@ -3040,7 +3040,8 @@ describe('chat-orchestrator', () => {
   // (model→tool→model→tool). The orchestrator subscribes to chat:turn-end
   // and fires proxy:rotate-session for sessions whose agent has at least
   // one credential with kind != 'api-key'. api-key-only sessions skip the
-  // rotation entirely (Phase 2 coarse mode is unchanged).
+  // turn-end rotation (a warm session is still re-resolved at routing —
+  // TASK-860, covered in keepalive.test.ts).
   // ---------------------------------------------------------------------
 
   function fireTurnEndAndChatEnd(
