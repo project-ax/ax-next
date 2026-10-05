@@ -14,8 +14,13 @@
  * where bytes written after the CONNECT reached it around the framer entirely.
  */
 
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import { createServer as tlsCreate, connect as tlsConnect, type TLSSocket } from 'node:tls';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import {
+  createServer as tlsCreate,
+  connect as tlsConnect,
+  TLSSocket as TLSSocketClass,
+  type TLSSocket,
+} from 'node:tls';
 import * as net from 'node:net';
 import { ProxyAgent } from 'undici';
 import forgeModule from 'node-forge';
@@ -102,6 +107,7 @@ const cleanups: Array<() => Promise<void> | void> = [];
 let listener: ProxyListener | undefined;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (listener) listener.stop();
   listener = undefined;
   for (const c of cleanups.splice(0)) await c();
@@ -1015,6 +1021,34 @@ describe('the wire: the client sees what the provider sent, and the provider see
 
 describe('non-metered tunnel lifecycle (TASK-722)', () => {
   it.each(['client EOF', 'idle timeout'])('releases both sockets after %s', async (cause) => {
+    const IDLE_MS = 200;
+    // TASK-876: in the idle case this test decides WHEN the idle window starts.
+    // The listener arms `clientTls`/`targetTls.setTimeout(idle)` in the same tick
+    // it writes the CONNECT 200, so with a real 200ms window the client's TLS
+    // handshake AND its request had to land inside 200ms of wall clock. A CI
+    // event-loop stall longer than that let the (correct) idle teardown fire
+    // mid-handshake, and `openTunnel` rejected with `read ECONNRESET`.
+    // Reproduced 5/5 with a 300ms busy-wait right after the 200. The TASK-865
+    // fix (fake setTimeout) does not reach this timer: `socket.setTimeout` runs
+    // on Node's internal timer list, not `globalThis.setTimeout` — measured, a
+    // faked clock advanced 1000ms left a 100ms socket timeout unfired. So the
+    // listener's idle arms are captured here and armed for real (same sockets,
+    // same ms, same callback) once the tunnel provably carries a request.
+    const deferredIdle: Array<{ sock: TLSSocket; ms: number; onIdle: () => void }> = [];
+    const realSetTimeout = TLSSocketClass.prototype.setTimeout;
+    if (cause === 'idle timeout') {
+      vi.spyOn(TLSSocketClass.prototype, 'setTimeout').mockImplementation(function (
+        this: TLSSocket,
+        ms: number,
+        onIdle?: () => void,
+      ) {
+        if (ms === IDLE_MS && onIdle !== undefined) {
+          deferredIdle.push({ sock: this, ms, onIdle });
+          return this;
+        }
+        return realSetTimeout.call(this, ms, onIdle);
+      });
+    }
     let upstream: net.Socket | undefined;
     const provider = await startUpstream(PROVIDER, (_req, _n, socket) => {
       upstream = socket;
@@ -1023,13 +1057,22 @@ describe('non-metered tunnel lifecycle (TASK-722)', () => {
     const registry = new SharedCredentialRegistry();
     const ph = registerSession(registry, 's1');
     const { port, audits } = await start(registry, [session('s1', [PROVIDER])], {
-      meteredTunnelIdleMs: cause === 'idle timeout' ? 200 : 5000,
+      meteredTunnelIdleMs: cause === 'idle timeout' ? IDLE_MS : 5000,
     });
     const inner = await openTunnel(port, PROVIDER, provider.port, tokenFor('s1'));
     collect(inner);
     send(inner, { headers: { 'x-api-key': ph }, body: MODEL_BODY });
     await waitFor(() => provider.requests.length === 1, 'upstream request');
     if (cause === 'client EOF') inner.end();
+    if (cause === 'idle timeout') {
+      // Non-vacuity: the listener armed exactly one idle timer per side of the
+      // tunnel (client-facing + upstream-facing), and none has run yet — were
+      // either missing, the teardown below could not be the idle path's.
+      expect(deferredIdle).toHaveLength(2);
+      expect(upstream?.destroyed).toBe(false);
+      // The tunnel now carries a request and stays silent: start the idle window.
+      for (const { sock, ms, onIdle } of deferredIdle) realSetTimeout.call(sock, ms, onIdle);
+    }
     await waitFor(() => upstream?.destroyed === true, 'upstream socket released', 3000);
     await waitFor(() => audits.filter((a) => a.status === 200).length === 1, 'one cleanup audit');
     inner.destroy();
