@@ -512,7 +512,14 @@ export function createChannelWebServerPlugin(
           // on it, add a team key)? Team admins only.
           hook: 'agents:can-set-shared-credential',
           degradation:
-            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and PUT, GET and DELETE …/connectors/:connectorId/team-key answer 503 connectors-unavailable',
+            'nobody is offered Sign in, Add team key or Remove team sign-in on a team agent (members are told to ask the owner), and PUT, GET and DELETE …/connectors/:connectorId/team-key and DELETE …/connectors/:connectorId/team-sign-in answer 503 connectors-unavailable',
+        },
+        {
+          // TASK-858 — remove a team agent's shared sign-in (its agent-scope
+          // token and needs-reconnect marker), owned by @ax/mcp-oauth.
+          hook: 'mcp-oauth:remove-shared-sign-in',
+          degradation:
+            'nobody is offered Remove team sign-in, and DELETE …/connectors/:connectorId/team-sign-in answers 503 connectors-unavailable',
         },
         {
           // TASK-813 — before saving a team key: would the vault let the agent's
@@ -529,9 +536,10 @@ export function createChannelWebServerPlugin(
         },
         {
           // TASK-854 — is a team key saved? Metadata only, at scope agent.
+          // TASK-858 — also: is a team sign-in saved (the list's teamSignIn flag)?
           hook: 'credentials:list',
           degradation:
-            'GET …/connectors/:connectorId/team-key answers 503 credentials-unavailable (whether a team key is saved cannot be read)',
+            'GET …/connectors/:connectorId/team-key answers 503 credentials-unavailable (whether a team key is saved cannot be read), and nobody is offered Remove team sign-in',
         },
         {
           // TASK-854 — remove a team key, at scope agent.

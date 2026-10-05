@@ -1122,6 +1122,14 @@ export interface AgentConnectorRow {
    * Saved with `PUT …/connectors/:connectorId/team-key`, which decides again.
    */
   teamKey?: true;
+  /**
+   * TASK-858 — present (true) when this caller may remove the TEAM sign-in
+   * for this connector: a sign-in saved ON this team agent that everyone
+   * using it acts as. Only when {@link AgentConnectorsRead.sharedCredentials}
+   * is true (a team admin) and such a sign-in is actually saved. Removed with
+   * `DELETE …/connectors/:connectorId/team-sign-in`, which decides again.
+   */
+  teamSignIn?: true;
 }
 
 /** `GET /api/workspace/agents/:agentId/connectors` answers this. */

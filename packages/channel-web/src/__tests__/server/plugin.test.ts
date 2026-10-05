@@ -918,7 +918,12 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'agents:can-set-shared-credential',
           degradation:
-            'nobody is offered Sign in or Add team key on a team agent (members are told to ask the owner), and PUT, GET and DELETE …/connectors/:connectorId/team-key answer 503 connectors-unavailable',
+            'nobody is offered Sign in, Add team key or Remove team sign-in on a team agent (members are told to ask the owner), and PUT, GET and DELETE …/connectors/:connectorId/team-key and DELETE …/connectors/:connectorId/team-sign-in answer 503 connectors-unavailable',
+        },
+        {
+          hook: 'mcp-oauth:remove-shared-sign-in',
+          degradation:
+            'nobody is offered Remove team sign-in, and DELETE …/connectors/:connectorId/team-sign-in answers 503 connectors-unavailable',
         },
         {
           hook: 'credentials:authorize-agent:account',
@@ -933,7 +938,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'credentials:list',
           degradation:
-            'GET …/connectors/:connectorId/team-key answers 503 credentials-unavailable (whether a team key is saved cannot be read)',
+            'GET …/connectors/:connectorId/team-key answers 503 credentials-unavailable (whether a team key is saved cannot be read), and nobody is offered Remove team sign-in',
         },
         {
           hook: 'credentials:delete',

@@ -937,7 +937,7 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
     toolNamespaces: [{ server: 'linear', toolNamespace: 'c0123456789' }],
   };
 
-  async function setup(opts: { rotateLoaded?: boolean } = {}) {
+  async function setup(opts: { rotateLoaded?: boolean; terminateThrows?: boolean } = {}) {
     // The vault: what `credentials:get` would answer for a ref right now.
     const vault = { version: 1, failing: false };
     const resolve = (ref: string): string => {
@@ -979,6 +979,9 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
       'session:terminate': async (_c, input: unknown) => {
         const sid = (input as { sessionId: string }).sessionId;
         terminated.push(sid);
+        // TASK-871 — a terminate that throws leaves the runner (and its handle)
+        // alive: nothing here resolves `handle.exited`.
+        if (opts.terminateThrows === true) throw new Error('simulated terminate failure');
         live.delete(sid);
         return {};
       },
@@ -1052,7 +1055,7 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
     };
 
     return {
-      vault, handles, turn, events, injectedAtQueue, terminated, logs,
+      vault, handles, turn, events, injectedAtQueue, terminated, logs, proxyTables,
       get opens() { return opens; },
       get rotates() { return rotates; },
     };
@@ -1103,6 +1106,60 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
     expect(t.events).not.toContain('queue:user-message:s-1');
     expect(t.logs.find((l) => l.msg === 'stale_session_respawn'))
       .toMatchObject({ sessionId: 's-1', reason: 'credential-rotation-failed' });
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  // TASK-871 — retiring a warm session must not depend on session:terminate to
+  // revoke its credentials. If terminate throws and the runner survives, its
+  // handle never exits, so the deferred close on `handle.exited` never runs and
+  // the proxy kept substituting the OLD key until the idle reaper.
+  async function retireWithFailedRotation(t: Awaited<ReturnType<typeof setup>>) {
+    await t.turn('s-1', 'req-1');
+    // The key is replaced AND the warm session's re-resolve fails, so 's-1'
+    // still holds the old value when it is retired. The fresh spawn's own open
+    // resolves again and succeeds.
+    t.vault.version = 2;
+    t.vault.failing = true;
+    const origPush = t.events.push.bind(t.events);
+    t.events.push = (...items: string[]) => {
+      if (items.some((e) => e.startsWith('rotate:'))) queueMicrotask(() => { t.vault.failing = false; });
+      return origPush(...items);
+    };
+    return t.turn('s-2', 'req-2');
+  }
+
+  it('a retire whose session:terminate throws still closes the proxy session (old key no longer injected)', async () => {
+    const t = await setup({ terminateThrows: true });
+    const out2 = await retireWithFailedRotation(t);
+    expect(out2).toEqual({ kind: 'complete', messages: [] });
+    expect(t.terminated).toContain('s-1');
+    expect(t.logs.find((l) => l.msg === 'respawn_terminate_failed'))
+      .toMatchObject({ sessionId: 's-1' });
+    // The runner survived (its handle never exited), yet its proxy session is gone.
+    expect(t.proxyTables.has('s-1')).toBe(false);
+    const injectedAnywhere = [...t.proxyTables.values()].flatMap((tb) => Object.values(tb.injected));
+    expect(injectedAnywhere.filter((v) => v.endsWith('#key-v1'))).toEqual([]);
+    // The fresh session is unaffected and carries the new key.
+    expect(t.opens).toBe(2);
+    const fresh = t.injectedAtQueue.at(-1)!;
+    expect(fresh.sessionId).toBe('s-2');
+    expect(fresh.injected.some((v) => v.endsWith('#key-v2'))).toBe(true);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  // Before terminate too: a terminate that hangs must not delay the revocation.
+  it('a retire closes the proxy session before terminate and before the fresh spawn opens its own', async () => {
+    const t = await setup();
+    const closes: string[] = [];
+    const origDelete = t.proxyTables.delete.bind(t.proxyTables);
+    t.proxyTables.delete = (k: string) => {
+      closes.push(`${k}@opens=${t.opens},terminated=${t.terminated.length}`);
+      return origDelete(k);
+    };
+    await retireWithFailedRotation(t);
+    expect(t.terminated).toContain('s-1');
+    expect(t.proxyTables.has('s-1')).toBe(false);
+    expect(closes[0]).toBe('s-1@opens=1,terminated=0');
     for (const hk of t.handles) hk.forceExit();
   });
 

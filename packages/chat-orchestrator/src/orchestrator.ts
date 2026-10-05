@@ -2430,8 +2430,9 @@ export function createOrchestrator(
               // the agent mid-chat. The fresh spawn folds the new set.
               //
               // TASK-833: and when a connector it folded was deleted or edited.
-              // Terminating closes its proxy session, so a deleted connector's
-              // key stops being substituted no later than this turn.
+              // Its proxy session is closed below (TASK-871: directly, not only
+              // via terminate), so a deleted connector's key stops being
+              // substituted no later than this turn.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
                 reason: hostSessionMissing
@@ -2463,6 +2464,27 @@ export function createOrchestrator(
               skippedConnectorRefsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
               forgetSessionConnectors(candidate);
+              // TASK-871 — revoke the retired session's credentials HERE, not
+              // via terminate. A warm session's proxy close is otherwise
+              // deferred to `handle.exited`; if session:terminate throws (or
+              // hangs) and the runner survives, that never fires and the proxy
+              // keeps substituting the OLD key until the idle reaper. Closing
+              // first means a hung terminate cannot delay it either. The close
+              // is idempotent, so the later `handle.exited` close is a no-op.
+              // Nothing of the old session is in flight: we are between turns.
+              if (bus.hasService('proxy:close-session')) {
+                try {
+                  await bus.call<ProxyCloseSessionInput, Record<string, never>>(
+                    'proxy:close-session', ctx, { sessionId: candidate },
+                  );
+                } catch (err) {
+                  ctx.logger.warn('proxy_close_session_failed', {
+                    sessionId: candidate,
+                    phase: 'retire',
+                    ...errorLogFields(err),
+                  });
+                }
+              }
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
               } catch (err) {
