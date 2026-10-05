@@ -104,11 +104,12 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
 
   const readCreds = useCallback(async (): Promise<{
     user: CredentialMeta[];
-    global: CredentialMeta[];
+    global: CredentialMeta[] | null;
   }> => {
     // Presence only. A failed read reads as "absent", which can only ask for
     // a key that is already there — never attach one that isn't. Logged
-    // (TASK-757): a safe fallback is still not a silent one.
+    // (TASK-757): a safe fallback is still not a silent one. A non-admin
+    // can't read workspace keys at all: `null`, and the attach re-checks.
     const user = await myCredentials.list().catch((e: unknown) => {
       logRequestFailure(e, 'add-connector my-credentials');
       return [];
@@ -118,7 +119,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
           logRequestFailure(e, 'add-connector workspace-credentials');
           return [];
         })
-      : [];
+      : null;
     return { user, global };
   }, [isAdmin]);
 
@@ -154,7 +155,6 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         const list = availableConnectors(
           catalog,
           new Set(effective.connectors.map((c) => c.id)),
-          isAdmin,
         );
         setTeamAgent(effective.shared !== false);
         setSharedCredentials(effective.sharedCredentials === true);
@@ -210,7 +210,15 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
           c.id,
           e instanceof HttpError && e.status === 403
             ? { text: `Only a workspace admin can add ${c.name} to ${name}.`, retry: null }
-            : e instanceof HttpError && e.status === 409
+            : e instanceof HttpError && e.status === 409 && !isAdmin && c.keyMode === 'workspace'
+              ? {
+                  // TASK-827 — the shared key is missing and only an admin can
+                  // add it. No Retry: re-checking would read "Add" again (a
+                  // non-admin can't see the key) and loop on the same 409.
+                  text: `${c.name} doesn’t have its shared key yet. Ask a workspace admin to add it.`,
+                  retry: null,
+                }
+              : e instanceof HttpError && e.status === 409
               ? {
                   // TASK-761 — the server holds the same line this subview
                   // does: no attach until the sign-in / key resolves. Retry
@@ -231,7 +239,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         });
       }
     },
-    [agentId, name, onAttached],
+    [agentId, name, onAttached, isAdmin],
   );
 
   /**

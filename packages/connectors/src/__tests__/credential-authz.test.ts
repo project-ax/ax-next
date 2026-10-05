@@ -283,13 +283,19 @@ describe('credentials:authorize-global:account — deny paths', () => {
     expect(await authorize(h, 'root', 'account:zendesk')).toEqual(ALLOWED);
   });
 
-  it('follows a keyMode change: flipping workspace -> personal revokes the grant', async () => {
-    // vs always-allow: the post-flip denial FAILS against it.
+  it('follows the live keyMode: the id re-created as personal revokes the grant', async () => {
+    // vs always-allow: the post-flip denial FAILS against it. TASK-827: a live
+    // connector's keyMode can no longer be edited, so the flip is a delete and
+    // a re-create — the read still follows whatever row is live now.
     authLookup = adminUser;
     const h = await makeHarness();
     await seed(h, 'root', 'zendesk', 'workspace', 'ZENDESK_API_KEY');
     expect(await authorize(h, 'root', 'account:zendesk')).toEqual(ALLOWED);
 
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'root' }), {
+      userId: 'root',
+      connectorId: 'zendesk',
+    });
     await seed(h, 'root', 'zendesk', 'personal', 'ZENDESK_API_KEY');
     expect(await authorize(h, 'root', 'account:zendesk')).toEqual(DENIED);
   });

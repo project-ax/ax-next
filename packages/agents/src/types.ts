@@ -306,17 +306,11 @@ export interface ListPersonalOwnersOutput {
 // team agent) / a workspace admin — the same answer
 // agents:can-manage-connectors gives. A plain team member may not attach
 // or detach anything: whatever a team agent reaches, every member's runs reach.
-// Attach additionally runs the non-admin workspace-connector guard (attaching a
-// shared/company-keyed connector is admin-only).
-//
-// Attach's error contract for that guard: a non-admin attaching a connector
-// that resolves (owner-scoped to the actor) to keyMode 'workspace' — or ANY
-// attach by a non-admin when `connectors:resolve` is absent (fail-closed: reach
-// can't be verified) — is refused with a PluginError of code `forbidden` and
-// `diagnosis.reason === 'workspace-connector'`. That tag tells it apart from the
-// ACL's `forbidden`; its message names only the connector id the caller sent,
-// so a transport may surface it verbatim (none does today: the workspace rail
-// maps every `forbidden` to an opaque 403). Admins bypass the guard.
+// TASK-827 — there is no keyMode guard on attach: a shared-key (workspace)
+// connector is one anyone may add to their own agent. Attaching grants no read
+// of the shared key by itself; @ax/connectors decides that at read time
+// (`credentials:authorize-global:account`, TASK-697: an admin-owned shared
+// definition only).
 //
 // `changed` is false when the call was a no-op (already attached / already
 // absent and not newly excluded). `exclude` records the id in

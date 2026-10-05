@@ -152,7 +152,7 @@ describe('what it shows', () => {
     expect(
       screen.getByText(/Pick one your workspace offers\. If it needs a sign-in, we add it to Quill once you’ve signed in\./),
     ).toBeTruthy();
-    expect(screen.getByRole('heading', { name: /^Available/ }).textContent).toBe('Available3');
+    expect(screen.getByRole('heading', { name: /^Available/ }).textContent).toBe('Available4');
     expect(screen.queryByText('Linear')).toBeNull();
     // Name only: no subtitles like "Needs a sign-in".
     expect(screen.queryByText(/Needs a/)).toBeNull();
@@ -163,10 +163,20 @@ describe('what it shows', () => {
     expect(attachMock).not.toHaveBeenCalled();
   });
 
-  it('hides company-key connectors from a non-admin, and shows them to an admin', async () => {
+  // TASK-827 — a shared-key connector is one anyone may add: the admin added
+  // the key once, so a non-admin sees a plain "Add" (they can't read the
+  // workspace keys; the server's attach re-checks the key is there).
+  it('shows a shared-key connector to a non-admin with a plain "Add"', async () => {
     renderAdd('user');
     await ready();
-    expect(screen.queryByText('Company CRM')).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Add — Company CRM' })).toBeTruthy();
+    expect(adminCredentials.list).not.toHaveBeenCalled();
+  });
+
+  it('a non-admin still sees "Add key" for a connector where each person adds their own key', async () => {
+    renderAdd('user');
+    await ready();
+    expect(screen.getByRole('button', { name: 'Add key — Zendesk' })).toBeTruthy();
   });
 
   it('an admin sees company-key connectors', async () => {
@@ -475,7 +485,7 @@ describe('add key, then attach', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add key — Zendesk' }));
     const dialog = await screen.findByRole('dialog', { name: 'Key for Zendesk' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save key' }));
-    await waitFor(() => expect(getConnector).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(getConnector).toHaveBeenCalledTimes(5));
     await new Promise((r) => setTimeout(r, 20));
     expect(attachMock).not.toHaveBeenCalled();
   });
@@ -503,6 +513,31 @@ describe('server refuses the attach until set up (TASK-761)', () => {
     ).toBeTruthy();
     expect(onAttached).not.toHaveBeenCalled();
     expect(within(row('Stripe')).getByRole('button', { name: 'Retry' })).toBeTruthy();
+  });
+});
+
+describe('shared-key connectors (TASK-827)', () => {
+  it('a non-admin adds one straight away — no key dialog', async () => {
+    const { onAttached } = renderAdd('user');
+    await ready();
+    fireEvent.click(await screen.findByRole('button', { name: 'Add — Company CRM' }));
+    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'company-crm'));
+    expect(onAttached).toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a 409 for a non-admin says the shared key is missing and offers no Retry', async () => {
+    attachMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors', 409));
+    const { onAttached } = renderAdd('user');
+    await ready();
+    fireEvent.click(await screen.findByRole('button', { name: 'Add — Company CRM' }));
+    expect(
+      await screen.findByText(
+        'Company CRM doesn’t have its shared key yet. Ask a workspace admin to add it.',
+      ),
+    ).toBeTruthy();
+    expect(onAttached).not.toHaveBeenCalled();
+    expect(within(row('Company CRM')).queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 });
 

@@ -278,6 +278,33 @@ describe('mock admin connectors', () => {
     }
   });
 
+  it('PATCH refuses to change keyMode on an existing connector (TASK-827); the same keyMode is fine', async () => {
+    const { url, close } = await startServer(store);
+    try {
+      await fetch(`${url}/admin/connectors`, {
+        method: 'POST',
+        headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody()),
+      });
+      const change = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+        body: JSON.stringify({ keyMode: 'workspace' }),
+      });
+      await expectStatus(change, 400);
+      expect((await change.json()).error).toBe("keyMode can't change on an existing connector");
+      const same = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+        body: JSON.stringify({ keyMode: 'personal', name: 'Drive' }),
+      });
+      await expectStatus(same, 200);
+      expect((await same.json()).connector.keyMode).toBe('personal');
+    } finally {
+      await close();
+    }
+  });
+
   it('DELETE removes the connector (204), then re-DELETE 404s', async () => {
     const { url, close } = await startServer(store);
     try {

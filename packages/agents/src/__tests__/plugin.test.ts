@@ -166,7 +166,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         {
           hook: 'connectors:resolve',
           degradation:
-            "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected; a newly attached connector also cannot copy its per-tool defaults",
+            "a newly attached connector cannot copy its per-tool defaults",
         },
         {
           hook: 'tool-policy:snapshot-connector-for-agent',
@@ -1038,8 +1038,8 @@ describe('model policy (models:get-policy)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// TASK-739 — atomic per-connector attach / detach + the workspace-connector
-// guard enforced in the hooks (every path, not just the admin route).
+// TASK-739 — atomic per-connector attach / detach, ACL enforced in the hooks
+// (every path, not just the admin route). TASK-827 removed the keyMode guard.
 // ---------------------------------------------------------------------------
 describe('agents:attach-connector / agents:detach-connector (TASK-739)', () => {
   // keyMode per connector id; anything else → connectors:resolve throws
@@ -1167,32 +1167,25 @@ describe('agents:attach-connector / agents:detach-connector (TASK-739)', () => {
     expect(after.connectorExclusions).toEqual([]);
   });
 
-  it('SECURITY: a non-admin cannot attach a workspace connector; an admin can', async () => {
+  // TASK-827 — a shared-key (keyMode 'workspace') connector is one anyone may
+  // add to their own agent. Attaching grants no read of the shared key by
+  // itself: that is decided at READ time by credentials:authorize-global:account
+  // (TASK-697 — the owner must be an admin), so the attach hook has no keyMode
+  // guard left.
+  it('TASK-827: a non-admin owner may attach a shared-key (workspace) connector to their own agent', async () => {
     const { h, agentId } = await seed();
-    await expect(
-      attach(h, { actor: owner, agentId, connectorId: 'workspace-conn' }),
-    ).rejects.toMatchObject({
-      code: 'forbidden',
-      // TASK-799 — attach's documented error contract: the guard's refusal is
-      // tagged apart from the ACL's, and names only the id the caller sent.
-      diagnosis: { reason: 'workspace-connector' },
-      message: expect.stringMatching(/'workspace-conn' is a workspace \(shared\) connector/),
-    });
-    expect((await current(h, agentId)).connectorAttachments).toEqual([]);
-    const byAdmin = await attach(h, { actor: admin, agentId, connectorId: 'workspace-conn' });
-    expect(byAdmin.agent.connectorAttachments).toEqual(['workspace-conn']);
+    const out = await attach(h, { actor: owner, agentId, connectorId: 'workspace-conn' });
+    expect(out.changed).toBe(true);
+    expect(out.agent.connectorAttachments).toEqual(['workspace-conn']);
   });
 
-  it('SECURITY: fail-closed without connectors:resolve — non-admin attach is forbidden', async () => {
+  it('TASK-827: attach no longer depends on connectors:resolve to verify keyMode', async () => {
     const { h, agentId } = await seed(false);
-    await expect(
-      attach(h, { actor: owner, agentId, connectorId: 'personal-conn' }),
-    ).rejects.toMatchObject({ code: 'forbidden', diagnosis: { reason: 'workspace-connector' } });
-    // An admin is unaffected.
-    await attach(h, { actor: admin, agentId, connectorId: 'personal-conn' });
-    // detach never grants reach, so it is not guarded.
-    const out = await detach(h, { actor: owner, agentId, connectorId: 'x', exclude: true });
-    expect(out.agent.connectorExclusions).toEqual(['x']);
+    const out = await attach(h, { actor: owner, agentId, connectorId: 'personal-conn' });
+    expect(out.agent.connectorAttachments).toEqual(['personal-conn']);
+    // detach never grants reach, and was never guarded.
+    const removed = await detach(h, { actor: owner, agentId, connectorId: 'x', exclude: true });
+    expect(removed.agent.connectorExclusions).toEqual(['x']);
   });
 
   it('CONCURRENCY: 10 parallel hook attaches of distinct ids all land', async () => {
