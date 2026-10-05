@@ -515,15 +515,23 @@ describe('@ax/preset-k8s blob GC enforce-mode canary (TASK-778)', () => {
     expect(await attach(USER_A, 'conv-reput', bytes)).toBe(sha);
     expect(await exists(livePath(sha))).toBe(true);
     expect(await gcRow(sha)).toEqual({ state: 'live' });
+    // The re-put wrote a live copy; the retired one is still there too.
+    expect(await exists(retPath(sha))).toBe(true);
 
+    // TASK-836: the next enforce sweep sees the sha in both listings under a
+    // live row, claims the row (a fresh grace window, so it is not a retire
+    // candidate this sweep), confirms the live copy, and purges only the
+    // retired duplicate.
     clockSkewMs = T_PURGE + HOUR;
     expect(await live().gc.sweep()).toMatchObject({
       outcome: 'reported',
-      report: { held: 1, retired: 0, purged: 0 },
+      report: { candidates: 0, retired: 0, purged: 0 },
     });
     expect(await exists(livePath(sha))).toBe(true);
+    expect(await exists(retPath(sha))).toBe(false);
+    expect(await gcRow(sha)).toEqual({ state: 'live' });
     expect(await getBytes(sha)).toEqual(bytes);
-    expect(freeing(sha).map((c) => c.hook)).toEqual(['blob:retire']);
+    expect(freeing(sha).map((c) => c.hook)).toEqual(['blob:retire', 'blob:purge']);
   });
 
   it('purge re-check: a row that appears WITHOUT a put restores the retired blob instead of purging it', async () => {
