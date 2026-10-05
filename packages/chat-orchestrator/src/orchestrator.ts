@@ -1958,9 +1958,10 @@ export function createOrchestrator(
   // (`connectors:deleted`). The delete purged the connector's stored key, but a
   // live credential-proxy session keeps the value it resolved at open and goes
   // on substituting it until the session closes. So a marked session is reaped
-  // the moment it is idle (now, or as soon as its in-flight turn ends) — the
-  // runner exits and the exit watcher closes the proxy session — and if a
-  // message beats the reaper it is retired at routing instead. Same lifetime +
+  // the moment it is idle (now, or as soon as its in-flight turn ends) — its
+  // proxy session is closed right then (TASK-877: directly, not only when the
+  // runner exits) and the runner is cancelled / killed — and if a message
+  // beats the reaper it is retired at routing instead. Same lifetime +
   // single-replica posture as `rotationFailedSessions`; the fingerprint compare
   // above is the replica-independent backstop.
   const connectorDeletedSessions = new Set<string>();
@@ -2026,10 +2027,35 @@ export function createOrchestrator(
     return connectorSetFingerprint([...effective, ...skillReferenced]) !== atSpawn.fingerprint;
   }
 
+  // TASK-877 — revoke a connector-deleted session's credentials the moment it
+  // is reaped, not when its runner finally exits. The reap is a graceful cancel
+  // and then a kill after `idleGraceMs`; the exit watcher's proxy close waits on
+  // `handle.exited`, so the deleted connector's key stayed injectable for the
+  // whole window — and indefinitely if the kill never landed. Called only for
+  // an IDLE session (no turn in flight), so nothing it is doing needs the
+  // proxy; a runner that wakes anyway reaches upstream without credentials.
+  // Idempotent in credential-proxy, so the exit watcher's later close (and a
+  // routing retire's) is a no-op. Fire-and-forget; never throws.
+  function closeProxyForDeletedConnector(ctx: AgentContext, sessionId: string): void {
+    if (!bus.hasService('proxy:close-session')) return;
+    void bus
+      .call<ProxyCloseSessionInput, Record<string, never>>(
+        'proxy:close-session', { ...ctx, sessionId }, { sessionId },
+      )
+      .catch((err: unknown) => {
+        ctx.logger.warn('proxy_close_session_failed', {
+          sessionId,
+          phase: 'connector-deleted',
+          ...errorLogFields(err),
+        });
+      });
+  }
+
   // TASK-833 — `connectors:deleted` (fired by @ax/connectors after the row is
   // gone and its stored key purged). Marks every session that folded that
-  // connector, and reaps the idle ones now. A session mid-turn is not
-  // interrupted: `onTurnEnd` reaps it as soon as the turn ends.
+  // connector, and reaps the idle ones now — closing their proxy sessions
+  // first (TASK-877). A session mid-turn is not interrupted: `onTurnEnd` reaps
+  // it (and closes its proxy session) as soon as the turn ends.
   //
   // Connector ids are not unique across owners, so the event's tool namespaces
   // (derived from the row OWNER) must match what the session was handed. A
@@ -2061,7 +2087,11 @@ export function createOrchestrator(
       marked += 1;
       const entry = warmSessions.get(sessionId);
       // Idle = the reaper is armed (a turn ended and none has started). A grace
-      // timer already running means a reap is under way.
+      // timer already running means a reap is under way — the session is idle
+      // too, so its proxy session is closed either way (TASK-877).
+      if (entry !== undefined && (entry.idleTimer !== null || entry.graceTimer !== null)) {
+        closeProxyForDeletedConnector(ctx, sessionId);
+      }
       if (entry !== undefined && entry.idleTimer !== null) {
         armReapTimer({ ...ctx, sessionId }, 0);
         reaped += 1;
@@ -2754,7 +2784,10 @@ export function createOrchestrator(
     //       session`. We track that with `proxyOpened`; the finally below
     //       fires close exactly once when the flag is set, regardless of
     //       which exit path won. The `proxy-not-loaded` exit below runs
-    //       BEFORE proxyOpened can be set — nothing to close.
+    //       BEFORE proxyOpened can be set — nothing to close. (Revocation
+    //       paths may close a warm session's proxy session EARLY — a routing
+    //       retire, TASK-871; a connector-deleted reap, TASK-877 — so the
+    //       close can fire more than once; it is idempotent.)
     //
     //       Both hooks must be registered before we enable proxy mode. A
     //       skewed preset that wired only one would otherwise either open
@@ -3993,8 +4026,14 @@ export function createOrchestrator(
       // Idempotent across the two turn-ends one user message emits.
       resolveWaiterFor(payload?.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
       resolveFoldedWaiters(ctx.sessionId, payload?.foldedReqIds);
-      // TASK-833 — a session holding a since-deleted connector is reaped now.
-      armReapTimer(ctx, connectorDeletedSessions.has(ctx.sessionId) ? 0 : idleWindowMs);
+      // TASK-833 — a session holding a since-deleted connector is reaped now,
+      // and (TASK-877) its proxy session closed now rather than on runner exit.
+      if (connectorDeletedSessions.has(ctx.sessionId)) {
+        closeProxyForDeletedConnector(ctx, ctx.sessionId);
+        armReapTimer(ctx, 0);
+      } else {
+        armReapTimer(ctx, idleWindowMs);
+      }
       return;
     }
 
