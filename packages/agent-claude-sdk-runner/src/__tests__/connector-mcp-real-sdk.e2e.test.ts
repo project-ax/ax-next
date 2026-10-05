@@ -8,6 +8,8 @@ import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claud
 import { createInterruptProcesses } from '../interrupt-processes.js';
 import { loadProjectedMcpServers } from '../projected-mcp-servers.js';
 import { classifySdkToolName } from '../tool-names.js';
+import { EventConnectorAuthFailureSchema } from '@ax/ipc-protocol';
+import { createConnectorAuthReporter, type ConnectorAuthFailureReport } from '../connector-auth-report.js';
 
 // ---------------------------------------------------------------------------
 // TASK-760 — does a connector's MCP tool actually reach the MODEL on the
@@ -55,19 +57,33 @@ let baseUrl: string;
 let mcpServer: http.Server;
 let mcpUrl: string;
 let tmp: string;
+let keychainStubDir: string | undefined;
 let cfg: string;
 /** Tool names the CLI offered on each agent-loop model call, in order. */
 let offered: string[][];
 /** Raw bodies of agent-loop model calls (to read tool_result content back). */
 let bodies: string[];
 let callTool: string | null;
+/**
+ * TASK-842 — when the probe server answers 401 (with the WWW-Authenticate a
+ * real provider sends): never, to every request (a revoked token at session
+ * start), or only to `tools/call` (a token revoked mid-session).
+ */
+let refuse: 'never' | 'always' | 'tools-call';
 
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-t760-sdk-'));
   cfg = path.join(tmp, 'cfg');
+  keychainStubDir = undefined;
+  if (process.platform === 'darwin') {
+    keychainStubDir = path.join(tmp, 'bin');
+    await fs.mkdir(keychainStubDir);
+    await fs.writeFile(path.join(keychainStubDir, 'security'), '#!/bin/sh\nexit 44\n', { mode: 0o755 });
+  }
   offered = [];
   bodies = [];
   callTool = null;
+  refuse = 'never';
 
   // The probe connector server: one tool, `ping` → `pong-from-connector`,
   // spoken over streamable HTTP (plain JSON responses, no SSE stream).
@@ -75,6 +91,25 @@ beforeEach(async () => {
     let body = '';
     req.on('data', (c: Buffer) => (body += c.toString('utf8')));
     req.on('end', () => {
+      if (req.method === 'GET' && req.url?.startsWith('/.well-known/')) {
+        // No OAuth metadata: the SDK's discovery after a 401 finds nothing.
+        res.writeHead(404).end();
+        return;
+      }
+      let method: unknown;
+      try {
+        method = (JSON.parse(body) as { method?: unknown }).method;
+      } catch {
+        /* not JSON-RPC */
+      }
+      if (refuse === 'always' || (refuse === 'tools-call' && method === 'tools/call')) {
+        res.writeHead(401, {
+          'content-type': 'application/json',
+          'www-authenticate': 'Bearer error="invalid_token"',
+        });
+        res.end(JSON.stringify({ error: 'invalid_token' }));
+        return;
+      }
       if (req.method !== 'POST') {
         res.writeHead(405).end();
         return;
@@ -193,6 +228,11 @@ async function runOneTurn(
       cwd: tmp,
       env: {
         ...process.env,
+        // macOS only: after a 401 the CLI looks for a stored MCP sign-in in
+        // the login keychain, and `security` can block on a keychain prompt
+        // (measured: no system/init within 200 s). A sandbox has no
+        // keychain, so a stub that answers "not found" is the faithful setup.
+        ...(keychainStubDir !== undefined ? { PATH: `${keychainStubDir}:${process.env.PATH ?? ''}` } : {}),
         HOME: tmp,
         CLAUDE_CONFIG_DIR: cfg,
         ANTHROPIC_BASE_URL: baseUrl,
@@ -255,5 +295,62 @@ describe.skipIf(!HAVE_BINARY)('connector MCP tools on the real claude-sdk binary
     await runOneTurn(servers, true);
     expect(offered[0]).toContain(SDK_TOOL);
     expect(bodies[1] ?? '').toContain('pong-from-connector');
+  }, 60_000);
+});
+
+/**
+ * Drive the reporter exactly the way main.ts does: init's `mcp_servers`, each
+ * assistant `tool_use`, each `tool_result` (`is_error`), the turn boundary.
+ */
+function reportsFor(seen: SDKMessage[]): ConnectorAuthFailureReport[] {
+  const sent: ConnectorAuthFailureReport[] = [];
+  const r = createConnectorAuthReporter(async (rep) => {
+    sent.push(rep);
+  }, () => {});
+  for (const m of seen) {
+    if (m.type === 'system' && m.subtype === 'init') r.onInit(m.mcp_servers);
+    if (m.type === 'assistant') {
+      for (const b of m.message.content) if (b.type === 'tool_use') r.onToolUse(b.id, b.name);
+    }
+    if (m.type === 'user' && Array.isArray(m.message.content)) {
+      for (const b of m.message.content as Array<{ type?: string; tool_use_id?: string; is_error?: boolean }>) {
+        if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') r.onToolResult(b.tool_use_id, b.is_error === true);
+      }
+    }
+    if (m.type === 'result') r.endTurn();
+  }
+  return sent;
+}
+
+describe.skipIf(!HAVE_BINARY)('a connector server that refuses the token, on the real binary (TASK-842)', () => {
+  it('401 at session start: init lists the server as refused, offers none of its tools, and the runner reports it', async () => {
+    refuse = 'always';
+    const { servers } = await loadProjectedMcpServers(cfg, () => {});
+    const seen = await runOneTurn(servers, true);
+    const init = seen.find((m) => m.type === 'system' && m.subtype === 'init');
+    const status = init?.type === 'system' && init.subtype === 'init'
+      ? init.mcp_servers.find((s) => s.name === NS)?.status
+      : undefined;
+    expect(['failed', 'needs-auth']).toContain(status);
+    expect(offered[0]?.some((n) => n.startsWith(`mcp__${NS}__`))).toBe(false);
+    const sent = reportsFor(seen);
+    expect(sent).toEqual([{ servers: [{ toolNamespace: NS, status }] }]);
+    expect(EventConnectorAuthFailureSchema.safeParse(sent[0]).success).toBe(true);
+  }, 60_000);
+
+  it('401 on a tool call: the server stays connected, the call is an error, and the runner reports a tool-error', async () => {
+    refuse = 'tools-call';
+    const { servers } = await loadProjectedMcpServers(cfg, () => {});
+    callTool = SDK_TOOL;
+    const seen = await runOneTurn(servers, true);
+    const init = seen.find((m) => m.type === 'system' && m.subtype === 'init');
+    // Why the init status alone is not enough: this server started fine.
+    expect(
+      init?.type === 'system' && init.subtype === 'init'
+        ? init.mcp_servers.find((s) => s.name === NS)?.status
+        : undefined,
+    ).toBe('connected');
+    expect(offered[0]).toContain(SDK_TOOL);
+    expect(reportsFor(seen)).toEqual([{ servers: [{ toolNamespace: NS, status: 'tool-error' }] }]);
   }, 60_000);
 });

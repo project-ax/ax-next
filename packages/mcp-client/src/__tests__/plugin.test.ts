@@ -159,8 +159,10 @@ describe('@ax/mcp-client plugin', () => {
       optionalCalls: [
         { hook: 'credentials:list', degradation: SWEEP_DEGRADATION },
         { hook: 'credentials:delete', degradation: SWEEP_DEGRADATION },
+        // TASK-842 — maps a runner-reported namespace to the agent's connector.
+        { hook: 'connectors:list-effective', degradation: expect.any(String) },
       ],
-      subscribes: ['agents:deleted'],
+      subscribes: ['agents:deleted', 'connectors:auth-failure-reported'],
     });
   });
 

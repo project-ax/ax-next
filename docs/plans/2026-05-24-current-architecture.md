@@ -261,7 +261,9 @@ three shapes:
   `/workspace.read`, `/session.get-config`, `/conversation.store-runner-session`.
 - **POST events** (fire-and-forget 202, subscriber fired async):
   `/event.tool-post-call`, `/event.turn-end`, `/event.chat-end`,
-  `/event.stream-chunk`.
+  `/event.stream-chunk`, `/event.connector-auth-failure` (TASK-842: a
+  connector server refused the runner; a hint the host re-checks, never acts
+  on directly).
 
 ### ARCH-2: one source of truth for the dispatcher's dependencies
 

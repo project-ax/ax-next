@@ -27,6 +27,13 @@ import type { BlobGcStore, BlobRowSummary } from './store.js';
 //                       every sha the table has never seen as live,
 //                       `last_put_at = now`; then `{ state: 'retired' }`, and
 //                       insert unseen ones as retired, `retired_at = now`.
+//                       Enforce only, REPAIR what a move killed between its
+//                       copy and its delete left (S3 has no rename, so retire
+//                       and restore are copy-then-delete; a crash leaves BOTH
+//                       copies, never none): a listed-live sha whose row says
+//                       retired goes back to live, and a listed-retired sha
+//                       whose row is live is claimed, `blob:stat`-restored, and
+//                       its retired copy purged only once a copy is confirmed.
 //                    2. RETIRE PASS: live rows last put before `now - graceMs`,
 //                       in batches of at most 1000, each offered to every
 //                       holder through `blob:collect-refs`. Each one nobody
@@ -174,8 +181,17 @@ export function createBlobGcService(deps: {
     });
   }
 
-  /** Page one backend namespace and insert the shas the table has never seen. */
-  async function discover(ctx: AgentContext, state: 'live' | 'retired'): Promise<number> {
+  /**
+   * Page one backend namespace and insert the shas the table has never seen.
+   * With `repair` (enforce only), also repair what a retire or restore that
+   * died between its copy and its delete left behind; see `repairLive` and
+   * `repairRetired`. Shas repaired are added to `repaired`.
+   */
+  async function discover(
+    ctx: AgentContext,
+    state: 'live' | 'retired',
+    repair: Set<string> | undefined,
+  ): Promise<number> {
     let discovered = 0;
     let after: string | undefined;
     for (;;) {
@@ -189,8 +205,54 @@ export function createBlobGcService(deps: {
         state === 'live'
           ? await store.discover(page.items, now())
           : await store.discoverRetired(page.items, now());
+      if (repair !== undefined) {
+        const shas = page.items.map((i) => i.sha256);
+        if (state === 'live') await repairLive(ctx, shas, repair);
+        else await repairRetired(ctx, shas, repair);
+      }
       if (page.next === undefined) return discovered;
       after = page.next;
+    }
+  }
+
+  /**
+   * Residual repair, live side. Every sha here was just listed LIVE, so a live
+   * copy exists. A row that still says `retired` is one a move left behind:
+   * a retire killed after its copy (both copies), a restore killed after its
+   * copy back (both copies), or a read that restored it. The live copy wins:
+   * the row goes live with a fresh grace window, and `repairRetired` then
+   * drops any retired duplicate. A retire the GC still wants simply happens
+   * again, whole, a grace window later. Only a row is written here.
+   */
+  async function repairLive(ctx: AgentContext, shas: readonly string[], repaired: Set<string>): Promise<void> {
+    for (const sha256 of await store.reviveListed(shas, now())) {
+      if (!repaired.has(sha256)) log(ctx, 'info', 'blob_gc_residual_repaired', { sha256 });
+      repaired.add(sha256);
+    }
+  }
+
+  /**
+   * Residual repair, retired side. Every sha here was just listed RETIRED. One
+   * whose row is LIVE has a retired copy nothing will ever purge (a crashed
+   * move, or a retire whose answer was lost after its delete landed). The row
+   * is CLAIMED first (`claimLive` refreshes its grace, so no retire can start
+   * moving its live copy), then `blob:stat` with `restore: true` makes sure a
+   * live copy exists (moving the retired one back if it was the only copy),
+   * and only then is the retired copy purged. A stat that finds nothing purges
+   * nothing: we never delete what might be the only copy.
+   */
+  async function repairRetired(ctx: AgentContext, shas: readonly string[], repaired: Set<string>): Promise<void> {
+    for (const sha256 of await store.claimLive(shas, now())) {
+      const stat = await bus.call<{ sha256: string; restore: boolean }, unknown>('blob:stat', ctx, {
+        sha256,
+        restore: true,
+      });
+      if (stat === null || typeof stat !== 'object' || (stat as Record<string, unknown>).found === false) {
+        continue;
+      }
+      await bus.call('blob:purge', ctx, { sha256 });
+      if (!repaired.has(sha256)) log(ctx, 'info', 'blob_gc_residual_repaired', { sha256 });
+      repaired.add(sha256);
     }
   }
 
@@ -274,6 +336,8 @@ export function createBlobGcService(deps: {
     restored: number;
     purged: number;
     bytesPurged: number;
+    /** Shas whose half-finished move this sweep repaired (enforce only). */
+    repaired: number;
   }
 
   function sweepLine(mode: BlobGcMode, c: Counts): Record<string, unknown> {
@@ -286,6 +350,7 @@ export function createBlobGcService(deps: {
       restored: c.restored,
       purged: c.purged,
       bytesPurged: c.bytesPurged,
+      repaired: c.repaired,
     };
   }
 
@@ -328,15 +393,19 @@ export function createBlobGcService(deps: {
       restored: 0,
       purged: 0,
       bytesPurged: 0,
+      repaired: 0,
     };
     const abort = (): SweepResult => {
       log(ctx, 'info', 'blob_gc_sweep', { ...sweepLine(mode, c), aborted: true });
       return { outcome: 'aborted' };
     };
 
-    // 1. DISCOVER.
-    c.discovered += await discover(ctx, 'live');
-    c.discovered += await discover(ctx, 'retired');
+    // 1. DISCOVER (and, enforce only, REPAIR). Live goes first, so a sha in
+    // both listings has a live row by the time the retired page is read.
+    const repaired = enforce ? new Set<string>() : undefined;
+    c.discovered += await discover(ctx, 'live', repaired);
+    c.discovered += await discover(ctx, 'retired', repaired);
+    c.repaired = repaired?.size ?? 0;
 
     // 2. RETIRE PASS.
     const cutoff = new Date(start - graceMs);

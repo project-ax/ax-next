@@ -330,6 +330,13 @@ charged only to whoever put them. This is the same accepted cost as card item 6.
 1. **Discover.** Page `blob:list { state: 'live' }`. Insert unseen shas with
    `last_put_at = now()`, `state = 'live'`. Page `blob:list { state: 'retired' }`.
    Mark unseen ones `retired` with `retired_at = now()`.
+   (TASK-836 addition, enforce only: **repair** a move killed halfway. On s3 a
+   retire or restore is copy-then-delete, so a crash leaves both copies. A sha
+   listed live whose row says `retired` goes back to live with a fresh grace
+   window; a sha listed retired whose row is live is claimed (its
+   `last_put_at` refreshed, so no retire can start on it), `blob:stat
+   { restore: true }`-ed, and its retired copy purged only if the stat found a
+   copy. The live copy always wins; a wanted retire just happens again later.)
 2. **Retire pass.** Take `state = 'live' AND last_put_at < now() - graceMs`, up to
    1000 at a time. Fire `blob:collect-refs`. If any roster member is missing or
    any answer says `ok: false`, stop the whole sweep. Each candidate no answer
@@ -341,7 +348,7 @@ charged only to whoever put them. This is the same accepted cost as card item 6.
      now()`.
    - Not held: `blob:purge`, then delete the row.
 4. **Log** `blob_gc_sweep { mode, discovered, candidates, held, retired,
-   restored, purged, bytesPurged, aborted? }`.
+   restored, purged, bytesPurged, repaired, aborted? }`.
 
 A sweep that aborts partway leaves every earlier step's work valid. Each step is
 idempotent, and the next sweep starts over.

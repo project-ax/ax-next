@@ -29,6 +29,7 @@ import {
   createUnstoredInventory,
   createInventoryToolTitles,
 } from './connector-inventory/describe-tools.js';
+import { createAuthFailureRecheck } from './connector-inventory/auth-failure-recheck.js';
 import type { ListOutcome, ListServerToolsOptions } from './connector-inventory/list-tools.js';
 import {
   createInventoryStore,
@@ -73,7 +74,12 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
   const registers: string[] = [];
   const subscribes: string[] = [];
   if (connectorToolInventory) {
-    subscribes.push('agents:deleted');
+    subscribes.push('agents:deleted', 'connectors:auth-failure-reported');
+    optionalCalls.push({
+      hook: 'connectors:list-effective',
+      degradation:
+        "A runner's report that a connector server refused it is dropped (logged): the connector's rail status updates only on its next rail or details check.",
+    });
     registers.push(
       'connectors:describe-tools',
       'connectors:inventory-status-batch',
@@ -142,6 +148,13 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
             : {}),
         });
         bus.registerService('connectors:describe-tools', PLUGIN_NAME, describeTools);
+        // TASK-842 — a runner saw a connector server refuse it mid-chat: re-check
+        // it host-side (the report is only a hint; see auth-failure-recheck.ts).
+        bus.subscribe<unknown>(
+          'connectors:auth-failure-reported',
+          PLUGIN_NAME,
+          createAuthFailureRecheck({ bus, describeTools }),
+        );
         bus.registerService(
           'connectors:inventory-status-batch',
           PLUGIN_NAME,

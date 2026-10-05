@@ -210,3 +210,52 @@ export const EventChatEndSchema = z.object({
   saveRefused: SaveRefusedCodeSchema.optional(),
 });
 export type EventChatEnd = z.infer<typeof EventChatEndSchema>;
+
+/**
+ * Shape of a host-minted connector tool namespace: `c` + 10 lowercase hex.
+ * Mirrors `@ax/connectors`' TOOL_NAMESPACE_RE and runner-core's
+ * CONNECTOR_TOOL_NAMESPACE_RE (a protocol package imports neither). Anchored
+ * and case-sensitive: anything else never names a connector server.
+ */
+const ConnectorToolNamespaceSchema = z.string().regex(/^c[0-9a-f]{10}$/);
+
+/**
+ * At most this many servers per report. A session has a handful of connector
+ * servers; this only ever rejects garbage.
+ */
+export const CONNECTOR_AUTH_FAILURE_MAX_SERVERS = 32;
+
+/**
+ * TASK-842 — the runner saw a connector's MCP server refuse it.
+ *
+ *   - `needs-auth` / `failed`: the agent SDK's own connection status for the
+ *     server at session start. A server that answers 401 to `initialize`
+ *     lands in one of the two (which one depends on what the SDK's OAuth
+ *     discovery finds), and the SDK never offers its tools.
+ *   - `tool-error`: one of the server's tools came back as an error during a
+ *     turn. The SDK keeps a server that 401s a `tools/call` `connected`, so
+ *     this is the only mid-turn signal there is, and it is a weak one.
+ *
+ * It is a HINT, not a verdict. The runner is untrusted, so the host never
+ * marks anything on the strength of this report: it re-checks the connector
+ * itself (the same cooldown-bounded check the connectors rail runs), and only
+ * a 401 the HOST sees reaches the sign-in machinery.
+ *
+ * It carries namespaces and a closed status only: no URL, no header, no error
+ * text from the server, no token material. Each entry is `.strict()`, so an
+ * added field is refused rather than silently stripped.
+ */
+export const EventConnectorAuthFailureSchema = z.object({
+  servers: z
+    .array(
+      z
+        .object({
+          toolNamespace: ConnectorToolNamespaceSchema,
+          status: z.enum(['needs-auth', 'failed', 'tool-error']),
+        })
+        .strict(),
+    )
+    .min(1)
+    .max(CONNECTOR_AUTH_FAILURE_MAX_SERVERS),
+});
+export type EventConnectorAuthFailure = z.infer<typeof EventConnectorAuthFailureSchema>;
