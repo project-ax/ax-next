@@ -339,6 +339,20 @@ const PROXY_AUTH_REQUIRED_BODY =
   'request did not carry a valid session credential (Proxy-Authorization).';
 
 /**
+ * Body of the CONNECT `400` for a target that is not strict authority-form
+ * `host:port` (`blocked: 'invalid_target'`, see connect-target.ts). A bare
+ * status line left the agent with "the proxy said no" and nothing to fix
+ * (TASK-875). FIXED text on purpose: the target is untrusted — the agent wrote
+ * the CONNECT line — so none of it is echoed back; the audit row keeps the
+ * target for whoever needs to see exactly what was sent.
+ */
+const INVALID_CONNECT_TARGET_BODY =
+  'Egress was blocked: the CONNECT target was not in a form this proxy accepts. ' +
+  'It must be host:port, where host is a hostname, an IPv4 address, or an IPv6 ' +
+  'address in [brackets], and port is a number from 1 to 65535 ' +
+  '(for example: api.example.com:443).';
+
+/**
  * RFC 9110 §15.5.8: a 407 MUST carry Proxy-Authenticate. Advertising Basic is
  * accurate (it is what the runner sends) and lets a client that negotiates
  * credentials on a 407 retry with them, instead of failing outright.
@@ -1200,7 +1214,16 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     const parsed = parseConnectTarget(target);
 
     if (parsed === undefined) {
-      clientSocket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+      // TASK-875: say what was wrong and what form is expected. Fixed text —
+      // the untrusted target is never reflected (it is only in the audit row).
+      clientSocket.write(
+        `HTTP/1.1 400 Bad Request\r\n` +
+          `Content-Type: text/plain\r\n` +
+          `Content-Length: ${Buffer.byteLength(INVALID_CONNECT_TARGET_BODY)}\r\n` +
+          `Connection: close\r\n` +
+          `\r\n` +
+          INVALID_CONNECT_TARGET_BODY,
+      );
       clientSocket.end();
       audit(stampSession({
         action: 'proxy_request',

@@ -115,6 +115,40 @@ function connect(port: number, target: string): Promise<string> {
 }
 
 /**
+ * TASK-875 — the `invalid_target` 400 says what was wrong and what form is
+ * expected, instead of arriving as a bare status line the agent can only call
+ * "the proxy said no". Pinned verbatim so a change to the wording is a
+ * deliberate one. It is FIXED text: the target is untrusted (the agent wrote
+ * it), so none of it is echoed back.
+ */
+const INVALID_TARGET_BODY =
+  'Egress was blocked: the CONNECT target was not in a form this proxy accepts. ' +
+  'It must be host:port, where host is a hostname, an IPv4 address, or an IPv6 ' +
+  'address in [brackets], and port is a number from 1 to 65535 ' +
+  '(for example: api.example.com:443).';
+
+/** Split a raw response into its header block (status line included) and body. */
+function splitResponse(raw: string): { head: string; body: string } {
+  const i = raw.indexOf('\r\n\r\n');
+  if (i < 0) return { head: raw, body: '' };
+  return { head: raw.slice(0, i), body: raw.slice(i + 4) };
+}
+
+/**
+ * The actionable 400: right status, framed (Content-Length matches the body's
+ * bytes, the connection is closed), and the body is the fixed explanation.
+ */
+function expectInvalidTargetResponse(response: string): void {
+  const { head, body } = splitResponse(response);
+  const lines = head.split('\r\n');
+  expect(lines[0]).toBe('HTTP/1.1 400 Bad Request');
+  expect(lines).toContain('Content-Type: text/plain');
+  expect(lines).toContain(`Content-Length: ${Buffer.byteLength(INVALID_TARGET_BODY)}`);
+  expect(lines).toContain('Connection: close');
+  expect(body).toBe(INVALID_TARGET_BODY);
+}
+
+/**
  * TASK-874 — whole targets that are not strict authority-form `host:port`.
  * Each is refused at the same parse step, with the same audited 400, before
  * any lookup. (The full grammar table is in connect-target.test.ts; these are
@@ -162,6 +196,8 @@ for (const mode of ['mitm', 'bypass'] as const) {
         expect(response).toMatch(/^HTTP\/1\.1 400 Bad Request\r\n/);
         expect(response).not.toContain('200 Connection Established');
         expect(response.match(/HTTP\/1\.1 /g)).toHaveLength(1);
+        // TASK-875: and it explains itself.
+        expectInvalidTargetResponse(response);
 
         // Refused at the parse: the allowlisted host was never even looked up.
         expect(lookups).toEqual([]);
@@ -195,6 +231,34 @@ for (const mode of ['mitm', 'bypass'] as const) {
         expect(audits).toHaveLength(1);
         expect(audits[0]!.status).toBe(502);
         expect(audits[0]!.url).toBe(target);
+      });
+    }
+
+    // TASK-875: the 400 body is fixed text. A target is untrusted (the agent
+    // wrote the CONNECT line), so it must not come back in the response — not
+    // as markup, not as an encoded header-injection attempt, not at all. Each
+    // of these reaches the `invalid_target` refusal (the audit proves it) and
+    // none of its text appears anywhere in what the proxy writes. (Node's own
+    // HTTP parser already refuses `<`, `>`, `"`, `{`, `\` and friends in the
+    // request-target before this handler runs, so markup cannot get here; these
+    // are the shapes that DO get here.)
+    for (const [label, target, marker] of [
+      ['a canary hostname with a bad port', 'reflect-canary-q9z.test:99999', 'reflect-canary-q9z'],
+      ['an encoded CRLF header injection', 'x%0d%0aSet-Cookie:pwn=1:443', 'Set-Cookie'],
+      ['a shell substitution', '$(id):443', '$(id)'],
+      ['a quote and a userinfo', `q'@${HOST}:443`, "q'@"],
+    ] as const) {
+      it(`does not reflect ${label} into the 400`, async () => {
+        const { audits, lookups, port } = await start(mode);
+
+        const response = await connect(port, target);
+
+        expectInvalidTargetResponse(response);
+        expect(response).not.toContain(marker);
+        expect(response).not.toContain(target);
+        expect(lookups).toEqual([]);
+        expect(audits).toHaveLength(1);
+        expect(audits[0]).toMatchObject({ url: target, status: 400, blocked: 'invalid_target' });
       });
     }
 
