@@ -178,6 +178,8 @@ export function createChatOrchestratorPlugin(
         'connectors:proposed',
         'system-prompt:augment-changed',
         'agents:deleted',
+        // TASK-833 — fired by @ax/connectors after a delete purged the key.
+        'connectors:deleted',
       ],
     },
     init({ bus }) {
@@ -353,6 +355,21 @@ export function createChatOrchestratorPlugin(
         PLUGIN_NAME,
         async (ctx, payload) => {
           await orch.onAgentDeleted(ctx, payload);
+          return undefined;
+        },
+      );
+
+      // TASK-833 — `connectors:deleted` (fired by @ax/connectors after the row
+      // is gone and its stored key purged). A warm session still holds that
+      // key in its credential-proxy session, so the sessions that folded the
+      // connector are reaped as soon as they are idle (the exit closes the
+      // proxy session) and retired at routing if a message arrives first.
+      // Observation-only: never vetoes, never throws.
+      bus.subscribe<unknown>(
+        'connectors:deleted',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          orch.onConnectorDeleted(ctx, payload);
           return undefined;
         },
       );
