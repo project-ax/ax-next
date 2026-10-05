@@ -70,8 +70,9 @@ export const FAILURE_TTL_MS = 60 * 1000;
  * CHECKS for a connector with N servers, however hard a client pushes — each
  * check lists every server signed in at the time, and each re-check needs a
  * real sign-in to land, which a client cannot manufacture. The price: a call
- * inside the window now reads the vault once per server still without a
- * sign-in (local row reads, no third party), where it used to read nothing.
+ * inside the window now reads the vault once per server that had no sign-in
+ * at the window's check (local row reads until one lands), where it used to
+ * read nothing.
  */
 export const CHECK_COOLDOWN_MS = 30 * 1000;
 const CHECK_COOLDOWN_MAX_KEYS = 1_000;
@@ -546,8 +547,12 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       }
     }
     // A check of this same key already running is the answer. With `reCheck`
-    // set this cannot happen: a running check opened the current window with
-    // `absent: null`, so the re-check gate above answered from the row.
+    // set that is rare but reachable: the window is per (user, connector) and
+    // this key is per agent, so a check of ours that outlives its window (a
+    // slow listing) can still be running when another agent's later check
+    // has opened and closed the current one. The running check reads every
+    // credential in its own pass 1; the dropped `reCheck` leaves the window
+    // as it was, so the next call can still buy it.
     const pending = inFlight.get(flightKey);
     if (pending !== undefined) return pending;
     const window = noteChecked(coolKey, at);
