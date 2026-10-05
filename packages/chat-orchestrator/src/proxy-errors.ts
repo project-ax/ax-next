@@ -85,6 +85,38 @@ export function failedCredentialEnvName(err: unknown): string | undefined {
 }
 
 /**
+ * Most per-credential failures we read out of one aggregate. An agent's merged
+ * credential set is a handful of slots; this only bounds a hostile/buggy array.
+ */
+const MAX_FAILURES = 64;
+
+/**
+ * The individual credential failures inside a failed `proxy:open-session`
+ * (TASK-828). Since TASK-828 the proxy tries EVERY ref and, when more than one
+ * fails, puts each per-credential `credential-resolve-failed` error in the
+ * `errors` of an `AggregateError` on the outer error's cause chain. Each
+ * returned element can be read with {@link failedCredentialEnvName},
+ * {@link isNeedsReconnect} and {@link isCredentialNotFound} on its own.
+ *
+ * Anything else — a single failure, or an error from a proxy that predates
+ * TASK-828 — is returned as the one failure it is: `[err]`.
+ */
+export function credentialResolveFailures(err: unknown): unknown[] {
+  // Only the proxy's own aggregate counts: the DIRECT cause of the OUTERMOST
+  // `credential-resolve-failed`. An AggregateError deeper down belongs to the
+  // resolver (Node's dialer throws one for a multi-address connect failure),
+  // and reading ITS errors as credential failures would drop the real
+  // classification — e.g. a NeedsReconnectError sitting above it.
+  const outer = causeChain(err).find((e) => codeOf(e) === 'credential-resolve-failed');
+  const agg = (outer as { cause?: unknown } | undefined)?.cause;
+  if (agg instanceof Error && agg.name === 'AggregateError') {
+    const errors = (agg as { errors?: unknown }).errors;
+    if (Array.isArray(errors) && errors.length > 0) return errors.slice(0, MAX_FAILURES);
+  }
+  return [err];
+}
+
+/**
  * What a log line may say about an error: its NAME and CODE, and its cause's —
  * never its message (see the module comment). `causeName`/`causeCode` are the
  * INNERMOST cause's, which is where the resolver's own `NeedsReconnectError`
