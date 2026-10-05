@@ -577,6 +577,32 @@ describe('connectConnectorTools — server drops the MCP session (TASK-839)', ()
     expect(tracked.closed.has(tracked.connected[1]!)).toBe(false);
   });
 
+  it('close() also closes a replaced connection that still has a call running on it', async () => {
+    const tracked = trackClients();
+    let n = 0;
+    let held = false;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: async (m) => {
+        if (m === 'tools/call' && ++n === 1) {
+          held = true;
+          await new Promise(() => {});
+        }
+        return undefined;
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await s.forgetSessions();
+    const stuck = exec(ct, `mcp__${NS}__echo`, { text: 'stuck' });
+    await vi.waitFor(() => expect(held).toBe(true));
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'ok' })).resolves.toBe('ok');
+    expect(tracked.closed.has(tracked.connected[0]!)).toBe(false);
+    await ct.close();
+    await stuck.catch(() => {});
+    expect(tracked.connected).toHaveLength(2);
+    for (const c of tracked.connected) expect(tracked.closed.has(c)).toBe(true);
+  });
+
   it('Stop during the reconnect aborts it promptly', async () => {
     let hangInit = false;
     const s = await testServer([echoTool], {
