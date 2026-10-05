@@ -229,15 +229,70 @@ describe('@ax/connectors hooks — CRUD round-trip', () => {
       h.ctx({ userId: 'userA' }),
       upsertInput({
         name: 'Drive (renamed)',
-        keyMode: 'workspace',
         capabilities: cliCaps(),
       }),
     );
     expect(up2.created).toBe(false);
     expect(up2.connector.name).toBe('Drive (renamed)');
-    expect(up2.connector.keyMode).toBe('workspace');
     // The whole spec is replaced — mechanism flipped MCP → CLI/package.
     expect(up2.connector.capabilities).toEqual(cliCaps());
+  });
+
+  // TASK-827 — who supplies the key is fixed once a connector exists. Flipping
+  // it would orphan the key stored under the old mode, and worse: a person's
+  // own leftover key SHADOWS the shared one (credentials:get walks
+  // user -> agent -> global), so a personal -> shared switch would quietly keep
+  // spending old personal keys. So the edit is refused, nothing is written.
+  it('TASK-827: refuses to change keyMode on an existing connector (both directions), writing nothing', async () => {
+    const h = await makeHarness();
+    for (const [from, to] of [
+      ['personal', 'workspace'],
+      ['workspace', 'personal'],
+    ] as const) {
+      const connectorId = `flip-${from}`;
+      await h.bus.call<UpsertInput, UpsertOutput>(
+        'connectors:upsert',
+        h.ctx({ userId: 'userA' }),
+        upsertInput({ connectorId, keyMode: from }),
+      );
+      await expect(
+        h.bus.call<UpsertInput, UpsertOutput>(
+          'connectors:upsert',
+          h.ctx({ userId: 'userA' }),
+          upsertInput({ connectorId, keyMode: to, name: 'Renamed' }),
+        ),
+      ).rejects.toMatchObject({
+        code: 'invalid-payload',
+        message: expect.stringMatching(/create a new connector/i),
+      });
+      const got = await h.bus.call<GetInput, GetOutput>(
+        'connectors:get',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', connectorId },
+      );
+      expect(got.connector.keyMode).toBe(from);
+      expect(got.connector.name).not.toBe('Renamed');
+    }
+  });
+
+  it('TASK-827: a deleted connector may come back with a different keyMode (its keys were purged on delete)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ keyMode: 'personal' }),
+    );
+    await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    const back = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ keyMode: 'workspace' }),
+    );
+    expect(back.connector.keyMode).toBe('workspace');
   });
 
   it('strips a legacy share-by-service `account` tag from a stored slot on read', async () => {

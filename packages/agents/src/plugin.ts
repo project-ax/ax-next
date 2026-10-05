@@ -22,7 +22,6 @@ import {
   validateUpdatePatch,
   type AgentStore,
 } from './store.js';
-import { assertConnectorGrantAllowed } from './connector-guard.js';
 import { randomBytes } from 'node:crypto';
 import {
   AgentsResolveAuthoredSkillsOutputSchema,
@@ -167,7 +166,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         {
           hook: 'connectors:resolve',
           degradation:
-            "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected; a newly attached connector also cannot copy its per-tool defaults",
+            "a newly attached connector cannot copy its per-tool defaults",
         },
         // TASK-809 — the attach-time seed for an OAuth connector's tools asks
         // `connectors:describe-tools` (@ax/mcp-client). That hook is deliberately
@@ -396,9 +395,9 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       );
 
       // TASK-739 — attach ONE connector. Order: id shape → agent exists →
-      // ownership ACL → owner-or-admin (TASK-798) → workspace-connector guard
-      // (non-admin) → one row-locked read-modify-write (append if absent, drop
-      // from exclusions).
+      // ownership ACL → owner-or-admin (TASK-798) → one row-locked
+      // read-modify-write (append if absent, drop from exclusions). No keyMode
+      // guard since TASK-827.
       bus.registerService<AttachConnectorInput, AttachConnectorOutput>(
         'agents:attach-connector',
         PLUGIN_NAME,
@@ -422,13 +421,10 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             input.actor,
             'agents:attach-connector',
           );
-          await assertConnectorGrantAllowed(
-            bus,
-            ctx,
-            input.actor,
-            [connectorId],
-            'agents:attach-connector',
-          );
+          // TASK-827 — no keyMode guard: a shared-key (workspace) connector is
+          // one anyone may add to their own agent. Who may READ its shared key
+          // is decided at read time (credentials:authorize-global:account,
+          // TASK-697: an admin-owned shared definition only).
           const out = await localStore.attachConnector(input.agentId, connectorId);
           // TASK-737's snapshot-on-attach, on THIS path too: a newly attached
           // connector copies its per-tool defaults. Only when the id is new to

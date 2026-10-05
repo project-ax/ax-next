@@ -123,6 +123,12 @@ Delete, with their tests, in the same PR (half-wired policy):
 Team agents get their shared sign-in from the rail instead (A), via Add → Sign in → attach. Admins add
 workspace-key connectors from the rail (non-admins still don't see them in Add).
 
+> **Superseded by TASK-827 (2026-10-04, owner decision):** a workspace-key ("shared-key") connector is one
+> ANYONE may add to their own agent with a plain Add — no key prompt. The attach-time guard
+> (`connector-guard.ts`, the error contract above) is deleted; who may READ the shared key stays decided at
+> read time by `credentials:authorize-global:account` (TASK-697). A connector's keyMode can no longer change
+> once it exists (`connectors:upsert` refuses it).
+
 ### D. Team-agent authority: owner or admin only
 
 - `mcp-oauth` begin with an `agentId` whose agent is `team`: if the caller is neither the agent's

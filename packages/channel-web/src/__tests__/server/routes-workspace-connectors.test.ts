@@ -1476,11 +1476,11 @@ describe('agent connector routes', () => {
       ]);
     });
 
-    it("turns the hook's workspace-connector refusal into a 403", async () => {
+    it("turns the hook's forbidden refusal into an opaque 403", async () => {
       attachRefusal = new PluginError({
         code: 'forbidden',
         plugin: 'agents',
-        message: "forbidden: 'shared' is a workspace (shared) connector — only an admin can attach it",
+        message: 'forbidden',
       });
       const r = await attach({ connectorId: 'shared' });
       expect(r.statusCode).toBe(403);
@@ -1726,11 +1726,29 @@ describe('agent connector routes', () => {
         expect(attachCalls).toHaveLength(0);
       });
 
-      it("403s a non-admin on a company-key connector without reading the company key", async () => {
-        const r = await attach({ connectorId: 'company' });
-        expect(r.statusCode).toBe(403);
-        expect(credentialReads).toHaveLength(0);
+      // TASK-827 — a shared-key connector is one anyone may add to their own
+      // agent: no key prompt, the agent spends the admin's shared key. Whether
+      // this person may READ that key is the vault's read-time question
+      // (credentials:authorize-global:account, TASK-697), asked here as them.
+      // UNFIXED: a non-admin got 403 before any read.
+      it('lets a non-admin attach a shared-key connector once the shared key exists', async () => {
+        const missing = await attach({ connectorId: 'company' });
+        expect(missing.statusCode).toBe(409);
+        expect(missing.body).toMatchObject({
+          error: 'connector-needs-shared-key',
+          message: expect.stringMatching(/ask a workspace admin/i),
+        });
         expect(attachCalls).toHaveLength(0);
+        vault.add('account:company');
+        const r = await attach({ connectorId: 'company' });
+        expect(r.statusCode).toBe(200);
+        expect(credentialReads.map((c) => [c.ref, c.userId])).toEqual([
+          ['account:company', caller.id],
+          ['account:company', caller.id],
+        ]);
+        expect(attachCalls).toEqual([
+          { actor: { userId: caller.id, isAdmin: false }, agentId: 'a1', connectorId: 'company' },
+        ]);
       });
 
       it('lets an admin attach a company-key connector once the company key exists', async () => {
