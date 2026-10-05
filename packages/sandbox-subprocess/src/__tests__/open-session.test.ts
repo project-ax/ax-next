@@ -8,6 +8,7 @@ import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
+import { TEST_PROXY_CONFIG } from './proxy-config.js';
 
 // ---------------------------------------------------------------------------
 // sandbox:open-session tests
@@ -38,6 +39,22 @@ function endpointToSocketPath(uri: string): string {
 const ECHO_STUB = fileURLToPath(new URL('./fixtures/echo-stub.mjs', import.meta.url));
 const EXIT_STUB = fileURLToPath(new URL('./fixtures/exit-stub.mjs', import.meta.url));
 const BOOT_FAIL_STUB = fileURLToPath(new URL('./fixtures/boot-fail-stub.mjs', import.meta.url));
+
+// Since TASK-838 an input WITHOUT proxyConfig is also `invalid-payload`, so a
+// bare `code === 'invalid-payload'` check can no longer tell WHY a rejection
+// test was refused. Assert the zod issue path the test targets, and that
+// proxyConfig is not among the complaints (every rejection input below carries
+// a valid TEST_PROXY_CONFIG, so it must be refused for its own reason).
+function expectInvalidPayloadAt(caught: unknown, expectedPath: string): void {
+  expect(caught).toBeInstanceOf(PluginError);
+  const err = caught as PluginError;
+  expect(err.code).toBe('invalid-payload');
+  const issues =
+    (err.cause as { issues?: Array<{ path: Array<string | number> }> } | undefined)?.issues ?? [];
+  const paths = issues.map((i) => i.path.join('.'));
+  expect(paths).toContain(expectedPath);
+  expect(paths.some((p) => p.startsWith('proxyConfig'))).toBe(false);
+}
 
 async function mkWorkspace(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'ax-ws-'));
@@ -112,7 +129,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'happy-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'happy-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     expect(result.runnerEndpoint).toMatch(/^unix:\/\/.*ax-ipc-/);
     expect(result.runnerEndpoint.endsWith('/ipc.sock')).toBe(true);
@@ -146,7 +163,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'env-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'env-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const line = await readFirstStdoutLine(result);
     const parsed = JSON.parse(line) as Record<string, string | null>;
@@ -192,7 +209,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'git-env-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'git-env-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const line = await readFirstStdoutLine(result);
     const parsed = JSON.parse(line) as Record<string, string | null>;
@@ -222,7 +239,7 @@ describe('sandbox:open-session', () => {
       const result = await h.bus.call<unknown, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
-        { sessionId: 'env-2', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+        { sessionId: 'env-2', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
       );
       const line = await readFirstStdoutLine(result);
       const parsed = JSON.parse(line) as Record<string, string | null>;
@@ -247,13 +264,12 @@ describe('sandbox:open-session', () => {
       await h.bus.call(
         'sandbox:open-session',
         ctx,
-        { sessionId: 'rel', workspaceRoot: ws, runnerBinary: './relative.mjs' },
+        { sessionId: 'rel', workspaceRoot: ws, runnerBinary: './relative.mjs', proxyConfig: TEST_PROXY_CONFIG },
       );
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('invalid-payload');
+    expectInvalidPayloadAt(caught, 'runnerBinary');
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -270,6 +286,7 @@ describe('sandbox:open-session', () => {
           sessionId: 'missing',
           workspaceRoot: ws,
           runnerBinary: '/var/empty/does/not/exist-ax.mjs',
+          proxyConfig: TEST_PROXY_CONFIG,
         },
       );
     } catch (err) {
@@ -288,7 +305,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'exit-fast', workspaceRoot: ws, runnerBinary: EXIT_STUB },
+      { sessionId: 'exit-fast', workspaceRoot: ws, runnerBinary: EXIT_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     // Wait for the natural exit.
     const final = await result.handle.exited;
@@ -307,7 +324,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'term-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'term-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const line = await readFirstStdoutLine(result);
     const envDump = JSON.parse(line) as { AX_AUTH_TOKEN: string };
@@ -339,7 +356,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'stop-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'stop-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const socketPath = endpointToSocketPath(result.runnerEndpoint);
     // Socket file is there before kill.
@@ -373,7 +390,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'cleanup-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'cleanup-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const socketDir = path.dirname(endpointToSocketPath(result.runnerEndpoint));
 
@@ -402,7 +419,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'i10', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'i10', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const socketDir = path.dirname(endpointToSocketPath(result.runnerEndpoint));
     const stat = await fs.stat(socketDir);
@@ -422,10 +439,10 @@ describe('sandbox:open-session', () => {
   // child env. CA private keys never enter the sandbox (I1) — the
   // certificate is a public key only.
   //
-  // When proxyConfig is undefined, no proxy env is injected and the
-  // runner fails at boot (no AX_PROXY_*). That's the intended Phase 5
-  // behavior; presets that want a working runner load
-  // @ax/credential-proxy and the orchestrator threads proxyConfig through.
+  // proxyConfig is REQUIRED on the open-session input (TASK-838): the runner
+  // refuses to boot without the per-session proxy env, so an input without one
+  // is refused here, before a session is minted (see the refusal test below).
+  // Every other test in this file passes the shared TEST_PROXY_CONFIG.
   // ---------------------------------------------------------------------
 
   it('writes CA cert + injects HTTPS_PROXY / NODE_EXTRA_CA_CERTS when proxyConfig.endpoint is set', async () => {
@@ -515,7 +532,7 @@ describe('sandbox:open-session', () => {
           envMap: {},
         },
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/proxyAuthToken/);
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -583,6 +600,7 @@ describe('sandbox:open-session', () => {
       sessionId: 'exit-zero-1',
       workspaceRoot: ws,
       runnerBinary: EXIT_STUB,
+      proxyConfig: TEST_PROXY_CONFIG,
     });
     expect((await result.handle.exited).code).toBe(0);
     expect(warns).not.toContain('runner_exited_nonzero');
@@ -689,31 +707,51 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
-  it('does not inject any proxy env when proxyConfig is undefined', async () => {
+  it('refuses an input without proxyConfig before minting a session (TASK-838)', async () => {
+    // Stub session/ipc services (not session-inmemory) so we can prove the
+    // refusal lands BEFORE any lifecycle hook fires: no session minted, no
+    // listener bound — hence nothing spawned (spawn comes after both).
     const ws = await mkWorkspace();
-    const h = await makeHarness();
+    const sessionCreate = vi.fn(async (_ctx: unknown, input: { sessionId: string }) => ({
+      sessionId: input.sessionId,
+      token: 'tok-' + input.sessionId,
+    }));
+    const ipcStart = vi.fn(async () => ({ running: true }));
+    const h = await createTestHarness({
+      services: {
+        'session:create': sessionCreate as never,
+        'session:terminate': vi.fn(async () => ({})) as never,
+        'ipc:start': ipcStart as never,
+        'ipc:stop': vi.fn(async () => ({})) as never,
+      },
+      plugins: [createSandboxSubprocessPlugin()],
+    });
     const ctx = h.ctx();
-    const result = await h.bus.call<unknown, OpenSessionResult>(
-      'sandbox:open-session',
-      ctx,
-      { sessionId: 'no-proxy', workspaceRoot: ws, runnerBinary: ECHO_STUB },
-    );
-    const line = await readFirstStdoutLine(result);
-    const parsed = JSON.parse(line) as Record<string, string | null>;
-    expect(parsed.HTTPS_PROXY).toBeNull();
-    expect(parsed.HTTP_PROXY).toBeNull();
-    expect(parsed.AX_PROXY_ENDPOINT).toBeNull();
-    expect(parsed.AX_PROXY_UNIX_SOCKET).toBeNull();
-    expect(parsed.NODE_EXTRA_CA_CERTS).toBeNull();
-    expect(parsed.SSL_CERT_FILE).toBeNull();
-    // No proxy → no MITM cert → git uses its normal trust store. Pinning a
-    // nonexistent CA path here would break the non-proxied git path.
-    expect(parsed.GIT_SSL_CAINFO).toBeNull();
-    expect(parsed.DENO_CERT).toBeNull();
-    expect(parsed.ANTHROPIC_API_KEY).toBeNull();
+    const input = { sessionId: 'no-proxy', workspaceRoot: ws, runnerBinary: ECHO_STUB };
+
+    let caught: unknown;
+    try {
+      await h.bus.call('sandbox:open-session', ctx, input);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    expect((caught as PluginError).message).toContain('proxyConfig');
+    expect(sessionCreate).not.toHaveBeenCalled();
+    expect(ipcStart).not.toHaveBeenCalled();
+
+    // Control: the SAME input plus a valid proxyConfig is accepted, so the
+    // refusal above is attributable to the missing proxyConfig alone.
+    const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx, {
+      ...input,
+      proxyConfig: TEST_PROXY_CONFIG,
+    });
+    expect(sessionCreate).toHaveBeenCalledTimes(1);
     await result.handle.kill();
     await result.handle.exited;
     await new Promise((r) => setTimeout(r, 50));
+    await h.close();
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -851,8 +889,10 @@ describe('sandbox:open-session', () => {
     } catch (err) {
       caught = err;
     }
+    // The refine failure is reported on the proxyConfig object itself.
     expect(caught).toBeInstanceOf(PluginError);
     expect((caught as PluginError).code).toBe('invalid-payload');
+    expect((caught as PluginError).message).toContain('exactly one of endpoint or unixSocketPath');
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -875,6 +915,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'sub-conv',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         owner: {
           userId: 'u-1',
           agentId: 'agt-1',
@@ -924,7 +965,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'p0-home', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'p0-home', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const line = await readFirstStdoutLine(result);
     const parsed = JSON.parse(line) as Record<string, string | null>;
@@ -959,7 +1000,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'p0-home-cleanup', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'p0-home-cleanup', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const line = await readFirstStdoutLine(result);
     const parsed = JSON.parse(line) as Record<string, string | null>;
@@ -1000,7 +1041,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'p0-no-prescaffold', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'p0-no-prescaffold', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
 
     await expect(fs.readdir(ws)).resolves.toEqual([]);
@@ -1021,6 +1062,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'sub-noconv',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         owner: {
           userId: 'u-1',
           agentId: 'agt-1',
@@ -1069,6 +1111,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'skills-write-1',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [
           {
             id: 'github',
@@ -1109,7 +1152,7 @@ describe('sandbox:open-session', () => {
     const result = await h.bus.call<unknown, OpenSessionResult>(
       'sandbox:open-session',
       ctx,
-      { sessionId: 'skills-absent-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'skills-absent-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
     );
     const line = await readFirstStdoutLine(result);
     const parsed = JSON.parse(line) as Record<string, string | null>;
@@ -1134,6 +1177,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'skills-empty-1',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [],
       },
     );
@@ -1161,6 +1205,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'skills-overwrite-1',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [{ id: 'github', files: [{ path: 'SKILL.md', contents: 'version-A' }] }],
       },
     );
@@ -1183,6 +1228,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'skills-overwrite-2',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [{ id: 'github', files: [{ path: 'SKILL.md', contents: 'version-B' }] }],
       },
     );
@@ -1211,14 +1257,14 @@ describe('sandbox:open-session', () => {
           sessionId: 'skills-bad-id',
           workspaceRoot: ws,
           runnerBinary: ECHO_STUB,
+          proxyConfig: TEST_PROXY_CONFIG,
           installedSkills: [{ id: '../escape', files: [{ path: 'SKILL.md', contents: 'x' }] }],
         },
       );
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('invalid-payload');
+    expectInvalidPayloadAt(caught, 'installedSkills.0.id');
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -1232,6 +1278,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'skills-dot-seg',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [
           {
             id: 'demo',
@@ -1245,8 +1292,7 @@ describe('sandbox:open-session', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('invalid-payload');
+    expectInvalidPayloadAt(caught, 'installedSkills.0.files.1.path');
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -1272,6 +1318,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'mcp-empty-1',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [
           {
             id: 'github',
@@ -1311,6 +1358,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'mcp-mode-1',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [
           {
             id: 'github',
@@ -1361,6 +1409,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'mcp-stdio-rejected',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [
           {
             id: 'github',
@@ -1380,8 +1429,7 @@ describe('sandbox:open-session', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('invalid-payload');
+    expectInvalidPayloadAt(caught, 'installedSkills.0.mcpServers.0.transport');
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -1395,6 +1443,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'mcp-http-no-url',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [
           {
             id: 'remote',
@@ -1414,8 +1463,7 @@ describe('sandbox:open-session', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('invalid-payload');
+    expectInvalidPayloadAt(caught, 'installedSkills.0.mcpServers.0.url');
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -1429,6 +1477,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'mcp-http-with-cmd',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [
           {
             id: 'remote',
@@ -1449,8 +1498,7 @@ describe('sandbox:open-session', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('invalid-payload');
+    expectInvalidPayloadAt(caught, 'installedSkills.0.mcpServers.0.command');
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -1465,6 +1513,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'mcp-http-1',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
+        proxyConfig: TEST_PROXY_CONFIG,
         installedSkills: [
           {
             id: 'remote',

@@ -305,25 +305,23 @@ export function createOpenSession(deps: OpenSessionDeps) {
         runnerEndpoint: deps.config.hostIpcUrl,
         // ctx.requestId may be undefined in synthetic tests; pass through.
         requestId: ctx.reqId,
-        ...(input.proxyConfig !== undefined
-          ? {
-              proxyConfig: {
-                caCertPem: input.proxyConfig.caCertPem,
-                envMap: input.proxyConfig.envMap,
-                ...(input.proxyConfig.endpoint !== undefined
-                  ? { endpoint: input.proxyConfig.endpoint }
-                  : {}),
-                ...(input.proxyConfig.unixSocketPath !== undefined
-                  ? { unixSocketPath: input.proxyConfig.unixSocketPath }
-                  : {}),
-                // TASK-52: thread the per-session egress-attribution token
-                // through to pod-spec (stamped as AX_PROXY_TOKEN). A dropped
-                // field here silently disables k8s-side attribution. Required
-                // since TASK-784 (the schema rejects a config without it).
-                proxyAuthToken: input.proxyConfig.proxyAuthToken,
-              },
-            }
-          : {}),
+        // proxyConfig is REQUIRED by OpenSessionInputSchema (TASK-838), so
+        // every pod gets the per-session proxy env.
+        proxyConfig: {
+          caCertPem: input.proxyConfig.caCertPem,
+          envMap: input.proxyConfig.envMap,
+          ...(input.proxyConfig.endpoint !== undefined
+            ? { endpoint: input.proxyConfig.endpoint }
+            : {}),
+          ...(input.proxyConfig.unixSocketPath !== undefined
+            ? { unixSocketPath: input.proxyConfig.unixSocketPath }
+            : {}),
+          // TASK-52: thread the per-session egress-attribution token
+          // through to pod-spec (stamped as AX_PROXY_TOKEN). A dropped
+          // field here silently disables k8s-side attribution. Required
+          // since TASK-784 (the schema rejects a config without it).
+          proxyAuthToken: input.proxyConfig.proxyAuthToken,
+        },
         // Phase 1 (skill-install): pass installed skills through to pod-spec
         // so the runner pod receives AX_INSTALLED_SKILLS_JSON in its env.
         ...(input.installedSkills !== undefined && input.installedSkills.length > 0

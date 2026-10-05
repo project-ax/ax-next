@@ -37,7 +37,14 @@ address guarantees identical bytes land at identical keys, so concurrent hosts
 pointed at the same bucket converge.
 
 **Retire and restore are not atomic on S3.** S3 has no rename, so each move is
-CopyObject then DeleteObject — two requests. Most interleavings are harmless and
+CopyObject then DeleteObject — two requests. The copy always goes first, so a
+process killed between the two leaves BOTH copies, never none, and the bytes stay
+readable (a `get` hits the live copy). `@ax/blob-gc`'s next enforce sweep sees
+the sha in both listings and repairs it (TASK-836): the live copy wins, the row
+goes back to live, and the retired duplicate is purged only after a
+`blob:stat { restore: true }` has confirmed a live copy. Both crash points
+(retire and restore) are tested here against this store and in the GC's sweep
+tests. Most concurrent interleavings are harmless and
 tested (a put racing a retire, two readers restoring at once, a restore losing
 to a purge: 1000-round randomized race test, plus targeted cases). The residual
 we know about: a SECOND retire of the same sha racing a restore could in
