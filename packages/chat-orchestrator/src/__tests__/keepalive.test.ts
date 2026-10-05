@@ -598,17 +598,28 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     return v;
   }
 
-  async function setup() {
+  async function setup(opts: { runnerExitsOnKill?: boolean; idleWindowMs?: number; idleGraceMs?: number } = {}) {
     const state = { effective: [linear()] as Effective[] };
     const agentRow = { ...TEST_AGENT, connectorAttachments: ['linear'], connectorExclusions: [] as string[] };
     const conv = { activeSessionId: null as string | null };
     const live = new Set<string>();
     const handles = [makeHandle(), makeHandle()];
+    // TASK-877 — a runner that does not exit promptly: neither the graceful
+    // cancel nor the grace kill resolves `handle.exited` (a wedged runner, or a
+    // kill still making its way through the kubelet).
+    if (opts.runnerExitsOnKill === false) {
+      for (const hk of handles) {
+        hk.handle.kill = async () => { hk.state.kills += 1; };
+      }
+    }
     let opens = 0;
     const queued: Array<{ sessionId: string; type: string }> = [];
     const terminated: string[] = [];
     const proxyOpens: Array<{ sessionId: string; credentialKeys: string[] }> = [];
     const proxyCloses: string[] = [];
+    // A model of the proxy's substitution table: the credential env names each
+    // OPEN proxy session still injects. Close drops the session's entry.
+    const proxyTables = new Map<string, string[]>();
     const logs: Array<Record<string, unknown>> = [];
 
     const services: Record<string, ServiceHandler> = {
@@ -651,10 +662,13 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
       'proxy:open-session': async (_c, input: unknown) => {
         const i = input as { sessionId: string; credentials: Record<string, unknown> };
         proxyOpens.push({ sessionId: i.sessionId, credentialKeys: Object.keys(i.credentials) });
+        proxyTables.set(i.sessionId, Object.keys(i.credentials));
         return { proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) };
       },
       'proxy:close-session': async (_c, input: unknown) => {
-        proxyCloses.push((input as { sessionId: string }).sessionId);
+        const sid = (input as { sessionId: string }).sessionId;
+        proxyCloses.push(sid);
+        proxyTables.delete(sid);
         return {};
       },
     };
@@ -665,7 +679,7 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
         runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
         // A long idle window: a reap observed inside a test is never the
         // ordinary idle-out.
-        keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 5,
+        keepAlive: true, idleWindowMs: opts.idleWindowMs ?? 60_000, idleGraceMs: opts.idleGraceMs ?? 5,
       })],
     });
 
@@ -704,9 +718,13 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     return {
       state, h, handles, turn, deleteConnector, settle,
       get opens() { return opens; },
-      queued, terminated, proxyOpens, proxyCloses, logs,
+      queued, terminated, proxyOpens, proxyCloses, proxyTables, logs,
     };
   }
+
+  /** Credential env names any still-open proxy session injects for `linear`. */
+  const linearStillInjected = (t: Awaited<ReturnType<typeof setup>>) =>
+    [...t.proxyTables.values()].flat().filter((k) => k.includes('linear'));
 
   it('the spawn hands the connector credential to the proxy (fixture sanity)', async () => {
     const t = await setup();
@@ -777,6 +795,76 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     // Not the ordinary 60s idle-out: the reap ran right after the turn.
     expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
     expect(t.proxyCloses).toContain('s-1');
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  // TASK-877 — the reap used to close the proxy session only on `handle.exited`,
+  // so the deleted connector's key stayed injectable for as long as the runner
+  // took to exit (bounded only by the grace kill — and not at all if the kill
+  // never landed). The reap now closes the proxy session itself.
+  it('deleting a connector closes an IDLE warm session\'s proxy session even if its runner does not exit', async () => {
+    // A grace far beyond the test: nothing here is the forced kill.
+    const t = await setup({ runnerExitsOnKill: false, idleGraceMs: 60_000 });
+    await t.turn('s-1', 'req-1');
+    expect(linearStillInjected(t)).not.toEqual([]);
+
+    t.state.effective = [];
+    await t.deleteConnector('linear', LINEAR_NS);
+    await t.settle();
+
+    // The reap started (graceful cancel queued) but the runner is still up...
+    expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
+    expect(t.handles[0]!.state.kills).toBe(0);
+    // ...and its proxy session is closed regardless: the key is gone.
+    expect(t.proxyCloses).toContain('s-1');
+    expect(linearStillInjected(t)).toEqual([]);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('a wedged runner whose grace kill never lands still loses the deleted connector\'s key', async () => {
+    const t = await setup({ runnerExitsOnKill: false });
+    await t.turn('s-1', 'req-1');
+    t.state.effective = [];
+    await t.deleteConnector('linear', LINEAR_NS);
+    await t.settle();
+    expect(t.handles[0]!.state.kills).toBeGreaterThanOrEqual(1); // the kill ran, the runner lived
+    expect(t.proxyCloses).toContain('s-1');
+    expect(linearStillInjected(t)).toEqual([]);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('deleting a connector while an ordinary idle-out is already in its grace window still closes the proxy session', async () => {
+    // A short idle window: the ordinary reaper fires (cancel queued) and the
+    // runner ignores it, so the session sits in its (long) grace window.
+    const t = await setup({ runnerExitsOnKill: false, idleWindowMs: 5, idleGraceMs: 60_000 });
+    await t.turn('s-1', 'req-1');
+    await t.settle();
+    expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
+    expect(t.proxyCloses).not.toContain('s-1');
+
+    t.state.effective = [];
+    await t.deleteConnector('linear', LINEAR_NS);
+    await t.settle();
+    expect(t.proxyCloses).toContain('s-1');
+    expect(linearStillInjected(t)).toEqual([]);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('deleting a connector DURING a turn leaves that turn\'s proxy session open, then closes it when the turn ends (runner still up)', async () => {
+    const t = await setup({ runnerExitsOnKill: false, idleGraceMs: 60_000 });
+    let closedMidTurn: boolean | undefined;
+    await t.turn('s-1', 'req-1', async () => {
+      t.state.effective = [];
+      await t.deleteConnector('linear', LINEAR_NS);
+      await t.settle();
+      // The in-flight turn is not interrupted: its proxy session stays.
+      closedMidTurn = t.proxyCloses.includes('s-1');
+    });
+    await t.settle();
+    expect(closedMidTurn).toBe(false);
+    expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
+    expect(t.proxyCloses).toContain('s-1');
+    expect(linearStillInjected(t)).toEqual([]);
     for (const hk of t.handles) hk.forceExit();
   });
 
