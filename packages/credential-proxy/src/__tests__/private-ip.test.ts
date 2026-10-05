@@ -78,6 +78,15 @@ describe('resolveAndCheck', () => {
     await expect(resolveAndCheck('127.0.0.1')).rejects.toThrow(/Blocked: private IP/);
   });
 
+  it('throws Blocked: for a zoned private IPv6 literal (net.isIP accepts the zone)', async () => {
+    const resolver: Resolver = async () => {
+      throw new Error('a literal must not be resolved');
+    };
+    await expect(resolveAndCheck('fe80::1%eth0', undefined, resolver)).rejects.toBeInstanceOf(
+      BlockedIPError,
+    );
+  });
+
   it('returns IP for literal public IP', async () => {
     expect(await resolveAndCheck('8.8.8.8')).toBe('8.8.8.8');
   });
