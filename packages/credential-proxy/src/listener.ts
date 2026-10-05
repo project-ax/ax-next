@@ -302,6 +302,21 @@ const METERED_TUNNEL_IDLE_MS = 15 * 60_000;
 const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
 
 /**
+ * The port of a CONNECT target (`host:port`), or `undefined` when it is not a
+ * usable TCP port. A target with no `:port` at all keeps the historical 443
+ * default. Otherwise the port must be 1–5 ASCII digits naming 1–65535 — not
+ * `parseInt`, which reads `443abc` as 443, `-1` as -1 and `99999` as 99999.
+ * Untrusted input (the agent writes the CONNECT line), so this is strict by
+ * design (TASK-862).
+ */
+function parseConnectPort(portStr: string | undefined): number | undefined {
+  if (portStr === undefined) return 443;
+  if (!/^[0-9]{1,5}$/.test(portStr)) return undefined;
+  const port = Number(portStr);
+  return port >= 1 && port <= 65535 ? port : undefined;
+}
+
+/**
  * The response a metered tunnel gives when it refuses a request (TASK-715): a
  * complete HTTP/1.1 message in the error shape both model APIs' SDKs parse
  * (`{ "type": "error", "error": { "type", "message" } }`), so the person or agent
@@ -1076,10 +1091,11 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // down both sides. 'secureConnect' and cleanup() both clear it, so it never
     // touches an established tunnel and never outlives this exchange.
     //
-    // Armed LAST, after the dial and every handler: `tls.connect` throws
-    // synchronously on a bad port (ERR_SOCKET_BAD_PORT, e.g. CONNECT
-    // host:99999), and a timer armed before that throw would fire into
-    // bindings that were never initialized — an uncaught error on the host.
+    // Armed LAST, after the dial and every handler: `tls.connect` can throw
+    // synchronously (ERR_SOCKET_BAD_PORT was the known case — CONNECT
+    // host:99999 — until TASK-862 refused bad ports at parse; the ordering stays
+    // as defense in depth), and a timer armed before such a throw would fire
+    // into bindings that were never initialized — an uncaught error on the host.
     // 'secureConnect' and cleanup() only ever run from socket events, which
     // Node never emits synchronously, so both see it assigned.
     targetTls.once('secureConnect', () => clearTimeout(connectTimer));
@@ -1150,11 +1166,15 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     }
     const callerSession = caller.session;
 
-    // Parse host:port from CONNECT target ("host:port")
+    // Parse host:port from CONNECT target ("host:port"). The port is validated
+    // HERE, before the allowlist, DNS, or any `200 Connection Established`
+    // (TASK-862): an out-of-range port used to reach the dial, where `tls.connect`
+    // / `net.connect` throws ERR_SOCKET_BAD_PORT — on the MITM path AFTER the 200
+    // was written, so the client got a raw 502 inside an established tunnel.
     const [hostname, portStr] = target.split(':');
-    const port = parseInt(portStr ?? '443', 10);
+    const port = parseConnectPort(portStr);
 
-    if (!hostname || Number.isNaN(port)) {
+    if (!hostname || port === undefined) {
       clientSocket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
       clientSocket.end();
       audit(stampSession({
@@ -1329,11 +1349,12 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // connect callback and cleanup() both clear it, so it never touches an
       // established tunnel and never outlives this exchange.
       //
-      // Armed LAST, after the dial and every handler: `net.connect` throws
-      // synchronously on a bad port (ERR_SOCKET_BAD_PORT, e.g. CONNECT
-      // host:99999), and a timer armed before that throw would fire into a
-      // `cleanup` that was never initialized — an uncaught ReferenceError on
-      // the host. The connect callback and cleanup() only ever run from socket
+      // Armed LAST, after the dial and every handler: `net.connect` can throw
+      // synchronously (ERR_SOCKET_BAD_PORT was the known case — CONNECT
+      // host:99999 — until TASK-862 refused bad ports at parse; the ordering
+      // stays as defense in depth), and a timer armed before such a throw would
+      // fire into a `cleanup` that was never initialized — an uncaught
+      // ReferenceError on the host. The connect callback and cleanup() only ever run from socket
       // events, which Node never emits synchronously, so both see it assigned.
       const connectTimer = setTimeout(() => {
         if (!established) cleanup();
