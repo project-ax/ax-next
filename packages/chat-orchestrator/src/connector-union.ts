@@ -323,6 +323,37 @@ export async function resolveSkillReferencedConnectors(
   return out;
 }
 
+/** JSON with every object's keys sorted, so two reads of the same row compare equal. */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) => {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    );
+  });
+}
+
+/**
+ * TASK-833 — an order-insensitive fingerprint of a connector set: every field a
+ * spawn folds into the sandbox (capabilities, tool namespaces, the usage note
+ * that becomes the synthetic SKILL.md). Two resolves of the same rows always
+ * agree; a delete, an edit or a new connector changes it. The display `name`
+ * is left out on purpose: a rename changes nothing the sandbox holds.
+ */
+export function connectorSetFingerprint(connectors: readonly ResolvedConnectorForOrch[]): string {
+  const entries = connectors
+    .map((c) =>
+      canonicalJson({
+        id: c.id,
+        capabilities: c.capabilities,
+        toolNamespaces: c.toolNamespaces ?? [],
+        usageNote: c.usageNote ?? null,
+      }),
+    )
+    .sort();
+  return JSON.stringify(entries);
+}
+
 /**
  * Per-connector credential env-name scheme — the connector twin of
  * `skillCredentialEnvName`. `connector:<id>:<slot>`. Namespacing connector slots
