@@ -443,6 +443,100 @@ describe('S3BlobStore (content-addressed S3 store)', () => {
   });
 
   // -------------------------------------------------------------------------
+  // A MOVE KILLED HALFWAY (TASK-836). S3 has no rename, so retire and restore
+  // are CopyObject then DeleteObject. Kill the process between the two and
+  // BOTH copies are left, never none, and the bytes stay readable. The GC's
+  // next sweep sees the sha in both listings and repairs it with
+  // `stat({ restore: true })` then `purge`, which is exercised here against
+  // the real store code.
+  // -------------------------------------------------------------------------
+  describe('a move killed between its CopyObject and its DeleteObject', () => {
+    /** The process dies on the first DeleteObject of `key`: the request never lands. */
+    function killOnDeleteOf(key: string): void {
+      const send = fake.send.bind(fake);
+      let killed = false;
+      fake.send = async (cmd) => {
+        const input = (cmd as { input?: { Key?: string } }).input;
+        if (!killed && cmd.constructor.name === 'DeleteObjectCommand' && input?.Key === key) {
+          killed = true;
+          throw new Error('process killed');
+        }
+        return send(cmd);
+      };
+    }
+
+    async function bothCopiesAreThere(sha256: string, bytes: Uint8Array): Promise<void> {
+      expect(fake._get(BUCKET, blobKey('', sha256))).toEqual(bytes);
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toEqual(bytes);
+      // Both listings name it: this is what the sweep's repair keys off.
+      expect((await store.list({ state: 'live', limit: 10 })).items).toEqual([
+        { sha256, size: bytes.length },
+      ]);
+      expect((await store.list({ state: 'retired', limit: 10 })).items).toEqual([
+        { sha256, size: bytes.length },
+      ]);
+    }
+
+    /** The sweep's repair for a retired copy under a live row. */
+    async function sweepRepair(sha256: string, bytes: Uint8Array): Promise<void> {
+      expect(await store.stat(sha256, { restore: true })).toEqual({ size: bytes.length });
+      await store.purge(sha256);
+      expect(fake._get(BUCKET, blobKey('', sha256))).toEqual(bytes);
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toBeUndefined();
+      const got = await store.get(sha256);
+      expect('bytes' in got && got.bytes).toEqual(bytes);
+    }
+
+    it('retire killed after its copy: both copies, still readable, and the repair keeps the live one', async () => {
+      const bytes = new TextEncoder().encode('retire killed halfway');
+      const { sha256 } = await store.put(bytes);
+      killOnDeleteOf(blobKey('', sha256));
+
+      await expect(store.retire(sha256)).rejects.toThrow('process killed');
+
+      await bothCopiesAreThere(sha256, bytes);
+      fake.calls.length = 0;
+      const got = await store.get(sha256);
+      expect('bytes' in got && got.bytes).toEqual(bytes);
+      // Served from live: no move was attempted.
+      expect(fake.calls.map((c) => c.name)).toEqual(['GetObject']);
+      await sweepRepair(sha256, bytes);
+    });
+
+    it('retire killed after its copy, then retired again: the second retire finishes the move', async () => {
+      const bytes = new TextEncoder().encode('retire killed, retried');
+      const { sha256 } = await store.put(bytes);
+      killOnDeleteOf(blobKey('', sha256));
+      await expect(store.retire(sha256)).rejects.toThrow('process killed');
+
+      await store.retire(sha256);
+
+      expect(fake._get(BUCKET, blobKey('', sha256))).toBeUndefined();
+      expect(fake._get(BUCKET, retiredBlobKey('', sha256))).toEqual(bytes);
+    });
+
+    it('restore killed after its copy back: both copies, still readable, and the repair drops the retired one', async () => {
+      const bytes = new TextEncoder().encode('restore killed halfway');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+      killOnDeleteOf(retiredBlobKey('', sha256));
+
+      await expect(store.get(sha256)).rejects.toThrow('process killed');
+
+      await bothCopiesAreThere(sha256, bytes);
+      await sweepRepair(sha256, bytes);
+    });
+
+    it('the repair restores, never purges, a retired copy that is the ONLY copy', async () => {
+      const bytes = new TextEncoder().encode('only the retired copy');
+      const { sha256 } = await store.put(bytes);
+      await store.retire(sha256);
+
+      await sweepRepair(sha256, bytes);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // THE RACE (design D3). A put whose HeadObject fast path sees the live key
   // can return success while a concurrent retire moves that key away. Nothing
   // may be lost: the following get must restore and serve the bytes. With the
