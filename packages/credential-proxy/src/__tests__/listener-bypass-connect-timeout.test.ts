@@ -87,7 +87,7 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
       registry: new SharedCredentialRegistry(),
       ca: { key: 'unused-key', cert: 'unused-cert' }, // bypass path never touches the CA
       sessions: bypassSession(BLACK_HOLE),
-      bypassConnectTimeoutMs: CONNECT_TIMEOUT_MS,
+      upstreamConnectTimeoutMs: CONNECT_TIMEOUT_MS,
       onAudit: (e) => audits.push(e),
     });
 
@@ -147,7 +147,7 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
       registry: new SharedCredentialRegistry(),
       ca: { key: 'unused-key', cert: 'unused-cert' },
       sessions: bypassSession('127.0.0.1'),
-      bypassConnectTimeoutMs: CONNECT_TIMEOUT_MS,
+      upstreamConnectTimeoutMs: CONNECT_TIMEOUT_MS,
       onAudit: (e) => audits.push(e),
     });
 
@@ -196,7 +196,7 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
       registry: new SharedCredentialRegistry(),
       ca: { key: 'unused-key', cert: 'unused-cert' },
       sessions: bypassSession('127.0.0.1'),
-      bypassConnectTimeoutMs: CONNECT_TIMEOUT_MS,
+      upstreamConnectTimeoutMs: CONNECT_TIMEOUT_MS,
       onAudit: (e) => audits.push(e),
     });
 
