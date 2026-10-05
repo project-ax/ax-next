@@ -261,6 +261,50 @@ async function waitFor(cond: () => boolean, what: string, timeoutMs = 5_000): Pr
   }
 }
 
+/**
+ * TASK-876: let the test decide WHEN a tunnel's idle window starts.
+ *
+ * The listener arms `clientTls`/`targetTls.setTimeout(idle)` in the same tick it
+ * writes the CONNECT 200, so with a short real window the client's TLS handshake
+ * AND its request must land inside it on the wall clock. On a loaded CI runner an
+ * event-loop stall longer than the window let the (correct) idle teardown fire
+ * mid-handshake, and `openTunnel` rejected with `read ECONNRESET` — reproduced
+ * every time with a 300ms busy-wait right after the 200.
+ *
+ * TASK-865's fix (fake only setTimeout/clearTimeout) cannot reach this timer:
+ * `socket.setTimeout` runs on Node's internal timer list, not on
+ * `globalThis.setTimeout` (measured: a faked clock advanced 1000ms left a 100ms
+ * socket timeout unfired; it then fired on the real clock). So this captures
+ * every `TLSSocket#setTimeout(idleMs, cb)` instead of arming it, and `start()`
+ * arms each one for real — same socket, same ms, same callback — once the test
+ * has established its precondition. Idle detection itself stays Node's own.
+ * Restored by `vi.restoreAllMocks()` in afterEach.
+ */
+function deferIdleTimers(idleMs: number): { armed: () => number; start: () => void } {
+  const realSetTimeout = TLSSocketClass.prototype.setTimeout;
+  const held: Array<{ sock: TLSSocket; onIdle: () => void }> = [];
+  vi.spyOn(TLSSocketClass.prototype, 'setTimeout').mockImplementation(function (
+    this: TLSSocket,
+    ms: number,
+    onIdle?: () => void,
+  ) {
+    if (ms === idleMs && onIdle !== undefined) {
+      held.push({ sock: this, onIdle });
+      return this;
+    }
+    return realSetTimeout.call(this, ms, onIdle);
+  });
+  return {
+    armed: () => held.length,
+    start: () => {
+      for (const { sock, onIdle } of held.splice(0)) realSetTimeout.call(sock, idleMs, onIdle);
+    },
+  };
+}
+
+/** The idle window the idle-teardown tests use (armed by `deferIdleTimers`, not at CONNECT). */
+const IDLE_MS = 200;
+
 function session(label: string, allowlist: string[], meter?: ProviderMeter): SessionConfig {
   return {
     allowlist: new Set(allowlist),
@@ -925,13 +969,18 @@ describe('what a settled call is worth', () => {
     const registry = new SharedCredentialRegistry();
     const ph = registerSession(registry, 's1');
     const m = fakeMeter();
+    const idle = deferIdleTimers(IDLE_MS);
     const { port } = await start(registry, [session('s1', [PROVIDER], m.meter)], {
-      meteredTunnelIdleMs: 200,
+      meteredTunnelIdleMs: IDLE_MS,
     });
     const inner = await openTunnel(port, PROVIDER, provider.port, tokenFor('s1'));
     collect(inner);
     send(inner, { headers: { 'x-api-key': ph }, body: MODEL_BODY });
     await waitFor(() => provider.requests.length === 1, 'the request to arrive');
+    // Both sides armed, nothing settled yet; only now does the silence start counting.
+    expect(idle.armed()).toBe(2);
+    expect(m.settled).toHaveLength(0);
+    idle.start();
     // Neither side says another word. Without the idle limit this slot would be held forever.
     await waitFor(() => m.settled.length === 1, 'the idle tunnel to be settled', 3_000);
     expect(m.settled[0]).toMatchObject({ billable: true, usage: null });
@@ -1021,34 +1070,7 @@ describe('the wire: the client sees what the provider sent, and the provider see
 
 describe('non-metered tunnel lifecycle (TASK-722)', () => {
   it.each(['client EOF', 'idle timeout'])('releases both sockets after %s', async (cause) => {
-    const IDLE_MS = 200;
-    // TASK-876: in the idle case this test decides WHEN the idle window starts.
-    // The listener arms `clientTls`/`targetTls.setTimeout(idle)` in the same tick
-    // it writes the CONNECT 200, so with a real 200ms window the client's TLS
-    // handshake AND its request had to land inside 200ms of wall clock. A CI
-    // event-loop stall longer than that let the (correct) idle teardown fire
-    // mid-handshake, and `openTunnel` rejected with `read ECONNRESET`.
-    // Reproduced 5/5 with a 300ms busy-wait right after the 200. The TASK-865
-    // fix (fake setTimeout) does not reach this timer: `socket.setTimeout` runs
-    // on Node's internal timer list, not `globalThis.setTimeout` — measured, a
-    // faked clock advanced 1000ms left a 100ms socket timeout unfired. So the
-    // listener's idle arms are captured here and armed for real (same sockets,
-    // same ms, same callback) once the tunnel provably carries a request.
-    const deferredIdle: Array<{ sock: TLSSocket; ms: number; onIdle: () => void }> = [];
-    const realSetTimeout = TLSSocketClass.prototype.setTimeout;
-    if (cause === 'idle timeout') {
-      vi.spyOn(TLSSocketClass.prototype, 'setTimeout').mockImplementation(function (
-        this: TLSSocket,
-        ms: number,
-        onIdle?: () => void,
-      ) {
-        if (ms === IDLE_MS && onIdle !== undefined) {
-          deferredIdle.push({ sock: this, ms, onIdle });
-          return this;
-        }
-        return realSetTimeout.call(this, ms, onIdle);
-      });
-    }
+    const idle = cause === 'idle timeout' ? deferIdleTimers(IDLE_MS) : undefined;
     let upstream: net.Socket | undefined;
     const provider = await startUpstream(PROVIDER, (_req, _n, socket) => {
       upstream = socket;
@@ -1064,14 +1086,13 @@ describe('non-metered tunnel lifecycle (TASK-722)', () => {
     send(inner, { headers: { 'x-api-key': ph }, body: MODEL_BODY });
     await waitFor(() => provider.requests.length === 1, 'upstream request');
     if (cause === 'client EOF') inner.end();
-    if (cause === 'idle timeout') {
-      // Non-vacuity: the listener armed exactly one idle timer per side of the
-      // tunnel (client-facing + upstream-facing), and none has run yet — were
-      // either missing, the teardown below could not be the idle path's.
-      expect(deferredIdle).toHaveLength(2);
+    if (idle !== undefined) {
+      // Non-vacuity: one idle timer per side of the tunnel was armed and none has
+      // run yet — were either missing, the teardown below could not be the idle path's.
+      expect(idle.armed()).toBe(2);
       expect(upstream?.destroyed).toBe(false);
       // The tunnel now carries a request and stays silent: start the idle window.
-      for (const { sock, ms, onIdle } of deferredIdle) realSetTimeout.call(sock, ms, onIdle);
+      idle.start();
     }
     await waitFor(() => upstream?.destroyed === true, 'upstream socket released', 3000);
     await waitFor(() => audits.filter((a) => a.status === 200).length === 1, 'one cleanup audit');
