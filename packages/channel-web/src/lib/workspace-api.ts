@@ -539,7 +539,43 @@ async function teamKeyCall(
   method: 'GET' | 'PUT' | 'DELETE',
   body?: Record<string, string>,
 ): Promise<Response> {
-  const url = teamKeyUrl(agentId, connectorId);
+  return teamCredentialCall(teamKeyUrl(agentId, connectorId), method, teamKeyRefusal, body);
+}
+
+/** TASK-858 — the team-sign-in refusals a person can act on. */
+export const TEAM_SIGN_IN_FORBIDDEN = 'Only the team’s admins can remove its sign-in.';
+export const TEAM_SIGN_IN_UNAVAILABLE =
+  'There’s no team sign-in to remove here. Anyone who signed in with their own account keeps it.';
+export const TEAM_SIGN_IN_NOT_REMOVED =
+  'We couldn’t remove the team sign-in just now. Nothing changed — please try again.';
+export const TEAM_SIGN_IN_OFFLINE =
+  'Connectors aren’t available right now, so the team sign-in stays as it is. Try again in a bit.';
+
+/**
+ * The sentence for a refused team-sign-in removal, or `undefined` for the
+ * generic per-status copy. Status only — the body is never read, so nothing a
+ * server says can reach the screen.
+ */
+function teamSignInRefusal(res: Response): string | undefined {
+  if (res.status === 403) return TEAM_SIGN_IN_FORBIDDEN;
+  if (res.status === 409) return TEAM_SIGN_IN_UNAVAILABLE;
+  if (res.status === 502) return TEAM_SIGN_IN_NOT_REMOVED;
+  if (res.status === 503) return TEAM_SIGN_IN_OFFLINE;
+  return undefined;
+}
+
+/**
+ * One call to a team agent's credential route — team key (TASK-813/854) or
+ * team sign-in (TASK-858). A transport exception becomes a bare `HttpError`
+ * (the original may carry request details); only route + status are logged;
+ * a refusal wears `refusal`'s sentence. Answers the ok `Response`.
+ */
+async function teamCredentialCall(
+  url: string,
+  method: 'GET' | 'PUT' | 'DELETE',
+  refusal: (res: Response) => Promise<string | undefined> | string | undefined,
+  body?: Record<string, string>,
+): Promise<Response> {
   const route = url.slice('/api/workspace'.length);
   let res: Response;
   try {
@@ -553,7 +589,7 @@ async function teamKeyCall(
   }
   if (res.ok) return res;
   console.warn(`[workspace] ${method} ${route} → ${res.status}`);
-  throw new HttpError(url, res.status, await teamKeyRefusal(res));
+  throw new HttpError(url, res.status, await refusal(res));
 }
 
 export interface RouteProposal {
@@ -1067,6 +1103,20 @@ export const workspaceApi = {
    */
   removeTeamKey: async (agentId: string, connectorId: string, slot: string): Promise<void> => {
     await teamKeyCall(agentId, connectorId, 'DELETE', { slot });
+  },
+
+  /**
+   * TASK-858 — remove the TEAM sign-in on this team agent: the one everyone
+   * using it acts as. Only the team's admins may (a row's `teamSignIn`); the
+   * server decides again. No body — the server derives what to remove.
+   * Anyone's own personal sign-in is untouched.
+   */
+  removeTeamSignIn: async (agentId: string, connectorId: string): Promise<void> => {
+    await teamCredentialCall(
+      `/api/workspace/agents/${encodeURIComponent(agentId)}/connectors/${encodeURIComponent(connectorId)}/team-sign-in`,
+      'DELETE',
+      teamSignInRefusal,
+    );
   },
 
   /**

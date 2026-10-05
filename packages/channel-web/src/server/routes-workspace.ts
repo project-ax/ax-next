@@ -1493,6 +1493,19 @@ interface CredentialsDeleteInput {
   ownerId: string;
   ref: string;
 }
+/**
+ * Structural mirror of @ax/mcp-oauth's `mcp-oauth:remove-shared-sign-in`
+ * (TASK-858) — no import (invariant 2). Removes a team agent's shared OAuth
+ * sign-in for one connector (the agent-scope token and the agent's
+ * needs-reconnect marker); the vault ref is mcp-oauth's, never ours.
+ */
+interface McpOauthRemoveSharedSignInInput {
+  agentId: string;
+  connectorId: string;
+}
+interface McpOauthRemoveSharedSignInOutput {
+  removed: true;
+}
 
 const AGENT_CONNECTOR_SOURCES: readonly AgentConnectorSource[] = ['attached', 'legacy-owned'];
 
@@ -1682,7 +1695,11 @@ interface TeamKeyGate<B> {
   agentId: string;
   connectorId: string;
   ctx: AgentContext;
-  /** The connector's api-key plan entries — the slots a team key can fill. */
+  /**
+   * The connector's plan entries for the gate's mode: its api-key entries
+   * (the slots a team key can fill) in `'key'` mode, its OAuth sign-in
+   * entries in `'sign-in'` mode (TASK-858).
+   */
   checks: ConnectorCredentialCheck[];
   body: B;
   /** Log a check fault by error name and answer 503 `team-key-check-failed`. */
@@ -4138,10 +4155,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * TASK-813 / TASK-854 — the checks every team-key route (PUT, GET, DELETE
-   * …/connectors/:connectorId/team-key) runs, in order, before it touches the
-   * vault. Each fails closed and answers the response itself; `null` means it
-   * did, and the route stops.
+   * TASK-813 / TASK-854 / TASK-858 — the checks every team-credential route
+   * (PUT, GET, DELETE …/connectors/:connectorId/team-key in `'key'` mode;
+   * DELETE …/connectors/:connectorId/team-sign-in in `'sign-in'` mode) runs,
+   * in order, before it touches the vault. Each fails closed and answers the
+   * response itself; `null` means it did, and the route stops.
    *
    *   1. signed in (401), an agent id (400 `missing-agent-id`), a connector id
    *      (400 `invalid-connector`), the agent resolves under the caller (404);
@@ -4152,19 +4170,25 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    *      gone → 404 `agent-not-found`; absent → 503 `connectors-unavailable`,
    *      faulting → 503 `team-key-check-failed`, logged by error name);
    *   4. the route's body, via `readBody` (400 with its error string);
-   *   5. the connector exists for the caller (404 `connector-not-found`) and
-   *      spends a per-person key (`keyMode: workspace` → 409
-   *      `team-key-unavailable`).
+   *   5. the connector exists for the caller (404 `connector-not-found`) and,
+   *      in `'key'` mode only, spends a per-person key (`keyMode: workspace`
+   *      → 409 `team-key-unavailable`). `'sign-in'` mode skips that refusal:
+   *      who pays for a key has nothing to do with whose sign-in the agent
+   *      uses.
    *
-   * Hands back the connector's api-key plan entries (`checks`) — the only
-   * slots a team key can fill, each with its server-side ref; an OAuth slot
-   * or the admin's OAuth client secret is never one — plus a `failed` that
-   * logs a check fault by error name and answers 503.
+   * Hands back the connector's plan entries for the mode (`checks`), each
+   * with its server-side ref: in `'key'` mode the api-key entries — the only
+   * slots a team key can fill; an OAuth slot or the admin's OAuth client
+   * secret is never one — and in `'sign-in'` mode the OAuth sign-in entries
+   * (possibly none; the route decides what that means). Plus a `failed` that
+   * logs a check fault by error name and answers 503 `team-key-check-failed`
+   * (in either mode).
    */
   async function teamKeyGate<B>(
     req: RouteRequest,
     res: RouteResponse,
     readBody: (raw: Buffer) => TeamKeyBodyResult<B>,
+    mode: 'key' | 'sign-in' = 'key',
   ): Promise<TeamKeyGate<B> | null> {
     const actor = await authActorOr401(bus, initCtx, req, res);
     if (actor === null) return null;
@@ -4240,7 +4264,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       failed('connector', err);
       return null;
     }
-    if (connector?.keyMode === 'workspace') {
+    if (mode === 'key' && connector?.keyMode === 'workspace') {
       res.status(409).json({ error: 'team-key-unavailable' });
       return null;
     }
@@ -4249,7 +4273,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       agentId,
       connectorId,
       ctx,
-      checks: credentialChecks(connector).filter((c) => !c.signIn),
+      checks: credentialChecks(connector).filter((c) => (mode === 'sign-in' ? c.signIn : !c.signIn)),
       body: body.value,
       failed,
     };
@@ -4331,6 +4355,58 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (!isConnectorId(id) || e.summary.keyMode === 'workspace') continue;
       const checks = credentialChecks({ id, keyMode: e.summary.keyMode, capabilities: e.capabilities });
       if (checks.some((c) => !c.signIn)) out.add(id);
+    }
+    return out;
+  }
+
+  /**
+   * TASK-858 — connector ids whose TEAM sign-in this caller may remove: a row
+   * sits at scope `agent` on this agent under one of the connector's OAuth
+   * sign-in plan refs. Asked only for a team admin (`sharedCredentials`),
+   * only when `mcp-oauth:remove-shared-sign-in` is registered, and only when
+   * some connector has a sign-in. One `credentials:list` per read — metadata
+   * only, and agent-scope only: `credentials:has` walks user → agent → global
+   * and would answer for the admin's OWN sign-in. Absent or failing → empty
+   * (the action is hidden), logged by error name; the list itself still loads.
+   */
+  async function teamSignInConnectors(
+    agentId: string,
+    callerId: string,
+    sharedCredentials: boolean,
+    effective: ConnectorsListEffectiveOutput,
+  ): Promise<Set<string>> {
+    const out = new Set<string>();
+    if (!sharedCredentials || !bus.hasService('mcp-oauth:remove-shared-sign-in')) return out;
+    const signInRefs = new Map<string, string[]>();
+    for (const e of Array.isArray(effective?.connectors) ? effective.connectors : []) {
+      const id = e?.summary?.id;
+      if (!isConnectorId(id)) continue;
+      const refs = credentialChecks({ id, keyMode: e.summary.keyMode, capabilities: e.capabilities })
+        .filter((c) => c.signIn)
+        .map((c) => c.ref);
+      if (refs.length > 0) signInRefs.set(id, refs);
+    }
+    if (signInRefs.size === 0 || !bus.hasService('credentials:list')) return out;
+    let rows: ReadonlyArray<CredentialsListRow>;
+    try {
+      const listed = await bus.call<CredentialsListInput, CredentialsListOutput>(
+        'credentials:list',
+        agentWorkspaceCtx(agentId, callerId),
+        { scope: 'agent', ownerId: agentId },
+      );
+      rows = Array.isArray(listed?.credentials) ? listed.credentials : [];
+    } catch (err) {
+      initCtx.logger.warn('workspace_team_sign_in_list_failed', {
+        agentId,
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+      return out;
+    }
+    const saved = new Set(
+      rows.filter((r) => r?.scope === 'agent' && r.ownerId === agentId).map((r) => r.ref),
+    );
+    for (const [id, refs] of signInRefs) {
+      if (refs.some((ref) => saved.has(ref))) out.add(id);
     }
     return out;
   }
@@ -6961,6 +7037,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         sharedCredentialsAllowed(agentId, teamAgent, actor),
       ]);
       const teamKeys = sharedCredentials ? teamKeyConnectors(out) : new Set<string>();
+      // TASK-858 — whose team sign-in this caller may remove.
+      const teamSignIns = await teamSignInConnectors(agentId, userId, sharedCredentials, out);
       res.status(200).json({
         connectors: rows.map((r) => {
           const setup = setupForCaller(health.setup.get(r.id), teamAgent, sharedCredentials);
@@ -6971,6 +7049,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             ...(setup !== undefined ? { setup } : {}),
             removable: manageable,
             ...(teamKeys.has(r.id) ? { teamKey: true as const } : {}),
+            ...(teamSignIns.has(r.id) ? { teamSignIn: true as const } : {}),
           };
         }),
         shared: teamAgent,
@@ -7295,6 +7374,56 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
       initCtx.logger.info('workspace_team_key_removed', { agentId, connectorId });
+      res.status(200).json({ removed: true });
+    },
+
+    /**
+     * DELETE /api/workspace/agents/:agentId/connectors/:connectorId/team-sign-in
+     * — remove a team agent's shared sign-in (TASK-858). Everyone using the
+     * agent loses this connector until a team admin signs in again; anyone
+     * who signed in with their own account keeps it.
+     *
+     * Behind the same team-credential gate as the team-key routes
+     * ({@link teamKeyGate}) in `'sign-in'` mode: only an admin of the owning
+     * team, no workspace-admin bypass; a shared-key (`keyMode: workspace`)
+     * connector is not refused. Any body is ignored — the client never names
+     * a ref. A connector with no OAuth sign-in slot is a 409
+     * `team-sign-in-unavailable`.
+     *
+     * Then `mcp-oauth:remove-shared-sign-in` with exactly `{ agentId,
+     * connectorId }` — it owns the agent-scope token row and the agent's
+     * needs-reconnect marker (absent → 503 `connectors-unavailable`). A
+     * failure there is a 502 `team-sign-in-not-removed`, logged by error
+     * name only. Success is 200 `{ removed: true }`.
+     */
+    async removeTeamSignIn(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const gate = await teamKeyGate(req, res, noTeamKeyBody, 'sign-in');
+      if (gate === null) return;
+      const { agentId, connectorId, ctx } = gate;
+      if (gate.checks.length === 0) {
+        res.status(409).json({ error: 'team-sign-in-unavailable' });
+        return;
+      }
+      if (!bus.hasService('mcp-oauth:remove-shared-sign-in')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      try {
+        await bus.call<McpOauthRemoveSharedSignInInput, McpOauthRemoveSharedSignInOutput>(
+          'mcp-oauth:remove-shared-sign-in',
+          ctx,
+          { agentId, connectorId },
+        );
+      } catch (err) {
+        initCtx.logger.warn('workspace_team_sign_in_remove_failed', {
+          agentId,
+          connectorId,
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+        res.status(502).json({ error: 'team-sign-in-not-removed' });
+        return;
+      }
+      initCtx.logger.info('workspace_team_sign_in_removed', { agentId, connectorId });
       res.status(200).json({ removed: true });
     },
 
@@ -8585,6 +8714,12 @@ export async function registerWorkspaceRoutes(
       method: 'DELETE',
       path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-key',
       handler: handlers.removeTeamKey as unknown as RouteHandler,
+    },
+    {
+      // TASK-858 — remove a team agent's shared sign-in. Team admins only.
+      method: 'DELETE',
+      path: '/api/workspace/agents/:agentId/connectors/:connectorId/team-sign-in',
+      handler: handlers.removeTeamSignIn as unknown as RouteHandler,
     },
     {
       // TASK-741 — the row menu's "Retry": one forced check of one connector.
