@@ -1101,6 +1101,9 @@ describe('@ax/preset-k8s wiring', () => {
     expect(mcpOAuth!.manifest.registers).toEqual([
       'credentials:resolve:mcp-oauth',
       'mcp-oauth:status-batch',
+      // TASK-858 — a team admin removes a team agent's shared sign-in. Needs the
+      // vault's `credentials:delete`, so it rides the mounted routes.
+      'mcp-oauth:remove-shared-sign-in',
     ]);
     // mountRoutes:true in the preset expands the manifest `calls` to the OAuth
     // route + resolver deps. All are registered by plugins loaded above
@@ -1115,6 +1118,7 @@ describe('@ax/preset-k8s wiring', () => {
       'agents:resolve',
       'credentials:get',
       'credentials:set',
+      'credentials:delete',
     ]);
   });
 
