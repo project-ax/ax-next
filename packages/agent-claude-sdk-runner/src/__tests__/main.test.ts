@@ -1996,6 +1996,115 @@ describe('main()', () => {
     expect(resultChunks[2]?.isError).toBe(true);
   });
 
+  it('TASK-842: a connector server refused at init, or a connector tool error mid-turn, is reported to the host; held calls and other tools are not', async () => {
+    const NS_INIT = 'c0123456789';
+    const NS_CALL = 'cabcdef0123';
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'tool.pre-call') {
+        const { call } = payload as { call: { id: string } };
+        return call.id === 'tu_held'
+          ? { verdict: 'hold', decisionId: 'dec_842', note: MODEL_HOLD_NOTE }
+          : { verdict: 'allow' };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('look it up'), userEntry('again'), cancelEntry]);
+
+    queryMock.mockImplementation((arg: unknown) => {
+      const { prompt, options } = arg as {
+        prompt: AsyncIterable<SDKUserMessage>;
+        options: {
+          hooks: {
+            PreToolUse: Array<{
+              hooks: Array<(input: unknown, toolUseID: string | undefined, opts: unknown) => Promise<unknown>>;
+            }>;
+          };
+        };
+      };
+      const preToolUse = options.hooks.PreToolUse[0]!.hooks[0]!;
+      const firePreToolUse = async (id: string, name: string) =>
+        await preToolUse(
+          {
+            hook_event_name: 'PreToolUse',
+            session_id: 'sess-1',
+            transcript_path: '/tmp/t.jsonl',
+            cwd: '/tmp/workspace',
+            tool_name: name,
+            tool_input: {},
+            tool_use_id: id,
+          },
+          id,
+          { signal: new AbortController().signal },
+        );
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        await it.next();
+        yield {
+          ...(systemInit('sess-1') as object),
+          mcp_servers: [
+            { name: NS_INIT, status: 'failed' },
+            { name: NS_CALL, status: 'connected' },
+            { name: 'ax-host-tools', status: 'failed' },
+          ],
+        } as unknown as SDKMessage;
+        // Turn 1: a connector call that errors twice (reported once), a held
+        // connector call (not a failure), and a failing built-in (not a connector).
+        yield assistantBlocks([
+          { type: 'tool_use', id: 'tu_c1', name: `mcp__${NS_CALL}__search`, input: {} },
+          { type: 'tool_use', id: 'tu_c2', name: `mcp__${NS_CALL}__create`, input: {} },
+          { type: 'tool_use', id: 'tu_held', name: `mcp__${NS_INIT}__search`, input: {} },
+          { type: 'tool_use', id: 'tu_bash', name: 'Bash', input: {} },
+        ]);
+        await firePreToolUse('tu_held', `mcp__${NS_INIT}__search`);
+        yield userToolResult('tu_c1', 'expected object, received null', true);
+        yield userToolResult('tu_c2', 'expected object, received null', true);
+        yield userToolResult('tu_held', MODEL_HOLD_NOTE, true);
+        yield userToolResult('tu_bash', 'boom', true);
+        yield resultSuccess();
+        // Turn 2: the same connector errors again — a new turn reports again.
+        await it.next();
+        yield assistantBlocks([{ type: 'tool_use', id: 'tu_c3', name: `mcp__${NS_CALL}__search`, input: {} }]);
+        yield userToolResult('tu_c3', 'nope', true);
+        yield resultSuccess();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    const reports = fakeClient.event.mock.calls
+      .filter((c) => c[0] === 'event.connector-auth-failure')
+      .map((c) => c[1]);
+    expect(reports).toEqual([
+      { servers: [{ toolNamespace: NS_INIT, status: 'failed' }] },
+      { servers: [{ toolNamespace: NS_CALL, status: 'tool-error' }] },
+      { servers: [{ toolNamespace: NS_CALL, status: 'tool-error' }] },
+    ]);
+    // Nothing but namespaces and a status crosses — never the tool output.
+    expect(JSON.stringify(reports)).not.toContain('received null');
+  });
+
   it('FAULTA-3: fresh first turn (runnerSessionId null) still emits turnId — read via transcriptSessionId, not the boot runnerSessionId', async () => {
     // On a conversation's FIRST turn the boot runnerSessionId is null (it only
     // ever holds a *resume* value). The turn-end turnId reads MUST use the SDK's

@@ -148,11 +148,11 @@ async function loopbackFetch(url: string, init: Record<string, unknown>): Promis
 async function boot(): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
-      // Present only so bootstrap's call-graph check finds a provider for
-      // mcp-client's declared `agents:resolve`. describe-tools calls it only
-      // when an agentId is named, which this suite does not do — the
-      // agent-scoped credential path is out of scope here.
-      'agents:resolve': async () => ({ agent: {} }),
+      // describe-tools calls it only when an agentId is named; the TASK-842
+      // case below names one (the session's agent), attached to the connector.
+      'agents:resolve': async () => ({
+        agent: { connectorAttachments: [CONNECTOR_ID], connectorExclusions: [] },
+      }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -304,5 +304,40 @@ describe('connectors:describe-tools through the real connectors:resolve (TASK-74
     const out = await describeTools(h);
     expect(out.status).toBe('needs-auth');
     expect(seen.some((r) => r.path === '/primary')).toBe(false);
+  });
+});
+
+describe('a runner-reported connector auth failure re-checks it host-side (TASK-842)', () => {
+  it('connectors:auth-failure-reported maps the namespace through the real effective set and checks that connector for the session agent', async () => {
+    const h = await boot();
+    const resolved = await seedConnector(h);
+    await storeKey(h, resolved);
+    const nsPrimary = expectedNamespace(USER, CONNECTOR_ID, 'primary');
+    const agentId = 'agent-842';
+    const sessionCtx = h.ctx({ userId: USER, agentId });
+
+    await h.bus.fire('connectors:auth-failure-reported', sessionCtx, {
+      servers: [{ toolNamespace: nsPrimary, status: 'failed' }],
+    });
+
+    // The subscriber asked the server itself, with the vaulted key.
+    const primary = seen.filter((r) => r.path === '/primary');
+    expect(primary.length).toBeGreaterThan(0);
+    for (const r of primary) expect(r.headers['x-api-key']).toBe(SECRET);
+    // And the answer landed on the (user, session agent, connector) row the
+    // rail reads.
+    const batch = await h.bus.call<unknown, { statuses: Array<{ connectorId: string; status: string }> }>(
+      'connectors:inventory-status-batch',
+      h.ctx({ userId: USER }),
+      { userId: USER, agentId, connectorIds: [CONNECTOR_ID] },
+    );
+    expect(batch.statuses).toMatchObject([{ connectorId: CONNECTOR_ID, status: 'ok' }]);
+
+    // A namespace the agent does not have reaches no server.
+    const before = seen.length;
+    await h.bus.fire('connectors:auth-failure-reported', sessionCtx, {
+      servers: [{ toolNamespace: 'c0000000000', status: 'failed' }],
+    });
+    expect(seen.length).toBe(before);
   });
 });

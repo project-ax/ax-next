@@ -52,6 +52,7 @@ import {
 } from './turn-end-uuid.js';
 import { createJsonlTranscriptSource } from './jsonl-transcript-source.js';
 import { createTurnUsageAccumulator } from './turn-usage.js';
+import { createConnectorAuthReporter } from './connector-auth-report.js';
 
 // ---------------------------------------------------------------------------
 // Runner entry binary (claude-sdk variant).
@@ -220,6 +221,12 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
       // reset, so a turn never inherits the previous one's tokens. `model` is
       // the agent's full `provider/model-id` ref, which is what the host prices.
       const turnUsage = createTurnUsageAccumulator(agentConfig.model);
+      // TASK-842: a connector server that refused us (at init, or a connector
+      // tool error mid-turn) is reported to the host, which re-checks it
+      // itself. Fire-and-forget; see connector-auth-report.ts.
+      const connectorAuth = createConnectorAuthReporter((report) =>
+        client.event('event.connector-auth-failure', report),
+      );
 
       // Inbox → SDK user-message generator. Closing via `return` on cancel
       // tells the SDK no more user messages are coming, which lets the outer
@@ -708,6 +715,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           if (ctx.getTranscriptSessionId() === null) {
             ctx.setTranscriptSessionId(msg.session_id);
           }
+          connectorAuth.onInit(msg.mcp_servers);
           continue;
         }
         if (msg.type === 'assistant') {
@@ -787,6 +795,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                 phraseByAxName,
                 block.name,
               );
+              connectorAuth.onToolUse(block.id, block.name);
               turnContentBlocks.push({
                 type: 'tool_use',
                 id: block.id,
@@ -896,6 +905,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     !wasHeld && typeof tr.is_error === 'boolean'
                       ? tr.is_error
                       : undefined;
+                  connectorAuth.onToolResult(tr.tool_use_id, publishedIsError === true);
                   // TASK-270: the persisted "held" flag. A hold is not a
                   // completion and not a failure — the reader keys the
                   // Waiting treatment off this, never off the copy.
@@ -973,6 +983,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           const toolResultBlocks = turnToolResultBlocks;
           turnContentBlocks = [];
           turnToolResultBlocks = [];
+          connectorAuth.endTurn();
           // Read-then-clear, per turn: a hold must not bleed into the next
           // turn, and the read has to happen first (that ordering is what
           // `drainHoldLatch` exists to make un-mis-writable). This is the one

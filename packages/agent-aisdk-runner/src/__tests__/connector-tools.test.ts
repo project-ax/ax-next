@@ -412,3 +412,302 @@ describe('connectConnectorTools', () => {
     expect(ct.logs).toEqual([]);
   });
 });
+
+describe('connectConnectorTools — server drops the MCP session (TASK-839)', () => {
+  const echoTool: TestTool = {
+    name: 'echo',
+    inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
+    handler: (args) => ({ content: [{ type: 'text', text: String(args['text'] ?? '') }] }),
+  };
+  const inits = (s: { seenMethods: string[] }) => s.seenMethods.filter((m) => m === 'initialize').length;
+  const calls = (s: { seenMethods: string[] }) => s.seenMethods.filter((m) => m === 'tools/call').length;
+
+  /** Every Client this test connected — so a test can assert none was leaked. */
+  function trackClients(): { connected: Client[]; closed: Set<Client> } {
+    const connected: Client[] = [];
+    const closed = new Set<Client>();
+    const realConnect = Client.prototype.connect;
+    const realClose = Client.prototype.close;
+    const c = vi.spyOn(Client.prototype, 'connect').mockImplementation(function (this: Client, ...a) {
+      connected.push(this);
+      return realConnect.apply(this, a);
+    });
+    const d = vi.spyOn(Client.prototype, 'close').mockImplementation(function (this: Client) {
+      closed.add(this);
+      return realClose.apply(this);
+    });
+    cleanups.push(async () => {
+      c.mockRestore();
+      d.mockRestore();
+    });
+    return { connected, closed };
+  }
+
+  it('re-initializes once and retries the call when the server has forgotten the session', async () => {
+    const s = await testServer([echoTool], { sessionful: true });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'before' })).resolves.toBe('before');
+    expect(inits(s)).toBe(1);
+
+    await s.forgetSessions();
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'after' })).resolves.toBe('after');
+    expect(inits(s)).toBe(2);
+    expect(ct.logs.join('\n')).toMatch(new RegExp(`^${NS}: .*session.*reconnected`, 'm'));
+
+    // The fresh session sticks: the next call needs no further initialize.
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'again' })).resolves.toBe('again');
+    expect(inits(s)).toBe(2);
+    // Policy saw ONE call per execute, never the internal retry.
+    expect(ct.policy.preToolUse).toHaveBeenCalledTimes(3);
+    expect(ct.policy.postToolUse).toHaveBeenLastCalledWith(`mcp.${NS}.echo`, 'call-1', { text: 'again' }, 'again', false);
+  });
+
+  it('the reconnect and the retried call go through the same proxy fetch, carrying only the placeholder', async () => {
+    const s = await testServer([echoTool], { sessionful: true });
+    const seenByFetch: Array<{ method: string; auth: string }> = [];
+    const recordingFetch: typeof fetch = async (input, init) => {
+      const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as { method?: string }) : {};
+      seenByFetch.push({
+        method: body.method ?? `<${init?.method ?? 'GET'}>`,
+        auth: new Headers(init?.headers).get('authorization') ?? '<none>',
+      });
+      return fetch(input, init);
+    };
+    const ct = await connect(
+      { [NS]: { url: s.url, headers: { Authorization: `Bearer ${PH}` }, bundle: 'b' } },
+      { fetch: recordingFetch },
+    );
+    await s.forgetSessions();
+    const before = seenByFetch.length;
+    const headersBefore = s.seenHeaders.length;
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'via proxy' })).resolves.toBe('via proxy');
+
+    const after = seenByFetch.slice(before);
+    // The failed call, the re-initialize, and the retried call — all through OUR fetch.
+    expect(after.map((r) => r.method)).toEqual(
+      expect.arrayContaining(['tools/call', 'initialize', 'notifications/initialized']),
+    );
+    expect(after.filter((r) => r.method === 'tools/call')).toHaveLength(2);
+    expect(new Set(after.map((r) => r.auth))).toEqual(new Set([`Bearer ${PH}`]));
+    expect(s.seenHeaders.slice(headersBefore).every((h) => h.authorization === `Bearer ${PH}`)).toBe(true);
+  });
+
+  it('a 404 without an MCP session (stateless server) is a plain failed call — no reconnect', async () => {
+    const s = await testServer([echoTool], {
+      methodError: { method: 'tools/call', status: 404, body: 'no such route' },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'x' })).rejects.toThrow(/connector tool 'echo' failed/);
+    expect(inits(s)).toBe(1);
+    expect(calls(s)).toBe(1);
+  });
+
+  it('a non-404 failure on a sessionful server does not reconnect', async () => {
+    let fail = false;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: (m) => (fail && m === 'tools/call' ? { status: 500, body: 'boom' } : undefined),
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    fail = true;
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'x' })).rejects.toThrow(/connector tool 'echo' failed/);
+    expect(inits(s)).toBe(1);
+    expect(calls(s)).toBe(1);
+  });
+
+  it('retries only once: a retry that loses its session again is a failed, clipped call', async () => {
+    const huge = 'Z'.repeat(50_000);
+    const ref: { s?: Awaited<ReturnType<typeof testServer>> } = {};
+    let forgetOnCall = false;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: async (m) => {
+        if (forgetOnCall && m === 'tools/call') {
+          await ref.s!.forgetSessions();
+          return { status: 404, body: huge };
+        }
+        return undefined;
+      },
+    });
+    ref.s = s;
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    forgetOnCall = true;
+    const err = await exec(ct, `mcp__${NS}__echo`, { text: 'x' }).then(
+      () => { throw new Error('expected the call to fail'); },
+      (e: unknown) => e as Error,
+    );
+    expect(err.message).toContain(`connector tool 'echo' failed`);
+    expect(err.message).toContain('[truncated]');
+    expect(err.message.length).toBeLessThanOrEqual(MAX_ERROR_CHARS + 200);
+    expect(inits(s)).toBe(2);
+    expect(calls(s)).toBe(2);
+    expect(ct.policy.preToolUse).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reconnect that fails is a failed call; a later call reconnects and heals', async () => {
+    let refuseInit = false;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: (m) =>
+        refuseInit && m === 'initialize' ? { status: 503, body: 'restarting\nrunner: FORGED' } : undefined,
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { connectTimeoutMs: 2_000 });
+    await s.forgetSessions();
+    refuseInit = true;
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'x' })).rejects.toThrow(/connector tool 'echo' failed/);
+    expect(calls(s)).toBe(1);
+    const mine = ct.logs.filter((l) => l.startsWith(`${NS}: `));
+    expect(mine.some((l) => /could not reconnect/.test(l))).toBe(true);
+    for (const l of ct.logs) expect(l).not.toContain('\n');
+
+    refuseInit = false;
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'healed' })).resolves.toBe('healed');
+  });
+
+  it('concurrent calls that all lose the session share ONE reconnect', async () => {
+    const s = await testServer([echoTool], { sessionful: true });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await s.forgetSessions();
+    const out = await Promise.all(['a', 'b', 'c'].map((t) => exec(ct, `mcp__${NS}__echo`, { text: t })));
+    expect(out).toEqual(['a', 'b', 'c']);
+    expect(inits(s)).toBe(2);
+  });
+
+  it('a call whose 404 lands AFTER another call already reconnected reuses that connection', async () => {
+    const tracked = trackClients();
+    let n = 0;
+    let release: (() => void) | undefined;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: async (m) => {
+        // Hold the FIRST tools/call after the forget until the test releases it.
+        if (m === 'tools/call' && ++n === 1) {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        }
+        return undefined;
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await s.forgetSessions();
+    const late = exec(ct, `mcp__${NS}__echo`, { text: 'late' });
+    await vi.waitFor(() => expect(release).toBeDefined());
+    // A second call fails, reconnects and succeeds while the first is held.
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'early' })).resolves.toBe('early');
+    expect(inits(s)).toBe(2);
+    // The replaced boot client stays open while the held call still runs on it…
+    expect(tracked.connected).toHaveLength(2);
+    expect(tracked.closed.has(tracked.connected[0]!)).toBe(false);
+    release!();
+    await expect(late).resolves.toBe('late');
+    expect(inits(s)).toBe(2);
+    // …and is closed once that last call settles.
+    await vi.waitFor(() => expect(tracked.closed.has(tracked.connected[0]!)).toBe(true));
+    expect(tracked.closed.has(tracked.connected[1]!)).toBe(false);
+  });
+
+  it('close() also closes a replaced connection that still has a call running on it', async () => {
+    const tracked = trackClients();
+    let n = 0;
+    let held = false;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: async (m) => {
+        if (m === 'tools/call' && ++n === 1) {
+          held = true;
+          await new Promise(() => {});
+        }
+        return undefined;
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } });
+    await s.forgetSessions();
+    const stuck = exec(ct, `mcp__${NS}__echo`, { text: 'stuck' });
+    await vi.waitFor(() => expect(held).toBe(true));
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'ok' })).resolves.toBe('ok');
+    expect(tracked.closed.has(tracked.connected[0]!)).toBe(false);
+    await ct.close();
+    await stuck.catch(() => {});
+    expect(tracked.connected).toHaveLength(2);
+    for (const c of tracked.connected) expect(tracked.closed.has(c)).toBe(true);
+  });
+
+  it('Stop during the reconnect aborts it promptly', async () => {
+    let hangInit = false;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: async (m) => {
+        if (hangInit && m === 'initialize') await new Promise(() => {});
+        return undefined;
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { connectTimeoutMs: 30_000 });
+    await s.forgetSessions();
+    hangInit = true;
+    const ac = new AbortController();
+    const started = Date.now();
+    const p = exec(ct, `mcp__${NS}__echo`, { text: 'x' }, ac.signal);
+    await vi.waitFor(() => expect(inits(s)).toBe(2));
+    const stop = new Error('user pressed Stop');
+    ac.abort(stop);
+    await expect(p).rejects.toBe(stop);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('a reconnect is bounded by the connect timeout', async () => {
+    let hangInit = false;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: async (m) => {
+        if (hangInit && m === 'initialize') await new Promise(() => {});
+        return undefined;
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { connectTimeoutMs: 300 });
+    await s.forgetSessions();
+    hangInit = true;
+    const started = Date.now();
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'x' })).rejects.toThrow(/connector tool 'echo' failed/);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(inits(s)).toBe(2);
+    expect(calls(s)).toBe(1);
+  });
+
+  it('every client ever connected is closed — the replaced one, and one whose reconnect finished after close()', async () => {
+    const tracked = trackClients();
+    let release: (() => void) | undefined;
+    let holdInit = false;
+    const s = await testServer([echoTool], {
+      sessionful: true,
+      intercept: async (m) => {
+        if (holdInit && m === 'initialize') {
+          await new Promise<void>((r) => {
+            release = r;
+          });
+        }
+        return undefined;
+      },
+    });
+    const ct = await connect({ [NS]: { url: s.url, bundle: 'b' } }, { connectTimeoutMs: 10_000 });
+
+    // Round 1: an ordinary reconnect replaces the boot client, and closes it.
+    await s.forgetSessions();
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'one' })).resolves.toBe('one');
+    expect(tracked.connected).toHaveLength(2);
+    await vi.waitFor(() => expect(tracked.closed.has(tracked.connected[0]!)).toBe(true));
+
+    // Round 2: close() lands while a reconnect is still in flight.
+    await s.forgetSessions();
+    holdInit = true;
+    const p = exec(ct, `mcp__${NS}__echo`, { text: 'two' });
+    await vi.waitFor(() => expect(release).toBeDefined());
+    await ct.close();
+    release!();
+    await p.catch(() => {});
+    expect(tracked.connected).toHaveLength(3);
+    await vi.waitFor(() => {
+      for (const c of tracked.connected) expect(tracked.closed.has(c)).toBe(true);
+    });
+  });
+});

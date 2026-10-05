@@ -354,7 +354,8 @@ describe('plugin wiring', () => {
       'connectors:inventory-status-batch',
       'connectors:inventory-tool-titles',
     ]);
-    expect(on.manifest.subscribes).toEqual(['agents:deleted']);
+    expect(on.manifest.subscribes).toEqual(['agents:deleted', 'connectors:auth-failure-reported']);
+    expect(p.manifest.optionalCalls?.map((c) => c.hook)).not.toContain('connectors:list-effective');
     expect(p.manifest.subscribes).toEqual([]);
     expect(on.manifest.calls).toEqual(
       expect.arrayContaining(['database:get-instance', 'connectors:resolve', 'agents:resolve', 'credentials:get']),
