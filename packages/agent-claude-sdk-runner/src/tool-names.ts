@@ -177,7 +177,7 @@ function isDisabledBuiltin(sdkName: string): sdkName is DisabledBuiltin {
  * (it may itself contain `__`, `.` or `-`). `CONNECTOR_TOOL_NAMESPACE_RE` is
  * the single place the namespace shape is written down.
  */
-function splitConnectorToolName(
+export function splitConnectorToolName(
   sdkName: string,
 ): { toolNamespace: string; tool: string } | undefined {
   if (!sdkName.startsWith(MCP_PREFIX)) return undefined;

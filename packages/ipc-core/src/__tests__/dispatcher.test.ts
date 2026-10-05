@@ -686,6 +686,99 @@ describe('dispatcher', () => {
   });
 
   // -------------------------------------------------------------------------
+  // /event.connector-auth-failure (TASK-842)
+  // -------------------------------------------------------------------------
+
+  it('POST /event.connector-auth-failure — fires connectors:auth-failure-reported with one entry per namespace', async () => {
+    let resolved: (v: { ctx: unknown; payload: unknown }) => void = () => {};
+    const fired = new Promise<{ ctx: unknown; payload: unknown }>((r) => {
+      resolved = r;
+    });
+    const s = await setup({
+      sessionId: 's-auth-report',
+      subscribers: [
+        {
+          hook: 'connectors:auth-failure-reported',
+          handler: async (ctx, payload) => {
+            resolved({ ctx, payload });
+            return undefined;
+          },
+        },
+      ],
+    });
+    setups.push(s);
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.connector-auth-failure',
+      s.token,
+      JSON.stringify({
+        servers: [
+          { toolNamespace: 'c0123456789', status: 'needs-auth' },
+          { toolNamespace: 'cabcdef0123', status: 'tool-error' },
+          { toolNamespace: 'c0123456789', status: 'tool-error' },
+        ],
+      }),
+    );
+    expect(res.status).toBe(202);
+    const { ctx, payload } = await fired;
+    expect(payload).toEqual({
+      servers: [
+        { toolNamespace: 'c0123456789', status: 'needs-auth' },
+        { toolNamespace: 'cabcdef0123', status: 'tool-error' },
+      ],
+    });
+    // Who the report is about comes from the authenticated session, never the body.
+    expect((ctx as { sessionId: string }).sessionId).toBe('s-auth-report');
+  });
+
+  it('POST /event.connector-auth-failure — refuses a payload carrying more than namespace + status', async () => {
+    let fired = false;
+    const s = await setup({
+      subscribers: [
+        {
+          hook: 'connectors:auth-failure-reported',
+          handler: async () => {
+            fired = true;
+            return undefined;
+          },
+        },
+      ],
+    });
+    setups.push(s);
+    for (const body of [
+      { servers: [{ toolNamespace: 'c0123456789', status: 'failed', error: 'Bearer sk-live' }] },
+      { servers: [{ toolNamespace: 'linear', status: 'failed' }] },
+      { servers: [] },
+    ]) {
+      const res = await doRequest(
+        s.socketPath,
+        'POST',
+        '/event.connector-auth-failure',
+        s.token,
+        JSON.stringify(body),
+      );
+      expect(res.status).toBe(400);
+      expect(JSON.parse(res.body).error.code).toBe('VALIDATION');
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fired).toBe(false);
+  });
+
+  it('POST /event.connector-auth-failure — 202 with no subscriber (a deployment without the connector inventory)', async () => {
+    const s = await setup();
+    setups.push(s);
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.connector-auth-failure',
+      s.token,
+      JSON.stringify({ servers: [{ toolNamespace: 'c0123456789', status: 'failed' }] }),
+    );
+    expect(res.status).toBe(202);
+  });
+
+  // -------------------------------------------------------------------------
   // /event.turn-end
   // -------------------------------------------------------------------------
 

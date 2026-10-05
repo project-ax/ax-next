@@ -29,6 +29,8 @@ import {
   EventTurnEndSchema,
   EventChatEndSchema,
   AgentOutcomeSchema,
+  EventConnectorAuthFailureSchema,
+  CONNECTOR_AUTH_FAILURE_MAX_SERVERS,
 } from '../events.js';
 import {
   IpcErrorCodeSchema,
@@ -586,6 +588,54 @@ describe('events', () => {
   it('EventToolPostCall rejects missing call', () => {
     const r = EventToolPostCallSchema.safeParse({ output: 'x' });
     expect(r.success).toBe(false);
+  });
+
+  // TASK-842 — runner-reported connector auth failure: namespaces + a closed
+  // status, nothing else.
+  it('EventConnectorAuthFailure accepts namespaces with each status', () => {
+    const parsed = EventConnectorAuthFailureSchema.parse({
+      servers: [
+        { toolNamespace: 'c0123456789', status: 'needs-auth' },
+        { toolNamespace: 'cabcdef0123', status: 'failed' },
+        { toolNamespace: 'c9999999999', status: 'tool-error' },
+      ],
+    });
+    expect(parsed.servers.map((s) => s.status)).toEqual(['needs-auth', 'failed', 'tool-error']);
+  });
+
+  it('EventConnectorAuthFailure refuses a field beyond namespace + status (no error text, no token)', () => {
+    for (const extra of [{ error: 'Bearer abc' }, { token: 'x' }, { url: 'https://mcp.example' }]) {
+      const r = EventConnectorAuthFailureSchema.safeParse({
+        servers: [{ toolNamespace: 'c0123456789', status: 'failed', ...extra }],
+      });
+      expect(r.success).toBe(false);
+    }
+  });
+
+  it('EventConnectorAuthFailure refuses a namespace that is not host-minted', () => {
+    for (const toolNamespace of ['C0123456789', 'c012345678', 'c01234567890', 'cg123456789', 'host', '']) {
+      const r = EventConnectorAuthFailureSchema.safeParse({
+        servers: [{ toolNamespace, status: 'failed' }],
+      });
+      expect(r.success).toBe(false);
+    }
+  });
+
+  it('EventConnectorAuthFailure refuses an unknown status, an empty list, and an oversized list', () => {
+    expect(
+      EventConnectorAuthFailureSchema.safeParse({
+        servers: [{ toolNamespace: 'c0123456789', status: '401' }],
+      }).success,
+    ).toBe(false);
+    expect(EventConnectorAuthFailureSchema.safeParse({ servers: [] }).success).toBe(false);
+    const many = Array.from({ length: CONNECTOR_AUTH_FAILURE_MAX_SERVERS + 1 }, () => ({
+      toolNamespace: 'c0123456789',
+      status: 'failed',
+    }));
+    expect(EventConnectorAuthFailureSchema.safeParse({ servers: many }).success).toBe(false);
+    expect(
+      EventConnectorAuthFailureSchema.safeParse({ servers: many.slice(1) }).success,
+    ).toBe(true);
   });
 
   it('EventTurnEnd round-trips each reason', () => {

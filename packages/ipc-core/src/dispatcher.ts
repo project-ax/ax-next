@@ -66,6 +66,10 @@ import {
   validateEventStreamChunk,
   fireEventStreamChunk,
 } from './handlers/event-stream-chunk.js';
+import {
+  validateEventConnectorAuthFailure,
+  fireEventConnectorAuthFailure,
+} from './handlers/event-connector-auth-failure.js';
 
 // ---------------------------------------------------------------------------
 // Dispatcher
@@ -234,6 +238,13 @@ EVENTS.set('/event.stream-chunk', {
   method: 'POST',
   validate: validateEventStreamChunk,
   fire: fireEventStreamChunk,
+});
+// TASK-842: the runner saw a connector's MCP server refuse it. A hint only —
+// the subscriber re-checks host-side; see the handler.
+EVENTS.set('/event.connector-auth-failure', {
+  method: 'POST',
+  validate: validateEventConnectorAuthFailure,
+  fire: fireEventConnectorAuthFailure,
 });
 
 // The complete set of request paths the dispatcher routes: the GET-only
