@@ -598,7 +598,7 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     return v;
   }
 
-  async function setup(opts: { runnerExitsOnKill?: boolean; idleGraceMs?: number } = {}) {
+  async function setup(opts: { runnerExitsOnKill?: boolean; idleWindowMs?: number; idleGraceMs?: number } = {}) {
     const state = { effective: [linear()] as Effective[] };
     const agentRow = { ...TEST_AGENT, connectorAttachments: ['linear'], connectorExclusions: [] as string[] };
     const conv = { activeSessionId: null as string | null };
@@ -679,7 +679,7 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
         runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
         // A long idle window: a reap observed inside a test is never the
         // ordinary idle-out.
-        keepAlive: true, idleWindowMs: 60_000, idleGraceMs: opts.idleGraceMs ?? 5,
+        keepAlive: true, idleWindowMs: opts.idleWindowMs ?? 60_000, idleGraceMs: opts.idleGraceMs ?? 5,
       })],
     });
 
@@ -828,6 +828,23 @@ describe('TASK-833: connector delete / edit mid-chat reaches the warm session', 
     await t.deleteConnector('linear', LINEAR_NS);
     await t.settle();
     expect(t.handles[0]!.state.kills).toBeGreaterThanOrEqual(1); // the kill ran, the runner lived
+    expect(t.proxyCloses).toContain('s-1');
+    expect(linearStillInjected(t)).toEqual([]);
+    for (const hk of t.handles) hk.forceExit();
+  });
+
+  it('deleting a connector while an ordinary idle-out is already in its grace window still closes the proxy session', async () => {
+    // A short idle window: the ordinary reaper fires (cancel queued) and the
+    // runner ignores it, so the session sits in its (long) grace window.
+    const t = await setup({ runnerExitsOnKill: false, idleWindowMs: 5, idleGraceMs: 60_000 });
+    await t.turn('s-1', 'req-1');
+    await t.settle();
+    expect(t.queued).toContainEqual({ sessionId: 's-1', type: 'cancel' });
+    expect(t.proxyCloses).not.toContain('s-1');
+
+    t.state.effective = [];
+    await t.deleteConnector('linear', LINEAR_NS);
+    await t.settle();
     expect(t.proxyCloses).toContain('s-1');
     expect(linearStillInjected(t)).toEqual([]);
     for (const hk of t.handles) hk.forceExit();
