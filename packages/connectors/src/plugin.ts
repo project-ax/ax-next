@@ -666,6 +666,20 @@ async function upsertConnector(
   // TASK-752 — read the live row's servers BEFORE the write, so a rename can be
   // told apart from an add (the namespace is a hash of the server name).
   const prior = await store.getByIdNotDeleted(userId, connectorId);
+  // TASK-827 — who supplies the key is fixed for a live connector. A switch
+  // would leave the old mode's key behind (orphaned), and a personal key left
+  // behind would SHADOW the shared one: credentials:get walks
+  // user -> agent -> global. Refused before anything is written; a delete
+  // purges the keys, so a deleted id may come back in the other mode.
+  if (prior !== null && prior.keyMode !== keyMode) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message:
+        'keyMode can’t change on an existing connector: create a new connector instead',
+    });
+  }
   if (prior !== null) {
     await resetMovedEndpoints(bus, ctx, userId, connectorId, prior, capabilities, hookName);
   }
