@@ -2633,11 +2633,11 @@ export function createOrchestrator(
     //       session was opened by the orchestrator that originally
     //       spawned it.
     //
-    //       Phase 6 made @ax/credential-proxy mandatory. Without it,
-    //       proxyConfig would stay undefined and sandbox:open-session
-    //       would inject no proxy env — the runner would fail at boot
-    //       with MissingEnvError, which is a worse error path than a
-    //       structured outcome at agent:invoke time. Fail loud here.
+    //       Phase 6 made @ax/credential-proxy mandatory. Without it there
+    //       is no proxyConfig, and sandbox:open-session refuses the input
+    //       (OpenSessionInputSchema requires it since TASK-838) — a generic
+    //       sandbox failure is a worse error path than a structured outcome
+    //       at agent:invoke time. Fail loud here.
     //
     //       I7 — `proxy:close-session` always fires once per `proxy:open-
     //       session`. We track that with `proxyOpened`; the finally below
@@ -4441,9 +4441,9 @@ function endpointToProxyConfig(
   // runner refuses to boot without one (TASK-704). Fail closed HERE, before a
   // sandbox is spawned, rather than letting the sandbox schema (or the runner)
   // refuse it later. The value is never echoed into the error. (This covers a
-  // proxy config built here — the only one the orchestrator produces. The
-  // sandbox input schema still treats `proxyConfig` itself as optional; a
-  // session opened without one is refused only by the runner, at boot.)
+  // proxy config built here — the only one the orchestrator produces. Since
+  // TASK-838 the sandbox input schema also requires `proxyConfig` itself, so a
+  // session opened without one is refused at the sandbox boundary too.)
   if (typeof proxyAuthToken !== 'string' || !PROXY_AUTH_TOKEN_FORMAT.test(proxyAuthToken)) {
     throw new PluginError({
       code: 'invalid-proxy-auth-token',

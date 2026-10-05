@@ -6,6 +6,7 @@ import { PluginError } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { openSessionImpl } from '../open-session.js';
 import type { ComposeRunner, ComposeRunResult } from '../compose.js';
+import { TEST_PROXY_CONFIG } from './proxy-config.js';
 
 // ---------------------------------------------------------------------------
 // TASK-152 — `services` bring-up / teardown / fail-loud, all driven through an
@@ -116,7 +117,7 @@ describe('sandbox:open-session — services bring-up (TASK-152)', () => {
     await expect(
       openSessionImpl(
         ctx,
-        { sessionId: 'svc-fail-1', workspaceRoot: ws, runnerBinary: EXIT_STUB, services: [pgService()] },
+        { sessionId: 'svc-fail-1', workspaceRoot: ws, runnerBinary: EXIT_STUB, proxyConfig: TEST_PROXY_CONFIG, services: [pgService()] },
         harness.bus,
         run,
       ),
@@ -141,7 +142,7 @@ describe('sandbox:open-session — services bring-up (TASK-152)', () => {
     const { run } = fakeRunner({ available: false });
     const err = await openSessionImpl(
       ctx,
-      { sessionId: 'svc-fail-2', workspaceRoot: ws, runnerBinary: EXIT_STUB, services: [pgService()] },
+      { sessionId: 'svc-fail-2', workspaceRoot: ws, runnerBinary: EXIT_STUB, proxyConfig: TEST_PROXY_CONFIG, services: [pgService()] },
       harness.bus,
       run,
     ).catch((e: unknown) => e);
@@ -159,7 +160,7 @@ describe('sandbox:open-session — services bring-up (TASK-152)', () => {
 
     const result = await openSessionImpl(
       ctx,
-      { sessionId: 'svc-up-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, services: [pgService()] },
+      { sessionId: 'svc-up-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG, services: [pgService()] },
       harness.bus,
       run,
     );
@@ -197,7 +198,7 @@ describe('sandbox:open-session — services bring-up (TASK-152)', () => {
 
     const result = await openSessionImpl(
       ctx,
-      { sessionId: 'svc-none-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      { sessionId: 'svc-none-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
       harness.bus,
       run,
     );
@@ -221,7 +222,7 @@ describe('sandbox:open-session — services bring-up (TASK-152)', () => {
 
     const err = await openSessionImpl(
       ctx,
-      { sessionId: 'svc-up-fail-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, services: [pgService()] },
+      { sessionId: 'svc-up-fail-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG, services: [pgService()] },
       harness.bus,
       run,
     ).catch((e: unknown) => e);
@@ -257,7 +258,7 @@ describe('sandbox:open-session — services bring-up (TASK-152)', () => {
 
     const err = await openSessionImpl(
       ctx,
-      { sessionId: 'svc-erofs-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, services: [pgService()] },
+      { sessionId: 'svc-erofs-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG, services: [pgService()] },
       harness.bus,
       run,
     ).catch((e: unknown) => e);
@@ -292,7 +293,7 @@ describe('sandbox:open-session — services bring-up (TASK-152)', () => {
 
     const err = await openSessionImpl(
       ctx,
-      { sessionId: 'svc-generic-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, services: [pgService()] },
+      { sessionId: 'svc-generic-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG, services: [pgService()] },
       harness.bus,
       run,
     ).catch((e: unknown) => e);

@@ -7,6 +7,7 @@ import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
+import { TEST_PROXY_CONFIG } from './proxy-config.js';
 
 // ---------------------------------------------------------------------------
 // Regression guard: GIT_TERMINAL_PROMPT=0 must be present in the subprocess
@@ -74,7 +75,7 @@ describe('sandbox-subprocess git env', () => {
       result = await h.bus.call<unknown, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
-        { sessionId: 'git-tp-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+        { sessionId: 'git-tp-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
       );
       const line = await readFirstStdoutLine(result);
       const parsed = JSON.parse(line) as Record<string, string | null>;

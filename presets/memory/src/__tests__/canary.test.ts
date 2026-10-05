@@ -19,13 +19,24 @@ import {
   type Plugin,
 } from '@ax/core';
 import { createSandboxK8sPlugin, type K8sCoreApi } from '@ax/sandbox-k8s';
-import { startTestContainer } from '@ax/test-harness';
+import { startTestContainer, TEST_PROXY_AUTH_TOKEN } from '@ax/test-harness';
 
 import { createMemoryPlugins, type MemoryPresetConfig } from '../index.js';
 
 const ALICE = 'user-alice';
 const BOB = 'user-bob';
 const EVE = 'user-eve';
+
+// `sandbox:open-session` REQUIRES a proxyConfig (TASK-838) — the host refuses an
+// input without one before minting a session. Minimal valid blob (unix-socket
+// posture, matching this canary's default sandbox-k8s config); the fake k8s api
+// never dials it.
+const PROXY_CONFIG = {
+  unixSocketPath: '/var/run/ax/proxy.sock',
+  caCertPem: '-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n',
+  envMap: {},
+  proxyAuthToken: TEST_PROXY_AUTH_TOKEN,
+};
 
 function authStub(): Plugin {
   const name = '@ax/canary/auth-stub';
@@ -1262,6 +1273,7 @@ describe('@ax/preset-memory canary', () => {
         sessionId: 'canary-pod-session',
         workspaceRoot: '/tmp/workspace',
         runnerBinary: '/tmp/stub-runner.js',
+        proxyConfig: PROXY_CONFIG,
         owner: {
           userId: ALICE,
           agentId: aliceAgentId,
@@ -1731,6 +1743,7 @@ describe('@ax/preset-memory canary without the export volume', () => {
       sessionId: 'canary-pod-session-novol',
       workspaceRoot: '/tmp/workspace',
       runnerBinary: '/tmp/stub-runner.js',
+      proxyConfig: PROXY_CONFIG,
       owner: {
         userId: ALICE,
         agentId: aliceAgentId,

@@ -10,12 +10,16 @@ import { prepareAgentSandboxMounts } from '../prepare-mounts.js';
 import { sweepOrphanedPods } from '../sweep.js';
 import type { OpenSessionResult } from '../open-session.js';
 import { makeMockK8sApi } from './mock-k8s.js';
+import { testProxyConfigTcp } from './proxy-config.js';
 
 const config = resolveConfig({ backend: 'agent-sandbox', namespace: 'runners',
   hostIpcUrl: 'http://host:80', proxyEndpoint: 'http://proxy:8888',
   readinessPollMs: 1, readinessTimeoutMs: 100 });
 const log = createLogger({ reqId: 'test', writer: () => {} });
 const labels = { [SANDBOX_BACKEND_LABEL]: 'agent-sandbox' };
+// Valid TCP-posture proxyConfig (this config sets `proxyEndpoint`); required on
+// every `sandbox:open-session` input since TASK-838.
+const proxyConfig = testProxyConfigTcp(config.proxyEndpoint);
 
 function mocks() {
   const pods = makeMockK8sApi();
@@ -152,7 +156,7 @@ describe('Agent Sandbox lifecycle', () => {
     try {
       const ctx = h.ctx();
       const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx,
-        { sessionId: ctx.sessionId, workspaceRoot: '/agent', runnerBinary });
+        { sessionId: ctx.sessionId, workspaceRoot: '/agent', runnerBinary, proxyConfig });
       const body = mock.custom.createNamespacedCustomObject.mock.calls[0]![0].body as ReturnType<typeof buildSandboxResource>;
       const containers = body.spec.podTemplate.spec.containers as Array<{ args: string[]; env: Array<{ name: string; value: string }> }>;
       expect(containers[0]!.args).toEqual(['node', runnerBinary]);
@@ -184,7 +188,10 @@ describe('Agent Sandbox lifecycle', () => {
     try {
       const ctx = h.ctx();
       await expect(h.bus.call('sandbox:open-session', ctx, { sessionId: ctx.sessionId,
-        workspaceRoot: '/agent', runnerBinary: '/runner.js' })).rejects.toThrow();
+        workspaceRoot: '/agent', runnerBinary: '/runner.js', proxyConfig })).rejects.toThrow();
+      // Got past input validation to the Sandbox create (and failed THERE), so
+      // the rollback below is the one under test, not an invalid-payload refusal.
+      expect(mock.custom.createNamespacedCustomObject).toHaveBeenCalledTimes(1);
       expect(await h.bus.call('session:is-alive', ctx, { sessionId: ctx.sessionId })).toEqual({ alive: false });
       expect(mock.custom.deleteNamespacedCustomObject).toHaveBeenCalledTimes(stage === 'readiness' ? 1 : 0);
     } finally { await h.close(); }
@@ -199,7 +206,7 @@ describe('Agent Sandbox lifecycle', () => {
     try {
       const ctx = h.ctx();
       const result = await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx,
-        { sessionId: ctx.sessionId, workspaceRoot: '/agent', runnerBinary: '/runner.js' });
+        { sessionId: ctx.sessionId, workspaceRoot: '/agent', runnerBinary: '/runner.js', proxyConfig });
       await result.handle.kill();
       expect(await h.bus.call('session:is-alive', ctx, { sessionId: ctx.sessionId })).toEqual({ alive: false });
       mock.setPhase('Succeeded');
