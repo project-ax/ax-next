@@ -52,6 +52,12 @@ describe('isPrivateIPv6', () => {
     ['::FFFF:127.0.0.1', true],       // upper-case mapped
     ['::ffff:808:808', false],        // hex IPv4-mapped 8.8.8.8 (public)
     ['::127.0.0.1', true],            // deprecated IPv4-compatible → loopback v4
+    ['::7f00:1', true],               // …and its canonical form, which is what the CONNECT parser emits
+    // A zone id must not make a private address look public (fail closed):
+    // net.isIPv6 accepts these, so a future caller could hand one in.
+    ['fe80::1%eth0', true],
+    ['::1%lo0', true],
+    ['2001:db8::1%eth0', false],
     ['64:ff9b::7f00:1', true],        // NAT64 well-known prefix → 127.0.0.1
     ['64:ff9b::808:808', false],      // NAT64 → public 8.8.8.8
     ['fe81::1', true],                // fe80::/10 is wider than the literal "fe80:"

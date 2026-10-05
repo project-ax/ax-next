@@ -16,7 +16,10 @@
  * expand (the WHATWG URL "ends in a number" rule). Bracketed IPv6 rejects zone
  * ids and IPvFuture, and is returned unbracketed and canonicalized (WHATWG
  * host serialization: compressed, lower-case) — the same spelling the HTTP
- * forward path hands the allowlist and the private-IP check.
+ * forward path hands the allowlist and the private-IP check. Registered names
+ * are NOT case-folded (unchanged from before; the HTTP path's `URL.hostname`
+ * does lowercase them), so a mixed-case CONNECT name matches only an
+ * allowlist entry spelled the same way — the strict direction.
  *
  * Everything else (`host:443:x`, unbracketed v6, an empty host, a missing
  * port, userinfo, whitespace, `%`) is `undefined`, and the listener answers

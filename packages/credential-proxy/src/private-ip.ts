@@ -60,8 +60,10 @@ export function isPrivateIPv4(ip: string): boolean {
  * and its hex form `::ffff:7f00:1` (WHATWG URL's serialization) alike.
  */
 function ipv6Groups(ip: string): number[] | undefined {
-  if (!net.isIPv6(ip) || ip.includes('%')) return undefined;
-  let text = ip;
+  if (!net.isIPv6(ip)) return undefined;
+  // Classify the address, not its zone: `fe80::1%eth0` is still link-local.
+  // Bailing out here would call a zoned private address public (fail open).
+  let text = ip.split('%')[0]!;
   // A trailing dotted IPv4 is the last two groups.
   const lastColon = text.lastIndexOf(':');
   const tail = text.slice(lastColon + 1);
