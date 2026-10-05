@@ -553,6 +553,10 @@ describe('@ax/mcp-oauth mcp-oauth:remove-shared-sign-in (TASK-858)', () => {
     ['an empty connectorId', { agentId: 'team-1', connectorId: '' }],
     ['a non-string agentId', { agentId: 42, connectorId: 'gmail' }],
     ['an oversized connectorId', { agentId: 'team-1', connectorId: 'c'.repeat(129) }],
+    // The hook builds `account:<connectorId>` itself, so a connectorId that is
+    // not a slug could aim its credentials:delete at another ref.
+    ['a connectorId naming a sub-ref', { agentId: 'team-1', connectorId: 'gmail:OAUTH_CLIENT_SECRET' }],
+    ['a non-slug connectorId', { agentId: 'team-1', connectorId: 'Gmail' }],
     ['an unknown field (e.g. a caller trying to pick the scope)', { agentId: 'team-1', connectorId: 'gmail', scope: 'user' }],
     ['null', null],
   ])('refuses %s with invalid-payload, and touches neither the vault nor the marker', async (_case, bad) => {

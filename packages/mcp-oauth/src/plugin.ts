@@ -155,7 +155,14 @@ export interface RemoveSharedSignInOutput {
 const RemoveSharedSignInInputSchema = z
   .object({
     agentId: z.string().min(1).max(256),
-    connectorId: z.string().min(1).max(128),
+    // A connector-id slug — the same shape the resolver's `account:<id>` match
+    // accepts. This hook builds the ref itself, so a `:` here would aim its
+    // `credentials:delete` at some other ref (e.g. the OAuth client secret).
+    connectorId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[a-z0-9][a-z0-9_-]*$/),
   })
   .strict();
 const RemoveSharedSignInOutputSchema = z.object({
