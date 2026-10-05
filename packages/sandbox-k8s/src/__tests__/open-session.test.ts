@@ -4,6 +4,7 @@ import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxK8sPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
 import { makeMockK8sApi, type MockK8sApi } from './mock-k8s.js';
+import { TEST_PROXY_CONFIG } from './proxy-config.js';
 
 // ---------------------------------------------------------------------------
 // sandbox:open-session — k8s impl
@@ -67,6 +68,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-1',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       },
     );
 
@@ -141,6 +143,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-1',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       });
       const body = api.creates[0]!.body as {
         spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> };
@@ -188,6 +191,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-2',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       }),
     ).rejects.toBeDefined();
 
@@ -207,6 +211,7 @@ describe('sandbox:open-session (k8s)', () => {
       sessionId: 'sess-3',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: TEST_PROXY_CONFIG,
     });
 
     const body = api.creates[0]!.body as {
@@ -253,6 +258,7 @@ describe('sandbox:open-session (k8s)', () => {
       sessionId: 'sess-4',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: TEST_PROXY_CONFIG,
     });
     const body = api.creates[0]!.body as {
       spec: { containers: Array<{ image: string }> };
@@ -278,6 +284,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-5',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       },
     );
     expect(result.runnerEndpoint).toBe(TEST_HOST_IPC_URL);
@@ -288,14 +295,55 @@ describe('sandbox:open-session (k8s)', () => {
     api.setReadResponses(readyPod());
     const h = await makeHarness(api);
     const ctx = h.ctx();
+    // Refused for ITS OWN reason (the relative path) — the input carries a
+    // valid proxyConfig, so a missing one cannot be what trips invalid-payload.
     await expect(
       h.bus.call('sandbox:open-session', ctx, {
         sessionId: 'sess-6',
         workspaceRoot: '/tmp/ws',
         runnerBinary: './relative.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       }),
-    ).rejects.toMatchObject({ code: 'invalid-payload' });
+    ).rejects.toMatchObject({
+      code: 'invalid-payload',
+      message: expect.stringContaining('runnerBinary must be absolute'),
+    });
     expect(api.creates).toHaveLength(0);
+  });
+
+  it('refuses an input without proxyConfig before minting a session (TASK-838)', async () => {
+    // proxyConfig is REQUIRED on the open-session input: the runner refuses to
+    // boot without the per-session proxy env, so the host refuses the request
+    // here — before session:create and before any pod is created — rather than
+    // letting it surface later as a runner exit 2.
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const createPod = vi.spyOn(api, 'createNamespacedPod');
+    const h = await makeHarness(api);
+    const spy = vi.spyOn(h.bus, 'call');
+    const ctx = h.ctx();
+    const input = {
+      sessionId: 'sess-no-proxy',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+    };
+
+    await expect(h.bus.call('sandbox:open-session', ctx, input)).rejects.toMatchObject({
+      code: 'invalid-payload',
+      message: expect.stringContaining('proxyConfig'),
+    });
+    expect(createPod).not.toHaveBeenCalled();
+    expect(api.creates).toHaveLength(0);
+    expect(spy.mock.calls.some(([hook]) => hook === 'session:create')).toBe(false);
+
+    // Control: the SAME input plus a valid proxyConfig is accepted, so the
+    // refusal above is attributable to the missing proxyConfig alone.
+    await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx, {
+      ...input,
+      proxyConfig: TEST_PROXY_CONFIG,
+    });
+    expect(createPod).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls.filter(([hook]) => hook === 'session:create')).toHaveLength(1);
   });
 
   it('owner.conversationId round-trips through session:create → session:get-config', async () => {
@@ -317,6 +365,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-conv',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
         owner: {
           userId: 'u-1',
           agentId: 'agt-1',
@@ -356,6 +405,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-noconv',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
         owner: {
           userId: 'u-1',
           agentId: 'agt-1',
@@ -420,6 +470,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-phase-1',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       },
     );
 
@@ -442,8 +493,8 @@ describe('sandbox:open-session (k8s)', () => {
     h.bus.subscribe('chat:phase', 'test-phase-failure', async (_ctx, payload) => { phases.push(payload); return undefined; });
     const ctx = h.ctx();
     await expect(h.bus.call('sandbox:open-session', ctx, {
-      sessionId: 'sess-phase-fail', workspaceRoot: '/tmp/ws', runnerBinary: '/opt/ax/runner.js',
-    })).rejects.toThrow();
+      sessionId: 'sess-phase-fail', workspaceRoot: '/tmp/ws', runnerBinary: '/opt/ax/runner.js', proxyConfig: TEST_PROXY_CONFIG,
+    })).rejects.toThrow(/create failed/);
     expect(phases).toEqual([{ reqId: ctx.reqId, phase: 'sandbox-starting' }]);
   });
 
@@ -461,6 +512,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-phase-2',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       },
     );
     expect(result.runnerEndpoint).toBe(TEST_HOST_IPC_URL);
@@ -484,6 +536,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-phase-3',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       },
     );
     expect(api.creates).toHaveLength(1);
@@ -501,6 +554,7 @@ describe('sandbox:open-session (k8s)', () => {
       sessionId: 'sess-svc',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: TEST_PROXY_CONFIG,
       services: [
         {
           name: 'postgres',
@@ -555,6 +609,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-svc-timeout',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
         services: [
           {
             name: 'a',
@@ -598,6 +653,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-noservices-timeout',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
       }),
       // no services → flat 60ms, NOT scaled.
     ).rejects.toMatchObject({ message: expect.stringContaining('within 60ms') });
@@ -641,6 +697,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-kafka-erofs',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
         services: [
           {
             name: 'kafka',
@@ -700,6 +757,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-init',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
         services: [
           {
             name: 'kafka',
@@ -775,6 +833,7 @@ describe('sandbox:open-session (k8s)', () => {
         sessionId: 'sess-mount',
         workspaceRoot: '/tmp/ws',
         runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
         owner: OWNER,
       });
       const body = api.creates[0]!.body as {
@@ -825,6 +884,7 @@ describe('sandbox:open-session (k8s)', () => {
           sessionId: 'sess-mount-fail',
           workspaceRoot: '/tmp/ws',
           runnerBinary: '/opt/ax/runner.js',
+          proxyConfig: TEST_PROXY_CONFIG,
           owner: OWNER,
         }),
       ).rejects.toThrow(/resolver boom/);
@@ -851,6 +911,7 @@ describe('sandbox:open-session (k8s)', () => {
       sessionId: 'sess-mem',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: TEST_PROXY_CONFIG,
       owner: OWNER,
     };
     const MEMORY_MOUNT = {

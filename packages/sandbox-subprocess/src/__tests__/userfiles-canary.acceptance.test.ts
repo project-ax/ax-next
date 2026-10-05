@@ -12,6 +12,7 @@ import type {
 } from '@ax/sandbox-mount-protocol';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
+import { TEST_PROXY_CONFIG } from './proxy-config.js';
 
 // ---------------------------------------------------------------------------
 // filestore-user-files Phase 1 — CANARY acceptance (design §12).
@@ -114,6 +115,7 @@ async function runSession(
       sessionId,
       workspaceRoot,
       runnerBinary: USERFILES_STUB,
+      proxyConfig: TEST_PROXY_CONFIG,
       owner: owner(agentId),
     },
   );
@@ -277,6 +279,7 @@ describe('filestore-user-files canary (subprocess + localDir)', () => {
           sessionId,
           workspaceRoot,
           runnerBinary: TIERS_STUB,
+          proxyConfig: TEST_PROXY_CONFIG,
           owner: owner('tiers-agent'),
         },
       );
