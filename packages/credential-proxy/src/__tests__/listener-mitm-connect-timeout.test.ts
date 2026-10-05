@@ -271,7 +271,6 @@ describe('proxy listener — MITM CONNECT upstream connect-phase timeout (TASK-8
       });
     });
     servers.push(slow);
-    servers.push(slow);
     const upPort = await new Promise<number>((r) =>
       slow.listen(0, '127.0.0.1', () => r((slow.address() as { port: number }).port)),
     );
@@ -309,6 +308,9 @@ describe('proxy listener — MITM CONNECT upstream connect-phase timeout (TASK-8
       inner.on('end', () => resolve(acc));
       inner.on('error', reject);
     });
+    // Awaited below, after the clock has moved; until then an early error must
+    // not surface as an unhandled rejection (it still fails the `await`).
+    received.catch(() => { /* observed by the await below */ });
     // The upstream holding the request means the proxy's upstream TLS
     // handshake finished: the tunnel is established.
     await upstreamGotRequest;
