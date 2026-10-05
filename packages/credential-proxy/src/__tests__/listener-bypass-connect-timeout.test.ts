@@ -134,50 +134,44 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
     expect(entry!.blocked).toBeUndefined();
   });
 
-  it('an out-of-range port (host:99999) is refused at parse — 400, no dial, no timer armed', async () => {
+  it('an out-of-range port (host:99999) is refused at parse — 400, not a 502', async () => {
     // Before TASK-862 this reached `net.connect`, which throws
     // ERR_SOCKET_BAD_PORT synchronously — the reason the connect timer is armed
     // LAST (a timer armed ahead of that throw fired into an uninitialized
     // `cleanup`). The port is now validated when the CONNECT is parsed, so the
-    // dial — and its timer — is never reached. The spy only observes (real
-    // timers stay real); it proves no connect timer was armed without waiting
-    // out a timer window.
+    // client gets a 400 instead of a 502 and the dial is never reached. (The
+    // armed-last ordering stays as defense in depth; CONNECT input can no longer
+    // exercise it.)
     const CONNECT_TIMEOUT_MS = 50;
-    const armed = vi.spyOn(globalThis, 'setTimeout');
-    try {
-      const audits: ProxyAuditEntry[] = [];
-      listener = await startProxyListener({
-        listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
-        registry: new SharedCredentialRegistry(),
-        ca: { key: 'unused-key', cert: 'unused-cert' },
-        sessions: bypassSession('127.0.0.1'),
-        upstreamConnectTimeoutMs: CONNECT_TIMEOUT_MS,
-        onAudit: (e) => audits.push(e),
-      });
+    const audits: ProxyAuditEntry[] = [];
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry: new SharedCredentialRegistry(),
+      ca: { key: 'unused-key', cert: 'unused-cert' },
+      sessions: bypassSession('127.0.0.1'),
+      upstreamConnectTimeoutMs: CONNECT_TIMEOUT_MS,
+      onAudit: (e) => audits.push(e),
+    });
 
-      const response = await new Promise<string>((resolve, reject) => {
-        const sock = net.connect(listener!.port, '127.0.0.1', () => {
-          sock.write(rawConnect('127.0.0.1:99999', tokenFor('s1')));
-        });
-        let acc = '';
-        sock.on('data', (c: Buffer) => {
-          acc += c.toString('utf8');
-        });
-        sock.on('end', () => {
-          sock.end();
-          resolve(acc);
-        });
-        sock.on('error', reject);
+    const response = await new Promise<string>((resolve, reject) => {
+      const sock = net.connect(listener!.port, '127.0.0.1', () => {
+        sock.write(rawConnect('127.0.0.1:99999', tokenFor('s1')));
       });
-      expect(response).toMatch(/^HTTP\/1\.1 400\b/);
+      let acc = '';
+      sock.on('data', (c: Buffer) => {
+        acc += c.toString('utf8');
+      });
+      sock.on('end', () => {
+        sock.end();
+        resolve(acc);
+      });
+      sock.on('error', reject);
+    });
+    expect(response).toMatch(/^HTTP\/1\.1 400\b/);
 
-      expect(armed.mock.calls.filter(([, ms]) => ms === CONNECT_TIMEOUT_MS)).toHaveLength(0);
-      expect(audits).toHaveLength(1);
-      expect(audits[0]!.status).toBe(400);
-      expect(audits[0]!.blocked).toBe('invalid_target');
-    } finally {
-      armed.mockRestore();
-    }
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.status).toBe(400);
+    expect(audits[0]!.blocked).toBe('invalid_target');
   });
 
   it('leaves an established tunnel alone after the connect timeout has elapsed', async () => {

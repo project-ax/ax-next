@@ -219,30 +219,25 @@ describe('proxy listener — MITM CONNECT upstream connect-phase timeout (TASK-8
     expect(audits[0]!.blocked).toMatch(/^tls_error: upstream connect timed out/);
   });
 
-  it('an out-of-range port (host:99999) is refused at parse — 400 before any 200, no timer armed', async () => {
+  it('an out-of-range port (host:99999) is refused at parse — 400 before any 200', async () => {
     // Before TASK-862 this reached `tls.connect` AFTER the 200 was written; it
     // threw ERR_SOCKET_BAD_PORT synchronously and the catch wrote a raw 502 into
     // the "established" tunnel. That throw is why the connect timer is armed
-    // LAST. The port is now validated when the CONNECT is parsed, so neither the
-    // 200 nor the dial nor its timer is reached. The spy only observes (real
-    // timers stay real), so no timer window has to be waited out.
+    // LAST. The port is now validated when the CONNECT is parsed, so the client
+    // gets one clean 400 — no 200 ahead of it — and the dial is never reached.
+    // (The armed-last ordering stays as defense in depth; CONNECT input can no
+    // longer exercise it.)
     const CONNECT_TIMEOUT_MS = 50;
-    const armed = vi.spyOn(globalThis, 'setTimeout');
-    try {
-      const audits: ProxyAuditEntry[] = [];
-      const l = await startListener('127.0.0.1', CONNECT_TIMEOUT_MS, audits);
+    const audits: ProxyAuditEntry[] = [];
+    const l = await startListener('127.0.0.1', CONNECT_TIMEOUT_MS, audits);
 
-      const response = await connectAndAwaitClose(l.port, '127.0.0.1:99999');
-      expect(response).toMatch(/^HTTP\/1\.1 400 Bad Request\r\n/);
-      expect(response).not.toContain('200 Connection Established');
+    const response = await connectAndAwaitClose(l.port, '127.0.0.1:99999');
+    expect(response).toMatch(/^HTTP\/1\.1 400 Bad Request\r\n/);
+    expect(response).not.toContain('200 Connection Established');
 
-      expect(armed.mock.calls.filter(([, ms]) => ms === CONNECT_TIMEOUT_MS)).toHaveLength(0);
-      expect(audits).toHaveLength(1);
-      expect(audits[0]!.status).toBe(400);
-      expect(audits[0]!.blocked).toBe('invalid_target');
-    } finally {
-      armed.mockRestore();
-    }
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.status).toBe(400);
+    expect(audits[0]!.blocked).toBe('invalid_target');
   });
 
   it('leaves an established MITM tunnel alone after the connect timeout has elapsed', async () => {

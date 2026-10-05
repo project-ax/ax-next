@@ -158,6 +158,33 @@ for (const mode of ['mitm', 'bypass'] as const) {
       });
     }
 
+    it('an unauthenticated CONNECT with a bad port still gets 407, not 400', async () => {
+      // Auth runs before the target is parsed, so a bad port is no oracle for an
+      // unauthenticated prober.
+      const { audits, lookups, port } = await start(mode);
+
+      const response = await new Promise<string>((resolve, reject) => {
+        const sock = net.connect(port, '127.0.0.1', () => {
+          sock.write(rawConnect(`${HOST}:99999`));
+        });
+        clients.push(sock);
+        let acc = '';
+        sock.on('data', (c: Buffer) => {
+          acc += c.toString('latin1');
+        });
+        sock.on('end', () => {
+          sock.end();
+          resolve(acc);
+        });
+        sock.on('error', reject);
+      });
+
+      expect(response).toMatch(/^HTTP\/1\.1 407 /);
+      expect(lookups).toEqual([]);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({ status: 407, blocked: 'proxy_auth_required' });
+    });
+
     it('still defaults a target with no port to 443 (unchanged)', async () => {
       const { audits, lookups, port } = await start(mode);
 
