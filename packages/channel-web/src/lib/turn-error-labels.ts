@@ -110,6 +110,12 @@ export const ERROR_LABELS: Record<string, string> = {
   // `detail` names it ("Connector: Gmail"), rendered on the line under this.
   'connector-needs-reconnect':
     'One of this agent’s connectors needs you to sign in again. Open Connectors, reconnect it, then retry.',
+  // TASK-828 — the same failure for SEVERAL connectors at once. The host now
+  // learns about every dead sign-in in one go, and the frame's `detail` lists
+  // them ("Connectors: Gmail, Linear"), so the sentence says "some … them"
+  // rather than sending the person to fix one, retry, and meet the next.
+  'connectors-need-reconnect':
+    'Some of this agent’s connectors need you to sign in again. Open Connectors, reconnect each one, then retry.',
   // TASK-796 — the reconnect line's sibling for a connector nobody has signed
   // in to yet (an attached connector whose key nobody has added). "Sign in",
   // never "reconnect": there was never a connection to restore. The rail marks
@@ -146,7 +152,8 @@ export const ERROR_LABELS: Record<string, string> = {
  * click rather than a hunt. The reloaded error row stays text-only by design
  * (see `AgentConversation`).
  *
- * Only `connector-needs-reconnect` is left (TASK-806): a connector never
+ * Only `connector-needs-reconnect` (and, since TASK-828, its plural
+ * `connectors-need-reconnect`) is left (TASK-806): a connector never
  * signed in to is skipped for the turn rather than failing it, so
  * `connector-needs-sign-in` and `provider-key-missing-connector-needs-sign-in`
  * can no longer arrive on a live stream. Their LABELS stay in `ERROR_LABELS`
@@ -157,6 +164,8 @@ export const ERROR_LABELS: Record<string, string> = {
  */
 const CONNECTORS_TAB_REASONS: ReadonlySet<string> = new Set([
   'connector-needs-reconnect',
+  // TASK-828 — the plural of the line above; same fix, same tab.
+  'connectors-need-reconnect',
 ]);
 
 /** True when the turn failed for a reason the Connectors tab fixes. */
