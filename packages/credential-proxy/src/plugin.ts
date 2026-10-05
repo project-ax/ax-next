@@ -439,6 +439,40 @@ async function resolveCredential(
 }
 
 /**
+ * The error `proxy:open-session` throws when one or more credentials failed to
+ * resolve (TASK-828). `failures` (non-empty; `first` is `failures[0]`) are the per-credential
+ * `credential-resolve-failed` errors {@link resolveCredential} threw, in the
+ * order the caller listed the credentials.
+ *
+ * ONE failure → that error, exactly as before, so every existing reader sees
+ * the TASK-783 shape unchanged.
+ *
+ * SEVERAL → an outer `credential-resolve-failed` naming the FIRST one in
+ * `diagnosis.envName` (so a reader that only knows the one-failure shape still
+ * attributes the turn to a real credential), whose `.cause` is an
+ * `AggregateError` holding EVERY per-credential error in `errors`. The
+ * aggregate's own `.cause` is the first resolver error, so a `.cause`-chain
+ * walk from the outer error reaches the same resolver error it always did.
+ * Why this matters: a person with two dead connector sign-ins was told about
+ * the first, fixed it, retried, and only then learned about the second.
+ *
+ * Every message here is fixed text, for the same reason as
+ * {@link resolveCredential}'s.
+ */
+function resolveFailuresError(first: PluginError, failures: readonly PluginError[]): PluginError {
+  if (failures.length <= 1) return first;
+  return new PluginError({
+    code: 'credential-resolve-failed',
+    plugin: PLUGIN_NAME,
+    message: 'some session credentials could not be resolved',
+    cause: new AggregateError(failures, 'several session credentials could not be resolved', {
+      cause: first.cause,
+    }),
+    diagnosis: { ...(first.diagnosis ?? {}) },
+  });
+}
+
+/**
  * Anything that is not EXACTLY `{ blocked: false }` blocks. The usage ledger is
  * in-process and trusted, but this is a money control: a malformed answer must
  * never read as "go ahead".
@@ -670,6 +704,12 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
             const requests = parseMeteredRequests(envName, cred.metered);
             if (requests !== undefined) meteredRequests.set(envName, requests);
           }
+          // TASK-828 — a failed resolve does NOT stop the loop: every ref is
+          // tried, and the open fails once with ALL the failures, so the caller
+          // can name every connector whose sign-in is dead in one turn error
+          // rather than one per retry. Nothing is registered on failure — the
+          // map below is dropped with the throw.
+          const failures: PluginError[] = [];
           for (const [envName, { ref }] of Object.entries(input.credentials)) {
             const allowedHosts = bindings.get(envName) ?? [];
             if (allowedHosts.length === 0) {
@@ -678,9 +718,17 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
               // discover as an upstream 401. Env NAME only — never a value.
               ctx.logger.warn('credential_unbound', { envName });
             }
-            const value = await resolveCredential(bus, ctx, envName, ref, input.userId);
+            let value: string;
+            try {
+              value = await resolveCredential(bus, ctx, envName, ref, input.userId);
+            } catch (err) {
+              failures.push(err as PluginError);
+              continue;
+            }
             map.register(envName, value, allowedHosts);
           }
+          const firstFailure = failures[0];
+          if (firstFailure !== undefined) throw resolveFailuresError(firstFailure, failures);
 
           // Register the placeholder map with the shared registry so the
           // MITM substitution path can find it.

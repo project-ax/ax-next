@@ -742,6 +742,66 @@ describe('@ax/credential-proxy plugin', () => {
     assertNamesCredential(caught, 'connector:gmail:GMAIL', 'NeedsReconnectError');
   });
 
+  // TASK-828 — every failing ref is resolved and reported, not just the first,
+  // so the orchestrator can name every dead connector sign-in in one turn error.
+  it('proxy:open-session: SEVERAL failed credentials:get are ALL reported, first one named outside (TASK-828)', async () => {
+    const resolved: string[] = [];
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin((ref) => {
+          resolved.push(ref);
+          if (ref === 'account:gmail' || ref === 'account:linear') {
+            const e = new Error(`refresh rejected: ${UPSTREAM_TEXT}`);
+            e.name = 'NeedsReconnectError';
+            throw e;
+          }
+        }),
+        createCredentialProxyPlugin({ listen: { kind: 'tcp', host: '127.0.0.1', port: 0 }, caDir }),
+      ],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), { ref: 'provider:anthropic', userId: 'u1', value: 'sk-1' });
+
+    let caught: unknown;
+    try {
+      await bus.call('proxy:open-session', ctx(), {
+        sessionId: 's-name-many',
+        userId: 'u1',
+        agentId: 'a1',
+        allowlist: [],
+        credentials: {
+          'connector:gmail:GMAIL': { ref: 'account:gmail', kind: 'mcp-oauth' },
+          ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          'connector:linear:LINEAR': { ref: 'account:linear', kind: 'mcp-oauth' },
+        },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    // Every ref was tried — the failure on gmail did not stop the loop.
+    expect(resolved).toEqual(['account:gmail', 'provider:anthropic', 'account:linear']);
+    // The outer error keeps the one-failure shape, naming the FIRST failure.
+    expect(caught).toBeInstanceOf(PluginError);
+    const pe = caught as PluginError;
+    expect(pe.code).toBe('credential-resolve-failed');
+    expect(pe.diagnosis).toEqual({ envName: 'connector:gmail:GMAIL' });
+    expect(pe.message).not.toContain(UPSTREAM_TEXT);
+    // Its cause is an AggregateError holding one named error per failure, in order.
+    expect(pe.cause).toBeInstanceOf(AggregateError);
+    const agg = pe.cause as AggregateError;
+    expect(agg.message).not.toContain(UPSTREAM_TEXT);
+    expect(agg.errors).toHaveLength(2);
+    assertNamesCredential(agg.errors[0], 'connector:gmail:GMAIL', 'NeedsReconnectError');
+    assertNamesCredential(agg.errors[1], 'connector:linear:LINEAR', 'NeedsReconnectError');
+    // A cause-chain walk from the outer error still reaches a resolver error.
+    expect(agg.cause).toBe((agg.errors[0] as PluginError).cause);
+    // Nothing was registered: the session does not exist.
+    await expect(bus.call('proxy:rotate-session', ctx(), { sessionId: 's-name-many' })).rejects.toMatchObject({
+      code: 'unknown-session',
+    });
+  });
+
   it('proxy:rotate-session: a failed credentials:get names the failing env key (TASK-783)', async () => {
     let failGmail = false;
     kernel = await bootstrap({
