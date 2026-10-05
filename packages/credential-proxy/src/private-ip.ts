@@ -53,19 +53,53 @@ export function isPrivateIPv4(ip: string): boolean {
   );
 }
 
+/**
+ * The eight 16-bit groups of an IPv6 literal, or `undefined` if it is not one.
+ * Parsing (rather than string-prefix matching) is what lets one check cover
+ * every spelling of an address — `::1`, `0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1`
+ * and its hex form `::ffff:7f00:1` (WHATWG URL's serialization) alike.
+ */
+function ipv6Groups(ip: string): number[] | undefined {
+  if (!net.isIPv6(ip)) return undefined;
+  // Classify the address, not its zone: `fe80::1%eth0` is still link-local.
+  // Bailing out here would call a zoned private address public (fail open).
+  let text = ip.split('%')[0]!;
+  // A trailing dotted IPv4 is the last two groups.
+  const lastColon = text.lastIndexOf(':');
+  const tail = text.slice(lastColon + 1);
+  if (isIPv4(tail)) {
+    const [a, b, c, d] = tail.split('.').map(Number) as [number, number, number, number];
+    text = `${text.slice(0, lastColon + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = text.split('::');
+  const parse = (part: string): number[] =>
+    part === '' ? [] : part.split(':').map((h) => parseInt(h, 16));
+  const head = parse(halves[0]!);
+  const tailGroups = halves.length === 2 ? parse(halves[1]!) : [];
+  const fill = 8 - head.length - tailGroups.length;
+  const groups =
+    halves.length === 2 ? [...head, ...Array<number>(fill).fill(0), ...tailGroups] : head;
+  return groups.length === 8 ? groups : undefined;
+}
+
 export function isPrivateIPv6(ip: string): boolean {
-  const norm = ip.toLowerCase();
-  // IPv4-mapped IPv6 (RFC 4291 §2.5.5.2): unwrap and check as IPv4
-  if (norm.startsWith('::ffff:')) {
-    const v4 = norm.slice(7);
-    if (isIPv4(v4)) return isPrivateIPv4(v4);
+  const g = ipv6Groups(ip);
+  if (g === undefined) return false;
+  // The last 32 bits as dotted IPv4, for the prefixes that embed one.
+  const v4 = `${g[6]! >> 8}.${g[6]! & 0xff}.${g[7]! >> 8}.${g[7]! & 0xff}`;
+  const zeroThrough = (n: number) => g.slice(0, n).every((x) => x === 0);
+  // ::/96 — `::`, `::1` (both land in 0.0.0.0/8) and deprecated IPv4-compatible.
+  if (zeroThrough(6)) return isPrivateIPv4(v4);
+  // ::ffff:0:0/96 — IPv4-mapped (RFC 4291 §2.5.5.2).
+  if (zeroThrough(5) && g[5] === 0xffff) return isPrivateIPv4(v4);
+  // 64:ff9b::/96 — NAT64 well-known prefix (RFC 6052); a NAT64 gateway would
+  // carry it to the embedded IPv4.
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) {
+    return isPrivateIPv4(v4);
   }
   return (
-    norm === '::1' ||
-    norm === '::' ||
-    norm.startsWith('fe80:') ||
-    norm.startsWith('fc') ||
-    norm.startsWith('fd')
+    (g[0]! & 0xffc0) === 0xfe80 || // fe80::/10 link-local
+    (g[0]! & 0xfe00) === 0xfc00 //    fc00::/7  unique local
   );
 }
 

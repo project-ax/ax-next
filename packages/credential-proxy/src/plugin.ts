@@ -184,8 +184,10 @@ function mapBlockedReason(
 function parseHostPath(method: string, url: string): { host: string; path: string } {
   if (method === 'CONNECT') {
     // CONNECT target is `host:port`. Split on the last `:` so IPv6 literals
-    // like `[::1]:443` still work — though Phase 1a's bridge only emits
-    // hostnames (no IPv6 brackets).
+    // like `[::1]:443` keep their brackets — the listener's strict grammar
+    // (connect-target.ts, TASK-874) accepts them, and the HTTP path's
+    // `URL.hostname` reports v6 hosts bracketed too. A target that failed the
+    // grammar (`invalid_target`) is reported as written.
     const lastColon = url.lastIndexOf(':');
     const host = lastColon === -1 ? url : url.slice(0, lastColon);
     return { host, path: '/' };
