@@ -1729,6 +1729,9 @@ export function createOrchestrator(
     // The agent this runner serves (`ctx.agentId` at spawn). `agents:deleted`
     // (TASK-718) finds a deleted agent's warm runners by it.
     agentId: string;
+    // True when this runner has a credential-proxy session (closed on exit).
+    // TASK-860 re-resolves its credentials before each routed turn.
+    proxyOpened: boolean;
     idleTimer: ReturnType<typeof setTimeout> | null;
     graceTimer: ReturnType<typeof setTimeout> | null;
   }
@@ -1775,8 +1778,10 @@ export function createOrchestrator(
   }
 
   // Phase 3 / I10 — sessions whose agent has at least one non-`api-key`
-  // credential get `proxy:rotate-session` fired between turns. api-key-only
-  // sessions stay in coarse mode (no rotation, identical to Phase 2).
+  // credential get `proxy:rotate-session` fired at turn END. api-key-only
+  // sessions skip that one (their values never expire); every WARM session,
+  // whatever its kinds, is also re-resolved when a message is routed into it
+  // (TASK-860, `refreshWarmSessionCredentials`) so a replaced key is picked up.
   // Membership is added after a successful proxy:open-session and removed in
   // the runAgentInvoke finally that fires proxy:close-session.
   const sessionsNeedingRotation = new Set<string>();
@@ -1849,6 +1854,50 @@ export function createOrchestrator(
       }),
     );
     return answers.some((present) => present);
+  }
+
+  /**
+   * TASK-860 — re-resolve a warm session's credentials before a message is
+   * routed into it. The credential proxy resolves every ref once at open, and
+   * I10's turn-end rotation covers only refreshable kinds — so a NEW api-key
+   * entered on an existing connector (same connector shape, same ref; nothing
+   * TASK-833 can see) was never picked up, and the session went on injecting
+   * the OLD key until it idled out. `proxy:rotate-session` re-reads every ref
+   * from the vault in place (placeholders unchanged, I11), so the turn about
+   * to run injects whatever is stored now.
+   *
+   * Returns false when the re-resolve FAILED: the caller retires the session
+   * (fails toward re-spawning — a session whose credentials cannot be re-read
+   * must not keep injecting the ones it already holds), and the fresh spawn's
+   * own proxy:open-session reports a dead credential by name (TASK-783).
+   * True when it succeeded or does not apply (no proxy session for this warm
+   * runner, or no rotate hook loaded).
+   */
+  async function refreshWarmSessionCredentials(
+    ctx: AgentContext,
+    sessionId: string,
+  ): Promise<boolean> {
+    if (warmSessions.get(sessionId)?.proxyOpened !== true) return true;
+    if (!bus.hasService('proxy:rotate-session')) return true;
+    try {
+      await bus.call<{ sessionId: string }, { envMap: Record<string, string> }>(
+        'proxy:rotate-session',
+        ctx,
+        { sessionId },
+      );
+      return true;
+    } catch (err) {
+      // Name/code + our env key only — a refresh failure's message can carry
+      // an OAuth server's own text (TASK-783).
+      const envName = failedCredentialEnvName(err);
+      ctx.logger.warn('proxy_rotate_session_failed', {
+        sessionId,
+        phase: 'routing',
+        ...errorLogFields(err),
+        ...(envName !== undefined ? { envName } : {}),
+      });
+      return false;
+    }
   }
 
   // TASK-811 — the fifth reason a warm session is retired at its next turn: a
@@ -2293,7 +2342,7 @@ export function createOrchestrator(
             const hostSessionMissing = keepAlive && !warmSessions.has(candidate);
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
-            const rotationFailed = rotationFailedSessions.has(candidate);
+            let rotationFailed = rotationFailedSessions.has(candidate);
             // TASK-811 — a connector attached / detached since this session
             // spawned. TASK-833 — or one it folded was deleted (marked by
             // `connectors:deleted`), or no longer resolves to what it folded
@@ -2313,6 +2362,23 @@ export function createOrchestrator(
                 rotationFailed ||
                 connectorsChanged
               ) && (await skippedConnectorSignedIn(ctx, candidate));
+            // TASK-860 — the session is staying: re-resolve its credentials so
+            // a key replaced since the last turn is the one this turn injects.
+            // Last, because a session retired for any reason above closes its
+            // proxy session anyway. A failure retires it (secure direction).
+            if (
+              !(
+                skillsDirty ||
+                augmentStale ||
+                hostSessionMissing ||
+                rotationFailed ||
+                connectorsChanged ||
+                connectorSignedIn
+              ) &&
+              !(await refreshWarmSessionCredentials(ctx, candidate))
+            ) {
+              rotationFailed = true;
+            }
             if (
               skillsDirty ||
               augmentStale ||
@@ -2336,6 +2402,7 @@ export function createOrchestrator(
               //
               // TASK-783: and when its credential rotation failed. The fresh
               // open re-resolves every ref and names a dead connector.
+              // TASK-860: likewise when the routing-time re-resolve failed.
               //
               // TASK-811: and when a connector was attached to or detached from
               // the agent mid-chat. The fresh spawn folds the new set.
@@ -3482,7 +3549,7 @@ export function createOrchestrator(
         // entry. This is also why the per-invoke finally must NOT close the
         // proxy in keepalive mode (see the finally below).
         warmSessions.set(sessionId, {
-          handle, agentId: ctx.agentId, idleTimer: null, graceTimer: null,
+          handle, agentId: ctx.agentId, proxyOpened, idleTimer: null, graceTimer: null,
         });
         proxyCloseDeferredToHandle = proxyOpened;
         const warmCtx = ctx;
@@ -3835,8 +3902,9 @@ export function createOrchestrator(
   ): void {
     // I10 — rotate proxy credentials BEFORE the one-shot cancel, so that any
     // tool-call follow-ups inside the same turn (model→tool→model) pick up
-    // the refreshed token. api-key-only sessions skip rotation: their kind
-    // never refreshes, and Phase 2's coarse mode is the desired behavior.
+    // the refreshed token. api-key-only sessions skip THIS rotation: their
+    // kind never refreshes. (A key REPLACED by a person is picked up when the
+    // next message is routed in — TASK-860, refreshWarmSessionCredentials.)
     //
     // The rotation is fire-and-forget: a failing rotate (network blip,
     // refresh-failed) shouldn't kill the chat. The credentials facade's
