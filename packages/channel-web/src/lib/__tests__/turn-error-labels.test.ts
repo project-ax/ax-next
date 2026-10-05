@@ -102,6 +102,19 @@ describe('turnErrorText — a connector sign-in expired (TASK-713)', () => {
     );
   });
 
+  // TASK-828 — several connectors at once get their own, plural sentence; the
+  // detail line underneath lists them.
+  it('has a plural sentence for several dead sign-ins, with the names on the detail line', () => {
+    const text = turnErrorText('connectors-need-reconnect', 'Connectors: Gmail, Linear');
+    expect(text).toBe(
+      'Some of this agent’s connectors need you to sign in again. Open Connectors, reconnect each one, then retry.\nConnectors: Gmail, Linear',
+    );
+  });
+
+  it('offers the Open Connectors button for the plural reason too (TASK-828)', () => {
+    expect(turnErrorOpensConnectors('connectors-need-reconnect')).toBe(true);
+  });
+
   it('keeps the generic line for an ordinary session-open failure', () => {
     expect(turnErrorText('proxy-open-failed')).toBe(DEFAULT_TURN_ERROR);
   });
@@ -124,7 +137,7 @@ describe('turnErrorText — a connector nobody signed in to yet (TASK-796, repla
     expect(text.toLowerCase()).not.toContain('reconnect');
   });
 
-  it('marks only the reconnect reason as fixed on the Connectors tab', () => {
+  it('marks only the reconnect reasons as fixed on the Connectors tab', () => {
     expect(turnErrorOpensConnectors('connector-needs-reconnect')).toBe(true);
     for (const other of ['proxy-open-failed', 'chat-run-timeout', 'toString', '', null, undefined]) {
       expect(turnErrorOpensConnectors(other)).toBe(false);

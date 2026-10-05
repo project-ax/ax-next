@@ -35,7 +35,7 @@ import {
   foldConnectorCaps,
   stampConnectorHeaders,
   connectorCredentialEnvName,
-  connectorLabel,
+  reconnectDetail,
   connectorSetFingerprint,
   type ResolvedConnectorForOrch,
   ConnectorServiceCollisionError,
@@ -45,6 +45,7 @@ import {
   isNeedsReconnect,
   isCredentialNotFound,
   failedCredentialEnvName,
+  credentialResolveFailures,
   errorLogFields,
 } from './proxy-errors.js';
 import {
@@ -898,26 +899,47 @@ interface OpenSessionResult {
 
 /** Turn-error reason: a connector's sign-in expired; reconnect it, then retry. */
 const CONNECTOR_NEEDS_RECONNECT = 'connector-needs-reconnect';
+/**
+ * Turn-error reason (TASK-828): SEVERAL connectors' sign-ins are dead. Its own
+ * code so the label can say "some … reconnect them" instead of "one … it".
+ */
+const CONNECTORS_NEED_RECONNECT = 'connectors-need-reconnect';
 
 /**
  * Classify a failed `proxy:open-session`. `connectorFor(envName)` answers the
  * connector that owns a credential env key, or undefined for the agent's own
- * keys. `detail` is the turn error's untrusted detail line — the connector's
- * label (already control-stripped and clamped by `connectorLabel`), present
- * only when the failure is attributed to a connector.
+ * keys. `detail` is the turn error's untrusted detail line naming the
+ * connectors (each label control-stripped and clamped by `connectorLabel`),
+ * present only when the failure is attributed to at least one connector.
+ *
+ * TASK-828 — the proxy reports EVERY credential that failed, so each failure
+ * is classified on its own and every connector with a dead sign-in is named
+ * (deduped — one connector can own several slots), in the order the proxy
+ * reported them. The turn is a reconnect if ANY failure is: that is the part
+ * the person can fix now, and anything else left over surfaces on the retry.
  */
 function classifyProxyOpenFailure(
   err: unknown,
   connectorFor: (envName: string) => { id: string; name?: unknown } | undefined,
 ): { reason: string; detail?: string } {
-  const envName = failedCredentialEnvName(err);
-  const connector = envName !== undefined ? connectorFor(envName) : undefined;
-  const reconnect =
-    isNeedsReconnect(err) || (connector !== undefined && isCredentialNotFound(err));
+  let reconnect = false;
+  const dead = new Map<string, { id: string; name?: unknown }>();
+  for (const failure of credentialResolveFailures(err)) {
+    const envName = failedCredentialEnvName(failure);
+    const connector = envName !== undefined ? connectorFor(envName) : undefined;
+    const isReconnect =
+      isNeedsReconnect(failure) || (connector !== undefined && isCredentialNotFound(failure));
+    if (!isReconnect) continue;
+    reconnect = true;
+    if (connector !== undefined && !dead.has(connector.id)) dead.set(connector.id, connector);
+  }
   if (!reconnect) return { reason: 'proxy-open-failed' };
-  return connector !== undefined
-    ? { reason: CONNECTOR_NEEDS_RECONNECT, detail: `Connector: ${connectorLabel(connector)}` }
-    : { reason: CONNECTOR_NEEDS_RECONNECT };
+  const named = [...dead.values()];
+  const detail = reconnectDetail(named);
+  return {
+    reason: named.length > 1 ? CONNECTORS_NEED_RECONNECT : CONNECTOR_NEEDS_RECONNECT,
+    ...(detail !== undefined ? { detail } : {}),
+  };
 }
 
 /** Owner tag for the agent's own credential slots — the model-provider key. */
@@ -2408,8 +2430,9 @@ export function createOrchestrator(
               // the agent mid-chat. The fresh spawn folds the new set.
               //
               // TASK-833: and when a connector it folded was deleted or edited.
-              // Terminating closes its proxy session, so a deleted connector's
-              // key stops being substituted no later than this turn.
+              // Its proxy session is closed below (TASK-871: directly, not only
+              // via terminate), so a deleted connector's key stops being
+              // substituted no later than this turn.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
                 reason: hostSessionMissing
@@ -2441,6 +2464,27 @@ export function createOrchestrator(
               skippedConnectorRefsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
               forgetSessionConnectors(candidate);
+              // TASK-871 — revoke the retired session's credentials HERE, not
+              // via terminate. A warm session's proxy close is otherwise
+              // deferred to `handle.exited`; if session:terminate throws (or
+              // hangs) and the runner survives, that never fires and the proxy
+              // keeps substituting the OLD key until the idle reaper. Closing
+              // first means a hung terminate cannot delay it either. The close
+              // is idempotent, so the later `handle.exited` close is a no-op.
+              // Nothing of the old session is in flight: we are between turns.
+              if (bus.hasService('proxy:close-session')) {
+                try {
+                  await bus.call<ProxyCloseSessionInput, Record<string, never>>(
+                    'proxy:close-session', ctx, { sessionId: candidate },
+                  );
+                } catch (err) {
+                  ctx.logger.warn('proxy_close_session_failed', {
+                    sessionId: candidate,
+                    phase: 'retire',
+                    ...errorLogFields(err),
+                  });
+                }
+              }
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
               } catch (err) {

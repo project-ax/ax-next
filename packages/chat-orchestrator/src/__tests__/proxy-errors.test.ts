@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { PluginError } from '@ax/core';
 import {
+  credentialResolveFailures,
   errorLogFields,
   failedCredentialEnvName,
   isCredentialNotFound,
@@ -71,5 +72,51 @@ describe('proxy-errors', () => {
     expect(clamped.name.length).toBeLessThanOrEqual(64);
     expect((clamped.code ?? '').length).toBeLessThanOrEqual(64);
     expect(errorLogFields('a string')).toEqual({ name: 'string' });
+  });
+
+  // TASK-828 — the proxy reports EVERY failed credential; each is read alone.
+  describe('credentialResolveFailures', () => {
+    /** The proxy's several-failures shape: outer named error → AggregateError. */
+    function several(failures: PluginError[]): PluginError {
+      return new PluginError({
+        code: 'credential-resolve-failed',
+        plugin: '@ax/credential-proxy',
+        message: 'some session credentials could not be resolved',
+        cause: new AggregateError(failures, 'several', { cause: failures[0]?.cause }),
+        diagnosis: { ...failures[0]?.diagnosis },
+      });
+    }
+
+    it('one failure (or a pre-TASK-828 proxy) is the error itself', () => {
+      const one = proxyFailure('E', reconnect());
+      expect(credentialResolveFailures(one)).toEqual([one]);
+      const plain = new Error('x');
+      expect(credentialResolveFailures(plain)).toEqual([plain]);
+    });
+
+    it('several failures come back one per credential, in order, under a bus wrapper too', () => {
+      const a = proxyFailure('connector:gmail:GMAIL', reconnect());
+      const b = proxyFailure('connector:linear:LINEAR', reconnect());
+      const err = several([a, b]);
+      expect(credentialResolveFailures(err)).toEqual([a, b]);
+      const wrapped = new PluginError({ code: 'unknown', plugin: 'bus', message: 'w', cause: err });
+      const got = credentialResolveFailures(wrapped);
+      expect(got.map(failedCredentialEnvName)).toEqual(['connector:gmail:GMAIL', 'connector:linear:LINEAR']);
+    });
+
+    it("ignores an AggregateError inside ONE resolver's own failure (a dialer's), keeping its classification", () => {
+      const dialer = new AggregateError([new Error('ECONNREFUSED a'), new Error('ECONNREFUSED b')], 'connect');
+      const r = reconnect();
+      (r as { cause?: unknown }).cause = dialer;
+      const one = proxyFailure('connector:gmail:GMAIL', r);
+      const got = credentialResolveFailures(one);
+      expect(got).toEqual([one]);
+      expect(isNeedsReconnect(got[0])).toBe(true);
+    });
+
+    it('bounds a huge errors array', () => {
+      const many = Array.from({ length: 500 }, (_, i) => proxyFailure(`E${i}`, reconnect()));
+      expect(credentialResolveFailures(several(many))).toHaveLength(64);
+    });
   });
 });
