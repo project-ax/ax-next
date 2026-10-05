@@ -462,6 +462,36 @@ describe('connectConnectorTools — server drops the MCP session (TASK-839)', ()
     expect(ct.policy.postToolUse).toHaveBeenLastCalledWith(`mcp.${NS}.echo`, 'call-1', { text: 'again' }, 'again', false);
   });
 
+  it('the reconnect and the retried call go through the same proxy fetch, carrying only the placeholder', async () => {
+    const s = await testServer([echoTool], { sessionful: true });
+    const seenByFetch: Array<{ method: string; auth: string }> = [];
+    const recordingFetch: typeof fetch = async (input, init) => {
+      const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as { method?: string }) : {};
+      seenByFetch.push({
+        method: body.method ?? `<${init?.method ?? 'GET'}>`,
+        auth: new Headers(init?.headers).get('authorization') ?? '<none>',
+      });
+      return fetch(input, init);
+    };
+    const ct = await connect(
+      { [NS]: { url: s.url, headers: { Authorization: `Bearer ${PH}` }, bundle: 'b' } },
+      { fetch: recordingFetch },
+    );
+    await s.forgetSessions();
+    const before = seenByFetch.length;
+    const headersBefore = s.seenHeaders.length;
+    await expect(exec(ct, `mcp__${NS}__echo`, { text: 'via proxy' })).resolves.toBe('via proxy');
+
+    const after = seenByFetch.slice(before);
+    // The failed call, the re-initialize, and the retried call — all through OUR fetch.
+    expect(after.map((r) => r.method)).toEqual(
+      expect.arrayContaining(['tools/call', 'initialize', 'notifications/initialized']),
+    );
+    expect(after.filter((r) => r.method === 'tools/call')).toHaveLength(2);
+    expect(new Set(after.map((r) => r.auth))).toEqual(new Set([`Bearer ${PH}`]));
+    expect(s.seenHeaders.slice(headersBefore).every((h) => h.authorization === `Bearer ${PH}`)).toBe(true);
+  });
+
   it('a 404 without an MCP session (stateless server) is a plain failed call — no reconnect', async () => {
     const s = await testServer([echoTool], {
       methodError: { method: 'tools/call', status: 404, body: 'no such route' },
