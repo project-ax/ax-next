@@ -61,6 +61,13 @@ export const FAILURE_TTL_MS = 60 * 1000;
  * expired cache), so no caller can probe a third-party server faster. Per
  * process: N replicas allow N per window, a small fixed multiple that never
  * grows with how hard a client pushes.
+ *
+ * TASK-841 — one exception: a server that had NOTHING stored for its sign-in
+ * at the window's check, and has one now. Its sign-in finished inside the
+ * window, so the answer we hold is stale by definition; one check is made and
+ * it opens a new window. Each server buys that at most once while windows
+ * chain (the set only shrinks), so a connector with N servers is checked at
+ * most N + 1 times per window however hard a client pushes.
  */
 export const CHECK_COOLDOWN_MS = 30 * 1000;
 const CHECK_COOLDOWN_MAX_KEYS = 1_000;
@@ -183,19 +190,30 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
   const now = deps.now ?? (() => new Date());
   const list = deps.listTools ?? listServerTools;
   const inFlight = new Map<string, Promise<DescribeToolsOutput>>();
-  /** (user, connector) → when a check of its servers last started (TASK-756). */
-  const lastChecked = new Map<string, number>();
-  function noteChecked(key: string, at: number): void {
+  /**
+   * (user, connector) → its current window (TASK-756): when a check of its
+   * servers last started, and (TASK-841) which servers had nothing stored for
+   * their sign-in at that check — `null` while the check is still running, so
+   * a concurrent call has nothing to re-check against.
+   */
+  interface CheckWindow {
+    at: number;
+    absent: ReadonlySet<string> | null;
+  }
+  const lastChecked = new Map<string, CheckWindow>();
+  function noteChecked(key: string, at: number): CheckWindow {
     lastChecked.delete(key);
     if (lastChecked.size >= CHECK_COOLDOWN_MAX_KEYS) {
-      for (const [k, t] of lastChecked) if (at - t >= CHECK_COOLDOWN_MS || at < t) lastChecked.delete(k);
+      for (const [k, w] of lastChecked) if (at - w.at >= CHECK_COOLDOWN_MS || at < w.at) lastChecked.delete(k);
       while (lastChecked.size >= CHECK_COOLDOWN_MAX_KEYS) {
         const oldest = lastChecked.keys().next().value;
         if (oldest === undefined) break;
         lastChecked.delete(oldest);
       }
     }
-    lastChecked.set(key, at);
+    const window: CheckWindow = { at, absent: null };
+    lastChecked.set(key, window);
+    return window;
   }
   /**
    * The last answer per (user, agent, connector) that the store did NOT keep
@@ -210,7 +228,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     server: ResolvedServer,
     ctx: AgentContext,
     userId: string,
-  ): Promise<{ headers: Record<string, string>; bearerRef?: string } | 'needs-auth' | 'unavailable'> {
+  ): Promise<{ headers: Record<string, string>; bearerRef?: string } | 'absent' | 'needs-auth' | 'unavailable'> {
     const headers: Record<string, string> = {};
     // The ref whose token is in `Authorization` (the last OAuth slot wins).
     let bearerRef: string | undefined;
@@ -233,7 +251,10 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
           code: err instanceof PluginError ? err.code : 'error',
           transient: !missing,
         });
-        return missing ? 'needs-auth' : 'unavailable';
+        if (!missing) return 'unavailable';
+        // TASK-841 — nothing stored at all (never signed in, or signed out),
+        // as opposed to a sign-in the authorization server rejected.
+        return err instanceof PluginError && err.code === 'credential-not-found' ? 'absent' : 'needs-auth';
       }
       if (typeof value !== 'string' || value.length === 0) return 'needs-auth';
       headers[header] = slot.kind === 'oauth' ? `Bearer ${value}` : value;
@@ -287,7 +308,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
     key: InventoryKey,
     previous: InventoryRow | null,
     connector: ResolvedConnector,
-  ): Promise<{ out: DescribeToolsOutput; asked: boolean }> {
+  ): Promise<{ out: DescribeToolsOutput; asked: boolean; absent: Set<string> }> {
     const nsByServer = new Map((connector.toolNamespaces ?? []).map((t) => [t.server, t.toolNamespace]));
 
     let status: InventoryStatus = 'unknown';
@@ -311,6 +332,9 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
           bearerRef?: string;
         };
     const planned: Planned[] = [];
+    // TASK-841 — servers that stopped here because nothing is stored for
+    // their sign-in: the only ones a call inside the window reads again.
+    const absent = new Set<string>();
     for (const server of connector.capabilities.mcpServers) {
       anyHttp = true;
       const ns = nsByServer.get(server.name) ?? '';
@@ -337,8 +361,9 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
           message: 'credential temporarily unavailable; try again',
         });
       }
+      if (headers === 'absent') absent.add(server.name);
       planned.push(
-        headers === 'needs-auth'
+        headers === 'needs-auth' || headers === 'absent'
           ? { server, ns, outcome: { kind: 'needs-auth' } }
           : { server, ns, url: server.url, headers: headers.headers, ...(headers.bearerRef !== undefined ? { bearerRef: headers.bearerRef } : {}) },
       );
@@ -404,7 +429,30 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       const event: ToolsDiscoveredEvent = { connectorId: input.connectorId, tools };
       await deps.bus.fire('connectors:tools-discovered', ctx, event);
     }
-    return { out: { status, tools, checkedAt: checkedAt.toISOString() }, asked };
+    return { out: { status, tools, checkedAt: checkedAt.toISOString() }, asked, absent };
+  }
+
+  /**
+   * TASK-841 — which of `absent` (servers that had nothing stored for their
+   * sign-in at the window's check) have a usable sign-in now. Reads ONLY
+   * those: for them `credentials:get` is one local row read until a sign-in
+   * lands, then a fresh token — whereas reading a REJECTED sign-in may ask
+   * the authorization server to renew it, which is the kind of call the
+   * window exists to bound. A blip reads as "not yet"; never throws.
+   */
+  async function signedInSince(
+    absent: ReadonlySet<string>,
+    connector: ResolvedConnector,
+    ctx: AgentContext,
+    userId: string,
+  ): Promise<Set<string>> {
+    const found = new Set<string>();
+    for (const server of connector.capabilities.mcpServers) {
+      if (!absent.has(server.name)) continue;
+      const headers = await headersFor(connector, server, ctx, userId).catch(() => 'unavailable' as const);
+      if (typeof headers === 'object') found.add(server.name);
+    }
+    return found;
   }
 
   return async function describeTools(
@@ -457,41 +505,79 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       tools: row.tools,
       checkedAt: row.checkedAt.toISOString(),
     });
+    // TASK-841 — set only when this call is the one re-check a sign-in buys
+    // inside the window: `before` is the window's set of servers that had no
+    // sign-in, `carried` the ones that still have none. The new window this
+    // check opens starts from `carried`, so the set only shrinks while
+    // windows chain.
+    let reCheck: { before: ReadonlySet<string>; carried: ReadonlySet<string> } | null = null;
     if (previous !== null) {
       const ttl = previous.status === 'ok' ? OK_TTL_MS : FAILURE_TTL_MS;
       const age = at - previous.checkedAt.getTime();
       if (input.force !== true && age >= 0 && age < ttl) return cached(previous);
       const last = lastChecked.get(coolKey);
-      if (last !== undefined && at >= last && at - last < CHECK_COOLDOWN_MS) {
+      if (last !== undefined && at >= last.at && at - last.at < CHECK_COOLDOWN_MS) {
         // Forced, or stale: either way not inside the window. What we have is
-        // the last real answer.
-        callerCtx.logger.info('connector_inventory_check_cooled_down', { connectorId: input.connectorId });
-        return cached(previous);
+        // the last real answer — unless a server that had no sign-in at the
+        // window's check has one now (TASK-841).
+        const before = last.absent;
+        const signedIn =
+          before !== null && before.size > 0
+            ? await signedInSince(before, connector, ctx, input.userId)
+            : new Set<string>();
+        // Re-read after the await: a concurrent call may have used this
+        // window's re-check already. Nothing awaits between here and
+        // `noteChecked`, so only one call can.
+        if (before === null || signedIn.size === 0 || lastChecked.get(coolKey) !== last) {
+          callerCtx.logger.info('connector_inventory_check_cooled_down', { connectorId: input.connectorId });
+          return cached(previous);
+        }
+        reCheck = { before, carried: new Set([...before].filter((s) => !signedIn.has(s))) };
+        callerCtx.logger.info('connector_inventory_check_after_sign_in', {
+          connectorId: input.connectorId,
+          servers: signedIn.size,
+        });
       }
     }
     const pending = inFlight.get(flightKey);
     if (pending !== undefined) return pending;
-    noteChecked(coolKey, at);
+    const window = noteChecked(coolKey, at);
     const run = check(input, ctx, key, previous, connector)
-      .then(({ out, asked }) => {
-        // TASK-812 — same rule as the credential blip below: a check that
-        // asked no server must not use up the window. Otherwise a sign-in
-        // finished inside it is answered "needs-auth" from the row this
-        // credential-only check just wrote, Retry and `?refresh=1` included.
-        // Probes stay bounded: the window still holds after any check that
-        // listed even one server.
-        if (!asked && lastChecked.get(coolKey) === at) lastChecked.delete(coolKey);
+      .then(({ out, asked, absent }) => {
+        if (lastChecked.get(coolKey) !== window) return out;
+        if (reCheck !== null) {
+          // TASK-841 — a re-check keeps its window whatever it asked: the
+          // check before it did ask a server.
+          const carried = reCheck.carried;
+          window.absent = new Set([...carried].filter((s) => absent.has(s)));
+        } else if (!asked) {
+          // TASK-812 — same rule as the credential blip below: a check that
+          // asked no server must not use up the window. Otherwise a sign-in
+          // finished inside it is answered "needs-auth" from the row this
+          // credential-only check just wrote, Retry and `?refresh=1` included.
+          // Probes stay bounded: the window still holds after any check that
+          // listed even one server.
+          lastChecked.delete(coolKey);
+        } else {
+          window.absent = absent;
+        }
         return out;
       })
       .catch((err: unknown) => {
-        // A credential blip throws before any server was asked (pass 1), so
-        // it must not use up the window — "try again" has to mean it.
-        if (
-          err instanceof PluginError &&
-          err.code === 'credential-unavailable' &&
-          lastChecked.get(coolKey) === at
-        ) {
-          lastChecked.delete(coolKey);
+        if (lastChecked.get(coolKey) === window) {
+          if (reCheck !== null) {
+            // TASK-841 — the re-check keeps its window either way (the check
+            // before it asked a server). A credential blip throws before any
+            // server is listed, so the servers it was for still count as "no
+            // sign-in yet" and the next call may try again. Any other failure
+            // may have come after a listing: nothing more is bought.
+            const blip = err instanceof PluginError && err.code === 'credential-unavailable';
+            window.absent = blip ? reCheck.before : reCheck.carried;
+          } else if (err instanceof PluginError && err.code === 'credential-unavailable') {
+            // A credential blip throws before any server was asked (pass 1), so
+            // it must not use up the window — "try again" has to mean it.
+            lastChecked.delete(coolKey);
+          }
         }
         throw err;
       })
