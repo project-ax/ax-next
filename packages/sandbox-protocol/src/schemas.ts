@@ -271,8 +271,12 @@ export const ProxyConfigSchema = z
 export type ProxyConfig = z.infer<typeof ProxyConfigSchema>;
 
 // The full `sandbox:open-session` input envelope. Both backends `safeParse`
-// this at their boundary. `owner`, `proxyConfig`, and `installedSkills` are
-// optional for back-compat with non-orchestrator paths (tests, ad-hoc CLI).
+// this at their boundary. `owner` and `installedSkills` are optional for
+// back-compat with non-orchestrator paths (tests, ad-hoc CLI). `proxyConfig`
+// is REQUIRED (TASK-838): the runner refuses to boot without the per-session
+// proxy env, so a session opened without one could never be served. The host
+// refuses it here, before a sandbox is spawned, instead of letting it surface
+// as a runner exit 2.
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
@@ -301,7 +305,7 @@ export const OpenSessionInputSchema = z.object({
       source: z.enum(['routine', 'user']).optional(),
     })
     .optional(),
-  proxyConfig: ProxyConfigSchema.optional(),
+  proxyConfig: ProxyConfigSchema,
   installedSkills: z.array(InstalledSkillSchema).max(50).optional(),
   // TASK-150 — dev SERVICES the orchestrator folded from the agent's connector
   // capabilities. Optional + back-compat with non-orchestrator callers (tests,

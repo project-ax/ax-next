@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OpenSessionInputSchema } from '../open-session.js';
+import { TEST_PROXY_CONFIG } from './proxy-config.js';
 
 // ---------------------------------------------------------------------------
 // Schema rejection tests for OpenSessionInputSchema (Phase B follow-up).
@@ -23,6 +24,9 @@ function validBaseInput(): unknown {
     sessionId: 'sess-base',
     workspaceRoot: '/tmp/ws',
     runnerBinary: '/opt/ax/runner.js',
+    // REQUIRED since TASK-838. Every rejection test below mutates this base, so
+    // each one must be refused for ITS OWN field (see expectRejectedAt).
+    proxyConfig: TEST_PROXY_CONFIG,
     installedSkills: [
       {
         id: 'github',
@@ -51,6 +55,19 @@ function withMcpServer(server: Record<string, unknown>): unknown {
   return base;
 }
 
+// Assert `input` is rejected AT `expectedPath` (a dotted zod issue path) and
+// NOT because proxyConfig is missing/invalid. A bare `success === false` can't
+// tell those apart now that proxyConfig is required, which would let every
+// rejection test pass vacuously if the base input lost its proxyConfig.
+function expectRejectedAt(input: unknown, expectedPath: string): void {
+  const result = OpenSessionInputSchema.safeParse(input);
+  expect(result.success).toBe(false);
+  if (result.success) return;
+  const paths = result.error.issues.map((i) => i.path.join('.'));
+  expect(paths).toContain(expectedPath);
+  expect(paths.some((p) => p.startsWith('proxyConfig'))).toBe(false);
+}
+
 describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
   it('accepts the valid base input (sanity)', () => {
     const result = OpenSessionInputSchema.safeParse(validBaseInput());
@@ -61,7 +78,7 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
     // Name must match /^[a-z][a-z0-9-]{0,63}$/ — uppercase and leading
     // digits are out. We use uppercase here; both shapes are equivalent
     // rejection cases.
-    const result = OpenSessionInputSchema.safeParse(
+    expectRejectedAt(
       withMcpServer({
         name: 'Remote',
         transport: 'http',
@@ -69,12 +86,12 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
         allowedHosts: [],
         credentials: [],
       }),
+      'installedSkills.0.mcpServers.0.name',
     );
-    expect(result.success).toBe(false);
   });
 
   it('rejects an mcpServers entry whose transport is not http', () => {
-    const result = OpenSessionInputSchema.safeParse(
+    expectRejectedAt(
       withMcpServer({
         name: 'remote',
         transport: 'websocket',
@@ -82,12 +99,12 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
         allowedHosts: [],
         credentials: [],
       }),
+      'installedSkills.0.mcpServers.0.transport',
     );
-    expect(result.success).toBe(false);
   });
 
   it('rejects a stdio mcpServers entry (transport removed)', () => {
-    const result = OpenSessionInputSchema.safeParse(
+    expectRejectedAt(
       withMcpServer({
         name: 'local',
         transport: 'stdio',
@@ -95,8 +112,8 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
         allowedHosts: [],
         credentials: [],
       }),
+      'installedSkills.0.mcpServers.0.command',
     );
-    expect(result.success).toBe(false);
   });
 
   it('rejects installedSkills entries with more than 8 mcpServers', () => {
@@ -114,8 +131,7 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
       installedSkills: Array<{ mcpServers: unknown[] }>;
     };
     base.installedSkills[0]!.mcpServers = tooMany;
-    const result = OpenSessionInputSchema.safeParse(base);
-    expect(result.success).toBe(false);
+    expectRejectedAt(base, 'installedSkills.0.mcpServers');
   });
 
   // -------------------------------------------------------------------------
@@ -126,7 +142,7 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
   // -------------------------------------------------------------------------
 
   it('rejects an http mcpServers entry that is missing url', () => {
-    const result = OpenSessionInputSchema.safeParse(
+    expectRejectedAt(
       withMcpServer({
         name: 'remote',
         transport: 'http',
@@ -134,12 +150,12 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
         allowedHosts: [],
         credentials: [],
       }),
+      'installedSkills.0.mcpServers.0.url',
     );
-    expect(result.success).toBe(false);
   });
 
   it('rejects an http mcpServers entry that also sets command (cross-contamination)', () => {
-    const result = OpenSessionInputSchema.safeParse(
+    expectRejectedAt(
       withMcpServer({
         name: 'remote',
         transport: 'http',
@@ -148,7 +164,7 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
         allowedHosts: [],
         credentials: [],
       }),
+      'installedSkills.0.mcpServers.0.command',
     );
-    expect(result.success).toBe(false);
   });
 });

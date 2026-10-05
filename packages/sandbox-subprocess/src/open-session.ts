@@ -569,8 +569,7 @@ export async function openSessionImpl(
     GIT_CONFIG_VALUE_0: '*',
   };
 
-  // credential-proxy env. When the orchestrator handed us a `proxyConfig`,
-  // write the MITM CA PEM to the per-session tempdir (the same one we
+  // credential-proxy env. Write the MITM CA PEM to the per-session tempdir (the same one we
   // built for the IPC socket — its 0700 mode keeps it host-uid-only) and
   // inject the matching env vars. The CA cleanup piggybacks on the
   // existing tempdir cleanup in the close handler — no new code.
@@ -583,90 +582,87 @@ export async function openSessionImpl(
   //     populated for off-the-shelf libraries that won't know about the
   //     ax-prefixed ones.
   //
-  // When `proxyConfig` is undefined, no proxy env is injected. The runner
-  // will read neither AX_PROXY_ENDPOINT nor AX_PROXY_UNIX_SOCKET and fail
-  // at boot — that's the intended Phase 5 behavior; presets that want a
-  // working runner load @ax/credential-proxy.
-  if (input.proxyConfig !== undefined) {
-    const caPath = path.join(socketDir, 'ax-mitm-ca.pem');
-    try {
-      await fs.writeFile(caPath, input.proxyConfig.caCertPem, { mode: 0o600 });
-    } catch (err) {
-      await bus
-        .call('ipc:stop', ctx, { sessionId: created.sessionId })
-        .catch(() => undefined);
-      await bus
-        .call('session:terminate', ctx, { sessionId: created.sessionId })
-        .catch(() => undefined);
-      await unlockInstalledSkillsDir(installedSkillsDir);
-      await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
-      throw new PluginError({
-        code: 'ca-write-failed',
-        plugin: PLUGIN_NAME,
-        hookName: HOOK_NAME,
-        message: `failed to write MITM CA cert to ${caPath}`,
-        cause: err,
-      });
-    }
-    sessionEnv.NODE_EXTRA_CA_CERTS = caPath;
-    sessionEnv.SSL_CERT_FILE = caPath;
-    // TASK-12: the `git` binary the Bash tool spawns is libcurl/OpenSSL-
-    // backed and reads NEITHER NODE_EXTRA_CA_CERTS nor SSL_CERT_FILE — it
-    // verifies the proxy MITM cert against GIT_SSL_CAINFO. Point it at the
-    // same per-session CA file, or `git clone` over the proxy fails with
-    // `SSL certificate problem: unable to get local issuer certificate`.
-    // Mirrors the k8s side (pod-spec.ts stamps the fixed /var/run/ax path).
-    sessionEnv.GIT_SSL_CAINFO = caPath;
-    // TASK-62: Deno-compiled CLIs the Bash tool spawns (e.g.
-    // `npx @schpet/linear-cli`) use rustls with a bundled Mozilla root store
-    // and read NEITHER NODE_EXTRA_CA_CERTS nor SSL_CERT_FILE — Deno honors only
-    // DENO_CERT. Point it at the same per-session CA file, or the CLI's HTTPS
-    // call over the proxy dies with `invalid peer certificate: UnknownIssuer`.
-    // Mirrors the k8s side (pod-spec.ts stamps the fixed /var/run/ax path).
-    sessionEnv.DENO_CERT = caPath;
-    if (input.proxyConfig.endpoint !== undefined) {
-      sessionEnv.HTTPS_PROXY = input.proxyConfig.endpoint;
-      sessionEnv.HTTP_PROXY = input.proxyConfig.endpoint;
-      sessionEnv.AX_PROXY_ENDPOINT = input.proxyConfig.endpoint;
-    }
-    if (input.proxyConfig.unixSocketPath !== undefined) {
-      // Subprocess sandbox passes through; the runner-side bridge converts
-      // this to a local TCP port and rewrites HTTP(S)_PROXY in-process.
-      sessionEnv.AX_PROXY_UNIX_SOCKET = input.proxyConfig.unixSocketPath;
-    }
-    // TASK-52: per-session proxy token for egress attribution. The runner
-    // (proxy-startup.ts) reads AX_PROXY_TOKEN and embeds it as Basic
-    // userinfo on the proxy URL the SDK subprocess uses, so every egress
-    // client sends `Proxy-Authorization: Basic ax:<token>` automatically.
-    // We leave HTTPS_PROXY/HTTP_PROXY unchanged here — the token is the
-    // single source the runner reads; it owns the URL embedding. Always set
-    // (TASK-784 — required by ProxyConfigSchema).
-    sessionEnv.AX_PROXY_TOKEN = input.proxyConfig.proxyAuthToken;
-    // Merge envMap LAST so per-session credential placeholders win over
-    // anything we set above. (They shouldn't collide with HTTPS_PROXY etc.,
-    // but be explicit so a future field collision doesn't silently do the
-    // wrong thing.)
-    Object.assign(sessionEnv, input.proxyConfig.envMap);
-
-    // TASK-14 (CLI-1 part 2): wire skill-declared credentials into git's HTTP
-    // Basic auth — a host-scoped `url.<base>.insteadOf` rewrite per credentialed
-    // allowedHost so `git clone https://<host>/...` sends the proxy placeholder
-    // as a preemptive Basic password (the proxy substitutes it). Appends after
-    // the safe.directory entry (index 0); the returned GIT_CONFIG_COUNT is the
-    // new total and overwrites the base count set above. Mirrors the k8s side
-    // (pod-spec.ts). The runner forwards GIT_* into the SDK subprocess.
-    Object.assign(
-      sessionEnv,
-      buildGitCredentialEnv({
-        installedSkills: (input.installedSkills ?? []).map((s) => ({
-          allowedHosts: s.allowedHosts ?? [],
-          credentials: s.credentials ?? [],
-        })),
-        envMap: input.proxyConfig.envMap,
-        baseCount: 1, // index 0 is safe.directory (set in sessionEnv above)
-      }),
-    );
+  // `proxyConfig` is REQUIRED by OpenSessionInputSchema (TASK-838): an input
+  // without one was already refused at the schema parse above, before any
+  // session was minted — the runner cannot boot without the proxy env.
+  const caPath = path.join(socketDir, 'ax-mitm-ca.pem');
+  try {
+    await fs.writeFile(caPath, input.proxyConfig.caCertPem, { mode: 0o600 });
+  } catch (err) {
+    await bus
+      .call('ipc:stop', ctx, { sessionId: created.sessionId })
+      .catch(() => undefined);
+    await bus
+      .call('session:terminate', ctx, { sessionId: created.sessionId })
+      .catch(() => undefined);
+    await unlockInstalledSkillsDir(installedSkillsDir);
+    await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
+    throw new PluginError({
+      code: 'ca-write-failed',
+      plugin: PLUGIN_NAME,
+      hookName: HOOK_NAME,
+      message: `failed to write MITM CA cert to ${caPath}`,
+      cause: err,
+    });
   }
+  sessionEnv.NODE_EXTRA_CA_CERTS = caPath;
+  sessionEnv.SSL_CERT_FILE = caPath;
+  // TASK-12: the `git` binary the Bash tool spawns is libcurl/OpenSSL-
+  // backed and reads NEITHER NODE_EXTRA_CA_CERTS nor SSL_CERT_FILE — it
+  // verifies the proxy MITM cert against GIT_SSL_CAINFO. Point it at the
+  // same per-session CA file, or `git clone` over the proxy fails with
+  // `SSL certificate problem: unable to get local issuer certificate`.
+  // Mirrors the k8s side (pod-spec.ts stamps the fixed /var/run/ax path).
+  sessionEnv.GIT_SSL_CAINFO = caPath;
+  // TASK-62: Deno-compiled CLIs the Bash tool spawns (e.g.
+  // `npx @schpet/linear-cli`) use rustls with a bundled Mozilla root store
+  // and read NEITHER NODE_EXTRA_CA_CERTS nor SSL_CERT_FILE — Deno honors only
+  // DENO_CERT. Point it at the same per-session CA file, or the CLI's HTTPS
+  // call over the proxy dies with `invalid peer certificate: UnknownIssuer`.
+  // Mirrors the k8s side (pod-spec.ts stamps the fixed /var/run/ax path).
+  sessionEnv.DENO_CERT = caPath;
+  if (input.proxyConfig.endpoint !== undefined) {
+    sessionEnv.HTTPS_PROXY = input.proxyConfig.endpoint;
+    sessionEnv.HTTP_PROXY = input.proxyConfig.endpoint;
+    sessionEnv.AX_PROXY_ENDPOINT = input.proxyConfig.endpoint;
+  }
+  if (input.proxyConfig.unixSocketPath !== undefined) {
+    // Subprocess sandbox passes through; the runner-side bridge converts
+    // this to a local TCP port and rewrites HTTP(S)_PROXY in-process.
+    sessionEnv.AX_PROXY_UNIX_SOCKET = input.proxyConfig.unixSocketPath;
+  }
+  // TASK-52: per-session proxy token for egress attribution. The runner
+  // (proxy-startup.ts) reads AX_PROXY_TOKEN and embeds it as Basic
+  // userinfo on the proxy URL the SDK subprocess uses, so every egress
+  // client sends `Proxy-Authorization: Basic ax:<token>` automatically.
+  // We leave HTTPS_PROXY/HTTP_PROXY unchanged here — the token is the
+  // single source the runner reads; it owns the URL embedding. Always set
+  // (TASK-784 — required by ProxyConfigSchema).
+  sessionEnv.AX_PROXY_TOKEN = input.proxyConfig.proxyAuthToken;
+  // Merge envMap LAST so per-session credential placeholders win over
+  // anything we set above. (They shouldn't collide with HTTPS_PROXY etc.,
+  // but be explicit so a future field collision doesn't silently do the
+  // wrong thing.)
+  Object.assign(sessionEnv, input.proxyConfig.envMap);
+
+  // TASK-14 (CLI-1 part 2): wire skill-declared credentials into git's HTTP
+  // Basic auth — a host-scoped `url.<base>.insteadOf` rewrite per credentialed
+  // allowedHost so `git clone https://<host>/...` sends the proxy placeholder
+  // as a preemptive Basic password (the proxy substitutes it). Appends after
+  // the safe.directory entry (index 0); the returned GIT_CONFIG_COUNT is the
+  // new total and overwrites the base count set above. Mirrors the k8s side
+  // (pod-spec.ts). The runner forwards GIT_* into the SDK subprocess.
+  Object.assign(
+    sessionEnv,
+    buildGitCredentialEnv({
+      installedSkills: (input.installedSkills ?? []).map((s) => ({
+        allowedHosts: s.allowedHosts ?? [],
+        credentials: s.credentials ?? [],
+      })),
+      envMap: input.proxyConfig.envMap,
+      baseCount: 1, // index 0 is safe.directory (set in sessionEnv above)
+    }),
+  );
 
   // Allowlist FIRST, sessionEnv LAST: the parent's PATH/HOME/TZ etc. are
   // load-bearing for the runner (resolving `node`, finding home dirs), but
@@ -867,7 +863,7 @@ export async function openSessionImpl(
   //     ctx.logger so per-request correlation is automatic.
   const stderrTail = createStderrTail([
     created.token,
-    ...(input.proxyConfig !== undefined ? [input.proxyConfig.proxyAuthToken] : []),
+    input.proxyConfig.proxyAuthToken,
   ]);
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {

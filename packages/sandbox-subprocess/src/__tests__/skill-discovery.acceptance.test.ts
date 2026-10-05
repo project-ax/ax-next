@@ -7,6 +7,7 @@ import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
+import { TEST_PROXY_CONFIG } from './proxy-config.js';
 
 // ---------------------------------------------------------------------------
 // Phase 0 acceptance — SDK skill discovery (I-P0-1/3/4/5).
@@ -199,7 +200,7 @@ describe('Phase 0: SDK skill discovery acceptance', () => {
       result = await h.bus.call<unknown, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
-        { sessionId: 'p0-canary', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+        { sessionId: 'p0-canary', workspaceRoot: ws, runnerBinary: ECHO_STUB, proxyConfig: TEST_PROXY_CONFIG },
       );
 
       // 3. echo-stub emits env (line 1) then probe (line 2). Parse both.

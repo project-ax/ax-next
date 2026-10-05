@@ -454,11 +454,24 @@ describe('AgentConfigSchema', () => {
 
 // --- OpenSessionInputSchema (envelope) --------------------------------------
 
+// TASK-838 — proxyConfig is REQUIRED on the envelope, so every fixture below
+// carries one; a rejection test must fail for ITS reason, not for a missing
+// proxyConfig.
+function validProxyConfig() {
+  return {
+    endpoint: 'http://127.0.0.1:1',
+    caCertPem: 'PEM',
+    envMap: {},
+    proxyAuthToken: PROXY_TOKEN,
+  };
+}
+
 function validOpenSessionInput(): unknown {
   return {
     sessionId: 'sess-base',
     workspaceRoot: '/tmp/ws',
     runnerBinary: '/opt/ax/runner.js',
+    proxyConfig: validProxyConfig(),
     installedSkills: [
       {
         id: 'github',
@@ -475,6 +488,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
     });
     expect(result.success).toBe(true);
   });
@@ -489,6 +503,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: 'relative/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
     });
     expect(result.success).toBe(false);
   });
@@ -498,6 +513,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: 'runner.js',
+      proxyConfig: validProxyConfig(),
     });
     expect(result.success).toBe(false);
   });
@@ -507,6 +523,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: '',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
     });
     expect(result.success).toBe(false);
   });
@@ -520,6 +537,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
       installedSkills: skills,
     });
     expect(result.success).toBe(false);
@@ -556,6 +574,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
     };
     const proxyConfig = { endpoint: 'http://127.0.0.1:1', caCertPem: 'PEM', envMap: {} };
     expect(OpenSessionInputSchema.safeParse({ ...base, proxyConfig }).success).toBe(false);
@@ -573,9 +592,24 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
       services: [validServiceDescriptor()],
     });
     expect(result.success).toBe(true);
+  });
+
+  it('rejects an input with no proxyConfig, naming the field (TASK-838)', () => {
+    // A session without a credential proxy can never boot a runner (it
+    // refuses to start without AX_PROXY_*), so the host refuses it HERE —
+    // a schema error naming proxyConfig, not a runner exit 2 later.
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues.map((i) => i.path.join('.'))).toEqual(['proxyConfig']);
   });
 
   it('still accepts an input with no services (back-compat)', () => {
@@ -583,6 +617,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
     });
     expect(result.success).toBe(true);
   });
@@ -592,6 +627,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
       services: [{ ...validServiceDescriptor(), image: 'postgres:16' }],
     });
     expect(result.success).toBe(false);
@@ -602,6 +638,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
       services: [{ ...validServiceDescriptor(), writablePaths: ['var/lib/data'] }],
     });
     expect(result.success).toBe(false);
@@ -612,6 +649,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
       services: [{ ...validServiceDescriptor(), runtimeClassName: 'gvisor' }],
     });
     expect(result.success).toBe(false);
@@ -626,6 +664,7 @@ describe('OpenSessionInputSchema', () => {
       sessionId: 'sess-1',
       workspaceRoot: '/tmp/ws',
       runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
       services,
     });
     expect(result.success).toBe(false);
