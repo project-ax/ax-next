@@ -47,6 +47,8 @@ let listener: ProxyListener | undefined;
 const servers: net.Server[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   listener?.stop();
   listener = undefined;
   for (const s of servers.splice(0)) await new Promise<void>((r) => s.close(() => r()));
@@ -175,13 +177,33 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
   });
 
   it('leaves an established tunnel alone after the connect timeout has elapsed', async () => {
+    // TASK-870: this test owns the clock. It used to race the real one: the
+    // proxy's upstream TCP connect had to complete inside a 100ms wall-clock
+    // window, and an event-loop stall longer than that between the dial and
+    // the connect let the timers phase run the connect timer before the poll
+    // phase delivered the connect — a correct 502 on a tunnel that was never
+    // established from Node's view. Reproduced 5/5 with a 300ms busy-wait
+    // scheduled right after the dial. With setTimeout/clearTimeout faked (and
+    // only those — socket I/O, setImmediate and Date stay real), the connect
+    // window cannot elapse until the test says so, and it says so only after
+    // the tunnel is provably established.
     const CONNECT_TIMEOUT_MS = 100;
-    // The upstream speaks only once the timer would long since have fired, and
-    // only after the client has asked — so the reply proves the tunnel outlived
-    // the connect window without the test sleeping on a guess.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const armed = vi.spyOn(globalThis, 'setTimeout');
+    // The upstream answers only once asked AND only once the test has moved the
+    // clock past the connect window — so the reply proves the tunnel outlived it.
+    let answer: (() => void) | undefined;
+    let markRequestSeen!: () => void;
+    const upstreamGotRequest = new Promise<void>((r) => {
+      markRequestSeen = r;
+    });
     const plain = net.createServer((socket) => {
+      socket.on('error', () => {
+        /* teardown resets are fine */
+      });
       socket.once('data', () => {
-        setTimeout(() => socket.end('late-reply'), CONNECT_TIMEOUT_MS * 4);
+        answer = () => socket.end('late-reply');
+        markRequestSeen();
       });
     });
     servers.push(plain);
@@ -199,8 +221,7 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
       onAudit: (e) => audits.push(e),
     });
 
-    const started = Date.now();
-    const received = await new Promise<string>((resolve, reject) => {
+    const received = new Promise<string>((resolve, reject) => {
       const sock = net.connect(listener!.port, '127.0.0.1', () => {
         sock.write(rawConnect(`127.0.0.1:${upPort}`, tokenFor('s1')));
       });
@@ -216,13 +237,35 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
       sock.on('close', () => resolve(acc));
       sock.on('error', reject);
     });
+    // Awaited below, after the clock has moved; until then an early error must
+    // not surface as an unhandled rejection (it still fails the `await`).
+    received.catch(() => {
+      /* observed by the await below */
+    });
+    // The upstream holding the client's bytes means the proxy's upstream
+    // connect completed and the pipe is up: the tunnel is established.
+    await upstreamGotRequest;
 
-    expect(received).toMatch(/^HTTP\/1\.1 200 Connection Established\r\n\r\n/);
-    expect(received).toContain('late-reply');
-    // The tunnel genuinely lived past the connect window.
-    expect(Date.now() - started).toBeGreaterThan(CONNECT_TIMEOUT_MS * 2);
+    // Guard against a vacuous pass: the listener's connect timer really was
+    // armed on OUR clock (were it on a real one, advancing below would prove
+    // nothing) — and the completed connect has already cleared it.
+    expect(armed.mock.calls.filter(([, ms]) => ms === CONNECT_TIMEOUT_MS)).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
 
-    await pollUntil(() => audits.length >= 1, 'the tunnel audit row');
+    // Now let the connect window elapse — four times over — with the tunnel open.
+    vi.advanceTimersByTime(CONNECT_TIMEOUT_MS * 4);
+    // Only after that does the upstream answer.
+    answer!();
+
+    const reply = await received;
+    expect(reply).toMatch(/^HTTP\/1\.1 200 Connection Established\r\n\r\n/);
+    expect(reply).toContain('late-reply');
+
+    // Poll with setImmediate: `pollUntil` sleeps on setTimeout, which is fake here.
+    await new Promise<void>((resolve) => {
+      const check = () => (audits.length >= 1 ? resolve() : setImmediate(check));
+      check();
+    });
     expect(audits).toHaveLength(1);
     expect(audits[0]!.status).toBe(200);
     expect(audits[0]!.requestBytes).toBeGreaterThan(0);
