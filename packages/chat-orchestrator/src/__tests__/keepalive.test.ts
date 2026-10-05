@@ -1281,7 +1281,13 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
       const settled: { out?: AgentOutcome } = {};
       void retireWithFailedRotation(t).then((o) => { settled.out = o; });
       const tick = () => new Promise<void>((r) => setImmediate(r));
-      for (let i = 0; i < 200 && !t.closeIsPending; i++) await tick();
+      // Wall-clock budgeted (Date stays real: only setTimeout/clearTimeout are
+      // faked), polled on setImmediate — vi.waitFor would advance the fake clock.
+      const until = async (cond: () => boolean): Promise<void> => {
+        const deadline = Date.now() + 5_000;
+        while (!cond() && Date.now() < deadline) await tick();
+      };
+      await until(() => t.closeIsPending);
       expect(t.closeIsPending).toBe(true);
       // The bound is armed on the (fake) clock — otherwise this test proves nothing.
       expect(spy.mock.calls.some(([, ms]) => ms === CLOSE_BOUND_MS)).toBe(true);
@@ -1292,11 +1298,11 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
       expect(t.logs.some((l) => l.msg === 'proxy_close_session_timeout')).toBe(false);
 
       vi.advanceTimersByTime(CLOSE_BOUND_MS);
-      for (let i = 0; i < 200 && t.opens < 2; i++) await tick();
+      await until(() => t.opens >= 2);
       // The turn-end `turn()` pre-fired landed while routing was held; the
       // fresh runner's turn ends now.
       t.endTurn('s-2', 'req-2');
-      for (let i = 0; i < 200 && settled.out === undefined; i++) await tick();
+      await until(() => settled.out !== undefined);
 
       expect(settled.out).toEqual({ kind: 'complete', messages: [] });
       expect(t.terminated).toContain('s-1');
@@ -1306,7 +1312,7 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
       // Not cancelled: the slow close still revokes the old session when it lands.
       expect(t.proxyTables.has('s-1')).toBe(true);
       t.releaseClose();
-      for (let i = 0; i < 20 && t.proxyTables.has('s-1'); i++) await tick();
+      await until(() => !t.proxyTables.has('s-1'));
       expect(t.proxyTables.has('s-1')).toBe(false);
       expect(t.logs.some((l) => l.msg === 'proxy_close_session_failed')).toBe(false);
     } finally {

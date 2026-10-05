@@ -3324,7 +3324,13 @@ describe('chat-orchestrator', () => {
         .call<unknown, AgentOutcome>('agent:invoke', ctx, { message: { role: 'user', content: 'hi' } })
         .then((o) => { settled.out = o; });
       const tick = () => new Promise<void>((r) => setImmediate(r));
-      for (let i = 0; i < 200 && !closeCalled; i++) await tick();
+      // Wall-clock budgeted (Date stays real: only setTimeout/clearTimeout are
+      // faked), polled on setImmediate — vi.waitFor would advance the fake clock.
+      const until = async (cond: () => boolean): Promise<void> => {
+        const deadline = Date.now() + 5_000;
+        while (!cond() && Date.now() < deadline) await tick();
+      };
+      await until(() => closeCalled);
       expect(closeCalled).toBe(true);
       expect(spy.mock.calls.some(([, ms]) => ms === CLOSE_BOUND_MS)).toBe(true);
       // Inside the bound: agent:invoke is still waiting on the close.
@@ -3332,7 +3338,7 @@ describe('chat-orchestrator', () => {
       expect(settled.out).toBeUndefined();
 
       vi.advanceTimersByTime(CLOSE_BOUND_MS);
-      for (let i = 0; i < 200 && settled.out === undefined; i++) await tick();
+      await until(() => settled.out !== undefined);
 
       expect(settled.out?.kind).toBe(kind);
       expect(lines.find((l) => l.msg === 'proxy_close_session_timeout')).toMatchObject({
