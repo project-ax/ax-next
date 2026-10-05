@@ -134,12 +134,14 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
     expect(entry!.blocked).toBeUndefined();
   });
 
-  it('a dial that throws synchronously (bad port) answers 502 and leaves no timer behind', async () => {
-    // `net.connect` throws ERR_SOCKET_BAD_PORT synchronously for CONNECT
-    // host:99999 — before any cleanup exists. If the connect timer were armed
-    // ahead of the dial it would still fire, into an uninitialized `cleanup`,
-    // and throw an uncaught ReferenceError on the host. Vitest fails the run on
-    // any uncaught exception, so outliving the timer window is the assertion.
+  it('an out-of-range port (host:99999) is refused at parse — 400, not a 502', async () => {
+    // Before TASK-862 this reached `net.connect`, which throws
+    // ERR_SOCKET_BAD_PORT synchronously — the reason the connect timer is armed
+    // LAST (a timer armed ahead of that throw fired into an uninitialized
+    // `cleanup`). The port is now validated when the CONNECT is parsed, so the
+    // client gets a 400 instead of a 502 and the dial is never reached. (The
+    // armed-last ordering stays as defense in depth; CONNECT input can no longer
+    // exercise it.)
     const CONNECT_TIMEOUT_MS = 50;
     const audits: ProxyAuditEntry[] = [];
     listener = await startProxyListener({
@@ -165,14 +167,11 @@ describe('proxy listener — bypassMITM raw tunnel connect-phase timeout (TASK-7
       });
       sock.on('error', reject);
     });
-    expect(response).toMatch(/^HTTP\/1\.1 502\b/);
+    expect(response).toMatch(/^HTTP\/1\.1 400\b/);
 
-    // A negative can only be shown by waiting. Node fires timers in expiry
-    // order, so a connect timer armed earlier with a shorter delay always fires
-    // before this one — load delays both, it cannot reorder them.
-    await new Promise((r) => setTimeout(r, CONNECT_TIMEOUT_MS * 6));
     expect(audits).toHaveLength(1);
-    expect(audits[0]!.status).toBe(502);
+    expect(audits[0]!.status).toBe(400);
+    expect(audits[0]!.blocked).toBe('invalid_target');
   });
 
   it('leaves an established tunnel alone after the connect timeout has elapsed', async () => {
