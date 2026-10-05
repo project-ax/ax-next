@@ -26,7 +26,10 @@
  * sign-in ("Team sign-in expired. Ask the agent’s owner to sign in again.").
  * The team's admins also get **Team key** on a row that says `teamKey`: a
  * key stored on the agent that everyone using it uses unless they've added
- * their own (`TeamKeyDialog`). What stays everyone's: Add key (it stores their
+ * their own (`TeamKeyDialog`). And **Remove team sign-in** (TASK-858) on a
+ * row that says `teamSignIn` — a sign-in saved ON the agent that everyone
+ * using it acts as — behind a confirmation. It removes only that one; anyone
+ * who signed in with their own account keeps theirs. What stays everyone's: Add key (it stores their
  * own key), Sign in again for their own expired sign-in, Retry, View details,
  * and Edit for a connector they may edit.
  *
@@ -80,6 +83,7 @@ import {
   Info,
   KeyRound,
   LogIn,
+  LogOut,
   MoreHorizontal,
   Pencil,
   Plug,
@@ -129,7 +133,8 @@ import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConne
 import { useAgentConnectors } from '@/lib/agent-connectors';
 import { getConnector, type Connector } from '@/lib/connectors';
 import { useUser } from '@/lib/user-context';
-import type { GrantRow } from '@/lib/workspace-api';
+import { HttpError } from '@/lib/http';
+import { workspaceApi, type GrantRow } from '@/lib/workspace-api';
 import { cn } from '@/lib/utils';
 import type {
   AgentConnectorHealth,
@@ -254,6 +259,33 @@ export function AgentConnectors({
   const [addingKey, setAddingKey] = useState<AgentConnectorRow | null>(null);
   // TASK-813 — a team admin adding the key everyone on this agent uses.
   const [addingTeamKey, setAddingTeamKey] = useState<AgentConnectorRow | null>(null);
+  // TASK-858 — a team admin removing the sign-in everyone on this agent uses.
+  const [removingSignIn, setRemovingSignIn] = useState<AgentConnectorRow | null>(null);
+  const [signInBusy, setSignInBusy] = useState(false);
+
+  async function onRemoveTeamSignIn(row: AgentConnectorRow) {
+    setNotice(null);
+    setSignInBusy(true);
+    try {
+      await workspaceApi.removeTeamSignIn(agentId, row.id);
+    } catch (e) {
+      setRemovingSignIn(null);
+      setNotice({
+        tone: 'error',
+        // An HttpError's message is authored copy; anything else is not shown.
+        text:
+          e instanceof HttpError
+            ? e.message
+            : `We couldn’t remove the team sign-in to ${row.name} just now. Nothing changed.`,
+      });
+      return;
+    } finally {
+      setSignInBusy(false);
+    }
+    setRemovingSignIn(null);
+    setNotice({ tone: 'note', text: `Removed the team sign-in to ${row.name}.` });
+    refresh();
+  }
 
   /** The row's first-time setup, from the menu or the details view. */
   function onSetUp(row: AgentConnectorRow) {
@@ -378,6 +410,10 @@ export function AgentConnectors({
         setNotice(null);
         setAddingTeamKey(row);
       }}
+      onRemoveTeamSignIn={() => {
+        setNotice(null);
+        setRemovingSignIn(row);
+      }}
       onSignInAgain={() => {
         setNotice(null);
         setSigningIn(row);
@@ -496,6 +532,41 @@ export function AgentConnectors({
               }}
             >
               Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={removingSignIn !== null}
+        onOpenChange={(open) => {
+          if (!open && !signInBusy) setRemovingSignIn(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove the team sign-in to {removingSignIn?.name}?</DialogTitle>
+            <DialogDescription>
+              Everyone using {name} loses access to {removingSignIn?.name} until a
+              team admin signs in again. Anyone who signed in with their own
+              account keeps it.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={signInBusy}
+              onClick={() => setRemovingSignIn(null)}
+            >
+              Keep it
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={signInBusy}
+              onClick={() => {
+                if (removingSignIn !== null) void onRemoveTeamSignIn(removingSignIn);
+              }}
+            >
+              {signInBusy ? 'Removing…' : 'Remove'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -767,6 +838,7 @@ function RowMenu({
   canReconnect,
   onReconnect,
   onAddTeamKey,
+  onRemoveTeamSignIn,
   onSignInAgain,
   onRetry,
   onSetUp,
@@ -788,6 +860,8 @@ function RowMenu({
   onReconnect: () => void;
   /** TASK-813 — "Team key" (add, replace, remove — TASK-854), on a row that says `teamKey`. */
   onAddTeamKey: () => void;
+  /** TASK-858 — "Remove team sign-in", on a row that says `teamSignIn`. */
+  onRemoveTeamSignIn: () => void;
   onSignInAgain: () => void;
   onRetry: () => void;
   /** TASK-795 — Sign in / Add key on a `needs-sign-in` row. */
@@ -871,6 +945,19 @@ function RowMenu({
         <DropdownMenuItem onSelect={onAddTeamKey}>
           <KeyRound aria-hidden="true" />
           Team key
+        </DropdownMenuItem>
+      ),
+    });
+  }
+  // TASK-858 — the server sends `teamSignIn` only to the team's admins, and
+  // only when a team sign-in is saved; it decides again on removal.
+  if (row.teamSignIn === true) {
+    groups.push({
+      key: 'team-sign-in',
+      item: (
+        <DropdownMenuItem onSelect={onRemoveTeamSignIn}>
+          <LogOut aria-hidden="true" />
+          Remove team sign-in
         </DropdownMenuItem>
       ),
     });
