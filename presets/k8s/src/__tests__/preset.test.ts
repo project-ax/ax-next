@@ -551,9 +551,14 @@ describe('@ax/preset-k8s wiring', () => {
     expect(mcp!.manifest.optionalCalls?.map((c) => c.hook)).toEqual([
       'credentials:list',
       'credentials:delete',
+      // TASK-842: maps a runner-reported connector namespace to the agent's connector.
+      'connectors:list-effective',
     ]);
-    expect(mcp!.manifest.subscribes).toEqual(['agents:deleted']);
+    // TASK-842: `connectors:auth-failure-reported` is fired by the IPC
+    // dispatcher when a runner reports a connector server refused it.
+    expect(mcp!.manifest.subscribes).toEqual(['agents:deleted', 'connectors:auth-failure-reported']);
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
+    expect(registered.has('connectors:list-effective')).toBe(true);
     expect(registered.has('connectors:resolve')).toBe(true);
     expect(registered.has('agents:resolve')).toBe(true);
     expect(registered.has('credentials:get')).toBe(true);
