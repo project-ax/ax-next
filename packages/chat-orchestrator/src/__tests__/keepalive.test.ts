@@ -1025,7 +1025,13 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
     toolNamespaces: [{ server: 'linear', toolNamespace: 'c0123456789' }],
   };
 
-  async function setup(opts: { rotateLoaded?: boolean; terminateThrows?: boolean } = {}) {
+  async function setup(opts: {
+    rotateLoaded?: boolean;
+    terminateThrows?: boolean;
+    /** TASK-878 — a close for this session never settles until `releaseClose()`. */
+    closeHangsFor?: string;
+    proxyCloseTimeoutMs?: number;
+  } = {}) {
     // The vault: what `credentials:get` would answer for a ref right now.
     const vault = { version: 1, failing: false };
     const resolve = (ref: string): string => {
@@ -1047,6 +1053,7 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
     const injectedAtQueue: Array<{ sessionId: string; injected: string[] }> = [];
     const terminated: string[] = [];
     const logs: Array<Record<string, unknown>> = [];
+    let releaseClose: (() => void) | undefined;
 
     const services: Record<string, ServiceHandler> = {
       'agents:resolve': async () => ({
@@ -1102,7 +1109,12 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
         return { proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) };
       },
       'proxy:close-session': async (_c, input: unknown) => {
-        proxyTables.delete((input as { sessionId: string }).sessionId);
+        const sid = (input as { sessionId: string }).sessionId;
+        if (sid === opts.closeHangsFor) {
+          // A wedged (e.g. remote) proxy: the close lands only when released.
+          await new Promise<void>((r) => { releaseClose = r; });
+        }
+        proxyTables.delete(sid);
         return {};
       },
     };
@@ -1123,6 +1135,7 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
       plugins: [createChatOrchestratorPlugin({
         runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
         keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 5,
+        ...(opts.proxyCloseTimeoutMs !== undefined ? { proxyCloseTimeoutMs: opts.proxyCloseTimeoutMs } : {}),
       })],
     });
 
@@ -1144,6 +1157,9 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
 
     return {
       vault, handles, turn, events, injectedAtQueue, terminated, logs, proxyTables,
+      releaseClose: () => releaseClose?.(),
+      endTurn: (sessionId: string, reqId: string) => fireTurnEnd(h.bus, sessionId, reqId),
+      get closeIsPending() { return releaseClose !== undefined; },
       get opens() { return opens; },
       get rotates() { return rotates; },
     };
@@ -1249,6 +1265,61 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
     expect(t.proxyTables.has('s-1')).toBe(false);
     expect(closes[0]).toBe('s-1@opens=1,terminated=0');
     for (const hk of t.handles) hk.forceExit();
+  });
+
+  // TASK-878 — the retire awaits proxy:close-session before terminate. A close
+  // that never settles (a remote or wedged proxy) used to hold the user's next
+  // message for the HookBus service timeout (120 s). Bounded now: log, then
+  // terminate + respawn anyway — and the close is NOT cancelled.
+  it('a retire whose proxy:close-session hangs proceeds after the bound, logs it, and the close still lands later', async () => {
+    const CLOSE_BOUND_MS = 250;
+    const t = await setup({ closeHangsFor: 's-1', proxyCloseTimeoutMs: CLOSE_BOUND_MS });
+    await t.turn('s-1', 'req-1');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const spy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const settled: { out?: AgentOutcome } = {};
+      void retireWithFailedRotation(t).then((o) => { settled.out = o; });
+      const tick = () => new Promise<void>((r) => setImmediate(r));
+      // Wall-clock budgeted (Date stays real: only setTimeout/clearTimeout are
+      // faked), polled on setImmediate — vi.waitFor would advance the fake clock.
+      const until = async (cond: () => boolean): Promise<void> => {
+        const deadline = Date.now() + 5_000;
+        while (!cond() && Date.now() < deadline) await tick();
+      };
+      await until(() => t.closeIsPending);
+      expect(t.closeIsPending).toBe(true);
+      // The bound is armed on the (fake) clock — otherwise this test proves nothing.
+      expect(spy.mock.calls.some(([, ms]) => ms === CLOSE_BOUND_MS)).toBe(true);
+      // Inside the bound: the retire is still waiting on the close.
+      for (let i = 0; i < 20; i++) await tick();
+      expect(t.terminated).not.toContain('s-1');
+      expect(t.opens).toBe(1);
+      expect(t.logs.some((l) => l.msg === 'proxy_close_session_timeout')).toBe(false);
+
+      vi.advanceTimersByTime(CLOSE_BOUND_MS);
+      await until(() => t.opens >= 2);
+      // The turn-end `turn()` pre-fired landed while routing was held; the
+      // fresh runner's turn ends now.
+      t.endTurn('s-2', 'req-2');
+      await until(() => settled.out !== undefined);
+
+      expect(settled.out).toEqual({ kind: 'complete', messages: [] });
+      expect(t.terminated).toContain('s-1');
+      expect(t.opens).toBe(2);
+      expect(t.logs.find((l) => l.msg === 'proxy_close_session_timeout'))
+        .toMatchObject({ sessionId: 's-1', phase: 'retire', timeoutMs: CLOSE_BOUND_MS });
+      // Not cancelled: the slow close still revokes the old session when it lands.
+      expect(t.proxyTables.has('s-1')).toBe(true);
+      t.releaseClose();
+      await until(() => !t.proxyTables.has('s-1'));
+      expect(t.proxyTables.has('s-1')).toBe(false);
+      expect(t.logs.some((l) => l.msg === 'proxy_close_session_failed')).toBe(false);
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+      for (const hk of t.handles) hk.forceExit();
+    }
   });
 
   it('without proxy:rotate-session loaded, routing is unchanged (no retire)', async () => {

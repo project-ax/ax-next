@@ -3268,6 +3268,169 @@ describe('chat-orchestrator', () => {
     expect(JSON.stringify(lines)).not.toContain(SECRET_TEXT);
   });
 
+  // TASK-878 — both awaited closes in agent:invoke are bounded: a close that
+  // never settles no longer holds the turn's outcome for the HookBus service
+  // timeout (120 s). Logged as proxy_close_session_timeout with its phase.
+  it.each([
+    ['turn completed (per-invoke finally)', 'tcp://127.0.0.1:54321', 'complete', 'invoke-end'],
+    ['open succeeded, endpoint translation threw (open-failure catch)', 'http://oops:54321', 'terminated', 'open-failed'],
+  ] as const)('a hung proxy:close-session releases agent:invoke after the bound — %s', async (_label, endpoint, kind, phase) => {
+    const CLOSE_BOUND_MS = 250;
+    const proxy = buildProxyHooks({
+      openOutput: { proxyEndpoint: endpoint, caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) },
+    });
+    let closeCalled = false;
+    proxy.services['proxy:close-session'] = () => {
+      closeCalled = true;
+      return new Promise(() => undefined);
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        fireTurnEndAndChatEnd(busRef, sessionId, ctx.reqId);
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
+          proxyCloseTimeoutMs: CLOSE_BOUND_MS,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const lines: Array<Record<string, unknown>> = [];
+    const ctx = makeAgentContext({
+      sessionId: 'close-hang-session',
+      agentId: 'a',
+      userId: 'u',
+      logger: createLogger({
+        reqId: 'close-hang',
+        writer: (l: string) => lines.push(JSON.parse(l) as Record<string, unknown>),
+      }),
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const spy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const settled: { out?: AgentOutcome } = {};
+      void h.bus
+        .call<unknown, AgentOutcome>('agent:invoke', ctx, { message: { role: 'user', content: 'hi' } })
+        .then((o) => { settled.out = o; });
+      const tick = () => new Promise<void>((r) => setImmediate(r));
+      // Wall-clock budgeted (Date stays real: only setTimeout/clearTimeout are
+      // faked), polled on setImmediate — vi.waitFor would advance the fake clock.
+      const until = async (cond: () => boolean): Promise<void> => {
+        const deadline = Date.now() + 5_000;
+        while (!cond() && Date.now() < deadline) await tick();
+      };
+      await until(() => closeCalled);
+      expect(closeCalled).toBe(true);
+      expect(spy.mock.calls.some(([, ms]) => ms === CLOSE_BOUND_MS)).toBe(true);
+      // Inside the bound: agent:invoke is still waiting on the close.
+      for (let i = 0; i < 20; i++) await tick();
+      expect(settled.out).toBeUndefined();
+
+      vi.advanceTimersByTime(CLOSE_BOUND_MS);
+      await until(() => settled.out !== undefined);
+
+      expect(settled.out?.kind).toBe(kind);
+      expect(lines.find((l) => l.msg === 'proxy_close_session_timeout')).toMatchObject({
+        sessionId: 'close-hang-session', phase, timeoutMs: CLOSE_BOUND_MS,
+      });
+      expect(lines.some((l) => l.msg === 'proxy_close_session_failed')).toBe(false);
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  // TASK-878 — the bound gives up the WAIT, not the call: a close that fails
+  // after the bound is still reported, flagged afterTimeout, code-only.
+  it('a close that fails after the bound is still logged (afterTimeout, name/code only)', async () => {
+    const CLOSE_BOUND_MS = 250;
+    const SECRET_TEXT = 'late-failure-text-that-must-not-be-logged';
+    const proxy = buildProxyHooks();
+    let failClose: ((e: Error) => void) | undefined;
+    proxy.services['proxy:close-session'] = () =>
+      new Promise((_resolve, reject) => { failClose = reject; });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        fireTurnEndAndChatEnd(busRef, sessionId, ctx.reqId);
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
+          proxyCloseTimeoutMs: CLOSE_BOUND_MS,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const lines: Array<Record<string, unknown>> = [];
+    const ctx = makeAgentContext({
+      sessionId: 'close-late-fail',
+      agentId: 'a',
+      userId: 'u',
+      logger: createLogger({
+        reqId: 'close-late-fail',
+        writer: (l: string) => lines.push(JSON.parse(l) as Record<string, unknown>),
+      }),
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const settled: { out?: AgentOutcome } = {};
+      void h.bus
+        .call<unknown, AgentOutcome>('agent:invoke', ctx, { message: { role: 'user', content: 'hi' } })
+        .then((o) => { settled.out = o; });
+      const tick = () => new Promise<void>((r) => setImmediate(r));
+      const until = async (cond: () => boolean): Promise<void> => {
+        const deadline = Date.now() + 5_000;
+        while (!cond() && Date.now() < deadline) await tick();
+      };
+      await until(() => failClose !== undefined);
+      vi.advanceTimersByTime(CLOSE_BOUND_MS);
+      await until(() => settled.out !== undefined);
+      expect(settled.out?.kind).toBe('complete');
+      expect(lines.some((l) => l.msg === 'proxy_close_session_failed')).toBe(false);
+
+      failClose!(new Error(SECRET_TEXT));
+      await until(() => lines.some((l) => l.msg === 'proxy_close_session_failed'));
+      expect(lines.find((l) => l.msg === 'proxy_close_session_failed')).toMatchObject({
+        sessionId: 'close-late-fail', phase: 'invoke-end', afterTimeout: true, name: 'PluginError',
+      });
+      expect(JSON.stringify(lines)).not.toContain(SECRET_TEXT);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  for (const bad of [-1, Number.NaN]) {
+    it(`refuses proxyCloseTimeoutMs=${bad} at init`, async () => {
+      await expect(createTestHarness({
+        services: buildMocks({}).services,
+        plugins: [createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' }, proxyCloseTimeoutMs: bad,
+        })],
+      })).rejects.toThrow(/proxyCloseTimeoutMs/);
+    });
+  }
+
   it('does NOT fire proxy:rotate-session for api-key-only sessions', async () => {
     const proxy = buildProxyHooks({ includeRotate: true });
     const busRef: { current: HookBus | null } = { current: null };

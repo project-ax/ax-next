@@ -170,6 +170,14 @@ export interface ChatOrchestratorConfig {
    * `CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS` (30 s). Exposed so tests need not wait.
    */
   chatEventSubscriberTimeoutMs?: number;
+  /**
+   * TASK-878 — how long a caller waits on `proxy:close-session` before it
+   * logs `proxy_close_session_timeout` and moves on (to `session:terminate`,
+   * to the fresh spawn, to returning the turn's outcome). Defaults to
+   * `PROXY_CLOSE_TIMEOUT_MS` (10 s). `Infinity` waits for the bus's own
+   * service timeout. Exposed so tests need not wait.
+   */
+  proxyCloseTimeoutMs?: number;
   // One-shot mode (default true for 6.5a): on the first `chat:turn-end` the
   // orchestrator queues a `cancel` entry into the runner's inbox, so the
   // runner exits cleanly after processing the single user message and emits
@@ -1150,6 +1158,21 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
 export const CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS = 30_000;
 
 /**
+ * TASK-878 — bound on how long any caller here WAITS for
+ * `proxy:close-session`. Today the proxy is in-process and the close is a few
+ * Map deletes, so it settles in microseconds; the bound only matters if the
+ * proxy ever goes remote or wedges. Without it the wait is bounded only by
+ * the HookBus service timeout (120 s), and on the routing-retire path
+ * (TASK-871) that is 120 s of a user's next message going nowhere.
+ *
+ * What the bound does NOT do: cancel the close. The call keeps running and
+ * still revokes the session when it lands (a late failure is still logged).
+ * `session:terminate` follows regardless, and the exit watcher's close on
+ * `handle.exited` is a second attempt — close is idempotent.
+ */
+export const PROXY_CLOSE_TIMEOUT_MS = 10_000;
+
+/**
  * Fail at boot, not on every turn: an invalid bound would make each bounded
  * fire reject (HookBus.fire validates it), so catch it here.
  */
@@ -1721,6 +1744,10 @@ export function createOrchestrator(
     'chatEventSubscriberTimeoutMs',
     config.chatEventSubscriberTimeoutMs ?? CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS,
   );
+  const proxyCloseTimeoutMs = validSubscriberBound(
+    'proxyCloseTimeoutMs',
+    config.proxyCloseTimeoutMs ?? PROXY_CLOSE_TIMEOUT_MS,
+  );
 
   // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
   // this plugin fires goes through here, so each subscriber is bounded by
@@ -2038,17 +2065,56 @@ export function createOrchestrator(
   // routing retire's) is a no-op. Fire-and-forget; never throws.
   function closeProxyForDeletedConnector(ctx: AgentContext, sessionId: string): void {
     if (!bus.hasService('proxy:close-session')) return;
-    void bus
+    void closeProxySession({ ...ctx, sessionId }, sessionId, 'connector-deleted');
+  }
+
+  // TASK-878 — every `proxy:close-session` this plugin makes goes through
+  // here. Waits at most `proxyCloseTimeoutMs`, then logs
+  // `proxy_close_session_timeout` and resolves so the caller proceeds — the
+  // close itself is NOT cancelled (see PROXY_CLOSE_TIMEOUT_MS). Never throws:
+  // a failure (before or after the bound) is logged as
+  // `proxy_close_session_failed`, name/code only (errorLogFields).
+  async function closeProxySession(
+    ctx: AgentContext,
+    sessionId: string,
+    phase: 'retire' | 'connector-deleted' | 'open-failed' | 'runner-exit' | 'invoke-end',
+  ): Promise<void> {
+    let timedOut = false;
+    const close = bus
       .call<ProxyCloseSessionInput, Record<string, never>>(
-        'proxy:close-session', { ...ctx, sessionId }, { sessionId },
+        'proxy:close-session', ctx, { sessionId },
       )
-      .catch((err: unknown) => {
-        ctx.logger.warn('proxy_close_session_failed', {
+      .then(
+        () => undefined,
+        (err: unknown) => {
+          ctx.logger.warn('proxy_close_session_failed', {
+            sessionId,
+            phase,
+            ...(timedOut ? { afterTimeout: true } : {}),
+            ...errorLogFields(err),
+          });
+        },
+      );
+    if (proxyCloseTimeoutMs === Number.POSITIVE_INFINITY) {
+      await close;
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), proxyCloseTimeoutMs);
+    });
+    try {
+      if ((await Promise.race([close, bound])) === 'timeout') {
+        timedOut = true;
+        ctx.logger.warn('proxy_close_session_timeout', {
           sessionId,
-          phase: 'connector-deleted',
-          ...errorLogFields(err),
+          phase,
+          timeoutMs: proxyCloseTimeoutMs,
         });
-      });
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // TASK-833 — `connectors:deleted` (fired by @ax/connectors after the row is
@@ -2502,18 +2568,10 @@ export function createOrchestrator(
               // first means a hung terminate cannot delay it either. The close
               // is idempotent, so the later `handle.exited` close is a no-op.
               // Nothing of the old session is in flight: we are between turns.
+              // TASK-878 — the wait is bounded: a close that hangs is logged
+              // and we terminate + respawn anyway (the close keeps running).
               if (bus.hasService('proxy:close-session')) {
-                try {
-                  await bus.call<ProxyCloseSessionInput, Record<string, never>>(
-                    'proxy:close-session', ctx, { sessionId: candidate },
-                  );
-                } catch (err) {
-                  ctx.logger.warn('proxy_close_session_failed', {
-                    sessionId: candidate,
-                    phase: 'retire',
-                    ...errorLogFields(err),
-                  });
-                }
+                await closeProxySession(ctx, candidate, 'retire');
               }
               try {
                 await bus.call('session:terminate', ctx, { sessionId: candidate });
@@ -3482,18 +3540,7 @@ export function createOrchestrator(
       // proxy when it's loaded — that would force real credentials
       // into the sandbox env, breaking I1.
       if (proxyOpened) {
-        await bus
-          .call<ProxyCloseSessionInput, Record<string, never>>(
-            'proxy:close-session',
-            ctx,
-            { sessionId: ctx.sessionId },
-          )
-          .catch((closeErr: unknown) => {
-            ctx.logger.warn('proxy_close_session_failed', {
-              sessionId: ctx.sessionId,
-              ...errorLogFields(closeErr),
-            });
-          });
+        await closeProxySession(ctx, ctx.sessionId, 'open-failed');
       }
       // TASK-783 — attribute the failure to the connector that owns the
       // credential the proxy failed on (`slotOwners` is the fold's own
@@ -3649,16 +3696,7 @@ export function createOrchestrator(
             rotationFailedSessions.delete(sessionId);
             forgetSessionConnectors(sessionId);
             if (proxyOpened) {
-              void bus
-                .call<ProxyCloseSessionInput, Record<string, never>>(
-                  'proxy:close-session', warmCtx, { sessionId: warmCtx.sessionId },
-                )
-                .catch((err: unknown) => {
-                  warmCtx.logger.warn('proxy_close_session_failed', {
-                    sessionId: warmCtx.sessionId,
-                    ...errorLogFields(err),
-                  });
-                });
+              void closeProxySession(warmCtx, warmCtx.sessionId, 'runner-exit');
             }
           })
           .catch(() => undefined);
@@ -3911,18 +3949,7 @@ export function createOrchestrator(
       // before-warming path. Best-effort: a failing close shouldn't mask the
       // chat outcome.
       if (!proxyCloseDeferredToHandle) {
-        await bus
-          .call<ProxyCloseSessionInput, Record<string, never>>(
-            'proxy:close-session',
-            ctx,
-            { sessionId: ctx.sessionId },
-          )
-          .catch((err: unknown) => {
-            ctx.logger.warn('proxy_close_session_failed', {
-              sessionId: ctx.sessionId,
-              ...errorLogFields(err),
-            });
-          });
+        await closeProxySession(ctx, ctx.sessionId, 'invoke-end');
         // I10 — drop the rotation flag on the non-warm paths only. A warm
         // session must keep rotating across turns, so its cleanup is deferred
         // to handle.exited (Step 5); clearing it here would disable
