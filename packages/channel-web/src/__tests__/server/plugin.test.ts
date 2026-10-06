@@ -926,6 +926,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'nobody is offered Remove team sign-in, and DELETE …/connectors/:connectorId/team-sign-in answers 503 connectors-unavailable',
         },
         {
+          hook: 'mcp-oauth:remove-personal-sign-in',
+          degradation:
+            'a personal sign-in survives removing its connector from every agent, so re-adding it reuses that sign-in instead of asking again',
+        },
+        {
           hook: 'credentials:authorize-agent:account',
           degradation:
             'PUT …/connectors/:connectorId/team-key answers 503 connectors-unavailable (whether the agent\'s users could read the key cannot be checked)',

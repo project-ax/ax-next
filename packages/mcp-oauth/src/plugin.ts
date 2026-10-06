@@ -170,6 +170,44 @@ const RemoveSharedSignInOutputSchema = z.object({
 }) as unknown as z.ZodType<RemoveSharedSignInOutput>;
 
 /**
+ * `mcp-oauth:remove-personal-sign-in`. A person's OWN sign-in to one
+ * connector goes — the user-scope token row and that person's "sign-in
+ * expired" marker. The host calls it once the connector is on none of the
+ * agents that person uses, so adding it to an agent later asks them to sign
+ * in again rather than quietly reusing an old grant.
+ *
+ * Boundary review: `{userId, connectorId}` → `{removed: true}` names no
+ * storage or transport; an alternate impl (a vault that tracks sign-in
+ * health itself) answers the same shape. A hook of its own for the same
+ * reason as the team one: the row and the marker are this plugin's, and
+ * delete-then-clear is bundled so a bare marker-clear can't be asked for.
+ *
+ * Never touches an agent-scope row or marker: a team's shared sign-in is the
+ * team's (that one is `mcp-oauth:remove-shared-sign-in`).
+ */
+export interface RemovePersonalSignInInput {
+  userId: string;
+  connectorId: string;
+}
+export interface RemovePersonalSignInOutput {
+  removed: true;
+}
+const RemovePersonalSignInInputSchema = z
+  .object({
+    userId: z.string().min(1).max(256),
+    // Same slug rule as the team hook: this hook builds the ref itself.
+    connectorId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[a-z0-9][a-z0-9_-]*$/),
+  })
+  .strict();
+const RemovePersonalSignInOutputSchema = z.object({
+  removed: z.literal(true),
+}) as unknown as z.ZodType<RemovePersonalSignInOutput>;
+
+/**
  * Build the minimal {@link AuthorizationServerMetadata} the SDK's refresh helper
  * needs, WITHOUT re-discovery — the token endpoint was discovered + stored at
  * connect time and rides in the token blob, so a refresh-on-read must not pay
@@ -224,7 +262,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       // they write to) are mounted.
       'credentials:delete',
     );
-    registers.push('mcp-oauth:remove-shared-sign-in');
+    registers.push('mcp-oauth:remove-shared-sign-in', 'mcp-oauth:remove-personal-sign-in');
   }
 
   return {
@@ -474,6 +512,41 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
             return { removed: true };
           },
           { returns: RemoveSharedSignInOutputSchema },
+        );
+
+        bus.registerService<RemovePersonalSignInInput, RemovePersonalSignInOutput>(
+          'mcp-oauth:remove-personal-sign-in',
+          PLUGIN_NAME,
+          async (ctx, raw) => {
+            const parsed = RemovePersonalSignInInputSchema.safeParse(raw);
+            if (!parsed.success) {
+              throw new PluginError({
+                code: 'invalid-payload',
+                plugin: PLUGIN_NAME,
+                hookName: 'mcp-oauth:remove-personal-sign-in',
+                message: 'invalid remove-personal-sign-in input',
+              });
+            }
+            const { userId, connectorId } = parsed.data;
+            await bus.call<
+              { scope: 'user'; ownerId: string; ref: string },
+              void
+            >('credentials:delete', ctx, {
+              scope: 'user',
+              ownerId: userId,
+              ref: `account:${connectorId}`,
+            });
+            try {
+              await store.clearNeedsReconnect({ kind: 'user', userId }, connectorId);
+            } catch (err) {
+              ctx.logger.warn('mcp_oauth_needs_reconnect_clear_failed', {
+                connectorId,
+                name: err instanceof Error ? err.name : 'unknown',
+              });
+            }
+            return { removed: true };
+          },
+          { returns: RemovePersonalSignInOutputSchema },
         );
 
         const unregs = await registerMcpOAuthRoutes(bus, initCtx, {

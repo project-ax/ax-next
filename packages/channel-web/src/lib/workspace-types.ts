@@ -1191,6 +1191,12 @@ export interface AgentConnectorAttached {
 export interface AgentConnectorRemoved {
   removed: true;
   cleanup: 'complete' | 'partial';
+  /**
+   * The connector is now on none of this person's agents, so their own
+   * sign-in / personal keys for it were deleted: adding it again asks them to
+   * sign in again.
+   */
+  signedOut?: true;
 }
 
 /**

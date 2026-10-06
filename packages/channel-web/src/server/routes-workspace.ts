@@ -488,7 +488,12 @@ interface AgentsListForUserInput {
   teamIds?: string[];
 }
 interface AgentsListForUserOutput {
-  agents: Array<{ id: string; displayName: string }>;
+  agents: Array<{
+    id: string;
+    displayName: string;
+    connectorAttachments?: string[];
+    connectorExclusions?: string[];
+  }>;
 }
 
 /**
@@ -1489,9 +1494,18 @@ interface CredentialsListOutput {
   credentials: CredentialsListRow[];
 }
 interface CredentialsDeleteInput {
-  scope: 'agent';
+  scope: 'agent' | 'user';
   ownerId: string;
   ref: string;
+}
+/**
+ * Structural mirror of @ax/mcp-oauth's `mcp-oauth:remove-personal-sign-in` —
+ * no import (invariant 2). Removes ONE person's own OAuth sign-in for one
+ * connector (the user-scope token and that person's needs-reconnect marker).
+ */
+interface McpOauthRemovePersonalSignInInput {
+  userId: string;
+  connectorId: string;
 }
 /**
  * Structural mirror of @ax/mcp-oauth's `mcp-oauth:remove-shared-sign-in`
@@ -4409,6 +4423,87 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (refs.some((ref) => saved.has(ref))) out.add(id);
     }
     return out;
+  }
+
+  /**
+   * After a connector leaves an agent: is it now on NONE of the agents this
+   * person uses? Then their own sign-in and personal keys for it go too, so
+   * adding it to an agent later asks them to sign in again instead of quietly
+   * reusing an old grant. A team agent's shared sign-in or team key is the
+   * team's and is never touched here.
+   *
+   * `kept` whenever we can't tell (a read failed, a hook is missing): a
+   * sign-in left in place is the cheaper way to be wrong than signing someone
+   * out of a connector one of their agents still uses. `failed` is a delete
+   * that was attempted and didn't land — reported as a partial cleanup.
+   */
+  async function signOutIfUnused(
+    ctx: AgentContext,
+    userId: string,
+    connectorId: string,
+  ): Promise<'signed-out' | 'kept' | 'failed'> {
+    if (!bus.hasService('agents:list-for-user') || !bus.hasService('connectors:get')) {
+      return 'kept';
+    }
+    try {
+      for (const agent of await listAgents(userId)) {
+        const out = await listEffectiveConnectors(agent, userId);
+        const ids = (Array.isArray(out?.connectors) ? out.connectors : []).map((c) => c?.summary?.id);
+        if (ids.includes(connectorId)) return 'kept';
+      }
+    } catch (err) {
+      initCtx.logger.warn('workspace_connector_sign_out_check_failed', {
+        connectorId,
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+      return 'kept';
+    }
+    let connector: Connector;
+    try {
+      const out = await bus.call<{ userId: string; connectorId: string }, { connector: Connector }>(
+        'connectors:get',
+        ctx,
+        { userId, connectorId },
+      );
+      connector = out.connector;
+    } catch (err) {
+      initCtx.logger.warn('workspace_connector_sign_out_check_failed', {
+        connectorId,
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+      return 'kept';
+    }
+    // A shared-key connector holds nothing personal to sign out of.
+    if (connector?.keyMode === 'workspace') return 'kept';
+    const checks = credentialChecks(connector);
+    if (checks.length === 0) return 'kept';
+    try {
+      for (const check of checks) {
+        if (check.signIn) {
+          if (!bus.hasService('mcp-oauth:remove-personal-sign-in')) return 'kept';
+          await bus.call<McpOauthRemovePersonalSignInInput, unknown>(
+            'mcp-oauth:remove-personal-sign-in',
+            ctx,
+            { userId, connectorId },
+          );
+        } else {
+          if (!bus.hasService('credentials:delete')) return 'kept';
+          await bus.call<CredentialsDeleteInput, unknown>('credentials:delete', ctx, {
+            scope: 'user',
+            ownerId: userId,
+            ref: check.ref,
+          });
+        }
+      }
+    } catch (err) {
+      initCtx.logger.warn('workspace_connector_sign_out_failed', {
+        connectorId,
+        name: err instanceof Error ? err.name : 'unknown',
+      });
+      return 'failed';
+    }
+    initCtx.logger.info('workspace_connector_signed_out', { connectorId });
+    return 'signed-out';
   }
 
   /**
@@ -7545,6 +7640,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * best-effort — the agent can no longer reach the connector, so a leftover
      * row is inert — and a miss is reported as `cleanup: 'partial'` rather
      * than dressed up as complete.
+     *
+     * Last, when the connector is now on none of the caller's agents, their
+     * own sign-in and personal keys for it are deleted ({@link signOutIfUnused})
+     * and the answer says `signedOut: true` — so the next agent it's added to
+     * asks them to sign in again.
      */
     async removeConnector(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authActorOr401(bus, initCtx, req, res);
@@ -7599,9 +7699,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         connectorId,
         Array.isArray(entry.toolNamespaces) ? entry.toolNamespaces : [],
       );
+      const signOut = await signOutIfUnused(ctx, actor.id, connectorId);
       res.status(200).json({
         removed: true,
-        cleanup: complete ? 'complete' : 'partial',
+        cleanup: complete && signOut !== 'failed' ? 'complete' : 'partial',
+        ...(signOut === 'signed-out' ? { signedOut: true as const } : {}),
       } satisfies AgentConnectorRemoved);
     },
 
