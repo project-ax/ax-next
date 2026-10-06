@@ -161,14 +161,45 @@ describe('opening and closing', () => {
     expect(screen.queryByText(/signed in as you/)).toBeNull();
   });
 
-  it('draws the legend, the routines note, and the pinned footer actions', async () => {
+  it('draws the legend, the routines note, and the pinned footer’s Remove', async () => {
     renderTab();
     await openDetails();
     const legend = await screen.findByRole('list', { name: 'What each choice means' });
     expect(legend.textContent).toBe('AllowAsk firstDeny');
     expect(screen.getByText('With Ask first, routines pause and wait for you.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Edit connector' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy();
+  });
+
+  // A connector's own settings are a workspace admin's, in Settings ›
+  // Connectors — never reachable from the rail, even for an editable row.
+  it('has no Edit connector in the footer, even for an editable, removable row', async () => {
+    expect(ROWS[0]).toMatchObject({ editable: true, removable: true });
+    renderTab();
+    await openDetails();
+    const footer = await screen.findByTestId('connector-details-footer');
+    expect(within(footer).getAllByRole('button').map((b) => b.textContent)).toEqual(['Remove']);
+    expect(screen.queryByRole('button', { name: 'Edit connector' })).toBeNull();
+  });
+
+  it('the details menu offers neither View details nor Edit permissions', async () => {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      shared: false,
+      connectorsSupported: true,
+      manageable: true,
+      sharedCredentials: false,
+      connectors: [{ ...ROWS[0]!, health: 'unreachable' }],
+    });
+    renderTab();
+    await openDetails();
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for Linear' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
+      'Retry',
+      'Remove from Quill',
+    ]);
   });
 });
 
@@ -184,12 +215,14 @@ describe('a member on a team agent (TASK-798)', () => {
     });
   }
 
-  it('has no Remove in the footer — not even a disabled one — and keeps Edit connector', async () => {
-    asMember([{ ...ROWS[0]!, removable: false }]);
+  it('has no Remove — not even a disabled one — and so no footer at all, even for an editable row', async () => {
+    asMember([{ ...ROWS[0]!, editable: true, removable: false }]);
     renderTab();
     await openDetails();
-    expect(screen.getByRole('button', { name: 'Edit connector' })).toBeTruthy();
+    await screen.findByText('Search issues');
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit connector' })).toBeNull();
+    expect(screen.queryByTestId('connector-details-footer')).toBeNull();
   });
 
   it('has no Remove in the details menu either', async () => {
@@ -203,7 +236,6 @@ describe('a member on a team agent (TASK-798)', () => {
     const menu = await screen.findByRole('menu');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Retry',
-      'Edit connector',
     ]);
   });
 

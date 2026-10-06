@@ -2,7 +2,8 @@
  * The agent's connector list (TASK-739, connectors-rail slice 6).
  *
  * Pinned: rows are the connector NAME only; the ⋯ menu holds exactly what is
- * wired (Edit connector for an editable one, then Remove from <agent>);
+ * wired (View details, Edit permissions for every row, then Remove from
+ * <agent>) — never the Settings connector editor ("Edit connector");
  * removing asks first and never drops a row the server still has; the empty
  * state; "+ Add" / "Add connector" open the Add subview (TASK-740). View
  * details arrived with TASK-742 (see ConnectorDetails.test.tsx).
@@ -15,9 +16,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError, type AgentDetail } from '@/lib/workspace-api';
-import { getConnector } from '@/lib/connectors';
 import { beginOAuth, getOAuthStatus } from '@/lib/connectors-oauth';
-import type { AgentConnectorRow } from '@/lib/workspace-types';
+import type { AgentConnectorRow, AgentConnectorToolsRead } from '@/lib/workspace-types';
+import type { AuthUser } from '@/lib/auth';
+import { UserProvider } from '@/lib/user-context';
 import { AgentRail } from '../AgentRail';
 import { rail } from './rail-fixture';
 
@@ -33,6 +35,8 @@ vi.mock('@/lib/workspace-api', async () => {
       connectors: vi.fn(),
       removeConnector: vi.fn(),
       retryConnector: vi.fn(),
+      connectorTools: vi.fn(),
+      setToolVerdict: vi.fn(),
     },
   };
 });
@@ -44,11 +48,6 @@ vi.mock('@/lib/connectors-oauth', async () => {
     getOAuthStatus: vi.fn(async () => 'needs-reconnect'),
     beginOAuth: vi.fn(),
   };
-});
-
-vi.mock('@/lib/connectors', async () => {
-  const actual = await vi.importActual<Record<string, unknown>>('@/lib/connectors');
-  return { ...actual, getConnector: vi.fn() };
 });
 
 const connectorsMock = vi.mocked(workspaceApi.connectors);
@@ -79,10 +78,14 @@ function detail(): AgentDetail {
   };
 }
 
-function renderTab() {
-  return render(
-    <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} tab="connectors" />,
+const ADMIN: AuthUser = { id: 'u-admin', email: 'admin@example.com', name: 'Ada', role: 'admin' };
+
+/** Rendered with no signed-in user unless one is given (useUser() → null). */
+function renderTab(user?: AuthUser) {
+  const tab = (
+    <AgentRail detail={detail()} openPastId={null} onOpenPast={vi.fn()} tab="connectors" />
   );
+  return render(user ? <UserProvider value={user}>{tab}</UserProvider> : tab);
 }
 
 async function openMenu(name: string) {
@@ -127,32 +130,96 @@ describe('connector list', () => {
   });
 });
 
+const NS = 'c0123456789';
+function toolsRead(): AgentConnectorToolsRead {
+  return {
+    connector: { id: 'linear', name: 'Linear', access: 'personal' },
+    status: 'ok',
+    checkedAt: '2026-10-02T10:00:00.000Z',
+    possiblyIncomplete: false,
+    tools: [
+      {
+        toolKey: `mcp.${NS}.Search issues`,
+        title: 'Search issues',
+        description: '',
+        readOnly: true,
+        outward: null,
+        verdict: 'allow',
+        ceiling: 'allow',
+      },
+      {
+        toolKey: `mcp.${NS}.Create issue`,
+        title: 'Create issue',
+        description: '',
+        readOnly: false,
+        outward: true,
+        verdict: 'hold',
+        ceiling: 'allow',
+      },
+    ],
+  };
+}
+
 describe('row menu', () => {
-  it('offers Edit connector and Remove from <agent> for an editable connector', async () => {
+  it('offers Edit permissions — never Edit connector — and Remove from <agent> for an editable connector', async () => {
     renderTab();
     const menu = await openMenu('Linear');
     const items = within(menu).getAllByRole('menuitem').map((i) => i.textContent);
-    expect(items).toEqual(['View details', 'Edit connector', 'Remove from Quill']);
-    // Not wired yet — its slice adds it. A healthy row offers no fix.
+    expect(items).toEqual(['View details', 'Edit permissions', 'Remove from Quill']);
+    expect(within(menu).queryByText('Edit connector')).toBeNull();
+    // A healthy row offers no fix.
     expect(within(menu).queryByText(/Reconnect|Retry/)).toBeNull();
   });
 
-  it('hides Edit connector for one this person cannot edit', async () => {
+  it('offers Edit permissions for one this person cannot edit, too', async () => {
     renderTab();
     const menu = await openMenu('Gmail');
     const items = within(menu).getAllByRole('menuitem').map((i) => i.textContent);
-    expect(items).toEqual(['View details', 'Remove from Quill']);
+    expect(items).toEqual(['View details', 'Edit permissions', 'Remove from Quill']);
+    expect(within(menu).queryByText('Edit connector')).toBeNull();
   });
 
-  it('opens the Settings connector editor for Edit connector', async () => {
-    vi.mocked(getConnector).mockRejectedValue(new Error('offline'));
+  it('Edit permissions opens a dialog listing the connector’s tools, and a change writes the verdict', async () => {
+    const toolsMock = vi.mocked(workspaceApi.connectorTools);
+    const setMock = vi.mocked(workspaceApi.setToolVerdict);
+    toolsMock.mockResolvedValue(toolsRead());
+    setMock.mockResolvedValue({
+      tool: { toolKey: `mcp.${NS}.Create issue`, verdict: 'deny', ceiling: 'allow' },
+    });
+    renderTab();
+    const menu = await openMenu('Gmail');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Edit permissions' }));
+    const dialog = await screen.findByRole('dialog', { name: /Edit permissions/ });
+    expect(within(dialog).getByText('Edit permissions · Gmail')).toBeTruthy();
+    expect(toolsMock).toHaveBeenCalledWith('a-quill', 'gmail', false);
+    expect(await within(dialog).findByText('Search issues')).toBeTruthy();
+    expect(within(dialog).getByText('Create issue')).toBeTruthy();
+    // Not the Settings connector editor.
+    expect(within(dialog).queryByLabelText(/service name/i)).toBeNull();
+
+    const create = within(dialog).getByRole('group', { name: 'What it may do with Create issue' });
+    fireEvent.click(within(create).getByRole('radio', { name: 'Deny' }));
+    await waitFor(() =>
+      expect(setMock).toHaveBeenCalledWith('a-quill', 'gmail', `mcp.${NS}.Create issue`, 'deny'),
+    );
+    await waitFor(() =>
+      expect(
+        within(create).getByRole('radio', { name: 'Deny' }).getAttribute('aria-checked'),
+      ).toBe('true'),
+    );
+  });
+
+  it('the details view’s menu has no Edit permissions — the view already is them', async () => {
+    vi.mocked(workspaceApi.connectorTools).mockResolvedValue(toolsRead());
     renderTab();
     const menu = await openMenu('Linear');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Edit connector' }));
-    await waitFor(() =>
-      expect(getConnector).toHaveBeenCalledWith('linear', '/settings/connectors'),
-    );
-    expect(await screen.findByText(/couldn’t open Linear just now/)).toBeTruthy();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'View details' }));
+    await screen.findByRole('button', { name: 'Connectors' });
+    const inner = await openMenu('Linear');
+    const items = within(inner).getAllByRole('menuitem').map((i) => i.textContent);
+    expect(items).not.toContain('Edit permissions');
+    expect(items).not.toContain('View details');
+    expect(items).not.toContain('Edit connector');
   });
 });
 
@@ -203,6 +270,31 @@ describe('remove', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
     expect(await screen.findByText(/Removed Linear\. Some of what you’d approved/)).toBeTruthy();
   });
+
+  it('says it signed them out too when the connector was on none of their other agents', async () => {
+    removeMock.mockResolvedValue({ removed: true, cleanup: 'complete', signedOut: true });
+    renderTab();
+    const menu = await openMenu('Linear');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from Quill' }));
+    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
+    expect(
+      await screen.findByText(
+        'Removed Linear. None of your agents use it now, so we signed you out of it too — adding it again will ask you to sign in.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('says nothing about signing out on a plain remove', async () => {
+    removeMock.mockResolvedValue({ removed: true, cleanup: 'complete' });
+    renderTab();
+    const menu = await openMenu('Linear');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from Quill' }));
+    connectorsMock.mockResolvedValue({ connectors: [ROWS[1]!], shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(screen.queryByText('Linear')).toBeNull());
+    expect(screen.queryByText(/signed you out/)).toBeNull();
+  });
 });
 
 // TASK-798 — on a team agent only the agent's owner (a team admin) or a
@@ -245,7 +337,7 @@ describe('a member on a team agent (TASK-798)', () => {
     const menu = await openMenu('Linear');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'View details',
-      'Edit connector',
+      'Edit permissions',
     ]);
     expect(within(menu).queryByText(/Remove from/)).toBeNull();
   });
@@ -262,6 +354,7 @@ describe('a member on a team agent (TASK-798)', () => {
     const menu = await openMenu('Gmail');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'View details',
+      'Edit permissions',
     ]);
     expect(within(menu).queryByText(/Sign in/)).toBeNull();
   });
@@ -273,6 +366,7 @@ describe('a member on a team agent (TASK-798)', () => {
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Add key',
       'View details',
+      'Edit permissions',
     ]);
   });
 
@@ -304,6 +398,7 @@ describe('a member on a team agent (TASK-798)', () => {
     const menu = await openMenu('Gmail');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'View details',
+      'Edit permissions',
     ]);
   });
 
@@ -333,6 +428,7 @@ describe('a member on a team agent (TASK-798)', () => {
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Sign in again',
       'View details',
+      'Edit permissions',
     ]);
   });
 
@@ -353,6 +449,7 @@ describe('a member on a team agent (TASK-798)', () => {
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Sign in',
       'View details',
+      'Edit permissions',
       'Remove from Quill',
     ]);
   });
@@ -466,6 +563,7 @@ describe('connector health (TASK-741)', () => {
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Reconnect',
       'View details',
+      'Edit permissions',
       'Remove from Quill',
     ]);
     fireEvent.keyDown(menu, { key: 'Escape' });
@@ -474,7 +572,7 @@ describe('connector health (TASK-741)', () => {
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Retry',
       'View details',
-      'Edit connector',
+      'Edit permissions',
       'Remove from Quill',
     ]);
   });
@@ -555,6 +653,7 @@ describe('a team agent member’s own expired sign-in (TASK-774)', () => {
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'Sign in again',
       'View details',
+      'Edit permissions',
       'Remove from Quill',
     ]);
   });
@@ -643,37 +742,41 @@ describe("a connector a session can't fully load (TASK-745)", () => {
     connectorsMock.mockResolvedValue({ connectors: NOT_LOADED, shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
   });
 
-  it('wears the error icon after its name, saying what this person can do about it', async () => {
+  const ASK_ADMIN = 'Couldn’t load it. Ask a workspace admin to fix it.';
+  const FIX_IN_SETTINGS = 'Couldn’t load it. Fix it in Settings › Connectors.';
+
+  it('wears the error icon after its name; someone who isn’t an admin is told to ask one — even for a connector they may edit', async () => {
     renderTab();
-    const editable = await screen.findByRole('button', {
-      name: 'Couldn’t load it. Choose Edit connector to fix it.',
-    });
-    const locked = screen.getByRole('button', {
-      name: 'Couldn’t load it. Ask a workspace admin to fix it.',
-    });
-    expect(editable.previousElementSibling?.textContent).toBe('Linear');
-    expect(locked.previousElementSibling?.textContent).toBe('Gmail');
-    expect(editable.querySelector('svg.lucide-circle-alert')).not.toBeNull();
+    const icons = await screen.findAllByRole('button', { name: ASK_ADMIN });
+    expect(icons.map((i) => i.previousElementSibling?.textContent)).toEqual(['Linear', 'Gmail']);
+    expect(icons[0]!.querySelector('svg.lucide-circle-alert')).not.toBeNull();
+    // The old advice pointed at a menu item the rail no longer has.
+    expect(screen.queryByRole('button', { name: /Edit connector/ })).toBeNull();
     // No jargon reaches the person.
     expect(document.body.textContent ?? '').not.toMatch(/MCP|namespace/i);
   });
 
-  it('shows the reason in a tooltip on keyboard focus', async () => {
-    renderTab();
-    const icon = await screen.findByRole('button', {
-      name: 'Couldn’t load it. Choose Edit connector to fix it.',
-    });
-    icon.focus();
-    const tip = await screen.findByRole('tooltip');
-    expect(tip.textContent).toBe('Couldn’t load it. Choose Edit connector to fix it.');
+  it('a workspace admin is pointed at Settings › Connectors, whether or not the row is editable', async () => {
+    renderTab(ADMIN);
+    const icons = await screen.findAllByRole('button', { name: FIX_IN_SETTINGS });
+    expect(icons.map((i) => i.previousElementSibling?.textContent)).toEqual(['Linear', 'Gmail']);
+    expect(screen.queryByRole('button', { name: ASK_ADMIN })).toBeNull();
   });
 
-  it('offers no Reconnect or Retry — neither would fix it — and keeps Edit connector', async () => {
+  it('shows the reason in a tooltip on keyboard focus', async () => {
+    renderTab(ADMIN);
+    const [icon] = await screen.findAllByRole('button', { name: FIX_IN_SETTINGS });
+    icon!.focus();
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toBe(FIX_IN_SETTINGS);
+  });
+
+  it('offers no Reconnect or Retry — neither would fix it — and no Edit connector', async () => {
     renderTab();
     let menu = await openMenu('Linear');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'View details',
-      'Edit connector',
+      'Edit permissions',
       'Remove from Quill',
     ]);
     fireEvent.keyDown(menu, { key: 'Escape' });
@@ -681,6 +784,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
     menu = await openMenu('Gmail');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
       'View details',
+      'Edit permissions',
       'Remove from Quill',
     ]);
   });

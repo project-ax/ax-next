@@ -17,7 +17,11 @@ import type {
 
 export type AgentConnectorsStatus = 'loading' | 'ok' | 'unavailable' | 'failed';
 
-export type RemoveOutcome = 'removed' | 'removed-partial' | 'failed';
+/**
+ * `removed-signed-out` — it was on none of this person's other agents, so
+ * their own sign-in / keys for it went too (adding it again asks again).
+ */
+export type RemoveOutcome = 'removed' | 'removed-partial' | 'removed-signed-out' | 'failed';
 
 /** What Retry found (TASK-741), or that the check itself could not run. */
 export type RetryOutcome = AgentConnectorHealth | 'failed';
@@ -136,6 +140,7 @@ export function useAgentConnectors(agentId: string): AgentConnectorsState {
       try {
         const out = await workspaceApi.removeConnector(agentId, connectorId);
         if (agentScope.current === agentAtStart) load(false);
+        if (out.signedOut === true) return 'removed-signed-out';
         return out.cleanup === 'complete' ? 'removed' : 'removed-partial';
       } catch (e) {
         logRequestFailure(e, 'agent-connectors');

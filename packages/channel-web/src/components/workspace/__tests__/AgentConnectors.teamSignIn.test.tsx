@@ -121,6 +121,7 @@ describe('Remove team sign-in (TASK-858)', () => {
     renderTab();
     expect(await menuItems('Linear')).toEqual([
       'View details',
+      'Edit permissions',
       'Remove team sign-in',
       'Remove from Quill',
     ]);
