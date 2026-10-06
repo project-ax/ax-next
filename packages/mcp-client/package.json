@@ -19,10 +19,10 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "ipaddr.js": "2.4.0",
     "kysely": "0.28.17",
-    "undici": "7.29.1",
+    "undici": "8.11.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
