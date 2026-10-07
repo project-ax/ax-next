@@ -986,11 +986,17 @@ export function createConnectorRouteHandlers(
     async listAuthoredProposals(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
-      const out = await deps.bus.call<ListAuthoredPendingAllInput, ListAuthoredPendingAllOutput>(
-        'connectors:list-authored-pending-all',
-        ctx,
-        {},
-      );
+      let out: ListAuthoredPendingAllOutput;
+      try {
+        out = await deps.bus.call<ListAuthoredPendingAllInput, ListAuthoredPendingAllOutput>(
+          'connectors:list-authored-pending-all',
+          ctx,
+          {},
+        );
+      } catch (err) {
+        handleHookError(err, res);
+        return;
+      }
       const newest = new Map<string, ListAuthoredPendingAllOutput['drafts'][number]>();
       for (const d of out.drafts) {
         const key = `${d.ownerUserId}\u0000${d.connectorId}`;
@@ -1082,9 +1088,10 @@ export async function registerAdminConnectorRoutes(
   }> = [
     { method: 'GET', path: '/admin/connectors', handler: handlers.list },
     { method: 'POST', path: '/admin/connectors', handler: handlers.create },
-    // Slice 2c — agent requests awaiting approval, and Dismiss. Registered
-    // BEFORE the `/:id` patterns so `authored` is never captured as an `:id`.
-    // Approving is creating: POST /admin/connectors clears the requests.
+    // Slice 2c — agent requests awaiting approval, and Dismiss. The router
+    // prefers an exact path over a `:id` pattern, so `authored` would shadow a
+    // connector with that id — `validateConnectorId` reserves it. Approving is
+    // creating: POST /admin/connectors (shared) clears the requests.
     { method: 'GET', path: '/admin/connectors/authored', handler: handlers.listAuthoredProposals },
     {
       method: 'DELETE',

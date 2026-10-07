@@ -3,7 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { PluginError } from '@ax/core';
+import { PluginError, type Logger } from '@ax/core';
 import {
   createTestHarness,
   type TestHarness,
@@ -178,6 +178,27 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
     ).rejects.toThrow(PluginError);
   });
 
+  it('rejects the reserved id `authored` (it would be shadowed by the admin queue route)', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+        'connectors:install-authored',
+        h.ctx({ userId: 'userA' }),
+        installInput({ connectorId: 'authored' }),
+      ),
+    ).rejects.toThrow(/reserved/);
+    await expect(
+      h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), {
+        userId: 'admin',
+        connectorId: 'authored',
+        name: 'Authored',
+        keyMode: 'personal',
+        visibility: 'shared',
+        capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+      }),
+    ).rejects.toThrow(/reserved/);
+  });
+
   it('rejects a malformed connectorId', async () => {
     const h = await makeHarness();
     await expect(
@@ -221,7 +242,7 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
 // connector owned by the same user with the SAME connector id.
 // ---------------------------------------------------------------------------
 
-/** Seed an active connector into the LIVE registry (the post-approval state). */
+/** Seed a live SHARED connector into the registry (the admin-created state). */
 async function seedRegistryConnector(
   h: TestHarness,
   over: Partial<UpsertInput> = {},
@@ -234,7 +255,7 @@ async function seedRegistryConnector(
       connectorId: 'linear',
       name: 'Linear',
       keyMode: 'personal',
-      visibility: 'private',
+      visibility: 'shared',
       capabilities: {
         allowedHosts: ['api.linear.app'],
         credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', account: 'linear' }],
@@ -345,6 +366,34 @@ describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-1
       {},
     );
     expect(all.drafts).toEqual([]);
+  });
+
+  it('does NOT dedup against another owner’s PRIVATE connector: the draft is written (no "taken" leak)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userB' }),
+      {
+        userId: 'userB',
+        connectorId: 'linear',
+        name: 'Linear',
+        keyMode: 'personal',
+        visibility: 'private',
+        capabilities: { allowedHosts: ['api.linear.app'], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+      },
+    );
+    const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput(),
+    );
+    expect(out).toEqual({ connectorId: 'linear', status: 'pending' });
+    const list = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
+      'connectors:list-authored',
+      h.ctx({ userId: 'userA' }),
+      { ownerUserId: 'userA', agentId: 'agent1' },
+    );
+    expect(list.drafts.map((d) => d.connectorId)).toEqual(['linear']);
   });
 });
 
@@ -509,7 +558,7 @@ describe('@ax/connectors — connectors:clear-authored-by-id (Dismiss)', () => {
 });
 
 describe('@ax/connectors — creating a connector resolves its proposals', () => {
-  it('connectors:upsert that CREATES clears both proposers’ drafts for that id', async () => {
+  it('connectors:upsert that CREATES a SHARED connector clears both proposers’ drafts for that id', async () => {
     const h = await makeHarness();
     await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
       installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
@@ -528,6 +577,59 @@ describe('@ax/connectors — creating a connector resolves its proposals', () =>
       'connectors:list-authored', h.ctx({ userId: 'userA' }), { ownerUserId: 'userA', agentId: 'agent1' },
     );
     expect(a.drafts).toEqual([]);
+  });
+
+  it('creating a PRIVATE connector leaves other people’s requests in place (no cross-tenant clear)', async () => {
+    const h = await makeHarness();
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
+      installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userB' }),
+      installInput({ ownerUserId: 'userB', agentId: 'agent2' }));
+
+    const up = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert', h.ctx({ userId: 'userC' }),
+      sharedUpsert({ userId: 'userC', keyMode: 'personal', visibility: 'private' }),
+    );
+    expect(up.created).toBe(true);
+    for (const [owner, agent] of [['userA', 'agent1'], ['userB', 'agent2']] as const) {
+      const rows = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
+        'connectors:list-authored', h.ctx({ userId: owner }), { ownerUserId: owner, agentId: agent },
+      );
+      expect(rows.drafts.map((d) => d.connectorId)).toEqual(['linear']);
+    }
+  });
+
+  it('a failing clear never fails the create: upsert returns created:true and logs connectors_proposals_clear_failed', async () => {
+    const h = await makeHarness();
+    // Make the clear throw: drop the drafts table out from under the store.
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query('DROP TABLE connectors_v1_authored');
+    } finally {
+      await pg.end();
+    }
+    const warns: Array<{ msg: string; bindings?: Record<string, unknown> }> = [];
+    const logger: Logger = {
+      debug() {},
+      info() {},
+      warn(msg, bindings) {
+        warns.push({ msg, bindings });
+      },
+      error() {},
+      child() {
+        return logger;
+      },
+    };
+    const up = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert', h.ctx({ userId: 'admin', logger }), sharedUpsert(),
+    );
+    expect(up.created).toBe(true);
+    expect(up.connector.id).toBe('linear');
+    expect(warns.map((w) => w.msg)).toContain('connectors_proposals_clear_failed');
+    expect(warns.find((w) => w.msg === 'connectors_proposals_clear_failed')?.bindings).toMatchObject({
+      connectorId: 'linear',
+    });
   });
 
   it('an EDIT (created:false) does not clear drafts', async () => {

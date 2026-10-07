@@ -771,12 +771,14 @@ async function upsertConnector(
   if (prior !== null) {
     await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);
   }
-  // Slice 2c — approval is creation. A new live connector resolves every
-  // pending agent request for its id, whoever asked. An edit leaves them (the
-  // queue already hides an id that is live). Best-effort: the connector is
-  // committed, and a leftover draft is still hidden from the queue and refused
-  // by the install dedup, so a failure only logs.
-  if (created) {
+  // Slice 2c — approval is creation. A new SHARED connector resolves every
+  // pending agent request for its id, whoever asked: it is what they asked for.
+  // A PRIVATE one resolves nobody else's request, so it must not touch other
+  // people's rows (cross-tenant). An edit leaves them (the queue already hides
+  // an id that is live). Best-effort: the connector is committed, and a
+  // leftover draft is still hidden from the queue and refused by the install
+  // dedup, so a failure only logs.
+  if (created && connector.visibility === 'shared') {
     try {
       const { cleared } = await authored.clearAllById(connectorId);
       if (cleared > 0) {
@@ -1206,15 +1208,14 @@ async function installAuthoredConnector(
   );
   const keyMode = validateKeyMode(input.keyMode);
 
-  // Re-propose dedup (TASK-114, widened in slice 2c). If ANY live connector,
-  // of any owner, already carries this id, the install is a NO-OP: we write no
-  // draft and report `active`, so the model learns it already exists (admins
-  // define connectors and share them; a person adds it to their agent from
-  // Connectors). Pure id match. SECURITY: this grants zero new reach — it
-  // writes nothing and only reports an existing, admin-defined id. It does tell
-  // the agent that an id is taken; the ids are admin-chosen catalog names and
-  // `connectors:live-ids` already answers the same question.
-  if (await registry.hasLiveById(connectorId)) {
+  // Re-propose dedup (TASK-114, reshaped in slice 2c). If a live SHARED
+  // connector already carries this id, the install is a NO-OP: we write no
+  // draft and report `active`, so the model learns it is already available (a
+  // person adds it to their agent from Connectors). Only SHARED counts: a
+  // private connector of someone else is nothing the proposer can add, and
+  // answering `active` for it would leak that the id is taken. Pure id match.
+  // SECURITY: grants zero new reach — it writes nothing.
+  if (await registry.hasLiveSharedById(connectorId)) {
     return { connectorId, status: 'active' };
   }
 

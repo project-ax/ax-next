@@ -45,6 +45,13 @@ function invalid(message: string): PluginError {
   });
 }
 
+/**
+ * Ids a connector may never take because a route path uses the same segment:
+ * `/admin/connectors/authored` (slice 2c, the request queue) would shadow
+ * `/admin/connectors/:id` for a connector with that id (exact match wins).
+ */
+const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored']);
+
 export function validateConnectorId(value: unknown): string {
   if (typeof value !== 'string') {
     throw invalid('connectorId must be a string');
@@ -56,6 +63,9 @@ export function validateConnectorId(value: unknown): string {
     throw invalid(
       `connectorId must match ${ID_RE.source} (lowercase slug)`,
     );
+  }
+  if (RESERVED_CONNECTOR_IDS.has(value)) {
+    throw invalid(`connectorId '${value}' is reserved`);
   }
   return value;
 }
