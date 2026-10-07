@@ -5,6 +5,8 @@ import {
   patchConnector,
   isToolPermissionsResetFailure,
   TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
+  isOwnerOnlyChange,
+  OWNER_ONLY_CHANGE_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
 import { connectorIdFromName } from '@/lib/connector-form';
@@ -132,7 +134,10 @@ export function RemoteMcpConnectorForm({
   const [keyModeChoice, setKeyModeChoice] = useState<'personal' | 'workspace'>(
     'personal',
   );
-  const base = isAdmin ? '/admin/connectors' : '/settings/connectors';
+  // Slice 2a: only admins define connectors, and this form opens only from
+  // Admin › Connectors, so every read and write is the admin bundle. (The
+  // `/settings/connectors` write routes are gone.)
+  const base = '/admin/connectors';
   // TASK-809 — a new connector that doesn't sign in with OAuth is added in two
   // steps in this one dialog: Add creates it, then its tools are listed here
   // so Save gives every one an admin default. `created` is that new connector.
@@ -545,7 +550,9 @@ export function RemoteMcpConnectorForm({
       setSaveError(
         isToolPermissionsResetFailure(err)
           ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
-          : 'We couldn’t save this connector. Check the settings and try again.',
+          : isOwnerOnlyChange(err)
+            ? OWNER_ONLY_CHANGE_MESSAGE
+            : 'We couldn’t save this connector. Check the settings and try again.',
       );
     } finally {
       setSaving(false);

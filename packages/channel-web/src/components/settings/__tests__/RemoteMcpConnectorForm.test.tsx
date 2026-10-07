@@ -63,6 +63,8 @@ let toolPermsGets: string[];
 let toolPermsPuts: { url: string; body: { verdicts: unknown[] } }[];
 let toolPermsGet: () => Response;
 let toolPermsPut: () => Response;
+// What a connector POST/PATCH answers (null = success with the fixture).
+let writeResponse: (() => Response) | null;
 const initialCapabilities = structuredClone(fixture.capabilities);
 beforeEach(() => {
   fixture.keyMode = 'personal';
@@ -91,6 +93,7 @@ beforeEach(() => {
       JSON.stringify({ status: 'ok', checkedAt: null, tools: [], defaults: [] }),
     );
   toolPermsPut = () => new Response(JSON.stringify({ ok: true }));
+  writeResponse = null;
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -136,6 +139,7 @@ beforeEach(() => {
           url: input,
           body: JSON.parse(String(init.body)) as Record<string, unknown>,
         });
+        if (writeResponse) return writeResponse();
         return new Response(JSON.stringify({ connector: fixture }));
       }
       connectorReads++;
@@ -222,7 +226,25 @@ describe('remote connector editor', () => {
       screen.getByRole('button', { name: /Request headers/ }),
     ).toBeVisible();
   });
-  it('preserves hidden data on the user route', async () => {
+  // Slice 2a — a second admin may relabel a shared connector but not retarget
+  // it; the server answers 403 owner-only-change. Say who can, and what to do.
+  it('a save refused as owner-only says who can change it, and stays open', async () => {
+    writeResponse = () =>
+      new Response(JSON.stringify({ error: 'owner-only-change' }), { status: 403 });
+    const options = await openEditor(true);
+    fireEvent.change(screen.getByLabelText('Name'), {
+      target: { value: 'Linear updated' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(
+      await screen.findByText(
+        'Only the admin who created this connector can change where it connects. To point it somewhere else, delete it and add a new one.',
+      ),
+    ).toBeInTheDocument();
+    expect(writes[0]!.url).toBe('/admin/connectors/linear');
+    expect(options.onSaved).not.toHaveBeenCalled();
+  });
+  it('preserves hidden data when the isAdmin={false} variant saves (always the admin route)', async () => {
     const options = await openEditor();
     fireEvent.change(screen.getByLabelText('Name'), {
       target: { value: 'Linear updated' },
@@ -230,7 +252,7 @@ describe('remote connector editor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes).toHaveLength(1);
-    expect(writes[0]!.url).toBe('/settings/connectors/linear');
+    expect(writes[0]!.url).toBe('/admin/connectors/linear');
     expect(writes[0]!.body).not.toHaveProperty('visibility');
     expect(writes[0]!.body).not.toHaveProperty('defaultAttached');
     expect(writes[0]!.body).not.toHaveProperty('description');
@@ -375,7 +397,7 @@ describe('remote connector editor', () => {
       ).toBeEnabled(),
     );
   });
-  it('creates a remote server with no sign-in on the personal route', async () => {
+  it('creates a remote server with no sign-in with a per-person key (always the admin route)', async () => {
     discovery = { hosts: ['public.example.com'], auth: 'none' };
     const options = await openNew();
     expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
@@ -384,7 +406,7 @@ describe('remote connector editor', () => {
     await finishAdding();
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes).toHaveLength(1);
-    expect(writes[0]!.url).toBe('/settings/connectors');
+    expect(writes[0]!.url).toBe('/admin/connectors');
     expect(writes[0]!.body).toMatchObject({
       keyMode: 'personal',
       visibility: 'shared',
@@ -922,7 +944,7 @@ describe('tool permissions (TASK-737)', () => {
     expect(pressed('Update issue')).toEqual(['Ask first']);
   });
 
-  it('sends only changed rows, to the user base, after the connector saves', async () => {
+  it('sends only changed rows, to the admin base even in the isAdmin={false} variant, after the connector saves', async () => {
     serve(
       inventory({
         defaults: [
@@ -944,7 +966,7 @@ describe('tool permissions (TASK-737)', () => {
     expect(writes).toHaveLength(1);
     expect(toolPermsPuts).toEqual([
       {
-        url: '/settings/connectors/linear/tool-permissions',
+        url: '/admin/connectors/linear/tool-permissions',
         body: { verdicts: [{ toolKey: 'mcp.linear.create_issue', verdict: 'deny' }] },
       },
     ]);
@@ -1195,7 +1217,7 @@ describe('tool permissions (TASK-737)', () => {
     expect(pressed('archive_issue')).toEqual(['Deny']);
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
     await waitFor(() => expect(toolPermsGets).toHaveLength(2));
-    expect(toolPermsGets[1]).toBe('/settings/connectors/linear/tool-permissions?refresh=1');
+    expect(toolPermsGets[1]).toBe('/admin/connectors/linear/tool-permissions?refresh=1');
     await screen.findByRole('group', { name: 'Permission for archive_issue' });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());

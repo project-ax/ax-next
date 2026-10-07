@@ -127,6 +127,10 @@ function renderShell() {
  * the outline. `ConnectorsTab.test.tsx` — which has those modules mocked
  * properly — carries the outline assertion for the Connectors body instead, and
  * `RoutinesTab` has no headings of its own to place.
+ *
+ * `Sites` (slice 2a) is absent for the same reason as Connectors: its two
+ * panels read through `lib/*` modules this file doesn't mock.
+ * `SitesTab.test.tsx` carries its outline.
  */
 const TABS: ReadonlyArray<readonly [nav: string, title: string]> = [
   ['Skills', 'Skills'],

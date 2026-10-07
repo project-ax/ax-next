@@ -38,8 +38,8 @@ try {
 import { AdminShell } from './components/admin/AdminShell';
 import { UserProvider } from './lib/user-context';
 import './index.css';
-const admin = new URLSearchParams(location.search).has('admin');
-createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1',name:'Test user',email:'test@example.com',role:admin?'admin':'user'}}><AdminShell isAdmin={admin} onClose={()=>{}} initialTab="connectors-user" /></UserProvider>);`,
+// Slice 2a: only admins define connectors, so the editor lives at Admin › Connectors.
+createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1',name:'Test admin',email:'test@example.com',role:'admin'}}><AdminShell isAdmin onClose={()=>{}} initialTab="connectors" /></UserProvider>);`,
   );
   const viteEnv = { ...process.env };
   delete viteEnv.AX_BACKEND_URL;
@@ -117,7 +117,9 @@ createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1
     },
   };
   const writes = [];
-  await page.route('**/settings/connectors**', (route) => {
+  // The editor reads and writes only the admin bundle (slice 2a: the
+  // /settings/connectors write routes are gone).
+  await page.route('**/admin/connectors**', (route) => {
     const request = route.request(),
       url = new URL(request.url());
     if (request.method() === 'PATCH') {
@@ -126,17 +128,26 @@ createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1
       connector = { ...connector, ...body };
       return route.fulfill({ json: { connector } });
     }
-    if (url.pathname === '/settings/connectors')
+    if (url.pathname === '/admin/connectors')
       return route.fulfill({ json: { connectors: [connector] } });
-    if (url.pathname === '/settings/connectors/linear')
+    if (url.pathname === '/admin/connectors/linear')
       return route.fulfill({ json: { connector } });
-    return route.fulfill({ json: { drafts: [] } });
+    return route.fulfill({ json: {} });
   });
-  await page.route('**/settings/destinations/account/credential', (route) => {
+  // The "Proposed by your assistant" shelf still reads its owner-scoped list.
+  await page.route('**/settings/connectors/authored**', (route) =>
+    route.fulfill({ json: { drafts: [] } }),
+  );
+  // A shared connector's client secret is the workspace's, so an admin's
+  // editor stores it on the /admin side.
+  await page.route('**/destinations/account/credential', (route) => {
     writes.push({ kind: 'secret', body: route.request().postDataJSON() });
     return route.fulfill({ json: {} });
   });
   await page.route('**/settings/credentials', (route) =>
+    route.fulfill({ json: { credentials: [] } }),
+  );
+  await page.route('**/admin/credentials**', (route) =>
     route.fulfill({ json: { credentials: [] } }),
   );
   await page.route('**/api/chat/allowed-sites', (route) =>
@@ -266,7 +277,7 @@ createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1
   // so the form must never send it (or `visibility`) at all.
   assert(
     !('visibility' in saved) && !('defaultAttached' in saved),
-    'User writes must not carry admin permissions or the retired default flag',
+    'An edit must not resend sharing or the retired default flag',
   );
   assert.equal(connector.description, 'Preserved description');
   assert.equal(connector.usageNote, 'Preserved instructions');

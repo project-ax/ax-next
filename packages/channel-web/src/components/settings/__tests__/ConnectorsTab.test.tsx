@@ -65,16 +65,15 @@ describe('ConnectorsTab', () => {
     // No proposed (pending authored) drafts by default → the Proposed shelf is
     // absent (#310). Tests that exercise the fallback override this.
     vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([]);
-    // Allowed-sites lives in its own child panel now (AllowedSitesPanel, tested
-    // separately). Stub its deps so the embedded panel is a quiet empty list and
-    // these tests stay focused on the connector shelves.
+    // The site lists live on Settings › Sites now; these spies stay so a test
+    // can assert this tab never reads them.
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([]);
     vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([]);
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it('lists the user connectors by service name', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
+  it('lists the connectors by service name', async () => {
+    render(<ConnectorsTab />);
     expect(await screen.findByText('My Notion')).toBeInTheDocument();
     expect(screen.getByText('Salesforce')).toBeInTheDocument();
   });
@@ -99,7 +98,7 @@ describe('ConnectorsTab', () => {
 
   it('shows a "Proposed by your assistant" shelf when there are pending authored drafts', async () => {
     vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([PROPOSED_LINEAR]);
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     expect(await screen.findByText(/Proposed by your assistant/i)).toBeInTheDocument();
     const tile = await screen.findByTestId('proposed-connector-linear');
     expect(within(tile).getByText('Linear')).toBeInTheDocument();
@@ -107,7 +106,7 @@ describe('ConnectorsTab', () => {
   });
 
   it('omits the Proposed shelf when there are no pending drafts', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     expect(screen.queryByText(/Proposed by your assistant/i)).not.toBeInTheDocument();
   });
@@ -123,7 +122,7 @@ describe('ConnectorsTab', () => {
       .spyOn(connectorsLib, 'approveAuthoredConnector')
       .mockResolvedValue(undefined);
 
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     const tile = await screen.findByTestId('proposed-connector-linear');
     fireEvent.click(within(tile).getByRole('button', { name: /approve/i }));
 
@@ -150,7 +149,7 @@ describe('ConnectorsTab', () => {
 
   it('offers a Dismiss action on a proposed connector', async () => {
     vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([PROPOSED_LINEAR]);
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     const tile = await screen.findByTestId('proposed-connector-linear');
     expect(within(tile).getByRole('button', { name: /dismiss/i })).toBeInTheDocument();
   });
@@ -166,7 +165,7 @@ describe('ConnectorsTab', () => {
       .spyOn(connectorsLib, 'rejectAuthoredConnector')
       .mockResolvedValue(undefined);
 
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     const tile = await screen.findByTestId('proposed-connector-linear');
     fireEvent.click(within(tile).getByRole('button', { name: /dismiss/i }));
 
@@ -185,7 +184,7 @@ describe('ConnectorsTab', () => {
   });
 
   it('keeps the default view mechanism-free (no transport/command/url/args)', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     const body = document.body.textContent ?? '';
     expect(body).not.toMatch(/stdio/i);
@@ -196,18 +195,32 @@ describe('ConnectorsTab', () => {
   });
 
   it('captions what each connector needs (a key) without naming the mechanism', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    expect(screen.getByText(/shared key/i)).toBeInTheDocument();
-    expect(screen.getByText(/personal key/i)).toBeInTheDocument();
+    // Slice 2a: a per-person key is added per agent, so the caption says so.
+    // The stored keyMode is still 'personal' — only the words changed.
+    expect(
+      within(screen.getByTestId('connector-tile-my-notion')).getByText(
+        'Each agent adds its own key',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('connector-tile-company-salesforce')).getByText(
+        'One shared key for everyone',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/personal key/i)).toBeNull();
   });
 
-  it('shows the empty state with no "catalog" language for a solo user', async () => {
+  it('shows the empty state with no "catalog" language', async () => {
     vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([]);
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await waitFor(() => {
       expect(screen.getByText(/no connectors yet/i)).toBeInTheDocument();
     });
+    expect(
+      screen.getByText(/Add one to make it available to the workspace\./),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Catalog')).toBeNull();
     expect(screen.queryByText(/catalog/i)).toBeNull();
   });
@@ -216,99 +229,53 @@ describe('ConnectorsTab', () => {
     vi.spyOn(connectorsLib, 'listConnectors').mockRejectedValue(
       new Error('connectors boom'),
     );
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await waitFor(() => {
       expect(screen.getByText('connectors boom')).toBeInTheDocument();
     });
-  });
-
-  // --- user authoring (TASK-129) -------------------------------------------
-
-  it('a non-admin gets "New connector" + Edit/Delete on a PRIVATE owned connector', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
-    await screen.findByText('My Notion');
-    // The authoring entry point is open to every user now.
-    expect(
-      screen.getByRole('button', { name: /new connector/i }),
-    ).toBeInTheDocument();
-    const privateTile = screen.getByTestId('connector-tile-my-notion');
-    expect(
-      within(privateTile).getByRole('button', { name: /^edit$/i }),
-    ).toBeInTheDocument();
-    expect(
-      within(privateTile).getByRole('button', { name: /^delete$/i }),
-    ).toBeInTheDocument();
   });
 
   it('an owner can edit a shared personal definition', async () => {
     vi.mocked(connectorsLib.listConnectors).mockResolvedValue([
       { ...PRIVATE_CONN, visibility: 'shared', canEdit: true },
     ]);
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     const tile = screen.getByTestId('connector-tile-my-notion');
     expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
   });
 
-  it('a shared definition owned by someone else is read-only even for an admin', async () => {
+  it('a definition the server marks read-only shows no Edit or Delete', async () => {
     vi.mocked(connectorsLib.listConnectors).mockResolvedValue([
       { ...SHARED_CONN, canEdit: false },
     ]);
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
     const tile = screen.getByTestId('connector-tile-company-salesforce');
     expect(within(tile).queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
     expect(within(tile).queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
   });
 
-  it('a non-admin sees NO Edit/Delete on a catalog/shared connector (read-only)', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
+  // --- admin curation (TASK-127; admin-only since slice 2a) ----------------
+
+  it('a connector the server sent without canEdit is editable (any admin may edit a shared one)', async () => {
+    render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    const sharedTile = screen.getByTestId('connector-tile-company-salesforce');
-    expect(
-      within(sharedTile).queryByRole('button', { name: /^edit$/i }),
-    ).toBeNull();
-    expect(
-      within(sharedTile).queryByRole('button', { name: /^delete$/i }),
-    ).toBeNull();
+    const tile = screen.getByTestId('connector-tile-company-salesforce');
+    expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
+    expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
   });
 
-  it('a non-admin gets NO admin-only controls (Test)', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
+  it('reads the list from /admin/connectors, never the /settings/connectors routes', async () => {
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    expect(screen.queryByRole('button', { name: /^test$/i })).toBeNull();
+    expect(connectorsLib.listConnectors).toHaveBeenCalledWith('/admin/connectors');
+    expect(connectorsLib.listConnectors).not.toHaveBeenCalledWith('/settings/connectors');
   });
-
-  it('non-admin "New connector" opens the user-variant create form (no Sharing field)', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
-    await screen.findByText('My Notion');
-    fireEvent.click(screen.getByRole('button', { name: /new connector/i }));
-    expect(await screen.findByLabelText(/^name$/i)).toBeInTheDocument();
-    // The user variant hides the admin-only Sharing field.
-    expect(screen.queryByLabelText(/^sharing$/i)).toBeNull();
-  });
-
-  it('non-admin Delete on a private connector deletes via the /settings/connectors route', async () => {
-    const del = vi.spyOn(connectorsLib, 'deleteConnector').mockResolvedValue();
-    render(<ConnectorsTab isAdmin={false} />);
-    await screen.findByText('My Notion');
-    const tile = screen.getByTestId('connector-tile-my-notion');
-    fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
-    expect(await screen.findByText(/delete connector\?/i)).toBeInTheDocument();
-    const dialogDelete = screen
-      .getAllByRole('button', { name: /^delete$/i })
-      .at(-1)!;
-    fireEvent.click(dialogDelete);
-    await waitFor(() =>
-      expect(del).toHaveBeenCalledWith('my-notion', '/settings/connectors'),
-    );
-  });
-
-  // --- admin inline curation (TASK-127) ------------------------------------
 
   it('shows admin curation controls (New + per-row Edit/Delete) for an admin', async () => {
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     expect(screen.getByRole('button', { name: /new connector/i })).toBeInTheDocument();
     const tile = screen.getByTestId('connector-tile-my-notion');
@@ -319,14 +286,14 @@ describe('ConnectorsTab', () => {
   });
 
   it('admin "New connector" opens the create form', async () => {
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     fireEvent.click(screen.getByRole('button', { name: /new connector/i }));
     expect(await screen.findByLabelText(/^name$/i)).toBeInTheDocument();
   });
 
   it('admin per-row Edit opens the edit form prefilled', async () => {
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     const tile = screen.getByTestId('connector-tile-my-notion');
     fireEvent.click(within(tile).getByRole('button', { name: /^edit$/i }));
@@ -336,7 +303,7 @@ describe('ConnectorsTab', () => {
 
   it('admin Delete opens a styled confirm and deletes on confirm', async () => {
     const del = vi.spyOn(connectorsLib, 'deleteConnector').mockResolvedValue();
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     const tile = screen.getByTestId('connector-tile-my-notion');
     fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
@@ -358,7 +325,7 @@ describe('ConnectorsTab', () => {
   // key" status that's only true for whoever is looking, or a "Catalog" badge.
 
   it('renders one list with no Connected / Available shelves', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     expect(screen.getByTestId('connector-tile-my-notion')).toBeInTheDocument();
     expect(screen.getByTestId('connector-tile-company-salesforce')).toBeInTheDocument();
@@ -367,7 +334,7 @@ describe('ConnectorsTab', () => {
   });
 
   it('tells people where they sign in', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     expect(
       screen.getByText(/People sign in from each agent’s Connectors tab\./),
@@ -375,7 +342,7 @@ describe('ConnectorsTab', () => {
   });
 
   it('an admin tile has no Test / Connect / Update key, no status words, no Catalog badge', async () => {
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
     for (const id of ['my-notion', 'company-salesforce']) {
       const tile = screen.getByTestId(`connector-tile-${id}`);
@@ -390,13 +357,13 @@ describe('ConnectorsTab', () => {
     // A tile's caption still says what it needs.
     expect(
       within(screen.getByTestId('connector-tile-company-salesforce')).getByText(
-        'Needs a shared key',
+        'One shared key for everyone',
       ),
     ).toBeInTheDocument();
   });
 
   it('reads no credential presence and no full connector records', async () => {
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
     // Give any stray follow-up reads a chance to fire.
     await waitFor(() => expect(connectorsLib.listConnectors).toHaveBeenCalled());
@@ -407,7 +374,7 @@ describe('ConnectorsTab', () => {
   });
 
   it('an editable tile shows exactly Edit and Delete', async () => {
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     const tile = screen.getByTestId('connector-tile-my-notion');
     expect(
@@ -421,18 +388,21 @@ describe('ConnectorsTab', () => {
     vi.mocked(connectorsLib.listConnectors).mockResolvedValue([
       { ...SHARED_CONN, canEdit: false },
     ]);
-    render(<ConnectorsTab isAdmin />);
+    render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
     const tile = screen.getByTestId('connector-tile-company-salesforce');
     expect(within(tile).queryAllByRole('button')).toEqual([]);
   });
 
-  // Allowed sites moved into its own AllowedSitesPanel (one list across agents);
-  // its behavior is covered by AllowedSitesPanel.test.tsx. ConnectorsTab only
-  // embeds it (with deps stubbed empty in beforeEach).
-  it('embeds the Allowed sites panel', async () => {
-    render(<ConnectorsTab isAdmin={false} />);
-    expect(await screen.findByText('Allowed sites')).toBeInTheDocument();
+  // Slice 2a: the two site lists moved to their own Settings › Sites page
+  // (SitesTab.test.tsx). Connectors is an admin page; the site lists are
+  // everyone's, so they must not ride along here.
+  it('no longer carries the site lists', async () => {
+    render(<ConnectorsTab />);
+    await screen.findByText('My Notion');
+    expect(screen.queryByText('Allowed sites')).toBeNull();
+    expect(screen.queryByText('Sites we read without asking')).toBeNull();
+    expect(connLib.listAllAllowedSites).not.toHaveBeenCalled();
   });
 
   /*
@@ -444,8 +414,9 @@ describe('ConnectorsTab', () => {
     the shell — meant the tab's outline began two levels down from a heading
     that did not exist.
 
-    The three `h2`s are the tab's three genuine top-level sections; the `h3`
-    is the Proposed shelf inside the first of them. The connector list itself
+    The `h2` is the tab's one top-level section (the two site sections that
+    used to follow it moved to Settings › Sites in slice 2a); the `h3` is the
+    Proposed shelf inside it. The connector list itself
     is one flat list with no shelf headings (no Connected / Available split). Asserting the exact
     list, not just "no skipped levels", is what stops the levels being fixed by
     deleting a section heading.
@@ -454,15 +425,13 @@ describe('ConnectorsTab', () => {
     vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([
       PROPOSED_LINEAR,
     ]);
-    render(<ConnectorsTab isAdmin={false} />);
+    render(<ConnectorsTab />);
     await screen.findByText('My Notion');
 
     expect(headingOutlineProblems(document.body, 2)).toEqual([]);
     expect(headingOutline()).toEqual([
       'h2: Connectors',
       'h3: Proposed by your assistant (1)',
-      'h2: Allowed sites',
-      'h2: Sites we read without asking',
     ]);
   });
 });

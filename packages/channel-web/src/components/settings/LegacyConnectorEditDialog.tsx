@@ -43,6 +43,8 @@ import {
   patchConnector,
   isToolPermissionsResetFailure,
   TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
+  isOwnerOnlyChange,
+  OWNER_ONLY_CHANGE_MESSAGE,
   type Connector,
   type ConnectorSummary,
   type ConnectorKeyMode,
@@ -122,6 +124,9 @@ export interface ConnectorEditDialogProps {
    * Admin variant. When true the workspace-level fields (Sharing) are
    * exposed. User edits preserve saved sharing settings; new definitions are
    * shared. Defaults to false.
+   *
+   * Since slice 2a the only caller is Admin › Connectors, which passes true;
+   * reads and writes always use `/admin/connectors` whatever this says.
    */
   isAdmin?: boolean;
 }
@@ -525,13 +530,10 @@ export function LegacyConnectorEditDialog({
     Record<number, string>
   >({});
 
-  // The route bundle this variant targets (TASK-129): the admin variant curates
-  // via `/admin/connectors`; the user variant authors via the locked-down
-  // `/settings/connectors` (owner forced; workspace keys rejected
-  // server-side; shared definitions owned by others are read-only).
-  const base: ConnectorRouteBase = isAdmin
-    ? '/admin/connectors'
-    : '/settings/connectors';
+  // Slice 2a: only admins define connectors, and this editor opens only from
+  // Admin › Connectors, so every read and write is the admin bundle. (The
+  // `/settings/connectors` write routes are gone.)
+  const base: ConnectorRouteBase = '/admin/connectors';
 
   // The shared wrapper supplies the full connector before mounting this editor.
   // Initialize synchronously from it so Save never serializes summary-only data.
@@ -676,7 +678,9 @@ export function LegacyConnectorEditDialog({
       setError(
         isToolPermissionsResetFailure(err)
           ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
-          : "We couldn't save this connector. Please try again.",
+          : isOwnerOnlyChange(err)
+            ? OWNER_ONLY_CHANGE_MESSAGE
+            : "We couldn't save this connector. Please try again.",
       );
     } finally {
       setBusy(false);

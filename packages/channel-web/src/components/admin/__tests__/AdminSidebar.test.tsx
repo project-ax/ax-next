@@ -28,12 +28,15 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     expect(screen.getByRole('button', { name: /chat/i })).toBeInTheDocument();
   });
 
-  it('shows the user tabs (Skills, Connectors, Agents) — no separate Credentials tab', () => {
+  it('shows the user tabs (Skills, Sites, Agents) — no Connectors, no separate Credentials tab', () => {
     render(
       <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBack={noop} backLabel="chat" />,
     );
     expect(screen.getByText('Skills')).toBeInTheDocument();
-    expect(screen.getByText('Connectors')).toBeInTheDocument();
+    // Slice 2a: only admins define connectors, so Connectors moved to Admin and
+    // the two site lists it used to carry got their own Settings page.
+    expect(screen.getByText('Sites')).toBeInTheDocument();
+    expect(screen.queryByText('Connectors')).not.toBeInTheDocument();
     // Agents is a user-facing Settings tab now — every user lists + manages their
     // OWN agents (owner-scoped). Visible even to a non-admin.
     expect(screen.getByText('Agents')).toBeInTheDocument();
@@ -145,19 +148,33 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
   it('fires onTabChange when a tab is clicked', () => {
     const onTabChange = vi.fn();
     render(
-      <AdminSidebar activeTab="connectors-user" isAdmin={false} onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
+      <AdminSidebar activeTab="sites" isAdmin={false} onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
     );
     screen.getByText('Skills').click();
     expect(onTabChange).toHaveBeenCalledWith('skills');
   });
 
-  it('the user "Connectors" tab uses the connectors-user id', () => {
+  it('the user "Sites" tab uses the sites id, where Connectors used to sit', () => {
     const onTabChange = vi.fn();
     render(
       <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
     );
+    const items = screen.getAllByRole('button').map((item) => item.textContent);
+    expect(items.indexOf('Sites')).toBe(items.indexOf('Skills') + 1);
+    screen.getByText('Sites').click();
+    expect(onTabChange).toHaveBeenCalledWith('sites');
+  });
+
+  it('Connectors is the first Admin tab, for admins only', () => {
+    const onTabChange = vi.fn();
+    render(
+      <AdminSidebar activeTab="providers" isAdmin onTabChange={onTabChange} onBack={noop} backLabel="chat" />,
+    );
+    const items = screen.getAllByRole('button').map((item) => item.textContent);
+    expect(items.indexOf('Connectors')).toBe(items.indexOf('AI model keys') - 1);
+    expect(items.indexOf('Connectors')).toBeGreaterThan(items.indexOf('Storage'));
     screen.getByText('Connectors').click();
-    expect(onTabChange).toHaveBeenCalledWith('connectors-user');
+    expect(onTabChange).toHaveBeenCalledWith('connectors');
   });
   it('lists Models right after AI model keys, for admins only', () => {
     const { rerender } = render(<AdminSidebar activeTab="providers" isAdmin onTabChange={noop} onBack={noop} backLabel="chat" />);

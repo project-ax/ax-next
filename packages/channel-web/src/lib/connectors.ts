@@ -244,6 +244,24 @@ export function isToolPermissionsResetFailure(err: unknown): boolean {
   return err instanceof Error && err.message === TOOL_PERMISSIONS_RESET_FAILED;
 }
 
+/**
+ * Slice 2a — what `PATCH /admin/connectors/:id` answers (403) when an admin
+ * who didn't create a shared connector tries to change where it connects
+ * (its capabilities, whose key it uses, or who can see it). Relabelling is
+ * fine; retargeting is the creator's call. Mirrors `@ax/connectors`
+ * `admin-routes.ts`.
+ */
+export const OWNER_ONLY_CHANGE = 'owner-only-change';
+
+/** What the editors say for {@link OWNER_ONLY_CHANGE}. */
+export const OWNER_ONLY_CHANGE_MESSAGE =
+  'Only the admin who created this connector can change where it connects. To point it somewhere else, delete it and add a new one.';
+
+/** True when a {@link patchConnector} failure is the owner-only refusal. */
+export function isOwnerOnlyChange(err: unknown): boolean {
+  return err instanceof Error && err.message === OWNER_ONLY_CHANGE;
+}
+
 export async function deleteConnector(
   id: string,
   base: ConnectorRouteBase,

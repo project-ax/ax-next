@@ -19,7 +19,7 @@ export type { ConnectorEditDialogProps } from './LegacyConnectorEditDialog';
 
 /** A failed full fetch must never fall back to saving a metadata-only summary. */
 export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
-  const { open, target, isAdmin = false } = props;
+  const { open, target } = props;
   const id = target === 'new' ? null : target.id;
   const [loaded, setLoaded] = useState<{
     id: string;
@@ -32,10 +32,9 @@ export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
     setFailed(false);
     if (!open || !id) return;
     let stale = false;
-    void getConnector(
-      id,
-      isAdmin ? '/admin/connectors' : '/settings/connectors',
-    ).then(
+    // Opened only from Admin › Connectors (slice 2a), so always the admin
+    // bundle — the same one the editors below write through.
+    void getConnector(id, '/admin/connectors').then(
       (connector) => {
         if (!stale) setLoaded({ id, connector });
       },
@@ -46,7 +45,7 @@ export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
     return () => {
       stale = true;
     };
-  }, [open, id, isAdmin, retry]);
+  }, [open, id, retry]);
   if (!open) return null;
   if (target === 'new') return <RemoteMcpConnectorForm {...props} />;
   if (loaded?.id === id) {

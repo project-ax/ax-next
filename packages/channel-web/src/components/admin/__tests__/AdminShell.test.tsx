@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { AdminShell } from '../AdminShell';
+import type { AdminTabId } from '../AdminSidebar';
 import { UserProvider } from '../../../lib/user-context';
 import type { AuthUser } from '../../../lib/auth';
 
@@ -141,7 +142,7 @@ describe('AdminShell', () => {
     // The agent-centric Settings tabs (every user). No separate Credentials tab —
     // each connector owns its own key(s) (credentials-into-connectors).
     expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sites' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Credentials' })).toBeNull();
     // Agents is a USER Settings tab now (owner-scoped — every user manages their
     // own agents), no longer in the Admin group.
@@ -149,6 +150,8 @@ describe('AdminShell', () => {
     // Admin tabs (Admin section) — present for admins. The Admin group is now
     // keys / model / sign-in / teams / branding / usage; the duplicate Catalog /
     // Connector-catalog surfaces are gone.
+    // Slice 2a: only admins define connectors, so Connectors is an Admin tab.
+    expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'AI model keys' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Helper model' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
@@ -165,6 +168,8 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
     // Agents is owner-scoped → a user Settings tab, shown even to non-admins.
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sites' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Connectors' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Teams' })).toBeNull();
     // Usage is money and a pause switch: an admin's tab, never offered to a user.
@@ -313,6 +318,59 @@ describe('AdminShell — initialTab (TASK-627)', () => {
     );
     expect(active('Skills')).toBe(true);
     expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
+  });
+
+  it('never opens Connectors for someone who is not an admin, and never asks /admin/connectors', () => {
+    render(
+      <UserProvider value={{ ...fakeUser, role: 'user' }}>
+        <AdminShell isAdmin={false} onClose={vi.fn()} initialTab="connectors" />
+      </UserProvider>,
+    );
+    expect(active('Skills')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Connectors' })).toBeNull();
+    expect(screen.getByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(([url]) => /\/admin\/connectors/.test(String(url))),
+    ).toBe(false);
+  });
+
+  it('opens Admin › Connectors when an admin asks for it', () => {
+    render(
+      <UserProvider value={fakeUser}>
+        <AdminShell isAdmin onClose={vi.fn()} initialTab="connectors" />
+      </UserProvider>,
+    );
+    expect(active('Connectors')).toBe(true);
+    expect(screen.getByRole('heading', { level: 1, name: 'Connectors' })).toBeTruthy();
+  });
+
+  // The pre-2a id. Nothing in the app passes it any more, but a stale caller
+  // (or a stored tab) must land somewhere real, not on a tab with no title.
+  it.each([
+    ['an admin', true],
+    ['someone who is not an admin', false],
+  ])('falls back to Skills for the retired connectors-user id, for %s', (_who, isAdmin) => {
+    render(
+      <UserProvider value={isAdmin ? fakeUser : { ...fakeUser, role: 'user' }}>
+        <AdminShell
+          isAdmin={isAdmin}
+          onClose={vi.fn()}
+          initialTab={'connectors-user' as unknown as AdminTabId}
+        />
+      </UserProvider>,
+    );
+    expect(active('Skills')).toBe(true);
+    expect(screen.getByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
+  });
+
+  it('opens Sites for someone who is not an admin', () => {
+    render(
+      <UserProvider value={{ ...fakeUser, role: 'user' }}>
+        <AdminShell isAdmin={false} onClose={vi.fn()} initialTab="sites" />
+      </UserProvider>,
+    );
+    expect(active('Sites')).toBe(true);
+    expect(screen.getByRole('heading', { level: 1, name: 'Sites' })).toBeTruthy();
   });
 });
 

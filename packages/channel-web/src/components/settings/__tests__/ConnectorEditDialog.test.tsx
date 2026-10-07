@@ -77,7 +77,7 @@ describe('ConnectorEditDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const [body, base] = vi.mocked(connectorsLib.createConnector).mock.calls[0]!;
-    expect(base).toBe('/settings/connectors');
+    expect(base).toBe('/admin/connectors');
     expect(body.capabilities.allowedHosts).toEqual(expect.arrayContaining([...gmailHosts, 'custom.example.com']));
     expect(body.capabilities.allowedHosts.filter((host) => host === 'accounts.google.com')).toHaveLength(1);
     expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledWith(gmailUrl, expect.any(AbortSignal));
@@ -413,7 +413,9 @@ describe('ConnectorEditDialog', () => {
     expect(body).not.toHaveProperty('defaultAttached');
   });
 
-  it('user variant creates through the /settings/connectors route base (TASK-129)', async () => {
+  // Slice 2a: the /settings/connectors write routes are gone, so even the
+  // isAdmin={false} variant must never write there.
+  it('creates through the /admin/connectors route base whatever the variant', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -428,7 +430,7 @@ describe('ConnectorEditDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const base = vi.mocked(connectorsLib.createConnector).mock.calls[0]![1];
-    expect(base).toBe('/settings/connectors');
+    expect(base).toBe('/admin/connectors');
   });
 
   // --- services section (TASK-154 — service bundle) -----------------------
