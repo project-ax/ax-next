@@ -11,18 +11,18 @@ import type { Capabilities, CapabilitySlot, Connector, KeyMode } from './types.j
 //
 //   keyMode 'personal'  → credential scope 'user'   — each user supplies their
 //                         own key the first time they use the connector (the
-//                         existing JIT `account:<service>` per-user vault flow);
+//                         JIT `account:<connector id>` per-user vault flow);
 //                         everyone acts as themselves.
 //   keyMode 'workspace' → credential scope 'global' — an admin supplies ONE key;
 //                         every allowed agent spends it as a shared service
 //                         identity (the company key).
 //
-// Both modes use the SAME `account:<service>` ref shape — only the SCOPE differs.
-// (Design open-Q #1 lean "share by service": the `account:<service>` vault key is
-// the natural credential identity, reused across connectors/skills that name the
-// same service. The chat-orchestrator's `applyCapabilityGrant` already binds
-// `account:<service>` for `account`-tagged skill slots; connectors reuse that
-// exact ref so a personal connector and a skill to the same service share one key.)
+// Both modes use the SAME `account:<tag>[:<SLOT>]` ref shape — only the SCOPE
+// differs. The tag is ALWAYS the connector id (`serviceTagForSlot`): each
+// connector owns its own key(s), and two connectors naming the same upstream
+// service each store their own copy. (The original "share by service" lean —
+// one key per service, shared across connectors and skills — is gone; a legacy
+// slot `account` tag is ignored.)
 //
 // READ AUTHORIZATION (TASK-697). This plan says which scope a slot's key is
 // WRITTEN to; it is also what decides who may READ a `global` one. The ref is

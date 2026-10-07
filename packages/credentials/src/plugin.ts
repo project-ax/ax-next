@@ -329,7 +329,8 @@ export interface CredentialsPurgeByOwnerOutput {
  * 'global' is refused (invalid-payload): no caller needs it, and a company
  * key is a connector's OWN key, purged by ref via `credentials:delete`. Other
  * ref namespaces are never touched. Used today when a shared connector is
- * deleted (agent scope); slice 5's boot migration will call it at user scope.
+ * deleted: agent scope always, plus user scope (people's keys) when no live
+ * connector still carries the id. Slice 5's boot migration will also call it.
  *
  * Boundary review: alternate impl = a KMS/vault backend deleting by tag; no
  * backend vocabulary in the payload.

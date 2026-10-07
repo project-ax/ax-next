@@ -24,6 +24,10 @@ import { validateConnectorId, type AgentStore } from './store.js';
 // ---------------------------------------------------------------------------
 
 export const CONNECTOR_CLEANUP_KEY = '@ax/agents/connector-cleanup';
+// Mirrors @ax/connectors' `LIVE_IDS_MAX` (500), the most ids one
+// `connectors:live-ids` call accepts — hard-coded, not imported (invariant 2).
+// If connectors ever lowers its cap, every call here is refused and the boot
+// sweep fails safe into a no-op (nothing detached); keep the two in step.
 const LIVE_IDS_BATCH = 500;
 
 function errMessage(err: unknown): string {
