@@ -375,29 +375,34 @@ function canonicalJson(v: unknown): string {
 }
 
 /**
- * Fix round 1 (security). A NON-owner admin may relabel a shared connector
- * (name / description / usage note; tool permissions on their own route) but
- * never change where it connects or who supplies the key. `capabilities`
- * (servers + endpoints, allowed hosts, credential slots incl. OAuth client
- * fields, packages, services), `keyMode` and `visibility` are the owner's: an
- * endpoint change would hand every agent's stored sign-ins and the shared key
- * to the new host through the credential proxy (only tool permissions are reset
- * on a move — TASK-758). A field sent with its STORED value is fine; editors
- * send the whole form. Capabilities are compared after the same parse the store
- * applies, so defaults (e.g. `services: []`) never read as a change; an
- * unparseable value is a change (refused). Both sides also get the OAuth slot
- * defaults (`withCapabilityDefaults`): a slot that spells out
- * `clientRegistration: 'custom'` / `scopes: []` means the same as one that
- * leaves them out, so an editor filling them in is not a retarget — while a
- * different value still is.
- */
-/**
- * Fix round 3 (security) — the only body fields a NON-owner admin's PATCH
- * writes: the labels. Everything that decides reach (capabilities, keyMode,
- * visibility) is taken from the stored row on that path.
+ * The only body fields a NON-owner admin's PATCH writes: the labels. Everything
+ * that decides reach (capabilities, keyMode, visibility) is taken from the
+ * stored row on that path.
  */
 const DISPLAY_FIELDS = ['name', 'description', 'usageNote'] as const;
 
+/**
+ * Whether a NON-owner admin's PATCH body tries to change an owner-only field.
+ * Such an admin may relabel a shared connector (name / description / usage
+ * note; tool permissions on their own route) but never change where it
+ * connects or who supplies the key. `capabilities` (servers + endpoints,
+ * allowed hosts, credential slots incl. OAuth client fields, packages,
+ * services), `keyMode` and `visibility` are the owner's: an endpoint change
+ * would hand every agent's stored sign-ins and the shared key to the new host
+ * through the credential proxy (only tool permissions are reset on a move —
+ * TASK-758). A field sent with its STORED value is fine; editors send the whole
+ * form. Capabilities are compared after the same parse the store applies, so
+ * defaults (e.g. `services: []`) never read as a change; an unparseable value
+ * is a change (refused). Both sides also get the OAuth slot defaults
+ * (`withCapabilityDefaults`): a slot that spells out
+ * `clientRegistration: 'custom'` / `scopes: []` means the same as one that
+ * leaves them out, so an editor filling them in is not a retarget — while a
+ * different value still is.
+ *
+ * This only picks the answer (403 vs 200). What keeps reach safe is that the
+ * cross-owner write uses the stored reach whatever the body says, so a reading
+ * of a field here that differs from the runtime's can never change reach.
+ */
 function changesOwnerOnlyFields(existing: Connector, patch: Record<string, unknown>): boolean {
   if ('keyMode' in patch && patch.keyMode !== existing.keyMode) return true;
   if ('visibility' in patch && patch.visibility !== existing.visibility) return true;

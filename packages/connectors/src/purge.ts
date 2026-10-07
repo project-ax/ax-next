@@ -40,7 +40,9 @@ export async function purgeConnectorState(
   // SECURITY (invariant #5): a per-user ref (scope:'user', ownerId:ownerUserId) is
   // unambiguously the row owner's own — always safe to purge. A GLOBAL ref
   // (scope:'global', shared company key, owner-independent) is purged ONLY when
-  // the caller is authorized (opts.purgeGlobal — routes pass actor.isAdmin).
+  // the caller is authorized (opts.purgeGlobal — `connectors:delete` passes the
+  // caller's `purgeGlobal`, which only the admin-only DELETE route sets; the boot
+  // stdio sweep sets it unless another owner's same-id connector survives).
   // Gating the PURGE here, not just the HTTP create route, closes EVERY path to
   // a non-admin global-credential wipe (incl. the authored-connector approve
   // path, which promotes a draft straight through connectors:upsert). Each

@@ -250,7 +250,7 @@ describe('remote connector editor', () => {
   // OAuth slot comes back with `clientRegistration: 'custom'` (derived from the
   // pinned clientId) and `scopes: []`. Those are exactly the defaults an absent
   // field means, and the server compares by meaning (`withCapabilityDefaults`
-  // in @ax/connectors, fix round 2), so the rename goes through. This test
+  // in @ax/connectors), so the rename goes through. This test
   // documents exactly what the form adds; anything else it changed would be a
   // real difference the server would refuse.
   it('a name-only save differs from what was loaded only by the OAuth slot’s clientRegistration and scopes', async () => {

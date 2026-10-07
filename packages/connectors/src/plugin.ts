@@ -437,10 +437,11 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       // host configures it (the k8s preset) and an http-server is present. The
       // routes delegate straight back to the `connectors:*` hooks above.
       //
-      // TASK-129 — the user-authoring bridge (`/settings/connectors`) mounts on
-      // the SAME http-server gate. It's the locked-down sibling of the admin
-      // registry routes (forces private, rejects admin-only fields, catalog/
-      // shared read-only) — both delegate to the same `connectors:*` hooks.
+      // TASK-129 — the `/settings/connectors` bundle mounts on the SAME
+      // http-server gate. Since slice 2a it is READ-only for any signed-in user
+      // (list + show, plus the authored-draft routes): only admins write
+      // connector definitions, through `/admin/connectors`. Both delegate to the
+      // same `connectors:*` hooks.
       if (mountAdminRoutes) {
         const adminUnregisters = await registerAdminConnectorRoutes(bus, initCtx);
         unregisterRoutes.push(...adminUnregisters);

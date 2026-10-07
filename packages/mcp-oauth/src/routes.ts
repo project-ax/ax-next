@@ -401,8 +401,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       // admin who is not a team admin is refused too; whose account the team
       // acts as is the team's call. Anyone else is refused here, before any
       // connector read, vault read, state write or provider redirect. A
-      // member's own sign-in (no agentId — Settings › Connectors) is
-      // untouched. Fails closed: no @ax/agents answer, `allowed: false` or a
+      // user-scoped sign-in (no agentId) is untouched. Fails closed: no @ax/agents answer, `allowed: false` or a
       // rejection is a 403.
       if (agent.visibility === 'team' && !(await maySetSharedCredential(user, agentId))) {
         res.status(403).json({ error: 'forbidden' });

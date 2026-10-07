@@ -700,8 +700,7 @@ describe('admin connector routes', () => {
       expect(shown.captured.body).toMatchObject({ connector: { name: 'CRM' } });
     });
 
-    // Fix round 1 (security): a NON-OWNER admin may relabel a shared connector,
-    // never retarget it — an endpoint / host / slot change would send every
+    // A NON-OWNER admin may relabel a shared connector, never retarget it — an endpoint / host / slot change would send every
     // agent's stored sign-ins and the shared key somewhere new.
     describe('a non-owner admin cannot change where it connects or who it is for', () => {
       async function seedAndShow(h: TestHarness) {
@@ -779,7 +778,7 @@ describe('admin connector routes', () => {
         expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
       });
 
-      // Fix round 2 — an OAuth slot stored WITHOUT `clientRegistration` /
+      // An OAuth slot stored WITHOUT `clientRegistration` /
       // `scopes` means the same as one carrying their defaults (a pinned
       // clientId → 'custom'; no scopes → []). Editors fill those in, so a
       // non-owner admin's rename must not read as a retarget. A real change of
@@ -837,7 +836,7 @@ describe('admin connector routes', () => {
           expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
         });
 
-        // Fix round 3 (security) — the stored reach is what a non-owner admin's
+        // The stored reach is what a non-owner admin's
         // save writes back, byte for byte; the body's (defaults-filled) copy
         // only decides whether to refuse.
         it('a 200 rename leaves capabilities byte-identical to the stored row, not the defaults-filled body', async () => {
