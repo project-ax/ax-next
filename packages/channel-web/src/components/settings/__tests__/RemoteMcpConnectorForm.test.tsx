@@ -245,36 +245,14 @@ describe('remote connector editor', () => {
     expect(options.onSaved).not.toHaveBeenCalled();
   });
   // Slice 2a — a second admin may relabel a shared connector, but the server
-  // refuses (owner-only-change) any save whose capabilities, keyMode or
-  // visibility differ from what is stored (`changesOwnerOnlyFields`: schema
-  // parse, no defaults, then canonical JSON). So a rename must send them back
-  // exactly as loaded: no reordering, no defaults filled in.
-  //
-  // KNOWN GAP — `it.fails` on purpose, so it turns red the day it's fixed.
-  // keyMode matches and no visibility is sent, but the OAuth slot comes back
-  // with two fields the stored slot didn't have: `clientRegistration:
-  // 'custom'` (derived from the pinned clientId) and `scopes: []`. The schema
-  // has no defaults for either, so the server sees a capabilities change and a
-  // non-owner admin's rename of an OAuth connector saved without them is
-  // refused with owner-only-change. Fixing it (emit those only when they
-  // differ from what was loaded) is a form change, flagged in the task report.
-  it.fails('a name-only save sends capabilities and keyMode exactly as loaded', async () => {
-    const loaded = structuredClone(fixture);
-    const options = await openEditor();
-    fireEvent.change(screen.getByLabelText('Name'), {
-      target: { value: 'Linear (renamed)' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
-    expect(writes).toHaveLength(1);
-    expect(writes[0]!.url).toBe('/admin/connectors/linear');
-    expect(writes[0]!.body.name).toBe('Linear (renamed)');
-    expect(writes[0]!.body.capabilities).toStrictEqual(loaded.capabilities);
-    expect(writes[0]!.body.keyMode).toBe(loaded.keyMode);
-    expect(writes[0]!.body).not.toHaveProperty('visibility');
-  });
-  // The gap above, pinned to exactly those two fields: everything else a
-  // rename sends is what was loaded.
+  // refuses (owner-only-change) a save that changes where it connects. A
+  // name-only save from this form is NOT byte-identical to what it loaded: the
+  // OAuth slot comes back with `clientRegistration: 'custom'` (derived from the
+  // pinned clientId) and `scopes: []`. Those are exactly the defaults an absent
+  // field means, and the server compares by meaning (`withCapabilityDefaults`
+  // in @ax/connectors, fix round 2), so the rename goes through. This test
+  // documents exactly what the form adds; anything else it changed would be a
+  // real difference the server would refuse.
   it('a name-only save differs from what was loaded only by the OAuth slot’s clientRegistration and scopes', async () => {
     const loaded = structuredClone(fixture);
     const options = await openEditor();

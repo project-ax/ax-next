@@ -22,7 +22,7 @@ import type {
   UpsertInput,
   UpsertOutput,
 } from './types.js';
-import { CapabilitiesSchema } from './types.js';
+import { CapabilitiesSchema, withCapabilityDefaults } from './types.js';
 import { deriveCredentialPlan } from './credential-plan.js';
 import { deriveToolNamespaces } from './tool-namespace.js';
 import {
@@ -384,7 +384,11 @@ function canonicalJson(v: unknown): string {
  * on a move — TASK-758). A field sent with its STORED value is fine; editors
  * send the whole form. Capabilities are compared after the same parse the store
  * applies, so defaults (e.g. `services: []`) never read as a change; an
- * unparseable value is a change (refused).
+ * unparseable value is a change (refused). Both sides also get the OAuth slot
+ * defaults (`withCapabilityDefaults`): a slot that spells out
+ * `clientRegistration: 'custom'` / `scopes: []` means the same as one that
+ * leaves them out, so an editor filling them in is not a retarget — while a
+ * different value still is.
  */
 function changesOwnerOnlyFields(existing: Connector, patch: Record<string, unknown>): boolean {
   if ('keyMode' in patch && patch.keyMode !== existing.keyMode) return true;
@@ -392,7 +396,11 @@ function changesOwnerOnlyFields(existing: Connector, patch: Record<string, unkno
   if ('capabilities' in patch) {
     const parsed = CapabilitiesSchema.safeParse(patch.capabilities);
     if (!parsed.success) return true;
-    if (canonicalJson(parsed.data) !== canonicalJson(existing.capabilities)) return true;
+    if (
+      canonicalJson(withCapabilityDefaults(parsed.data)) !==
+      canonicalJson(withCapabilityDefaults(existing.capabilities))
+    )
+      return true;
   }
   return false;
 }

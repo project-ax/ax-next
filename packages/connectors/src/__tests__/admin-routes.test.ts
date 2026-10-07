@@ -779,6 +779,92 @@ describe('admin connector routes', () => {
         expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
       });
 
+      // Fix round 2 — an OAuth slot stored WITHOUT `clientRegistration` /
+      // `scopes` means the same as one carrying their defaults (a pinned
+      // clientId → 'custom'; no scopes → []). Editors fill those in, so a
+      // non-owner admin's rename must not read as a retarget. A real change of
+      // either value still must.
+      describe('OAuth slot defaults', () => {
+        const oauthSlot = {
+          slot: 'TOKEN',
+          kind: 'oauth' as const,
+          server: 'gdrive',
+          clientId: 'pinned-client',
+          authServerUrl: 'https://auth.example.com',
+        };
+        const oauthCrm = {
+          ...crm,
+          capabilities: { ...mcpCaps(), credentials: [oauthSlot] },
+        };
+        async function seedOAuth(h: TestHarness) {
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const created = makeRes();
+          await handlers.create(makeReq({ body: oauthCrm }), created.res);
+          expect(created.captured.status).toBe(201);
+          const shown = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+          const before = (shown.captured.body as { connector: { capabilities: Capabilities } })
+            .connector;
+          // Stored exactly as sent: neither field present.
+          expect(before.capabilities.credentials[0]).not.toHaveProperty('clientRegistration');
+          expect(before.capabilities.credentials[0]).not.toHaveProperty('scopes');
+          return { handlers, before };
+        }
+        const withSlot = (before: { capabilities: Capabilities }, slot: Record<string, unknown>) => ({
+          ...before.capabilities,
+          credentials: [{ ...oauthSlot, ...slot }],
+        });
+
+        it('accepts a rename whose slot spells out the defaults: 200, renamed, owner unchanged', async () => {
+          const h = await makeHarness();
+          const { handlers, before } = await seedOAuth(h);
+          currentActor = { id: 'admin2', isAdmin: true };
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({
+              params: { id: 'crm' },
+              body: {
+                name: 'CRM (renamed)',
+                keyMode: 'personal',
+                capabilities: withSlot(before, { clientRegistration: 'custom', scopes: [] }),
+              },
+            }),
+            patched.res,
+          );
+          expect(patched.captured.status).toBe(200);
+          expect(patched.captured.body).toMatchObject({ connector: { name: 'CRM (renamed)' } });
+          expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+        });
+
+        const realChanges: Array<[string, Record<string, unknown>]> = [
+          ['adds a scope', { scopes: ['read'] }],
+          ['changes clientRegistration away from its default', { clientRegistration: 'dcr' }],
+          ['changes clientRegistration and leaves the rest default', { clientRegistration: 'auto', scopes: [] }],
+          ['changes the clientId', { clientId: 'other-client' }],
+        ];
+        for (const [what, slot] of realChanges) {
+          it(`refuses a rename that ${what}: 403 owner-only-change`, async () => {
+            const h = await makeHarness();
+            const { handlers, before } = await seedOAuth(h);
+            currentActor = { id: 'admin2', isAdmin: true };
+            const patched = makeRes();
+            await handlers.update(
+              makeReq({
+                params: { id: 'crm' },
+                body: { name: 'CRM (renamed)', capabilities: withSlot(before, slot) },
+              }),
+              patched.res,
+            );
+            expect(patched.captured).toMatchObject({
+              status: 403,
+              body: { error: 'owner-only-change' },
+            });
+            expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+          });
+        }
+      });
+
       it('the owner may still change their own server url', async () => {
         const h = await makeHarness();
         const { handlers } = await seedAndShow(h);

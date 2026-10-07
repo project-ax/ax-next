@@ -60,6 +60,47 @@ export interface OAuthCapabilitySlot {
 }
 
 /**
+ * What an OAuth slot's optional fields MEAN when they are absent — the one
+ * place this package spells it out:
+ *   - `clientRegistration` absent → `'custom'` when a `clientId` is pinned,
+ *     else `'auto'` (the sign-in flow reads it the same way);
+ *   - `scopes` absent → `[]`, and an empty list asks for nothing explicit
+ *     either way (the flow falls back to what the resource advertises).
+ *
+ * Returns the slot with those defaults written in, so two slots that differ
+ * only by spelling a default out (or leaving it out) normalize to the same
+ * value, while a real change of either value stays a difference. Pure; the
+ * input is not modified.
+ */
+export function withOAuthSlotDefaults(slot: OAuthCapabilitySlot): OAuthCapabilitySlot {
+  return {
+    ...slot,
+    clientRegistration:
+      slot.clientRegistration ?? (slot.clientId !== undefined ? 'custom' : 'auto'),
+    scopes: slot.scopes ?? [],
+  };
+}
+
+/**
+ * {@link withOAuthSlotDefaults} applied to every OAuth slot in a Capabilities
+ * (top-level `credentials` and each server's `credentials`). Other slots and
+ * fields pass through unchanged. For comparing two capability sets by
+ * meaning, never for storing (a stored row keeps what its author wrote).
+ */
+export function withCapabilityDefaults(caps: Capabilities): Capabilities {
+  const slots = (list: CapabilitySlot[]): CapabilitySlot[] =>
+    list.map((s) => (s.kind === 'oauth' ? withOAuthSlotDefaults(s) : s));
+  return {
+    ...caps,
+    credentials: slots(caps.credentials as CapabilitySlot[]),
+    mcpServers: caps.mcpServers.map((server) => ({
+      ...server,
+      credentials: slots(server.credentials as CapabilitySlot[]),
+    })),
+  } as Capabilities;
+}
+
+/**
  * A credential slot declared inside a connector's Capabilities. Either an
  * API-key slot (back-compat with existing connectors) or an OAuth slot (new
  * for MCP connectors that use the OAuth authorization flow). Replaces the
