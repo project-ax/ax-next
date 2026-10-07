@@ -37,4 +37,6 @@ export type {
   CredentialsEnvelopeEncryptOutput,
   CredentialsEnvelopeDecryptInput,
   CredentialsEnvelopeDecryptOutput,
+  CredentialsPurgeAccountInput,
+  CredentialsPurgeAccountOutput,
 } from './plugin.js';

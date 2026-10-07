@@ -320,6 +320,32 @@ export interface CredentialsPurgeByOwnerOutput {
   deleted: number;
 }
 
+/**
+ * `credentials:purge-account` — tombstone connector credentials (`account:` refs).
+ *
+ * With `connectorId`: `account:<id>` and `account:<id>:<anything>` only — the
+ * trailing `:` keeps `gmail` from matching `gmail2`. Without it: every
+ * `account:` row. Only in the listed `scopes`. Other ref namespaces are never
+ * touched. Used when a shared connector is deleted (agent scope) and by the
+ * boot migration (user scope).
+ *
+ * Boundary review: alternate impl = a KMS/vault backend deleting by tag; no
+ * backend vocabulary in the payload.
+ */
+export interface CredentialsPurgeAccountInput {
+  /** Omit to purge EVERY `account:` row in `scopes`. */
+  connectorId?: string;
+  /** Non-empty; each one of 'user' | 'agent' | 'global'. */
+  scopes: CredentialScope[];
+}
+
+export interface CredentialsPurgeAccountOutput {
+  /** Live rows tombstoned. */
+  purged: number;
+}
+
+const PURGE_CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
+
 // Raw envelope primitive — `(plaintext: string) → ciphertext: Uint8Array` and
 // the inverse. NOT the same shape as the credential-set envelope (which
 // JSON-wraps `kind` + `payloadB64` + metadata). Other plugins want a
@@ -420,6 +446,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:list',
         'credentials:list-kinds',
         'credentials:purge-by-owner',
+        'credentials:purge-account',
         'credentials:resolve:setting',
         'credentials:envelope-encrypt',
         'credentials:envelope-decrypt',
@@ -1121,6 +1148,55 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
             ctx,
             input,
           );
+        },
+      );
+
+      bus.registerService<CredentialsPurgeAccountInput, CredentialsPurgeAccountOutput>(
+        'credentials:purge-account',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const invalidPurge = (message: string) =>
+            new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME, message });
+          if (!Array.isArray(input.scopes) || input.scopes.length === 0) {
+            throw invalidPurge('scopes must be a non-empty array');
+          }
+          const scopes = [...new Set(input.scopes.map((s) => validateScope(s)))];
+          let prefix: string | undefined;
+          if (input.connectorId !== undefined) {
+            if (typeof input.connectorId !== 'string' || !PURGE_CONNECTOR_ID_RE.test(input.connectorId)) {
+              throw invalidPurge('connectorId is not a valid connector id');
+            }
+            prefix = `${GUARDED_ACCOUNT_REF_PREFIX}${input.connectorId}`;
+          }
+          const matches = (ref: string): boolean =>
+            prefix === undefined
+              ? ref.startsWith(GUARDED_ACCOUNT_REF_PREFIX)
+              : ref === prefix || ref.startsWith(`${prefix}:`);
+          let purged = 0;
+          for (const scope of scopes) {
+            const out = await bus.call<
+              { scope: CredentialScope },
+              { entries: Array<{ scope: CredentialScope; ownerId: string | null; ref: string; blob: Uint8Array }> }
+            >('credentials:store-blob:list', ctx, { scope });
+            for (const e of out.entries) {
+              if (!matches(e.ref)) continue;
+              let live = true;
+              try {
+                live = !unwrapEnvelope(e.blob).isTombstone;
+              } catch {
+                // Undecryptable (key-rotation aftermath): still ours to purge.
+              }
+              if (!live) continue;
+              await bus.call('credentials:store-blob:put', ctx, {
+                scope: e.scope,
+                ownerId: e.ownerId,
+                ref: e.ref,
+                blob: encryptWithKey(key, ''),
+              });
+              purged++;
+            }
+          }
+          return { purged };
         },
       );
 
