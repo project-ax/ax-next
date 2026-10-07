@@ -282,6 +282,8 @@ export interface UpsertInput {
   keyMode: KeyMode;
   visibility: Visibility;
   capabilities: Capabilities;
+  /** Refuse (`connector-id-taken`) a NEW connector whose id another owner holds live. */
+  requireUniqueId?: boolean;
 }
 export interface UpsertOutput {
   connector: Connector;

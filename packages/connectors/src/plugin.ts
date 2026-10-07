@@ -732,6 +732,7 @@ async function upsertConnector(
     keyMode,
     visibility,
     capabilities,
+    requireUniqueId: input.requireUniqueId === true,
   });
   if (prior !== null) {
     await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);

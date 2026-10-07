@@ -190,6 +190,10 @@ function handleHookError(err: unknown, res: RouteResponse): void {
     // TASK-758 — an endpoint change whose tool-permission reset failed was
     // refused before anything was written. Retryable, so a 503, and a fixed
     // string the editors key their message on (never the cause's text).
+    if (err.code === 'connector-id-taken') {
+      res.status(409).json({ error: 'connector-id-taken' });
+      return;
+    }
     if (err.code === TOOL_PERMISSIONS_RESET_FAILED) {
       res.status(503).json({ error: TOOL_PERMISSIONS_RESET_FAILED });
       return;
@@ -527,7 +531,11 @@ export function createConnectorRouteHandlers(
         }
       }
       raw.visibility ??= existing?.visibility ?? 'shared';
-      const input = { ...raw, userId: actor.id } as unknown as UpsertInput;
+      const input = {
+        ...raw,
+        userId: actor.id,
+        ...(mode === 'admin' ? { requireUniqueId: true } : {}),
+      } as unknown as UpsertInput;
       try {
         const out = await deps.bus.call<UpsertInput, UpsertOutput>(
           'connectors:upsert',

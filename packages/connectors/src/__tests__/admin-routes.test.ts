@@ -499,6 +499,28 @@ describe('admin connector routes', () => {
     expect(dCap.status).toBe(404);
   });
 
+  it('POST 409 connector-id-taken when another owner holds the id as a private connector', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    const body = {
+      connectorId: 'gmail',
+      name: 'Gmail',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: mcpCaps(),
+    };
+    currentActor = { id: 'admin1', isAdmin: true };
+    const first = makeRes();
+    await handlers.create(makeReq({ body }), first.res);
+    expect(first.captured.status).toBe(201);
+
+    currentActor = { id: 'admin2', isAdmin: true };
+    const second = makeRes();
+    await handlers.create(makeReq({ body }), second.res);
+    expect(second.captured.status).toBe(409);
+    expect(second.captured.body).toEqual({ error: 'connector-id-taken' });
+  });
+
   it('400 on invalid JSON body', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });

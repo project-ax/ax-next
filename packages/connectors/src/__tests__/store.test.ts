@@ -138,6 +138,57 @@ describe('createConnectorStore', () => {
     expect(await store.softDelete('u', 'c')).toBe(false);
   });
 
+  describe('requireUniqueId', () => {
+    const base = {
+      connectorId: 'gmail',
+      name: 'Gmail',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal' as const,
+      visibility: 'private' as const,
+      capabilities: caps(),
+    };
+
+    it('rejects a new row when another owner holds a live row with the id', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert({ ...base, userId: 'idA' });
+      await expect(
+        store.upsert({ ...base, userId: 'idB', requireUniqueId: true }),
+      ).rejects.toMatchObject({ code: 'connector-id-taken' });
+      expect(await store.getByIdNotDeleted('idB', 'gmail')).toBeNull();
+    });
+
+    it('is opt-in: without the flag a second owner may reuse the id', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert({ ...base, userId: 'idA' });
+      const out = await store.upsert({ ...base, userId: 'idB' });
+      expect(out.created).toBe(true);
+    });
+
+    it('a tombstoned row never blocks', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert({ ...base, userId: 'idA' });
+      await store.softDelete('idA', 'gmail');
+      const out = await store.upsert({ ...base, userId: 'idB', requireUniqueId: true });
+      expect(out.created).toBe(true);
+    });
+
+    it('re-upserting your own live row with the flag succeeds', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert({ ...base, userId: 'idA' });
+      const out = await store.upsert({ ...base, userId: 'idA', requireUniqueId: true });
+      expect(out.created).toBe(false);
+    });
+  });
+
   it('shared reads do not grant writes, leak private rows, or attach connectors by default', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);

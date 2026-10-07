@@ -260,6 +260,12 @@ export interface UpsertArgs {
   keyMode: KeyMode;
   visibility: Visibility;
   capabilities: Capabilities;
+  /**
+   * Opt-in. When true and no live row exists for (userId, connectorId), refuse
+   * with `connector-id-taken` if ANY other owner holds a live row (any
+   * visibility) with this id. Tombstones never block.
+   */
+  requireUniqueId?: boolean;
 }
 
 export interface ConnectorStore {
@@ -424,6 +430,24 @@ export function createConnectorStore(
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       const created = existing === undefined;
+      if (created && args.requireUniqueId === true) {
+        const taken = await db
+          .selectFrom('connectors_v1_connectors')
+          .select('owner_user_id')
+          .where('connector_id', '=', args.connectorId)
+          .where('owner_user_id', '<>', args.userId)
+          .where('deleted_at', 'is', null)
+          .limit(1)
+          .executeTakeFirst();
+        if (taken !== undefined) {
+          throw new PluginError({
+            code: 'connector-id-taken',
+            plugin: PLUGIN_NAME,
+            hookName: 'connectors:upsert',
+            message: `connector id '${args.connectorId}' is already in use`,
+          });
+        }
+      }
 
       // JSONB is written via an explicit `::jsonb` cast of the canonical
       // JSON so the opaque spec round-trips byte-faithfully (mirrors the
