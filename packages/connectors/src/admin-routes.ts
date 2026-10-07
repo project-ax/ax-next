@@ -85,8 +85,10 @@ interface AgentsResolveInputLike {
 // of its routes, exactly like the other `/admin/*` surfaces (TASK-698) — it is the
 // curation surface (shared / workspace-keyed connectors, the Test
 // probe), and before the gate it was a bypass of the `/settings/connectors`
-// rejections. The `/settings/connectors*` bundle (mode 'user') stays open to any
-// signed-in user. Connectors are
+// rejections. The `/settings/connectors*` bundle (mode 'user') is READS only
+// (list/show/tool-permissions GET + the authored-draft routes; any signed-in
+// user): its write handlers 403 a non-admin and no write route is registered
+// there, so those paths 404. Connectors are
 // readable when owned by the actor or explicitly shared. Writes are owner-only,
 // with one exception: on the admin bundle any admin may edit or delete a SHARED
 // definition someone else owns, and the write lands on the OWNER's row (owner
@@ -311,17 +313,15 @@ export interface AdminRouteDeps {
 
 /**
  * The route bundle's authoring MODE — the policy difference between the admin
- * Connector registry and the user-authoring surface (TASK-129).
+ * Connector registry and the read-only `/settings` surface (TASK-129).
  *
  *   - `'admin'` — the folded Connector registry (`/admin/connectors`). The actor
  *     may curate the workspace catalog: set `visibility: 'shared'` and
  *     `keyMode: 'workspace'`. Owner is still forced from the session.
  *   - `'user'`  — the `/settings/connectors` READ surface (list/show/tool-
- *     permissions reads + the authored-draft routes). Since slice 2a only admins
- *     write connector definitions, so NO write route is registered in this mode;
- *     the write handlers below keep their locked-down policy (workspace-key
- *     fields rejected, shared rows read-only) as defence in depth, but nothing
- *     routes to them.
+ *     permissions reads + the authored-draft routes). Only admins write
+ *     connector definitions (slice 2a), so no write route is registered in this
+ *     mode and the write handlers 403 a non-admin even if one were wired.
  *
  * Both modes share the read paths (list/show) and the owner-forced-from-session
  * posture verbatim; the `'admin'` bundle requires an admin (403 otherwise —
@@ -331,9 +331,8 @@ export interface AdminRouteDeps {
 export type ConnectorRouteMode = 'admin' | 'user';
 
 /** Shared reads grant no writes; workspace credentials remain admin-curated. */
-function isReadOnly(c: Connector, mode: ConnectorRouteMode): boolean {
-  return c.canEdit === false ||
-    (mode === 'user' && c.visibility === 'shared' && c.keyMode === 'workspace');
+function isReadOnly(c: Connector): boolean {
+  return c.canEdit === false;
 }
 
 /**
@@ -358,7 +357,7 @@ function writeOwner(
   actorId: string,
   mode: ConnectorRouteMode,
 ): string | null {
-  if (!isReadOnly(got.connector, mode) && got.connector.canEdit === true) return actorId;
+  if (!isReadOnly(got.connector) && got.connector.canEdit === true) return actorId;
   if (adminCurates(got.connector, mode)) return got.ownerUserId;
   return null;
 }
@@ -425,27 +424,6 @@ function rejectRemovedFields(body: unknown): string | null {
   return null;
 }
 
-/**
- * Reject admin-only write fields on the user surface. Returns an error message
- * when the body carries a field only an admin may set (so the route 400s instead
- * of silently downgrading), else null. Checked BEFORE the owner/visibility are
- * forced so a tampered client body surfaces as a clear rejection.
- */
-function rejectAdminOnlyFields(raw: Record<string, unknown>): string | null {
-  // keyMode:'workspace' means "an admin supplies ONE shared GLOBAL company key".
-  // SECURITY (purge-on-delete): a workspace connector derives a GLOBAL credential
-  // ref (account:<id>, owner-independent), so deleting it tombstones the SHARED
-  // company key. The global credential WRITE is already admin-gated
-  // (/admin/destinations); the connector that drives the global PURGE must be too,
-  // or a non-admin could create-then-delete a workspace connector to wipe a
-  // company key. A non-admin only ever authors their OWN personal
-  // connectors here.
-  if (raw.keyMode === 'workspace') {
-    return 'keyMode: workspace is admin-only';
-  }
-  return null;
-}
-
 export function createConnectorRouteHandlers(
   deps: AdminRouteDeps & { mode?: ConnectorRouteMode },
 ) {
@@ -466,9 +444,9 @@ export function createConnectorRouteHandlers(
    * is not an admin — the same status/body every other `/admin/*` route answers.
    * Returns null once a response has been written (caller must early-return).
    *
-   * `adminOnly` forces the role check regardless of mode: the Test probe is a
-   * curation action (and reads global-scope credential PRESENCE), so it stays
-   * admin-only even if a future change bundles it into a user-mode registration.
+   * `adminOnly` forces the role check regardless of mode: the Test probe and
+   * every definition WRITE are curation actions, so they stay admin-only even
+   * on a user-mode bundle (which registers reads only).
    */
   async function authenticate(
     req: RouteRequest,
@@ -513,13 +491,14 @@ export function createConnectorRouteHandlers(
   async function loadEditable(
     req: RouteRequest,
     res: RouteResponse,
+    opts: { adminOnly?: boolean } = {},
   ): Promise<{
     actor: { id: string; isAdmin: boolean };
     connector: Connector;
     owner: string;
     namespaces: string[];
   } | null> {
-    const actor = await authenticate(req, res);
+    const actor = await authenticate(req, res, opts);
     if (actor === null) return null;
     const id = req.params.id;
     if (typeof id !== 'string' || id.length === 0) {
@@ -585,7 +564,7 @@ export function createConnectorRouteHandlers(
 
     /** POST /admin/connectors — create (or update an owned connector). */
     async create(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await authenticate(req, res);
+      const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
       const parsed = parseAndValidateBody(req.body);
       if (!parsed.ok) {
@@ -605,13 +584,6 @@ export function createConnectorRouteHandlers(
       delete raw.requireUniqueId;
       // Likewise `updateOnly`: only the PATCH route sets it, never the body.
       delete raw.updateOnly;
-      if (mode === 'user') {
-        const rejected = rejectAdminOnlyFields(raw);
-        if (rejected !== null) {
-          res.status(400).json({ error: rejected });
-          return;
-        }
-      }
       // POST is an upsert. Preserve saved settings on updates; apply defaults
       // only to genuinely new definitions. A shared read never grants a write.
       let existing: Connector | undefined;
@@ -627,7 +599,7 @@ export function createConnectorRouteHandlers(
             res.status(409).json({ error: 'connector-id-taken' });
             return;
           }
-          if (isReadOnly(existing, mode)) {
+          if (isReadOnly(existing)) {
             res.status(403).json({ error: 'read-only' });
             return;
           }
@@ -660,7 +632,7 @@ export function createConnectorRouteHandlers(
 
     /** PATCH /admin/connectors/:id — the owner, or (admin bundle) any admin for a shared connector. */
     async update(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await authenticate(req, res);
+      const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
@@ -703,15 +675,6 @@ export function createConnectorRouteHandlers(
       delete patchRaw.userId;
       delete patchRaw.connectorId;
       delete patchRaw.id;
-      // Sharing a definition grants no authority to write global credentials.
-      // That field remains admin-only.
-      if (mode === 'user') {
-        const rejected = rejectAdminOnlyFields(patchRaw);
-        if (rejected !== null) {
-          res.status(400).json({ error: rejected });
-          return;
-        }
-      }
       if (owner !== actor.id && changesOwnerOnlyFields(existing, patchRaw)) {
         res.status(403).json({ error: 'owner-only-change' });
         return;
@@ -752,7 +715,7 @@ export function createConnectorRouteHandlers(
 
     /** DELETE /admin/connectors/:id — the owner, or (admin bundle) any admin for a shared connector. */
     async destroy(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await authenticate(req, res);
+      const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
       const id = req.params.id;
       if (typeof id !== 'string' || id.length === 0) {
@@ -778,11 +741,10 @@ export function createConnectorRouteHandlers(
           'connectors:delete',
           ctx,
           // The hook is keyed by the row OWNER (an admin deleting another
-          // admin's shared connector deletes that owner's row). Only an admin
-          // may purge a GLOBAL (shared/company) credential on delete — a
-          // non-admin's delete leaves global-scope refs intact (it still purges
-          // per-user refs). This is the authority the hook gates on.
-          { userId: owner, connectorId: id, purgeGlobal: actor.isAdmin },
+          // admin's shared connector deletes that owner's row). Only admins
+          // reach here, and an admin may purge a GLOBAL (shared/company)
+          // credential on delete — this is the authority the hook gates on.
+          { userId: owner, connectorId: id, purgeGlobal: true },
         );
         if (!out.deleted) {
           // Soft-delete returns false when there was nothing (owned) to delete —
@@ -899,7 +861,7 @@ export function createConnectorRouteHandlers(
      * not check that, by design). All-or-nothing.
      */
     async setToolPermissions(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const target = await loadEditable(req, res);
+      const target = await loadEditable(req, res, { adminOnly: true });
       if (target === null) return;
       if (!deps.bus.hasService('tool-policy:set-connector-defaults')) {
         res.status(503).json({ error: 'unavailable' });

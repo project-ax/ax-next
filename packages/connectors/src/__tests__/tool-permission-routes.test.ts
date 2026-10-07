@@ -451,8 +451,8 @@ describe('tool-permissions routes — authz', () => {
 
   it('404 for a private connector someone else owns', async () => {
     const h = await makeHarness();
-    currentActor = { id: 'author', isAdmin: false };
-    await create(h, 'user', { ...linear, visibility: 'private' });
+    currentActor = { id: 'author', isAdmin: true };
+    await create(h, 'admin', { ...linear, visibility: 'private' });
     currentActor = { id: 'u2', isAdmin: false };
     expect((await getPerms(h, 'user', 'linear')).status).toBe(404);
   });

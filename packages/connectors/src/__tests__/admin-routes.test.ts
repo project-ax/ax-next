@@ -1188,76 +1188,49 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(captured.body).toEqual({ error: 'unauthenticated' });
   });
 
-  it('POST ignores a client-supplied requireUniqueId (no existence probe of other owners\' private ids)', async () => {
+  // Slice 2a: the `/settings/connectors` bundle is READS only. These pin that
+  // its WRITE handlers (never routed) also refuse a non-admin, so wiring one up
+  // by mistake could not reopen non-admin authoring.
+  it('a non-admin on the user bundle: every write handler 403s, and nothing is stored or purged', async () => {
     const h = await makeHarness();
-    currentActor = { id: 'admin1', isAdmin: true };
+    currentActor = { id: 'admin-own', isAdmin: true };
     await adminSeed(h.bus, {
-      connectorId: 'x',
-      name: 'X',
-      keyMode: 'personal',
-      visibility: 'private',
+      connectorId: 'user-bundle-shared',
+      name: 'Shared',
+      keyMode: 'workspace',
+      visibility: 'shared',
       capabilities: mcpCaps(),
     });
-    currentActor = { id: 'plainUser', isAdmin: false };
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'x',
-          name: 'X',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-          requireUniqueId: true,
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(201);
+    currentActor = { id: 'plain-user', isAdmin: false };
+    const body = { connectorId: 'plain-new', name: 'Mine', keyMode: 'personal', capabilities: mcpCaps() };
+    const results = [
+      (r: ReturnType<typeof makeRes>) => handlers.create(makeReq({ body }), r.res),
+      (r: ReturnType<typeof makeRes>) => handlers.update(makeReq({ params: { id: 'user-bundle-shared' }, body: { name: 'x' } }), r.res),
+      (r: ReturnType<typeof makeRes>) => handlers.destroy(makeReq({ params: { id: 'user-bundle-shared' } }), r.res),
+      (r: ReturnType<typeof makeRes>) => handlers.setToolPermissions(makeReq({ params: { id: 'user-bundle-shared' }, body: { verdicts: [] } }), r.res),
+    ];
+    for (const run of results) {
+      const r = makeRes();
+      await run(r);
+      expect(r.captured.status).toBe(403);
+      expect(r.captured.body).toEqual({ error: 'forbidden' });
+    }
+    const list = makeRes();
+    await handlers.list(makeReq({}), list.res);
+    expect((list.captured.body as { connectors: Array<{ id: string }> }).connectors.map((c) => c.id)).toEqual([
+      'user-bundle-shared',
+    ]);
   });
 
-  it('POST defaults a new connector to shared and requiring explicit attachment', async () => {
+  it('a shared connector is readable, never editable, for another user on the user bundle (reads)', async () => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'mine',
-          name: 'My connector',
-          keyMode: 'personal',
-          // No visibility supplied — new definitions default to shared.
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(201);
-    const connector = (captured.body as { connector: { visibility: string } })
-      .connector;
-    expect(connector.visibility).toBe('shared');
-    // TASK-808 — the workspace-default flag is gone from the connector shape.
-    expect(connector).not.toHaveProperty('defaultAttached');
-  });
-
-  it('a shared personal connector supports owner edits and is read-only for other users', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'author', isAdmin: false };
-    const created = makeRes();
-    await handlers.create(makeReq({ body: {
+    currentActor = { id: 'author', isAdmin: true };
+    await adminSeed(h.bus, {
       connectorId: 'shared-personal', name: 'Shared', keyMode: 'personal',
       visibility: 'shared', capabilities: mcpCaps(),
-    } }), created.res);
-    expect(created.captured.status).toBe(201);
-    const edited = makeRes();
-    await handlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Updated', requiresAttachment: false } }), edited.res);
-    expect(edited.captured.status).toBe(200);
-    expect(edited.captured.body).toMatchObject({ connector: { visibility: 'shared', requiresAttachment: true } });
-    expect((edited.captured.body as { connector: object }).connector).not.toHaveProperty('defaultAttached');
-
+    });
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
     currentActor = { id: 'reader', isAdmin: false };
     const list = makeRes();
     await handlers.list(makeReq({}), list.res);
@@ -1265,28 +1238,8 @@ describe('user connector routes (/settings/connectors)', () => {
     const shown = makeRes();
     await handlers.show(makeReq({ params: { id: 'shared-personal' } }), shown.res);
     expect(shown.captured.status).toBe(200);
-    expect(shown.captured.body).toMatchObject({ connector: { name: 'Updated', canEdit: false } });
-    const patch = makeRes();
-    await handlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Hijack', canEdit: true } }), patch.res);
-    expect(patch.captured.status).toBe(403);
-    const post = makeRes();
-    await handlers.create(makeReq({ body: { connectorId: 'shared-personal', name: 'Hijack', keyMode: 'personal', capabilities: mcpCaps(), canEdit: true } }), post.res);
-    expect(post.captured.status).toBe(403);
-    const del = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'shared-personal' } }), del.res);
-    expect(del.captured.status).toBe(403);
-
-    // An admin, on the ADMIN surface, may edit any shared connector (slice 2a).
-    currentActor = { id: 'reader', isAdmin: true };
-    const adminHandlers = createAdminConnectorRouteHandlers({ bus: h.bus });
-    const adminPatch = makeRes();
-    await adminHandlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Curated' } }), adminPatch.res);
-    expect(adminPatch.captured.status).toBe(200);
-
-    currentActor = { id: 'author', isAdmin: false };
-    const ownDelete = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'shared-personal' } }), ownDelete.res);
-    expect(ownDelete.captured.status).toBe(204);
+    expect(shown.captured.body).toMatchObject({ connector: { name: 'Shared', canEdit: false } });
+    expect((shown.captured.body as { connector: object }).connector).not.toHaveProperty('ownerUserId');
   });
 
   it('admin create defaults to shared; editing and POST upserts preserve the saved visibility and key mode', async () => {
@@ -1307,19 +1260,17 @@ describe('user connector routes (/settings/connectors)', () => {
 
   // TASK-808 — "Set default" is gone. A stale client that still sends the field
   // fails LOUDLY (400) instead of being silently dropped, for ONE release, on
-  // every write route, in both modes, whatever the value (it no longer means
+  // every admin write route, whatever the value (it no longer means
   // anything, so `false` is as stale as `true`). Nothing is stored.
   describe('defaultAttached is rejected (TASK-808)', () => {
     const MESSAGE = 'defaultAttached is no longer supported';
 
-    for (const mode of ['admin', 'user'] as const) {
+    for (const mode of ['admin'] as const) {
       for (const value of [true, false, null, 'yes']) {
         it(`${mode} POST with defaultAttached: ${JSON.stringify(value)} -> 400 and nothing is stored`, async () => {
           const h = await makeHarness();
-          const handlers = mode === 'admin'
-            ? createAdminConnectorRouteHandlers({ bus: h.bus })
-            : createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-          currentActor = { id: 'userU', isAdmin: mode === 'admin' };
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'userU', isAdmin: true };
           const { res, captured } = makeRes();
           await handlers.create(
             makeReq({
@@ -1343,10 +1294,8 @@ describe('user connector routes (/settings/connectors)', () => {
 
         it(`${mode} PATCH with defaultAttached: ${JSON.stringify(value)} -> 400 and the connector is unchanged`, async () => {
           const h = await makeHarness();
-          const handlers = mode === 'admin'
-            ? createAdminConnectorRouteHandlers({ bus: h.bus })
-            : createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-          currentActor = { id: 'userU', isAdmin: mode === 'admin' };
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'userU', isAdmin: true };
           await handlers.create(
             makeReq({ body: { connectorId: 'kept', name: 'Kept', keyMode: 'personal', visibility: 'private', capabilities: mcpCaps() } }),
             makeRes().res,
@@ -1377,120 +1326,6 @@ describe('user connector routes (/settings/connectors)', () => {
       expect(captured.status).toBe(400);
       expect((captured.body as { error: string }).error).toMatch(/add connectors to each agent/i);
     });
-  });
-
-  it('POST rejects keyMode:workspace (admin-only) — a non-admin must never own a workspace (global-keyed) connector', async () => {
-    // SECURITY (purge-on-delete): a workspace connector derives a GLOBAL credential
-    // ref (account:<id>, owner-independent). If a non-admin could own one, deleting
-    // it would tombstone the SHARED company key. The global credential WRITE is
-    // admin-gated (/admin/destinations); the connector that drives the global purge
-    // must be too. So the user route rejects keyMode:workspace.
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'company-sf',
-          name: 'Salesforce',
-          keyMode: 'workspace',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(400);
-    expect((captured.body as { error: string }).error).toContain('admin-only');
-    // It must NOT have landed — the GET 404s, so there is no workspace connector
-    // for the non-admin to later delete (and thus no global purge they can trigger).
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'company-sf' } }), gRes);
-    expect(gCap.status).toBe(404);
-  });
-
-  it('PATCH cannot flip an owned private connector to keyMode:workspace (admin-only)', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userFlipWs', isAdmin: false };
-    // Seed an owned PRIVATE personal connector (unique id — the container persists
-    // rows across this file's tests).
-    const { res: cRes, captured: cCap } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'flip-to-ws',
-          name: 'Flip',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      cRes,
-    );
-    expect(cCap.status).toBe(201);
-    // Attempt to flip it to workspace via PATCH → rejected.
-    const { res, captured } = makeRes();
-    await handlers.update(
-      makeReq({ params: { id: 'flip-to-ws' }, body: { keyMode: 'workspace' } }),
-      res,
-    );
-    expect(captured.status).toBe(400);
-    expect((captured.body as { error: string }).error).toContain('admin-only');
-  });
-
-  it('destroy passes purgeGlobal=actor.isAdmin: an admin purges the GLOBAL key, a non-admin does not', async () => {
-    // Defense at the dangerous primitive: even if a non-admin somehow OWNS a
-    // workspace (global-keyed) connector — e.g. via the authored-connector approve
-    // path, which bypasses the HTTP keyMode gate — their delete must NOT purge the
-    // shared company key. The route passes actor.isAdmin as purgeGlobal; the hook
-    // skips the global-scope purge unless authorized. We seed the owned-state
-    // directly via the upsert hook (the user route would reject keyMode:workspace).
-    const deleteCalls: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
-    const h = await createTestHarness({
-      services: {
-        'credentials:delete': async (_c, input) => {
-          deleteCalls.push(input as (typeof deleteCalls)[number]);
-        },
-      },
-      plugins: [
-        createDatabasePostgresPlugin({ connectionString }),
-        authStubPlugin(),
-        credentialsStubPlugin(),
-        createConnectorsPlugin(),
-      ],
-    });
-    harnesses.push(h);
-    // Two same-id workspace connectors, one owned by a non-admin, one by an admin.
-    for (const owner of ['mallory', 'adminX']) {
-      await h.bus.call('connectors:upsert', h.ctx({ userId: owner }), {
-        userId: owner,
-        connectorId: 'ws-route',
-        name: 'Workspace svc',
-        keyMode: 'workspace',
-        visibility: 'private',
-        capabilities: mcpCaps(),
-      });
-    }
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const adminHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'admin' });
-
-    // Non-admin destroy → purgeGlobal:false → the shared global key is untouched.
-    currentActor = { id: 'mallory', isAdmin: false };
-    const { res: r1, captured: c1 } = makeRes();
-    await userHandlers.destroy(makeReq({ params: { id: 'ws-route' } }), r1);
-    expect(c1.status).toBe(204);
-    expect(deleteCalls).toEqual([]);
-
-    // Admin destroy → purgeGlobal:true → the shared global key IS purged.
-    currentActor = { id: 'adminX', isAdmin: true };
-    const { res: r2, captured: c2 } = makeRes();
-    await adminHandlers.destroy(makeReq({ params: { id: 'ws-route' } }), r2);
-    expect(c2.status).toBe(204);
-    expect(deleteCalls).toEqual([
-      { scope: 'global', ownerId: null, ref: 'account:ws-route' },
-    ]);
   });
 
   it('an admin deleting ANOTHER admin’s shared connector still purges its state (owner-keyed, purgeGlobal)', async () => {
@@ -1527,185 +1362,6 @@ describe('user connector routes (/settings/connectors)', () => {
     ]);
   });
 
-  it('full CRUD on an owned private connector: create → edit → delete', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    // Unique id per test — the postgres container persists rows across the file's
-    // tests, so a reused id would make a "create" return 200 (update) not 201.
-    currentActor = { id: 'userCrud', isAdmin: false };
-
-    const { res: cRes, captured: cCap } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'crud-conn',
-          name: 'My connector',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      cRes,
-    );
-    expect(cCap.status).toBe(201);
-
-    const { res: pRes, captured: pCap } = makeRes();
-    await handlers.update(
-      makeReq({ params: { id: 'crud-conn' }, body: { name: 'Renamed' } }),
-      pRes,
-    );
-    expect(pCap.status).toBe(200);
-    expect((pCap.body as { connector: { name: string } }).connector.name).toBe(
-      'Renamed',
-    );
-    // Still private after the edit.
-    expect(
-      (pCap.body as { connector: { visibility: string } }).connector.visibility,
-    ).toBe('private');
-
-    const { res: dRes, captured: dCap } = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'crud-conn' } }), dRes);
-    expect(dCap.status).toBe(204);
-
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'crud-conn' } }), gRes);
-    expect(gCap.status).toBe(404);
-  });
-
-  it('PATCH on a SHARED (catalog) connector is read-only — 403', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'userU', isAdmin: true };
-    // Admin-seed a SHARED connector owned by userU (a catalog item).
-    await adminSeed(h.bus, {
-      connectorId: 'catalog-conn',
-      name: 'Catalog',
-      keyMode: 'workspace',
-      visibility: 'shared',
-      capabilities: mcpCaps(),
-    });
-    // Now the SAME user hits the user route — the shared connector is read-only.
-    currentActor = { id: 'userU', isAdmin: false };
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const { res, captured } = makeRes();
-    await userHandlers.update(
-      makeReq({ params: { id: 'catalog-conn' }, body: { name: 'hijack' } }),
-      res,
-    );
-    expect(captured.status).toBe(403);
-    expect(captured.body).toEqual({ error: 'read-only' });
-  });
-
-  it('POST cannot demote an existing catalog/shared connector to private (read-only — 403)', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'userU', isAdmin: true };
-    // Admin-seed a SHARED connector owned by userU.
-    await adminSeed(h.bus, {
-      connectorId: 'demote-target',
-      name: 'Shared',
-      keyMode: 'workspace',
-      visibility: 'shared',
-      capabilities: mcpCaps(),
-    });
-    // The same user POSTs the SAME id via the user route — create-or-update must
-    // NOT silently demote the shared connector to private; it 403s (read-only).
-    currentActor = { id: 'userU', isAdmin: false };
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const { res, captured } = makeRes();
-    await userHandlers.create(
-      makeReq({
-        body: {
-          connectorId: 'demote-target',
-          name: 'Sneaky private',
-          keyMode: 'personal',
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(403);
-    expect(captured.body).toEqual({ error: 'read-only' });
-    // The connector is STILL shared — the demote never landed.
-    currentActor = { id: 'userU', isAdmin: true };
-    const { res: gRes, captured: gCap } = makeRes();
-    await createAdminConnectorRouteHandlers({ bus: h.bus }).show(
-      makeReq({ params: { id: 'demote-target' } }),
-      gRes,
-    );
-    expect(
-      (gCap.body as { connector: { visibility: string } }).connector.visibility,
-    ).toBe('shared');
-  });
-
-  it('DELETE on a catalog (shared) connector is read-only — 403', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'userU', isAdmin: true };
-    await adminSeed(h.bus, {
-      connectorId: 'catalog-conn',
-      name: 'Catalog',
-      keyMode: 'workspace',
-      visibility: 'shared',
-      capabilities: mcpCaps(),
-    });
-    currentActor = { id: 'userU', isAdmin: false };
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const { res, captured } = makeRes();
-    await userHandlers.destroy(makeReq({ params: { id: 'catalog-conn' } }), res);
-    expect(captured.status).toBe(403);
-    expect(captured.body).toEqual({ error: 'read-only' });
-  });
-
-  it('forces actor id from session — a body-supplied userId cannot impersonate', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userImp', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          userId: 'someoneElse',
-          connectorId: 'imp-conn',
-          name: 'Mine',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(201);
-    // The connector landed under userImp, not "someoneElse".
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'imp-conn' } }), gRes);
-    expect(gCap.status).toBe(200);
-  });
-
-  it('cross-tenant: user B cannot edit / delete user A’s private connector (404)', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userA', isAdmin: false };
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'a-conn',
-          name: 'A',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      makeRes().res,
-    );
-    currentActor = { id: 'userB', isAdmin: false };
-    const { res: pRes, captured: pCap } = makeRes();
-    await handlers.update(
-      makeReq({ params: { id: 'a-conn' }, body: { name: 'hijack' } }),
-      pRes,
-    );
-    expect(pCap.status).toBe(404);
-    const { res: dRes, captured: dCap } = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'a-conn' } }), dRes);
-    expect(dCap.status).toBe(404);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2060,10 +1716,10 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
     'account:mine:a:b',
   ];
 
-  it.each(FOREIGN_REFS)('user route POST refuses %j (400) and stores nothing', async (ref) => {
+  it.each(FOREIGN_REFS)('admin route POST refuses %j (400) and stores nothing', async (ref) => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'mallory-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'mallory-712', isAdmin: true };
     const { res, captured } = makeRes();
     await handlers.create(makeReq({ body: create('mine', ref) }), res);
     expect(captured.status).toBe(400);
@@ -2078,10 +1734,10 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
     expect(gCap.status).toBe(404);
   });
 
-  it('user route POST accepts the connector’s own ref and it round-trips', async () => {
+  it('admin route POST accepts the connector’s own ref and it round-trips', async () => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'own-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'own-712', isAdmin: true };
     const own = 'account:mine:oauth-client-secret';
     const { res, captured } = makeRes();
     await handlers.create(makeReq({ body: create('mine', own) }), res);
@@ -2096,17 +1752,17 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
 
   it('a connector without a clientSecretRef (DCR) is unaffected', async () => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'dcr-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'dcr-712', isAdmin: true };
     const { res, captured } = makeRes();
     await handlers.create(makeReq({ body: create('mine') }), res);
     expect(captured.status).toBe(201);
   });
 
-  it('user route PATCH cannot introduce a foreign ref; the stored row is untouched', async () => {
+  it('admin route PATCH cannot introduce a foreign ref; the stored row is untouched', async () => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'patch-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'patch-712', isAdmin: true };
     const own = 'account:mine:oauth-client-secret';
     const { res: cRes, captured: cCap } = makeRes();
     await handlers.create(makeReq({ body: create('mine', own) }), cRes);
@@ -2182,8 +1838,8 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
       capabilities: legacyCaps,
     });
 
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'legacy-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'legacy-712', isAdmin: true };
     const { res: gRes, captured: gCap } = makeRes();
     await handlers.show(makeReq({ params: { id: 'mine' } }), gRes);
     expect(gCap.status).toBe(200);
