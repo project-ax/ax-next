@@ -266,6 +266,12 @@ export interface UpsertArgs {
    * visibility) with this id. Tombstones never block.
    */
   requireUniqueId?: boolean;
+  /**
+   * When true, write only a LIVE (owner, id) row, atomically (an UPDATE guarded
+   * on `deleted_at IS NULL`): no insert, no resurrection. Throws `not-found`
+   * when no live row matched.
+   */
+  updateOnly?: boolean;
 }
 
 export interface ConnectorStore {
@@ -415,6 +421,33 @@ export function createConnectorStore(
 
     async upsert(args) {
       const now = new Date();
+      if (args.updateOnly === true) {
+        const updated = await db
+          .updateTable('connectors_v1_connectors')
+          .set({
+            name: args.name,
+            description: args.description,
+            usage_note: args.usageNote,
+            key_mode: args.keyMode,
+            visibility: args.visibility,
+            capabilities: sql<unknown>`${JSON.stringify(args.capabilities)}::jsonb`,
+            updated_at: now,
+          })
+          .where('owner_user_id', '=', args.userId)
+          .where('connector_id', '=', args.connectorId)
+          .where('deleted_at', 'is', null)
+          .returningAll()
+          .executeTakeFirst();
+        if (updated === undefined) {
+          throw new PluginError({
+            code: 'not-found',
+            plugin: PLUGIN_NAME,
+            hookName: 'connectors:upsert',
+            message: `connector '${args.connectorId}' not found`,
+          });
+        }
+        return { connector: rowToConnector(updated), created: false };
+      }
       // `created` = "no LIVE row existed for this (owner, id)". A tombstoned row
       // is invisible to the owner (get/list filter deleted_at IS NULL), so
       // resurrecting one reports `created: true` — from the owner's view the

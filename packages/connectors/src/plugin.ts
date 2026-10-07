@@ -670,6 +670,16 @@ async function upsertConnector(
   // TASK-752 — read the live row's servers BEFORE the write, so a rename can be
   // told apart from an add (the namespace is a hash of the server name).
   const prior = await store.getByIdNotDeleted(userId, connectorId);
+  // An edit (`updateOnly`) of a connector that is already gone stops here,
+  // before any side effect; the store re-checks atomically at the write.
+  if (prior === null && input.updateOnly === true) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `connector '${connectorId}' not found`,
+    });
+  }
   // TASK-827 — who supplies the key is fixed for a live connector. A switch
   // would leave the old mode's key behind (orphaned), and a personal key left
   // behind would SHADOW the shared one: credentials:get walks
@@ -732,6 +742,7 @@ async function upsertConnector(
     visibility,
     capabilities,
     requireUniqueId: input.requireUniqueId === true,
+    updateOnly: input.updateOnly === true,
   });
   if (prior !== null) {
     await announceNamespaceChange(bus, ctx, userId, connectorId, prior, connector);

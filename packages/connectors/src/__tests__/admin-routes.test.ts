@@ -689,6 +689,164 @@ describe('admin connector routes', () => {
       await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
       expect(shown.captured.body).toMatchObject({ connector: { name: 'CRM' } });
     });
+
+    // Fix round 1 (security): a NON-OWNER admin may relabel a shared connector,
+    // never retarget it — an endpoint / host / slot change would send every
+    // agent's stored sign-ins and the shared key somewhere new.
+    describe('a non-owner admin cannot change where it connects or who it is for', () => {
+      async function seedAndShow(h: TestHarness) {
+        const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+        currentActor = { id: 'admin1', isAdmin: true };
+        const created = makeRes();
+        await handlers.create(makeReq({ body: crm }), created.res);
+        expect(created.captured.status).toBe(201);
+        const shown = makeRes();
+        await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+        return {
+          handlers,
+          before: (shown.captured.body as { connector: Record<string, unknown> }).connector,
+        };
+      }
+
+      const caps = mcpCaps();
+      const server = caps.mcpServers[0]!;
+      const changes: Array<[string, Record<string, unknown>]> = [
+        ['a server url', {
+          capabilities: { ...caps, mcpServers: [{ ...server, url: 'https://evil.example.com/mcp' }] },
+        }],
+        ['allowedHosts', { capabilities: { ...caps, allowedHosts: ['evil.example.com'] } }],
+        ['a server’s allowedHosts', {
+          capabilities: { ...caps, mcpServers: [{ ...server, allowedHosts: ['evil.example.com'] }] },
+        }],
+        ['a credential slot', {
+          capabilities: { ...caps, credentials: [{ slot: 'gdrive', kind: 'api-key', headerName: 'x-leak' }] },
+        }],
+        ['packages', { capabilities: { ...caps, packages: { npm: ['evil-pkg'], pypi: [] } } }],
+        ['keyMode', { keyMode: 'workspace' }],
+        ['visibility (shared → private)', { visibility: 'private' }],
+      ];
+
+      for (const [what, patch] of changes) {
+        it(`refuses ${what}: 403 owner-only-change, the stored row unchanged`, async () => {
+          const h = await makeHarness();
+          const { handlers, before } = await seedAndShow(h);
+          currentActor = { id: 'admin2', isAdmin: true };
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({ params: { id: 'crm' }, body: { name: 'Renamed', ...patch } }),
+            patched.res,
+          );
+          expect(patched.captured).toMatchObject({
+            status: 403,
+            body: { error: 'owner-only-change' },
+          });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const after = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), after.res);
+          expect((after.captured.body as { connector: unknown }).connector).toEqual(before);
+        });
+      }
+
+      it('accepts the whole unchanged form plus a new name: 200, canEdit, no owner id', async () => {
+        const h = await makeHarness();
+        const { handlers, before } = await seedAndShow(h);
+        currentActor = { id: 'admin2', isAdmin: true };
+        const patched = makeRes();
+        await handlers.update(
+          makeReq({ params: { id: 'crm' }, body: { ...before, name: 'CRM (relabelled)', description: 'New words' } }),
+          patched.res,
+        );
+        expect(patched.captured.status).toBe(200);
+        const body = patched.captured.body as { connector: Record<string, unknown> };
+        expect(body.connector).toMatchObject({
+          name: 'CRM (relabelled)',
+          description: 'New words',
+          canEdit: true,
+          capabilities: before.capabilities,
+        });
+        expect(body.connector).not.toHaveProperty('ownerUserId');
+        expect(body).not.toHaveProperty('ownerUserId');
+        expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+      });
+
+      it('the owner may still change their own server url', async () => {
+        const h = await makeHarness();
+        const { handlers } = await seedAndShow(h);
+        const patched = makeRes();
+        await handlers.update(
+          makeReq({ params: { id: 'crm' }, body: changes[0]![1] }),
+          patched.res,
+        );
+        expect(patched.captured.status).toBe(200);
+        expect(patched.captured.body).toMatchObject({
+          connector: { capabilities: { mcpServers: [{ url: 'https://evil.example.com/mcp' }] } },
+        });
+      });
+    });
+
+    it('same-id shared rows from two owners, none the admin’s: PATCH and DELETE 404 (fail closed)', async () => {
+      const h = await makeHarness();
+      for (const owner of ['ownerA', 'ownerB']) {
+        await h.bus.call('connectors:upsert', h.ctx({ userId: owner }), {
+          ...crm,
+          userId: owner,
+        });
+      }
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin3', isAdmin: true };
+      const patched = makeRes();
+      await handlers.update(makeReq({ params: { id: 'crm' }, body: { name: 'X' } }), patched.res);
+      expect(patched.captured.status).toBe(404);
+      const deleted = makeRes();
+      await handlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(404);
+      expect((await rowOwners(h, 'crm')).sort()).toEqual(['ownerA', 'ownerB']);
+    });
+
+    it('an edit never resurrects a connector deleted after it was read (updateOnly)', async () => {
+      const h = await makeHarness();
+      await h.bus.call('connectors:upsert', h.ctx({ userId: 'admin1' }), {
+        ...crm,
+        userId: 'admin1',
+      });
+      // The PATCH read happened; then the owner deletes; then the PATCH writes.
+      await h.bus.call('connectors:delete', h.ctx({ userId: 'admin1' }), {
+        userId: 'admin1',
+        connectorId: 'crm',
+        purgeGlobal: true,
+      });
+      await expect(
+        h.bus.call('connectors:upsert', h.ctx({ userId: 'admin1' }), {
+          ...crm,
+          name: 'Late edit',
+          userId: 'admin1',
+          updateOnly: true,
+        }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+      expect(await rowOwners(h, 'crm')).toEqual([]);
+
+      // The store's own guard (the write itself is conditional on a live row),
+      // which closes the window after the hook's pre-check.
+      const { db } = await h.bus.call<unknown, { db: Kysely<ConnectorDatabase> }>(
+        'database:get-instance',
+        h.ctx(),
+        {},
+      );
+      await expect(
+        createConnectorStore(db).upsert({
+          userId: 'admin1',
+          connectorId: 'crm',
+          name: 'Late edit',
+          description: '',
+          usageNote: '',
+          keyMode: 'personal',
+          visibility: 'shared',
+          capabilities: mcpCaps(),
+          updateOnly: true,
+        }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+      expect(await rowOwners(h, 'crm')).toEqual([]);
+    });
   });
 
   it('400 on invalid JSON body', async () => {

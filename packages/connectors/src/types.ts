@@ -291,6 +291,12 @@ export interface UpsertInput {
   capabilities: Capabilities;
   /** Refuse (`connector-id-taken`) a NEW connector whose id another owner holds live. */
   requireUniqueId?: boolean;
+  /**
+   * Edit only: refuse (`not-found`) instead of creating — or resurrecting a
+   * deleted — connector. An edit that lost a race with a delete must not bring
+   * the connector back.
+   */
+  updateOnly?: boolean;
 }
 export interface UpsertOutput {
   connector: Connector;

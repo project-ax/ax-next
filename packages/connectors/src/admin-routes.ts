@@ -22,6 +22,7 @@ import type {
   UpsertInput,
   UpsertOutput,
 } from './types.js';
+import { CapabilitiesSchema } from './types.js';
 import { deriveCredentialPlan } from './credential-plan.js';
 import { deriveToolNamespaces } from './tool-namespace.js';
 import {
@@ -366,6 +367,41 @@ function writeOwner(
   return null;
 }
 
+/** Stable JSON: object keys sorted, so key order never reads as a change. */
+function canonicalJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val: unknown) =>
+    val !== null && typeof val === 'object' && !Array.isArray(val)
+      ? Object.fromEntries(
+          Object.entries(val as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+      : val,
+  );
+}
+
+/**
+ * Fix round 1 (security). A NON-owner admin may relabel a shared connector
+ * (name / description / usage note; tool permissions on their own route) but
+ * never change where it connects or who supplies the key. `capabilities`
+ * (servers + endpoints, allowed hosts, credential slots incl. OAuth client
+ * fields, packages, services), `keyMode` and `visibility` are the owner's: an
+ * endpoint change would hand every agent's stored sign-ins and the shared key
+ * to the new host through the credential proxy (only tool permissions are reset
+ * on a move — TASK-758). A field sent with its STORED value is fine; editors
+ * send the whole form. Capabilities are compared after the same parse the store
+ * applies, so defaults (e.g. `services: []`) never read as a change; an
+ * unparseable value is a change (refused).
+ */
+function changesOwnerOnlyFields(existing: Connector, patch: Record<string, unknown>): boolean {
+  if ('keyMode' in patch && patch.keyMode !== existing.keyMode) return true;
+  if ('visibility' in patch && patch.visibility !== existing.visibility) return true;
+  if ('capabilities' in patch) {
+    const parsed = CapabilitiesSchema.safeParse(patch.capabilities);
+    if (!parsed.success) return true;
+    if (canonicalJson(parsed.data) !== canonicalJson(existing.capabilities)) return true;
+  }
+  return false;
+}
+
 /** What the admin surface tells the UI it may edit (the store's `canEdit` is
  *  owner-only; an admin may also curate any shared connector). */
 function presentCanEdit<T extends { canEdit?: boolean; visibility: Connector['visibility'] }>(
@@ -678,6 +714,10 @@ export function createConnectorRouteHandlers(
           return;
         }
       }
+      if (owner !== actor.id && changesOwnerOnlyFields(existing, patchRaw)) {
+        res.status(403).json({ error: 'owner-only-change' });
+        return;
+      }
       const input: UpsertInput = {
         name: existing.name,
         description: existing.description,
@@ -687,6 +727,9 @@ export function createConnectorRouteHandlers(
         capabilities: existing.capabilities,
         ...patchRaw,
         requireUniqueId: false,
+        // An edit never creates or resurrects: a delete that lands between the
+        // read above and this write wins (→ 404), so slice 1's purge stands.
+        updateOnly: true,
         // Re-assert the immutable identity + owner AFTER the spread so a stray
         // patch field can't rename or owner-hijack. The owner is the stored
         // row's, so ownership never changes on an edit.
@@ -820,6 +863,8 @@ export function createConnectorRouteHandlers(
             'connectors:describe-tools',
             ctx,
             {
+              // The actor's id resolves the same row `loadEditable` did (own row
+              // first, else the single shared one); the owner only keys the namespaces.
               userId: actor.id,
               connectorId: connector.id,
               ...(req.query.refresh === '1' && { force: true }),
