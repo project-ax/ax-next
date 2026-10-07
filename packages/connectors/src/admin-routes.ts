@@ -7,8 +7,8 @@ import {
 } from '@ax/core';
 import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
 import type {
-  ClearAuthoredInput,
-  ClearAuthoredOutput,
+  ClearAuthoredByIdInput,
+  ClearAuthoredByIdOutput,
   Connector,
   ConnectorSummary,
   DeleteInput,
@@ -17,8 +17,8 @@ import type {
   GetOutput,
   ListInput,
   ListOutput,
-  ListAuthoredPendingInput,
-  ListAuthoredPendingOutput,
+  ListAuthoredPendingAllInput,
+  ListAuthoredPendingAllOutput,
   UpsertInput,
   UpsertOutput,
 } from './types.js';
@@ -37,30 +37,23 @@ import {
   type SetConnectorDefaultsOutputLike,
 } from './tool-permissions.js';
 
-// Structural mirrors of the orchestrator's authored-connector grant hook
-// (registered by @ax/chat-orchestrator) + the agents ACL gate. Re-declared here
-// per Invariant I2 (no cross-plugin import); the orchestrator validates
-// authoritatively, so this is just the call shape. The grant re-resolves the
-// agent's OWN authored drafts host-side (server-authoritative), so an unknown /
-// foreign connectorId returns `not-authored` — it can never approve a draft the
-// caller doesn't own.
-interface ApplyAuthoredConnectorGrantInputLike {
-  /** Omitted on this path: a Settings approval has no live conversation
-   *  (the "approve-ahead" branch — writes approval rows + promotes to the
-   *  registry + flips the draft active, with no warm-session retire). */
-  conversationId?: string;
-  userId: string;
-  agentId: string;
-  connectorId: string;
-  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
+// Structural mirror of `auth:get-user` (registered by the auth plugin; I2 — no
+// import). Only the display fields are read, to label who asked for a proposal.
+interface AuthUserLike {
+  displayName?: string | null;
+  email?: string | null;
 }
-type ApplyAuthoredConnectorGrantOutputLike =
-  | { applied: true; respawned: boolean }
-  | { applied: false; reason: 'not-authored' };
 
-interface AgentsResolveInputLike {
-  agentId: string;
-  userId: string;
+/** One request in the admin "Awaiting approval" queue, as the route returns it. */
+interface AuthoredProposalView {
+  connectorId: string;
+  name: string;
+  usageNote: string;
+  keyMode: string;
+  proposal: unknown;
+  updatedAt: string;
+  /** Who asked: their id and a display label (name, else email, else the id). */
+  proposedBy: { userId: string; label: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +79,7 @@ interface AgentsResolveInputLike {
 // curation surface (shared / workspace-keyed connectors, the Test
 // probe), and before the gate it was a bypass of the `/settings/connectors`
 // rejections. The `/settings/connectors*` bundle (mode 'user') is READS only
-// (list + show GET, plus the authored-draft routes; any signed-in user). No
+// (list + show GET; any signed-in user). No
 // write route is registered there: a POST / PATCH / DELETE on a path a GET
 // shares answers 405 (Allow: GET) from the http-server router, and the handlers
 // themselves are adminOnly in case one is ever bundled there. Connectors are
@@ -319,8 +312,7 @@ export interface AdminRouteDeps {
  *   - `'admin'` — the folded Connector registry (`/admin/connectors`). The actor
  *     may curate the workspace catalog: set `visibility: 'shared'` and
  *     `keyMode: 'workspace'`. Owner is still forced from the session.
- *   - `'user'`  — the `/settings/connectors` READ surface (list/show + the
- *     authored-draft routes). Only admins write
+ *   - `'user'`  — the `/settings/connectors` READ surface (list/show). Only admins write
  *     connector definitions (slice 2a), so no write route is registered in this
  *     mode and the write handlers 403 a non-admin even if one were wired.
  *
@@ -557,6 +549,31 @@ export function createConnectorRouteHandlers(
     const { connector } = got;
     const namespaces = deriveToolNamespaces(owner, connector).map((e) => e.toolNamespace);
     return { actor, connector, owner, namespaces };
+  }
+
+  /**
+   * Who asked for a proposal, for the admin queue: display name, else email,
+   * else the id. Fail-soft — never fails the list.
+   */
+  async function proposerLabel(userId: string): Promise<string> {
+    if (!deps.bus.hasService('auth:get-user')) return userId;
+    try {
+      const u = await deps.bus.call<{ userId: string }, AuthUserLike | null>(
+        'auth:get-user',
+        ctx,
+        { userId },
+      );
+      const name = typeof u?.displayName === 'string' ? u.displayName.trim() : '';
+      if (name.length > 0) return name;
+      const email = typeof u?.email === 'string' ? u.email.trim() : '';
+      if (email.length > 0) return email;
+    } catch (err) {
+      ctx.logger.warn('connectors_proposer_lookup_failed', {
+        userId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return userId;
   }
 
   return {
@@ -956,181 +973,79 @@ export function createConnectorRouteHandlers(
     },
 
     /**
-     * GET /settings/connectors/authored — the Settings "Proposed by your
-     * assistant" fallback list. Returns the session user's PENDING authored
-     * connector drafts across ALL their agents (each carrying its `agentId` so
-     * the approve action knows which (user, agent) authored it). Owner-scoped at
-     * the store layer — a foreign user's draft can never appear. No request body.
-     * Mechanism-agnostic: the response carries only the declared capability
-     * surface (hosts / slot names / packages), never a secret.
+     * GET /admin/connectors/authored — slice 2c's "Awaiting approval" queue:
+     * every person's pending agent requests for a new connector (ids already
+     * live are dropped by the hook). adminOnly on every bundle. One row per
+     * (person, id): the agent is not named, so a person's several agents asking
+     * for the same id read as one request (the newest one is shown).
+     *
+     * Each row is labelled with who asked via `auth:get-user` (display name,
+     * else email). Fail-soft: no provider, a null user or a throw shows the id.
+     * The proposal fields are agent-written: the UI renders them as text.
      */
-    async listAuthoredPending(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await authenticate(req, res);
+    async listAuthoredProposals(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
-      if (!deps.bus.hasService('connectors:list-authored-pending')) {
-        // The preset doesn't expose authored drafts — surface an empty list
-        // rather than an error (the shelf simply renders nothing).
-        res.status(200).json({ drafts: [] });
-        return;
+      const out = await deps.bus.call<ListAuthoredPendingAllInput, ListAuthoredPendingAllOutput>(
+        'connectors:list-authored-pending-all',
+        ctx,
+        {},
+      );
+      const newest = new Map<string, ListAuthoredPendingAllOutput['drafts'][number]>();
+      for (const d of out.drafts) {
+        const key = `${d.ownerUserId}\u0000${d.connectorId}`;
+        const seen = newest.get(key);
+        if (seen === undefined || d.updatedAt > seen.updatedAt) newest.set(key, d);
       }
-      try {
-        const out = await deps.bus.call<
-          ListAuthoredPendingInput,
-          ListAuthoredPendingOutput
-        >('connectors:list-authored-pending', ctx, { userId: actor.id });
-        res.status(200).json({ drafts: out.drafts });
-      } catch (err) {
-        handleHookError(err, res);
-      }
+      const labels = new Map<string, Promise<string>>();
+      const labelFor = (userId: string): Promise<string> => {
+        let p = labels.get(userId);
+        if (p === undefined) {
+          p = proposerLabel(userId);
+          labels.set(userId, p);
+        }
+        return p;
+      };
+      const drafts: AuthoredProposalView[] = await Promise.all(
+        // Map iteration keeps the hook's order (connector id, then person).
+        [...newest.values()].map(async (d) => ({
+          connectorId: d.connectorId,
+          name: d.name,
+          usageNote: d.usageNote,
+          keyMode: d.keyMode,
+          proposal: d.proposal,
+          updatedAt: d.updatedAt,
+          proposedBy: { userId: d.ownerUserId, label: await labelFor(d.ownerUserId) },
+        })),
+      );
+      res.status(200).json({ drafts });
     },
 
     /**
-     * POST /settings/connectors/authored/:id/approve — approve a pending authored
-     * connector draft OUTSIDE chat (the Settings fallback for a missed/dismissed
-     * card). Body `{ agentId, shown? }`. The user has already written the key to
-     * their own vault (client-side, `setDestinationCredential`), exactly like the
-     * in-chat card; this only triggers the grant.
-     *
-     * Security: `userId` is forced from the session; `agentId` comes from the
-     * draft the client listed. We ACL-gate `agents:resolve(agentId, userId)` for
-     * defense-in-depth (a user may only approve under an agent they can reach),
-     * then call the orchestrator's `agent:apply-authored-connector-grant` with
-     * NO conversationId (the approve-ahead path: writes approval rows, promotes
-     * the draft into the registry, flips it active — no warm-session retire). The
-     * grant re-resolves the agent's OWN drafts host-side, so an unknown / foreign
-     * id is `not-authored` → 409 (nothing approved). No secret crosses this route.
+     * DELETE /admin/connectors/authored/:connectorId — Dismiss: clear every
+     * person's request for this id. adminOnly. Idempotent (204 whether or not a
+     * row matched, so two admins dismissing at once both succeed). The person
+     * is not notified. A malformed id is a 400.
      */
-    async approveAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await authenticate(req, res);
+    async dismissAuthoredProposal(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
-      const connectorId = req.params.id;
+      const connectorId = req.params.connectorId;
       if (typeof connectorId !== 'string' || connectorId.length === 0) {
         res.status(400).json({ error: 'missing-id' });
         return;
       }
-      const parsed = parseAndValidateBody(req.body);
-      if (!parsed.ok) {
-        res.status(parsed.status).json({ error: parsed.message });
-        return;
-      }
-      const raw = (parsed.value ?? {}) as Record<string, unknown>;
-      const agentId = typeof raw.agentId === 'string' ? raw.agentId : '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'agentId is required' });
-        return;
-      }
-      // `shown` is the same TOCTOU narrowing guard the in-chat card sends —
-      // optional + forwarded verbatim; the grant intersects it with the
-      // re-resolved proposal (it can only NARROW, never widen).
-      const shown = raw.shown as
-        | { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] }
-        | undefined;
-
-      // Defense-in-depth ACL gate: the caller may only approve under an agent
-      // they can reach. forbidden → 403, not-found → 404. Gated on the hook being
-      // present (it always is in the k8s preset; a stripped preset skips the gate
-      // and relies on the owner-scoped grant re-resolution below).
-      if (deps.bus.hasService('agents:resolve')) {
-        try {
-          await deps.bus.call<AgentsResolveInputLike, unknown>('agents:resolve', ctx, {
-            agentId,
-            userId: actor.id,
-          });
-        } catch (err) {
-          if (err instanceof PluginError) {
-            if (err.code === 'forbidden') {
-              res.status(403).json({ error: 'forbidden' });
-              return;
-            }
-            res.status(404).json({ error: 'agent-not-found' });
-            return;
-          }
-          throw err;
-        }
-      }
-
-      if (!deps.bus.hasService('agent:apply-authored-connector-grant')) {
-        res.status(409).json({ error: 'connector-grant-unavailable' });
-        return;
-      }
       try {
-        const out = await deps.bus.call<
-          ApplyAuthoredConnectorGrantInputLike,
-          ApplyAuthoredConnectorGrantOutputLike
-        >('agent:apply-authored-connector-grant', ctx, {
-          userId: actor.id,
-          agentId,
-          connectorId,
-          ...(shown !== undefined ? { shown } : {}),
-          // conversationId intentionally omitted — approve-ahead (no live turn).
-        });
-        if (!out.applied) {
-          // not-authored: the id isn't one of this (user, agent)'s pending drafts.
-          res.status(409).json({ error: 'not-authored' });
-          return;
-        }
-        res.status(200).json({ applied: true });
-      } catch (err) {
-        handleHookError(err, res);
-      }
-    },
-
-    /**
-     * DELETE /settings/connectors/authored/:id — DISMISS a pending authored
-     * connector draft the assistant proposed (the "Proposed by your assistant"
-     * shelf, 2026-06-04). Body `{ agentId }`. Before this route the only shelf
-     * action was Approve, so the sole way to get rid of an unwanted proposal was
-     * to approve it (entering a real or fake key to promote it into the registry)
-     * and THEN delete it from the Connected shelf — a genuinely bad trap.
-     *
-     * Security: `userId` is forced from the session and the underlying
-     * `connectors:clear-authored` deletes only rows scoped to `(ownerUserId,
-     * agentId, connectorId)`, so a user can only ever dismiss their OWN draft —
-     * a foreign / unknown (user, agent, connector) clears zero rows → 404.
-     *
-     * Deliberately NO `agents:resolve` ACL gate (unlike approve, which GRANTS
-     * reach and must verify the caller can reach the agent). Dismissing your own
-     * draft must work even when the authoring agent is gone or no longer
-     * reachable — gating it would re-create the exact trap of an
-     * un-dismissable orphan. No secret crosses this route.
-     */
-    async rejectAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const actor = await authenticate(req, res);
-      if (actor === null) return;
-      const connectorId = req.params.id;
-      if (typeof connectorId !== 'string' || connectorId.length === 0) {
-        res.status(400).json({ error: 'missing-id' });
-        return;
-      }
-      const parsed = parseAndValidateBody(req.body);
-      if (!parsed.ok) {
-        res.status(parsed.status).json({ error: parsed.message });
-        return;
-      }
-      const raw = (parsed.value ?? {}) as Record<string, unknown>;
-      const agentId = typeof raw.agentId === 'string' ? raw.agentId : '';
-      if (agentId.length === 0) {
-        res.status(400).json({ error: 'agentId is required' });
-        return;
-      }
-      if (!deps.bus.hasService('connectors:clear-authored')) {
-        // The preset doesn't expose authored drafts — nothing could have been
-        // proposed, so there is nothing to dismiss.
-        res.status(409).json({ error: 'connector-clear-unavailable' });
-        return;
-      }
-      try {
-        const out = await deps.bus.call<ClearAuthoredInput, ClearAuthoredOutput>(
-          'connectors:clear-authored',
+        const out = await deps.bus.call<ClearAuthoredByIdInput, ClearAuthoredByIdOutput>(
+          'connectors:clear-authored-by-id',
           ctx,
-          { ownerUserId: actor.id, agentId, connectorId },
+          { connectorId },
         );
-        if (!out.cleared) {
-          // No row matched (already gone, or not this owner's draft) — surface as
-          // 404, the same leak posture as a foreign-owned read.
-          res.status(404).json({ error: 'not-found' });
-          return;
-        }
+        ctx.logger.info('connectors_admin_dismissed_proposal', {
+          actorId: actor.id,
+          connectorId,
+          cleared: out.cleared,
+        });
         res.status(204).end();
       } catch (err) {
         handleHookError(err, res);
@@ -1167,6 +1082,15 @@ export async function registerAdminConnectorRoutes(
   }> = [
     { method: 'GET', path: '/admin/connectors', handler: handlers.list },
     { method: 'POST', path: '/admin/connectors', handler: handlers.create },
+    // Slice 2c — agent requests awaiting approval, and Dismiss. Registered
+    // BEFORE the `/:id` patterns so `authored` is never captured as an `:id`.
+    // Approving is creating: POST /admin/connectors clears the requests.
+    { method: 'GET', path: '/admin/connectors/authored', handler: handlers.listAuthoredProposals },
+    {
+      method: 'DELETE',
+      path: '/admin/connectors/authored/:connectorId',
+      handler: handlers.dismissAuthoredProposal,
+    },
     { method: 'GET', path: '/admin/connectors/:id', handler: handlers.show },
     { method: 'PATCH', path: '/admin/connectors/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/connectors/:id', handler: handlers.destroy },
@@ -1197,7 +1121,8 @@ export async function registerAdminConnectorRoutes(
 
 /**
  * Register the `/settings/connectors` routes against @ax/http-server (TASK-129).
- * Slice 2a: list + show and the authored-draft routes only. The writes (POST,
+ * Slice 2a: list + show only (slice 2c moved agent requests to the admin
+ * bundle: `/admin/connectors/authored`). The writes (POST,
  * PATCH, DELETE, and the tool-permissions GET/PUT) were removed: admins write
  * connector definitions via `/admin/connectors`. Because GET still shares
  * `/settings/connectors` and `/settings/connectors/:id`, a write there answers
@@ -1221,26 +1146,6 @@ export async function registerUserConnectorRoutes(
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
     { method: 'GET', path: '/settings/connectors', handler: handlers.list },
-    // The Settings "Proposed by your assistant" fallback: list the user's
-    // pending authored drafts + approve one outside chat. Registered BEFORE the
-    // `/:id` patterns so `authored` is never captured as an `:id`.
-    {
-      method: 'GET',
-      path: '/settings/connectors/authored',
-      handler: handlers.listAuthoredPending,
-    },
-    {
-      method: 'POST',
-      path: '/settings/connectors/authored/:id/approve',
-      handler: handlers.approveAuthored,
-    },
-    {
-      // Dismiss a proposed draft (no approve, no key) — reuses
-      // `connectors:clear-authored`. Grouped with the other authored routes.
-      method: 'DELETE',
-      path: '/settings/connectors/authored/:id',
-      handler: handlers.rejectAuthored,
-    },
     // Reads only: the agent rail's Add list, the key dialogs and the skill editor
     // read these as non-admins. Writes, and the tool-permissions routes (whose
     // only client is the admin editor), live under `/admin/connectors`.

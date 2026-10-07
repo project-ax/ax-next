@@ -276,6 +276,15 @@ interface RouteCase {
 
 const ADMIN_ROUTES: RouteCase[] = [
   { label: 'GET /admin/connectors', method: 'GET', path: '/admin/connectors', opts: () => ({}), adminStatus: 200 },
+  // Slice 2c — the agent-proposal queue and its Dismiss.
+  { label: 'GET /admin/connectors/authored', method: 'GET', path: '/admin/connectors/authored', opts: () => ({}), adminStatus: 200 },
+  {
+    label: 'DELETE /admin/connectors/authored/:connectorId',
+    method: 'DELETE',
+    path: '/admin/connectors/authored/:connectorId',
+    opts: (id) => ({ params: { connectorId: id } }),
+    adminStatus: 204,
+  },
   {
     label: 'POST /admin/connectors',
     method: 'POST',
@@ -393,20 +402,16 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
     expect(foreign.status).toBe(404);
   });
 
-  it('only the READ and authored /settings/connectors routes exist: no write route is registered (production answers 405 or 404)', async () => {
+  it('only the two READ /settings/connectors routes exist: no write or authored route is registered (production answers 405 or 404)', async () => {
     const h = await makeHarness();
     const settings = [...routes.keys()].filter((k) => k.split(' ')[1]?.startsWith('/settings/connectors')).sort();
-    expect(settings).toEqual(
-      [
-        'GET /settings/connectors',
-        'GET /settings/connectors/:id',
-        'GET /settings/connectors/authored',
-        'POST /settings/connectors/authored/:id/approve',
-        'DELETE /settings/connectors/authored/:id',
-      ].sort(),
-    );
-    // The removed writes: calling them as a signed-in non-admin finds no handler.
+    expect(settings).toEqual(['GET /settings/connectors', 'GET /settings/connectors/:id']);
+    // The removed writes and (slice 2c) the per-person proposal routes: a
+    // signed-in non-admin finds no handler. Proposals now go to admins.
     const removed = [
+      'GET /settings/connectors/authored',
+      'POST /settings/connectors/authored/:id/approve',
+      'DELETE /settings/connectors/authored/:id',
       'POST /settings/connectors',
       'PATCH /settings/connectors/:id',
       'DELETE /settings/connectors/:id',

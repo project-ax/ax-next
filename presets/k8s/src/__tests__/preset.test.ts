@@ -1047,10 +1047,10 @@ describe('@ax/preset-k8s wiring', () => {
       // TASK-94 — agent-authored connector drafts + the approval gate.
       'connectors:install-authored',
       'connectors:list-authored',
-      // The Settings "Proposed by your assistant" fallback read.
-      'connectors:list-authored-pending',
       'connectors:activate-authored',
-      'connectors:clear-authored',
+      // Slice 2c — the admin proposal queue and its Dismiss.
+      'connectors:list-authored-pending-all',
+      'connectors:clear-authored-by-id',
       // TASK-808 — TRANSITIONAL: let @ax/agents convert the retired "Set default"
       // flag into explicit attachments at boot (no HTTP / IPC surface).
       'connectors:list-legacy-defaults',

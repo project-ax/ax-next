@@ -19,7 +19,7 @@ import type { Capabilities } from '../types.js';
 // ---------------------------------------------------------------------------
 // Authored-connector draft store (TASK-94) against a real postgres container.
 // Covers: upsert lands pending, list, idempotent status-guarded activate,
-// clear, and per-(owner, agent) isolation.
+// the all-owners pending read + clear-by-id, and per-(owner, agent) isolation.
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -131,27 +131,56 @@ describe('createAuthoredConnectorsStore', () => {
     expect(drafts[0]!.proposal).toEqual(caps());
   });
 
-  it('listPendingForUser returns only PENDING drafts across the user’s agents, each carrying agentId', async () => {
+  it('listPendingAll returns every owner’s PENDING drafts (system read), each carrying owner + agent', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createAuthoredConnectorsStore(db);
 
-    // Two pending drafts under different agents + one that gets activated.
     await store.upsert({ ownerUserId: 'u', agentId: 'a2', connectorId: 'linear', name: 'Linear', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.upsert({ ownerUserId: 'other', agentId: 'a1', connectorId: 'linear', name: 'Linear too', usageNote: '', keyMode: 'workspace', proposal: caps() });
     await store.upsert({ ownerUserId: 'u', agentId: 'a1', connectorId: 'gmail', name: 'Gmail', usageNote: '', keyMode: 'personal', proposal: caps() });
     await store.upsert({ ownerUserId: 'u', agentId: 'a1', connectorId: 'slack', name: 'Slack', usageNote: '', keyMode: 'personal', proposal: caps() });
-    // A different user's pending draft must NOT leak.
-    await store.upsert({ ownerUserId: 'other', agentId: 'a1', connectorId: 'notion', name: 'Notion', usageNote: '', keyMode: 'personal', proposal: caps() });
-    // Activate one of u's drafts — it's approved, so it must drop off the pending list.
+    // An ACTIVE draft is not pending: it must not appear.
     await store.activate({ ownerUserId: 'u', agentId: 'a1', connectorId: 'slack' });
 
-    const pending = await store.listPendingForUser('u');
-    // Deterministic order: connector_id asc (gmail, linear), each with its agentId.
-    expect(pending.map((d) => ({ connectorId: d.connectorId, agentId: d.agentId, status: d.status }))).toEqual([
-      { connectorId: 'gmail', agentId: 'a1', status: 'pending' },
-      { connectorId: 'linear', agentId: 'a2', status: 'pending' },
+    const pending = await store.listPendingAll();
+    // Deterministic order: connector_id, then owner, then agent.
+    expect(pending.map((d) => ({ connectorId: d.connectorId, ownerUserId: d.ownerUserId, agentId: d.agentId }))).toEqual([
+      { connectorId: 'gmail', ownerUserId: 'u', agentId: 'a1' },
+      { connectorId: 'linear', ownerUserId: 'other', agentId: 'a1' },
+      { connectorId: 'linear', ownerUserId: 'u', agentId: 'a2' },
     ]);
+    expect(pending.every((d) => d.status === 'pending')).toBe(true);
     expect(pending[0]!.proposal).toEqual(caps());
+  });
+
+  it('clearAllById removes every draft with that id across owners and agents, any status', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'linear', name: 'L', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.upsert({ ownerUserId: 'u2', agentId: 'a9', connectorId: 'linear', name: 'L', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a2', connectorId: 'linear', name: 'L', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.activate({ ownerUserId: 'u1', agentId: 'a2', connectorId: 'linear' });
+    // A different id stays.
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'gmail', name: 'G', usageNote: '', keyMode: 'personal', proposal: caps() });
+
+    expect(await store.clearAllById('linear')).toEqual({ cleared: 3 });
+    expect(await store.list('u1', 'a1')).toHaveLength(1);
+    expect(await store.list('u1', 'a2')).toEqual([]);
+    expect(await store.list('u2', 'a9')).toEqual([]);
+    // Again: nothing left to clear.
+    expect(await store.clearAllById('linear')).toEqual({ cleared: 0 });
+  });
+
+  it('clearAllById refuses an empty id before any statement runs', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'linear', name: 'L', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await expect(store.clearAllById('')).rejects.toThrow(/connectorId/);
+    expect(await store.list('u1', 'a1')).toHaveLength(1);
   });
 
   it('re-propose REPLACES the row (created:false) and re-opens the gate to pending', async () => {
@@ -211,28 +240,6 @@ describe('createAuthoredConnectorsStore', () => {
     // Activating a non-existent draft flips nothing.
     expect(await store.activate({ ownerUserId: 'u', agentId: 'a', connectorId: 'nope' }))
       .toEqual({ activated: false });
-  });
-
-  it('clear removes the draft (reject path)', async () => {
-    const db = makeKysely();
-    await runConnectorsMigration(db);
-    const store = createAuthoredConnectorsStore(db);
-
-    await store.upsert({
-      ownerUserId: 'u',
-      agentId: 'a',
-      connectorId: 'linear',
-      name: 'Linear',
-      usageNote: '',
-      keyMode: 'personal',
-      proposal: caps(),
-    });
-    expect(await store.clear({ ownerUserId: 'u', agentId: 'a', connectorId: 'linear' }))
-      .toEqual({ cleared: true });
-    expect(await store.list('u', 'a')).toEqual([]);
-    // Clearing again is a no-op.
-    expect(await store.clear({ ownerUserId: 'u', agentId: 'a', connectorId: 'linear' }))
-      .toEqual({ cleared: false });
   });
 
   it('drafts are isolated per (owner, agent)', async () => {

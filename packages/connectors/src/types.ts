@@ -690,19 +690,27 @@ export interface ListAuthoredOutput {
   drafts: AuthoredConnectorDraftDescriptor[];
 }
 
-/** One pending draft surfaced ACROSS the user's agents (Settings fallback);
- *  carries `agentId` so the approve action knows which (user, agent) authored
- *  it. */
-export interface PendingAuthoredConnectorDescriptor
-  extends AuthoredConnectorDraftDescriptor {
+/**
+ * Slice 2c — one pending proposal in the ADMIN queue (every owner's drafts).
+ * `ownerUserId` is who asked and `agentId` the agent that asked for them; both
+ * are opaque ids. `updatedAt` is an ISO-8601 timestamp of the latest proposal.
+ */
+export interface PendingAuthoredProposal {
+  ownerUserId: string;
   agentId: string;
+  connectorId: string;
+  name: string;
+  usageNote: string;
+  keyMode: KeyMode;
+  proposal: Capabilities;
+  updatedAt: string;
 }
 
-export interface ListAuthoredPendingInput {
-  userId: string;
-}
-export interface ListAuthoredPendingOutput {
-  drafts: PendingAuthoredConnectorDescriptor[];
+/** `connectors:list-authored-pending-all` — admin use only; takes nothing. */
+export type ListAuthoredPendingAllInput = Record<string, never>;
+export interface ListAuthoredPendingAllOutput {
+  /** Pending proposals whose id is not already live under any owner. */
+  drafts: PendingAuthoredProposal[];
 }
 
 export interface ActivateAuthoredInput {
@@ -715,14 +723,14 @@ export interface ActivateAuthoredOutput {
   activated: boolean;
 }
 
-export interface ClearAuthoredInput {
-  ownerUserId: string;
-  agentId: string;
+/** `connectors:clear-authored-by-id` — admin Dismiss: every proposer's draft
+ *  with this id. */
+export interface ClearAuthoredByIdInput {
   connectorId: string;
 }
-export interface ClearAuthoredOutput {
-  /** True iff a draft row was removed. */
-  cleared: boolean;
+export interface ClearAuthoredByIdOutput {
+  /** How many draft rows were removed (0 when none matched). */
+  cleared: number;
 }
 
 /**
@@ -911,21 +919,28 @@ export const ListAuthoredOutputSchema = z.object({
   drafts: z.array(AuthoredConnectorDraftSchema),
 }) as unknown as ZodType<ListAuthoredOutput>;
 
-const PendingAuthoredConnectorSchema = AuthoredConnectorDraftSchema.extend({
-  agentId: z.string(),
-});
-
-export const ListAuthoredPendingOutputSchema = z.object({
-  drafts: z.array(PendingAuthoredConnectorSchema),
-}) as unknown as ZodType<ListAuthoredPendingOutput>;
+export const ListAuthoredPendingAllOutputSchema = z.object({
+  drafts: z.array(
+    z.object({
+      ownerUserId: z.string(),
+      agentId: z.string(),
+      connectorId: z.string(),
+      name: z.string(),
+      usageNote: z.string(),
+      keyMode: KeyModeSchema,
+      proposal: CapabilitiesSchema,
+      updatedAt: z.string(),
+    }),
+  ),
+}) as unknown as ZodType<ListAuthoredPendingAllOutput>;
 
 export const ActivateAuthoredOutputSchema = z.object({
   activated: z.boolean(),
 }) as unknown as ZodType<ActivateAuthoredOutput>;
 
-export const ClearAuthoredOutputSchema = z.object({
-  cleared: z.boolean(),
-}) as unknown as ZodType<ClearAuthoredOutput>;
+export const ClearAuthoredByIdOutputSchema = z.object({
+  cleared: z.number().int().nonnegative(),
+}) as unknown as ZodType<ClearAuthoredByIdOutput>;
 
 export const AuthorizeGlobalOutputSchema = z.object({
   allowed: z.boolean(),

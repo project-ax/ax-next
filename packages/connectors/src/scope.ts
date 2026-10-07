@@ -76,22 +76,36 @@ export function scopedAuthoredConnectors(
 }
 
 /**
- * Owner-only authored-draft scope — every draft the user owns ACROSS all their
- * agents (no agent_id predicate). Backs `listPendingForUser`, the Settings
- * "Proposed by your assistant" fallback: a connector proposed mid-turn is
- * per-(owner, agent), but the user shouldn't have to know which agent proposed
- * it, so the fallback aggregates by owner. Routed through this helper so the
- * bare-tenant-table read lives in `scope.ts` (lint I7), same as the scoped reads
- * above. Still owner-scoped — a foreign user's draft can never be observed.
+ * DELIBERATELY UNSCOPED — every owner's PENDING authored drafts (slice 2c:
+ * agent proposals go to admins). The only caller is the store's
+ * `listPendingAll`, behind `connectors:list-authored-pending-all`, whose only
+ * HTTP caller is the adminOnly `GET /admin/connectors/authored`. Routed through
+ * this file so the cross-tenant read stays where lint I7 can see it.
  */
-export function scopedAuthoredConnectorsByUser(
-  db: Kysely<ConnectorDatabase>,
-  scope: { userId: string },
-) {
+export function pendingAuthoredConnectorsForAdmins(db: Kysely<ConnectorDatabase>) {
   return db
     .selectFrom('connectors_v1_authored')
     .selectAll('connectors_v1_authored')
-    .where('owner_user_id', '=', scope.userId);
+    .where('status', '=', 'pending');
+}
+
+/**
+ * DELIBERATELY UNSCOPED — delete every authored draft with this connector id,
+ * whoever proposed it and under whichever agent, in any status. Two callers,
+ * both admin-or-system: creating a live connector (`connectors:upsert` with
+ * `created`) resolves the proposals for its id, and the adminOnly Dismiss
+ * (`connectors:clear-authored-by-id`). The caller validates the id. Returns the
+ * number of rows removed.
+ */
+export async function clearAuthoredConnectorsByIdForAdmins(
+  db: Kysely<ConnectorDatabase>,
+  connectorId: string,
+): Promise<number> {
+  const res = await db
+    .deleteFrom('connectors_v1_authored')
+    .where('connector_id', '=', connectorId)
+    .executeTakeFirst();
+  return Number(res.numDeletedRows ?? 0n);
 }
 
 /**

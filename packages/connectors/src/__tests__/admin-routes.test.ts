@@ -1700,55 +1700,27 @@ describe('user connector routes (/settings/connectors)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// User connector AUTHORED-draft routes (2026-06-03) — the Settings "Proposed by
-// your assistant" fallback: GET /settings/connectors/authored (list pending) +
-// POST /settings/connectors/authored/:id/approve (approve outside chat). The
-// approve route forces userId from the session, ACL-gates agents:resolve, and
-// calls the orchestrator's authored-connector grant with NO conversationId
-// (approve-ahead). Both stubbed here; the real grant is tested in
-// @ax/chat-orchestrator.
+// Slice 2c — agent proposals go to admins. GET /admin/connectors/authored lists
+// every person's pending proposals (labelled with who asked, via
+// `auth:get-user`, fail-soft to the id); DELETE /admin/connectors/authored/:id
+// is Dismiss (clears that id for everyone). There is no approve route: an
+// admin approves by creating the connector (POST /admin/connectors), and
+// creation clears the proposals.
 // ---------------------------------------------------------------------------
-describe('user connector AUTHORED routes (/settings/connectors/authored)', () => {
-  // Captured grant calls + a configurable verdict the stub returns.
-  let grantCalls: Array<Record<string, unknown>>;
-  let grantApplied: boolean;
-  // When set, the grant stub throws this instead of returning a verdict.
-  let grantThrows: Error | null;
-  // agents:resolve verdict: 'ok' | 'forbidden' | 'not-found'.
-  let agentsResolveVerdict: 'ok' | 'forbidden' | 'not-found';
+describe('admin proposal routes (/admin/connectors/authored)', () => {
+  // auth:get-user behaviour per user id: a user record, null, or a throw.
+  let users: Record<string, { displayName: string | null; email: string | null } | null | 'throw'>;
 
-  async function makeAuthoredHarness(): Promise<TestHarness> {
-    grantCalls = [];
-    grantApplied = true;
-    grantThrows = null;
-    agentsResolveVerdict = 'ok';
+  async function makeProposalHarness(): Promise<TestHarness> {
+    users = {};
     const h = await createTestHarness({
       services: {
-        'agents:resolve': async (_ctx, input: unknown) => {
-          if (agentsResolveVerdict === 'forbidden') {
-            throw new PluginError({
-              code: 'forbidden',
-              plugin: 'agents-stub',
-              hookName: 'agents:resolve',
-              message: 'no',
-            });
-          }
-          if (agentsResolveVerdict === 'not-found') {
-            throw new PluginError({
-              code: 'not-found',
-              plugin: 'agents-stub',
-              hookName: 'agents:resolve',
-              message: 'gone',
-            });
-          }
-          return { agent: { id: (input as { agentId: string }).agentId } };
-        },
-        'agent:apply-authored-connector-grant': async (_ctx, input: unknown) => {
-          grantCalls.push(input as Record<string, unknown>);
-          if (grantThrows !== null) throw grantThrows;
-          return grantApplied
-            ? { applied: true, respawned: false }
-            : { applied: false, reason: 'not-authored' };
+        'auth:get-user': async (_ctx, input: unknown) => {
+          const id = (input as { userId: string }).userId;
+          const u = users[id];
+          if (u === 'throw') throw new Error('auth down');
+          if (u === undefined || u === null) return null;
+          return { id, isAdmin: false, ...u };
         },
       },
       plugins: [
@@ -1762,8 +1734,7 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
     return h;
   }
 
-  /** Seed a PENDING authored draft via the install-authored hook. */
-  async function seedDraft(
+  async function propose(
     h: TestHarness,
     over: { userId: string; agentId: string; connectorId: string; name?: string },
   ): Promise<void> {
@@ -1774,215 +1745,149 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
       name: over.name ?? over.connectorId,
       hosts: ['api.linear.app'],
       slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
-      usageNote: '',
+      usageNote: 'Track issues',
       keyMode: 'personal',
     });
   }
 
-  it('GET authored lists the session user’s pending drafts across agents (owner-scoped)', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    await seedDraft(h, { userId: 'userU', agentId: 'agent2', connectorId: 'linear' });
-    await seedDraft(h, { userId: 'userU', agentId: 'agent1', connectorId: 'gmail' });
-    await seedDraft(h, { userId: 'other', agentId: 'agent1', connectorId: 'notion' });
+  type Listed = {
+    drafts: Array<{
+      connectorId: string;
+      name: string;
+      usageNote: string;
+      keyMode: string;
+      proposal: Capabilities;
+      updatedAt: string;
+      proposedBy: { userId: string; label: string };
+    }>;
+  };
 
-    currentActor = { id: 'userU', isAdmin: false };
+  async function list(h: TestHarness): Promise<Listed['drafts']> {
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
     const { res, captured } = makeRes();
-    await handlers.listAuthoredPending(makeReq({}), res);
+    await handlers.listAuthoredProposals(makeReq({}), res);
     expect(captured.status).toBe(200);
-    const drafts = (captured.body as { drafts: Array<{ connectorId: string; agentId: string }> }).drafts;
-    // userU's two drafts only (owner-scoped), sorted by connector_id; never 'notion'.
-    expect(drafts.map((d) => ({ connectorId: d.connectorId, agentId: d.agentId }))).toEqual([
-      { connectorId: 'gmail', agentId: 'agent1' },
-      { connectorId: 'linear', agentId: 'agent2' },
+    return (captured.body as Listed).drafts;
+  }
+
+  it('GET lists every proposer’s pending requests, labelled with who asked', async () => {
+    const h = await makeProposalHarness();
+    users = {
+      alice: { displayName: 'Alice Doe', email: 'alice@example.com' },
+      bob: { displayName: null, email: 'bob@example.com' },
+    };
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'linear', name: 'Linear' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'linear', name: 'Linear please' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'notion', name: 'Notion' });
+
+    const drafts = await list(h);
+    expect(drafts.map((d) => [d.connectorId, d.name, d.proposedBy])).toEqual([
+      ['linear', 'Linear', { userId: 'alice', label: 'Alice Doe' }],
+      ['linear', 'Linear please', { userId: 'bob', label: 'bob@example.com' }],
+      ['notion', 'Notion', { userId: 'bob', label: 'bob@example.com' }],
+    ]);
+    expect(drafts[0]).toMatchObject({ usageNote: 'Track issues', keyMode: 'personal' });
+    expect(drafts[0]!.proposal.allowedHosts).toEqual(['api.linear.app']);
+    // The agent is not named, and no agent id leaves the host.
+    expect(drafts[0]).not.toHaveProperty('agentId');
+  });
+
+  it('one row per person per id, however many of their agents asked', async () => {
+    const h = await makeProposalHarness();
+    users = { alice: { displayName: 'Alice', email: null } };
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'linear' });
+    await propose(h, { userId: 'alice', agentId: 'a2', connectorId: 'linear' });
+    expect((await list(h)).map((d) => d.proposedBy.label)).toEqual(['Alice']);
+  });
+
+  it('the proposer label fails soft to the user id when the lookup returns null or throws', async () => {
+    const h = await makeProposalHarness();
+    users = { ghost: null, flaky: 'throw' };
+    await propose(h, { userId: 'ghost', agentId: 'g1', connectorId: 'gmail' });
+    await propose(h, { userId: 'flaky', agentId: 'f1', connectorId: 'linear' });
+    const drafts = await list(h);
+    expect(drafts.map((d) => d.proposedBy)).toEqual([
+      { userId: 'ghost', label: 'ghost' },
+      { userId: 'flaky', label: 'flaky' },
     ]);
   });
 
-  it('GET authored 401 when unauthenticated', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = null;
-    const { res, captured } = makeRes();
-    await handlers.listAuthoredPending(makeReq({}), res);
-    expect(captured.status).toBe(401);
+  it('GET and DELETE are admin-only (401 signed out, 403 non-admin)', async () => {
+    const h = await makeProposalHarness();
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'linear' });
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    for (const actor of [null, { id: 'alice', isAdmin: false }]) {
+      currentActor = actor;
+      const g = makeRes();
+      await handlers.listAuthoredProposals(makeReq({}), g.res);
+      expect(g.captured.status).toBe(actor === null ? 401 : 403);
+      const d = makeRes();
+      await handlers.dismissAuthoredProposal(makeReq({ params: { connectorId: 'linear' } }), d.res);
+      expect(d.captured.status).toBe(actor === null ? 401 : 403);
+    }
+    // Nothing was dismissed.
+    expect(await list(h)).toHaveLength(1);
   });
 
-  it('POST approve forces userId from session, omits conversationId, returns 200', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    await seedDraft(h, { userId: 'userU', agentId: 'agent1', connectorId: 'linear' });
-
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.approveAuthored(
-      makeReq({
-        params: { id: 'linear' },
-        body: { agentId: 'agent1', shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] } },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(200);
-    expect(captured.body).toEqual({ applied: true });
-    // The grant was called with the session userId + body agentId + url id, the
-    // shown guard forwarded, and NO conversationId (approve-ahead).
-    expect(grantCalls).toHaveLength(1);
-    expect(grantCalls[0]).toMatchObject({
-      userId: 'userU',
-      agentId: 'agent1',
-      connectorId: 'linear',
-      shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] },
-    });
-    expect(grantCalls[0]).not.toHaveProperty('conversationId');
+  it('DELETE dismisses the request for everyone who asked (204), and is idempotent', async () => {
+    const h = await makeProposalHarness();
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'linear' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'linear' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'notion' });
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    const first = makeRes();
+    await handlers.dismissAuthoredProposal(makeReq({ params: { connectorId: 'linear' } }), first.res);
+    expect(first.captured.status).toBe(204);
+    expect(first.captured.ended).toBe(true);
+    expect((await list(h)).map((d) => d.connectorId)).toEqual(['notion']);
+    const again = makeRes();
+    await handlers.dismissAuthoredProposal(makeReq({ params: { connectorId: 'linear' } }), again.res);
+    expect(again.captured.status).toBe(204);
   });
 
-  it('POST approve 400 when agentId is missing', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
+  it('DELETE 400 on a malformed id', async () => {
+    const h = await makeProposalHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
     const { res, captured } = makeRes();
-    await handlers.approveAuthored(makeReq({ params: { id: 'linear' }, body: {} }), res);
-    expect(captured.status).toBe(400);
-    expect(grantCalls).toHaveLength(0);
-  });
-
-  it('POST approve 403 when the agent ACL gate forbids', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    agentsResolveVerdict = 'forbidden';
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.approveAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agentX' } }),
-      res,
-    );
-    expect(captured.status).toBe(403);
-    // The grant is never reached when the ACL gate rejects.
-    expect(grantCalls).toHaveLength(0);
-  });
-
-  it('POST approve 409 when the grant reports not-authored (unknown/foreign draft)', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    grantApplied = false;
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.approveAuthored(
-      makeReq({ params: { id: 'ghost' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(409);
-    expect((captured.body as { error: string }).error).toBe('not-authored');
-  });
-
-  // TASK-771 — approving promotes the draft via connectors:upsert, which refuses
-  // an endpoint move whose tool-permission reset failed (TASK-758). The Settings
-  // approve dialog keys its message on this exact 503 body.
-  it('POST approve 503 tool-permissions-reset-failed when the promotion’s reset fails', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    grantThrows = new PluginError({
-      code: 'tool-permissions-reset-failed',
-      plugin: '@ax/connectors',
-      hookName: 'connectors:upsert',
-      message: 'internal detail that must not reach the client',
-    });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.approveAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(503);
-    expect(captured.body).toEqual({ error: 'tool-permissions-reset-failed' });
-  });
-
-  // DELETE /settings/connectors/authored/:id — the "Dismiss" action on the
-  // "Proposed by your assistant" shelf (2026-06-04). Lets a user reject a draft
-  // their assistant proposed WITHOUT first approving it (the old trap: the only
-  // shelf action was Approve, so dismissing meant entering a real/fake key just
-  // to promote it into the registry where Delete finally appeared). Reuses the
-  // dormant `connectors:clear-authored` hook. Owner-scoped from the session.
-  it('DELETE authored clears the session user’s pending draft, returns 204', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    // A test-unique userId keeps this assertion isolated from drafts other tests
-    // seed into the shared DB (the list is owner-scoped).
-    await seedDraft(h, { userId: 'ru-clear', agentId: 'agent1', connectorId: 'linear' });
-
-    currentActor = { id: 'ru-clear', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(204);
-    expect(captured.ended).toBe(true);
-
-    // The draft is gone from this user's "Proposed" shelf.
-    const { res: lRes, captured: lCap } = makeRes();
-    await handlers.listAuthoredPending(makeReq({}), lRes);
-    expect((lCap.body as { drafts: unknown[] }).drafts).toEqual([]);
-  });
-
-  it('DELETE authored 404 when the draft belongs to another user (owner-scoped)', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    await seedDraft(h, { userId: 'ru-owner', agentId: 'agent1', connectorId: 'linear' });
-
-    // A different user cannot clear ru-owner's draft — the clear is scoped to the
-    // session owner, so zero rows match → not-found.
-    currentActor = { id: 'ru-other', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(404);
-
-    // ru-owner's draft is untouched.
-    currentActor = { id: 'ru-owner', isAdmin: false };
-    const { res: lRes, captured: lCap } = makeRes();
-    await handlers.listAuthoredPending(makeReq({}), lRes);
-    expect((lCap.body as { drafts: Array<{ connectorId: string }> }).drafts).toHaveLength(1);
-  });
-
-  it('DELETE authored 400 when agentId is missing', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(makeReq({ params: { id: 'linear' }, body: {} }), res);
+    await handlers.dismissAuthoredProposal(makeReq({ params: { connectorId: 'Bad Id!' } }), res);
     expect(captured.status).toBe(400);
   });
 
-  it('DELETE authored 401 when unauthenticated', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = null;
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(401);
-  });
+  it('POST /admin/connectors creating the id clears both proposers’ requests; an edit does not', async () => {
+    const h = await makeProposalHarness();
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'gdrive' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'gdrive' });
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    const body = { connectorId: 'gdrive', name: 'Drive', keyMode: 'personal', capabilities: mcpCaps() };
+    const created = makeRes();
+    await handlers.create(makeReq({ body }), created.res);
+    expect(created.captured.status).toBe(201);
+    expect(await list(h)).toEqual([]);
 
-  it('DELETE authored succeeds even when agents:resolve would forbid (no ACL gate)', async () => {
-    // Rejecting your OWN draft must never be blocked by agent reachability — a
-    // draft authored under an agent you can no longer reach (deleted / access
-    // revoked) would otherwise be un-dismissable, the exact trap we’re fixing.
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    await seedDraft(h, { userId: 'ru-nogate', agentId: 'agent1', connectorId: 'linear' });
-    agentsResolveVerdict = 'forbidden';
-
-    currentActor = { id: 'ru-nogate', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
+    // A request that arrives behind the dedup (drift) survives an edit.
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query(
+        `INSERT INTO connectors_v1_authored (owner_user_id, agent_id, connector_id, name, usage_note, key_mode, capability_proposal, status)
+         VALUES ('carol', 'c1', 'gdrive', 'Drive', '', 'personal', '{"allowedHosts":[],"credentials":[],"mcpServers":[],"packages":{"npm":[],"pypi":[]}}'::jsonb, 'pending')`,
+      );
+    } finally {
+      await pg.end();
+    }
+    currentActor = { id: 'root', isAdmin: true };
+    const edited = makeRes();
+    await handlers.create(makeReq({ body: { ...body, name: 'Drive (renamed)' } }), edited.res);
+    expect(edited.captured.status).toBe(200);
+    // The queue drops it (the id is live), but the row itself was not cleared.
+    const rows = await h.bus.call<{ ownerUserId: string; agentId: string }, { drafts: unknown[] }>(
+      'connectors:list-authored', h.ctx({ userId: 'carol' }), { ownerUserId: 'carol', agentId: 'c1' },
     );
-    expect(captured.status).toBe(204);
+    expect(rows.drafts).toHaveLength(1);
   });
 });
 
