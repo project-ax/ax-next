@@ -86,9 +86,10 @@ interface AgentsResolveInputLike {
 // curation surface (shared / workspace-keyed connectors, the Test
 // probe), and before the gate it was a bypass of the `/settings/connectors`
 // rejections. The `/settings/connectors*` bundle (mode 'user') is READS only
-// (list/show/tool-permissions GET + the authored-draft routes; any signed-in
-// user): its write handlers 403 a non-admin and no write route is registered
-// there, so those paths 404. Connectors are
+// (list + show GET, plus the authored-draft routes; any signed-in user). No
+// write route is registered there: a POST / PATCH / DELETE on a path a GET
+// shares answers 405 (Allow: GET) from the http-server router, and the handlers
+// themselves are adminOnly in case one is ever bundled there. Connectors are
 // readable when owned by the actor or explicitly shared. Writes are owner-only,
 // with one exception: on the admin bundle any admin may edit or delete a SHARED
 // definition someone else owns, and the write lands on the OWNER's row (owner
@@ -318,8 +319,8 @@ export interface AdminRouteDeps {
  *   - `'admin'` — the folded Connector registry (`/admin/connectors`). The actor
  *     may curate the workspace catalog: set `visibility: 'shared'` and
  *     `keyMode: 'workspace'`. Owner is still forced from the session.
- *   - `'user'`  — the `/settings/connectors` READ surface (list/show/tool-
- *     permissions reads + the authored-draft routes). Only admins write
+ *   - `'user'`  — the `/settings/connectors` READ surface (list/show + the
+ *     authored-draft routes). Only admins write
  *     connector definitions (slice 2a), so no write route is registered in this
  *     mode and the write handlers 403 a non-admin even if one were wired.
  *
@@ -1191,9 +1192,12 @@ export async function registerAdminConnectorRoutes(
 
 /**
  * Register the `/settings/connectors` routes against @ax/http-server (TASK-129).
- * Slice 2a: READS and the authored-draft routes only. The writes (POST, PATCH,
- * DELETE, tool-permissions PUT) were removed: admins write connector definitions
- * via `/admin/connectors`, so those paths 404 for a non-admin.
+ * Slice 2a: list + show and the authored-draft routes only. The writes (POST,
+ * PATCH, DELETE, and the tool-permissions GET/PUT) were removed: admins write
+ * connector definitions via `/admin/connectors`. Because GET still shares
+ * `/settings/connectors` and `/settings/connectors/:id`, a write there answers
+ * 405 (Allow: GET) from the router; `/settings/connectors/:id/tool-permissions`
+ * has no route at all, so it 404s.
  *
  * NOTE: there is deliberately no `/settings/connectors/:id/test` — the Test
  * probe is an admin curation action, not part of user authoring.
@@ -1227,23 +1231,15 @@ export async function registerUserConnectorRoutes(
     },
     {
       // Dismiss a proposed draft (no approve, no key) — reuses
-      // `connectors:clear-authored`. The 4-segment path can't collide with the
-      // 3-segment `DELETE /settings/connectors/:id` below, but it's grouped with
-      // the other authored routes for clarity.
+      // `connectors:clear-authored`. Grouped with the other authored routes.
       method: 'DELETE',
       path: '/settings/connectors/authored/:id',
       handler: handlers.rejectAuthored,
     },
-    { method: 'GET', path: '/settings/connectors/:id', handler: handlers.show },
     // Reads only: the agent rail's Add list, the key dialogs and the skill editor
-    // read these as non-admins. Writes (POST/PATCH/DELETE, tool-permissions PUT)
-    // are admin-only and live under `/admin/connectors`; they are NOT registered
-    // here, so they 404 for everyone.
-    {
-      method: 'GET',
-      path: '/settings/connectors/:id/tool-permissions',
-      handler: handlers.toolPermissions,
-    },
+    // read these as non-admins. Writes, and the tool-permissions routes (whose
+    // only client is the admin editor), live under `/admin/connectors`.
+    { method: 'GET', path: '/settings/connectors/:id', handler: handlers.show },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {

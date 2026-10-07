@@ -395,7 +395,8 @@ describe('mock admin connectors', () => {
 
 // ---------------------------------------------------------------------------
 // /settings/connectors mock — READ-ONLY (slice 2a). Same offline UI parity as the
-// real routes: shared reads, and every write 404s (admins write via /admin).
+// real routes: shared reads; a write on a path a GET shares answers 405 (Allow:
+// GET), and tool-permissions has no route there (404). Admins write via /admin.
 // ---------------------------------------------------------------------------
 
 async function startUserServer(
@@ -463,7 +464,7 @@ describe('mock user connectors (/settings/connectors)', () => {
     }
   });
 
-  it('every write on /settings/connectors is "no such route" (404), and stores nothing', async () => {
+  it('every write on /settings/connectors answers 405 or 404 like production, and stores nothing', async () => {
     const { url, close } = await startUserServer(store);
     try {
       const seed = await fetch(`${url}/admin/connectors`, {
@@ -473,14 +474,24 @@ describe('mock user connectors (/settings/connectors)', () => {
       });
       await expectStatus(seed, 201);
       const json = { cookie: ALICE, 'content-type': 'application/json' };
-      const writes: Array<[string, string, string | undefined]> = [
+      // A GET shares these paths, so the router answers 405 (Allow: GET).
+      const shared: Array<[string, string, string | undefined]> = [
         ['POST', '/settings/connectors', JSON.stringify(upsertBody({ connectorId: 'mine' }))],
         ['PATCH', '/settings/connectors/shared-conn', JSON.stringify({ name: 'hijack' })],
         ['DELETE', '/settings/connectors/shared-conn', undefined],
-        ['PUT', '/settings/connectors/shared-conn/tool-permissions', JSON.stringify({ verdicts: [] })],
       ];
-      for (const [method, path, body] of writes) {
+      for (const [method, path, body] of shared) {
         const res = await fetch(`${url}${path}`, { method, headers: json, ...(body ? { body } : {}) });
+        await expectStatus(res, 405);
+        expect(res.headers.get('allow')).toBe('GET');
+      }
+      // Nothing is registered on the tool-permissions path any more (404).
+      for (const method of ['GET', 'PUT']) {
+        const res = await fetch(`${url}/settings/connectors/shared-conn/tool-permissions`, {
+          method,
+          headers: json,
+          ...(method === 'PUT' ? { body: JSON.stringify({ verdicts: [] }) } : {}),
+        });
         await expectStatus(res, 404);
       }
       const list = await fetch(`${url}/admin/connectors`, { headers: { cookie: ADMIN } });
@@ -591,7 +602,7 @@ describe('mock connector tool permissions', () => {
     const { url, close } = await startUserServer(store);
     try {
       await create(url, '/admin/connectors', ADMIN);
-      const first = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+      const first = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
         headers: { cookie: ADMIN },
       });
       await expectStatus(first, 200);
@@ -625,7 +636,6 @@ describe('mock connector tool permissions', () => {
       await expectStatus(put, 200);
       expect(await put.json()).toEqual({ ok: true });
 
-      // The /settings read bundle sees the same defaults the admin bundle wrote.
       const clear = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
         method: 'PUT',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
@@ -636,7 +646,7 @@ describe('mock connector tool permissions', () => {
       await expectStatus(clear, 200);
 
       const after = await fetch(
-        `${url}/settings/connectors/linear/tool-permissions?refresh=1`,
+        `${url}/admin/connectors/linear/tool-permissions?refresh=1`,
         { headers: { cookie: ADMIN } },
       );
       expect(((await after.json()) as { defaults: unknown[] }).defaults).toEqual([
@@ -674,20 +684,21 @@ describe('mock connector tool permissions', () => {
     }
   });
 
-  it('403s someone who can read the connector but not edit it, and 404s an unknown one', async () => {
+  it('403s a non-admin, and 404s an unknown connector for an admin', async () => {
     const { url, close } = await startUserServer(store);
     try {
       await create(url, '/admin/connectors', ADMIN);
-      const foreign = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+      const nonAdmin = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
         headers: { cookie: ALICE },
       });
-      await expectStatus(foreign, 403);
-      const missing = await fetch(`${url}/settings/connectors/nope/tool-permissions`, {
-        headers: { cookie: ALICE },
+      await expectStatus(nonAdmin, 403);
+      const missing = await fetch(`${url}/admin/connectors/nope/tool-permissions`, {
+        headers: { cookie: ADMIN },
       });
       await expectStatus(missing, 404);
     } finally {
       await close();
     }
   });
+
 });

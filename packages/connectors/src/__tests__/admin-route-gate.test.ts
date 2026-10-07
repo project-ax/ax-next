@@ -393,30 +393,40 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
     expect(foreign.status).toBe(404);
   });
 
-  it('only the READ and authored /settings/connectors routes exist: no non-admin write route is registered (so each 404s)', async () => {
+  it('only the READ and authored /settings/connectors routes exist: no write route is registered (production answers 405 or 404)', async () => {
     const h = await makeHarness();
     const settings = [...routes.keys()].filter((k) => k.split(' ')[1]?.startsWith('/settings/connectors')).sort();
     expect(settings).toEqual(
       [
         'GET /settings/connectors',
         'GET /settings/connectors/:id',
-        'GET /settings/connectors/:id/tool-permissions',
         'GET /settings/connectors/authored',
         'POST /settings/connectors/authored/:id/approve',
         'DELETE /settings/connectors/authored/:id',
       ].sort(),
     );
     // The removed writes: calling them as a signed-in non-admin finds no handler.
-    for (const key of [
+    const removed = [
       'POST /settings/connectors',
       'PATCH /settings/connectors/:id',
       'DELETE /settings/connectors/:id',
       'PUT /settings/connectors/:id/tool-permissions',
-    ]) {
+      'GET /settings/connectors/:id/tool-permissions',
+    ];
+    for (const key of removed) {
       await expect(call(key.split(' ')[0]!, key.split(' ')[1]!, MALLORY, { params: { id: 'x' }, body: {} })).rejects.toThrow(
         /route not registered/,
       );
     }
+    // What production answers for them: @ax/http-server's router replies 405
+    // (Allow: <the other methods>) when another method is registered on the same
+    // path, else 404. A GET still shares the first three paths; nothing is
+    // registered on the tool-permissions path any more.
+    const methodsOn = (path: string) =>
+      [...routes.keys()].filter((k) => k.split(' ')[1] === path).map((k) => k.split(' ')[0]);
+    expect(methodsOn('/settings/connectors')).toEqual(['GET']);
+    expect(methodsOn('/settings/connectors/:id')).toEqual(['GET']);
+    expect(methodsOn('/settings/connectors/:id/tool-permissions')).toEqual([]);
     // The reads stay open to a non-admin (the agent rail's Add list).
     await seed(h, MALLORY.id, 'mal-mine');
     expect((await call('GET', '/settings/connectors', MALLORY)).status).toBe(200);

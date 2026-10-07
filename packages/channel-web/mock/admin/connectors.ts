@@ -4,9 +4,8 @@ import { requireSession } from '../auth';
 
 /**
  * Offline Vite mock for the connector REST surface. Both route bundles list
- * owned and shared definitions; writes stay owner-only. New definitions default
- * to shared with automatic attachment off. User routes reject workspace keys
- * and automatic attachment. Mirrors the real connectors plugin.
+ * owned and shared definitions. Only the admin bundle writes (slice 2a); new
+ * definitions default to shared. Mirrors the real connectors plugin.
  *
  * The real backend registers these routes in `@ax/connectors`
  * (`mountAdminRoutes` → `admin-routes.ts`), bridging the `connectors:*` service
@@ -26,15 +25,17 @@ import { requireSession } from '../auth';
  *   GET    <base>/:id/tool-permissions[?refresh=1]
  *          → { status, checkedAt, tools: InventoryTool[], defaults: SavedDefault[] }
  *   PUT    <base>/:id/tool-permissions  body { verdicts: [{ toolKey, verdict|null }] }
- *          → { ok: true }   (TASK-737; editors only, 403 otherwise)
+ *          → { ok: true }   (TASK-737; admin bundle only)
  *
  * Note the path has NO `/api/` prefix — it matches the real `@ax/connectors`
  * routes, which the UI hits directly.
  *
  * SECURITY parity: identity comes from the session. The `/admin/connectors*`
  * bundle is admin-only (403 `forbidden` for a signed-in non-admin, TASK-698);
- * `/settings/connectors*` is READ-ONLY (GET only; writes 404) and open to any
- * signed-in user. Private foreign rows are
+ * `/settings/connectors*` is READ-ONLY and open to any signed-in user: list +
+ * show only. A write on those paths answers 405 (Allow: GET), as production's
+ * router does, and `<base>/:id/tool-permissions` has no route there (404).
+ * Private foreign rows are
  * invisible; shared foreign rows are read-only. Credential values never appear.
  *
  * These type shapes are DUPLICATED from `@ax/connectors` (not imported):
@@ -316,10 +317,17 @@ function connectorsMiddleware(
     // before any auth gate runs, because no route matches it; claiming it here
     // and answering 401/403 first would disagree with prod (TASK-790).
     if (path !== base && !idRe.test(path) && !toolPermsRe.test(path)) return false;
-    // Slice 2a: the real `/settings/connectors*` bundle registers READS only
-    // (admins write via `/admin/connectors`), so a write there is "no such route"
-    // — let it fall through to the dev server's 404, as production does.
-    if (mode === 'user' && method !== 'GET') return false;
+    // Slice 2a: the real `/settings/connectors*` bundle registers list + show
+    // only (admins write via `/admin/connectors`). Production's router answers a
+    // write on a path a GET shares with 405 before any auth runs, and has no
+    // route at all for `<base>/:id/tool-permissions` (404 — fall through).
+    if (mode === 'user') {
+      if (toolPermsRe.test(path)) return false;
+      if (method !== 'GET') {
+        send(res, 405, { error: 'method-not-allowed' }, { Allow: 'GET' });
+        return true;
+      }
+    }
 
     // auth:require-user — 401 with no session. The `/admin/connectors*` bundle
     // (mode 'admin') is additionally ADMIN-ONLY, mirroring the real
@@ -549,7 +557,7 @@ export function adminConnectorsMiddleware(
   return connectorsMiddleware(store, { base: '/admin/connectors', mode: 'admin' });
 }
 
-/** The user-authoring mock (`/settings/connectors[/:id]`, TASK-129). */
+/** The read-only `/settings/connectors[/:id]` mock (TASK-129; reads only since slice 2a). */
 export function settingsConnectorsMiddleware(
   store: Store,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
