@@ -178,3 +178,26 @@ export async function hasOtherLiveSameIdConnectorForSystemSweep(
   const row = await query.limit(1).executeTakeFirst();
   return row !== undefined;
 }
+
+/**
+ * Slice 2b — has the one-shot boot step `name` completed? System-level (no
+ * tenant); lives here so the bare `connectors_v1_*` read stays where lint I7
+ * can see it. Only boot sweeps call these two.
+ */
+export async function isBootStepDone(db: Kysely<ConnectorDatabase>, name: string): Promise<boolean> {
+  const row = await db
+    .selectFrom('connectors_v1_boot_steps')
+    .select('name')
+    .where('name', '=', name)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
+/** Record the one-shot boot step `name` as completed (idempotent). */
+export async function markBootStepDone(db: Kysely<ConnectorDatabase>, name: string): Promise<void> {
+  await db
+    .insertInto('connectors_v1_boot_steps')
+    .values({ name })
+    .onConflict((oc) => oc.column('name').doNothing())
+    .execute();
+}

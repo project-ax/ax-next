@@ -122,6 +122,16 @@ export async function runConnectorsMigration<DB>(
     CREATE INDEX IF NOT EXISTS connectors_v1_authored_owner_agent
       ON connectors_v1_authored (owner_user_id, agent_id)
   `.execute(db);
+
+  // Slice 2b — one-shot boot steps this plugin has COMPLETED, keyed by a
+  // constant step name (e.g. the non-admin connector removal). A row means
+  // "done, never run again"; it is written only after a complete pass.
+  await sql`
+    CREATE TABLE IF NOT EXISTS connectors_v1_boot_steps (
+      name    TEXT PRIMARY KEY,
+      done_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.execute(db);
 }
 
 /**
@@ -169,7 +179,14 @@ export interface ConnectorsAuthoredRow {
   updated_at: Date;
 }
 
+/** Slice 2b — a completed one-shot boot step (see the migration). */
+export interface ConnectorsBootStepRow {
+  name: string;
+  done_at: Generated<Date>;
+}
+
 export interface ConnectorDatabase {
   connectors_v1_connectors: ConnectorsRow;
   connectors_v1_authored: ConnectorsAuthoredRow;
+  connectors_v1_boot_steps: ConnectorsBootStepRow;
 }

@@ -146,7 +146,11 @@ afterEach(async () => {
   while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
   await sql('DROP TABLE IF EXISTS connectors_v1_connectors');
   await sql('DROP TABLE IF EXISTS connectors_v1_authored');
+  await sql('DROP TABLE IF EXISTS connectors_v1_boot_steps');
 });
+
+const doneMarkers = async () =>
+  (await sql('SELECT name FROM connectors_v1_boot_steps')).map((r) => r['name']);
 
 afterAll(async () => {
   if (container) await stopPostgresContainer(container);
@@ -290,6 +294,49 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
     await boot([authPlugin(auth), capturePlugin(events, purged, [])]);
     expect(events).toEqual([]);
     expect(purged).toEqual([]);
+    expect(await rows()).toEqual([['userB', 'mytool', false]]);
+  });
+
+  it('runs ONCE: after a complete pass, a new non-admin connector survives later boots', async () => {
+    await bootAndClose();
+    await insertConnector('userB', 'mytool');
+    const auth = { userB: 'user' as const, userC: 'user' as const };
+    await bootAndClose([authPlugin(auth), capturePlugin([], [], [])]);
+    expect(await doneMarkers()).toEqual(['non-admin-connector-removal']);
+
+    // Not a standing rule: a connector a non-admin makes afterwards stays.
+    await insertConnector('userC', 'newtool');
+    const events: ConnectorDeletedEvent[] = [];
+    const { logs } = await captureLogs(() => boot([authPlugin(auth), capturePlugin(events, [], [])]));
+    expect(events).toEqual([]);
+    expect(await rows()).toEqual([
+      ['userB', 'mytool', false],
+      ['userC', 'newtool', true],
+    ]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_sweep_skipped')).toEqual([
+      expect.objectContaining({ reason: 'already-done' }),
+    ]);
+  });
+
+  it('an owner-lookup failure leaves no marker, and the next boot retries', async () => {
+    await bootAndClose();
+    await insertConnector('flaky', 'keepme');
+    await bootAndClose([authPlugin({ flaky: 'throw' }), capturePlugin([], [], [])]);
+    expect(await doneMarkers()).toEqual([]);
+    expect(await rows()).toEqual([['flaky', 'keepme', true]]);
+
+    // Auth recovers: the retry removes it and only now records the step.
+    await bootAndClose([authPlugin({ flaky: 'user' }), capturePlugin([], [], [])]);
+    expect(await rows()).toEqual([['flaky', 'keepme', false]]);
+    expect(await doneMarkers()).toEqual(['non-admin-connector-removal']);
+  });
+
+  it('a pass skipped for no auth provider leaves no marker', async () => {
+    await bootAndClose();
+    await insertConnector('userB', 'mytool');
+    await bootAndClose([capturePlugin([], [], [])]);
+    expect(await doneMarkers()).toEqual([]);
+    await bootAndClose([authPlugin({ userB: 'user' }), capturePlugin([], [], [])]);
     expect(await rows()).toEqual([['userB', 'mytool', false]]);
   });
 });

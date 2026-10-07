@@ -20,7 +20,12 @@
 //     people's keys, stay (they may be the survivor's).
 // A deleted account (`auth:get-user` → null) counts as non-admin.
 //
-// Idempotent: a second boot finds no live non-admin rows. Never throws.
+// ONE-TIME, not a standing rule: after a COMPLETE pass (no owner-lookup or
+// per-connector failure) it records the `non-admin-connector-removal` boot step
+// and never runs again, so a later-demoted admin's connectors, or one a person
+// creates before the non-admin creation paths are gone, are left alone. An
+// incomplete pass, or one skipped for no auth provider, records nothing and
+// retries next boot. Never throws.
 // Soft-delete (not hard) so the tombstone keeps the id, like `connectors:delete`.
 // ---------------------------------------------------------------------------
 
@@ -30,13 +35,18 @@ import type { ConnectorDatabase } from './migrations.js';
 import { announceConnectorDeleted, purgeConnectorState, type PurgeableConnector } from './purge.js';
 import {
   hasOtherLiveSameIdConnectorForSystemSweep,
+  isBootStepDone,
   liveConnectorRowsForSystemSweep,
+  markBootStepDone,
 } from './scope.js';
 import { validateCapabilities, validateKeyMode, validateVisibility, type ConnectorStore } from './store.js';
 
 interface AuthUserLike {
   isAdmin?: unknown;
 }
+
+/** The boot-step name recorded once a complete pass has run. */
+export const NON_ADMIN_SWEEP_STEP = 'non-admin-connector-removal';
 
 const errMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -45,10 +55,21 @@ export async function sweepNonAdminConnectors(
   store: Pick<ConnectorStore, 'softDelete' | 'hasLiveById'>,
   bus: HookBus,
   ctx: AgentContext,
-): Promise<{ removed: number }> {
+): Promise<{ removed: number; complete: boolean }> {
+  let done: boolean;
+  try {
+    done = await isBootStepDone(db, NON_ADMIN_SWEEP_STEP);
+  } catch (err) {
+    ctx.logger.warn('connectors_non_admin_sweep_failed', { err: errMessage(err) });
+    return { removed: 0, complete: false };
+  }
+  if (done) {
+    ctx.logger.info('connectors_non_admin_sweep_skipped', { reason: 'already-done' });
+    return { removed: 0, complete: true };
+  }
   if (!bus.hasService('auth:get-user')) {
     ctx.logger.info('connectors_non_admin_sweep_skipped', { reason: 'no-auth-provider' });
-    return { removed: 0 };
+    return { removed: 0, complete: false };
   }
 
   let rows: Awaited<ReturnType<ReturnType<typeof liveConnectorRowsForSystemSweep>['execute']>>;
@@ -56,8 +77,11 @@ export async function sweepNonAdminConnectors(
     rows = await liveConnectorRowsForSystemSweep(db).execute();
   } catch (err) {
     ctx.logger.warn('connectors_non_admin_sweep_failed', { err: errMessage(err) });
-    return { removed: 0 };
+    return { removed: 0, complete: false };
   }
+
+  // Any failure below leaves the step unrecorded, so the next boot retries.
+  let complete = true;
 
   // One lookup per distinct owner. `true` = remove this owner's connectors.
   const removeOwner = new Map<string, boolean>();
@@ -75,6 +99,7 @@ export async function sweepNonAdminConnectors(
         err: errMessage(err),
       });
       removeOwner.set(owner, false);
+      complete = false;
     }
   }
 
@@ -98,6 +123,7 @@ export async function sweepNonAdminConnectors(
           ownerUserId,
           err: errMessage(err),
         });
+        complete = false;
         continue;
       }
 
@@ -144,6 +170,7 @@ export async function sweepNonAdminConnectors(
     } catch (err) {
       // One row's failure never stops the sweep or the boot; the row (if still
       // live) is retried next boot.
+      complete = false;
       ctx.logger.warn('connectors_non_admin_sweep_row_failed', {
         connectorId,
         ownerUserId,
@@ -152,6 +179,15 @@ export async function sweepNonAdminConnectors(
     }
   }
 
-  ctx.logger.info('connectors_non_admin_swept', { count: removed });
-  return { removed };
+  if (complete) {
+    try {
+      await markBootStepDone(db, NON_ADMIN_SWEEP_STEP);
+    } catch (err) {
+      // Re-running is safe (the pass is idempotent); it just runs again.
+      complete = false;
+      ctx.logger.warn('connectors_non_admin_sweep_mark_failed', { err: errMessage(err) });
+    }
+  }
+  ctx.logger.info('connectors_non_admin_swept', { count: removed, complete });
+  return { removed, complete };
 }
