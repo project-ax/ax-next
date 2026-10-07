@@ -499,8 +499,9 @@ export interface AgentsListAuthoredSkillsOutput {
  * `connectors` it references (resolved into sandbox caps by the orchestrator's
  * skill→connector bridge). A model-authored skill is therefore always zero-
  * reach instruction scaffolding — there is no per-skill capability proposal or
- * delta, and so no per-skill capability approval card (the connector approval
- * card gates a connector's reach instead). `manifestYaml` is the authored
+ * delta, and so no per-skill capability approval card (a connector's reach is
+ * gated instead by the held `connector_propose` call plus an admin creating the
+ * connector). `manifestYaml` is the authored
  * SKILL.md verbatim (already cap-free — the parser rejects a capabilities
  * block). */
 export interface AuthoredResolvedSkill {

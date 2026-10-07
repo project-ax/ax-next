@@ -65,7 +65,8 @@ export function grantPackagesVisible(request: PermissionRequest): boolean {
 }
 
 /**
- * The reassurance line, shared by the skill and connector cards.
+ * The reassurance line on every grant card (`GrantRow`: skill and site grants;
+ * the in-chat connector card was removed in slice 2c).
  *
  * `workspace/ApprovalCard.tsx` has said something like this for a while and it
  * is the reason that surface reads as trustworthy: it tells you what the button

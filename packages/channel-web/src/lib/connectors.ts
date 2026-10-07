@@ -31,9 +31,10 @@
  * `lib/admin.ts`.
  */
 
-// TASK-154 — the neutral dev-service descriptor. Type-only import of the
-// canonical shape from the pure-parser package @ax/skills-parser (allowed by the
-// eslint runtime-import allowlist; here we only need the TYPE, which is erased).
+// TASK-154 — the neutral dev-service descriptor. A RUNTIME import from the
+// pure-parser package @ax/skills-parser (allowed by the eslint runtime-import
+// allowlist): the schema validates services carried over from an agent's
+// request, and the type is the canonical shape.
 // A connector's declared services ride its opaque `capabilities` fill, exactly
 // like mcpServers/packages.
 import { ServiceDescriptorSchema, type ServiceDescriptor } from '@ax/skills-parser';

@@ -42,9 +42,9 @@ afterAll(async () => {
   if (container) await stopPostgresContainer(container);
 });
 
-// The store no longer has a write path (skills:approved-caps-set is gone — rows
-// are legacy data that still display and revoke). Tests seed those legacy rows
-// directly.
+// The store no longer has a write path: slice 2c removed the
+// skills:approved-caps-set hook, so rows are legacy data that still display and
+// revoke. Tests seed those legacy rows directly.
 function withSeed(db: Kysely<SkillsDatabase>) {
   const store = createApprovedCapsStore(db);
   async function set(input: {

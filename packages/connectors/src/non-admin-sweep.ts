@@ -31,7 +31,9 @@
 // decision 2026-10-07 — skills relying on such connectors may break.
 //
 // NOT handled here: authored drafts (`connectors_v1_authored`) proposing a
-// removed id are left alone — slice 2c owns the drafts.
+// removed id are left alone. Pending ones surface in the admins' Awaiting
+// approval queue (with their age, so a stale one is easy to Dismiss); old
+// `active` ones are inert — nothing reads them as reach.
 //
 // ONE-TIME, not a standing rule: after a COMPLETE pass (no owner-lookup,
 // purge or row-processing failure) it records the `non-admin-connector-removal` boot step

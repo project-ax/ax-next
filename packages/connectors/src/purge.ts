@@ -68,8 +68,8 @@ export async function purgeConnectorState(
   // caller's `purgeGlobal`, which only the admin-only DELETE route sets; the boot
   // stdio sweep sets it unless another owner's same-id connector survives).
   // Gating the PURGE here, not just the HTTP create route, closes EVERY path to
-  // a non-admin global-credential wipe (incl. the authored-connector approve
-  // path, which promotes a draft straight through connectors:upsert). Each
+  // a non-admin global-credential wipe, whatever path reaches
+  // connectors:upsert / connectors:delete. Each
   // failure is logged + swallowed so a credential hiccup never wedges the delete.
   if (bus.hasService('credentials:delete')) {
     const purgeGlobal = opts.purgeGlobal;

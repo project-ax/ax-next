@@ -572,10 +572,12 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       //
       // TASK-100 — a skill manifest carries NO capability block; its only
       // declared reach is the `connectors` it references (resolved into sandbox
-      // caps by the orchestrator's skill→connector bridge, gated by the connector
-      // approval wall). So there is no per-skill capability proposal to intersect
-      // with an approved set, no proposalDelta, and no per-skill capability
-      // approval card — we project the skill's connector references verbatim.
+      // caps by the orchestrator's skill→connector bridge; a connector exists only
+      // once an admin creates it — an agent's request is a held tool call that
+      // an admin approves by creating the connector). So there is no per-skill
+      // capability proposal to intersect with an approved set, no
+      // proposalDelta, and no per-skill capability approval card — we project
+      // the skill's connector references verbatim.
       //
       // QUARANTINE is the row's `status === 'quarantined'` (set by the
       // skills:propose gate when skills:scan flagged it) — a quarantined skill is
