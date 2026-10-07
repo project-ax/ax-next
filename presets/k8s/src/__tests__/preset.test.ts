@@ -1042,6 +1042,8 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:resolve',
       // TASK-744 — toolNamespace → connector display name.
       'connectors:tool-labels',
+      // Agent-owned sign-ins slice 2b — which ids a live connector still carries.
+      'connectors:live-ids',
       // TASK-94 — agent-authored connector drafts + the approval gate.
       'connectors:install-authored',
       'connectors:list-authored',

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -12,7 +12,7 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import type { AgentContext } from '@ax/core';
 import { createAgentsPlugin } from '../plugin.js';
-import type { Actor, CreateInput, CreateOutput, ResolveInput, ResolveOutput } from '../types.js';
+import type { Actor, CreateInput, CreateOutput } from '../types.js';
 
 /**
  * Slice 2b — @ax/agents detaches a deleted connector from every agent
