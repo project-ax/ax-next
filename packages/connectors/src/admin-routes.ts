@@ -424,6 +424,19 @@ function presentCanEdit<T extends { canEdit?: boolean; visibility: Connector['vi
 }
 
 /**
+ * A write body (POST and PATCH) must be a JSON object: a field map. A primitive
+ * would otherwise reach `in` checks (which throw on a primitive → 500) and an
+ * array or string would be spread into the row key by key. Returns the 400
+ * message, else null.
+ */
+function rejectNonObjectBody(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return 'body must be a JSON object';
+  }
+  return null;
+}
+
+/**
  * TASK-808 — "Set default" is gone. For one release a write that still carries
  * the field (a stale client, a pinned tab, a script) fails LOUDLY instead of
  * being silently dropped, whatever the value: `false` is as stale as `true`
@@ -588,12 +601,12 @@ export function createConnectorRouteHandlers(
       }
       // Force userId from the authenticated actor — a client cannot create a
       // connector owned by someone else. Strip any client-supplied userId.
-      const removed = rejectRemovedFields(parsed.value);
+      const removed = rejectNonObjectBody(parsed.value) ?? rejectRemovedFields(parsed.value);
       if (removed !== null) {
         res.status(400).json({ error: removed });
         return;
       }
-      const raw = (parsed.value ?? {}) as Record<string, unknown>;
+      const raw = parsed.value as Record<string, unknown>;
       // The route decides uniqueness, never the body (it would be an existence
       // probe for other owners' private ids).
       delete raw.requireUniqueId;
@@ -626,10 +639,12 @@ export function createConnectorRouteHandlers(
         }
       }
       raw.visibility ??= existing?.visibility ?? 'shared';
+      // Every create is an admin create (the handler is adminOnly), so an id
+      // another owner holds is always taken.
       const input = {
         ...raw,
         userId: actor.id,
-        ...(mode === 'admin' ? { requireUniqueId: true } : {}),
+        requireUniqueId: true,
       } as unknown as UpsertInput;
       try {
         const out = await deps.bus.call<UpsertInput, UpsertOutput>(
@@ -659,7 +674,8 @@ export function createConnectorRouteHandlers(
         res.status(parsed.status).json({ error: parsed.message });
         return;
       }
-      const removed = rejectRemovedFields(parsed.value);
+      // Checked before any read, on the owner and the cross-owner path alike.
+      const removed = rejectNonObjectBody(parsed.value) ?? rejectRemovedFields(parsed.value);
       if (removed !== null) {
         res.status(400).json({ error: removed });
         return;
@@ -686,7 +702,7 @@ export function createConnectorRouteHandlers(
       }
       // Merge the patch over the existing connector, then re-assert id + userId
       // from the URL / session so a malicious body can't rename or owner-hijack.
-      const patchRaw = (parsed.value ?? {}) as Record<string, unknown>;
+      const patchRaw = parsed.value as Record<string, unknown>;
       delete patchRaw.userId;
       delete patchRaw.connectorId;
       delete patchRaw.id;

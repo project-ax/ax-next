@@ -954,6 +954,182 @@ describe('admin connector routes', () => {
       });
     });
 
+    // A write body must be a JSON object. A primitive used to reach the
+    // owner-only guard's `in` checks (500 on the cross-owner path) or get
+    // spread into the row on the owner path; an array is no field map either.
+    describe('a body that is not a JSON object is a 400, and writes nothing', () => {
+      const bodies = ['"x"', '5', 'true', 'null', '[]', '["name"]'];
+      for (const raw of bodies) {
+        for (const who of ['owner', 'non-owner admin'] as const) {
+          it(`PATCH ${raw} as the ${who}: 400`, async () => {
+            const h = await makeHarness();
+            const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+            currentActor = { id: 'admin1', isAdmin: true };
+            await handlers.create(makeReq({ body: crm }), makeRes().res);
+            const shown = makeRes();
+            await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+            const before = (shown.captured.body as { connector: unknown }).connector;
+
+            currentActor = { id: who === 'owner' ? 'admin1' : 'admin2', isAdmin: true };
+            const patched = makeRes();
+            await handlers.update(makeReq({ params: { id: 'crm' }, body: raw }), patched.res);
+            expect(patched.captured).toMatchObject({
+              status: 400,
+              body: { error: 'body must be a JSON object' },
+            });
+
+            currentActor = { id: 'admin1', isAdmin: true };
+            const after = makeRes();
+            await handlers.show(makeReq({ params: { id: 'crm' } }), after.res);
+            expect((after.captured.body as { connector: unknown }).connector).toEqual(before);
+            expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+          });
+        }
+        it(`POST ${raw}: 400, nothing created`, async () => {
+          const h = await makeHarness();
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const created = makeRes();
+          await handlers.create(makeReq({ body: raw }), created.res);
+          expect(created.captured).toMatchObject({
+            status: 400,
+            body: { error: 'body must be a JSON object' },
+          });
+          const listed = makeRes();
+          await handlers.list(makeReq({}), listed.res);
+          expect(listed.captured.body).toEqual({ connectors: [] });
+        });
+      }
+    });
+
+    // The PATCH route sets `updateOnly`, so a delete that lands between the
+    // route's read and the write wins (404) instead of being undone. The seam:
+    // `connectors:upsert` reads the prior row, then (for a non-OAuth server,
+    // which `mcpCaps()` has) calls `tool-policy:set-ceiling-sources` BEFORE
+    // `store.upsert`. A stub there soft-deletes the row, deterministically.
+    describe('a delete racing a PATCH wins (updateOnly)', () => {
+      for (const who of ['owner', 'non-owner admin'] as const) {
+        it(`as the ${who}: 404, and the row stays deleted`, async () => {
+          let armed = false;
+          let fired = 0;
+          const ceilingStub: Plugin = {
+            manifest: {
+              name: 'ceiling-stub',
+              version: '0.0.0',
+              registers: ['tool-policy:set-ceiling-sources'],
+              calls: [],
+              subscribes: [],
+            },
+            async init({ bus }) {
+              bus.registerService('tool-policy:set-ceiling-sources', 'ceiling-stub', async () => {
+                if (!armed) return {};
+                armed = false;
+                fired += 1;
+                const pg = new (await import('pg')).default.Client({ connectionString });
+                await pg.connect();
+                try {
+                  await pg.query(
+                    "UPDATE connectors_v1_connectors SET deleted_at = now() WHERE connector_id = 'crm'",
+                  );
+                } finally {
+                  await pg.end();
+                }
+                return {};
+              });
+            },
+          };
+          const h = await createTestHarness({
+            plugins: [
+              createDatabasePostgresPlugin({ connectionString }),
+              authStubPlugin(),
+              credentialsStubPlugin(),
+              ceilingStub,
+              createConnectorsPlugin(),
+            ],
+          });
+          harnesses.push(h);
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const created = makeRes();
+          await handlers.create(makeReq({ body: crm }), created.res);
+          expect(created.captured.status).toBe(201);
+
+          currentActor = { id: who === 'owner' ? 'admin1' : 'admin2', isAdmin: true };
+          armed = true;
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({ params: { id: 'crm' }, body: { name: 'After the delete' } }),
+            patched.res,
+          );
+          expect(fired).toBe(1);
+          expect(patched.captured).toMatchObject({ status: 404, body: { error: 'not-found' } });
+          expect(await rowOwners(h, 'crm')).toEqual([]);
+          currentActor = { id: 'admin1', isAdmin: true };
+          const shown = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+          expect(shown.captured.status).toBe(404);
+        });
+      }
+    });
+
+    // What the admin editor (LegacyConnectorEditDialog) sends for an unchanged
+    // connector with no MCP servers, plus a new name: the whole form, with
+    // `capabilities` rebuilt from the form (channel-web's connector-form test
+    // pins that this round trip reproduces the stored capabilities). A
+    // non-owner admin's rename must not read as a retarget.
+    const noServerCaps: Array<[string, Capabilities]> = [
+      ['direct API', {
+        allowedHosts: ['api.billing.example.com'],
+        credentials: [{ slot: 'BILLING_KEY', kind: 'api-key', description: 'API key' }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      }],
+      ['command-line tool', {
+        allowedHosts: ['registry.npmjs.org', 'api.billing.example.com'],
+        credentials: [{ slot: 'BILLING_KEY', kind: 'api-key' }],
+        mcpServers: [],
+        packages: { npm: ['billing-cli'], pypi: [] },
+      }],
+    ];
+    for (const [kind, capabilities] of noServerCaps) {
+      it(`a non-owner admin renaming a ${kind} connector through the editor’s full-form body: 200`, async () => {
+        const h = await makeHarness();
+        const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+        const noServer = {
+          connectorId: 'billing',
+          name: 'Billing',
+          description: 'Invoices.',
+          usageNote: 'Read invoices.',
+          keyMode: 'workspace',
+          visibility: 'shared',
+          capabilities,
+        };
+        currentActor = { id: 'admin1', isAdmin: true };
+        const created = makeRes();
+        await handlers.create(makeReq({ body: noServer }), created.res);
+        expect(created.captured.status).toBe(201);
+        const shown = makeRes();
+        await handlers.show(makeReq({ params: { id: 'billing' } }), shown.res);
+        const before = (shown.captured.body as { connector: { capabilities: Capabilities } }).connector;
+
+        currentActor = { id: 'admin2', isAdmin: true };
+        const patched = makeRes();
+        await handlers.update(
+          // The dialog's body shape: every field, no `services` key when there are none.
+          makeReq({ params: { id: 'billing' }, body: { ...noServer, name: 'Billing (renamed)' } }),
+          patched.res,
+        );
+        expect(patched.captured.status).toBe(200);
+        currentActor = { id: 'admin1', isAdmin: true };
+        const after = makeRes();
+        await handlers.show(makeReq({ params: { id: 'billing' } }), after.res);
+        const stored = (after.captured.body as { connector: { name: string; capabilities: Capabilities } })
+          .connector;
+        expect(stored.name).toBe('Billing (renamed)');
+        expect(stored.capabilities).toStrictEqual(before.capabilities);
+      });
+    }
+
     it('same-id shared rows from two owners, none the admin’s: PATCH and DELETE 404 (fail closed)', async () => {
       const h = await makeHarness();
       for (const owner of ['ownerA', 'ownerB']) {
