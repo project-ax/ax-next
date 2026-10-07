@@ -1137,11 +1137,10 @@ describe('@ax/preset-k8s wiring', () => {
     }
   });
 
-  it('loads @ax/skills and registers the approved-caps read + write services (Phase 4 PR-B)', () => {
+  it('loads @ax/skills and registers the approved-caps list + revoke services (Phase 4 PR-B)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const registers = plugins.flatMap((p) => p.manifest.registers);
     expect(registers).toContain('skills:approved-caps-list');
-    expect(registers).toContain('skills:approved-caps-set');
     expect(registers).toContain('skills:approved-caps-revoke');
     expect(registers).toContain('agent:apply-authored-capability-grant');
   });
