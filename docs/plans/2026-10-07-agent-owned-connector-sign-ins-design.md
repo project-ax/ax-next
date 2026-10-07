@@ -237,7 +237,7 @@ written/read in between, which is the old behavior, but Add semantics are mixed)
    purges agents' sign-ins; agent delete purges reconnect markers. [none]
 2. **Admin-only connectors** — Admin › Connectors; delete non-admin routes; proposals to
    admins; `keyMode personal → agent`; workspace-unique connector ids; detach a deleted
-   connector from every agent; Settings › Sites; boot step deleting non-admin
+   connector from every agent and drop its reconnect markers; Settings › Sites; boot step deleting non-admin
    connectors. Must precede 3: agent-scope reads only work for shared definitions. [1]
 3. **Agent-owned sign-in + all-or-nothing Add** — mcp-oauth `begin` requires agent, always
    agent scope, `prompt=select_account`; callback completion + compensation; Add vs
