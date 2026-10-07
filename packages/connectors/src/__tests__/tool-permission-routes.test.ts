@@ -417,12 +417,36 @@ describe('tool-permissions routes — authz', () => {
     expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({ defaults: [] });
   });
 
-  it('403 for an admin who is not the connector owner (canEdit is owner-only)', async () => {
+  it('another admin may read and set a SHARED connector’s defaults, keyed by the owner’s row', async () => {
     const h = await makeHarness();
     currentActor = { id: 'admin1', isAdmin: true };
     await create(h, 'admin', linear);
+    const ownerNs = deriveToolNamespace('admin1', 'linear', 'linear');
     currentActor = { id: 'admin2', isAdmin: true };
-    expect((await getPerms(h, 'admin', 'linear')).status).toBe(403);
+    expect((await getPerms(h, 'admin', 'linear')).status).toBe(200);
+    // The namespaces are the OWNER's: a key derived from admin2 is not this connector's.
+    const foreignNs = deriveToolNamespace('admin2', 'linear', 'linear');
+    const wrong = await putPerms(h, 'admin', 'linear', {
+      verdicts: [{ toolKey: `mcp.${foreignNs}.create_issue`, verdict: 'allow' }],
+    });
+    expect(wrong.status).toBe(400);
+    const put = await putPerms(h, 'admin', 'linear', {
+      verdicts: [{ toolKey: `mcp.${ownerNs}.create_issue`, verdict: 'allow' }],
+    });
+    expect(put).toEqual({ status: 200, body: { ok: true } });
+    currentActor = { id: 'admin1', isAdmin: true };
+    expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({
+      defaults: [{ toolKey: `mcp.${ownerNs}.create_issue`, verdict: 'allow' }],
+    });
+  });
+
+  it('another admin still gets 404 for a PRIVATE connector they do not own', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'admin1', isAdmin: true };
+    await create(h, 'admin', { ...linear, visibility: 'private' });
+    currentActor = { id: 'admin2', isAdmin: true };
+    expect((await getPerms(h, 'admin', 'linear')).status).toBe(404);
+    expect((await putPerms(h, 'admin', 'linear', { verdicts: [] })).status).toBe(404);
   });
 
   it('404 for a private connector someone else owns', async () => {

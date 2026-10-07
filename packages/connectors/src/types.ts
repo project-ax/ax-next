@@ -271,6 +271,13 @@ export interface GetInput {
 }
 export interface GetOutput {
   connector: Connector;
+  /**
+   * Who owns the returned definition (the row's owner, not the requester).
+   * Host-internal: the admin routes use it to act on the owner's row when an
+   * admin edits a shared connector someone else defined. Never serialized to
+   * a browser — routes send `connector` only.
+   */
+  ownerUserId: string;
 }
 
 export interface UpsertInput {
@@ -720,6 +727,7 @@ export const ListOutputSchema = z.object({
 
 export const GetOutputSchema = z.object({
   connector: ConnectorSchema,
+  ownerUserId: z.string(),
 }) as unknown as ZodType<GetOutput>;
 
 export const UpsertOutputSchema = z.object({

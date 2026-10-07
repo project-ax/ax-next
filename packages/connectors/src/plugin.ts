@@ -625,8 +625,7 @@ async function getConnector(
   const userId = requireUserId(input.userId, hookName);
   const connectorId = validateConnectorId(input.connectorId);
   const available = await store.getAvailableById(userId, connectorId);
-  const connector = available?.connector ?? null;
-  if (connector === null) {
+  if (available === null) {
     throw new PluginError({
       code: 'not-found',
       plugin: PLUGIN_NAME,
@@ -634,7 +633,7 @@ async function getConnector(
       message: `connector '${connectorId}' not found`,
     });
   }
-  return { connector };
+  return { connector: available.connector, ownerUserId: available.ownerUserId };
 }
 
 async function upsertConnector(

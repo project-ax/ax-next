@@ -86,9 +86,13 @@ interface AgentsResolveInputLike {
 // probe), and before the gate it was a bypass of the `/settings/connectors`
 // rejections. The `/settings/connectors*` bundle (mode 'user') stays open to any
 // signed-in user. Connectors are
-// readable when owned by the actor or explicitly shared. Writes remain owner-only;
-// actor identity is forced from the session and canEdit is derived by the store.
-// Private foreign definitions stay invisible. Shared foreign definitions are read-only.
+// readable when owned by the actor or explicitly shared. Writes are owner-only,
+// with one exception: on the admin bundle any admin may edit or delete a SHARED
+// definition someone else owns, and the write lands on the OWNER's row (owner
+// taken from the stored row, never the request; ownership never changes).
+// Actor identity is forced from the session and canEdit is derived by the store.
+// Private foreign definitions stay invisible. On the user surface shared foreign
+// definitions are read-only.
 //
 // Responses NEVER include resolved credential VALUES — a connector declares
 // credential SLOT names only (the `capabilities.credentials[].slot`); the actual
@@ -336,6 +340,44 @@ function isReadOnly(c: Connector, mode: ConnectorRouteMode): boolean {
 }
 
 /**
+ * Slice 2a — any admin may curate any SHARED connector, whoever defined it. True
+ * only on the admin bundle (whose `authenticate` already 403s a non-admin) and
+ * only for a shared definition: a private one someone else owns never reaches
+ * here (`connectors:get` 404s it), and the user surface never gets this reach.
+ */
+function adminCurates(c: Connector, mode: ConnectorRouteMode): boolean {
+  return mode === 'admin' && c.visibility === 'shared';
+}
+
+/**
+ * Whose row a write acts on, or null when the actor may only read it. The
+ * actor's own row when they may edit it; on the admin bundle, a shared row
+ * another person owns is written AS that owner's row — the hooks are keyed by
+ * owner, and ownership never changes on an edit. The owner always comes from
+ * the stored row (`connectors:get`), never from the request.
+ */
+function writeOwner(
+  got: GetOutput,
+  actorId: string,
+  mode: ConnectorRouteMode,
+): string | null {
+  if (!isReadOnly(got.connector, mode) && got.connector.canEdit === true) return actorId;
+  if (adminCurates(got.connector, mode)) return got.ownerUserId;
+  return null;
+}
+
+/** What the admin surface tells the UI it may edit (the store's `canEdit` is
+ *  owner-only; an admin may also curate any shared connector). */
+function presentCanEdit<T extends { canEdit?: boolean; visibility: Connector['visibility'] }>(
+  c: T,
+  mode: ConnectorRouteMode,
+): T {
+  return c.canEdit !== true && mode === 'admin' && c.visibility === 'shared'
+    ? { ...c, canEdit: true }
+    : c;
+}
+
+/**
  * TASK-808 — "Set default" is gone. For one release a write that still carries
  * the field (a stale client, a pinned tab, a script) fails LOUDLY instead of
  * being silently dropped, whatever the value: `false` is as stale as `true`
@@ -411,12 +453,30 @@ export function createConnectorRouteHandlers(
   }
 
   /**
+   * When an admin acts on a shared connector someone else defined, record WHO
+   * did it (the hooks only see the row owner).
+   */
+  function logCuration(
+    action: string,
+    actorId: string,
+    ownerUserId: string,
+    connectorId: string,
+  ): void {
+    if (ownerUserId === actorId) return;
+    ctx.logger.info('connectors_admin_curated_shared', {
+      action,
+      actorId,
+      ownerUserId,
+      connectorId,
+    });
+  }
+
+  /**
    * Authenticate, then load a connector the actor may EDIT (TASK-737). 404 for
    * a missing / invisible one (same leak posture as `show`), 403 `read-only`
-   * for one they can only read. On success also returns the connector's tool
-   * namespaces — derived from the actor, which is correct ONLY because an
-   * editable connector is always one the actor owns (`canEdit` is
-   * `row owner === actor`; namespaces are keyed by the row owner).
+   * for one they can only read. On success also returns the row owner the
+   * writes act on (see `writeOwner`) and the connector's tool namespaces —
+   * derived from that OWNER, since namespaces are keyed by the row owner.
    */
   async function loadEditable(
     req: RouteRequest,
@@ -424,6 +484,7 @@ export function createConnectorRouteHandlers(
   ): Promise<{
     actor: { id: string; isAdmin: boolean };
     connector: Connector;
+    owner: string;
     namespaces: string[];
   } | null> {
     const actor = await authenticate(req, res);
@@ -433,23 +494,24 @@ export function createConnectorRouteHandlers(
       res.status(400).json({ error: 'missing-id' });
       return null;
     }
-    let connector: Connector;
+    let got: GetOutput;
     try {
-      const got = await deps.bus.call<GetInput, GetOutput>('connectors:get', ctx, {
+      got = await deps.bus.call<GetInput, GetOutput>('connectors:get', ctx, {
         userId: actor.id,
         connectorId: id,
       });
-      connector = got.connector;
     } catch (err) {
       handleHookError(err, res);
       return null;
     }
-    if (isReadOnly(connector, mode) || connector.canEdit !== true) {
+    const owner = writeOwner(got, actor.id, mode);
+    if (owner === null) {
       res.status(403).json({ error: 'read-only' });
       return null;
     }
-    const namespaces = deriveToolNamespaces(actor.id, connector).map((e) => e.toolNamespace);
-    return { actor, connector, namespaces };
+    const { connector } = got;
+    const namespaces = deriveToolNamespaces(owner, connector).map((e) => e.toolNamespace);
+    return { actor, connector, owner, namespaces };
   }
 
   return {
@@ -462,7 +524,9 @@ export function createConnectorRouteHandlers(
         ctx,
         { userId: actor.id },
       );
-      res.status(200).json({ connectors: out.connectors satisfies ConnectorSummary[] });
+      res.status(200).json({
+        connectors: out.connectors.map((c) => presentCanEdit(c, mode)) satisfies ConnectorSummary[],
+      });
     },
 
     /** GET /admin/connectors/:id */
@@ -480,7 +544,8 @@ export function createConnectorRouteHandlers(
           ctx,
           { userId: actor.id, connectorId: id },
         );
-        res.status(200).json({ connector: out.connector satisfies Connector });
+        // `connector` only — the owner id stays host-side.
+        res.status(200).json({ connector: presentCanEdit(out.connector, mode) satisfies Connector });
       } catch (err) {
         handleHookError(err, res);
       }
@@ -522,6 +587,12 @@ export function createConnectorRouteHandlers(
             'connectors:get', ctx, { userId: actor.id, connectorId: raw.connectorId },
           );
           existing = got.connector;
+          // POST creates (or updates the actor's OWN row). On the admin surface
+          // another person's shared id is taken — editing it is a PATCH.
+          if (existing.canEdit !== true && adminCurates(existing, mode)) {
+            res.status(409).json({ error: 'connector-id-taken' });
+            return;
+          }
           if (isReadOnly(existing, mode)) {
             res.status(403).json({ error: 'read-only' });
             return;
@@ -553,7 +624,7 @@ export function createConnectorRouteHandlers(
       }
     },
 
-    /** PATCH /admin/connectors/:id — owner only. */
+    /** PATCH /admin/connectors/:id — the owner, or (admin bundle) any admin for a shared connector. */
     async update(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authenticate(req, res);
       if (actor === null) return;
@@ -572,21 +643,23 @@ export function createConnectorRouteHandlers(
         res.status(400).json({ error: removed });
         return;
       }
-      // PATCH requires a live owned definition. Missing/private foreign ids
-      // return 404; a readable shared foreign definition is rejected below.
-      let existing: Connector;
+      // PATCH requires a live definition the actor may write. Missing/private
+      // foreign ids return 404; a shared foreign definition is read-only except
+      // to an admin on the admin bundle, who writes the OWNER's row.
+      let got: GetOutput;
       try {
-        const got = await deps.bus.call<GetInput, GetOutput>(
+        got = await deps.bus.call<GetInput, GetOutput>(
           'connectors:get',
           ctx,
           { userId: actor.id, connectorId: id },
         );
-        existing = got.connector;
       } catch (err) {
         handleHookError(err, res);
         return;
       }
-      if (isReadOnly(existing, mode)) {
+      const existing = got.connector;
+      const owner = writeOwner(got, actor.id, mode);
+      if (owner === null) {
         res.status(403).json({ error: 'read-only' });
         return;
       }
@@ -615,8 +688,9 @@ export function createConnectorRouteHandlers(
         ...patchRaw,
         requireUniqueId: false,
         // Re-assert the immutable identity + owner AFTER the spread so a stray
-        // patch field can't rename or owner-hijack.
-        userId: actor.id,
+        // patch field can't rename or owner-hijack. The owner is the stored
+        // row's, so ownership never changes on an edit.
+        userId: owner,
         connectorId: existing.id,
       } as UpsertInput;
       try {
@@ -625,13 +699,17 @@ export function createConnectorRouteHandlers(
           ctx,
           input,
         );
-        res.status(200).json({ connector: out.connector, created: out.created });
+        logCuration('update', actor.id, owner, existing.id);
+        res.status(200).json({
+          connector: presentCanEdit(out.connector, mode),
+          created: out.created,
+        });
       } catch (err) {
         handleHookError(err, res);
       }
     },
 
-    /** DELETE /admin/connectors/:id — owner only. */
+    /** DELETE /admin/connectors/:id — the owner, or (admin bundle) any admin for a shared connector. */
     async destroy(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authenticate(req, res);
       if (actor === null) return;
@@ -640,26 +718,30 @@ export function createConnectorRouteHandlers(
         res.status(400).json({ error: 'missing-id' });
         return;
       }
+      let owner: string | null;
       try {
         const got = await deps.bus.call<GetInput, GetOutput>('connectors:get', ctx, {
           userId: actor.id, connectorId: id,
         });
-        if (isReadOnly(got.connector, mode)) {
-          res.status(403).json({ error: 'read-only' });
-          return;
-        }
+        owner = writeOwner(got, actor.id, mode);
       } catch (err) {
         handleHookError(err, res);
+        return;
+      }
+      if (owner === null) {
+        res.status(403).json({ error: 'read-only' });
         return;
       }
       try {
         const out = await deps.bus.call<DeleteInput, DeleteOutput>(
           'connectors:delete',
           ctx,
-          // Only an admin may purge a GLOBAL (shared/company) credential on delete
-          // — a non-admin's delete leaves global-scope refs intact (it still purges
-          // their own per-user refs). This is the authority the hook gates on.
-          { userId: actor.id, connectorId: id, purgeGlobal: actor.isAdmin },
+          // The hook is keyed by the row OWNER (an admin deleting another
+          // admin's shared connector deletes that owner's row). Only an admin
+          // may purge a GLOBAL (shared/company) credential on delete — a
+          // non-admin's delete leaves global-scope refs intact (it still purges
+          // per-user refs). This is the authority the hook gates on.
+          { userId: owner, connectorId: id, purgeGlobal: actor.isAdmin },
         );
         if (!out.deleted) {
           // Soft-delete returns false when there was nothing (owned) to delete —
@@ -667,6 +749,7 @@ export function createConnectorRouteHandlers(
           res.status(404).json({ error: 'not-found' });
           return;
         }
+        logCuration('delete', actor.id, owner, id);
         res.status(204).end();
       } catch (err) {
         handleHookError(err, res);
@@ -814,6 +897,7 @@ export function createConnectorRouteHandlers(
         });
         return;
       }
+      logCuration('set-tool-permissions', target.actor.id, target.owner, target.connector.id);
       res.status(200).json({ ok: true });
     },
 

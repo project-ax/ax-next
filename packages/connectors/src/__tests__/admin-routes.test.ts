@@ -521,6 +521,176 @@ describe('admin connector routes', () => {
     expect(second.captured.body).toEqual({ error: 'connector-id-taken' });
   });
 
+  describe('any admin may edit or delete a SHARED connector, whoever owns it', () => {
+    const crm = {
+      connectorId: 'crm',
+      name: 'CRM',
+      keyMode: 'personal',
+      visibility: 'shared',
+      capabilities: mcpCaps(),
+    };
+
+    async function rowOwners(h: TestHarness, id: string): Promise<string[]> {
+      const { db } = await h.bus.call<unknown, { db: Kysely<ConnectorDatabase> }>(
+        'database:get-instance',
+        h.ctx(),
+        {},
+      );
+      return (await createConnectorStore(db).listAllLive(() => {}))
+        .filter((r) => r.connectorId === id)
+        .map((r) => r.ownerUserId);
+    }
+
+    it('admin2 PATCHes admin1’s shared connector: 200, the change sticks, admin1 still owns it', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      const created = makeRes();
+      await handlers.create(makeReq({ body: crm }), created.res);
+      expect(created.captured.status).toBe(201);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const patched = makeRes();
+      await handlers.update(
+        makeReq({ params: { id: 'crm' }, body: { name: 'CRM (edited)', userId: 'admin2' } }),
+        patched.res,
+      );
+      expect(patched.captured.status).toBe(200);
+
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.body).toMatchObject({ connector: { name: 'CRM (edited)' } });
+      // Ownership never changes on edit, and the owner id never reaches the wire.
+      expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+      expect((shown.captured.body as { connector: object }).connector).not.toHaveProperty(
+        'ownerUserId',
+      );
+
+      currentActor = { id: 'admin1', isAdmin: true };
+      const ownerView = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), ownerView.res);
+      expect(ownerView.captured.body).toMatchObject({
+        connector: { name: 'CRM (edited)', canEdit: true },
+      });
+    });
+
+    it('the admin surface reports a foreign shared connector as editable', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: crm }), makeRes().res);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const list = makeRes();
+      await handlers.list(makeReq({}), list.res);
+      expect(list.captured.body).toMatchObject({ connectors: [{ id: 'crm', canEdit: true }] });
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.body).toMatchObject({ connector: { id: 'crm', canEdit: true } });
+    });
+
+    it('admin2 DELETEs admin1’s shared connector: 204, and admin1 then 404s on it', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: crm }), makeRes().res);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const deleted = makeRes();
+      await handlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(204);
+
+      currentActor = { id: 'admin1', isAdmin: true };
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.status).toBe(404);
+      expect(await rowOwners(h, 'crm')).toEqual([]);
+    });
+
+    it('admin2 POSTing admin1’s shared id is a create, not an edit: 409, nothing changes', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: crm }), makeRes().res);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const post = makeRes();
+      await handlers.create(makeReq({ body: { ...crm, name: 'Hijack' } }), post.res);
+      expect(post.captured.status).toBe(409);
+      expect(post.captured.body).toEqual({ error: 'connector-id-taken' });
+      expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+    });
+
+    it('a non-admin PATCH/DELETE through /admin/connectors/crm is 403 and changes nothing', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: crm }), makeRes().res);
+
+      currentActor = { id: 'member', isAdmin: false };
+      const patched = makeRes();
+      await handlers.update(
+        makeReq({ params: { id: 'crm' }, body: { name: 'Hijack' } }),
+        patched.res,
+      );
+      expect(patched.captured).toMatchObject({ status: 403, body: { error: 'forbidden' } });
+      const deleted = makeRes();
+      await handlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(403);
+
+      currentActor = { id: 'admin1', isAdmin: true };
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.body).toMatchObject({ connector: { name: 'CRM' } });
+    });
+
+    it('the user surface still refuses a foreign shared connector, even for an admin', async () => {
+      const h = await makeHarness();
+      currentActor = { id: 'admin1', isAdmin: true };
+      await createAdminConnectorRouteHandlers({ bus: h.bus }).create(
+        makeReq({ body: crm }),
+        makeRes().res,
+      );
+      currentActor = { id: 'admin2', isAdmin: true };
+      const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+      const patched = makeRes();
+      await userHandlers.update(
+        makeReq({ params: { id: 'crm' }, body: { name: 'Hijack' } }),
+        patched.res,
+      );
+      expect(patched.captured).toMatchObject({ status: 403, body: { error: 'read-only' } });
+      const deleted = makeRes();
+      await userHandlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(403);
+      const listed = makeRes();
+      await userHandlers.list(makeReq({}), listed.res);
+      expect(listed.captured.body).toMatchObject({ connectors: [{ id: 'crm', canEdit: false }] });
+    });
+
+    it('admin2 still cannot see or touch admin1’s PRIVATE connector (404)', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: { ...crm, visibility: 'private' } }), makeRes().res);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const patched = makeRes();
+      await handlers.update(
+        makeReq({ params: { id: 'crm' }, body: { name: 'Hijack' } }),
+        patched.res,
+      );
+      expect(patched.captured.status).toBe(404);
+      const deleted = makeRes();
+      await handlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(404);
+
+      currentActor = { id: 'admin1', isAdmin: true };
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.body).toMatchObject({ connector: { name: 'CRM' } });
+    });
+  });
+
   it('400 on invalid JSON body', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
@@ -938,14 +1108,12 @@ describe('user connector routes (/settings/connectors)', () => {
     await handlers.destroy(makeReq({ params: { id: 'shared-personal' } }), del.res);
     expect(del.captured.status).toBe(403);
 
+    // An admin, on the ADMIN surface, may edit any shared connector (slice 2a).
     currentActor = { id: 'reader', isAdmin: true };
     const adminHandlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     const adminPatch = makeRes();
-    await adminHandlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Hijack' } }), adminPatch.res);
-    expect(adminPatch.captured.status).toBe(403);
-    const adminDelete = makeRes();
-    await adminHandlers.destroy(makeReq({ params: { id: 'shared-personal' } }), adminDelete.res);
-    expect(adminDelete.captured.status).toBe(403);
+    await adminHandlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Curated' } }), adminPatch.res);
+    expect(adminPatch.captured.status).toBe(200);
 
     currentActor = { id: 'author', isAdmin: false };
     const ownDelete = makeRes();
@@ -1154,6 +1322,40 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(c2.status).toBe(204);
     expect(deleteCalls).toEqual([
       { scope: 'global', ownerId: null, ref: 'account:ws-route' },
+    ]);
+  });
+
+  it('an admin deleting ANOTHER admin’s shared connector still purges its state (owner-keyed, purgeGlobal)', async () => {
+    const deleteCalls: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
+    const h = await createTestHarness({
+      services: {
+        'credentials:delete': async (_c, input) => {
+          deleteCalls.push(input as (typeof deleteCalls)[number]);
+        },
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        authStubPlugin(),
+        credentialsStubPlugin(),
+        createConnectorsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+    const adminHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'admin' });
+    currentActor = { id: 'admin1', isAdmin: true };
+    const created = makeRes();
+    await adminHandlers.create(makeReq({ body: {
+      connectorId: 'ws-shared', name: 'Workspace svc', keyMode: 'workspace',
+      visibility: 'shared', capabilities: mcpCaps(),
+    } }), created.res);
+    expect(created.captured.status).toBe(201);
+
+    currentActor = { id: 'admin2', isAdmin: true };
+    const deleted = makeRes();
+    await adminHandlers.destroy(makeReq({ params: { id: 'ws-shared' } }), deleted.res);
+    expect(deleted.captured.status).toBe(204);
+    expect(deleteCalls).toEqual([
+      { scope: 'global', ownerId: null, ref: 'account:ws-shared' },
     ]);
   });
 
