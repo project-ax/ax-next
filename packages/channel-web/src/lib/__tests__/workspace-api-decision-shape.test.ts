@@ -289,9 +289,16 @@ describe('the grants read-back (TASK-373)', () => {
     await expect(workspaceApi.grants()).resolves.toEqual({ grants });
   });
 
-  it('rejects an in-chat connector card (slice 2c removed it; the server drops them)', async () => {
+  it('drops a retired in-chat connector card instead of failing the whole read (slice 2c)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const skillRow = {
+      conversationId: 'cnv-1',
+      agentId: 'a-quill',
+      request: { kind: 'skill', skillId: 'linear', description: '', hosts: [], slots: [] },
+    };
     respondWith({
       grants: [
+        skillRow,
         {
           conversationId: 'cnv-2',
           agentId: 'a-quill',
@@ -299,9 +306,9 @@ describe('the grants read-back (TASK-373)', () => {
         },
       ],
     });
-    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
-      WorkspaceShapeError,
-    );
+    await expect(workspaceApi.grants()).resolves.toEqual({ grants: [skillRow] });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('accepts an honestly empty page', async () => {

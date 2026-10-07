@@ -12,6 +12,10 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { workspaceApi } from '../workspace-api';
+import {
+  getWorkspaceGrantSnapshot,
+  workspaceGrantActions,
+} from '../workspace-grant-store';
 import type { PermissionRequest } from '../../server/types';
 
 function sseResponse(frames: unknown[]): Response {
@@ -87,20 +91,27 @@ describe('a permissionRequest frame reaches the caller', () => {
     expect(seen).toEqual([card]);
   });
 
-  it('forwards a connector card', async () => {
+  it('an older server’s connector card reaches the store, which drops it (slice 2c)', async () => {
+    // The frame reader forwards what arrives; drawing is the store's call. The
+    // in-chat connector card is gone, so a card from an older server must not
+    // become a row with a dead Connect button.
     const card = {
-      kind: 'connector' as const,
+      kind: 'connector',
       connectorId: 'linear',
       name: 'Linear',
       hosts: ['api.linear.app'],
       slots: [],
-    };
+    } as unknown as PermissionRequest;
     const { seen } = await run([
       { reqId: 'r1', permissionRequest: card },
       { reqId: 'r1', done: true },
     ]);
-
     expect(seen).toEqual([card]);
+
+    workspaceGrantActions.resetForTest();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    workspaceGrantActions.raise(seen[0]!, { conversationId: 'cnv-1', agentId: 'a-quill' });
+    expect(getWorkspaceGrantSnapshot().grants).toEqual([]);
   });
 
   it('is NON-TERMINAL — the turn carries on around it', async () => {

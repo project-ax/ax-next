@@ -672,6 +672,16 @@ async function upsertConnector(
   const prior = await store.getByIdNotDeleted(userId, connectorId);
   // An edit (`updateOnly`) of a connector that is already gone stops here,
   // before any side effect; the store re-checks atomically at the write.
+  // A create (`createOnly`) of an id the caller already holds stops here too:
+  // it must never become an overwrite. The store re-checks at the write.
+  if (prior !== null && input.createOnly === true) {
+    throw new PluginError({
+      code: 'connector-id-taken',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `connector id '${connectorId}' is already in use`,
+    });
+  }
   if (prior === null && input.updateOnly === true) {
     throw new PluginError({
       code: 'not-found',
@@ -742,6 +752,7 @@ async function upsertConnector(
     visibility,
     capabilities,
     requireUniqueId: input.requireUniqueId === true,
+    createOnly: input.createOnly === true,
     updateOnly: input.updateOnly === true,
   });
   if (prior !== null) {

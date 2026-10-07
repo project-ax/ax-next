@@ -9,6 +9,7 @@ import {
   OWNER_ONLY_CHANGE_MESSAGE,
   isConnectorIdTaken,
   CONNECTOR_ID_TAKEN_MESSAGE,
+  CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
 import { connectorIdFromName } from '@/lib/connector-form';
@@ -74,6 +75,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ConnectorToolPermissions } from './ConnectorToolPermissions';
+import { RequestLeftOutNotice } from './RequestLeftOutNotice';
 import type { ConnectorEditDialogProps } from './LegacyConnectorEditDialog';
 
 function Disclosure({
@@ -567,7 +569,9 @@ export function RemoteMcpConnectorForm({
           : isOwnerOnlyChange(err)
             ? OWNER_ONLY_CHANGE_MESSAGE
             : isConnectorIdTaken(err)
-              ? CONNECTOR_ID_TAKEN_MESSAGE
+              ? prefill
+                ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
+                : CONNECTOR_ID_TAKEN_MESSAGE
               : 'We couldn’t save this connector. Check the settings and try again.',
       );
     } finally {
@@ -647,6 +651,7 @@ export function RemoteMcpConnectorForm({
               <FieldGroup>
                 {!created && (
                 <>
+                {prefill && <RequestLeftOutNotice items={prefill.leftOut ?? []} />}
                 <FieldGroup>
                   {textField('name', 'Name', 'e.g. Linear')}
                   {textField('url', 'Server URL', 'https://example.com/mcp')}

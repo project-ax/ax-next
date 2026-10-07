@@ -783,6 +783,33 @@ function decisionPost<T>(id: string, action: string): Promise<T> {
   });
 }
 
+let warnedRetiredConnectorGrant = false;
+
+/**
+ * Slice 2c removed the in-chat connector card: an agent-proposed connector
+ * goes to the workspace admins. A server from before that may still answer
+ * `/grants` with a `kind:'connector'` row. That kind is KNOWN and retired, so
+ * the row is dropped (with one warning) rather than failing the whole read;
+ * a kind this build has never heard of still fails it, as before.
+ */
+function dropRetiredConnectorGrants(body: unknown): unknown {
+  if (!isRecord(body) || !Array.isArray(body.grants)) return body;
+  const kept = body.grants.filter(
+    (g) =>
+      !(
+        isRecord(g) &&
+        isRecord((g as { request?: unknown }).request) &&
+        ((g as { request: Record<string, unknown> }).request.kind === 'connector')
+      ),
+  );
+  if (kept.length === body.grants.length) return body;
+  if (!warnedRetiredConnectorGrant) {
+    warnedRetiredConnectorGrant = true;
+    console.warn('[workspace] dropping in-chat connector cards (retired in slice 2c)');
+  }
+  return { ...body, grants: kept };
+}
+
 export const workspaceApi = {
   board: () => req<BoardState>('/state'),
 
@@ -819,7 +846,7 @@ export const workspaceApi = {
    * per-conversation card cap and holds only PENDING grants.
    */
   grants: async () => {
-    const body = await req<unknown>('/grants');
+    const body = dropRetiredConnectorGrants(await req<unknown>('/grants'));
     // Same shape guard as the queue read, at the boundary the two share: what
     // must never happen is a malformed body being mistaken for an empty list.
     // `request`, `conversationId` and `agentId` are checked because the merge
@@ -840,7 +867,8 @@ export const workspaceApi = {
     //
     // (The store refuses an unknown kind as well, which is what covers the SSE
     // stream — that path has no shape guard at all. Here it is a WHOLE-page
-    // failure on purpose: a server answering `/grants` with a row we cannot
+    // failure on purpose — except for the one RETIRED kind, `connector`, which
+    // `dropRetiredConnectorGrants` takes out first (slice 2c): a server answering `/grants` with a row we cannot
     // read is news about the server, and the mount path already knows how to
     // say "I could not check" without pretending the day is empty.)
     return checkedRead<GrantsPage>(

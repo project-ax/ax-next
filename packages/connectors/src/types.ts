@@ -341,6 +341,13 @@ export interface UpsertInput {
   /** Refuse (`connector-id-taken`) a NEW connector whose id another owner holds live. */
   requireUniqueId?: boolean;
   /**
+   * Slice 2c — create only: refuse (`connector-id-taken`) when the CALLER
+   * already owns a live connector with this id, instead of updating it. The
+   * admin POST route sets it, so creating a connector from an agent's request
+   * can never overwrite an existing one (edits are a PATCH).
+   */
+  createOnly?: boolean;
+  /**
    * Edit only: refuse (`not-found`) instead of creating — or resurrecting a
    * deleted — connector. An edit that lost a race with a delete must not bring
    * the connector back.

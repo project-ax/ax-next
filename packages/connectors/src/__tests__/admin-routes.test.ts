@@ -1577,7 +1577,7 @@ describe('user connector routes (/settings/connectors)', () => {
     expect((shown.captured.body as { connector: object }).connector).not.toHaveProperty('ownerUserId');
   });
 
-  it('admin create defaults to shared; editing and POST upserts preserve the saved visibility and key mode', async () => {
+  it('admin create defaults to shared; an edit preserves the saved visibility and key mode', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'root', isAdmin: true };
@@ -1588,9 +1588,50 @@ describe('user connector routes (/settings/connectors)', () => {
     const patch = makeRes();
     await handlers.update(makeReq({ params: { id: 'legacy' }, body: { name: 'Edited' } }), patch.res);
     expect(patch.captured.body).toMatchObject({ connector: { visibility: 'private', keyMode: 'workspace' } });
-    const post = makeRes();
-    await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Upserted', keyMode: 'workspace', capabilities: mcpCaps() } }), post.res);
-    expect(post.captured.body).toMatchObject({ connector: { visibility: 'private', keyMode: 'workspace' } });
+  });
+
+  // Slice 2c — POST is create-only. "Set it up" from an agent's request must
+  // never overwrite a connector the admin already has with agent-chosen reach.
+  it('POST for an id the admin already owns is a 409 and leaves the connector unchanged', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    const created = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'mine', name: 'Mine', keyMode: 'personal', capabilities: mcpCaps() } }), created.res);
+    expect(created.captured.status).toBe(201);
+    const again = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'mine',
+          name: 'Overwritten',
+          keyMode: 'personal',
+          capabilities: { ...mcpCaps(), allowedHosts: ['evil.example.com'] },
+        },
+      }),
+      again.res,
+    );
+    expect(again.captured.status).toBe(409);
+    expect(again.captured.body).toEqual({ error: 'connector-id-taken' });
+    const shown = makeRes();
+    await handlers.show(makeReq({ params: { id: 'mine' } }), shown.res);
+    expect(shown.captured.body).toMatchObject({ connector: { name: 'Mine' } });
+    expect(
+      (shown.captured.body as { connector: { capabilities: { allowedHosts: string[] } } })
+        .connector.capabilities.allowedHosts,
+    ).not.toContain('evil.example.com');
+  });
+
+  it('the connectors:upsert hook refuses createOnly for an id the caller holds', async () => {
+    const h = await makeHarness();
+    const input = { userId: 'root', connectorId: 'hooked', name: 'Hooked', keyMode: 'personal', visibility: 'shared', capabilities: mcpCaps() };
+    await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), input);
+    await expect(
+      h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), { ...input, name: 'Again', createOnly: true }),
+    ).rejects.toMatchObject({ code: 'connector-id-taken' });
+    // Without the flag the hook is still an upsert (other callers rely on it).
+    const out = await h.bus.call<unknown, { created: boolean }>('connectors:upsert', h.ctx({ userId: 'root' }), { ...input, name: 'Again' });
+    expect(out.created).toBe(false);
   });
 
   // TASK-808 — "Set default" is gone. A stale client that still sends the field
@@ -1881,7 +1922,7 @@ describe('admin proposal routes (/admin/connectors/authored)', () => {
     }
     currentActor = { id: 'root', isAdmin: true };
     const edited = makeRes();
-    await handlers.create(makeReq({ body: { ...body, name: 'Drive (renamed)' } }), edited.res);
+    await handlers.update(makeReq({ params: { id: 'gdrive' }, body: { name: 'Drive (renamed)' } }), edited.res);
     expect(edited.captured.status).toBe(200);
     // The queue drops it (the id is live), but the row itself was not cleared.
     const check = new (await import('pg')).default.Client({ connectionString });

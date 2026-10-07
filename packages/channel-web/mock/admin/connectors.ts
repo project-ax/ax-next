@@ -18,7 +18,8 @@ import { requireSession } from '../auth';
  * `lib/connectors.ts` (where `<base>` is the bundle's base path):
  *
  *   GET    <base>      → { connectors: ConnectorSummary[] }
- *   POST   <base>      body ConnectorUpsertInput → { connector, created }
+ *   POST   <base>      body ConnectorUpsertInput → 201 { connector, created }
+ *          (create only: a live id, the caller's own included, is a 409)
  *   GET    <base>/:id  → { connector: Connector }
  *   PATCH  <base>/:id  body Partial<ConnectorUpsertInput> → { connector, created:false }
  *   DELETE <base>/:id  → 204
@@ -479,9 +480,13 @@ function connectorsMiddleware(
         return true;
       }
       const available = typeof body.connectorId === 'string' ? availableById(body.connectorId) : undefined;
-      // On the admin surface another person's shared id is taken (editing it
-      // is a PATCH) — mirrors the real route's 409.
-      if (available && mode === 'admin' && available.userId !== actor.id) {
+      // Slice 2c — the admin POST is CREATE only, like the real route: any
+      // live connector with this id (the caller's own included, any owner, any
+      // visibility) is a 409. Edits are a PATCH.
+      if (
+        mode === 'admin' &&
+        connectors.list().some((row) => row.connectorId === body.connectorId)
+      ) {
         send(res, 409, { error: 'connector-id-taken' });
         return true;
       }

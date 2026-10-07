@@ -156,6 +156,77 @@ describe('ConnectorsTab', () => {
     expect(row.querySelector('b')).toBeNull();
   });
 
+  it('groups requests by connector: one row per id, naming everyone who asked', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
+      REQUEST_LINEAR,
+      {
+        ...REQUEST_LINEAR,
+        usageNote: 'Newer note',
+        updatedAt: '2026-10-08T00:00:00Z',
+        proposedBy: { userId: 'u_bob', label: 'Bob' },
+      },
+    ]);
+    const dismiss = vi
+      .spyOn(connectorsLib, 'dismissAuthoredProposal')
+      .mockResolvedValue(undefined);
+    render(<ConnectorsTab />);
+    expect(await screen.findByText('Awaiting approval (1)')).toBeInTheDocument();
+    const rows = screen.getAllByTestId('connector-request-linear');
+    expect(rows).toHaveLength(1);
+    expect(
+      within(rows[0]!).getByText('Asked for by Ada Lovelace and Bob for their agents'),
+    ).toBeInTheDocument();
+    fireEvent.click(within(rows[0]!).getByRole('button', { name: 'Dismiss' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      within(dialog).getByText('The people who asked won’t be notified.'),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: /^dismiss$/i }));
+    await waitFor(() => expect(dismiss).toHaveBeenCalledTimes(1));
+    expect(dismiss).toHaveBeenCalledWith('linear');
+  });
+
+  it('Set it up carries only what the editor shows, lists the rest, and fixes Sharing to Shared', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
+      {
+        ...REQUEST_LINEAR,
+        proposal: {
+          allowedHosts: ['api.linear.app'],
+          credentials: [
+            { slot: 'LINEAR_API_KEY', kind: 'api-key', headerName: 'X-Key', server: 'x' },
+          ],
+          mcpServers: [],
+          packages: { npm: ['@linear/cli', 'sneaky-extra'], pypi: ['also-sneaky'] },
+        },
+      },
+    ]);
+    const create = vi
+      .spyOn(connectorsLib, 'createConnector')
+      .mockResolvedValue({ ...fullOf(SHARED_CONN), id: 'linear' });
+    render(<ConnectorsTab />);
+    const row = await screen.findByTestId('connector-request-linear');
+    fireEvent.click(within(row).getByRole('button', { name: 'Set it up' }));
+    const dialog = await screen.findByRole('dialog');
+    const note = await within(dialog).findByTestId('request-left-out');
+    expect(within(note).getByText('the npm package sneaky-extra')).toBeInTheDocument();
+    expect(within(note).getByText('the PyPI package also-sneaky')).toBeInTheDocument();
+    expect(
+      within(note).getByText('sending the key LINEAR_API_KEY as the header X-Key'),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByRole('combobox', { name: /sharing/i })).toBeDisabled();
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText(/service name/i)).toHaveValue('Linear'),
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const [body] = create.mock.calls[0]!;
+    expect(body.visibility).toBe('shared');
+    expect(body.capabilities.packages).toEqual({ npm: ['@linear/cli'], pypi: [] });
+    expect(body.capabilities.credentials).toEqual([
+      { slot: 'LINEAR_API_KEY', kind: 'api-key' },
+    ]);
+  });
+
   it('omits the Awaiting approval shelf when there are no requests', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
@@ -225,7 +296,9 @@ describe('ConnectorsTab', () => {
     );
     fireEvent.click(within(dialog).getByRole('button', { name: /^save$/i }));
     expect(
-      await within(dialog).findByText('A connector with this id already exists.'),
+      await within(dialog).findByText(
+        'A connector with this id already exists. Dismiss this request if it’s no longer needed.',
+      ),
     ).toBeInTheDocument();
   });
 
@@ -255,7 +328,9 @@ describe('ConnectorsTab', () => {
 
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('Dismiss this request?')).toBeInTheDocument();
-    expect(within(dialog).getByText(/The person won’t be notified\./)).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('The person who asked won’t be notified.'),
+    ).toBeInTheDocument();
     expect(dismiss).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: /^dismiss$/i }));
 

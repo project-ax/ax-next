@@ -11,6 +11,7 @@
  *   GET    <base>        → { connectors: ConnectorSummary[] }
  *   GET    <base>/:id    → { connector: Connector }
  *   POST   /admin/connectors        body: ConnectorUpsertInput → { connector, created }
+ *          (create only — a live id, the caller's own included, is a 409)
  *   PATCH  /admin/connectors/:id    body: Partial<ConnectorUpsertInput> → { connector, created }
  *   DELETE /admin/connectors/:id    → 204
  *
@@ -35,7 +36,7 @@
 // eslint runtime-import allowlist; here we only need the TYPE, which is erased).
 // A connector's declared services ride its opaque `capabilities` fill, exactly
 // like mcpServers/packages.
-import type { ServiceDescriptor } from '@ax/skills-parser';
+import { ServiceDescriptorSchema, type ServiceDescriptor } from '@ax/skills-parser';
 import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
 
 /** Re-export so consumers in channel-web (the form, the dialog) reference one
@@ -291,6 +292,10 @@ export const CONNECTOR_ID_TAKEN = 'connector-id-taken';
 /** What the editors say for {@link CONNECTOR_ID_TAKEN}. */
 export const CONNECTOR_ID_TAKEN_MESSAGE = 'A connector with this id already exists.';
 
+/** The same, on an editor opened by "Set it up" from a request. */
+export const CONNECTOR_ID_TAKEN_REQUEST_MESSAGE =
+  'A connector with this id already exists. Dismiss this request if it’s no longer needed.';
+
 /** True when a {@link createConnector} failure is the id-taken refusal. */
 export function isConnectorIdTaken(err: unknown): boolean {
   return err instanceof Error && err.message === CONNECTOR_ID_TAKEN;
@@ -391,7 +396,14 @@ export function normalizeProposal(raw: unknown): ConnectorCapabilities {
     }),
     packages: { npm: strings(pkgs.npm), pypi: strings(pkgs.pypi) },
   };
-  if (Array.isArray(r.services)) out.services = r.services as ServiceDescriptor[];
+  // Each service is checked against the canonical descriptor; a malformed
+  // one is dropped rather than cast through.
+  if (Array.isArray(r.services)) {
+    out.services = r.services.flatMap((svc): ServiceDescriptor[] => {
+      const parsed = ServiceDescriptorSchema.safeParse(svc);
+      return parsed.success ? [parsed.data] : [];
+    });
+  }
   return out;
 }
 
@@ -452,6 +464,12 @@ export interface ConnectorPrefill {
   /** The request's suggestion — the editor's starting point only. */
   keyMode: ConnectorKeyMode;
   capabilities: ConnectorCapabilities;
+  /**
+   * What the request asked for that the chosen editor does NOT show, so is NOT
+   * carried (see `lib/connector-request-prefill.ts`). Plain phrases, rendered
+   * as text in the editor's "This request also asked for" note.
+   */
+  leftOut?: string[];
 }
 
 export function prefillFromProposal(p: AuthoredProposal): ConnectorPrefill {

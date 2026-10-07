@@ -70,6 +70,48 @@ function needsCaption(keyMode: ConnectorSummary['keyMode']): string {
     : 'Each agent adds its own key';
 }
 
+/**
+ * One shelf row per requested connector id. Several people may ask for the
+ * same one; "Set it up" starts from the newest request, and Dismiss clears
+ * them all (the server clears every request with that id).
+ */
+interface RequestGroup {
+  connectorId: string;
+  newest: AuthoredProposal;
+  /** Who asked, de-duplicated, in list order. */
+  people: string[];
+}
+
+function groupRequests(requests: readonly AuthoredProposal[]): RequestGroup[] {
+  const groups = new Map<string, RequestGroup>();
+  for (const r of requests) {
+    const g = groups.get(r.connectorId);
+    if (!g) {
+      groups.set(r.connectorId, {
+        connectorId: r.connectorId,
+        newest: r,
+        people: [r.proposedBy.label],
+      });
+      continue;
+    }
+    if (r.updatedAt > g.newest.updatedAt) g.newest = r;
+    if (!g.people.includes(r.proposedBy.label)) g.people.push(r.proposedBy.label);
+  }
+  return [...groups.values()];
+}
+
+/** "Alice", "Alice and Bob", "Alice, Bob and Carol". */
+function namesList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+function askedByCaption(g: RequestGroup): string {
+  return g.people.length === 1
+    ? `Asked for by ${g.people[0]} for one of their agents`
+    : `Asked for by ${namesList(g.people)} for their agents`;
+}
+
 /** Every read and write here is the admin bundle (slice 2a). */
 const base: ConnectorWriteBase = '/admin/connectors';
 
@@ -88,7 +130,7 @@ export function ConnectorsTab() {
   // Awaiting approval: every person's open connector requests, and the one
   // awaiting dismiss confirmation (null = dialog closed).
   const [requests, setRequests] = useState<AuthoredProposal[]>([]);
-  const [dismissing, setDismissing] = useState<AuthoredProposal | null>(null);
+  const [dismissing, setDismissing] = useState<RequestGroup | null>(null);
 
   /** Reload the requests. Best-effort — a failure just hides the shelf rather
    *  than blocking the tab. */
@@ -170,6 +212,7 @@ export function ConnectorsTab() {
   };
 
   const list = connectors ?? [];
+  const groups = groupRequests(requests);
 
   /** One connector row: name, what it needs, and Edit / Delete when allowed. */
   const renderTile = (c: ConnectorSummary) => {
@@ -241,22 +284,23 @@ export function ConnectorsTab() {
 
       {/* Awaiting approval — every person's connector requests. Rendered only
           when there is at least one. */}
-      {requests.length > 0 && (
+      {groups.length > 0 && (
         <section className="flex flex-col gap-3.5">
           <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Awaiting approval ({requests.length})
+            Awaiting approval ({groups.length})
           </h3>
-          {requests.map((r) => {
+          {groups.map((g) => {
+            const r = g.newest;
             const reach = proposalReach(r.proposal);
             return (
               <div
-                key={`${r.proposedBy.userId}:${r.connectorId}`}
-                data-testid={`connector-request-${r.connectorId}`}
+                key={g.connectorId}
+                data-testid={`connector-request-${g.connectorId}`}
               >
                 <RoleCard
                   pill="request"
                   title={r.name}
-                  caption={`Asked for by ${r.proposedBy.label} for one of their agents`}
+                  caption={askedByCaption(g)}
                 >
                   <div className="flex flex-col gap-3">
                     {reach.length > 0 && (
@@ -268,7 +312,7 @@ export function ConnectorsTab() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setDismissing(r)}
+                        onClick={() => setDismissing(g)}
                       >
                         Dismiss
                       </Button>
@@ -359,8 +403,9 @@ export function ConnectorsTab() {
             <DialogHeader>
               <DialogTitle>Dismiss this request?</DialogTitle>
               <DialogDescription>
-                The person won’t be notified. If their agent still needs{' '}
-                {dismissing.name}, it can ask again.
+                {dismissing.people.length === 1
+                  ? 'The person who asked won’t be notified.'
+                  : 'The people who asked won’t be notified.'}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>

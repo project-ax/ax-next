@@ -797,22 +797,55 @@ describe('mock connector tool permissions', () => {
 
     it('a shared create clears every request with its id; a private one clears none', async () => {
       seedTwo();
+      seedConnectorRequest(store, {
+        ownerUserId: 'u2',
+        agentId: 'a-alice',
+        connectorId: 'notion',
+        name: 'Notion',
+        usageNote: '',
+        keyMode: 'personal',
+        proposal,
+      });
       const { url, close } = await startServer(store);
+      const ids = async () =>
+        ((await (await list(url)).json()) as { drafts: { connectorId: string }[] }).drafts.map(
+          (d) => d.connectorId,
+        );
       try {
         const priv = await fetch(`${url}/admin/connectors`, {
           method: 'POST',
           headers: { cookie: ADMIN, 'content-type': 'application/json' },
-          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'private' })),
+          body: JSON.stringify(upsertBody({ connectorId: 'notion', visibility: 'private' })),
         });
         await expectStatus(priv, 201);
-        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toHaveLength(2);
+        expect(await ids()).toEqual(['linear', 'linear', 'notion']);
         const shared = await fetch(`${url}/admin/connectors`, {
           method: 'POST',
           headers: { cookie: ADMIN2, 'content-type': 'application/json' },
           body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
         });
         await expectStatus(shared, 201);
-        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toEqual([]);
+        expect(await ids()).toEqual(['notion']);
+      } finally {
+        await close();
+      }
+    });
+
+    it('POST is create-only: the admin’s own live id is a 409 and stays unchanged', async () => {
+      const { url, close } = await startServer(store);
+      try {
+        const post = (name: string) =>
+          fetch(`${url}/admin/connectors`, {
+            method: 'POST',
+            headers: { cookie: ADMIN, 'content-type': 'application/json' },
+            body: JSON.stringify(upsertBody({ connectorId: 'mine', name, visibility: 'shared' })),
+          });
+        await expectStatus(await post('Mine'), 201);
+        const again = await post('Overwritten');
+        await expectStatus(again, 409);
+        expect(await again.json()).toEqual({ error: 'connector-id-taken' });
+        const shown = await fetch(`${url}/admin/connectors/mine`, { headers: { cookie: ADMIN } });
+        expect(((await shown.json()) as { connector: { name: string } }).connector.name).toBe('Mine');
       } finally {
         await close();
       }

@@ -7,8 +7,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   dismissAuthoredProposal,
   listAuthoredProposals,
+  normalizeProposal,
   proposalReach,
 } from '../connectors';
+import {
+  prefillForGeneralForm,
+  prefillForRemoteForm,
+} from '../connector-request-prefill';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -134,5 +139,81 @@ describe('proposalReach', () => {
         packages: { npm: [], pypi: [] },
       }),
     ).toEqual(['mcp.example.com', 'api.example.com']);
+  });
+});
+
+describe('normalizeProposal services', () => {
+  it('keeps a valid service and drops a malformed one', () => {
+    const good = {
+      name: 'db',
+      image: `postgres@sha256:${'a'.repeat(64)}`,
+      ports: [5432],
+      env: { POSTGRES_DB: 'app' },
+      writablePaths: ['/var/lib/postgresql/data'],
+    };
+    const out = normalizeProposal({
+      services: [good, { name: 'bad', image: 'postgres:latest' }, 'nope'],
+    });
+    expect(out.services).toEqual([good]);
+  });
+});
+
+describe('what "Set it up" carries (one rule: only what the editor shows)', () => {
+  const base = {
+    connectorId: 'x',
+    name: 'X',
+    usageNote: '',
+    keyMode: 'personal' as const,
+  };
+  it('the remote form keeps the leading server and its header / sign-in only', () => {
+    const p = prefillForRemoteForm({
+      ...base,
+      capabilities: {
+        allowedHosts: ['mcp.x.com', 'other.x.com'],
+        credentials: [
+          { slot: 'H', kind: 'api-key', headerName: 'X-H', server: 's' },
+          { slot: 'T', kind: 'oauth', server: 's', authServerUrl: 'https://auth.evil' },
+          { slot: 'K', kind: 'api-key' },
+        ],
+        mcpServers: [
+          { name: 's', transport: 'http', url: 'https://mcp.x.com/mcp', allowedHosts: [], credentials: [] },
+        ],
+        packages: { npm: [], pypi: ['p'] },
+      },
+    });
+    expect(p.capabilities).toEqual({
+      allowedHosts: [],
+      credentials: [
+        { slot: 'H', kind: 'api-key', headerName: 'X-H', server: 's' },
+        { slot: 'T', kind: 'oauth', server: 's' },
+      ],
+      mcpServers: [
+        { name: 's', transport: 'http', url: 'https://mcp.x.com/mcp', allowedHosts: [], credentials: [] },
+      ],
+      packages: { npm: [], pypi: [] },
+    });
+    expect(p.leftOut).toEqual([
+      'access to other.x.com',
+      'a key named K',
+      'the PyPI package p',
+    ]);
+  });
+  it('the general editor keeps hosts, rows, the leading package and services', () => {
+    const p = prefillForGeneralForm({
+      ...base,
+      capabilities: {
+        allowedHosts: ['api.x.com'],
+        credentials: [{ slot: 'T', kind: 'oauth', server: 'x', tokenUrl: 'https://t.evil' }],
+        mcpServers: [],
+        packages: { npm: ['a', 'b'], pypi: [] },
+      },
+    });
+    expect(p.capabilities).toEqual({
+      allowedHosts: ['api.x.com'],
+      credentials: [{ slot: 'T', kind: 'oauth', server: 'x' }],
+      mcpServers: [],
+      packages: { npm: ['a'], pypi: [] },
+    });
+    expect(p.leftOut).toEqual(['sign-in addresses for T', 'the npm package b']);
   });
 });

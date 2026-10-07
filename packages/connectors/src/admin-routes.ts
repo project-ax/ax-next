@@ -613,7 +613,12 @@ export function createConnectorRouteHandlers(
       }
     },
 
-    /** POST /admin/connectors — create (or update an owned connector). */
+    /**
+     * POST /admin/connectors — CREATE only (slice 2c). Any live connector with
+     * this id — the caller's own included — is a 409 `connector-id-taken`:
+     * "Set it up" from an agent's request must never overwrite an existing
+     * connector with agent-chosen reach. Edits are a PATCH.
+     */
     async create(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authenticate(req, res, { adminOnly: true });
       if (actor === null) return;
@@ -633,27 +638,20 @@ export function createConnectorRouteHandlers(
       // The route decides uniqueness, never the body (it would be an existence
       // probe for other owners' private ids).
       delete raw.requireUniqueId;
-      // Likewise `updateOnly`: only the PATCH route sets it, never the body.
+      // Likewise `updateOnly` (PATCH only) and `createOnly` (set below).
       delete raw.updateOnly;
-      // POST is an upsert. Preserve saved settings on updates; apply defaults
-      // only to genuinely new definitions. A shared read never grants a write.
-      let existing: Connector | undefined;
+      delete raw.createOnly;
+      // Answered before the upsert hook runs any side effect (ceiling sources,
+      // endpoint resets): a live id this admin can see — their own or a shared
+      // one — is taken. One they can't see (another owner's private row) is
+      // refused by the store's `requireUniqueId`.
       if (typeof raw.connectorId === 'string' && raw.connectorId.length > 0) {
         try {
-          const got = await deps.bus.call<GetInput, GetOutput>(
+          await deps.bus.call<GetInput, GetOutput>(
             'connectors:get', ctx, { userId: actor.id, connectorId: raw.connectorId },
           );
-          existing = got.connector;
-          // POST creates (or updates the actor's OWN row). On the admin surface
-          // another person's shared id is taken — editing it is a PATCH.
-          if (existing.canEdit !== true && adminCurates(existing, mode)) {
-            res.status(409).json({ error: 'connector-id-taken' });
-            return;
-          }
-          if (isReadOnly(existing)) {
-            res.status(403).json({ error: 'read-only' });
-            return;
-          }
+          res.status(409).json({ error: 'connector-id-taken' });
+          return;
         } catch (err) {
           if (!(err instanceof PluginError && err.code === 'not-found')) {
             handleHookError(err, res);
@@ -661,13 +659,15 @@ export function createConnectorRouteHandlers(
           }
         }
       }
-      raw.visibility ??= existing?.visibility ?? 'shared';
-      // Every create is an admin create (the handler is adminOnly), so an id
-      // another owner holds is always taken.
+      raw.visibility ??= 'shared';
+      // Every create is an admin create (the handler is adminOnly): an id
+      // another owner holds is taken (`requireUniqueId`), and so is one the
+      // caller holds (`createOnly`) — both answer 409 via handleHookError.
       const input = {
         ...raw,
         userId: actor.id,
         requireUniqueId: true,
+        createOnly: true,
       } as unknown as UpsertInput;
       try {
         const out = await deps.bus.call<UpsertInput, UpsertOutput>(

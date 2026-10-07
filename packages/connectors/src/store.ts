@@ -277,6 +277,11 @@ export interface UpsertArgs {
    */
   requireUniqueId?: boolean;
   /**
+   * When true and a live (userId, connectorId) row already exists, refuse with
+   * `connector-id-taken` instead of updating it.
+   */
+  createOnly?: boolean;
+  /**
    * When true, write only a LIVE (owner, id) row, atomically (an UPDATE guarded
    * on `deleted_at IS NULL`): no insert, no resurrection. Throws `not-found`
    * when no live row matched.
@@ -534,6 +539,14 @@ export function createConnectorStore(
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       const created = existing === undefined;
+      if (!created && args.createOnly === true) {
+        throw new PluginError({
+          code: 'connector-id-taken',
+          plugin: PLUGIN_NAME,
+          hookName: 'connectors:upsert',
+          message: `connector id '${args.connectorId}' is already in use`,
+        });
+      }
       if (created && args.requireUniqueId === true) {
         const taken = await db
           .selectFrom('connectors_v1_connectors')

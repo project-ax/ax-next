@@ -18,6 +18,10 @@ import {
   type ConnectorEditDialogProps,
 } from './LegacyConnectorEditDialog';
 import { RemoteMcpConnectorForm } from './RemoteMcpConnectorForm';
+import {
+  prefillForGeneralForm,
+  prefillForRemoteForm,
+} from '@/lib/connector-request-prefill';
 
 export type { ConnectorEditDialogProps } from './LegacyConnectorEditDialog';
 
@@ -44,11 +48,16 @@ function draftFromPrefill(prefill: ConnectorPrefill): Connector {
 /** A failed full fetch must never fall back to saving a metadata-only summary. */
 export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
   const { open, target, prefill } = props;
-  // Memoized: the general editor re-seeds its form whenever this object changes.
-  const prefillDraft = useMemo(
-    () => (prefill ? draftFromPrefill(prefill) : undefined),
-    [prefill],
-  );
+  // "Set it up": pick the editor, then carry only what THAT editor shows (the
+  // rest is listed in it, not saved). Memoized: the general editor re-seeds
+  // its form whenever its starting connector changes.
+  const routed = useMemo(() => {
+    if (!prefill) return undefined;
+    if (prefill.capabilities.mcpServers.length > 0)
+      return { kind: 'remote' as const, prefill: prefillForRemoteForm(prefill) };
+    const general = prefillForGeneralForm(prefill);
+    return { kind: 'general' as const, prefill: general, draft: draftFromPrefill(general) };
+  }, [prefill]);
   const id = target === 'new' ? null : target.id;
   const [loaded, setLoaded] = useState<{
     id: string;
@@ -79,8 +88,16 @@ export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
   if (target === 'new') {
     // "Set it up": an MCP request opens the remote-server form (it reads the
     // prefill itself); anything else opens the general editor.
-    if (prefillDraft && prefillDraft.capabilities.mcpServers.length === 0)
-      return <LegacyConnectorEditDialog {...props} connector={prefillDraft} />;
+    if (routed?.kind === 'general')
+      return (
+        <LegacyConnectorEditDialog
+          {...props}
+          prefill={routed.prefill}
+          connector={routed.draft}
+        />
+      );
+    if (routed?.kind === 'remote')
+      return <RemoteMcpConnectorForm {...props} prefill={routed.prefill} />;
     return <RemoteMcpConnectorForm {...props} />;
   }
   if (loaded?.id === id) {

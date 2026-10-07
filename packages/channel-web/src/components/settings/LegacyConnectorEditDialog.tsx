@@ -44,6 +44,7 @@ import {
   OWNER_ONLY_CHANGE_MESSAGE,
   isConnectorIdTaken,
   CONNECTOR_ID_TAKEN_MESSAGE,
+  CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
   type ConnectorPrefill,
   type ConnectorSummary,
@@ -93,6 +94,7 @@ import {
   CardDescription,
 } from '@/components/ui/card';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
+import { RequestLeftOutNotice } from './RequestLeftOutNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { discoverOAuthHosts } from '@/lib/connectors-oauth';
 import {
@@ -479,7 +481,10 @@ export function LegacyConnectorEditDialog({
   onOpenChange,
   onSaved,
   connector,
+  prefill,
 }: ConnectorEditDialogProps & { connector?: Connector }) {
+  // Slice 2c — opened by "Set it up": approval is a SHARED create.
+  const fromRequest = target === 'new' && prefill !== undefined;
   const [form, setForm] = useState<ConnectorFormState>(() =>
     connector ? formFromConnector(connector) : emptyConnectorForm(),
   );
@@ -583,7 +588,7 @@ export function LegacyConnectorEditDialog({
     const connectorId = form.connectorId || connectorIdFromName(form.name);
     setBusy(true);
     setError(null);
-    const visibility: ConnectorVisibility = form.visibility;
+    const visibility: ConnectorVisibility = fromRequest ? 'shared' : form.visibility;
 
     // --- oauth client_secret persistence ------------------------------------
     // For each oauth slot that has a newly-entered client_secret: write the
@@ -675,7 +680,9 @@ export function LegacyConnectorEditDialog({
           : isOwnerOnlyChange(err)
             ? OWNER_ONLY_CHANGE_MESSAGE
             : isConnectorIdTaken(err)
-              ? CONNECTOR_ID_TAKEN_MESSAGE
+              ? fromRequest
+                ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
+                : CONNECTOR_ID_TAKEN_MESSAGE
               : "We couldn't save this connector. Please try again.",
       );
     } finally {
@@ -725,6 +732,7 @@ export function LegacyConnectorEditDialog({
         </DialogHeader>
 
         <form className="flex flex-col gap-4" onSubmit={(e) => void submit(e)}>
+          {fromRequest && <RequestLeftOutNotice items={prefill?.leftOut ?? []} />}
           {/* Mechanism picker — leads the form, reshapes the fields below. */}
           <div className="flex flex-col gap-2">
             <Label>How it connects</Label>
@@ -822,8 +830,10 @@ export function LegacyConnectorEditDialog({
           {/* Workspace-level field: Sharing (visibility). */}
           <div className="flex flex-col gap-2">
             <Label htmlFor="connector-visibility">Sharing</Label>
+            {/* From a request it is fixed: approval is a shared create. */}
             <Select
-              value={form.visibility}
+              disabled={fromRequest}
+              value={fromRequest ? 'shared' : form.visibility}
               onValueChange={(v) =>
                 setForm((f) => ({ ...f, visibility: v as ConnectorVisibility }))
               }

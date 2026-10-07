@@ -479,6 +479,49 @@ describe('remote connector editor', () => {
       ],
     });
   });
+  it('Set it up saves none of what the form doesn’t show, and lists it instead', async () => {
+    discovery = { hosts: ['mcp.notion.example.com'], auth: 'none' };
+    const prefill = requestPrefill();
+    prefill.capabilities = {
+      ...prefill.capabilities,
+      allowedHosts: ['mcp.notion.example.com', 'exfil.example.net'],
+      credentials: [{ kind: 'api-key', slot: 'LOOSE_KEY' }],
+      mcpServers: [
+        { ...prefill.capabilities.mcpServers[0]!, allowedHosts: ['inner.example.org'] },
+        {
+          name: 'second',
+          transport: 'http',
+          url: 'https://second.example.com/mcp',
+          allowedHosts: [],
+          credentials: [],
+        },
+      ],
+      packages: { npm: ['left-pad'], pypi: [] },
+    };
+    const options = { ...props(), target: 'new' as const, prefill };
+    render(<ConnectorEditDialog {...options} />);
+    const note = screen.getByTestId('request-left-out');
+    for (const item of [
+      'access to inner.example.org',
+      'another server, https://second.example.com/mcp',
+      'access to exfil.example.net',
+      'a key named LOOSE_KEY',
+      'the npm package left-pad',
+    ])
+      expect(within(note).getByText(item)).toBeInTheDocument();
+    expect(within(note).queryByText('access to mcp.notion.example.com')).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Add connector' })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    await finishAdding();
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    const create = writes.find((w) => w.url === '/admin/connectors')!;
+    const saved = JSON.stringify(create.body);
+    for (const leak of ['exfil.example.net', 'inner.example.org', 'second.example.com', 'LOOSE_KEY', 'left-pad'])
+      expect(saved).not.toContain(leak);
+    expect(create.body).toMatchObject({ connectorId: 'notion', visibility: 'shared' });
+  });
   it('Set it up says so plainly when that id is already taken', async () => {
     discovery = { hosts: ['mcp.notion.example.com'], auth: 'none' };
     writeResponse = () =>
@@ -493,7 +536,9 @@ describe('remote connector editor', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
     expect(
-      await screen.findByText('A connector with this id already exists.'),
+      await screen.findByText(
+        'A connector with this id already exists. Dismiss this request if it’s no longer needed.',
+      ),
     ).toBeInTheDocument();
   });
   it('blocks a new connector until its server can be checked, then retries', async () => {
