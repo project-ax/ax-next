@@ -46,11 +46,22 @@ function invalid(message: string): PluginError {
 }
 
 /**
- * Ids a connector may never take because a route path uses the same segment:
- * `/admin/connectors/authored` (slice 2c, the request queue) would shadow
- * `/admin/connectors/:id` for a connector with that id (exact match wins).
+ * Ids a NEW connector may never take because a route path uses the same
+ * segment: `/admin/connectors/authored` (slice 2c, the request queue) would
+ * shadow `/admin/connectors/:id` for a connector with that id (exact match
+ * wins). Checked on create paths only (`assertConnectorIdCreatable`), so a
+ * connector that already had this id before slice 2c can still be read,
+ * edited and deleted, and `connectors:live-ids` still answers for it.
  */
 const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored']);
+
+/** Refuse an id no NEW connector or request may take. Call on create paths
+ *  only, after `validateConnectorId`. */
+export function assertConnectorIdCreatable(connectorId: string): void {
+  if (RESERVED_CONNECTOR_IDS.has(connectorId)) {
+    throw invalid(`connectorId '${connectorId}' is reserved`);
+  }
+}
 
 export function validateConnectorId(value: unknown): string {
   if (typeof value !== 'string') {
@@ -63,9 +74,6 @@ export function validateConnectorId(value: unknown): string {
     throw invalid(
       `connectorId must match ${ID_RE.source} (lowercase slug)`,
     );
-  }
-  if (RESERVED_CONNECTOR_IDS.has(value)) {
-    throw invalid(`connectorId '${value}' is reserved`);
   }
   return value;
 }
@@ -278,7 +286,8 @@ export interface UpsertArgs {
   requireUniqueId?: boolean;
   /**
    * When true and a live (userId, connectorId) row already exists, refuse with
-   * `connector-id-taken` instead of updating it.
+   * `connector-id-taken` instead of updating it. Atomic: the write itself only
+   * updates a tombstoned row (resurrection), never a live one.
    */
   createOnly?: boolean;
   /**
@@ -538,15 +547,11 @@ export function createConnectorStore(
         .where('connector_id', '=', args.connectorId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
-      const created = existing === undefined;
-      if (!created && args.createOnly === true) {
-        throw new PluginError({
-          code: 'connector-id-taken',
-          plugin: PLUGIN_NAME,
-          hookName: 'connectors:upsert',
-          message: `connector id '${args.connectorId}' is already in use`,
-        });
-      }
+      // Under `createOnly` a successful write is always a creation (a fresh
+      // insert or a resurrected tombstone): a live row makes the guarded write
+      // below return nothing. That statement, not this read, is the check, so
+      // a live row that appears in between is still refused.
+      const created = args.createOnly === true || existing === undefined;
       if (created && args.requireUniqueId === true) {
         const taken = await db
           .selectFrom('connectors_v1_connectors')
@@ -609,11 +614,27 @@ export function createConnectorStore(
           created_at: now,
           updated_at: now,
         })
-        .onConflict((oc) =>
-          oc.columns(['owner_user_id', 'connector_id']).doUpdateSet(updateSet),
-        )
+        .onConflict((oc) => {
+          const update = oc.columns(['owner_user_id', 'connector_id']).doUpdateSet(updateSet);
+          // A create may resurrect a tombstone but never overwrite a live row.
+          // Guarded in the statement itself, so a live row written between the
+          // pre-read above and this write still can't be clobbered.
+          return args.createOnly === true
+            ? update.where('connectors_v1_connectors.deleted_at', 'is not', null)
+            : update;
+        })
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (row === undefined) {
+        // Only reachable under `createOnly`: the conflict update's guard found
+        // a LIVE row, so nothing was written.
+        throw new PluginError({
+          code: 'connector-id-taken',
+          plugin: PLUGIN_NAME,
+          hookName: 'connectors:upsert',
+          message: `connector id '${args.connectorId}' is already in use`,
+        });
+      }
       return { connector: rowToConnector(row), created };
     },
 

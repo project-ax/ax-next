@@ -16,6 +16,7 @@ import {
   requiresSharedKeyConsent,
 } from './credential-plan.js';
 import {
+  assertConnectorIdCreatable,
   createConnectorStore,
   DESCRIPTION_MAX,
   USAGE_NOTE_MAX,
@@ -406,7 +407,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         // Admin use only (the adminOnly GET /admin/connectors/authored). The
         // registry store drops any request whose id is already live as a
         // SHARED connector.
-        async () => listAuthoredPendingAll(localAuthored, localStore),
+        async (ctx) => listAuthoredPendingAll(localAuthored, localStore, ctx),
         { returns: ListAuthoredPendingAllOutputSchema },
       );
 
@@ -690,6 +691,10 @@ async function upsertConnector(
       message: `connector '${connectorId}' not found`,
     });
   }
+  // A write with no live row is a create (or a resurrection): the reserved
+  // ids are refused here, not in `validateConnectorId`, so a connector that
+  // already holds one can still be edited.
+  if (prior === null) assertConnectorIdCreatable(connectorId);
   // TASK-827 — who supplies the key is fixed for a live connector. A switch
   // would leave the old mode's key behind (orphaned), and a personal key left
   // behind would SHADOW the shared one: credentials:get walks
@@ -1185,6 +1190,8 @@ async function installAuthoredConnector(
   const hookName = 'connectors:install-authored';
   const { ownerUserId, agentId } = requireScope(input, hookName);
   const connectorId = validateConnectorId(input.connectorId);
+  // A request is for a connector that does not exist yet: a create path.
+  assertConnectorIdCreatable(connectorId);
   const name = validateName(input.name);
   const usageNote = validateOptionalText(
     input.usageNote,
@@ -1228,8 +1235,15 @@ async function installAuthoredConnector(
 async function listAuthoredPendingAll(
   store: AuthoredConnectorsStore,
   registry: ConnectorStore,
+  ctx: AgentContext,
 ): Promise<ListAuthoredPendingAllOutput> {
-  const pending = await store.listPendingAll();
+  const pending = await store.listPendingAll(({ ownerUserId, connectorId }, err) => {
+    ctx.logger.warn('connectors_authored_pending_skipped_row', {
+      ownerUserId,
+      connectorId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  });
   if (pending.length === 0) return { drafts: [] };
   const live = new Set(await registry.liveSharedIds(pending.map((d) => d.connectorId)));
   return {

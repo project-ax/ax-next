@@ -14,6 +14,7 @@ import {
   type ConnectorDatabase,
 } from '../migrations.js';
 import {
+  assertConnectorIdCreatable,
   createConnectorStore,
   validateCapabilities,
   validateConnectorId,
@@ -186,6 +187,52 @@ describe('createConnectorStore', () => {
       await store.upsert({ ...base, userId: 'idA' });
       const out = await store.upsert({ ...base, userId: 'idA', requireUniqueId: true });
       expect(out.created).toBe(false);
+    });
+  });
+
+  describe('createOnly', () => {
+    const base = {
+      userId: 'idA',
+      connectorId: 'gmail',
+      name: 'Gmail',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal' as const,
+      visibility: 'shared' as const,
+      capabilities: caps(),
+    };
+
+    it('refuses a same-owner live row with connector-id-taken and leaves the row unchanged', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert(base);
+      const before = await store.getByIdNotDeleted('idA', 'gmail');
+      await expect(
+        store.upsert({ ...base, name: 'Overwritten', visibility: 'private', createOnly: true }),
+      ).rejects.toMatchObject({ code: 'connector-id-taken' });
+      const after = await store.getByIdNotDeleted('idA', 'gmail');
+      expect(after).toEqual(before);
+      expect(after?.name).toBe('Gmail');
+    });
+
+    it('still resurrects a tombstone (created: true)', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert(base);
+      await store.softDelete('idA', 'gmail');
+      const out = await store.upsert({ ...base, name: 'Gmail again', createOnly: true });
+      expect(out.created).toBe(true);
+      expect((await store.getByIdNotDeleted('idA', 'gmail'))?.name).toBe('Gmail again');
+    });
+
+    it('creates a fresh row', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      const out = await store.upsert({ ...base, createOnly: true });
+      expect(out.created).toBe(true);
     });
   });
 
@@ -439,6 +486,12 @@ describe('boundary validators', () => {
     expect(() => validateConnectorId('Has Space')).toThrow();
     expect(() => validateConnectorId('UPPER')).toThrow();
     expect(() => validateConnectorId('')).toThrow();
+  });
+
+  it('validateConnectorId accepts `authored` (reserved only on create), assertConnectorIdCreatable refuses it', () => {
+    expect(validateConnectorId('authored')).toBe('authored');
+    expect(() => assertConnectorIdCreatable('authored')).toThrow(/reserved/);
+    expect(() => assertConnectorIdCreatable('linear')).not.toThrow();
   });
 
   it('validateKeyMode / validateVisibility reject out-of-enum', () => {

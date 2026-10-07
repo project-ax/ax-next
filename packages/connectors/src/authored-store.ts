@@ -55,6 +55,12 @@ export interface PendingAuthoredConnectorDraft extends AuthoredConnectorDraft {
   agentId: string;
 }
 
+/** Told about each pending draft `listPendingAll` had to skip. */
+export type OnSkippedDraft = (
+  draft: { ownerUserId: string; connectorId: string },
+  err: unknown,
+) => void;
+
 export interface UpsertAuthoredConnectorInput {
   ownerUserId: string;
   agentId: string;
@@ -72,8 +78,10 @@ export interface AuthoredConnectorsStore {
   upsert(input: UpsertAuthoredConnectorInput): Promise<{ created: boolean }>;
   /** Slice 2c — every owner's PENDING drafts, each carrying its owner and
    *  agent, sorted by connector_id, owner_user_id, agent_id for a stable order.
-   *  A SYSTEM read: backs the admin proposal queue only. */
-  listPendingAll(): Promise<PendingAuthoredConnectorDraft[]>;
+   *  A SYSTEM read: backs the admin proposal queue only. A row that fails the
+   *  read schema is skipped and reported through `onSkip`, so one bad row from
+   *  one user can't empty the queue for every admin. */
+  listPendingAll(onSkip: OnSkippedDraft): Promise<PendingAuthoredConnectorDraft[]>;
   /**
    * Slice 2c — delete EVERY draft with this connector id, across owners and
    * agents, in any status. Called when a live connector with that id is created
@@ -168,16 +176,23 @@ export function createAuthoredConnectorsStore(
       return { created };
     },
 
-    async listPendingAll() {
+    async listPendingAll(onSkip) {
       const rows = await pendingAuthoredConnectorsForAdmins(db)
         .orderBy('connector_id', 'asc')
         .orderBy('owner_user_id', 'asc')
         .orderBy('agent_id', 'asc')
         .execute();
-      return rows.map((r) => {
+      const out: PendingAuthoredConnectorDraft[] = [];
+      for (const r of rows) {
         const row = r as ConnectorsAuthoredRow;
-        return { ...rowToDraft(row), ownerUserId: row.owner_user_id, agentId: row.agent_id };
-      });
+        try {
+          out.push({ ...rowToDraft(row), ownerUserId: row.owner_user_id, agentId: row.agent_id });
+        } catch (err) {
+          // Same posture as the live store's `listAllLive`: skip and report.
+          onSkip({ ownerUserId: row.owner_user_id, connectorId: row.connector_id }, err);
+        }
+      }
+      return out;
     },
 
     async clearAllById(connectorId) {

@@ -1634,6 +1634,60 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(out.created).toBe(false);
   });
 
+  it('a PATCH body carrying createOnly: true still edits (the route re-asserts createOnly: false)', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    await handlers.create(makeReq({ body: { connectorId: 'edited', name: 'Before', keyMode: 'personal', capabilities: mcpCaps() } }), makeRes().res);
+    const patch = makeRes();
+    await handlers.update(makeReq({ params: { id: 'edited' }, body: { name: 'After', createOnly: true } }), patch.res);
+    expect(patch.captured.status).toBe(200);
+    expect(patch.captured.body).toMatchObject({ connector: { name: 'After' }, created: false });
+  });
+
+  // Slice 2c — `authored` is reserved for NEW connectors only. A connector
+  // that already had the id (created before the reservation) stays readable,
+  // editable and deletable.
+  it('a pre-existing `authored` connector can still be read, edited and deleted', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    // Seeded through the store, below the hook: the way a connector created
+    // before the reservation exists.
+    const { db } = await h.bus.call<unknown, { db: Kysely<ConnectorDatabase> }>(
+      'database:get-instance', h.ctx(), {},
+    );
+    await createConnectorStore(db).upsert({
+      userId: 'root',
+      connectorId: 'authored',
+      name: 'Authored',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal',
+      visibility: 'shared',
+      capabilities: mcpCaps(),
+    });
+    const shown = makeRes();
+    await handlers.show(makeReq({ params: { id: 'authored' } }), shown.res);
+    expect(shown.captured.status).toBe(200);
+    const patch = makeRes();
+    await handlers.update(makeReq({ params: { id: 'authored' }, body: { name: 'Renamed' } }), patch.res);
+    expect(patch.captured.status).toBe(200);
+    const live = await h.bus.call<{ connectorIds: string[] }, { live: string[] }>(
+      'connectors:live-ids', h.ctx({ userId: 'root' }), { connectorIds: ['authored', 'x'] },
+    );
+    expect(live.live).toEqual(['authored']);
+    const del = await h.bus.call<unknown, { deleted: boolean }>(
+      'connectors:delete', h.ctx({ userId: 'root' }), { userId: 'root', connectorId: 'authored' },
+    );
+    expect(del.deleted).toBe(true);
+    // But a NEW one can't take the id.
+    const create = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'authored', name: 'New', keyMode: 'personal', capabilities: mcpCaps() } }), create.res);
+    expect(create.captured.status).toBe(400);
+    expect(create.captured.body).toMatchObject({ error: expect.stringMatching(/reserved/) });
+  });
+
   // TASK-808 — "Set default" is gone. A stale client that still sends the field
   // fails LOUDLY (400) instead of being silently dropped, for ONE release, on
   // every admin write route, whatever the value (it no longer means

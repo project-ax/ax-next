@@ -754,6 +754,8 @@ export function createConnectorRouteHandlers(
         capabilities: existing.capabilities,
         ...editable,
         requireUniqueId: false,
+        // A stray `createOnly` in the body would turn this edit into a 409.
+        createOnly: false,
         // An edit never creates or resurrects: a delete that lands between the
         // read above and this write wins (→ 404), so slice 1's purge stands.
         updateOnly: true,
@@ -1090,8 +1092,9 @@ export async function registerAdminConnectorRoutes(
     { method: 'POST', path: '/admin/connectors', handler: handlers.create },
     // Slice 2c — agent requests awaiting approval, and Dismiss. The router
     // prefers an exact path over a `:id` pattern, so `authored` would shadow a
-    // connector with that id — `validateConnectorId` reserves it. Approving is
-    // creating: POST /admin/connectors (shared) clears the requests.
+    // connector with that id — no NEW connector may take it
+    // (`assertConnectorIdCreatable`). Approving is creating: POST
+    // /admin/connectors (shared) clears the requests.
     { method: 'GET', path: '/admin/connectors/authored', handler: handlers.listAuthoredProposals },
     {
       method: 'DELETE',

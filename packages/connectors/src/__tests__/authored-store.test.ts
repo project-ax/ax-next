@@ -114,7 +114,7 @@ describe('runConnectorsMigration — authored table', () => {
     await runConnectorsMigration(db);
     await runConnectorsMigration(db);
     const store = createAuthoredConnectorsStore(db);
-    expect(await store.listPendingAll()).toEqual([]);
+    expect(await store.listPendingAll(() => {})).toEqual([]);
   });
 
   it('enforces status / key_mode CHECK constraints at the DB level', async () => {
@@ -181,7 +181,7 @@ describe('createAuthoredConnectorsStore', () => {
     // An ACTIVE draft is not pending: it must not appear.
     await markActive(db, 'u', 'a1', 'slack');
 
-    const pending = await store.listPendingAll();
+    const pending = await store.listPendingAll(() => {});
     // Deterministic order: connector_id, then owner, then agent.
     expect(pending.map((d) => ({ connectorId: d.connectorId, ownerUserId: d.ownerUserId, agentId: d.agentId }))).toEqual([
       { connectorId: 'gmail', ownerUserId: 'u', agentId: 'a1' },
@@ -190,6 +190,28 @@ describe('createAuthoredConnectorsStore', () => {
     ]);
     expect(pending.every((d) => d.status === 'pending')).toBe(true);
     expect(pending[0]!.proposal).toEqual(caps());
+  });
+
+  it('listPendingAll skips a draft with a malformed proposal, reports it, and still returns the good ones', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+    await store.upsert({ ownerUserId: 'u', agentId: 'a1', connectorId: 'linear', name: 'Linear', usageNote: '', keyMode: 'personal', proposal: caps() });
+    // One user's corrupt row (hand-edited / older shape) must not empty the
+    // queue for every admin.
+    await sql`
+      INSERT INTO connectors_v1_authored
+        (owner_user_id, agent_id, connector_id, name, usage_note, key_mode, capability_proposal, status)
+      VALUES ('bad-owner', 'a9', 'broken', 'Broken', '', 'personal', '{"allowedHosts": 5}'::jsonb, 'pending')
+    `.execute(db);
+
+    const skipped: Array<{ ownerUserId: string; connectorId: string; err: unknown }> = [];
+    const pending = await store.listPendingAll((draft, err) => skipped.push({ ...draft, err }));
+
+    expect(pending.map((d) => d.connectorId)).toEqual(['linear']);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toMatchObject({ ownerUserId: 'bad-owner', connectorId: 'broken' });
+    expect(String((skipped[0]!.err as Error).message)).toMatch(/malformed capability_proposal/);
   });
 
   it('clearAllById removes every draft with that id across owners and agents, any status', async () => {

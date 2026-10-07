@@ -207,6 +207,16 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
     ).rejects.toThrow(/reserved/);
   });
 
+  it('the reservation is create-only: connectors:live-ids answers for `authored` without throwing', async () => {
+    const h = await makeHarness();
+    const out = await h.bus.call<{ connectorIds: string[] }, { live: string[] }>(
+      'connectors:live-ids',
+      h.ctx({ userId: 'admin' }),
+      { connectorIds: ['authored', 'x'] },
+    );
+    expect(out.live).toEqual([]);
+  });
+
   it('rejects a malformed connectorId', async () => {
     const h = await makeHarness();
     await expect(
@@ -472,6 +482,45 @@ describe('@ax/connectors — connectors:list-authored-pending-all (admin queue)'
     expect(b.proposal.allowedHosts).toEqual(['api.linear.app']);
     expect(typeof b.updatedAt).toBe('string');
     expect(Number.isNaN(Date.parse(b.updatedAt))).toBe(false);
+  });
+});
+
+describe('@ax/connectors — one malformed request does not empty the admin queue', () => {
+  it('skips the bad row, logs it with its owner and id, and returns the good ones', async () => {
+    const h = await makeHarness();
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
+      installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query(
+        `INSERT INTO connectors_v1_authored (owner_user_id, agent_id, connector_id, name, usage_note, key_mode, capability_proposal, status)
+         VALUES ('userB', 'agent2', 'broken', 'Broken', '', 'personal', '{"allowedHosts": 5}'::jsonb, 'pending')`,
+      );
+    } finally {
+      await pg.end();
+    }
+    const warns: Array<{ msg: string; bindings?: Record<string, unknown> }> = [];
+    const logger: Logger = {
+      debug() {},
+      info() {},
+      warn(msg, bindings) {
+        warns.push({ msg, bindings });
+      },
+      error() {},
+      child() {
+        return logger;
+      },
+    };
+    const out = await h.bus.call<ListAuthoredPendingAllInput, ListAuthoredPendingAllOutput>(
+      'connectors:list-authored-pending-all',
+      h.ctx({ userId: 'admin', logger }),
+      {},
+    );
+    expect(out.drafts.map((d) => d.connectorId)).toEqual(['linear']);
+    const skipped = warns.filter((w) => w.msg === 'connectors_authored_pending_skipped_row');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.bindings).toMatchObject({ ownerUserId: 'userB', connectorId: 'broken' });
   });
 });
 
