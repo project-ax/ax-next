@@ -34,6 +34,8 @@ import { sql, type Kysely } from 'kysely';
  *     an AGENT owns (a team agent's shared sign-in, vault scope `agent`), keyed
  *     (agent, connector) so one member's reconnect clears it for every member.
  *     The per-user table above keeps the markers for tokens a person owns.
+ *     Cleaned on agent delete (`deleteAllForAgent`, via `agents:deleted`), so a
+ *     deleted agent leaves no marker behind.
  */
 export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`

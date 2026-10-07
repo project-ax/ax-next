@@ -98,9 +98,12 @@ that's a bug.
 - **Read authz unchanged:** `credentials:authorize-agent:account` (TASK-711) still requires
   the sole shared definition and the connector being effective on the agent. With
   admin-only definitions every connector qualifies; it stays as defense in depth.
-- **New hook `credentials:purge-account {connectorId}`:** deletes `account:<id>` and
-  `account:<id>:*` rows at agent and global scope across all owners. Used by connector
-  delete and the migration.
+- **New hook `credentials:purge-account {connectorId?, scopes}` → `{purged}`:** tombstones
+  `account:<id>` and `account:<id>:*` rows (or, with no `connectorId`, every `account:` row)
+  across all owners, only in the listed `scopes` (each `user` or `agent`; `global` is
+  refused — a connector's company key is its own key, purged by ref via
+  `credentials:delete`). Used by shared-connector delete (`agent`) and the migration
+  (`user`).
 
 ### 2. Sign-in flow (`@ax/mcp-oauth`)
 
@@ -186,8 +189,8 @@ secret" editor notice.
 - **`mcp-oauth:status-batch` gains `account`, `signedInBy`, `signedInAt`.** Alternate impl:
   a vault-backed or API-key store answering "who is this credential for" (`account: null`).
   Leaky names: none. Subscriber risk: none (service hook, one caller).
-- **New `credentials:purge-account {connectorId}`.** Alternate impl: a KMS/vault backend
-  deleting by tag. Leaky names: none. Subscriber risk: none.
+- **New `credentials:purge-account {connectorId?, scopes}`** (scopes ⊆ `user`|`agent`).
+  Alternate impl: a KMS/vault backend deleting by tag. Leaky names: none. Subscriber risk: none.
 - **Removed:** `mcp-oauth:remove-personal-sign-in`.
 - **Changed semantics:** `account:` refs no longer resolve at user scope; `begin` requires
   `agentId`. No payload field changes.

@@ -481,7 +481,7 @@ describe('createMcpOAuthStore', () => {
         .values({ client_key: 'k|a', client_id: 'cid', client_secret: null, dynamic: true, created_at: new Date(0) })
         .execute();
 
-      expect(await store.deleteAllForAgent('agt_gone')).toMatchObject({ deleted: 3 });
+      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 3, markers: 0 });
 
       for (const s of ['g1', 'g2', 'g3']) expect(await store.getPending(s)).toBeNull();
       for (const s of ['k1', 'k2']) expect(await store.getPending(s)).not.toBeNull();
