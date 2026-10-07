@@ -42,10 +42,41 @@ afterAll(async () => {
   if (container) await stopPostgresContainer(container);
 });
 
+// The store no longer has a write path (skills:approved-caps-set is gone — rows
+// are legacy data that still display and revoke). Tests seed those legacy rows
+// directly.
+function withSeed(db: Kysely<SkillsDatabase>) {
+  const store = createApprovedCapsStore(db);
+  async function set(input: {
+    ownerUserId: string;
+    agentId: string;
+    skillId?: string;
+    connectorId?: string;
+    kind: 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
+    value: string;
+    detail?: unknown;
+  }): Promise<void> {
+    await db
+      .insertInto('skills_v1_approved_caps')
+      .values({
+        owner_user_id: input.ownerUserId,
+        agent_id: input.agentId,
+        skill_id: input.skillId ?? '',
+        connector_id: input.connectorId ?? '',
+        cap_kind: input.kind,
+        cap_value: input.value,
+        cap_detail: input.detail === undefined ? null : input.detail,
+        created_at: new Date(),
+      } as never)
+      .execute();
+  }
+  return { ...store, set };
+}
+
 async function freshStore() {
   const db = makeKysely();
   await runSkillsMigration(db);
-  return createApprovedCapsStore(db);
+  return withSeed(db);
 }
 
 describe('skills approved-caps store', () => {
@@ -56,10 +87,9 @@ describe('skills approved-caps store', () => {
     expect(await s.list(key)).toEqual([]);
   });
 
-  it('set then list returns the entry; set is idempotent', async () => {
+  it('a seeded row is listed', async () => {
     const s = await freshStore();
-    expect(await s.set({ ...key, kind: 'host', value: 'api.linear.app' })).toEqual({ created: true });
-    expect(await s.set({ ...key, kind: 'host', value: 'api.linear.app' })).toEqual({ created: false });
+    await s.set({ ...key, kind: 'host', value: 'api.linear.app' });
     expect(await s.list(key)).toEqual([{ kind: 'host', value: 'api.linear.app' }]);
   });
 
@@ -101,14 +131,9 @@ describe('skills approved-caps store — connector subjects', () => {
     expect(await s.list(ckey)).toEqual([]);
   });
 
-  it('connector set→list→revoke round-trips; set is idempotent', async () => {
+  it('connector seed→list→revoke round-trips', async () => {
     const s = await freshStore();
-    expect(await s.set({ ...ckey, kind: 'host', value: 'api.salesforce.com' })).toEqual({
-      created: true,
-    });
-    expect(await s.set({ ...ckey, kind: 'host', value: 'api.salesforce.com' })).toEqual({
-      created: false,
-    });
+    await s.set({ ...ckey, kind: 'host', value: 'api.salesforce.com' });
     expect(await s.list(ckey)).toEqual([{ kind: 'host', value: 'api.salesforce.com' }]);
     expect(await s.clear({ ...ckey, kind: 'host', value: 'api.salesforce.com' })).toEqual({
       cleared: true,
@@ -161,7 +186,7 @@ describe('skills approved-caps migration idempotency', () => {
     const db = makeKysely();
     await runSkillsMigration(db);
     await runSkillsMigration(db); // re-run must be a no-op, not a constraint error
-    const s = createApprovedCapsStore(db);
+    const s = withSeed(db);
     await s.set({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'c1', kind: 'npm', value: 'pkg' });
     expect(await s.list({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'c1' })).toEqual([
       { kind: 'npm', value: 'pkg' },

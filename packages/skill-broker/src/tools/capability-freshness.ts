@@ -153,9 +153,9 @@ interface CatalogSkillDetail {
  * `connectors:resolve` returns it and it widens what the agent can touch, it is
  * digested. `usageNote` and the derived `credentialPlan` are excluded — a
  * reworded blurb is not a changed world, and the plan is a function of what is
- * already here. (The sibling producer in `@ax/tool-connector-propose` omits
- * `mcpServers` and `services` even though resolve returns them; that is a blind
- * spot, not a precedent, and TASK-262 deliberately does not inherit it.)
+ * already here. (`mcpServers` and `services` are digested too, even though
+ * resolve returns them as separate fields: leaving either out would be a blind
+ * spot.)
  *
  * Every field is optional because this is a WIRE shape from another plugin: a
  * resolve that predates a field, or a test stub that omits one, must degrade to
@@ -535,10 +535,9 @@ async function catalogToken(
   // replayed, so an already-granted approval is untouched and a fresh ask
   // simply captures the new digest.
   //
-  // The sibling producer in
-  // `@ax/tool-connector-propose` returns `{ predicate: null }` in this
-  // situation because the registry is the ONLY world it reads; copying that
-  // here would delete a working guard instead of narrowing it.
+  // Returning `{ predicate: null }` here would be wrong: the registry is not the
+  // only world this guard reads, so blanking the predicate would delete a
+  // working guard instead of narrowing it.
   //
   // The hook set is fixed for the life of a boot, so capture and check inside
   // one process always agree on which branch they are in. A HELD decision is

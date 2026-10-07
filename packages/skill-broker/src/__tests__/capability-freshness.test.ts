@@ -263,8 +263,8 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
       {
         capabilities: {
           ...REACH_CAPS,
-          // The sibling producer omits mcpServers from its digest even though
-          // resolve returns it. This producer does not inherit that blind spot.
+          // mcpServers is part of the digest even though resolve returns it
+          // as its own field.
           mcpServers: [
             { name: 'linear', transport: 'http', url: 'https://mcp.linear.app', allowedHosts: ['mcp.linear.app'], credentials: [] },
           ],
@@ -619,12 +619,10 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
   });
 
   it('still guards the catalog entry with NO connectors:resolve on the bus at all', async () => {
-    // THE REGRESSION GUARD. The sibling producer (@ax/tool-connector-propose)
-    // returns `{predicate:null}` when connectors:resolve is missing, because
-    // without it that producer has no world to read at all. Copying that shape
-    // HERE would blank this predicate and delete the working catalog guard in
-    // every connector-less preset. The gate belongs on the reach FOLD, never on
-    // the predicate.
+    // THE REGRESSION GUARD. Returning `{predicate:null}` when connectors:resolve
+    // is missing would blank this predicate and delete the working catalog guard
+    // in every connector-less preset. The gate belongs on the reach FOLD, never
+    // on the predicate.
     const catalog: Catalog = { linear: PRESENT };
     const bus = await bootWith(catalog);
     expect(bus.hasService('connectors:resolve')).toBe(false);

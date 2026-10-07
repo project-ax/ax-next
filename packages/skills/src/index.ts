@@ -29,8 +29,6 @@ export type {
   ApprovedCapEntry,
   SkillsApprovedCapsListInput,
   SkillsApprovedCapsListOutput,
-  SkillsApprovedCapsSetInput,
-  SkillsApprovedCapsSetOutput,
   SkillsApprovedCapsRevokeInput,
   SkillsApprovedCapsRevokeOutput,
   SkillsProposeInput,

@@ -2,14 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { rewriteManifestDroppingCaps } from '../cap-migration.js';
 import { parseSkillManifest } from '@ax/skills-parser';
 
-// TASK-100 — the pure rewrite half of the cap→connector data migration. The
-// DB-walking half (migrateSkillCapabilitiesToConnectors) is exercised against a
-// real postgres testcontainer in the plugin/store suites; here we pin the pure
-// transform: a legacy capabilities block is stripped, a connector reference is
-// added, and the result round-trips through the (cap-free) parser.
+// The pure rewrite half of the legacy capability strip. The DB-walking half is
+// in cap-migration-db.test.ts. A legacy capabilities block is stripped (no
+// connector reference is added) and the result round-trips through the parser.
 
 describe('rewriteManifestDroppingCaps', () => {
-  it('strips a legacy capabilities block and references a connector named after the skill', () => {
+  it('strips a legacy capabilities block and invents no connector reference', () => {
     const legacy = [
       'name: github',
       'description: GitHub helper.',
@@ -28,14 +26,7 @@ describe('rewriteManifestDroppingCaps', () => {
     const r = rewriteManifestDroppingCaps(legacy);
     expect(r).not.toBeNull();
     if (r === null) return;
-
-    // The connector carries the lifted reach.
-    expect(r.connectorId).toBe('github');
-    expect(r.capabilities?.allowedHosts).toEqual(['api.github.com']);
-    expect(r.capabilities?.credentials[0]?.slot).toBe('GITHUB_TOKEN');
-    expect(r.capabilities?.packages.npm).toEqual(['@github/cli']);
-
-    // The rewritten manifest is cap-free and references the connector.
+    expect(r.hadReach).toBe(true);
     expect(r.manifestYaml).not.toContain('capabilities');
     expect(r.manifestYaml).not.toContain('allowedHosts');
     const parsed = parseSkillManifest(r.manifestYaml);
@@ -43,31 +34,30 @@ describe('rewriteManifestDroppingCaps', () => {
     if (!parsed.ok) return;
     expect(parsed.value.id).toBe('github');
     expect(parsed.value.version).toBe(2);
-    expect(parsed.value.connectors).toEqual(['github']);
+    expect(parsed.value.connectors).toEqual([]);
   });
 
   it('is idempotent: a cap-free manifest is left alone (returns null)', () => {
     const capFree = 'name: notes\ndescription: Note-taking know-how.\nversion: 1\nconnectors:\n  - notion\n';
     expect(rewriteManifestDroppingCaps(capFree)).toBeNull();
-    // And it still parses cleanly (the guard for "already migrated").
     const parsed = parseSkillManifest(capFree);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.value.connectors).toEqual(['notion']);
   });
 
-  it('strips an EMPTY capabilities block without adding a connector (no reach to lift)', () => {
+  it('strips an EMPTY capabilities block (no reach to drop)', () => {
     const legacy = 'name: inert\ndescription: Instruction-only.\nversion: 0\ncapabilities: {}\n';
     const r = rewriteManifestDroppingCaps(legacy);
     expect(r).not.toBeNull();
     if (r === null) return;
-    expect(r.connectorId).toBeNull(); // no reach → no connector
+    expect(r.hadReach).toBe(false);
     expect(r.manifestYaml).not.toContain('capabilities');
     const parsed = parseSkillManifest(r.manifestYaml);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.value.connectors).toEqual([]);
   });
 
-  it('merges the migrated connector with any pre-existing connectors[] (deduped)', () => {
+  it('keeps pre-existing connectors[] untouched', () => {
     const legacy = [
       'name: linear',
       'description: Linear helper.',
@@ -84,6 +74,6 @@ describe('rewriteManifestDroppingCaps', () => {
     const parsed = parseSkillManifest(r.manifestYaml);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value.connectors).toEqual(['existing-connector', 'linear']);
+    expect(parsed.value.connectors).toEqual(['existing-connector']);
   });
 });

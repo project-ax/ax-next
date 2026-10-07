@@ -33,15 +33,6 @@ export interface ApprovedCapEntry {
 }
 
 export interface ApprovedCapsStore {
-  set(
-    input: {
-      ownerUserId: string;
-      agentId: string;
-      kind: ApprovedCapKind;
-      value: string;
-      detail?: unknown;
-    } & ApprovedCapSubject,
-  ): Promise<{ created: boolean }>;
   clear(
     input: {
       ownerUserId: string;
@@ -77,38 +68,6 @@ function subjectColumns(subject: ApprovedCapSubject): {
 
 export function createApprovedCapsStore(db: Kysely<SkillsDatabase>): ApprovedCapsStore {
   return {
-    async set({ ownerUserId, agentId, kind, value, detail, ...subject }) {
-      const { skill_id, connector_id } = subjectColumns(subject as ApprovedCapSubject);
-      // Idempotent: a duplicate (kind, value) for the same subject is a no-op.
-      // Accept the PK-violation race (mirrors host-grants / quarantine).
-      const res = await db
-        .insertInto('skills_v1_approved_caps')
-        .values({
-          owner_user_id: ownerUserId,
-          agent_id: agentId,
-          skill_id,
-          connector_id,
-          cap_kind: kind,
-          cap_value: value,
-          cap_detail: detail === undefined ? null : (detail as unknown),
-          created_at: new Date(),
-        })
-        .onConflict((oc) =>
-          oc
-            .columns([
-              'owner_user_id',
-              'agent_id',
-              'skill_id',
-              'connector_id',
-              'cap_kind',
-              'cap_value',
-            ])
-            .doNothing(),
-        )
-        .executeTakeFirst();
-      return { created: Number(res.numInsertedOrUpdatedRows ?? 0n) > 0 };
-    },
-
     async clear({ ownerUserId, agentId, kind, value, ...subject }) {
       const { skill_id, connector_id } = subjectColumns(subject as ApprovedCapSubject);
       const res = await db

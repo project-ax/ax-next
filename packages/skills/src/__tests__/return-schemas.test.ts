@@ -14,7 +14,6 @@ import {
   CatalogListRequestsOutputSchema,
   CatalogAdmitOutputSchema,
   SkillsApprovedCapsListOutputSchema,
-  SkillsApprovedCapsSetOutputSchema,
   SkillsApprovedCapsRevokeOutputSchema,
   SkillsProposeOutputSchema,
   SkillsListAuthoredOutputSchema,
@@ -37,7 +36,6 @@ import {
   type SkillsListUserAttachmentsOutput,
   type SkillsSearchCatalogOutput,
   type SkillsApprovedCapsListOutput,
-  type SkillsApprovedCapsSetOutput,
   type SkillsApprovedCapsRevokeOutput,
 } from '../types.js';
 
@@ -259,10 +257,6 @@ describe('skills return schemas', () => {
     ).toBe(false);
   });
 
-  it('skills:approved-caps-set output round-trips', () => {
-    const v: SkillsApprovedCapsSetOutput = { created: true };
-    expect(SkillsApprovedCapsSetOutputSchema.parse(v)).toEqual(v);
-  });
   it('skills:approved-caps-revoke output round-trips', () => {
     const v: SkillsApprovedCapsRevokeOutput = { cleared: false };
     expect(SkillsApprovedCapsRevokeOutputSchema.parse(v)).toEqual(v);
