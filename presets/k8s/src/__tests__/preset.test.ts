@@ -1104,6 +1104,9 @@ describe('@ax/preset-k8s wiring', () => {
       // TASK-858 — a team admin removes a team agent's shared sign-in. Needs the
       // vault's `credentials:delete`, so it rides the mounted routes.
       'mcp-oauth:remove-shared-sign-in',
+      // A person's own sign-in goes once its connector is on none of their
+      // agents (channel-web's connector DELETE). Same credentials:delete need.
+      'mcp-oauth:remove-personal-sign-in',
     ]);
     // mountRoutes:true in the preset expands the manifest `calls` to the OAuth
     // route + resolver deps. All are registered by plugins loaded above

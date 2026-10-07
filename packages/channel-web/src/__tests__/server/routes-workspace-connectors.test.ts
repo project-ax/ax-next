@@ -92,6 +92,8 @@ describe('agent connector routes', () => {
     runner?: string;
   };
   let effective: Effective[];
+  /** When set, `connectors:list-effective` answers from the input's attachments instead. */
+  let effectiveFromAttachments: boolean;
   let listEffectiveCalls: unknown[];
   let detachCalls: Array<Record<string, unknown>>;
   let attachCalls: Array<Record<string, unknown>>;
@@ -147,6 +149,7 @@ describe('agent connector routes', () => {
         toolNamespaces: [],
       },
     ];
+    effectiveFromAttachments = false;
     listEffectiveCalls = [];
     detachCalls = [];
     attachCalls = [];
@@ -210,6 +213,16 @@ describe('agent connector routes', () => {
     });
     bus.registerService('connectors:list-effective', 'connectors', async (_c, i: unknown) => {
       listEffectiveCalls.push(i);
+      if (effectiveFromAttachments) {
+        const { attachmentIds } = i as { attachmentIds: string[] };
+        return {
+          connectors: attachmentIds.map((id) => ({
+            summary: { id, name: id },
+            source: 'attached',
+            toolNamespaces: [],
+          })),
+        };
+      }
       return { connectors: effective };
     });
     bus.registerService('agents:attach-connector', 'agents', async (_c, i: unknown) => {
@@ -1463,6 +1476,100 @@ describe('agent connector routes', () => {
       }));
       const r = await remove('linear');
       expect(r.body).toEqual({ removed: true, cleanup: 'partial' });
+    });
+  });
+
+  describe('DELETE — signing out once a connector is on no agent', () => {
+    /** agents:list-for-user's answer: each agent's attachments AFTER the detach. */
+    let roster: Array<{ id: string; displayName: string; connectorAttachments: string[] }>;
+    let rosterThrows: boolean;
+    let personalSignOuts: Array<Record<string, unknown>>;
+    let personalSignOutThrows: boolean;
+    let credentialDeletes: Array<Record<string, unknown>>;
+
+    beforeEach(() => {
+      effectiveFromAttachments = true;
+      roster = [
+        { id: 'a1', displayName: 'Quill', connectorAttachments: [] },
+        { id: 'a2', displayName: 'Scout', connectorAttachments: ['linear'] },
+      ];
+      rosterThrows = false;
+      personalSignOuts = [];
+      personalSignOutThrows = false;
+      credentialDeletes = [];
+      bus.registerService('agents:list-for-user', 'agents', async () => {
+        if (rosterThrows) throw new Error('agents store down');
+        return { agents: roster };
+      });
+      bus.registerService('mcp-oauth:remove-personal-sign-in', 'mcp-oauth', async (_c, i: unknown) => {
+        personalSignOuts.push(i as Record<string, unknown>);
+        if (personalSignOutThrows) throw new Error('vault down');
+        return { removed: true };
+      });
+      bus.registerService('credentials:delete', 'credentials', async (_c, i: unknown) => {
+        credentialDeletes.push(i as Record<string, unknown>);
+        return undefined;
+      });
+    });
+
+    it("deletes the caller's own sign-in when the connector was on its last agent, and says so", async () => {
+      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
+      const r = await remove('figma');
+      expect(r.statusCode).toBe(200);
+      expect(r.body).toEqual({ removed: true, cleanup: 'complete', signedOut: true });
+      expect(personalSignOuts).toEqual([{ userId: 'u1', connectorId: 'figma' }]);
+      // Never an agent-scope (team) row.
+      expect(credentialDeletes).toEqual([]);
+    });
+
+    it('keeps the sign-in while another of their agents still uses the connector', async () => {
+      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
+      roster[1]!.connectorAttachments = ['figma'];
+      const r = await remove('figma');
+      expect(r.body).toEqual({ removed: true, cleanup: 'complete' });
+      expect(personalSignOuts).toEqual([]);
+    });
+
+    it('deletes a personal api key at user scope for the caller', async () => {
+      agentRow = { connectorAttachments: ['stripe'], connectorExclusions: [] };
+      const r = await remove('stripe');
+      expect(r.body).toEqual({ removed: true, cleanup: 'complete', signedOut: true });
+      // The ref comes from the connector's credential plan, never the client.
+      expect(credentialDeletes).toEqual([{ scope: 'user', ownerId: 'u1', ref: 'account:stripe' }]);
+      expect(personalSignOuts).toEqual([]);
+    });
+
+    it('never touches a shared-key (workspace) connector', async () => {
+      agentRow = { connectorAttachments: ['company'], connectorExclusions: [] };
+      const r = await remove('company');
+      expect(r.body).toEqual({ removed: true, cleanup: 'complete' });
+      expect(credentialDeletes).toEqual([]);
+      expect(personalSignOuts).toEqual([]);
+    });
+
+    it("keeps the sign-in when the caller's agents can't be read — can't tell is not unused", async () => {
+      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
+      rosterThrows = true;
+      const r = await remove('figma');
+      expect(r.body).toEqual({ removed: true, cleanup: 'complete' });
+      expect(personalSignOuts).toEqual([]);
+    });
+
+    it('reports a sign-out that did not land as a partial cleanup, without signedOut', async () => {
+      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
+      personalSignOutThrows = true;
+      const r = await remove('figma');
+      expect(r.statusCode).toBe(200);
+      expect(r.body).toEqual({ removed: true, cleanup: 'partial' });
+    });
+
+    it('signs nothing out when the detach is refused', async () => {
+      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
+      detachRefusal = new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
+      const r = await remove('figma');
+      expect(r.statusCode).toBe(403);
+      expect(personalSignOuts).toEqual([]);
+      expect(credentialDeletes).toEqual([]);
     });
   });
 

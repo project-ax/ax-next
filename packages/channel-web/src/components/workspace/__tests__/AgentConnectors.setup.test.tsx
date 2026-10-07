@@ -210,12 +210,12 @@ describe('the row icon', () => {
 describe('the row menu', () => {
   it('leads with Sign in for a sign-in row, and offers no Retry or Reconnect', async () => {
     renderTab();
-    expect(await menuItems('Linear')).toEqual(['Sign in', 'View details', 'Remove from Quill']);
+    expect(await menuItems('Linear')).toEqual(['Sign in', 'View details', 'Edit permissions', 'Remove from Quill']);
   });
 
   it('leads with Add key for a key row', async () => {
     renderTab();
-    expect(await menuItems('Brave')).toEqual(['Add key', 'View details', 'Remove from Quill']);
+    expect(await menuItems('Brave')).toEqual(['Add key', 'View details', 'Edit permissions', 'Remove from Quill']);
   });
 
   it('offers no setup for a row only an admin can set up — the icon says who can', async () => {
@@ -223,7 +223,7 @@ describe('the row menu', () => {
     expect(
       await screen.findByRole('button', { name: 'Needs a key from a workspace admin' }),
     ).toBeTruthy();
-    expect(await menuItems('Acme')).toEqual(['View details', 'Remove from Quill']);
+    expect(await menuItems('Acme')).toEqual(['View details', 'Edit permissions', 'Remove from Quill']);
   });
 
   it('offers no setup on a healthy row beside one that has it', async () => {
@@ -232,7 +232,7 @@ describe('the row menu', () => {
     expect(within(menu).getByRole('menuitem', { name: 'Sign in' })).toBeTruthy();
     fireEvent.keyDown(menu, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
-    expect(await menuItems('Gmail')).toEqual(['View details', 'Remove from Quill']);
+    expect(await menuItems('Gmail')).toEqual(['View details', 'Edit permissions', 'Remove from Quill']);
   });
 });
 

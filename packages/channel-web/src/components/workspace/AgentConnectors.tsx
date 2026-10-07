@@ -5,12 +5,15 @@
  * `⋯` menu — nothing else (product owner's call: no icon tiles, no tool-count
  * subtitle). The menu holds what is wired today:
  *
- *   - **Edit connector** — the same editor Settings › Connectors opens, for a
- *     connector this person may edit. Hidden otherwise rather than drawn and
- *     refused.
+ *   - **Edit permissions** — what THIS agent may do with each of the
+ *     connector's tools (Allow / Ask first / Deny), in a dialog
+ *     (`EditPermissionsDialog`). Never the connector's own settings: those are
+ *     a workspace admin's, in Settings › Connectors.
  *   - **Remove from <agent>** — destructive, behind a confirmation. Removing
  *     touches THIS agent only: the connector, and every other agent using it,
- *     stay as they are.
+ *     stay as they are. When it was on none of this person's other agents,
+ *     the server also signs them out of it (their own sign-in / keys), so the
+ *     next agent it's added to asks them to sign in again.
  *
  * Who may change a TEAM agent's connectors (TASK-798): only the agent's owner
  * (a team admin) or a workspace admin may add or remove one. The server
@@ -30,8 +33,8 @@
  * row that says `teamSignIn` — a sign-in saved ON the agent that everyone
  * using it acts as — behind a confirmation. It removes only that one; anyone
  * who signed in with their own account keeps theirs. What stays everyone's: Add key (it stores their
- * own key), Sign in again for their own expired sign-in, Retry, View details,
- * and Edit for a connector they may edit.
+ * own key), Sign in again for their own expired sign-in, Retry, View details
+ * and Edit permissions.
  *
  * Connector health (TASK-741, slice 8): a row whose sign-in was rejected or
  * whose server could not be reached gets ONE red `CircleAlert` right after its
@@ -64,8 +67,8 @@
  *
  * A connector a session cannot fully load (TASK-745 — e.g. two of its servers
  * share a name) wears the same icon, reason "Couldn’t load it". Reconnect and
- * Retry cannot fix that, so neither is offered; the tooltip points at the fix
- * this person has: Edit connector, or asking a workspace admin.
+ * Retry cannot fix that, so neither is offered; the tooltip points at the fix:
+ * Settings › Connectors for a workspace admin, else asking one.
  *
  * "+ Add" and the empty state's "Add connector" (TASK-740) open the Add
  * subview (`AddConnector`); the Connectors tab swaps it in for this list.
@@ -74,7 +77,8 @@
  * Allow / Ask first / Deny (`ConnectorDetails`). Which connector is open is
  * the tab's state (`viewing`), because the subview replaces the whole tab,
  * "Other abilities" included. The subview's `⋯` is this same menu (minus View
- * details), so Reconnect / Retry are there too — and the dialogs stay mounted
+ * details and Edit permissions — the subview IS the permissions), so
+ * Reconnect / Retry are there too — and the dialogs stay mounted
  * across the switch, so a sign-in started from either view is never cut off.
  */
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
@@ -85,10 +89,10 @@ import {
   LogIn,
   LogOut,
   MoreHorizontal,
-  Pencil,
   Plug,
   Plus,
   RotateCw,
+  SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -128,10 +132,8 @@ import {
 } from '@/components/ui/tooltip';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ConnectorConnectDialog } from '@/components/settings/ConnectorConnectDialog';
-import { ConnectorEditDialog } from '@/components/settings/ConnectorEditDialog';
 import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConnect';
 import { useAgentConnectors } from '@/lib/agent-connectors';
-import { getConnector, type Connector } from '@/lib/connectors';
 import { useUser } from '@/lib/user-context';
 import { HttpError } from '@/lib/http';
 import { workspaceApi, type GrantRow } from '@/lib/workspace-api';
@@ -143,6 +145,7 @@ import type {
 import {
   ConnectorDetails,
   ConnectorsUnsupported,
+  EditPermissionsDialog,
   SETUP_REASON,
   SETUP_UNKNOWN_REASON,
 } from './ConnectorDetails';
@@ -160,13 +163,17 @@ const HEALTH_REASON: Record<
 /** TASK-798 — a team agent's shared sign-in, for someone who can't redo it. */
 const TEAM_SIGN_IN_ASK_OWNER = 'Team sign-in expired. Ask the agent’s owner to sign in again.';
 
-function healthReason(row: AgentConnectorRow, sharedCredentials: boolean): string {
+function healthReason(
+  row: AgentConnectorRow,
+  sharedCredentials: boolean,
+  isAdmin: boolean,
+): string {
   if (row.health === 'needs-sign-in') {
     return row.setup !== undefined ? SETUP_REASON[row.setup] : SETUP_UNKNOWN_REASON;
   }
   if (row.health === 'not-loaded') {
-    return row.editable
-      ? 'Couldn’t load it. Choose Edit connector to fix it.'
+    return isAdmin
+      ? 'Couldn’t load it. Fix it in Settings › Connectors.'
       : 'Couldn’t load it. Ask a workspace admin to fix it.';
   }
   // TASK-756 — a team agent's shared sign-in is the team's, not this person's.
@@ -249,7 +256,7 @@ export function AgentConnectors({
   const [notice, setNotice] = useState<
     { tone: 'error' | 'note'; text: string } | null
   >(null);
-  const [editing, setEditing] = useState<Connector | null>(null);
+  const [editingPermissions, setEditingPermissions] = useState<AgentConnectorRow | null>(null);
   const [reconnecting, setReconnecting] = useState<AgentConnectorRow | null>(null);
   // TASK-774 — a team-agent member re-signing in for themselves only.
   const [signingIn, setSigningIn] = useState<AgentConnectorRow | null>(null);
@@ -351,6 +358,12 @@ export function AgentConnectors({
       });
       return;
     }
+    if (outcome === 'removed-signed-out') {
+      setNotice({
+        tone: 'note',
+        text: `Removed ${row.name}. None of your agents use it now, so we signed you out of it too — adding it again will ask you to sign in.`,
+      });
+    }
     if (outcome === 'removed-partial') {
       setNotice({
         tone: 'note',
@@ -358,20 +371,6 @@ export function AgentConnectors({
       });
     }
     onChanged?.();
-  }
-
-  async function onEdit(row: AgentConnectorRow) {
-    setNotice(null);
-    try {
-      setEditing(
-        await getConnector(row.id, isAdmin ? '/admin/connectors' : '/settings/connectors'),
-      );
-    } catch {
-      setNotice({
-        tone: 'error',
-        text: `We couldn’t open ${row.name} just now. Please try again.`,
-      });
-    }
   }
 
   const count = status === 'ok' && connectors !== null ? connectors.length : null;
@@ -421,7 +420,14 @@ export function AgentConnectors({
       onRetry={() => void onRetry(row)}
       onSetUp={() => onSetUp(row)}
       {...(withView && onView !== undefined ? { onView: () => onView(row.id) } : {})}
-      onEdit={() => void onEdit(row)}
+      {...(withView
+        ? {
+            onEditPermissions: () => {
+              setNotice(null);
+              setEditingPermissions(row);
+            },
+          }
+        : {})}
       onRemove={() => setConfirming(row)}
     />
   );
@@ -445,7 +451,6 @@ export function AgentConnectors({
           menu={menuFor(open, false)}
           {...(connectorsSupported ? {} : { unsupported: true })}
           onBack={() => onView?.(null)}
-          onEdit={() => void onEdit(open)}
           onRemove={() => setConfirming(open)}
           onSetUp={() => onSetUp(open)}
           onHealthStale={refresh}
@@ -480,7 +485,7 @@ export function AgentConnectors({
                   <span className="min-w-0 truncate text-[13px]">{row.name}</span>
                   {row.health !== 'ok' && (
                     <HealthIcon
-                      reason={healthReason(row, sharedCredentials)}
+                      reason={healthReason(row, sharedCredentials, isAdmin)}
                       tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
                     />
                   )}
@@ -715,17 +720,15 @@ export function AgentConnectors({
           onRemoved={refresh}
         />
       )}
-      {editing !== null && (
-        <ConnectorEditDialog
-          target={editing}
-          open
-          isAdmin={isAdmin}
+      {editingPermissions !== null && (
+        <EditPermissionsDialog
+          // A different connector is a different read: start it fresh.
+          key={editingPermissions.id}
+          agentId={agentId}
+          agentName={name}
+          row={editingPermissions}
           onOpenChange={(open) => {
-            if (!open) setEditing(null);
-          }}
-          onSaved={() => {
-            setEditing(null);
-            refresh();
+            if (!open) setEditingPermissions(null);
           }}
         />
       )}
@@ -843,7 +846,7 @@ function RowMenu({
   onRetry,
   onSetUp,
   onView,
-  onEdit,
+  onEditPermissions,
   onRemove,
 }: {
   row: AgentConnectorRow;
@@ -868,7 +871,8 @@ function RowMenu({
   onSetUp: () => void;
   /** Absent inside the details view itself. */
   onView?: () => void;
-  onEdit: () => void;
+  /** Absent inside the details view: it already shows the permissions. */
+  onEditPermissions?: () => void;
   onRemove: () => void;
 }) {
   // One group per kind of action, separated — only the groups this row has.
@@ -926,13 +930,13 @@ function RowMenu({
       ),
     });
   }
-  if (row.editable) {
+  if (onEditPermissions !== undefined) {
     groups.push({
-      key: 'edit',
+      key: 'permissions',
       item: (
-        <DropdownMenuItem onSelect={onEdit}>
-          <Pencil aria-hidden="true" />
-          Edit connector
+        <DropdownMenuItem onSelect={onEditPermissions}>
+          <SlidersHorizontal aria-hidden="true" />
+          Edit permissions
         </DropdownMenuItem>
       ),
     });

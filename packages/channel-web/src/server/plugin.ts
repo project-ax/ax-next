@@ -522,6 +522,13 @@ export function createChannelWebServerPlugin(
             'nobody is offered Remove team sign-in, and DELETE …/connectors/:connectorId/team-sign-in answers 503 connectors-unavailable',
         },
         {
+          // Removing a connector from the last agent a person uses it on
+          // deletes their own sign-in to it, owned by @ax/mcp-oauth.
+          hook: 'mcp-oauth:remove-personal-sign-in',
+          degradation:
+            'a personal sign-in survives removing its connector from every agent, so re-adding it reuses that sign-in instead of asking again',
+        },
+        {
           // TASK-813 — before saving a team key: would the vault let the agent's
           // users read it (TASK-788 read question)?
           hook: 'credentials:authorize-agent:account',

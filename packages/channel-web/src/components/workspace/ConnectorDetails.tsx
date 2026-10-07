@@ -4,7 +4,11 @@
  * "‹ Connectors" back + `⋯`, the connector's name and whether it answered,
  * then "What <agent> may do · N tools": every tool with an Allow / Ask first /
  * Deny segmented control, grouped "Looks things up" / "Makes changes".
- * "Edit connector" + "Remove" stay pinned at the bottom while the list scrolls.
+ * "Remove" stays pinned at the bottom while the list scrolls. There is no
+ * "Edit connector" here: a connector's settings are a workspace admin's, in
+ * Settings › Connectors. What a person may change is what this agent may do
+ * with it — this view, or the list's "Edit permissions" dialog
+ * ({@link EditPermissionsDialog}), which draws the same tool list.
  *
  * WHAT THE CONTROL CAN DO. It writes this agent's own choice through
  * `PUT …/tool-verdicts`, and the store refuses anything looser than the
@@ -29,12 +33,18 @@ import {
   KeyRound,
   Loader2,
   LogIn,
-  Pencil,
   Trash2,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -96,7 +106,6 @@ interface Props {
   /** The row's `⋯` menu, shared with the list so the two never disagree. */
   menu: React.ReactNode;
   onBack: () => void;
-  onEdit: () => void;
   onRemove: () => void;
   /**
    * TASK-761 — this agent's model gets no connector tools (a runner that
@@ -145,14 +154,13 @@ export function ConnectorDetails({
   busy,
   menu,
   onBack,
-  onEdit,
   onRemove,
   unsupported = false,
   onSetUp,
   onHealthStale,
 }: Props) {
   const state = useConnectorTools(agentId, row.id);
-  const { data, status } = state;
+  const { data } = state;
   // TASK-812 — the list's health word is the source of truth for sign-in;
   // this view's tool read is only as fresh as when it was taken. When the
   // list's word changes (a sign-in or key just finished, a Retry or
@@ -203,35 +211,7 @@ export function ConnectorDetails({
       )}
 
       <div className="mt-5 flex-1">
-        {status === 'loading' && (
-          <div className="flex flex-col gap-3" aria-busy="true">
-            <Skeleton className="h-4 w-3/5" />
-            <Skeleton className="h-4 w-4/5" />
-            <Skeleton className="h-4 w-2/3" />
-          </div>
-        )}
-        {(status === 'failed' || status === 'unavailable') && (
-          <div className="flex flex-col items-start gap-2">
-            <p className="text-[13px] leading-relaxed text-muted-foreground">
-              {status === 'unavailable'
-                ? 'This workspace can’t set what each tool may do yet.'
-                : `We couldn’t read what ${agentName} may do with ${row.name} just now.`}
-            </p>
-            {status === 'failed' && (
-              <Button type="button" variant="outline" size="sm" onClick={() => state.reload()}>
-                Try again
-              </Button>
-            )}
-          </div>
-        )}
-        {status === 'ok' && data !== null && (
-          <ToolList
-            agentName={agentName}
-            data={data}
-            state={state}
-            notSetUp={row.health === 'needs-sign-in'}
-          />
-        )}
+        <ToolPermissions agentName={agentName} row={row} state={state} />
         {(grants.length > 0 || grantsFailed) && (
           <section aria-label="Access you approved" className="mt-6">
             <h4 className="mb-1.5 text-[12px] font-medium text-muted-foreground">
@@ -269,25 +249,16 @@ export function ConnectorDetails({
         paints the strip; `z-10` keeps the segmented controls' focus layer
         under it. Keep the 5s in step with the rail scroller's padding.
 
-        TASK-798 — with neither action to offer, there is no footer at all
-        rather than an empty strip.
+        TASK-798 — with nothing to offer, there is no footer at all rather
+        than an empty strip. Remove is hidden, not drawn disabled, for anyone
+        who may not remove it (on a team agent: not its owner, not an admin).
       */}
-      {(row.editable || row.removable) && (
+      {row.removable && (
       <div
         data-testid="connector-details-footer"
-        className="sticky -bottom-5 z-10 -mx-1 -mb-5 mt-4 flex items-center justify-between gap-2 border-t border-border bg-background px-1 pb-8 pt-3"
+        className="sticky -bottom-5 z-10 -mx-1 -mb-5 mt-4 flex items-center justify-end gap-2 border-t border-border bg-background px-1 pb-8 pt-3"
       >
-        {row.editable ? (
-          <Button type="button" variant="outline" size="sm" onClick={onEdit} disabled={busy}>
-            <Pencil data-icon="inline-start" aria-hidden="true" />
-            Edit connector
-          </Button>
-        ) : (
-          <span />
-        )}
-        {/* TASK-798 — hidden, not drawn disabled, for anyone who may not
-            remove it (on a team agent: not its owner, not an admin). */}
-        {row.removable && (
+        {(
           <Button
             type="button"
             variant="ghost"
@@ -303,6 +274,93 @@ export function ConnectorDetails({
       </div>
       )}
     </div>
+  );
+}
+
+/**
+ * What this agent may do with one connector: the loading / failed states and
+ * the per-tool list. Shared by the details view and {@link EditPermissionsDialog}
+ * so the two never disagree.
+ */
+function ToolPermissions({
+  agentName,
+  row,
+  state,
+}: {
+  agentName: string;
+  row: AgentConnectorRow;
+  state: ConnectorToolsState;
+}) {
+  const { data, status } = state;
+  return (
+    <>
+      {status === 'loading' && (
+        <div className="flex flex-col gap-3" aria-busy="true">
+          <Skeleton className="h-4 w-3/5" />
+          <Skeleton className="h-4 w-4/5" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      )}
+      {(status === 'failed' || status === 'unavailable') && (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
+            {status === 'unavailable'
+              ? 'This workspace can’t set what each tool may do yet.'
+              : `We couldn’t read what ${agentName} may do with ${row.name} just now.`}
+          </p>
+          {status === 'failed' && (
+            <Button type="button" variant="outline" size="sm" onClick={() => state.reload()}>
+              Try again
+            </Button>
+          )}
+        </div>
+      )}
+      {status === 'ok' && data !== null && (
+        <ToolList
+          agentName={agentName}
+          data={data}
+          state={state}
+          notSetUp={row.health === 'needs-sign-in'}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * "Edit permissions" from a row's `⋯` menu: the same per-tool Allow / Ask
+ * first / Deny list as the details view, in a dialog. Only what THIS agent may
+ * do with the connector — the connector's own settings stay a workspace
+ * admin's, in Settings › Connectors. Every change saves as it is made (same
+ * write as the details view), so there is no Save button to forget.
+ */
+export function EditPermissionsDialog({
+  agentId,
+  agentName,
+  row,
+  onOpenChange,
+}: {
+  agentId: string;
+  agentName: string;
+  row: AgentConnectorRow;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const state = useConnectorTools(agentId, row.id);
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit permissions · {row.name}</DialogTitle>
+          <DialogDescription>
+            Choose what {agentName} may do with each of {row.name}’s tools. Changes
+            save as you make them.
+          </DialogDescription>
+        </DialogHeader>
+        <div>
+          <ToolPermissions agentName={agentName} row={row} state={state} />
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

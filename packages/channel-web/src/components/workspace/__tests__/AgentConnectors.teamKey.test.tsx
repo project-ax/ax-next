@@ -186,6 +186,7 @@ describe('Team key (TASK-813)', () => {
     renderTab();
     expect(await menuItems('Linear')).toEqual([
       'View details',
+      'Edit permissions',
       'Team key',
       'Remove from Quill',
     ]);
