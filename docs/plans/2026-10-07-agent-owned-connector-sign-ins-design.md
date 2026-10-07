@@ -179,8 +179,7 @@ Afterwards, personal-agent connectors show **Sign-in needed → Sign in again**.
 whose client secret was stored on themselves sees the existing "Re-enter the client
 secret" editor notice.
 
-**Main is not deployable mid-epic:** after slice 1, person-scope rows are unread, so
-personal agents lose connectors until slices 2–3 land. Deploy only after slice 8.
+**Main is not deployable mid-epic:** deploy only after slice 5 (see Slices).
 
 ## Boundary review
 
@@ -202,7 +201,7 @@ personal agents lose connectors until slices 2–3 land. Deploy only after slice
 - Migration deletes are scoped by ref prefix and scope; a test proves team-agent and
   `provider:`/`skill:`/`routine:` rows survive.
 - `prompt=select_account` adds no capability.
-- Run `security-checklist` on slices 1, 2, 3 and 8.
+- Run `security-checklist` on slices 1, 2, 3 and 5.
 
 ## Testing
 
@@ -226,22 +225,30 @@ personal agents lose connectors until slices 2–3 land. Deploy only after slice
 
 ## Slices (board cards; deps in brackets)
 
-1. **Credentials** — `account:` lookup agent → global; refuse user-scope `account:` writes;
-   `credentials:purge-account`. [none]
-2. **mcp-oauth** — `begin` requires agent; always agent scope; `prompt=select_account`;
-   identity capture; status-batch fields; retire user markers and
-   `remove-personal-sign-in`. [1]
-3. **All-or-nothing Add** — callback completion + compensation; Add vs Sign-in-again
-   pending mode; API-key Add route. [2]
-4. **Admin-only connectors** — Admin › Connectors; delete non-admin routes; proposals to
-   admins; `keyMode personal → agent`. [none]
-5. **Rail** — "Signed in as"; Edit / Remove (+ Sign in again); delete `signOutIfUnused`;
-   remove no-agentId sign-in callers. [2, 3]
-6. **Settings › Sites** — new page; personal Connectors removed. [4]
-7. **Cleanup + routines** — connector-delete and agent-delete purges; routine skip
-   warning. [1]
-8. **Boot migration.** [1–7]
-9. **(walk)** Kind acceptance with two Linear accounts. [8]
+**Revised 2026-10-07 while planning:** the lookup flip must come **last**. 22 test files in 7
+packages (mcp-oauth, connectors, mcp-client, channel-web, credentials-admin-routes,
+skill-broker, credentials) write or read person-level `account:` rows today, so flipping
+the lookup first breaks them all at once. Writers move to agent scope first; the flip,
+the write refusal and the person-level purge land together at the end. Main stays green
+at every slice, and stays **undeployable** until slice 5 (person-level rows are still
+written/read in between, which is the old behavior, but Add semantics are mixed).
+
+1. **Purge + delete cleanup** — `credentials:purge-account`; shared-connector delete
+   purges agents' sign-ins; agent delete purges reconnect markers. [none]
+2. **Admin-only connectors** — Admin › Connectors; delete non-admin routes; proposals to
+   admins; `keyMode personal → agent`; workspace-unique connector ids; detach a deleted
+   connector from every agent; Settings › Sites; boot step deleting non-admin
+   connectors. Must precede 3: agent-scope reads only work for shared definitions. [1]
+3. **Agent-owned sign-in + all-or-nothing Add** — mcp-oauth `begin` requires agent, always
+   agent scope, `prompt=select_account`; callback completion + compensation; Add vs
+   Sign-in-again pending mode; API-key Add route at agent scope; rail menu Edit / Remove
+   (+ Sign in again); delete `signOutIfUnused` and the no-agentId sign-in callers. [2]
+4. **"Signed in as"** — identity capture; status-batch fields; row label. [3]
+5. **Lookup flip + boot purge** — `account:` lookup agent → global; refuse user-scope
+   `account:` writes; purge user-scope `account:` rows and user markers; retire
+   `remove-personal-sign-in` and the user marker table; update the 22 test files. [3]
+6. **Routine skip warning.** [none]
+7. **(walk)** Kind acceptance with two Linear accounts. [4, 5, 6]
 
 ## Out of scope
 
