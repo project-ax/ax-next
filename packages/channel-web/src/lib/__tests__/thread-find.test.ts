@@ -334,9 +334,9 @@ describe('buildFindIndex', () => {
       const d = decisionFixture({ id: 'd-deploy', status: 'pending', summary: 'Deploy the site' });
       const g = grantFixture({
         request: {
-          kind: 'connector',
-          connectorId: 'deploy-bot',
-          name: 'Deploy bot',
+          kind: 'skill',
+          skillId: 'deploy-bot',
+          description: '',
           hosts: [],
           slots: [],
         },

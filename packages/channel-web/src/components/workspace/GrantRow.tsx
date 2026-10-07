@@ -39,7 +39,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
-import { ConnectorKeyModeNotice } from '@/components/credentials/ConnectorKeyModeNotice';
 import {
   RESOLUTION_FOCUS_RING,
   returnFocusToConsentRegion,
@@ -47,7 +46,6 @@ import {
 } from '@/lib/consent-focus';
 import { grantHost, setDestinationCredential } from '@/lib/credentials';
 import {
-  AUTHORED_CONNECTOR_WARNING,
   AUTHORED_SKILL_WARNING,
   GRANT_CONNECT_LABEL,
   GRANT_CONNECTING_LABEL,
@@ -70,16 +68,9 @@ import {
   grantTitle,
 } from '@/lib/grant-copy';
 import { FindHighlight, type FindView } from './ThreadFind';
-import {
-  accountDestinationForConnectorSlot,
-  accountOrSkillDestination,
-} from '@/lib/grant-destinations';
+import { accountOrSkillDestination } from '@/lib/grant-destinations';
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
-import {
-  TOOL_PERMISSIONS_RESET_FAILED,
-  TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE,
-} from '@/lib/connectors';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
@@ -88,32 +79,6 @@ import {
   getGrantDraft,
   setGrantDraftValue,
 } from '@/lib/workspace-grant-drafts';
-
-/**
- * TASK-775 — the one connector-approval refusal that gets its own sentence.
- *
- * Approving a connector promotes it through the same save the Settings editors
- * use, so it can hit the same TASK-758 refusal: the server couldn't reset a
- * moved server's tool permissions and approved nothing. The route answers 503
- * `{ error: 'tool-permissions-reset-failed' }` — and a bare 503 otherwise reads
- * as "unavailable", which sends someone to wait out an outage that isn't one.
- * The Settings approve dialog's sentence fits here word for word: this row's
- * button is also "Connect", and the card stays, so Connect can be tried again.
- *
- * `undefined` (the status's own sentence) for anything else, including a body
- * that isn't JSON — the code is the only thing read, never echoed.
- */
-async function connectorRefusalMessage(resp: Response): Promise<string | undefined> {
-  if (resp.status !== 503) return undefined;
-  try {
-    const body = (await resp.json()) as { error?: unknown } | null;
-    return body?.error === TOOL_PERMISSIONS_RESET_FAILED
-      ? TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 interface Props {
   grant: WorkspaceGrant;
@@ -141,7 +106,7 @@ interface Props {
    * REQUIRED, and not optional-with-a-no-op default. A missing resume is
    * exactly the silence this task is about, and a default would let the next
    * render site reintroduce it without writing a line of code. Fires only for
-   * `skill` and `connector`: a `host` grant widens the LIVE session allowlist
+   * `skill`: a `host` grant widens the LIVE session allowlist
    * and the agent never stopped, so there is nothing to pick up.
    */
   onGranted: (grant: WorkspaceGrant) => Promise<boolean>;
@@ -239,7 +204,7 @@ export function GrantRow({
    * reload, re-asking a question the person had already answered — and the
    * only way to discover that was to reload and watch it happen.
    *
-   * So a `skill` or `connector` refusal is RECORDED. It is a deferral, not a
+   * So a `skill` refusal is RECORDED. It is a deferral, not a
    * dismissal: the marker stops the replay, and a grant the agent raises again
    * because it genuinely needs it outranks the marker and comes back. Need
    * brings the question back; the clock never does. `GRANT_REJECT_HINT` is
@@ -270,12 +235,10 @@ export function GrantRow({
       resolveAndReturnFocus();
       return;
     }
-    const subjectId =
-      request.kind === 'connector' ? request.connectorId : request.skillId;
     setBusy(true);
     setError(null);
     try {
-      await workspaceApi.declineGrant(grant.agentId, request.kind, subjectId);
+      await workspaceApi.declineGrant(grant.agentId, request.kind, request.skillId);
       resolveAndReturnFocus();
     } catch (err) {
       /*
@@ -292,15 +255,13 @@ export function GrantRow({
   }
 
   /** Write each freshly-typed key to the host credential store, then decide. */
-  async function writeKeys(subjectId: string, forConnector: boolean): Promise<void> {
+  async function writeKeys(skillId: string): Promise<void> {
     for (const s of slots) {
       if (s.haveExisting === true) continue;
       const value = (values[s.slot] ?? '').trim();
       if (value.length === 0) continue;
       await setDestinationCredential({
-        destination: forConnector
-          ? accountDestinationForConnectorSlot(s, subjectId)
-          : accountOrSkillDestination(s, subjectId),
+        destination: accountOrSkillDestination(s, skillId),
         slot: { kind: 'api-key' },
         scope: { scope: 'user', ownerId: null },
         payload: value,
@@ -313,9 +274,8 @@ export function GrantRow({
     setBusy(true);
     setError(null);
     try {
-      const forConnector = request.kind === 'connector';
-      const subjectId = forConnector ? request.connectorId : request.skillId;
-      await writeKeys(subjectId, forConnector);
+      const skillId = request.skillId;
+      await writeKeys(skillId);
       // What the row DISPLAYED. The authored grant intersects its proposal with
       // this, so a card that showed less than the manifest asks for grants less.
       const shown = {
@@ -327,18 +287,10 @@ export function GrantRow({
       const resp = await httpFetch('/api/chat/permission-decision', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
-        body: JSON.stringify(
-          forConnector
-            ? { conversationId, connectorId: subjectId, shown }
-            : { conversationId, skillId: subjectId, shown },
-        ),
+        body: JSON.stringify({ conversationId, skillId, shown }),
       });
       if (!resp.ok) {
-        throw new HttpError(
-          '/api/chat/permission-decision',
-          resp.status,
-          forConnector ? await connectorRefusalMessage(resp) : undefined,
-        );
+        throw new HttpError('/api/chat/permission-decision', resp.status);
       }
       // Answered — clear the draft here, not only in `onResolved`'s caller:
       // the `stalled` branch below never calls `onResolved` (the row stays on
@@ -472,23 +424,8 @@ export function GrantRow({
 
   /*
     THE TITLE IS THE SUBJECT OF THE CONSENT, so it is the one string on this
-    card that must never be missing.
-
-    `name` is typed `string` and required, and `isRenderableGrant` deliberately
-    does not check it — correctly, since a connector with no name is still an
-    answerable grant and refusing it would cost the person the question
-    entirely. But the first version of that reasoning cleared `name` on the
-    wrong test: "it is interpolated, so it cannot throw." Not throwing is not
-    tolerating. `Connect ${undefined}` renders **"Connect undefined"** above a
-    `type="password"` input and the KEY_SAFETY copy — a credential prompt whose
-    subject has gone missing, on the one surface whose entire job is informed
-    consent. That is worse than the crash it was compared against: a crash is
-    loud and this is a person typing an API key into a question they cannot
-    read.
-
-    `connectorId` IS guarded, so it is always there to fall back on, and
-    `humanizeId` is already how the skill arm below builds its title. An empty
-    string counts as missing for the same reason `undefined` does.
+    card that must never be missing — `grantTitle` falls back to the humanized
+    skill id.
 
     BUILT BY `grantTitle` (`lib/grant-copy.ts`), not inline, since TASK-390:
     `lib/thread-find.ts` needs this exact string to index, and a second copy of
@@ -496,8 +433,6 @@ export function GrantRow({
     differently.
   */
   const title = grantTitle(request);
-  const authoredWarning =
-    request.kind === 'connector' ? AUTHORED_CONNECTOR_WARNING : AUTHORED_SKILL_WARNING;
   /*
     THE FALLBACK IS LOAD-BEARING, not defensive noise. `description` is typed
     `string` and required, and the JSX below asks it for `.length` — so a
@@ -593,19 +528,9 @@ export function GrantRow({
         <Alert className="mt-3 max-w-[660px]">
           <TriangleAlert className="size-4" />
           <AlertDescription className="text-[13px] leading-relaxed">
-            {authoredWarning}
+            {AUTHORED_SKILL_WARNING}
           </AlertDescription>
         </Alert>
-      )}
-
-      {/*
-        (TASK-711) WHO SUPPLIES THE KEY, before the reach and the key field: a
-        proposal that would use the company's shared key is the case an approver
-        most needs to see, and it changes how they read everything below it.
-        Connector cards only — a skill has no key mode.
-      */}
-      {request.kind === 'connector' && (
-        <ConnectorKeyModeNotice keyMode={request.keyMode} className="mt-3 max-w-[660px]" />
       )}
 
       {request.hosts.length > 0 && (

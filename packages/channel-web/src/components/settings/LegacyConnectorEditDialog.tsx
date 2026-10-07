@@ -42,7 +42,10 @@ import {
   TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
   isOwnerOnlyChange,
   OWNER_ONLY_CHANGE_MESSAGE,
+  isConnectorIdTaken,
+  CONNECTOR_ID_TAKEN_MESSAGE,
   type Connector,
+  type ConnectorPrefill,
   type ConnectorSummary,
   type ConnectorKeyMode,
   type ConnectorVisibility,
@@ -117,6 +120,13 @@ export interface ConnectorEditDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Called after a successful create/update so the caller can refresh + close. */
   onSaved: () => void;
+  /**
+   * Slice 2c — "Set it up" from Admin › Connectors › Awaiting approval: a
+   * `'new'` target starts from this request instead of blank, under the
+   * requested id (creating it is what clears the request). Agent-written and
+   * untrusted; the admin reviews every field and makes the key choice.
+   */
+  prefill?: ConnectorPrefill;
 }
 
 /** Per-mechanism "what the secrets are" label (truthful per the design). */
@@ -664,7 +674,9 @@ export function LegacyConnectorEditDialog({
           ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
           : isOwnerOnlyChange(err)
             ? OWNER_ONLY_CHANGE_MESSAGE
-            : "We couldn't save this connector. Please try again.",
+            : isConnectorIdTaken(err)
+              ? CONNECTOR_ID_TAKEN_MESSAGE
+              : "We couldn't save this connector. Please try again.",
       );
     } finally {
       setBusy(false);

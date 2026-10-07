@@ -62,9 +62,9 @@ describe('ConnectorsTab', () => {
     });
     vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([]);
     vi.spyOn(credLib.adminCredentials, 'list').mockResolvedValue([]);
-    // No proposed (pending authored) drafts by default → the Proposed shelf is
-    // absent (#310). Tests that exercise the fallback override this.
-    vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([]);
+    // No connector requests by default → the Awaiting approval shelf is absent.
+    // Tests that exercise it override this.
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([]);
     // The site lists live on Settings › Sites now; these spies stay so a test
     // can assert this tab never reads them.
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([]);
@@ -78,108 +78,190 @@ describe('ConnectorsTab', () => {
     expect(screen.getByText('Salesforce')).toBeInTheDocument();
   });
 
-  // The Settings "Proposed by your assistant" fallback (2026-06-03): a connector
-  // the assistant proposed mid-turn lands as a PENDING authored draft. If the
-  // in-chat approval card was missed, the user can approve it here.
-  const PROPOSED_LINEAR: connectorsLib.PendingAuthoredConnector = {
+  // Slice 2c — Awaiting approval: every person's connector requests (an agent
+  // needed a connector nobody had defined). Approval is creation: "Set it up"
+  // opens the normal create editor prefilled from the request.
+  const REQUEST_LINEAR: connectorsLib.AuthoredProposal = {
     connectorId: 'linear',
-    agentId: 'agt_1',
     name: 'Linear',
     usageNote: 'Drive the Linear CLI',
     keyMode: 'personal',
-    status: 'pending',
     proposal: {
       allowedHosts: ['api.linear.app'],
       credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
       mcpServers: [],
-      packages: { npm: ['@schpet/linear-cli'], pypi: [] },
+      packages: { npm: [], pypi: [] },
     },
+    updatedAt: '2026-10-07T00:00:00Z',
+    proposedBy: { userId: 'u_ada', label: 'Ada Lovelace' },
+  };
+  const REQUEST_NOTION: connectorsLib.AuthoredProposal = {
+    connectorId: 'notion',
+    name: 'Notion',
+    usageNote: '',
+    keyMode: 'workspace',
+    proposal: {
+      allowedHosts: [],
+      credentials: [],
+      mcpServers: [
+        {
+          name: 'notion',
+          transport: 'http',
+          url: 'https://mcp.notion.com/mcp',
+          allowedHosts: [],
+          credentials: [],
+        },
+      ],
+      packages: { npm: [], pypi: [] },
+    },
+    updatedAt: '2026-10-07T00:00:00Z',
+    proposedBy: { userId: 'u_grace', label: 'grace@example.com' },
   };
 
-  it('shows a "Proposed by your assistant" shelf when there are pending authored drafts', async () => {
-    vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([PROPOSED_LINEAR]);
+  it('lists every person’s requests under Awaiting approval', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
+      REQUEST_LINEAR,
+      REQUEST_NOTION,
+    ]);
     render(<ConnectorsTab />);
-    expect(await screen.findByText(/Proposed by your assistant/i)).toBeInTheDocument();
-    const tile = await screen.findByTestId('proposed-connector-linear');
-    expect(within(tile).getByText('Linear')).toBeInTheDocument();
-    expect(within(tile).getByRole('button', { name: /approve/i })).toBeInTheDocument();
+    expect(await screen.findByText('Awaiting approval (2)')).toBeInTheDocument();
+    const linear = await screen.findByTestId('connector-request-linear');
+    expect(within(linear).getByText('Linear')).toBeInTheDocument();
+    expect(
+      within(linear).getByText('Asked for by Ada Lovelace for one of their agents'),
+    ).toBeInTheDocument();
+    expect(within(linear).getByText('Would reach api.linear.app')).toBeInTheDocument();
+    expect(within(linear).getByRole('button', { name: 'Set it up' })).toBeInTheDocument();
+    expect(within(linear).getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
+    const notion = screen.getByTestId('connector-request-notion');
+    expect(
+      within(notion).getByText('Asked for by grace@example.com for one of their agents'),
+    ).toBeInTheDocument();
+    expect(within(notion).getByText('Would reach mcp.notion.com')).toBeInTheDocument();
   });
 
-  it('omits the Proposed shelf when there are no pending drafts', async () => {
+  it('renders agent-written request text as text, never markup', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
+      {
+        ...REQUEST_LINEAR,
+        name: '<img src=x onerror=alert(1)>',
+        proposal: { ...REQUEST_LINEAR.proposal, allowedHosts: ['<b>evil</b>'] },
+      },
+    ]);
+    render(<ConnectorsTab />);
+    const row = await screen.findByTestId('connector-request-linear');
+    expect(within(row).getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument();
+    expect(within(row).getByText('Would reach <b>evil</b>')).toBeInTheDocument();
+    expect(row.querySelector('img')).toBeNull();
+    expect(row.querySelector('b')).toBeNull();
+  });
+
+  it('omits the Awaiting approval shelf when there are no requests', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    expect(screen.queryByText(/Proposed by your assistant/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Awaiting approval/i)).not.toBeInTheDocument();
   });
 
-  it('approving a proposed connector writes the key then calls approve, and refreshes', async () => {
-    vi.spyOn(connectorsLib, 'listAuthoredPending')
-      .mockResolvedValueOnce([PROPOSED_LINEAR]) // initial load
-      .mockResolvedValue([]); // after approval → shelf empties
-    const setCred = vi
-      .spyOn(credLib, 'setDestinationCredential')
-      .mockResolvedValue(undefined as unknown as Awaited<ReturnType<typeof credLib.setDestinationCredential>>);
-    const approve = vi
-      .spyOn(connectorsLib, 'approveAuthoredConnector')
-      .mockResolvedValue(undefined);
-
+  it('keeps the tab working when the request list can’t load', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockRejectedValue(new Error('boom'));
     render(<ConnectorsTab />);
-    const tile = await screen.findByTestId('proposed-connector-linear');
-    fireEvent.click(within(tile).getByRole('button', { name: /approve/i }));
-
-    // The approve dialog opens with a key field for the declared slot.
-    const keyField = await screen.findByLabelText('Linear API key');
-    fireEvent.change(keyField, { target: { value: 'lin_secret_123' } });
-    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
-
-    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
-    // The key is written to the user's vault under the connector's account ref —
-    // never sent through the approve call.
-    expect(setCred).toHaveBeenCalledWith(
-      expect.objectContaining({
-        destination: { kind: 'account', service: 'linear' },
-        payload: 'lin_secret_123',
-        scope: { scope: 'user', ownerId: null },
-      }),
-    );
-    expect(approve).toHaveBeenCalledWith('linear', {
-      agentId: 'agt_1',
-      shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: ['@schpet/linear-cli'], pypi: [] },
-    });
+    expect(await screen.findByText('My Notion')).toBeInTheDocument();
+    expect(screen.queryByText(/Awaiting approval/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('boom')).not.toBeInTheDocument();
   });
 
-  it('offers a Dismiss action on a proposed connector', async () => {
-    vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([PROPOSED_LINEAR]);
-    render(<ConnectorsTab />);
-    const tile = await screen.findByTestId('proposed-connector-linear');
-    expect(within(tile).getByRole('button', { name: /dismiss/i })).toBeInTheDocument();
-  });
-
-  it('dismissing a proposed connector rejects it (no key) and refreshes the shelf', async () => {
-    vi.spyOn(connectorsLib, 'listAuthoredPending')
-      .mockResolvedValueOnce([PROPOSED_LINEAR]) // initial load
-      .mockResolvedValue([]); // after dismiss → shelf empties
-    const setCred = vi
-      .spyOn(credLib, 'setDestinationCredential')
-      .mockResolvedValue(undefined as unknown as Awaited<ReturnType<typeof credLib.setDestinationCredential>>);
-    const reject = vi
-      .spyOn(connectorsLib, 'rejectAuthoredConnector')
-      .mockResolvedValue(undefined);
+  it('Set it up opens the create editor prefilled, and Save creates a shared connector under the requested id', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals')
+      .mockResolvedValueOnce([REQUEST_LINEAR]) // initial load
+      .mockResolvedValue([]); // after the create → the server cleared it
+    const create = vi
+      .spyOn(connectorsLib, 'createConnector')
+      .mockResolvedValue({ ...fullOf(SHARED_CONN), id: 'linear' });
 
     render(<ConnectorsTab />);
-    const tile = await screen.findByTestId('proposed-connector-linear');
-    fireEvent.click(within(tile).getByRole('button', { name: /dismiss/i }));
+    const row = await screen.findByTestId('connector-request-linear');
+    fireEvent.click(within(row).getByRole('button', { name: 'Set it up' }));
 
-    // Confirm in the dialog (its own Dismiss button).
     const dialog = await screen.findByRole('dialog');
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText(/service name/i)).toHaveValue('Linear'),
+    );
+    expect(within(dialog).getByLabelText(/how to use it/i)).toHaveValue(
+      'Drive the Linear CLI',
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const [body, writeBase] = create.mock.calls[0]!;
+    expect(writeBase).toBe('/admin/connectors');
+    expect(body).toMatchObject({
+      connectorId: 'linear',
+      name: 'Linear',
+      usageNote: 'Drive the Linear CLI',
+      visibility: 'shared',
+      keyMode: 'personal',
+    });
+    expect(body.capabilities.allowedHosts).toEqual(['api.linear.app']);
+    expect(body.capabilities.credentials).toEqual([
+      expect.objectContaining({ slot: 'LINEAR_API_KEY', kind: 'api-key' }),
+    ]);
+    // The shelf refreshes and the request is gone.
+    await waitFor(() =>
+      expect(screen.queryByTestId('connector-request-linear')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('Set it up says so plainly when a connector with that id already exists', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([REQUEST_LINEAR]);
+    vi.spyOn(connectorsLib, 'createConnector').mockRejectedValue(
+      new Error(connectorsLib.CONNECTOR_ID_TAKEN),
+    );
+    render(<ConnectorsTab />);
+    const row = await screen.findByTestId('connector-request-linear');
+    fireEvent.click(within(row).getByRole('button', { name: 'Set it up' }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText(/service name/i)).toHaveValue('Linear'),
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: /^save$/i }));
+    expect(
+      await within(dialog).findByText('A connector with this id already exists.'),
+    ).toBeInTheDocument();
+  });
+
+  it('Set it up on an MCP request opens the remote-server form', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([REQUEST_NOTION]);
+    render(<ConnectorsTab />);
+    const row = await screen.findByTestId('connector-request-notion');
+    fireEvent.click(within(row).getByRole('button', { name: 'Set it up' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByLabelText('Name')).toHaveValue('Notion');
+    expect(within(dialog).getByLabelText('Server URL')).toHaveValue(
+      'https://mcp.notion.com/mcp',
+    );
+  });
+
+  it('Dismiss confirms, then clears the request and refreshes the shelf', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals')
+      .mockResolvedValueOnce([REQUEST_LINEAR]) // initial load
+      .mockResolvedValue([]); // after dismiss → shelf empties
+    const dismiss = vi
+      .spyOn(connectorsLib, 'dismissAuthoredProposal')
+      .mockResolvedValue(undefined);
+
+    render(<ConnectorsTab />);
+    const row = await screen.findByTestId('connector-request-linear');
+    fireEvent.click(within(row).getByRole('button', { name: 'Dismiss' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Dismiss this request?')).toBeInTheDocument();
+    expect(within(dialog).getByText(/The person won’t be notified\./)).toBeInTheDocument();
+    expect(dismiss).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: /^dismiss$/i }));
 
-    await waitFor(() => expect(reject).toHaveBeenCalledTimes(1));
-    expect(reject).toHaveBeenCalledWith('linear', { agentId: 'agt_1' });
-    // Dismiss never touches the vault — that was the whole bug.
-    expect(setCred).not.toHaveBeenCalled();
-    // The shelf empties on refresh.
+    await waitFor(() => expect(dismiss).toHaveBeenCalledWith('linear'));
     await waitFor(() =>
-      expect(screen.queryByTestId('proposed-connector-linear')).not.toBeInTheDocument(),
+      expect(screen.queryByTestId('connector-request-linear')).not.toBeInTheDocument(),
     );
   });
 
@@ -432,14 +514,14 @@ describe('ConnectorsTab', () => {
 
     The `h2` is the tab's one top-level section (the two site sections that
     used to follow it moved to Settings › Sites in slice 2a); the `h3` is the
-    Proposed shelf inside it. The connector list itself
+    Awaiting approval shelf inside it. The connector list itself
     is one flat list with no shelf headings (no Connected / Available split). Asserting the exact
     list, not just "no skipped levels", is what stops the levels being fixed by
     deleting a section heading.
   */
-  it('opens at h2 and steps down one level to the Proposed shelf', async () => {
-    vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([
-      PROPOSED_LINEAR,
+  it('opens at h2 and steps down one level to the Awaiting approval shelf', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
+      REQUEST_LINEAR,
     ]);
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
@@ -447,7 +529,7 @@ describe('ConnectorsTab', () => {
     expect(headingOutlineProblems(document.body, 2)).toEqual([]);
     expect(headingOutline()).toEqual([
       'h2: Connectors',
-      'h3: Proposed by your assistant (1)',
+      'h3: Awaiting approval (1)',
     ]);
   });
 });

@@ -7,6 +7,8 @@ import {
   TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
   isOwnerOnlyChange,
   OWNER_ONLY_CHANGE_MESSAGE,
+  isConnectorIdTaken,
+  CONNECTOR_ID_TAKEN_MESSAGE,
   type Connector,
 } from '@/lib/connectors';
 import { connectorIdFromName } from '@/lib/connector-form';
@@ -33,6 +35,7 @@ import {
 } from '@/lib/connector-credential-slots';
 import {
   remoteDraft,
+  remoteDraftFromProposal,
   remoteCapabilities,
   remoteErrors,
   serverHost,
@@ -48,6 +51,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Field,
   FieldGroup,
@@ -119,10 +123,20 @@ export function RemoteMcpConnectorForm({
   open,
   onOpenChange,
   onSaved,
+  prefill: prefillProp,
 }: ConnectorEditDialogProps & { connector?: Connector }) {
   const id = useId();
   const formRef = useRef<HTMLFormElement>(null);
-  const [draft, setDraft] = useState(() => remoteDraft(connector));
+  // Slice 2c — "Set it up" on a connector request. Only ever for a new one.
+  const prefill = connector ? undefined : prefillProp;
+  const [draft, setDraft] = useState(() =>
+    prefill
+      ? remoteDraftFromProposal(prefill.name, prefill.capabilities)
+      : remoteDraft(connector),
+  );
+  // The request's note for the assistant. Agent-written, so it's shown and
+  // editable here rather than saved unseen.
+  const [usageNote, setUsageNote] = useState(prefill?.usageNote ?? '');
   const [headersOpen, setHeadersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // The connector's saved key mode. A new connector starts per-person; the
@@ -130,8 +144,9 @@ export function RemoteMcpConnectorForm({
   const savedKeyMode = connector?.keyMode ?? 'personal';
   // TASK-827 — an admin adding a connector that doesn't sign in with OAuth
   // picks whose key it uses. Fixed once created (the server refuses a change).
+  // A request's suggestion is only the starting choice; the admin decides.
   const [keyModeChoice, setKeyModeChoice] = useState<'personal' | 'workspace'>(
-    'personal',
+    prefill?.keyMode ?? 'personal',
   );
   // Slice 2a: only admins define connectors, and this form opens only from
   // Admin › Connectors, so every read and write is the admin bundle. (The
@@ -462,7 +477,8 @@ export function RemoteMcpConnectorForm({
     }
     setSaving(true);
     setSaveError('');
-    const connectorId = connector?.id ?? newId;
+    // A request is created under its own id: that is what clears it.
+    const connectorId = connector?.id ?? prefill?.connectorId ?? newId;
     try {
       const scope = {
         scope:
@@ -515,6 +531,7 @@ export function RemoteMcpConnectorForm({
         name: draft.name.trim(),
         capabilities,
         keyMode,
+        ...(prefill ? { usageNote } : {}),
       };
       let added: Connector | undefined;
       if (connector) await patchConnector(connectorId, input, base);
@@ -549,7 +566,9 @@ export function RemoteMcpConnectorForm({
           ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
           : isOwnerOnlyChange(err)
             ? OWNER_ONLY_CHANGE_MESSAGE
-            : 'We couldn’t save this connector. Check the settings and try again.',
+            : isConnectorIdTaken(err)
+              ? CONNECTOR_ID_TAKEN_MESSAGE
+              : 'We couldn’t save this connector. Check the settings and try again.',
       );
     } finally {
       setSaving(false);
@@ -612,7 +631,9 @@ export function RemoteMcpConnectorForm({
               ? 'Update the remote server and how we connect.'
               : created
                 ? `${created.name} is added. Now choose what agents may do with its tools.`
-                : 'Connect AX to a remote MCP server.'}
+                : prefill
+                  ? 'Filled in from the request. Check each field before you add it.'
+                  : 'Connect AX to a remote MCP server.'}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -629,6 +650,22 @@ export function RemoteMcpConnectorForm({
                 <FieldGroup>
                   {textField('name', 'Name', 'e.g. Linear')}
                   {textField('url', 'Server URL', 'https://example.com/mcp')}
+                  {prefill && (
+                    <Field>
+                      <FieldLabel htmlFor={fieldId('usage-note')}>
+                        How to use it
+                      </FieldLabel>
+                      <Textarea
+                        id={fieldId('usage-note')}
+                        rows={3}
+                        value={usageNote}
+                        onChange={(event) => setUsageNote(event.target.value)}
+                      />
+                      <FieldDescription>
+                        Every assistant that uses this connector reads this note.
+                      </FieldDescription>
+                    </Field>
+                  )}
                 </FieldGroup>
                 {addressChanged && (
                   // TASK-790 — advice beside a field being typed in, not an

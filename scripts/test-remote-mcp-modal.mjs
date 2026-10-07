@@ -130,14 +130,13 @@ createRoot(document.getElementById('root')!).render(<UserProvider value={{id:'u1
     }
     if (url.pathname === '/admin/connectors')
       return route.fulfill({ json: { connectors: [connector] } });
+    // Slice 2c — the Awaiting approval shelf: every person's requests.
+    if (url.pathname === '/admin/connectors/authored')
+      return route.fulfill({ json: { drafts: [] } });
     if (url.pathname === '/admin/connectors/linear')
       return route.fulfill({ json: { connector } });
     return route.fulfill({ json: {} });
   });
-  // The "Proposed by your assistant" shelf still reads its owner-scoped list.
-  await page.route('**/settings/connectors/authored**', (route) =>
-    route.fulfill({ json: { drafts: [] } }),
-  );
   // A shared connector's client secret is the workspace's, so an admin's
   // editor stores it on the /admin side.
   await page.route('**/destinations/account/credential', (route) => {

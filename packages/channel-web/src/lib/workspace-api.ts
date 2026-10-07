@@ -1167,8 +1167,9 @@ export const workspaceApi = {
    *
    * `host` grants never come here. They are turn-scoped and the server does not
    * enumerate them, so a host refusal cannot be replayed and recording one would
-   * wrongly answer a later session's question in advance — hence `kind` is the
-   * narrow pair rather than the full `PermissionRequest['kind']`.
+   * wrongly answer a later session's question in advance — hence `kind` is only
+   * `skill` rather than the full `PermissionRequest['kind']` (slice 2c removed the
+   * in-chat connector card).
    *
    * No storage key and no timestamp on the wire (invariant 1): the three ids are
    * product vocabulary, and the server stamps the instant itself. The `agentId`
@@ -1180,7 +1181,7 @@ export const workspaceApi = {
    * write it. Both are worth reporting: a refusal we failed to record is one
    * the person will be asked again.
    */
-  declineGrant: (agentId: string, kind: 'skill' | 'connector', subjectId: string) =>
+  declineGrant: (agentId: string, kind: 'skill', subjectId: string) =>
     req<{ declined: boolean }>('/grants/decline', {
       method: 'POST',
       body: { agentId, kind, subjectId },

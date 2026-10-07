@@ -8,6 +8,7 @@ import { authMiddleware } from '../auth';
 import {
   adminConnectorsMiddleware,
   settingsConnectorsMiddleware,
+  seedConnectorRequest,
 } from '../admin/connectors';
 import { expectStatus } from './expect-status';
 
@@ -701,4 +702,171 @@ describe('mock connector tool permissions', () => {
     }
   });
 
+
+  // --- Awaiting approval (slice 2c) -----------------------------------------
+  // Mirrors `@ax/connectors` admin-routes: every person's requests, admin-only;
+  // a shared create clears every request with its id; Dismiss clears them.
+  describe('connector requests', () => {
+    const proposal = {
+      allowedHosts: ['api.linear.app'],
+      credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+      mcpServers: [],
+      packages: { npm: [], pypi: [] },
+    };
+    function seedTwo(): void {
+      seedConnectorRequest(store, {
+        ownerUserId: 'u2',
+        agentId: 'a-alice',
+        connectorId: 'linear',
+        name: 'Linear',
+        usageNote: 'Track issues.',
+        keyMode: 'personal',
+        proposal,
+      });
+      seedConnectorRequest(store, {
+        ownerUserId: 'u3',
+        agentId: 'a-admin2',
+        connectorId: 'linear',
+        name: 'Linear',
+        usageNote: '',
+        keyMode: 'workspace',
+        proposal,
+      });
+    }
+    async function list(url: string, cookie = ADMIN): Promise<Response> {
+      return fetch(`${url}/admin/connectors/authored`, { headers: { cookie } });
+    }
+
+    it('lists every person’s requests, labelled with who asked', async () => {
+      seedTwo();
+      const { url, close } = await startServer(store);
+      try {
+        const res = await list(url);
+        await expectStatus(res, 200);
+        const body = (await res.json()) as {
+          drafts: { connectorId: string; proposedBy: { userId: string; label: string } }[];
+        };
+        expect(body.drafts.map((d) => [d.connectorId, d.proposedBy])).toEqual([
+          ['linear', { userId: 'u2', label: 'Alice' }],
+          ['linear', { userId: 'u3', label: 'Admin Two' }],
+        ]);
+        expect(body.drafts[0]).toMatchObject({
+          name: 'Linear',
+          usageNote: 'Track issues.',
+          keyMode: 'personal',
+          proposal,
+        });
+      } finally {
+        await close();
+      }
+    });
+
+    it('is admin-only: 401 without a session, 403 for a non-admin', async () => {
+      seedTwo();
+      const { url, close } = await startServer(store);
+      try {
+        await expectStatus(await fetch(`${url}/admin/connectors/authored`), 401);
+        await expectStatus(await list(url, ALICE), 403);
+        const del = await fetch(`${url}/admin/connectors/authored/linear`, {
+          method: 'DELETE',
+          headers: { cookie: ALICE },
+        });
+        await expectStatus(del, 403);
+        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toHaveLength(2);
+      } finally {
+        await close();
+      }
+    });
+
+    it('Dismiss clears every request with that id (204, idempotent)', async () => {
+      seedTwo();
+      const { url, close } = await startServer(store);
+      try {
+        for (let i = 0; i < 2; i++) {
+          const res = await fetch(`${url}/admin/connectors/authored/linear`, {
+            method: 'DELETE',
+            headers: { cookie: ADMIN },
+          });
+          await expectStatus(res, 204);
+        }
+        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toEqual([]);
+      } finally {
+        await close();
+      }
+    });
+
+    it('a shared create clears every request with its id; a private one clears none', async () => {
+      seedTwo();
+      const { url, close } = await startServer(store);
+      try {
+        const priv = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'private' })),
+        });
+        await expectStatus(priv, 201);
+        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toHaveLength(2);
+        const shared = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
+        });
+        await expectStatus(shared, 201);
+        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toEqual([]);
+      } finally {
+        await close();
+      }
+    });
+
+    it('hides a request whose id is already live as a shared connector', async () => {
+      const { url, close } = await startServer(store);
+      try {
+        const created = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
+        });
+        await expectStatus(created, 201);
+        seedTwo();
+        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toEqual([]);
+      } finally {
+        await close();
+      }
+    });
+
+    it('creating another admin’s shared id is a 409 connector-id-taken', async () => {
+      const { url, close } = await startServer(store);
+      try {
+        const first = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
+        });
+        await expectStatus(first, 201);
+        const second = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear', visibility: 'shared' })),
+        });
+        await expectStatus(second, 409);
+        expect(await second.json()).toEqual({ error: 'connector-id-taken' });
+      } finally {
+        await close();
+      }
+    });
+
+    it('the id `authored` is reserved', async () => {
+      const { url, close } = await startServer(store);
+      try {
+        const res = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'authored' })),
+        });
+        await expectStatus(res, 400);
+      } finally {
+        await close();
+      }
+    });
+  });
 });

@@ -50,7 +50,9 @@ export const reservedHeaders = new Set([
 ]);
 export const headerNamePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/;
 
-export function remoteDraft(connector?: Connector): RemoteMcpDraft {
+export function remoteDraft(
+  connector?: Pick<Connector, 'name' | 'capabilities'>,
+): RemoteMcpDraft {
   const server = connector?.capabilities.mcpServers[0];
   const oauth = connector?.capabilities.credentials.find(
     (s): s is ConnectorOAuthSlot =>
@@ -75,6 +77,25 @@ export function remoteDraft(connector?: Connector): RemoteMcpDraft {
     clientSecretRef: oauth?.clientSecretRef ?? '',
     headers,
     scopes: (oauth?.scopes ?? []).join(' '),
+  };
+}
+
+/**
+ * Slice 2c — the draft "Set it up" opens with, from an agent's connector
+ * request: its name, server URL, sign-in shape and header NAMES. Nothing in
+ * the request is a secret, and nothing in it is trusted: header values start
+ * blank (the admin types them), and a client-secret ref is never carried over
+ * (it would point at the proposer's vault).
+ */
+export function remoteDraftFromProposal(
+  name: string,
+  capabilities: ConnectorCapabilities,
+): RemoteMcpDraft {
+  const draft = remoteDraft({ name, capabilities });
+  return {
+    ...draft,
+    clientSecretRef: '',
+    headers: draft.headers.map((h) => ({ ...h, value: '', saved: false })),
   };
 }
 

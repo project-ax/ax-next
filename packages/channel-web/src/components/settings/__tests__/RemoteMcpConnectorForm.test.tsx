@@ -8,7 +8,7 @@ import {
   within,
 } from '@testing-library/react';
 import { ConnectorEditDialog } from '../ConnectorEditDialog';
-import type { Connector } from '@/lib/connectors';
+import type { Connector, ConnectorPrefill } from '@/lib/connectors';
 
 const fixture: Connector = {
   id: 'linear',
@@ -406,6 +406,95 @@ describe('remote connector editor', () => {
       credentials: [fixture.capabilities.credentials[0]],
       allowedHosts: fixture.capabilities.allowedHosts,
     });
+  });
+  // Slice 2c — "Set it up" on an agent's connector request.
+  const requestPrefill = (): ConnectorPrefill => ({
+    connectorId: 'notion',
+    name: 'Notion',
+    usageNote: 'Search the team wiki first.',
+    keyMode: 'workspace',
+    capabilities: {
+      allowedHosts: [],
+      credentials: [
+        {
+          kind: 'api-key',
+          slot: 'NOTION_KEY',
+          headerName: 'X-Api-Key',
+          server: 'notion',
+        },
+      ],
+      mcpServers: [
+        {
+          name: 'notion',
+          transport: 'http',
+          url: 'https://mcp.notion.example.com/mcp',
+          allowedHosts: [],
+          credentials: [],
+        },
+      ],
+      packages: { npm: [], pypi: [] },
+    },
+  });
+  it('Set it up starts from the request and creates it shared, under the requested id', async () => {
+    discovery = { hosts: ['mcp.notion.example.com'], auth: 'other' };
+    const options = { ...props(), target: 'new' as const, prefill: requestPrefill() };
+    render(<ConnectorEditDialog {...options} />);
+    expect(screen.getByLabelText('Name')).toHaveValue('Notion');
+    expect(screen.getByLabelText('Server URL')).toHaveValue(
+      'https://mcp.notion.example.com/mcp',
+    );
+    expect(screen.getByLabelText('How to use it')).toHaveValue(
+      'Search the team wiki first.',
+    );
+    // The request's key suggestion is only the starting choice.
+    const shared = await screen.findByLabelText('One shared key for everyone');
+    expect(shared).toBeChecked();
+    fireEvent.click(screen.getByLabelText('Each person adds their own key'));
+    // The header NAME comes from the request; its value is the admin's to type.
+    const value = await screen.findByLabelText(/^Value/);
+    expect(value).toHaveValue('');
+    fireEvent.change(value, { target: { value: 'admin-typed' } });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Add connector' })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    await finishAdding();
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    const create = writes.find((w) => w.url === '/admin/connectors')!;
+    expect(create.body).toMatchObject({
+      connectorId: 'notion',
+      name: 'Notion',
+      usageNote: 'Search the team wiki first.',
+      keyMode: 'personal',
+      visibility: 'shared',
+      capabilities: {
+        mcpServers: [
+          { transport: 'http', url: 'https://mcp.notion.example.com/mcp' },
+        ],
+      },
+    });
+    expect(create.body.capabilities).toMatchObject({
+      credentials: [
+        expect.objectContaining({ slot: 'NOTION_KEY', headerName: 'X-Api-Key' }),
+      ],
+    });
+  });
+  it('Set it up says so plainly when that id is already taken', async () => {
+    discovery = { hosts: ['mcp.notion.example.com'], auth: 'none' };
+    writeResponse = () =>
+      new Response(JSON.stringify({ error: 'connector-id-taken' }), { status: 409 });
+    const prefill = requestPrefill();
+    prefill.capabilities.credentials = [];
+    render(
+      <ConnectorEditDialog {...props()} target="new" prefill={prefill} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Add connector' })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add connector' }));
+    expect(
+      await screen.findByText('A connector with this id already exists.'),
+    ).toBeInTheDocument();
   });
   it('blocks a new connector until its server can be checked, then retries', async () => {
     failDiscovery = true;

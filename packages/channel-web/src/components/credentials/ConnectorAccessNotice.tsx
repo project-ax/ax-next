@@ -22,7 +22,7 @@
  * the point instead — the same call `RememberedSitesPanel` makes.
  *
  * shadcn `Alert` + semantic tokens only (invariant #6). The `TriangleAlert` icon
- * and `size-4` are what `GrantRow` already uses for its authored-connector warning.
+ * and `size-4` are what `GrantRow` already uses for its authored-skill warning.
  */
 import { TriangleAlert } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';

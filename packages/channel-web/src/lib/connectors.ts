@@ -229,20 +229,8 @@ export { TOOL_PERMISSIONS_RESET_FAILED };
 export const TOOL_PERMISSIONS_RESET_FAILED_MESSAGE =
   'We couldn’t update this server’s tool permissions, so we didn’t save your changes. Your saved settings are unchanged. Try saving again in a moment.';
 
-/**
- * TASK-771 — the same refusal on the authored-connector APPROVE path
- * ({@link approveAuthoredConnector}): approving promotes the draft through the
- * same save, so it can hit the same reset. Same message, with the verbs the
- * approve dialog actually uses — there is no "save" button there, only Connect.
- * Nothing was approved; the proposal stays put, so Connect can be tried again.
- */
-export const TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE =
-  'We couldn’t update this server’s tool permissions, so we didn’t connect it. Try Connect again in a moment.';
-
-/**
- * True when a {@link createConnector} / {@link patchConnector} /
- * {@link approveAuthoredConnector} failure is the reset refusal.
- */
+/** True when a {@link createConnector} / {@link patchConnector} failure is the
+ *  reset refusal. */
 export function isToolPermissionsResetFailure(err: unknown): boolean {
   return err instanceof Error && err.message === TOOL_PERMISSIONS_RESET_FAILED;
 }
@@ -292,97 +280,205 @@ export async function deleteConnector(
   if (!res.ok) throw new Error(`delete connector: ${res.status}`);
 }
 
+/**
+ * Slice 2c — what `POST /admin/connectors` answers (409) when a connector with
+ * that id already exists. "Set it up" creates under the requested id (that is
+ * what clears the request), so this is the one create refusal a prefilled
+ * editor can expect. Mirrors `@ax/connectors` `admin-routes.ts`.
+ */
+export const CONNECTOR_ID_TAKEN = 'connector-id-taken';
+
+/** What the editors say for {@link CONNECTOR_ID_TAKEN}. */
+export const CONNECTOR_ID_TAKEN_MESSAGE = 'A connector with this id already exists.';
+
+/** True when a {@link createConnector} failure is the id-taken refusal. */
+export function isConnectorIdTaken(err: unknown): boolean {
+  return err instanceof Error && err.message === CONNECTOR_ID_TAKEN;
+}
+
 // ---------------------------------------------------------------------------
-// Authored-connector drafts (the Settings "Proposed by your assistant" fallback,
-// 2026-06-03). A connector the assistant proposed mid-turn lands as a PENDING
-// authored draft; the approval card surfaces it in chat, but if that's missed
-// the user can list + approve drafts here too. Always the owner-scoped
-// `/settings/connectors/authored` surface (the route is owner-scoped by session,
-// so admins use it too — it's about "what my assistant proposed", not curation).
+// Awaiting approval (slice 2c). An agent that needs a connector nobody has
+// defined yet files a REQUEST; every admin sees every person's requests in
+// Admin › Connectors. Approval is creation: an admin sets the connector up
+// through the normal create path (`POST /admin/connectors`, shared), and the
+// server clears every request with that id. Dismiss clears them without
+// creating anything. Both routes are admin-only.
+//
+//   GET    /admin/connectors/authored              → { drafts: AuthoredProposal[] }
+//   DELETE /admin/connectors/authored/:connectorId → 204
+//
+// UNTRUSTED: everything in a request except `proposedBy` was written by an
+// agent. Render it as text only, and never carry a secret ref out of it.
 // ---------------------------------------------------------------------------
 
-/** One pending authored draft surfaced for the Settings fallback. `agentId` is
- *  the agent that authored it — needed by the approve call (the user no longer
- *  picks the agent). `proposal` is the declared, UNAPPROVED capability surface. */
-export interface PendingAuthoredConnector {
+/** One request in the admin "Awaiting approval" list. */
+export interface AuthoredProposal {
   connectorId: string;
-  agentId: string;
   name: string;
   usageNote: string;
+  /** What the agent suggested for whose key — a hint; the admin decides. */
   keyMode: ConnectorKeyMode;
-  status: 'pending';
+  /** The reach it asked for, normalized by {@link listAuthoredProposals}. */
   proposal: ConnectorCapabilities;
+  updatedAt: string;
+  /** Who asked: their id and a display label (name, else email, else the id). */
+  proposedBy: { userId: string; label: string };
 }
 
-/** List the session user's pending authored connector drafts across all their
- *  agents. A preset without the connectors plugin returns an empty list (the
- *  shelf renders nothing). */
-export async function listAuthoredPending(): Promise<PendingAuthoredConnector[]> {
-  const res = await fetch('/settings/connectors/authored', { credentials: 'include' });
-  if (!res.ok) throw new Error(`list proposed connectors: ${res.status}`);
-  const body = (await res.json()) as { drafts: PendingAuthoredConnector[] };
-  return body.drafts;
-}
+const strings = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+const text = (v: unknown): string => (typeof v === 'string' ? v : '');
+const record = (v: unknown): Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 
-/** What the approval card displayed — the TOCTOU narrowing guard forwarded to
- *  the grant (it can only NARROW the re-resolved proposal, never widen it). */
-export interface AuthoredApprovalShown {
-  hosts: string[];
-  slots: string[];
-  npm: string[];
-  pypi: string[];
+/**
+ * Credential slots from an agent's request, as NAMES and kinds only. A
+ * `clientSecretRef` is dropped: it would point at the proposer's vault, and the
+ * admin's own key choice decides where any secret lives.
+ */
+function proposalSlots(v: unknown): ConnectorCredentialSlot[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((raw): ConnectorCredentialSlot[] => {
+    const r = record(raw);
+    const slot = text(r.slot);
+    if (!slot) return [];
+    if (r.kind === 'oauth') {
+      const server = text(r.server);
+      if (!server) return [];
+      const out: ConnectorOAuthSlot = { slot, kind: 'oauth', server };
+      const scopes = strings(r.scopes);
+      if (scopes.length) out.scopes = scopes;
+      if (text(r.clientId)) out.clientId = text(r.clientId);
+      const reg = r.clientRegistration;
+      if (reg === 'auto' || reg === 'cimd' || reg === 'dcr' || reg === 'custom')
+        out.clientRegistration = reg;
+      if (text(r.authServerUrl)) out.authServerUrl = text(r.authServerUrl);
+      if (text(r.tokenUrl)) out.tokenUrl = text(r.tokenUrl);
+      return [out];
+    }
+    const out: ConnectorApiKeySlot = { slot, kind: 'api-key' };
+    if (text(r.description)) out.description = text(r.description);
+    if (text(r.headerName)) out.headerName = text(r.headerName);
+    if (text(r.server)) out.server = text(r.server);
+    return [out];
+  });
 }
 
 /**
- * Approve a pending authored connector draft outside chat. The caller must have
- * already written any required key(s) to the vault (`setDestinationCredential`),
- * exactly like the in-chat card. `agentId` comes from the listed draft. No secret
- * crosses this call — only domain ids + the shown guard.
+ * Shape an agent-written proposal into {@link ConnectorCapabilities}. The
+ * server validated it when the request was filed; this only makes sure a
+ * malformed row can't break the list (missing arrays become empty).
  */
-export async function approveAuthoredConnector(
-  connectorId: string,
-  args: { agentId: string; shown: AuthoredApprovalShown },
-): Promise<void> {
-  const res = await fetch(
-    `/settings/connectors/authored/${encodeURIComponent(connectorId)}/approve`,
-    {
-      method: 'POST',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify({ agentId: args.agentId, shown: args.shown }),
-    },
-  );
-  if (!res.ok) {
-    const excerpt = await res.text().catch(() => '');
-    throw new Error(messageFrom(excerpt) || `approve connector: ${res.status}`);
-  }
+export function normalizeProposal(raw: unknown): ConnectorCapabilities {
+  const r = record(raw);
+  const pkgs = record(r.packages);
+  const out: ConnectorCapabilities = {
+    allowedHosts: strings(r.allowedHosts),
+    credentials: proposalSlots(r.credentials),
+    mcpServers: (Array.isArray(r.mcpServers) ? r.mcpServers : []).flatMap((raw) => {
+      const m = record(raw);
+      const name = text(m.name);
+      if (!name) return [];
+      return [
+        {
+          name,
+          transport: 'http' as const,
+          ...(text(m.url) ? { url: text(m.url) } : {}),
+          allowedHosts: strings(m.allowedHosts),
+          credentials: proposalSlots(m.credentials),
+        },
+      ];
+    }),
+    packages: { npm: strings(pkgs.npm), pypi: strings(pkgs.pypi) },
+  };
+  if (Array.isArray(r.services)) out.services = r.services as ServiceDescriptor[];
+  return out;
 }
 
 /**
- * Dismiss a pending authored connector draft (the "Proposed by your assistant"
- * shelf, 2026-06-04). Rejects the proposal outright — no approve, no key entry.
- * `agentId` comes from the listed draft (the composite key the clear scopes to).
- *
- * A 404 is treated as success: DELETE is idempotent, and a draft that's already
- * gone (a double-click, or it was approved/re-proposed in another tab) is the
- * exact end state the user asked for. Only an unexpected status throws.
+ * Every person's open connector requests (admin-only). A preset without the
+ * connectors plugin answers 404 — the list just stays empty.
  */
-export async function rejectAuthoredConnector(
-  connectorId: string,
-  args: { agentId: string },
-): Promise<void> {
+export async function listAuthoredProposals(): Promise<AuthoredProposal[]> {
+  const res = await fetch('/admin/connectors/authored', { credentials: 'include' });
+  if (!res.ok) throw new Error(`list connector requests: ${res.status}`);
+  const body = (await res.json()) as { drafts?: unknown };
+  const drafts = Array.isArray(body.drafts) ? body.drafts : [];
+  return drafts.flatMap((raw): AuthoredProposal[] => {
+    const d = record(raw);
+    const connectorId = text(d.connectorId);
+    if (!connectorId) return [];
+    const by = record(d.proposedBy);
+    const userId = text(by.userId);
+    return [
+      {
+        connectorId,
+        name: text(d.name) || connectorId,
+        usageNote: text(d.usageNote),
+        keyMode: d.keyMode === 'workspace' ? 'workspace' : 'personal',
+        proposal: normalizeProposal(d.proposal),
+        updatedAt: text(d.updatedAt),
+        proposedBy: { userId, label: text(by.label) || userId },
+      },
+    ];
+  });
+}
+
+/**
+ * Dismiss: clear every person's request for this id (admin-only). The person
+ * is not notified. The route is idempotent (204 whether or not a row matched).
+ */
+export async function dismissAuthoredProposal(connectorId: string): Promise<void> {
   const res = await fetch(
-    `/settings/connectors/authored/${encodeURIComponent(connectorId)}`,
+    `/admin/connectors/authored/${encodeURIComponent(connectorId)}`,
     {
       method: 'DELETE',
-      headers: writeHeaders,
+      headers: { 'x-requested-with': 'ax-admin' },
       credentials: 'include',
-      body: JSON.stringify({ agentId: args.agentId }),
     },
   );
-  if (res.ok || res.status === 404) return;
-  const excerpt = await res.text().catch(() => '');
-  throw new Error(messageFrom(excerpt) || `dismiss connector: ${res.status}`);
+  if (!res.ok) throw new Error(`dismiss connector request: ${res.status}`);
+}
+
+/**
+ * What "Set it up" opens the create editor with: a new connector under the
+ * requested id, prefilled from the request. Nothing in it is a secret; the
+ * admin's own choices in the editor decide whose key it uses.
+ */
+export interface ConnectorPrefill {
+  connectorId: string;
+  name: string;
+  usageNote: string;
+  /** The request's suggestion — the editor's starting point only. */
+  keyMode: ConnectorKeyMode;
+  capabilities: ConnectorCapabilities;
+}
+
+export function prefillFromProposal(p: AuthoredProposal): ConnectorPrefill {
+  return {
+    connectorId: p.connectorId,
+    name: p.name,
+    usageNote: p.usageNote,
+    keyMode: p.keyMode,
+    capabilities: p.proposal,
+  };
+}
+
+/** The hosts or servers a request would reach, for a one-line summary. */
+export function proposalReach(caps: ConnectorCapabilities): string[] {
+  const out = new Set<string>();
+  for (const m of caps.mcpServers) {
+    if (m.url) {
+      try {
+        out.add(new URL(m.url).host);
+      } catch {
+        out.add(m.url);
+      }
+    }
+    for (const h of m.allowedHosts) out.add(h);
+  }
+  for (const h of caps.allowedHosts) out.add(h);
+  return [...out];
 }
 
 /** An empty capability fill — the default for a fresh connector. */
@@ -487,8 +583,7 @@ function scopeForKeyMode(keyMode: ConnectorKeyMode): ConnectorCredentialScope {
  * `server/routes-workspace.ts`, which drops the OAuth client-secret ref the way
  * the host does — TASK-810), so it is one of THREE copies of the ref rule —
  * with @ax/connectors and @ax/chat-orchestrator's `connectorSlotRefs` (the
- * host's `connectorCredentialSlots` and the authored-connector approval card
- * both run that one). `__tests__/connector-credential-refs-contract.test.ts`
+ * host's `connectorCredentialSlots` runs that one). `__tests__/connector-credential-refs-contract.test.ts`
  * runs every derivation over one fixture table (TASK-807, TASK-810).
  */
 export function deriveCredentialPlan(

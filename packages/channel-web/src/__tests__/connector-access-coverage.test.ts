@@ -95,7 +95,6 @@ describe('connector access disclosure: coverage (TASK-700)', () => {
       'components/settings/ConnectorConnectDialog.tsx',
       'components/settings/LegacyConnectorEditDialog.tsx',
       'components/settings/RemoteMcpConnectorForm.tsx',
-      'components/settings/ProposedConnectorApproveDialog.tsx',
       'components/workspace/GrantRow.tsx',
       'components/workspace/AddConnector.tsx',
       // TASK-799 — AgentForm no longer attaches connectors or signs a team agent

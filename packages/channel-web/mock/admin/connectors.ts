@@ -26,6 +26,11 @@ import { requireSession } from '../auth';
  *          → { status, checkedAt, tools: InventoryTool[], defaults: SavedDefault[] }
  *   PUT    <base>/:id/tool-permissions  body { verdicts: [{ toolKey, verdict|null }] }
  *          → { ok: true }   (TASK-737; admin bundle only)
+ *   GET    /admin/connectors/authored              → { drafts: ConnectorRequestView[] }
+ *   DELETE /admin/connectors/authored/:connectorId → 204
+ *          (slice 2c — "Awaiting approval": every person's connector requests;
+ *          admin bundle only. A SHARED create clears every request with its id;
+ *          the id `authored` is reserved.)
  *
  * Note the path has NO `/api/` prefix — it matches the real `@ax/connectors`
  * routes, which the UI hits directly.
@@ -109,6 +114,38 @@ const ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const NAME_MAX = 200;
 
 const COLLECTION = 'connectors';
+const REQUESTS = 'connector_requests';
+/** Mirrors `@ax/connectors` `RESERVED_CONNECTOR_IDS`. */
+const RESERVED_IDS: ReadonlySet<string> = new Set(['authored']);
+
+/**
+ * An agent's pending request for a connector nobody has defined (slice 2c).
+ * Keyed `${owner}::${agent}::${connectorId}`, like the real authored table's
+ * (owner, agent, id) key. The proposal is agent-written: stored verbatim.
+ */
+interface StoredConnectorRequest {
+  id: string;
+  ownerUserId: string;
+  agentId: string;
+  connectorId: string;
+  name: string;
+  usageNote: string;
+  keyMode: KeyMode;
+  proposal: Capabilities;
+  updatedAt: string;
+}
+
+/** Test/dev helper: file a request as an agent would (`connector_propose`). */
+export function seedConnectorRequest(
+  store: Store,
+  r: Omit<StoredConnectorRequest, 'id' | 'updatedAt'> & { updatedAt?: string },
+): void {
+  store.collection<StoredConnectorRequest>(REQUESTS).upsert({
+    ...r,
+    id: `${r.ownerUserId}::${r.agentId}::${r.connectorId}`,
+    updatedAt: r.updatedAt ?? new Date().toISOString(),
+  });
+}
 
 function rowKey(userId: string, connectorId: string): string {
   return `${userId}::${connectorId}`;
@@ -303,6 +340,10 @@ function connectorsMiddleware(
   // pattern matches the literal prefix whatever it contains.
   const escapedBase = base.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
   const idRe = new RegExp(`^${escapedBase}\\/([^/]+)$`);
+  // Slice 2c — the request queue. Admin bundle only; exact paths win over
+  // `:id` in production's router, so these are matched first.
+  const requestsPath = `${base}/authored`;
+  const requestIdRe = new RegExp(`^${escapedBase}\\/authored\\/([^/]+)$`);
   const toolPermsRe = new RegExp(`^${escapedBase}\\/([^/]+)\\/tool-permissions$`);
   return async (req, res) => {
     const url = req.url ?? '';
@@ -316,7 +357,10 @@ function connectorsMiddleware(
     // 404s anything else under the prefix (`/admin/connectorsx`, `<base>/a/b`)
     // before any auth gate runs, because no route matches it; claiming it here
     // and answering 401/403 first would disagree with prod (TASK-790).
-    if (path !== base && !idRe.test(path) && !toolPermsRe.test(path)) return false;
+    const isRequestRoute =
+      mode === 'admin' && (path === requestsPath || requestIdRe.test(path));
+    if (path !== base && !idRe.test(path) && !toolPermsRe.test(path) && !isRequestRoute)
+      return false;
     // Slice 2a: the real `/settings/connectors*` bundle registers list + show
     // only (admins write via `/admin/connectors`). Production's router answers a
     // write on a path a GET shares with 405 before any auth runs, and has no
@@ -362,6 +406,58 @@ function connectorsMiddleware(
       });
     };
     const availableById = (id: string) => availableRows().find((row) => row.connectorId === id);
+    const requests = store.collection<StoredConnectorRequest>(REQUESTS);
+    const clearRequests = (connectorId: string): void => {
+      for (const r of requests.list()) if (r.connectorId === connectorId) requests.remove(r.id);
+    };
+
+    // ---- /admin/connectors/authored[/:connectorId] (slice 2c) ---------------
+    if (isRequestRoute) {
+      if (path === requestsPath && method === 'GET') {
+        // Ids already live as a shared connector are hidden; one row per
+        // (person, id) — the newest of that person's agents' requests.
+        const live = new Set(
+          connectors.list().filter((c) => c.visibility === 'shared').map((c) => c.connectorId),
+        );
+        const newest = new Map<string, StoredConnectorRequest>();
+        for (const r of requests.list()) {
+          if (live.has(r.connectorId)) continue;
+          const key = `${r.ownerUserId}\u0000${r.connectorId}`;
+          const seen = newest.get(key);
+          if (!seen || r.updatedAt > seen.updatedAt) newest.set(key, r);
+        }
+        const users = store.collection<{ id: string; email?: string; name?: string }>('users');
+        const label = (userId: string): string => {
+          const u = users.get(userId);
+          return u?.name?.trim() || u?.email?.trim() || userId;
+        };
+        const drafts = [...newest.values()]
+          .sort((a, b) =>
+            a.connectorId === b.connectorId
+              ? a.ownerUserId.localeCompare(b.ownerUserId)
+              : a.connectorId.localeCompare(b.connectorId),
+          )
+          .map((r) => ({
+            connectorId: r.connectorId,
+            name: r.name,
+            usageNote: r.usageNote,
+            keyMode: r.keyMode,
+            proposal: r.proposal,
+            updatedAt: r.updatedAt,
+            proposedBy: { userId: r.ownerUserId, label: label(r.ownerUserId) },
+          }));
+        send(res, 200, { drafts });
+        return true;
+      }
+      const requestMatch = path.match(requestIdRe);
+      if (requestMatch?.[1] && method === 'DELETE') {
+        clearRequests(decodeURIComponent(requestMatch[1]));
+        send(res, 204);
+        return true;
+      }
+      // Any other method falls through to the `:id` routes, as production's
+      // router does (`authored` is reserved, so none of them finds a row).
+    }
 
     // ---- collection routes -------------------------------------------------
     if (path === base && method === 'GET') {
@@ -378,7 +474,17 @@ function connectorsMiddleware(
           return true;
         }
       }
+      if (typeof body.connectorId === 'string' && RESERVED_IDS.has(body.connectorId)) {
+        send(res, 400, { error: `connectorId '${body.connectorId}' is reserved` });
+        return true;
+      }
       const available = typeof body.connectorId === 'string' ? availableById(body.connectorId) : undefined;
+      // On the admin surface another person's shared id is taken (editing it
+      // is a PATCH) — mirrors the real route's 409.
+      if (available && mode === 'admin' && available.userId !== actor.id) {
+        send(res, 409, { error: 'connector-id-taken' });
+        return true;
+      }
       if (available && isReadOnly(available, actor.id, mode)) {
         send(res, 403, { error: 'read-only' });
         return true;
@@ -403,6 +509,9 @@ function connectorsMiddleware(
         updatedAt: now,
       };
       connectors.upsert(row);
+      // Slice 2c — approval is creation: a new SHARED connector resolves every
+      // request for its id, whoever asked. A private one resolves nobody's.
+      if (!existing && row.visibility === 'shared') clearRequests(row.connectorId);
       send(res, existing ? 200 : 201, { connector: toConnector(row, actor.id), created: !existing });
       return true;
     }

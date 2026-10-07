@@ -1,12 +1,14 @@
 /**
  * The workspace grant row (TASK-350).
  *
- * Three kinds, and — the thing the card body got wrong — TWO different POST
- * targets. A `skill` or `connector` grant goes to `/api/chat/permission-decision`;
- * a `host` grant goes to `/api/chat/allow-host`, because
- * `PermissionDecisionRequest` refines that exactly one of skillId/connectorId is
- * present and has no host arm at all. A row that posted all three to the same
- * place would 400 on a third of the work.
+ * Two kinds, and — the thing the card body got wrong — TWO different POST
+ * targets. A `skill` grant goes to `/api/chat/permission-decision`; a `host`
+ * grant goes to `/api/chat/allow-host`, because `PermissionDecisionRequest`
+ * names a skill and has no host arm at all.
+ *
+ * Slice 2c removed the `connector` arm: an agent-proposed connector goes to
+ * the workspace admins (Admin › Connectors › Awaiting approval), never to a
+ * card here.
  */
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -23,10 +25,6 @@ import {
   SLOT_HINT,
 } from '@/lib/grant-copy';
 import { connectorAccessCopy } from '@/lib/connector-access-copy';
-import {
-  TOOL_PERMISSIONS_RESET_FAILED,
-  TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE,
-} from '@/lib/connectors';
 import type { PermissionRequest } from '@/server/types';
 
 function row(
@@ -64,11 +62,9 @@ const skillReq: PermissionRequest = {
   slots: [{ slot: 'api_key', kind: 'api-key' }],
 };
 
-const connectorReq: PermissionRequest = {
-  kind: 'connector',
-  connectorId: 'linear',
-  name: 'Linear',
-  hosts: ['api.linear.app'],
+/** A skill that needs no key — reach only. */
+const reachOnlyReq: PermissionRequest = {
+  ...skillReq,
   slots: [],
 };
 
@@ -148,54 +144,6 @@ describe('a payload the guard lets through but the row must survive', () => {
 
     expect(screen.getByText('Connect Linear issues')).toBeTruthy();
     expect(screen.queryByText('undefined')).toBeNull();
-  });
-
-  test('a connector with no name is titled from its id, never "Connect undefined"', () => {
-    /*
-      THE MAJOR FROM THE SECOND REVIEW ROUND. `name` was excluded from
-      `isRenderableGrant` on the grounds that interpolating it "cannot throw".
-      True, and the wrong test — `Connect ${undefined}` renders the literal
-      words "Connect undefined" above KEY_SAFETY copy and a `type="password"`
-      input. A credential prompt whose subject is missing is worse than a crash,
-      because a crash is loud and this just quietly asks for an API key on
-      behalf of nobody.
-
-      Excluding `name` from the guard is still right — a nameless connector is
-      an answerable grant, and refusing it would cost the person the question.
-      What was missing is the fallback, and `connectorId` is guarded, so it is
-      always there.
-    */
-    const nameless = {
-      kind: 'connector',
-      connectorId: 'linear',
-      hosts: ['api.linear.app'],
-      slots: [],
-    } as unknown as PermissionRequest;
-
-    row(nameless);
-
-    expect(screen.getByText('Connect Linear')).toBeTruthy();
-    expect(screen.queryByText(/undefined/)).toBeNull();
-  });
-
-  test('an empty-string name falls back the same way', () => {
-    // Absent and blank are the same thing to a reader, so they are the same
-    // thing here. A `.trim()`-less check would have let this one through.
-    const blankName = {
-      ...connectorReq,
-      name: '   ',
-    } as unknown as PermissionRequest;
-
-    row(blankName);
-
-    expect(screen.getByText('Connect Linear')).toBeTruthy();
-  });
-
-  test('a real connector name still wins over the fallback', () => {
-    // The positive control: the fallback must not have replaced the name.
-    row({ ...connectorReq, name: 'Linear Issues' } as PermissionRequest);
-
-    expect(screen.getByText('Connect Linear Issues')).toBeTruthy();
   });
 
   test('a half-filled packages list renders the row instead of throwing', () => {
@@ -334,9 +282,13 @@ describe('a skill grant', () => {
     const decision = fetchMock.mock.calls.find(
       (c) => c[0] === '/api/chat/permission-decision',
     );
-    expect(decision?.[1]?.body).toContain('"skillId":"linear-issues"');
-    expect(decision?.[1]?.body).toContain('"conversationId":"cnv-1"');
-    expect(decision?.[1]?.body).not.toContain('"connectorId"');
+    // The WHOLE body: the decision names a skill and nothing else. Slice 2c
+    // removed the connector arm, so no `connectorId` can ride it.
+    expect(JSON.parse(String(decision?.[1]?.body))).toEqual({
+      conversationId: 'cnv-1',
+      skillId: 'linear-issues',
+      shown: { hosts: ['api.linear.app'], slots: ['api_key'], npm: [], pypi: [] },
+    });
     // CSRF: the route is gated on this header, not on a token.
     expect(decision?.[1]?.headers).toMatchObject({ 'x-requested-with': 'ax-admin' });
 
@@ -347,76 +299,6 @@ describe('a skill grant', () => {
     // "it is base64 so it is fine" is not a thing.
     expect(decision?.[1]?.body).not.toContain('lin_test_123');
     expect(decision?.[1]?.body).not.toContain('bGluX3Rlc3RfMTIz');
-  });
-});
-
-describe('a connector grant', () => {
-  test('is titled by its display name, and posts connectorId, never skillId', async () => {
-    const fetchMock = okFetch();
-    const { onResolved } = row(connectorReq);
-
-    expect(screen.getByText('Connect Linear')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
-
-    await waitFor(() => expect(onResolved).toHaveBeenCalledWith('connector:linear'));
-    const decision = fetchMock.mock.calls.find(
-      (c) => c[0] === '/api/chat/permission-decision',
-    );
-    expect(decision?.[1]?.body).toContain('"connectorId":"linear"');
-    expect(decision?.[1]?.body).not.toContain('"skillId"');
-  });
-
-  /*
-    TASK-775 — the route answers 503 `tool-permissions-reset-failed` when the
-    approval's promotion couldn't reset a moved server's tool permissions
-    (TASK-758). Without reading the body that is just "a 503", whose sentence
-    (HTTP_UNAVAILABLE) tells the person the service is down. It isn't: nothing
-    was approved and Connect can simply be tried again.
-  */
-  test('a 503 tool-permissions-reset-failed shows the plain reset message, and the row stays', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ error: TOOL_PERMISSIONS_RESET_FAILED }), { status: 503 }),
-    );
-    const { onResolved, onGranted } = row(connectorReq);
-
-    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE);
-    expect(alert).not.toHaveTextContent(HTTP_UNAVAILABLE);
-    expect(alert).not.toHaveTextContent('tool-permissions-reset-failed');
-    expect(alert).not.toHaveTextContent(/503/);
-    expect(onResolved).not.toHaveBeenCalled();
-    expect(onGranted).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled(),
-    );
-  });
-
-  test('any other 503 keeps the status sentence, not the reset message', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ error: 'something-else' }), { status: 503 }),
-    );
-    row(connectorReq);
-
-    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(HTTP_UNAVAILABLE);
-    expect(alert).not.toHaveTextContent(TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE);
-  });
-
-  test('a 500 grant-failed keeps the generic server sentence', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ error: 'grant-failed' }), { status: 500 }),
-    );
-    row(connectorReq);
-
-    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(HTTP_SERVER_ERROR);
-    expect(alert).not.toHaveTextContent(TOOL_PERMISSIONS_RESET_FAILED_APPROVE_MESSAGE);
   });
 });
 
@@ -460,7 +342,7 @@ describe('turning a grant down (TASK-444)', () => {
   /*
     THE CLAIM THIS BLOCK REPLACES was "turning a grant down is purely local —
     it drops the row and calls nothing". True of the code, wrong about the
-    product. A `skill` or `connector` grant is pending ON THE SERVER:
+    product. A `skill` grant is pending ON THE SERVER:
     `pendingGrantsForUser` enumerates it on every workspace mount, so a refusal
     nobody recorded came straight back on the next reload and re-asked a
     question the person had already answered — and the only way to find that
@@ -493,26 +375,6 @@ describe('turning a grant down (TASK-444)', () => {
     });
     // CSRF: this route is gated on the header, like every other workspace write.
     expect(decline?.[1]?.headers).toMatchObject({ 'x-requested-with': 'ax-admin' });
-  });
-
-  test('a connector grant declines as a connector, with its connectorId', async () => {
-    // Not a duplicate of the case above: `kind` and `subjectId` are both
-    // DERIVED from the request, and a version that hardcoded `'skill'` or read
-    // `skillId` on every arm passes that test and declines the wrong thing here.
-    const fetchMock = okFetch();
-    const { onResolved } = row(connectorReq);
-
-    fireEvent.click(screen.getByRole('button', { name: GRANT_REJECT_LABEL }));
-
-    await waitFor(() => expect(onResolved).toHaveBeenCalledWith('connector:linear'));
-    const decline = fetchMock.mock.calls.find(
-      (c) => c[0] === '/api/workspace/grants/decline',
-    );
-    expect(JSON.parse(String(decline?.[1]?.body))).toEqual({
-      agentId: 'a-quill',
-      kind: 'connector',
-      subjectId: 'linear',
-    });
   });
 
   test('a decline the server never heard leaves the row where it was', async () => {
@@ -659,10 +521,10 @@ describe('without a conversation', () => {
   test('the connect button is disabled, and says why', () => {
     // A SLOTLESS request on purpose. Using the skill fixture here proved
     // nothing: its unfilled `api_key` slot disables Connect on its own, so the
-    // test passed with the conversation guard deleted. The connector fixture
-    // has no slots, so the only thing that can disable this button is the
-    // missing conversation.
-    row(connectorReq, null);
+    // test passed with the conversation guard deleted. This fixture has no
+    // slots, so the only thing that can disable this button is the missing
+    // conversation.
+    row(reachOnlyReq, null);
 
     expect(screen.getByRole('button', { name: /^connect$/i })).toBeDisabled();
     // And it is not a dead control: the one disabled state a person cannot fix
@@ -756,29 +618,20 @@ describe('a half-typed value surviving the row leaving and re-entering the threa
 
 /*
   TASK-700 — the launch disclosure (TASK-328) on the surface the assistant itself
-  raises: it proposed a connector or a skill and asks for the key to make it work.
+  raises: it proposed a skill and asks for the key to make it work.
   This is the most likely place for a first-time person to hand an assistant a key,
   in the middle of a conversation, so it says — next to the key, before Connect —
   what that key lets the assistant do.
 
   It follows the KEY, not the kind: a grant with key slots (typed OR already saved)
-  is handing access over; a grant with none (reach only, e.g. a connector that
-  needs no key) is not, and a notice there would be about something that is not
+  is handing access over; a grant with none (reach only) is not, and a notice there would be about something that is not
   happening.
 */
 describe('access disclosure (TASK-700)', () => {
   const NOTICE = 'connector-access-notice';
 
-  const connectorWithKey: PermissionRequest = {
-    ...connectorReq,
-    slots: [{ slot: 'api_key', kind: 'api-key' }],
-  };
-
-  test.each([
-    ['skill', skillReq],
-    ['connector', connectorWithKey],
-  ] as const)('a %s grant asking for a key shows the key notice, between the key and Connect', (_k, req) => {
-    row(req);
+  test('a grant asking for a key shows the key notice, between the key and Connect', () => {
+    row(skillReq);
     const notice = screen.getByTestId(NOTICE);
     expect(notice).toHaveTextContent(connectorAccessCopy('key').headline);
     expect(notice).toHaveTextContent(connectorAccessCopy('key').details);
@@ -801,7 +654,7 @@ describe('access disclosure (TASK-700)', () => {
 
   test('one notice however many keys the grant asks for', () => {
     row({
-      ...connectorWithKey,
+      ...skillReq,
       slots: [
         { slot: 'client_id', kind: 'api-key' },
         { slot: 'client_secret', kind: 'api-key' },
@@ -811,8 +664,8 @@ describe('access disclosure (TASK-700)', () => {
     expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
   });
 
-  test('a connector that needs no key hands over no key, so shows no notice', () => {
-    row(connectorReq);
+  test('a grant that needs no key hands over no key, so shows no notice', () => {
+    row(reachOnlyReq);
     expect(screen.queryByTestId(NOTICE)).toBeNull();
   });
 
@@ -842,13 +695,11 @@ describe('access disclosure (TASK-700)', () => {
 });
 
 describe('invalid caller-id credential floor', () => {
-  test.each(['skill', 'connector'] as const)('does not submit a blank %s destination floor', async (kind) => {
+  test('does not submit a blank skill destination floor', async () => {
     const fetchMock = okFetch();
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const slots = [{ slot: 'api_key', kind: 'api-key' as const }];
-    const request: PermissionRequest = kind === 'skill'
-      ? { ...skillReq, skillId: '   ', slots }
-      : { ...connectorReq, connectorId: '   ', slots };
+    const request: PermissionRequest = { ...skillReq, skillId: '   ', slots };
     const { onResolved, onGranted } = row(request);
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'test-only-key' } });
     const connect = screen.getByRole('button', { name: /^connect$/i });
@@ -860,49 +711,5 @@ describe('invalid caller-id credential floor', () => {
     expect(onResolved).not.toHaveBeenCalled();
     expect(onGranted).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: /^connect$/i })).toBeEnabled();
-  });
-});
-
-// TASK-711 — the connector card says who supplies the key. Before this, a
-// workspace-keyed proposal looked identical to a personal one, so an admin could
-// approve a connector that would be handed the company's shared key without
-// seeing that. Each `keyMode` case FAILS against the unfixed row (it rendered
-// nothing about the key mode); the absent/skill cases pin that we do not guess.
-describe('GrantRow — connector key mode (TASK-711)', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-    resetGrantDraftsForTest();
-  });
-
-  test('a shared company key is called out, as a note rather than an error', () => {
-    row({ ...connectorReq, keyMode: 'workspace' });
-    const notice = screen.getByTestId('connector-key-mode');
-    expect(notice).toHaveAttribute('data-key-mode', 'workspace');
-    expect(notice).toHaveAttribute('role', 'note');
-    expect(notice).toHaveTextContent(/shared company key, not a key of your own/i);
-    expect(notice).toHaveTextContent(/only approve this if you expected a shared key/i);
-  });
-
-  test('a personal key gets one plain line', () => {
-    row({ ...connectorReq, keyMode: 'personal' });
-    const notice = screen.getByTestId('connector-key-mode');
-    expect(notice).toHaveAttribute('data-key-mode', 'personal');
-    expect(notice).toHaveTextContent(/each person who uses it adds their own/i);
-    expect(notice).not.toHaveTextContent(/shared company key/i);
-  });
-
-  test('no key mode on the card (older cards) says nothing either way', () => {
-    row(connectorReq);
-    expect(screen.queryByTestId('connector-key-mode')).toBeNull();
-  });
-
-  test('a value we do not know is not described', () => {
-    row({ ...connectorReq, keyMode: 'everyone' } as unknown as PermissionRequest);
-    expect(screen.queryByTestId('connector-key-mode')).toBeNull();
-  });
-
-  test('a skill card never shows a key mode', () => {
-    row({ ...skillReq, keyMode: 'workspace' } as unknown as PermissionRequest);
-    expect(screen.queryByTestId('connector-key-mode')).toBeNull();
   });
 });

@@ -267,7 +267,7 @@ describe('the grants read-back (TASK-373)', () => {
     );
   });
 
-  it('accepts all three kinds it CAN draw', async () => {
+  it('accepts both kinds it CAN draw', async () => {
     /*
       The positive control for the two rejections above: without it they would
       pass just as well against a guard that refused everything, and a grants
@@ -280,11 +280,6 @@ describe('the grants read-back (TASK-373)', () => {
         request: { kind: 'skill', skillId: 'linear', description: '', hosts: [], slots: [] },
       },
       {
-        conversationId: 'cnv-2',
-        agentId: 'a-quill',
-        request: { kind: 'connector', connectorId: 'linear', name: 'Linear', hosts: [], slots: [] },
-      },
-      {
         conversationId: 'cnv-3',
         agentId: 'a-scout',
         request: { kind: 'host', host: 'example.org', sessionId: 's-1' },
@@ -292,6 +287,21 @@ describe('the grants read-back (TASK-373)', () => {
     ];
     respondWith({ grants });
     await expect(workspaceApi.grants()).resolves.toEqual({ grants });
+  });
+
+  it('rejects an in-chat connector card (slice 2c removed it; the server drops them)', async () => {
+    respondWith({
+      grants: [
+        {
+          conversationId: 'cnv-2',
+          agentId: 'a-quill',
+          request: { kind: 'connector', connectorId: 'linear', name: 'Linear', hosts: [], slots: [] },
+        },
+      ],
+    });
+    await expect(workspaceApi.grants()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
   });
 
   it('accepts an honestly empty page', async () => {
