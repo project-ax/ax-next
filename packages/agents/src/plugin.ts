@@ -9,6 +9,11 @@ import {
 import { sql, type Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
 import { snapshotNewlyAttachedConnectors } from './connector-snapshot.js';
+import {
+  CONNECTOR_CLEANUP_KEY,
+  dropDanglingConnectorIds,
+  makeConnectorDeletedHandler,
+} from './connector-cleanup.js';
 import { convertLegacyConnectorDefaults } from './legacy-default-conversion.js';
 import { listAuthoredSkills } from './authored-skills.js';
 import { projectAuthoredBundle } from './authored-caps.js';
@@ -195,12 +200,20 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             'a converted legacy connector default keeps its flag, so the (idempotent) conversion re-runs on the next boot',
         },
         {
+          // Slice 2b — the boot sweep asks which attached/excluded connector ids
+          // still exist. Subscribing to `connectors:deleted` is not a graph edge;
+          // this call is the existing agents -> connectors direction.
+          hook: 'connectors:live-ids',
+          degradation:
+            'a connector id deleted while the host was down stays on the agents that had it (the delete event itself still detaches it when it arrives)',
+        },
+        {
           hook: 'models:get-policy',
           degradation:
             "the model allow-list, the Default model and the runner rule fall back to the built-in list (today's behaviour)",
         },
       ],
-      subscribes: ['bootstrap:reset-cleanup'],
+      subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
     },
 
     async init({ bus }) {
@@ -645,6 +658,14 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         },
       );
 
+      // Slice 2b — a deleted connector is detached from every agent. The
+      // handler never throws (log + swallow).
+      bus.subscribe(
+        'connectors:deleted',
+        CONNECTOR_CLEANUP_KEY,
+        makeConnectorDeletedHandler({ store: localStore, logger: initCtx.logger }),
+      );
+
       // TASK-808 — convert any legacy connector defaults into explicit
       // attachments. LAST, so our own hooks are registered; the kernel inits
       // producers of our declared optional calls (@ax/connectors,
@@ -661,6 +682,15 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           err: err instanceof Error ? err.message : String(err),
         });
       }
+
+      // Slice 2b — boot sweep for ids whose `connectors:deleted` was missed.
+      // After the conversion above (which may attach). Never throws.
+      await dropDanglingConnectorIds({
+        bus,
+        ctx: initCtx,
+        store: localStore,
+        logger: initCtx.logger,
+      });
     },
 
     async shutdown() {
@@ -677,6 +707,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         }
       }
       busRef?.unsubscribe('bootstrap:reset-cleanup', RESET_CLEANUP_KEY);
+      busRef?.unsubscribe('connectors:deleted', CONNECTOR_CLEANUP_KEY);
       busRef = undefined;
       // The shared db handle is owned by @ax/database-postgres; don't close
       // it here. Just drop our references so a re-init doesn't read a

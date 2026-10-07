@@ -58,9 +58,23 @@ function agentsStub(): Plugin {
       version: '0.0.0',
       registers: ['agents:resolve'],
       calls: [],
-      subscribes: [],
+      subscribes: ['connectors:deleted'],
     },
     async init({ bus }) {
+      // Simulates what the REAL @ax/agents subscriber does (slice 2b): detach the
+      // id everywhere when no live connector keeps it. This fake cannot run the
+      // real plugin; the real detach is tested in @ax/agents
+      // (connector-cleanup.test.ts).
+      bus.subscribe<{ connectorId: string; idStillLive?: boolean }>(
+        'connectors:deleted',
+        'agents-stub',
+        async (_ctx, payload) => {
+          if (payload.idStillLive !== false) return undefined;
+          agent.connectorAttachments = agent.connectorAttachments.filter((id) => id !== payload.connectorId);
+          agent.connectorExclusions = agent.connectorExclusions.filter((id) => id !== payload.connectorId);
+          return undefined;
+        },
+      );
       bus.registerService(
         'agents:resolve',
         'agents-stub',
@@ -351,14 +365,18 @@ describe('deleting a shared connector purges agents\' sign-ins in the real vault
     await expectRefused(h, 'admin');
   });
 
-  it('KNOWN EXPOSURE (slice 2 closes it via detach-on-delete): a delete WITHOUT purgeGlobal leaves the row, and a same-id re-upsert reads the old token again', async () => {
+  it('a delete WITHOUT purgeGlobal still detaches the agent: a same-id re-upsert cannot read the old token', async () => {
     agent = { members: ['admin', 'bob'], connectorAttachments: ['linear'], connectorExclusions: [] };
     const h = await makeHarness();
     await seedTeamConnector(h);
-    await deleteAndRecreate(h, false);
-    // Documents current behaviour, not the goal: flip this assertion when
-    // slice 2 lands (the attachment is dropped on delete, so the read refuses).
     expect(await readOnAgent(h, 'bob')).toBe(TEAM_TOKEN);
+    await deleteAndRecreate(h, false);
+    // The old row survives (no purge authority), but the delete detached the
+    // agent (simulated by the stub's connectors:deleted subscriber, as the real
+    // @ax/agents one does), so the re-created connector is not attached to it.
+    expect(agent.connectorAttachments).toEqual([]);
+    await expectRefused(h, 'bob');
+    await expectRefused(h, 'admin');
   });
 });
 
