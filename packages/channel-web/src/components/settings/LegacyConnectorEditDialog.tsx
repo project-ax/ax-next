@@ -1,11 +1,8 @@
 /**
  * ConnectorEditDialog — the SHARED, mechanism-first connector create/edit form
- * (TASK-128, settings-unified epic). One component, two variants:
- *   - admin curation (the folded Connector Registry, `isAdmin`) — exposes the
- *     workspace-level fields (Sharing).
- *   - user authoring (`isAdmin={false}`) — hides those fields and forces the
- *     connector private. (The user-facing ENTRY points + owner-scoped routes are
- *     TASK-129; this component is the variant-aware form they reuse.)
+ * (TASK-128, settings-unified epic). Admin-only since slice 2a: opened from
+ * Admin › Connectors, it exposes the workspace-level fields (Sharing) and reads
+ * and writes through `/admin/connectors`.
  *
  * MECHANISM-FIRST. A segmented picker at the top — MCP server / Direct API /
  * Command-line tool — reshapes the visible fields (the old "Advanced — how it
@@ -120,15 +117,6 @@ export interface ConnectorEditDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Called after a successful create/update so the caller can refresh + close. */
   onSaved: () => void;
-  /**
-   * Admin variant. When true the workspace-level fields (Sharing) are
-   * exposed. User edits preserve saved sharing settings; new definitions are
-   * shared. Defaults to false.
-   *
-   * Since slice 2a the only caller is Admin › Connectors, which passes true;
-   * reads and writes always use `/admin/connectors` whatever this says.
-   */
-  isAdmin?: boolean;
 }
 
 /** Per-mechanism "what the secrets are" label (truthful per the design). */
@@ -480,7 +468,6 @@ export function LegacyConnectorEditDialog({
   open,
   onOpenChange,
   onSaved,
-  isAdmin = false,
   connector,
 }: ConnectorEditDialogProps & { connector?: Connector }) {
   const [form, setForm] = useState<ConnectorFormState>(() =>
@@ -586,9 +573,7 @@ export function LegacyConnectorEditDialog({
     const connectorId = form.connectorId || connectorIdFromName(form.name);
     setBusy(true);
     setError(null);
-    // Preserve sharing on user edits. Workspace keys remain admin-only on the
-    // server.
-    const visibility: ConnectorVisibility = isAdmin ? form.visibility : connector?.visibility ?? 'shared';
+    const visibility: ConnectorVisibility = form.visibility;
 
     // --- oauth client_secret persistence ------------------------------------
     // For each oauth slot that has a newly-entered client_secret: write the
@@ -601,8 +586,8 @@ export function LegacyConnectorEditDialog({
     // pointing at a missing ref.
     //
     // NOTE: where the secret is stored decides who can sign in (see
-    // `clientSecretScope`): a workspace-key connector and a shared connector an
-    // admin writes keep it at the workspace, so anyone can; any other connector
+    // `clientSecretScope`): a workspace-key connector and a shared connector
+    // keep it at the workspace, so anyone can; a private connector
     // keeps it at its author's own scope, where only the author can sign in. DCR
     // (blank client) avoids this entirely. There is no migration here for an
     // admin's older copy at their own scope; the remote-server form offers that.
@@ -623,7 +608,6 @@ export function LegacyConnectorEditDialog({
           slot: { kind: 'api-key' },
           scope: {
             scope: clientSecretScope({
-              isAdmin,
               keyMode: form.keyMode,
               visibility,
             }),
@@ -724,9 +708,7 @@ export function LegacyConnectorEditDialog({
             {target === 'new' ? 'New connector' : `Edit ${form.name || 'connector'}`}
           </DialogTitle>
           <DialogDescription>
-            {isAdmin
-              ? 'Curate a service the workspace can connect to. Sharing makes it available to everyone’s agents.'
-              : 'Add a service your assistant can connect to. It stays private to your agents.'}
+            Curate a service the workspace can connect to. Sharing makes it available to everyone’s agents.
           </DialogDescription>
         </DialogHeader>
 
@@ -825,33 +807,28 @@ export function LegacyConnectorEditDialog({
             )}
           </div>
 
-          {/* Admin-only workspace fields. Hidden + forced off in the user variant. */}
-          {isAdmin && (
-            <>
-              {/* Sharing (visibility) */}
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="connector-visibility">Sharing</Label>
-                <Select
-                  value={form.visibility}
-                  onValueChange={(v) =>
-                    setForm((f) => ({ ...f, visibility: v as ConnectorVisibility }))
-                  }
-                >
-                  <SelectTrigger id="connector-visibility">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="private">
-                      Private — just your agents
-                    </SelectItem>
-                    <SelectItem value="shared">
-                      Shared — agents others can use
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </>
-          )}
+          {/* Workspace-level field: Sharing (visibility). */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="connector-visibility">Sharing</Label>
+            <Select
+              value={form.visibility}
+              onValueChange={(v) =>
+                setForm((f) => ({ ...f, visibility: v as ConnectorVisibility }))
+              }
+            >
+              <SelectTrigger id="connector-visibility">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="private">
+                  Private — just your agents
+                </SelectItem>
+                <SelectItem value="shared">
+                  Shared — agents others can use
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
           {/* Per-mechanism fields. */}
           <div className="flex flex-col gap-4 border-t border-border pt-4">

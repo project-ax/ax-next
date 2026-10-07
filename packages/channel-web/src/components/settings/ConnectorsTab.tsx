@@ -288,7 +288,6 @@ export function ConnectorsTab() {
         <ConnectorEditDialog
           target={editing}
           open
-          isAdmin
           onOpenChange={(o) => {
             if (!o) setEditing(null);
           }}

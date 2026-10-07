@@ -51,7 +51,6 @@ async function openEditor(connector: Connector) {
     <LegacyConnectorEditDialog
       target={SUMMARY}
       open
-      isAdmin
       onOpenChange={() => {}}
       onSaved={() => {}}
     />,
@@ -90,7 +89,7 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
 
   it('a new connector never warns — it has no permissions to lose', async () => {
     render(
-      <LegacyConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+      <LegacyConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'X' } });
     fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://mcp.example.com/x' } });
@@ -107,7 +106,6 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
       <LegacyConnectorEditDialog
         target={SUMMARY}
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={onSaved}
       />,
@@ -138,7 +136,6 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
       <LegacyConnectorEditDialog
         target={SUMMARY}
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={onSaved}
       />,

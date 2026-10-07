@@ -119,7 +119,6 @@ export function RemoteMcpConnectorForm({
   open,
   onOpenChange,
   onSaved,
-  isAdmin = false,
 }: ConnectorEditDialogProps & { connector?: Connector }) {
   const id = useId();
   const formRef = useRef<HTMLFormElement>(null);
@@ -155,7 +154,6 @@ export function RemoteMcpConnectorForm({
   // connector is created shared.
   // Keyed on the SAVED mode: a new OAuth connector is always per-person.
   const secretScope = clientSecretScope({
-    isAdmin,
     keyMode: savedKeyMode,
     visibility: connector?.visibility ?? 'shared',
   });
@@ -222,9 +220,8 @@ export function RemoteMcpConnectorForm({
       : 'none'
     : draft.signIn;
   const signInKnown = Boolean(discovered) || usingSavedSignIn;
-  // TASK-827 — only a new connector, only an admin, never OAuth.
-  const offerKeyModeChoice =
-    isAdmin && !connector && signInKnown && signIn !== 'oauth';
+  // TASK-827 — only a new connector, never OAuth. (Only admins open this form.)
+  const offerKeyModeChoice = !connector && signInKnown && signIn !== 'oauth';
   const keyMode: 'personal' | 'workspace' = connector
     ? connector.keyMode
     : offerKeyModeChoice
@@ -815,14 +812,6 @@ export function RemoteMcpConnectorForm({
                                   </AlertDescription>
                                 </Alert>
                               )}
-                            {secretScope === 'user' &&
-                              keyMode === 'personal' &&
-                              !isAdmin && (
-                                <FieldDescription>
-                                  Only you can sign in to this connector because it
-                                  uses your OAuth app.
-                                </FieldDescription>
-                              )}
                           </Field>
                           <Field className="gap-2">
                             <FieldTitle>Redirect URL</FieldTitle>
@@ -894,7 +883,7 @@ export function RemoteMcpConnectorForm({
                         </RadioGroup>
                       </FieldSet>
                     )}
-                    {isAdmin && connector && signIn !== 'oauth' && (
+                    {connector && signIn !== 'oauth' && (
                       <FieldDescription>
                         {keyMode === 'workspace'
                           ? 'Everyone uses one shared key. To change this, create a new connector.'

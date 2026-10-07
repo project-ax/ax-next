@@ -743,7 +743,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
   });
 
   const ASK_ADMIN = 'Couldn’t load it. Ask a workspace admin to fix it.';
-  const FIX_IN_SETTINGS = 'Couldn’t load it. Fix it in Settings › Connectors.';
+  const FIX_IN_SETTINGS = 'Couldn’t load it. Fix it in Admin › Connectors.';
 
   it('wears the error icon after its name; someone who isn’t an admin is told to ask one — even for a connector they may edit', async () => {
     renderTab();
@@ -756,7 +756,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
     expect(document.body.textContent ?? '').not.toMatch(/MCP|namespace/i);
   });
 
-  it('a workspace admin is pointed at Settings › Connectors, whether or not the row is editable', async () => {
+  it('a workspace admin is pointed at Admin › Connectors, whether or not the row is editable', async () => {
     renderTab(ADMIN);
     const icons = await screen.findAllByRole('button', { name: FIX_IN_SETTINGS });
     expect(icons.map((i) => i.previousElementSibling?.textContent)).toEqual(['Linear', 'Gmail']);

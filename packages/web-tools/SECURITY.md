@@ -43,7 +43,7 @@ public host that clears the guard:
   decides.
 - **Approved** → we remember that host for *that person* (scope `user`), so the
   next read from it doesn't ask again.
-- **Changed your mind?** Settings → Connectors → **Sites we read without asking**
+- **Changed your mind?** Settings → Sites → **Sites we read without asking**
   lists every site you've allowed, plus any your admin pre-approved for everyone.
   Press **Ask again** on one and we go back to asking. A permission you can't find
   and can't take back isn't really a permission, so this list is part of the

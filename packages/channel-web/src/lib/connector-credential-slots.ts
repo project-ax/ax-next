@@ -31,22 +31,20 @@ export function newHeaderSlot(): string {
  * itself is workspace-wide, so the host serves a global secret only to signers
  * of a connector that is shared AND admin-owned. That decides the rule here:
  *
+ * Only admins write connectors (slice 2a), so the author is always an admin:
+ *
  *   - a workspace-key connector keeps its secret at the workspace, as ever;
- *   - a shared connector written by an admin does too, so everyone can sign in
- *     with the OAuth app the admin registered;
- *   - a PRIVATE admin connector stays at the author's own scope. A global
- *     secret would be unreadable even by its owner (it is not shared), so the
- *     only person who could sign in would be locked out;
- *   - a non-admin author can't write a global secret at all (that route is
- *     admin-only), so theirs stays at their own scope, and only they can sign in.
+ *   - a shared connector does too, so everyone can sign in with the OAuth app
+ *     the admin registered;
+ *   - a PRIVATE connector stays at the author's own scope. A global secret
+ *     would be unreadable even by its owner (it is not shared), so the only
+ *     person who could sign in would be locked out.
  */
 export function clientSecretScope(args: {
-  isAdmin: boolean;
   keyMode: 'personal' | 'workspace';
   visibility: 'private' | 'shared';
 }): 'global' | 'user' {
-  return args.keyMode === 'workspace' ||
-    (args.isAdmin && args.visibility === 'shared')
+  return args.keyMode === 'workspace' || args.visibility === 'shared'
     ? 'global'
     : 'user';
 }

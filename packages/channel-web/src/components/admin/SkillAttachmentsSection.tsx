@@ -176,7 +176,7 @@ export function SkillAttachmentsSection({
                 </Button>
               </div>
               {/* TASK-100 — a skill declares no credential slots; its reach is
-                  its connectors, configured under the Connectors tab. No
+                  its connectors, configured under Admin › Connectors. No
                   per-skill credential rows here. */}
             </li>
           );

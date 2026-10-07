@@ -39,7 +39,7 @@ describe('LegacyConnectorEditDialog — whose key (TASK-827)', () => {
 
   it('editing an existing connector disables the choice and says how to change it', async () => {
     render(
-      <LegacyConnectorEditDialog target={SUMMARY} open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+      <LegacyConnectorEditDialog target={SUMMARY} open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     const trigger = await screen.findByLabelText('Whose key');
     await waitFor(() => expect(trigger).toHaveTextContent(/Shared/));
@@ -49,7 +49,7 @@ describe('LegacyConnectorEditDialog — whose key (TASK-827)', () => {
 
   it('a new connector can still pick whose key', async () => {
     render(
-      <LegacyConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+      <LegacyConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     const trigger = await screen.findByLabelText('Whose key');
     expect(trigger).toBeEnabled();

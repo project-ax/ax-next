@@ -8,7 +8,7 @@
  *   - **Edit permissions** — what THIS agent may do with each of the
  *     connector's tools (Allow / Ask first / Deny), in a dialog
  *     (`EditPermissionsDialog`). Never the connector's own settings: those are
- *     a workspace admin's, in Settings › Connectors.
+ *     a workspace admin's, in Admin › Connectors.
  *   - **Remove from <agent>** — destructive, behind a confirmation. Removing
  *     touches THIS agent only: the connector, and every other agent using it,
  *     stay as they are. When it was on none of this person's other agents,
@@ -68,7 +68,7 @@
  * A connector a session cannot fully load (TASK-745 — e.g. two of its servers
  * share a name) wears the same icon, reason "Couldn’t load it". Reconnect and
  * Retry cannot fix that, so neither is offered; the tooltip points at the fix:
- * Settings › Connectors for a workspace admin, else asking one.
+ * Admin › Connectors for a workspace admin, else asking one.
  *
  * "+ Add" and the empty state's "Add connector" (TASK-740) open the Add
  * subview (`AddConnector`); the Connectors tab swaps it in for this list.
@@ -173,7 +173,7 @@ function healthReason(
   }
   if (row.health === 'not-loaded') {
     return isAdmin
-      ? 'Couldn’t load it. Fix it in Settings › Connectors.'
+      ? 'Couldn’t load it. Fix it in Admin › Connectors.'
       : 'Couldn’t load it. Ask a workspace admin to fix it.';
   }
   // TASK-756 — a team agent's shared sign-in is the team's, not this person's.

@@ -8,7 +8,7 @@
  *
  *   - **Sign in** — opens the provider's sign-in. While it is open the row
  *     shows a spinner and **Cancel**.
- *   - **Add key** — the same key dialog Settings › Connectors uses.
+ *   - **Add key** — the same key dialog Admin › Connectors uses.
  *   - **Add** — nothing to set up; attaches straight away.
  *
  * THE RULE THIS FILE EXISTS TO KEEP: the connector is attached to the agent

@@ -6,7 +6,7 @@
  * Deny segmented control, grouped "Looks things up" / "Makes changes".
  * "Remove" stays pinned at the bottom while the list scrolls. There is no
  * "Edit connector" here: a connector's settings are a workspace admin's, in
- * Settings › Connectors. What a person may change is what this agent may do
+ * Admin › Connectors. What a person may change is what this agent may do
  * with it — this view, or the list's "Edit permissions" dialog
  * ({@link EditPermissionsDialog}), which draws the same tool list.
  *
@@ -331,7 +331,7 @@ function ToolPermissions({
  * "Edit permissions" from a row's `⋯` menu: the same per-tool Allow / Ask
  * first / Deny list as the details view, in a dialog. Only what THIS agent may
  * do with the connector — the connector's own settings stay a workspace
- * admin's, in Settings › Connectors. Every change saves as it is made (same
+ * admin's, in Admin › Connectors. Every change saves as it is made (same
  * write as the details view), so there is no Save button to forget.
  */
 export function EditPermissionsDialog({
