@@ -71,12 +71,20 @@ export interface OAuthCapabilitySlot {
  * only by spelling a default out (or leaving it out) normalize to the same
  * value, while a real change of either value stays a difference. Pure; the
  * input is not modified.
+ *
+ * The runtime meaning this mirrors lives in @ax/mcp-oauth `routes.ts` (no
+ * cross-plugin import, so it is restated here): `registration:
+ * slot.clientRegistration ?? (slot.clientId ? 'custom' : 'auto')` and
+ * `slot.scopes?.join(' ') || discoveredScope`. Keep the two in step — but the
+ * owner-only guard in `admin-routes.ts` does NOT rely on this for security: a
+ * non-owner admin's save always writes the stored reach back, so a mismatch
+ * here can only produce a wrong 200/403 answer, not a changed connector.
  */
 export function withOAuthSlotDefaults(slot: OAuthCapabilitySlot): OAuthCapabilitySlot {
   return {
     ...slot,
-    clientRegistration:
-      slot.clientRegistration ?? (slot.clientId !== undefined ? 'custom' : 'auto'),
+    // Truthiness, not `!== undefined`: an empty clientId pins nothing.
+    clientRegistration: slot.clientRegistration ?? (slot.clientId ? 'custom' : 'auto'),
     scopes: slot.scopes ?? [],
   };
 }

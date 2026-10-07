@@ -1334,10 +1334,8 @@ describe('tool permissions (TASK-737)', () => {
 });
 
 // TASK-797 — where the custom OAuth client secret lives decides who can sign
-// in. An admin's shared connector keeps it at the workspace, so everyone can;
-// anyone else's stays with its author, so only they can.
-const ONLY_YOU =
-  'Only you can sign in to this connector because it uses your OAuth app.';
+// in. A shared connector keeps it at the workspace, so everyone can; a private
+// one keeps it with its author (only admins author connectors since slice 2a).
 const RE_ENTER = 'Re-enter the client secret so others can sign in';
 const ownSecretRow = {
   scope: 'user',
@@ -1415,22 +1413,7 @@ describe('custom client secret scope', () => {
     await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
     expect(writes[0]!.url).toBe('/settings/destinations/account/credential');
     expect(writes[0]!.body).toMatchObject({ scope: 'user' });
-    // An admin can see for themselves who a private connector is for.
-    expect(screen.queryByText(ONLY_YOU)).not.toBeInTheDocument();
     expect(myCredentialsGets).toBe(0);
-  });
-
-  it('says nothing about who can sign in when the admin’s secret is at the workspace', async () => {
-    await openEditor();
-    expect(screen.getByLabelText('Client ID')).toBeVisible();
-    expect(screen.queryByText(ONLY_YOU)).not.toBeInTheDocument();
-  });
-
-  it('says nothing about who can sign in when the connector uses automatic setup', async () => {
-    withoutClientId();
-    await openEditor();
-    expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
-    expect(screen.queryByText(ONLY_YOU)).not.toBeInTheDocument();
   });
 });
 

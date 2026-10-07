@@ -837,6 +837,80 @@ describe('admin connector routes', () => {
           expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
         });
 
+        // Fix round 3 (security) — the stored reach is what a non-owner admin's
+        // save writes back, byte for byte; the body's (defaults-filled) copy
+        // only decides whether to refuse.
+        it('a 200 rename leaves capabilities byte-identical to the stored row, not the defaults-filled body', async () => {
+          const h = await makeHarness();
+          const { handlers, before } = await seedOAuth(h);
+          currentActor = { id: 'admin2', isAdmin: true };
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({
+              params: { id: 'crm' },
+              body: {
+                name: 'CRM (renamed)',
+                capabilities: withSlot(before, { clientRegistration: 'custom', scopes: [] }),
+              },
+            }),
+            patched.res,
+          );
+          expect(patched.captured.status).toBe(200);
+          currentActor = { id: 'admin1', isAdmin: true };
+          const after = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), after.res);
+          const stored = (after.captured.body as { connector: { name: string; capabilities: Capabilities } })
+            .connector;
+          expect(stored.name).toBe('CRM (renamed)');
+          expect(stored.capabilities).toStrictEqual(before.capabilities);
+          expect(stored.capabilities.credentials[0]).not.toHaveProperty('clientRegistration');
+          expect(stored.capabilities.credentials[0]).not.toHaveProperty('scopes');
+        });
+
+        it('an empty pinned clientId: whatever the guard answers, the stored reach never changes', async () => {
+          const h = await makeHarness();
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const emptyClient = { ...oauthSlot, clientId: '' };
+          const created = makeRes();
+          await handlers.create(
+            makeReq({ body: { ...oauthCrm, capabilities: { ...mcpCaps(), credentials: [emptyClient] } } }),
+            created.res,
+          );
+          expect(created.captured.status).toBe(201);
+          const shown = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+          const before = (shown.captured.body as { connector: { name: string; capabilities: Capabilities } })
+            .connector;
+
+          currentActor = { id: 'admin2', isAdmin: true };
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({
+              params: { id: 'crm' },
+              body: {
+                name: 'CRM (renamed)',
+                capabilities: {
+                  ...before.capabilities,
+                  credentials: [{ ...emptyClient, clientRegistration: 'custom' }],
+                },
+              },
+            }),
+            patched.res,
+          );
+          const status = patched.captured.status;
+          expect([200, 403]).toContain(status);
+
+          currentActor = { id: 'admin1', isAdmin: true };
+          const after = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), after.res);
+          const stored = (after.captured.body as { connector: { name: string; capabilities: Capabilities } })
+            .connector;
+          expect(stored.capabilities).toStrictEqual(before.capabilities);
+          expect(stored.name).toBe(status === 200 ? 'CRM (renamed)' : before.name);
+          expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+        });
+
         const realChanges: Array<[string, Record<string, unknown>]> = [
           ['adds a scope', { scopes: ['read'] }],
           ['changes clientRegistration away from its default', { clientRegistration: 'dcr' }],

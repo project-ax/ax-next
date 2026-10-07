@@ -390,6 +390,13 @@ function canonicalJson(v: unknown): string {
  * leaves them out, so an editor filling them in is not a retarget — while a
  * different value still is.
  */
+/**
+ * Fix round 3 (security) — the only body fields a NON-owner admin's PATCH
+ * writes: the labels. Everything that decides reach (capabilities, keyMode,
+ * visibility) is taken from the stored row on that path.
+ */
+const DISPLAY_FIELDS = ['name', 'description', 'usageNote'] as const;
+
 function changesOwnerOnlyFields(existing: Connector, patch: Record<string, unknown>): boolean {
   if ('keyMode' in patch && patch.keyMode !== existing.keyMode) return true;
   if ('visibility' in patch && patch.visibility !== existing.visibility) return true;
@@ -683,10 +690,22 @@ export function createConnectorRouteHandlers(
       delete patchRaw.userId;
       delete patchRaw.connectorId;
       delete patchRaw.id;
-      if (owner !== actor.id && changesOwnerOnlyFields(existing, patchRaw)) {
+      const crossOwner = owner !== actor.id;
+      // `changesOwnerOnlyFields` only picks the ANSWER (a humane 403 for a body
+      // that really tries to retarget). It is not what keeps reach safe: a
+      // cross-owner save below writes the STORED capabilities / keyMode /
+      // visibility whatever the body says, so a disagreement between the
+      // comparison's reading of a field and the runtime's can at worst give a
+      // wrong 200/403 — never a changed reach.
+      if (crossOwner && changesOwnerOnlyFields(existing, patchRaw)) {
         res.status(403).json({ error: 'owner-only-change' });
         return;
       }
+      const editable: Record<string, unknown> = crossOwner
+        ? Object.fromEntries(
+            DISPLAY_FIELDS.filter((k) => k in patchRaw).map((k) => [k, patchRaw[k]]),
+          )
+        : patchRaw;
       const input: UpsertInput = {
         name: existing.name,
         description: existing.description,
@@ -694,7 +713,7 @@ export function createConnectorRouteHandlers(
         keyMode: existing.keyMode,
         visibility: existing.visibility,
         capabilities: existing.capabilities,
-        ...patchRaw,
+        ...editable,
         requireUniqueId: false,
         // An edit never creates or resurrects: a delete that lands between the
         // read above and this write wins (→ 404), so slice 1's purge stands.

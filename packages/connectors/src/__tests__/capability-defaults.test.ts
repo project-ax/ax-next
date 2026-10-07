@@ -10,6 +10,10 @@ describe('withOAuthSlotDefaults', () => {
     expect(withOAuthSlotDefaults(base).clientRegistration).toBe('auto');
   });
 
+  it('reads an EMPTY clientId as no pinned client (auto), like the sign-in flow does', () => {
+    expect(withOAuthSlotDefaults({ ...base, clientId: '' }).clientRegistration).toBe('auto');
+  });
+
   it('reads missing scopes as an empty list', () => {
     expect(withOAuthSlotDefaults(base).scopes).toEqual([]);
   });
