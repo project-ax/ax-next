@@ -51,6 +51,11 @@ describe('@ax/connectors plugin manifest', () => {
             'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
         },
         {
+          hook: 'credentials:purge-account',
+          degradation:
+            "the connector is deleted but agents' sign-ins for it are left in the vault (unreadable once the connector is gone)",
+        },
+        {
           hook: 'tool-policy:get-connector-defaults',
           degradation:
             'the connector editor cannot show per-tool permissions (the route answers 503)',
