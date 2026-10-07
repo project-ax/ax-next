@@ -17,6 +17,12 @@ export type PurgeableConnector = Pick<Connector, 'id' | 'keyMode' | 'visibility'
  * key(s) and the `connectors:deleted` announcement. Shared by the
  * `connectors:delete` hook and the boot-time sweeps (stdio-sweep.ts,
  * non-admin-sweep.ts).
+ *
+ * Every purge step is best-effort (logged + swallowed) so a credential hiccup
+ * never wedges a delete, but the steps that failed are RETURNED: the boot
+ * non-admin sweep must not tombstone a row whose keys are still stored (a later
+ * same-id connector would inherit them), so it keeps the row and retries. The
+ * admin delete path and the stdio sweep ignore the result.
  */
 export async function purgeConnectorState(
   bus: HookBus,
@@ -44,8 +50,11 @@ export async function purgeConnectorState(
      */
     announce?: boolean;
   },
-): Promise<void> {
+): Promise<{ failed: string[] }> {
   const connectorId = connector.id;
+  // Which purge steps failed, e.g. `credentials:delete:user:account:x` or
+  // `credentials:purge-account`. Empty = every attempted purge succeeded.
+  const failed: string[] = [];
 
   // Purge the connector's OWN stored key(s) so a secret never lingers with no UI
   // home. Soft-dep: only attempted when credentials:delete is present (a preset
@@ -99,6 +108,7 @@ export async function purgeConnectorState(
           ref: entry.ref,
         });
       } catch (err) {
+        failed.push(`credentials:delete:${entry.scope}:${entry.ref}`);
         ctx.logger.warn('connectors_delete_credential_purge_failed', {
           connectorId,
           ref: entry.ref,
@@ -144,8 +154,10 @@ export async function purgeConnectorState(
         purged: out.purged,
       });
     } catch (err) {
+      failed.push('credentials:purge-account');
       ctx.logger.warn('connectors_delete_agent_signins_purge_failed', {
         connectorId,
+        scopes,
         err: err instanceof Error ? err.message : String(err),
       });
     }
@@ -154,6 +166,7 @@ export async function purgeConnectorState(
   if (opts.announce !== false) {
     await announceConnectorDeleted(bus, ctx, ownerUserId, connector, opts.idStillLive);
   }
+  return { failed };
 }
 
 /**

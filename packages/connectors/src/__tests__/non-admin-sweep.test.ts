@@ -8,7 +8,12 @@ import {
   startTestContainer,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { Kysely, PostgresDialect } from 'kysely';
+import pg from 'pg';
+import type { ConnectorDatabase } from '../migrations.js';
+import { NON_ADMIN_SWEEP_STEP, sweepNonAdminConnectors } from '../non-admin-sweep.js';
 import { createConnectorsPlugin } from '../plugin.js';
+import { createConnectorStore } from '../store.js';
 import { deriveToolNamespaces } from '../tool-namespace.js';
 import type { ConnectorDeletedEvent } from '../types.js';
 
@@ -20,10 +25,22 @@ import type { ConnectorDeletedEvent } from '../types.js';
 
 type Purge = { scope: string; ownerId: string | null; ref: string };
 
+interface CaptureOpts {
+  /** `credentials:delete` throws (after recording the call). */
+  failDelete?: boolean;
+  /** `credentials:purge-account` throws (after recording the call). */
+  failPurgeAccount?: boolean;
+  /** Runs inside each purge call, before it answers (ordering probes). */
+  onPurge?: (connectorId: string) => Promise<void>;
+}
+
+const idOfRef = (ref: string) => ref.replace(/^account:/, '').split(':')[0]!;
+
 function capturePlugin(
   events: ConnectorDeletedEvent[],
   purged: Purge[],
   accountPurges: unknown[],
+  opts: CaptureOpts = {},
 ): Plugin {
   return {
     manifest: {
@@ -36,10 +53,14 @@ function capturePlugin(
     init({ bus }) {
       bus.registerService('credentials:delete', 'test/capture', async (_ctx, input) => {
         purged.push(input as Purge);
+        await opts.onPurge?.(idOfRef((input as Purge).ref));
+        if (opts.failDelete) throw new Error('credential store down');
         return undefined;
       });
       bus.registerService('credentials:purge-account', 'test/capture', async (_ctx, input) => {
         accountPurges.push(input);
+        await opts.onPurge?.((input as { connectorId: string }).connectorId);
+        if (opts.failPurgeAccount) throw new Error('credential store down');
         return { purged: 0 };
       });
       bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, e) => {
@@ -50,22 +71,31 @@ function capturePlugin(
   };
 }
 
+type AuthKind = 'admin' | 'user' | 'gone' | 'throw' | 'odd' | 'undef' | 'string';
+
 /**
  * `auth:get-user` stub: 'admin' → isAdmin true, 'user' → false, 'gone' → null,
- * 'throw' → throws, 'odd' → a user whose isAdmin is not a boolean.
+ * 'throw' → throws, 'odd' → a user whose isAdmin is not a boolean,
+ * 'undef' → undefined, 'string' → a non-object answer.
  */
-function authPlugin(users: Record<string, 'admin' | 'user' | 'gone' | 'throw' | 'odd'>): Plugin {
+function authHandler(users: Record<string, AuthKind>) {
+  return async (_ctx: unknown, input: unknown) => {
+    const { userId } = input as { userId: string };
+    const kind = users[userId] ?? 'gone';
+    if (kind === 'throw') throw new Error('auth backend down');
+    if (kind === 'gone') return null;
+    if (kind === 'undef') return undefined;
+    if (kind === 'string') return 'admin';
+    if (kind === 'odd') return { id: userId, isAdmin: 'yes' };
+    return { id: userId, isAdmin: kind === 'admin' };
+  };
+}
+
+function authPlugin(users: Record<string, AuthKind>): Plugin {
   return {
     manifest: { name: 'test/auth', version: '0.0.0', registers: ['auth:get-user'], calls: [], subscribes: [] },
     init({ bus }) {
-      bus.registerService('auth:get-user', 'test/auth', async (_ctx, input) => {
-        const { userId } = input as { userId: string };
-        const kind = users[userId] ?? 'gone';
-        if (kind === 'throw') throw new Error('auth backend down');
-        if (kind === 'gone') return null;
-        if (kind === 'odd') return { id: userId, isAdmin: 'yes' };
-        return { id: userId, isAdmin: kind === 'admin' };
-      });
+      bus.registerService('auth:get-user', 'test/auth', authHandler(users));
     },
   };
 }
@@ -146,8 +176,18 @@ beforeAll(async () => {
   connectionString = container.getConnectionUri();
 }, 120_000);
 
+const opened: Kysely<ConnectorDatabase>[] = [];
+function makeKysely(): Kysely<ConnectorDatabase> {
+  const k = new Kysely<ConnectorDatabase>({
+    dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString, max: 2 }) }),
+  });
+  opened.push(k);
+  return k;
+}
+
 afterEach(async () => {
   while (harnesses.length > 0) await harnesses.pop()!.close({ onError: () => {} });
+  while (opened.length > 0) await opened.pop()!.destroy();
   await sql('DROP TABLE IF EXISTS connectors_v1_connectors');
   await sql('DROP TABLE IF EXISTS connectors_v1_authored');
   await sql('DROP TABLE IF EXISTS connectors_v1_boot_steps');
@@ -393,5 +433,170 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
     expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_swept')).toEqual([
       expect.objectContaining({ complete: false, ownerChecksFailed: 1 }),
     ]);
+  });
+  it('an undefined auth:get-user answer is a lookup failure, not a deleted account', async () => {
+    await bootAndClose();
+    await insertConnector('undef', 'keepme');
+    await insertConnector('str', 'keeptoo');
+    const events: ConnectorDeletedEvent[] = [];
+    const { logs } = await captureLogs(() =>
+      bootAndClose([authPlugin({ undef: 'undef', str: 'string' }), capturePlugin(events, [], [])]),
+    );
+    expect(await rows()).toEqual([
+      ['str', 'keeptoo', true],
+      ['undef', 'keepme', true],
+    ]);
+    expect(events).toEqual([]);
+    expect(await doneMarkers()).toEqual([]);
+    expect(
+      logs.filter((l) => l['msg'] === 'connectors_non_admin_sweep_owner_check_failed').map((l) => l['ownerUserId']).sort(),
+    ).toEqual(['str', 'undef']);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_swept')).toEqual([
+      expect.objectContaining({ complete: false, ownerChecksFailed: 2 }),
+    ]);
+  });
+
+  it('a failed credentials:purge-account keeps the row and the marker unwritten; the next boot finishes', async () => {
+    await bootAndClose();
+    await insertConnector('userB', 'teamtool', { keyMode: 'workspace', visibility: 'shared' });
+    const auth = { userB: 'user' as const };
+
+    // Pin the ordering: the purge runs while the row is still live.
+    const liveDuringPurge: boolean[] = [];
+    const onPurge = async (id: string) => {
+      const r = await sql(
+        'SELECT deleted_at FROM connectors_v1_connectors WHERE owner_user_id = $1 AND connector_id = $2',
+        ['userB', id],
+      );
+      liveDuringPurge.push(r.length === 1 && r[0]!['deleted_at'] === null);
+    };
+
+    const events: ConnectorDeletedEvent[] = [];
+    const accountPurges: unknown[] = [];
+    const { logs } = await captureLogs(() =>
+      bootAndClose([
+        authPlugin(auth),
+        capturePlugin(events, [], accountPurges, { failPurgeAccount: true, onPurge }),
+      ]),
+    );
+    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent', 'user'] }]);
+    expect(liveDuringPurge.length).toBeGreaterThan(0);
+    expect(liveDuringPurge.every(Boolean)).toBe(true);
+    expect(await rows()).toEqual([['userB', 'teamtool', true]]);
+    expect(events).toEqual([]);
+    expect(await doneMarkers()).toEqual([]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_delete_agent_signins_purge_failed')).toEqual([
+      expect.objectContaining({ connectorId: 'teamtool', scopes: ['agent', 'user'] }),
+    ]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_sweep_row_failed')).toEqual([
+      expect.objectContaining({
+        connectorId: 'teamtool',
+        ownerUserId: 'userB',
+        reason: 'purge-failed',
+        failed: ['credentials:purge-account'],
+      }),
+    ]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_swept')).toEqual([
+      expect.objectContaining({ count: 0, complete: false }),
+    ]);
+
+    // Credentials recover: the retry removes it, announces it, and records the step.
+    const retryEvents: ConnectorDeletedEvent[] = [];
+    await bootAndClose([authPlugin(auth), capturePlugin(retryEvents, [], [])]);
+    expect(await rows()).toEqual([['userB', 'teamtool', false]]);
+    expect(retryEvents.map((e) => [e.connectorId, e.idStillLive])).toEqual([['teamtool', false]]);
+    expect(await doneMarkers()).toEqual([NON_ADMIN_SWEEP_STEP]);
+  });
+
+  it('a failed credentials:delete keeps the row and the marker unwritten; the next boot finishes', async () => {
+    await bootAndClose();
+    await insertConnector('userB', 'mytool');
+    const auth = { userB: 'user' as const };
+    const liveDuringPurge: boolean[] = [];
+    const onPurge = async (id: string) => {
+      const r = await sql(
+        'SELECT deleted_at FROM connectors_v1_connectors WHERE owner_user_id = $1 AND connector_id = $2',
+        ['userB', id],
+      );
+      liveDuringPurge.push(r.length === 1 && r[0]!['deleted_at'] === null);
+    };
+
+    const events: ConnectorDeletedEvent[] = [];
+    const purged: Purge[] = [];
+    const { logs } = await captureLogs(() =>
+      bootAndClose([authPlugin(auth), capturePlugin(events, purged, [], { failDelete: true, onPurge })]),
+    );
+    expect(purged).toEqual([{ scope: 'user', ownerId: 'userB', ref: 'account:mytool' }]);
+    expect(liveDuringPurge).toEqual([true]);
+    expect(await rows()).toEqual([['userB', 'mytool', true]]);
+    expect(events).toEqual([]);
+    expect(await doneMarkers()).toEqual([]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_sweep_row_failed')).toEqual([
+      expect.objectContaining({
+        connectorId: 'mytool',
+        reason: 'purge-failed',
+        failed: ['credentials:delete:user:account:mytool'],
+      }),
+    ]);
+
+    const retryEvents: ConnectorDeletedEvent[] = [];
+    await bootAndClose([authPlugin(auth), capturePlugin(retryEvents, [], [])]);
+    expect(await rows()).toEqual([['userB', 'mytool', false]]);
+    expect(retryEvents.map((e) => e.connectorId)).toEqual(['mytool']);
+    expect(await doneMarkers()).toEqual([NON_ADMIN_SWEEP_STEP]);
+  });
+
+  // The two paths below need a store that misbehaves, so they call the sweep
+  // directly (it takes its db/store/bus/ctx as arguments) against a booted
+  // harness whose own init-time sweep was skipped (no auth provider yet).
+  async function bootForDirectSweep(events: ConnectorDeletedEvent[]): Promise<TestHarness> {
+    const h = await boot([capturePlugin(events, [], [])]);
+    h.bus.registerService('auth:get-user', 'test/auth', authHandler({ userB: 'user' }));
+    return h;
+  }
+
+  it('a row-processing throw keeps the row live, writes no marker, and the next boot retries', async () => {
+    await bootAndClose();
+    await insertConnector('userB', 'mytool');
+    const events: ConnectorDeletedEvent[] = [];
+    const h = await bootForDirectSweep(events);
+    const db = makeKysely();
+    const real = createConnectorStore(db);
+    const store = {
+      softDelete: async () => {
+        throw new Error('db blip');
+      },
+      hasLiveById: real.hasLiveById.bind(real),
+    };
+    const { result, logs } = await captureLogs(() => sweepNonAdminConnectors(db, store, h.bus, h.ctx()));
+    expect(result).toEqual({ removed: 0, complete: false });
+    expect(events).toEqual([]);
+    expect(await rows()).toEqual([['userB', 'mytool', true]]);
+    expect(await doneMarkers()).toEqual([]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_sweep_row_failed')).toEqual([
+      expect.objectContaining({ connectorId: 'mytool', ownerUserId: 'userB', err: 'db blip' }),
+    ]);
+
+    // A real boot retries and finishes.
+    await bootAndClose([authPlugin({ userB: 'user' }), capturePlugin([], [], [])]);
+    expect(await rows()).toEqual([['userB', 'mytool', false]]);
+    expect(await doneMarkers()).toEqual([NON_ADMIN_SWEEP_STEP]);
+  });
+
+  it('a softDelete another replica won (false) fires no event, and the pass still completes', async () => {
+    await bootAndClose();
+    await insertConnector('userB', 'mytool');
+    const events: ConnectorDeletedEvent[] = [];
+    const h = await bootForDirectSweep(events);
+    const db = makeKysely();
+    const real = createConnectorStore(db);
+    const store = {
+      softDelete: async () => false,
+      hasLiveById: real.hasLiveById.bind(real),
+    };
+    const result = await sweepNonAdminConnectors(db, store, h.bus, h.ctx());
+    expect(result).toEqual({ removed: 0, complete: true });
+    expect(events).toEqual([]);
+    expect(await doneMarkers()).toEqual([NON_ADMIN_SWEEP_STEP]);
   });
 });

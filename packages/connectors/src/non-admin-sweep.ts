@@ -16,17 +16,25 @@
 //   - no `auth:get-user` provider (CLI / canary presets) → nothing is removed;
 //   - an `auth:get-user` throw for an owner → that owner's connectors stay;
 //   - an `auth:get-user` answer whose `isAdmin` isn't a boolean → same as a throw;
+//   - an `auth:get-user` answer that is neither an explicit `null` nor an
+//     object (e.g. `undefined`) → same as a throw;
 //   - a row whose capabilities don't parse → kept (and logged). That is
 //     permanent, not transient, so it does NOT block the one-time marker;
-
+//   - a row whose key purge fails (any `credentials:delete` /
+//     `credentials:purge-account` step) → kept, not announced, and the pass is
+//     incomplete: tombstoning it would strand its keys for a later same-id
+//     connector to inherit, so the next boot retries the whole row;
 //   - an id another live connector still carries → its GLOBAL keys, and its
 //     people's keys, stay (they may be the survivor's).
-// A deleted account (`auth:get-user` → null) counts as non-admin. So does the
-// platform owner `'system'` (skills cap-migration): DELIBERATE, owner decision
-// 2026-10-07 — skills relying on such connectors may break.
+// A deleted account (`auth:get-user` → explicit null) counts as non-admin. So
+// does the platform owner `'system'` (skills cap-migration): DELIBERATE, owner
+// decision 2026-10-07 — skills relying on such connectors may break.
 //
-// ONE-TIME, not a standing rule: after a COMPLETE pass (no owner-lookup or
-// row-processing failure) it records the `non-admin-connector-removal` boot step
+// NOT handled here: authored drafts (`connectors_v1_authored`) proposing a
+// removed id are left alone — slice 2c owns the drafts.
+//
+// ONE-TIME, not a standing rule: after a COMPLETE pass (no owner-lookup,
+// purge or row-processing failure) it records the `non-admin-connector-removal` boot step
 // and never runs again, so a later-demoted admin's connectors, or one a person
 // creates before the non-admin creation paths are gone, are left alone. An
 // incomplete pass, or one skipped for no auth provider, records nothing and
@@ -95,17 +103,21 @@ export async function sweepNonAdminConnectors(
   let ownerChecksFailed = 0;
   for (const owner of new Set(rows.map((row) => row.owner_user_id))) {
     try {
-      const user = await bus.call<{ userId: string }, AuthUserLike | null>(
+      // Typed `unknown`: the answer crosses a plugin boundary and is narrowed here.
+      const user = await bus.call<{ userId: string }, unknown>(
         'auth:get-user',
         ctx,
         { userId: owner },
       );
-      if (user === null || user === undefined) {
+      if (user === null) {
         // The account is gone — or it is the platform's 'system' owner, removed
         // deliberately (owner decision 2026-10-07: skills relying on it may break).
+        // Only an EXPLICIT null means that; anything else non-object is unknown.
         removeOwner.set(owner, true);
-      } else if (typeof user.isAdmin === 'boolean') {
-        removeOwner.set(owner, !user.isAdmin);
+      } else if (typeof user !== 'object') {
+        throw new Error(`auth:get-user answered ${typeof user}, not a user or null`);
+      } else if (typeof (user as AuthUserLike).isAdmin === 'boolean') {
+        removeOwner.set(owner, !(user as AuthUserLike).isAdmin);
       } else {
         throw new Error('auth:get-user answered without a boolean isAdmin');
       }
@@ -161,13 +173,25 @@ export async function sweepNonAdminConnectors(
       if (idStillLive) {
         ctx.logger.info('connectors_non_admin_sweep_skipped_global_purge', { connectorId });
       }
-      await purgeConnectorState(bus, ctx, ownerUserId, connector, {
+      const { failed } = await purgeConnectorState(bus, ctx, ownerUserId, connector, {
         purgeGlobal: !idStillLive,
         purgeAgentSignIns: !sharedSurvivor,
         agentSignInsSkipReason: 'same-id-survives',
         idStillLive,
         announce: false,
       });
+      if (failed.length > 0) {
+        // Keys may still be stored: keep the row live (no tombstone, no
+        // announcement) so the next boot retries the whole removal.
+        complete = false;
+        ctx.logger.warn('connectors_non_admin_sweep_row_failed', {
+          connectorId,
+          ownerUserId,
+          reason: 'purge-failed',
+          failed,
+        });
+        continue;
+      }
 
       const deleted = await store.softDelete(ownerUserId, connectorId);
       if (!deleted) {
