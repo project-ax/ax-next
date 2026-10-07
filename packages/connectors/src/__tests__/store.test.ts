@@ -535,3 +535,34 @@ describe('validateCapabilities — stdio removed', () => {
     ).not.toThrow();
   });
 });
+
+describe('createConnectorStore — id liveness across owners (slice 2b)', () => {
+  it('hasLiveById counts any owner and any visibility, never a tombstone', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = { name: 'CRM', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
+    expect(await store.hasLiveById('crm')).toBe(false);
+    await store.upsert({ ...base, userId: 'a', connectorId: 'crm', visibility: 'private' });
+    await store.upsert({ ...base, userId: 'b', connectorId: 'crm', visibility: 'shared' });
+    expect(await store.hasLiveById('crm')).toBe(true);
+    await store.softDelete('b', 'crm');
+    // The private row of another owner still keeps the id live.
+    expect(await store.hasLiveById('crm')).toBe(true);
+    await store.softDelete('a', 'crm');
+    expect(await store.hasLiveById('crm')).toBe(false);
+  });
+
+  it('liveIds returns the live subset (any owner), deduped, and nothing for an empty list', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = { name: 'X', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
+    await store.upsert({ ...base, userId: 'a', connectorId: 'crm', visibility: 'private' });
+    await store.upsert({ ...base, userId: 'b', connectorId: 'crm', visibility: 'shared' });
+    await store.upsert({ ...base, userId: 'b', connectorId: 'gone', visibility: 'shared' });
+    await store.softDelete('b', 'gone');
+    expect((await store.liveIds(['crm', 'gone', 'never', 'crm'])).sort()).toEqual(['crm']);
+    expect(await store.liveIds([])).toEqual([]);
+  });
+});

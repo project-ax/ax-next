@@ -136,7 +136,7 @@ describe('@ax/connectors stdio sweep', () => {
 
     // Cleanup ran for the LIVE stdio row only (the tombstone was purged at its soft delete).
     expect(events).toEqual([
-      { connectorId: 'localtool', toolNamespaces: deriveToolNamespaces('userA', { id: 'localtool', capabilities: { mcpServers: [stdioServer as never] } }) },
+      { connectorId: 'localtool', toolNamespaces: deriveToolNamespaces('userA', { id: 'localtool', capabilities: { mcpServers: [stdioServer as never] } }), idStillLive: false },
     ]);
     expect(purged).toEqual([{ scope: 'user', ownerId: 'userA', ref: 'account:localtool' }]);
 
@@ -160,7 +160,8 @@ describe('@ax/connectors stdio sweep', () => {
     await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
     const accountPurges: unknown[] = [];
     await boot([capturePlugin([], [], accountPurges)]);
-    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent'] }]);
+    // No connector keeps the id, so people's keys for it go too (slice 2b).
+    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent', 'user'] }]);
   });
 
   it('keeps agents\' sign-ins when another admin\'s live shared http connector keeps the id', async () => {
@@ -172,8 +173,8 @@ describe('@ax/connectors stdio sweep', () => {
     const accountPurges: unknown[] = [];
     await boot([capturePlugin(events, [], accountPurges)]);
     expect(accountPurges).toEqual([]);
-    // The stdio row is still swept and announced.
-    expect(events.map((e) => e.connectorId)).toEqual(['teamtool']);
+    // The stdio row is still swept and announced — and the id is still in use.
+    expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([['teamtool', true]]);
     const rows = await sql('SELECT owner_user_id FROM connectors_v1_connectors');
     expect(rows.map((r) => r['owner_user_id'])).toEqual(['admin2']);
   });
@@ -190,7 +191,7 @@ describe('@ax/connectors stdio sweep', () => {
     expect(rows.map((r) => r['owner_user_id'])).toEqual(['admin1']);
     expect(purged).not.toContainEqual({ scope: 'global', ownerId: null, ref: 'account:teamtool' });
     expect(purged.filter((p) => p.scope === 'global')).toEqual([]);
-    expect(events.map((e) => e.connectorId)).toEqual(['teamtool']);
+    expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([['teamtool', true]]);
   });
 
   it('deletes a row whose capabilities are garbage but mention stdio, without purging and without throwing', async () => {

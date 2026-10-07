@@ -22,6 +22,8 @@ describe('@ax/connectors plugin manifest', () => {
         'connectors:resolve',
         // TASK-744 — toolNamespace → connector display name.
         'connectors:tool-labels',
+        // Agent-owned sign-ins slice 2b — which ids are still in use.
+        'connectors:live-ids',
         // TASK-94 — agent-authored connector drafts + the approval gate.
         'connectors:install-authored',
         'connectors:list-authored',
@@ -53,7 +55,7 @@ describe('@ax/connectors plugin manifest', () => {
         {
           hook: 'credentials:purge-account',
           degradation:
-            "the connector is deleted but agents' sign-ins for it are left in the vault (a later connector with the same id could read them)",
+            "the connector is deleted but agents' sign-ins and people's keys for it are left in the vault (a later connector with the same id could read them)",
         },
         {
           hook: 'tool-policy:get-connector-defaults',

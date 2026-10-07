@@ -387,11 +387,37 @@ export interface DeleteOutput {
  * namespace already encodes the owner) and nothing here is storage-specific.
  * Empty for a connector with no MCP servers. Best-effort: subscriber failures
  * never fail the delete.
+ *
+ * `idStillLive` (agent-owned sign-ins slice 2b) — whether ANY live connector
+ * (any owner, any visibility) still carries `connectorId` after this delete.
+ * Connector ids are not unique across owners, so a subscriber that keys state
+ * on the id alone (an agent's attachment, a reconnect marker) must drop it only
+ * when this is false. Computed after the delete commits; when the check itself
+ * fails it is reported as `true` (keep data when unsure).
  */
 export interface ConnectorDeletedEvent {
   connectorId: string;
   toolNamespaces: ToolNamespaceEntry[];
+  idStillLive: boolean;
 }
+
+/**
+ * `connectors:live-ids` (agent-owned sign-ins slice 2b) — which of these ids
+ * does at least one live connector, of ANY owner, still carry? For a plugin
+ * that holds id-keyed state (agents' attachments) to drop references to ids
+ * that no longer exist, e.g. in a boot sweep. Host-internal: no HTTP / IPC
+ * surface. Answers only ids the caller already named, never lists the
+ * registry. Each id must match the connector-id grammar; at most
+ * `LIVE_IDS_MAX` per call.
+ */
+export interface LiveIdsInput {
+  connectorIds: string[];
+}
+export interface LiveIdsOutput {
+  /** The subset of the input still live, deduped. */
+  live: string[];
+}
+export const LIVE_IDS_MAX = 500;
 
 /**
  * Payload of the `connectors:tool-namespaces-changed` SUBSCRIBER event
@@ -793,6 +819,10 @@ export const UpsertOutputSchema = z.object({
 export const DeleteOutputSchema = z.object({
   deleted: z.boolean(),
 }) as unknown as ZodType<DeleteOutput>;
+
+export const LiveIdsOutputSchema = z.object({
+  live: z.array(z.string()),
+}) as unknown as ZodType<LiveIdsOutput>;
 
 // The derived credential plan + consent gate (TASK-96). `scope` is the neutral
 // credential-scope contract (NOT backend vocab); only the two scopes the keyMode

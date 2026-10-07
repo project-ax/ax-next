@@ -28,6 +28,13 @@ export async function purgeConnectorState(
     purgeAgentSignIns: boolean;
     /** Why `purgeAgentSignIns` is false (for the skip log). */
     agentSignInsSkipReason: 'not-authorized' | 'same-id-survives' | 'survivor-check-failed';
+    /**
+     * Slice 2b — caller-computed AFTER the row is removed: does any live
+     * connector (any owner, any visibility) still carry this id? A failed check
+     * must be passed as `true` (keep data when unsure). Rides the
+     * `connectors:deleted` event, and gates the person-scope purge below.
+     */
+    idStillLive: boolean;
   },
 ): Promise<void> {
   const connectorId = connector.id;
@@ -100,19 +107,32 @@ export async function purgeConnectorState(
   // connector that happens to share the id must never wipe them. Best-effort,
   // like the credential purge above. Requires admin authority (purgeGlobal) and
   // no surviving same-id shared connector (ids are not unique across owners).
+  //
+  // Slice 2b — PEOPLE's keys for it (user-scope `account:<id>[:SLOT]`, every
+  // user) go in the same call, under the same rule PLUS `!idStillLive`: no live
+  // connector of ANY owner or visibility keeps the id. A surviving private
+  // same-id connector's users may hold exactly those rows, so it keeps them.
   if (connector.visibility === 'shared' && !opts.purgeAgentSignIns) {
     ctx.logger.info('connectors_delete_skipped_agent_signins_purge', {
       connectorId,
       reason: opts.agentSignInsSkipReason,
     });
   } else if (connector.visibility === 'shared' && bus.hasService('credentials:purge-account')) {
+    const scopes: Array<'agent' | 'user'> = opts.idStillLive ? ['agent'] : ['agent', 'user'];
+    if (opts.idStillLive) {
+      ctx.logger.info('connectors_delete_skipped_user_keys_purge', {
+        connectorId,
+        reason: 'id-still-live',
+      });
+    }
     try {
       const out = await bus.call<
-        { connectorId: string; scopes: Array<'agent'> },
+        { connectorId: string; scopes: Array<'agent' | 'user'> },
         { purged: number }
-      >('credentials:purge-account', ctx, { connectorId, scopes: ['agent'] });
+      >('credentials:purge-account', ctx, { connectorId, scopes });
       ctx.logger.info('connectors_delete_agent_signins_purged', {
         connectorId,
+        scopes,
         purged: out.purged,
       });
     } catch (err) {
@@ -134,6 +154,7 @@ export async function purgeConnectorState(
   const event: ConnectorDeletedEvent = {
     connectorId,
     toolNamespaces: deriveToolNamespaces(ownerUserId, connector),
+    idStillLive: opts.idStillLive,
   };
   try {
     await bus.fire('connectors:deleted', ctx, event);

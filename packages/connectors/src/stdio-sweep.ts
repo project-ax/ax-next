@@ -67,6 +67,9 @@ export async function sweepStdioConnectors(
           purgeGlobal: !shared,
           purgeAgentSignIns: !shared,
           agentSignInsSkipReason: 'same-id-survives',
+          // Every stdio row with this id goes in this sweep, so the id stays in
+          // use exactly when a surviving non-stdio connector carries it.
+          idStillLive: shared,
         });
       } else {
         ctx.logger.warn('connectors_stdio_sweep_unparseable', { connectorId: row.connector_id });

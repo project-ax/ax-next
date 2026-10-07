@@ -63,6 +63,10 @@ import {
   ListEffectiveOutputSchema,
   ListLegacyDefaultsOutputSchema,
   ListOutputSchema,
+  LiveIdsOutputSchema,
+  LIVE_IDS_MAX,
+  type LiveIdsInput,
+  type LiveIdsOutput,
   ResolveOutputSchema,
   ToolLabelsOutputSchema,
   UpsertOutputSchema,
@@ -187,6 +191,9 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         // TASK-744 — toolNamespace → connector display name, for the surfaces
         // that would otherwise print `mcp.c<hex>.<tool>` at a person.
         'connectors:tool-labels',
+        // Agent-owned sign-ins slice 2b — which of these ids is still carried
+        // by a live connector of any owner (agents drop references to dead ids).
+        'connectors:live-ids',
         // TASK-94 — agent-authored connector drafts + the approval gate's
         // activate/clear. install-authored persists a PENDING draft (zero
         // reach); the orchestrator fires ONE approval card; activate-authored
@@ -233,7 +240,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         {
           hook: 'credentials:purge-account',
           degradation:
-            "the connector is deleted but agents' sign-ins for it are left in the vault (a later connector with the same id could read them)",
+            "the connector is deleted but agents' sign-ins and people's keys for it are left in the vault (a later connector with the same id could read them)",
         },
         // TASK-737 — the connector editor's per-tool permissions routes. The
         // values live in @ax/tool-policy: without it the routes answer 503
@@ -371,6 +378,13 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => toolLabels(localStore, bus, ctx, input),
         { returns: ToolLabelsOutputSchema },
+      );
+
+      bus.registerService<LiveIdsInput, LiveIdsOutput>(
+        'connectors:live-ids',
+        PLUGIN_NAME,
+        async (_ctx, input) => liveIds(localStore, input),
+        { returns: LiveIdsOutputSchema },
       );
 
       bus.registerService<InstallAuthoredInput, InstallAuthoredOutput>(
@@ -937,7 +951,7 @@ async function announceNamespaceChange(
 
 /** Exported for tests only (a store seam the hook path cannot reach). */
 export async function deleteConnector(
-  store: Pick<ConnectorStore, 'getByIdNotDeleted' | 'softDelete' | 'hasLiveSharedById'>,
+  store: Pick<ConnectorStore, 'getByIdNotDeleted' | 'softDelete' | 'hasLiveSharedById' | 'hasLiveById'>,
   bus: HookBus,
   ctx: AgentContext,
   input: DeleteInput,
@@ -973,7 +987,21 @@ export async function deleteConnector(
         });
       }
     }
+    // Slice 2b — is the id still in use by ANY live connector (any owner, any
+    // visibility)? Same post-soft-delete rule: a failed check never rejects
+    // the delete, and unknown means "still live" (keep people's keys, and
+    // subscribers keep id-keyed state).
+    let idStillLive = true;
+    try {
+      idStillLive = await store.hasLiveById(connectorId);
+    } catch (err) {
+      ctx.logger.warn('connectors_delete_live_check_failed', {
+        connectorId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
     await purgeConnectorState(bus, ctx, userId, connector, {
+      idStillLive,
       purgeGlobal: input.purgeGlobal === true,
       purgeAgentSignIns: input.purgeGlobal === true && !survivor,
       agentSignInsSkipReason:
@@ -986,6 +1014,33 @@ export async function deleteConnector(
   }
 
   return { deleted };
+}
+
+/**
+ * `connectors:live-ids` (slice 2b). Unscoped by design — it answers only ids
+ * the caller already holds, and only whether they are still in use — so every
+ * id is validated against the connector-id grammar and the list is capped.
+ */
+async function liveIds(store: ConnectorStore, input: LiveIdsInput): Promise<LiveIdsOutput> {
+  const raw = (input as { connectorIds?: unknown } | null | undefined)?.connectorIds;
+  if (!Array.isArray(raw)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'connectors:live-ids',
+      message: 'connectorIds must be an array',
+    });
+  }
+  if (raw.length > LIVE_IDS_MAX) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'connectors:live-ids',
+      message: `connectorIds must hold at most ${LIVE_IDS_MAX} ids`,
+    });
+  }
+  const ids = raw.map((id) => validateConnectorId(id));
+  return { live: await store.liveIds(ids) };
 }
 
 async function resolveConnector(

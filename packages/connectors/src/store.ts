@@ -324,6 +324,18 @@ export interface ConnectorStore {
    * id's agent-scope sign-ins. Internal: unscoped, never reachable from a hook.
    */
   hasLiveSharedById(connectorId: string): Promise<boolean>;
+  /**
+   * Slice 2b — does any LIVE row of ANY owner and ANY visibility carry
+   * `connectorId`? Call after a soft-delete to learn whether the id is still
+   * in use (`connectors:deleted`'s `idStillLive`). Internal: unscoped.
+   */
+  hasLiveById(connectorId: string): Promise<boolean>;
+  /**
+   * Slice 2b — the subset of `connectorIds` that at least one LIVE row (any
+   * owner, any visibility) carries, deduped. Callers validate and cap the list
+   * (`connectors:live-ids`). Internal: unscoped, answers only ids it is given.
+   */
+  liveIds(connectorIds: readonly string[]): Promise<string[]>;
   /** Idempotent create-or-update keyed (owner, connectorId). */
   upsert(args: UpsertArgs): Promise<{ connector: Connector; created: boolean }>;
   /** Soft-delete; true iff a live row was tombstoned. */
@@ -406,6 +418,32 @@ export function createConnectorStore(
         .limit(1)
         .executeTakeFirst();
       return row !== undefined;
+    },
+
+    async hasLiveById(connectorId) {
+      const row = await db
+        .selectFrom('connectors_v1_connectors')
+        .select('owner_user_id')
+        .where('connector_id', '=', connectorId)
+        .where('deleted_at', 'is', null)
+        .limit(1)
+        .executeTakeFirst();
+      return row !== undefined;
+    },
+
+    async liveIds(connectorIds) {
+      const wanted = [...new Set(connectorIds)];
+      if (wanted.length === 0) return [];
+      const rows = await db
+        .selectFrom('connectors_v1_connectors')
+        .select('connector_id')
+        .distinct()
+        .where('connector_id', 'in', wanted)
+        .where('deleted_at', 'is', null)
+        .execute();
+      const live = new Set(rows.map((row) => row.connector_id));
+      // In the caller's order, so the answer is deterministic.
+      return wanted.filter((id) => live.has(id));
     },
 
     async getByIdNotDeleted(userId, connectorId) {

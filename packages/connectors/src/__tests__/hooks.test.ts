@@ -867,9 +867,9 @@ describe('@ax/connectors hooks — delete fires connectors:deleted', () => {
     expect(del.deleted).toBe(true);
     const expected = deriveToolNamespaces('userA', up.connector);
     expect(expected).toHaveLength(1);
-    expect(events).toEqual([{ connectorId: 'gdrive', toolNamespaces: expected }]);
+    expect(events).toEqual([{ connectorId: 'gdrive', toolNamespaces: expected, idStillLive: false }]);
     // Storage-agnostic: no owner field rides the payload.
-    expect(Object.keys(events[0]!).sort()).toEqual(['connectorId', 'toolNamespaces']);
+    expect(Object.keys(events[0]!).sort()).toEqual(['connectorId', 'idStillLive', 'toolNamespaces']);
   });
 
   it('fires nothing when the connector is absent or already deleted', async () => {
@@ -971,7 +971,7 @@ describe('@ax/connectors hooks — delete fires connectors:deleted', () => {
       h.ctx({ userId: 'userA' }),
       { userId: 'userA', connectorId: 'sf' },
     );
-    expect(events).toEqual([{ connectorId: 'sf', toolNamespaces: [] }]);
+    expect(events).toEqual([{ connectorId: 'sf', toolNamespaces: [], idStillLive: false }]);
   });
 });
 
@@ -1884,7 +1884,7 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     const lines: string[] = [];
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
-    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
+    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent', 'user'] }]);
     expect(logged(lines, 'connectors_delete_agent_signins_purged')).toEqual([
       expect.objectContaining({ connectorId: 'sf', purged: 2 }),
     ]);
@@ -1934,6 +1934,8 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin2' }), privateSf('admin2'));
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin1' }),
       { userId: 'admin1', connectorId: 'sf', purgeGlobal: true });
+    // Agent rows go, but the id is still live (the private twin), so people's
+    // keys stay: the private connector's users may hold `account:sf` too.
     expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
   });
 
@@ -1989,7 +1991,7 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     ]);
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin2' }),
       { userId: 'admin2', connectorId: 'sf', purgeGlobal: true });
-    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
+    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent', 'user'] }]);
   });
 
   it('a failing survivor check after the soft-delete still completes the delete and keeps agent rows', async () => {
@@ -2022,6 +2024,7 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
       getByIdNotDeleted: async () => connector,
       softDelete: async () => true,
       hasLiveSharedById: async (): Promise<boolean> => { throw new Error('db down'); },
+      hasLiveById: async () => false,
     };
     const lines: string[] = [];
     const out = await deleteConnector(store, h.bus, loggedCtx(h, 'admin', lines),
@@ -2048,10 +2051,146 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
           ({ id: 'sf', keyMode: 'workspace', visibility, capabilities: cliCaps() }) as unknown as Connector,
         softDelete: async () => true,
         hasLiveSharedById: async () => { checks++; return false; },
+        hasLiveById: async () => false,
       };
       await deleteConnector(store, h.bus, h.ctx({ userId: 'admin' }),
         { userId: 'admin', connectorId: 'sf', purgeGlobal });
     }
     expect(checks).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent-owned sign-ins slice 2b — `connectors:deleted` says whether the id is
+// still in use, a shared delete with authority and no live same-id connector
+// left also purges people's keys, and `connectors:live-ids`.
+// ---------------------------------------------------------------------------
+describe('@ax/connectors hooks — idStillLive + person-scope purge (slice 2b)', () => {
+  function captureDeleted(h: TestHarness): ConnectorDeletedEvent[] {
+    const events: ConnectorDeletedEvent[] = [];
+    h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
+      events.push(payload);
+      return undefined;
+    });
+    return events;
+  }
+  const crm = (userId: string, visibility: 'shared' | 'private' = 'shared') =>
+    upsertInput({
+      userId, connectorId: 'crm', keyMode: visibility === 'shared' ? 'workspace' : 'personal',
+      visibility, capabilities: cliCaps(),
+    });
+
+  it('deleting the only crm announces idStillLive: false', async () => {
+    const { h } = await makeHarnessWithPurgeSpy();
+    const events = captureDeleted(h);
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin'));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'crm', purgeGlobal: true });
+    expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([['crm', false]]);
+  });
+
+  it('deleting one of two owners\' crm announces idStillLive: true, the last one false', async () => {
+    const { h } = await makeHarnessWithPurgeSpy();
+    const events = captureDeleted(h);
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }), crm('userA', 'private'));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userB' }), crm('userB', 'private'));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'crm' });
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userB' }),
+      { userId: 'userB', connectorId: 'crm' });
+    expect(events.map((e) => e.idStillLive)).toEqual([true, false]);
+  });
+
+  it('a shared crm deleted with authority and no survivor purges agent AND user scopes', async () => {
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin'));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'crm', purgeGlobal: true });
+    expect(purges).toEqual([{ connectorId: 'crm', scopes: ['agent', 'user'] }]);
+  });
+
+  it('a surviving shared same-id crm blocks both purges', async () => {
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin'));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin2' }), crm('admin2'));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'crm', purgeGlobal: true });
+    expect(purges).toEqual([]);
+  });
+
+  it('a shared delete WITHOUT authority purges neither scope, even when the id dies', async () => {
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    const events = captureDeleted(h);
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin'));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'crm' });
+    expect(purges).toEqual([]);
+    expect(events.map((e) => e.idStillLive)).toEqual([false]);
+  });
+
+  it('a PRIVATE delete never purges people\'s keys, even when the id dies', async () => {
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin', 'private'));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'crm', purgeGlobal: true });
+    expect(purges).toEqual([]);
+  });
+
+  it('a failing liveness check after the soft-delete keeps people\'s keys and announces idStillLive: true', async () => {
+    const purges: unknown[] = [];
+    const h = await createTestHarness({
+      services: {
+        'credentials:delete': async () => {},
+        'credentials:purge-account': async (_ctx, input) => { purges.push(input); return { purged: 0 }; },
+      },
+    });
+    harnesses.push(h);
+    const events = captureDeleted(h);
+    const store = {
+      getByIdNotDeleted: async () =>
+        ({ id: 'crm', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }) as unknown as Connector,
+      softDelete: async () => true,
+      hasLiveSharedById: async () => false,
+      hasLiveById: async (): Promise<boolean> => { throw new Error('db down'); },
+    };
+    const lines: string[] = [];
+    const out = await deleteConnector(store, h.bus, loggedCtx(h, 'admin', lines),
+      { userId: 'admin', connectorId: 'crm', purgeGlobal: true });
+    expect(out).toEqual({ deleted: true });
+    // The agent rule is unchanged (no shared survivor): agent rows still go.
+    expect(purges).toEqual([{ connectorId: 'crm', scopes: ['agent'] }]);
+    expect(events.map((e) => e.idStillLive)).toEqual([true]);
+    expect(logged(lines, 'connectors_delete_live_check_failed')).toEqual([
+      expect.objectContaining({ level: 'warn', connectorId: 'crm', err: 'db down' }),
+    ]);
+  });
+});
+
+describe('@ax/connectors hooks — connectors:live-ids (slice 2b)', () => {
+  type LiveIdsIn = { connectorIds: string[] };
+  type LiveIdsOut = { live: string[] };
+
+  it('returns only the ids still live under any owner', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }),
+      upsertInput({ userId: 'userA', connectorId: 'crm', visibility: 'private' }));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userB' }),
+      upsertInput({ userId: 'userB', connectorId: 'gone' }));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userB' }),
+      { userId: 'userB', connectorId: 'gone' });
+    const out = await h.bus.call<LiveIdsIn, LiveIdsOut>('connectors:live-ids', h.ctx({ userId: 'system' }),
+      { connectorIds: ['crm', 'gone', 'never'] });
+    expect(out).toEqual({ live: ['crm'] });
+    expect(await h.bus.call<LiveIdsIn, LiveIdsOut>('connectors:live-ids', h.ctx({ userId: 'system' }),
+      { connectorIds: [] })).toEqual({ live: [] });
+  });
+
+  it('rejects a malformed id, a non-array, and more than 500 ids', async () => {
+    const h = await makeHarness();
+    for (const connectorIds of [['crm', 'Bad Id'], 'crm', Array.from({ length: 501 }, (_, i) => `c${i}`)]) {
+      await expect(
+        h.bus.call<unknown, LiveIdsOut>('connectors:live-ids', h.ctx({ userId: 'system' }), { connectorIds }),
+      ).rejects.toMatchObject({ code: 'invalid-payload' });
+    }
   });
 });
