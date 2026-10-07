@@ -306,6 +306,12 @@ export interface ConnectorStore {
    * the user's own shadows the shared one).
    */
   getSoleSharedById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
+  /**
+   * Does any LIVE shared row (any owner) carry `connectorId`? Call after a
+   * soft-delete to learn whether a surviving shared definition still reads the
+   * id's agent-scope sign-ins. Internal: unscoped, never reachable from a hook.
+   */
+  hasLiveSharedById(connectorId: string): Promise<boolean>;
   /** Idempotent create-or-update keyed (owner, connectorId). */
   upsert(args: UpsertArgs): Promise<{ connector: Connector; created: boolean }>;
   /** Soft-delete; true iff a live row was tombstoned. */
@@ -376,6 +382,18 @@ export function createConnectorStore(
         connector: { ...rowToConnector(picked), canEdit: picked.owner_user_id === userId },
         ownerUserId: picked.owner_user_id,
       };
+    },
+
+    async hasLiveSharedById(connectorId) {
+      const row = await db
+        .selectFrom('connectors_v1_connectors')
+        .select('owner_user_id')
+        .where('connector_id', '=', connectorId)
+        .where('visibility', '=', 'shared')
+        .where('deleted_at', 'is', null)
+        .limit(1)
+        .executeTakeFirst();
+      return row !== undefined;
     },
 
     async getByIdNotDeleted(userId, connectorId) {

@@ -1889,10 +1889,39 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
       plugins: [createDatabasePostgresPlugin({ connectionString }), createConnectorsPlugin()],
     });
     harnesses.push(h);
+    const deletedEvents: string[] = [];
+    h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
+      deletedEvents.push(payload.connectorId);
+      return undefined;
+    });
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
       upsertInput({ userId: 'admin', connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
     const del = await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
       { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
     expect(del.deleted).toBe(true);
+    expect(deletedEvents).toEqual(['sf']);
+  });
+
+  it('a shared delete without purgeGlobal never purges agent rows', async () => {
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
+      upsertInput({ userId: 'admin', connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'sf' });
+    expect(purges).toEqual([]);
+  });
+
+  it('a surviving same-id shared connector blocks the purge until the last one goes', async () => {
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    for (const userId of ['admin', 'admin2']) {
+      await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId }),
+        upsertInput({ userId, connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
+    }
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
+    expect(purges).toEqual([]);
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin2' }),
+      { userId: 'admin2', connectorId: 'sf', purgeGlobal: true });
+    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
   });
 });

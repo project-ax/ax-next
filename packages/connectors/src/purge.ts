@@ -22,7 +22,13 @@ export async function purgeConnectorState(
   ctx: AgentContext,
   ownerUserId: string,
   connector: PurgeableConnector,
-  opts: { purgeGlobal: boolean },
+  opts: {
+    purgeGlobal: boolean;
+    /** Caller-computed: authorized AND no other live shared same-id connector survives. */
+    purgeAgentSignIns: boolean;
+    /** Why `purgeAgentSignIns` is false (for the skip log). */
+    agentSignInsSkipReason: 'not-authorized' | 'same-id-survives';
+  },
 ): Promise<void> {
   const connectorId = connector.id;
 
@@ -90,8 +96,14 @@ export async function purgeConnectorState(
   // Only a SHARED connector's delete may purge them: agent-scope rows are
   // readable only for the sole shared definition (TASK-711), so a private
   // connector that happens to share the id must never wipe them. Best-effort,
-  // like the credential purge above.
-  if (connector.visibility === 'shared' && bus.hasService('credentials:purge-account')) {
+  // like the credential purge above. Requires admin authority (purgeGlobal) and
+  // no surviving same-id shared connector (ids are not unique across owners).
+  if (connector.visibility === 'shared' && !opts.purgeAgentSignIns) {
+    ctx.logger.info('connectors_delete_skipped_agent_signins_purge', {
+      connectorId,
+      reason: opts.agentSignInsSkipReason,
+    });
+  } else if (connector.visibility === 'shared' && bus.hasService('credentials:purge-account')) {
     try {
       await bus.call('credentials:purge-account', ctx, { connectorId, scopes: ['agent'] });
     } catch (err) {

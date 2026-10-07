@@ -63,7 +63,11 @@ export async function sweepStdioConnectors(
             ownKeyPurged: true,
           });
         }
-        await purgeConnectorState(bus, ctx, row.owner_user_id, connector, { purgeGlobal: !shared });
+        await purgeConnectorState(bus, ctx, row.owner_user_id, connector, {
+          purgeGlobal: !shared,
+          purgeAgentSignIns: !shared,
+          agentSignInsSkipReason: 'same-id-survives',
+        });
       } else {
         ctx.logger.warn('connectors_stdio_sweep_unparseable', { connectorId: row.connector_id });
       }

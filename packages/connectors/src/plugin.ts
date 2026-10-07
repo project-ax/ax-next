@@ -941,8 +941,14 @@ async function deleteConnector(
   // connector (or one that lost a race to a concurrent delete) purges and
   // announces nothing.
   if (deleted && connector !== null) {
+    // Agent sign-ins are keyed `account:<id>` with no owner: wipe them only for
+    // an authorized (admin) delete AND when no other live shared connector with
+    // this id survives to read them. Checked AFTER the soft-delete.
+    const survivor = await store.hasLiveSharedById(connectorId);
     await purgeConnectorState(bus, ctx, userId, connector, {
       purgeGlobal: input.purgeGlobal === true,
+      purgeAgentSignIns: input.purgeGlobal === true && !survivor,
+      agentSignInsSkipReason: input.purgeGlobal !== true ? 'not-authorized' : 'same-id-survives',
     });
   }
 
