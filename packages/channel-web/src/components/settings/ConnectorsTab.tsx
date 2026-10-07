@@ -30,7 +30,7 @@ import {
   listAuthoredPending,
   rejectAuthoredConnector,
   type ConnectorSummary,
-  type ConnectorRouteBase,
+  type ConnectorWriteBase,
   type PendingAuthoredConnector,
 } from '@/lib/connectors';
 import { ProposedConnectorApproveDialog } from './ProposedConnectorApproveDialog';
@@ -59,7 +59,7 @@ function needsCaption(keyMode: ConnectorSummary['keyMode']): string {
 }
 
 /** Every read and write here is the admin bundle (slice 2a). */
-const base: ConnectorRouteBase = '/admin/connectors';
+const base: ConnectorWriteBase = '/admin/connectors';
 
 export function ConnectorsTab() {
   const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);

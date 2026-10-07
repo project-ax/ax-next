@@ -1,26 +1,26 @@
 /**
  * Connector client — typed wrappers around the connector REST routes.
  *
- * Shared definitions are readable by all signed-in users. Writes remain
- * owner-scoped. New definitions default to shared. `/admin/connectors`
- * additionally requires an admin role; ordinary users use
- * `/settings/connectors`, which rejects workspace keys.
- *
- * Both bundles share the same path shape + CSRF posture as `lib/admin.ts`:
+ * Shared definitions are readable by all signed-in users. Only admins write
+ * connector definitions (slice 2a): writes go to `/admin/connectors`, which is
+ * ADMIN-ONLY server-side (403 for a signed-in non-admin, TASK-698). Any admin
+ * may edit or delete a shared connector; a non-owner admin may only relabel it
+ * (see {@link OWNER_ONLY_CHANGE}). `/settings/connectors` is the READ bundle
+ * any signed-in user can reach (list + show).
  *
  *   GET    <base>        → { connectors: ConnectorSummary[] }
- *   POST   <base>        body: ConnectorUpsertInput → { connector, created }
  *   GET    <base>/:id    → { connector: Connector }
- *   PATCH  <base>/:id    body: Partial<ConnectorUpsertInput> → { connector, created }
- *   DELETE <base>/:id    → 204
+ *   POST   /admin/connectors        body: ConnectorUpsertInput → { connector, created }
+ *   PATCH  /admin/connectors/:id    body: Partial<ConnectorUpsertInput> → { connector, created }
+ *   DELETE /admin/connectors/:id    → 204
  *
- * `base` is REQUIRED on every call — there is no default (TASK-714).
- * `/admin/connectors*` is ADMIN-ONLY server-side (403 for a signed-in non-admin,
- * TASK-698), so a default of `/admin/connectors` was a trap: a new caller a
- * non-admin can reach would silently 403. Each caller now names its bundle —
- * `/settings/connectors` for anything a non-admin can reach, `/admin/connectors`
- * only from admin-only surfaces. (The Test probe is admin-only — it lives only
- * under `/admin/connectors/:id/test`, never the user base.)
+ * `base` is REQUIRED on every call — there is no default (TASK-714). A default
+ * of `/admin/connectors` was a trap: a new read a non-admin can reach would
+ * silently 403. Each read names its bundle — `/settings/connectors` for anything
+ * a non-admin can reach, `/admin/connectors` only from admin-only surfaces. The
+ * write helpers take {@link ConnectorWriteBase}, so they can only target the
+ * admin bundle. (The Test probe is admin-only too — it lives only under
+ * `/admin/connectors/:id/test`.)
  *
  * SECURITY — actor identity comes from the session, never the request body.
  * Shared definitions contain credential references, never secret values.
@@ -42,8 +42,11 @@ import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
  *  descriptor type. */
 export type { ServiceDescriptor };
 
-/** Which owner-scoped route bundle a call targets (TASK-129). */
+/** Which route bundle a READ targets (TASK-129). */
 export type ConnectorRouteBase = '/admin/connectors' | '/settings/connectors';
+
+/** The only bundle with write routes (slice 2a): writes are admin-only. */
+export type ConnectorWriteBase = '/admin/connectors';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -171,7 +174,7 @@ export async function getConnector(
 
 export async function createConnector(
   input: ConnectorUpsertInput,
-  base: ConnectorRouteBase,
+  base: ConnectorWriteBase,
 ): Promise<Connector> {
   const res = await fetch(base, {
     method: 'POST',
@@ -190,7 +193,7 @@ export async function createConnector(
 export async function patchConnector(
   id: string,
   patch: Partial<ConnectorUpsertInput>,
-  base: ConnectorRouteBase,
+  base: ConnectorWriteBase,
 ): Promise<Connector> {
   const res = await fetch(`${base}/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -264,7 +267,7 @@ export function isOwnerOnlyChange(err: unknown): boolean {
 
 export async function deleteConnector(
   id: string,
-  base: ConnectorRouteBase,
+  base: ConnectorWriteBase,
 ): Promise<void> {
   const res = await fetch(`${base}/${encodeURIComponent(id)}`, {
     method: 'DELETE',

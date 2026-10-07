@@ -46,7 +46,7 @@ import {
   type ConnectorSummary,
   type ConnectorKeyMode,
   type ConnectorVisibility,
-  type ConnectorRouteBase,
+  type ConnectorWriteBase,
   type ServiceDescriptor,
 } from '@/lib/connectors';
 import {
@@ -520,7 +520,7 @@ export function LegacyConnectorEditDialog({
   // Slice 2a: only admins define connectors, and this editor opens only from
   // Admin › Connectors, so every read and write is the admin bundle. (The
   // `/settings/connectors` write routes are gone.)
-  const base: ConnectorRouteBase = '/admin/connectors';
+  const base: ConnectorWriteBase = '/admin/connectors';
 
   // The shared wrapper supplies the full connector before mounting this editor.
   // Initialize synchronously from it so Save never serializes summary-only data.
