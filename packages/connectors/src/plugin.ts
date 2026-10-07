@@ -233,7 +233,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         {
           hook: 'credentials:purge-account',
           degradation:
-            "the connector is deleted but agents' sign-ins for it are left in the vault (unreadable once the connector is gone)",
+            "the connector is deleted but agents' sign-ins for it are left in the vault (a later connector with the same id could read them)",
         },
         // TASK-737 — the connector editor's per-tool permissions routes. The
         // values live in @ax/tool-policy: without it the routes answer 503
@@ -923,8 +923,9 @@ async function announceNamespaceChange(
   }
 }
 
-async function deleteConnector(
-  store: ConnectorStore,
+/** Exported for tests only (a store seam the hook path cannot reach). */
+export async function deleteConnector(
+  store: Pick<ConnectorStore, 'getByIdNotDeleted' | 'softDelete' | 'hasLiveSharedById'>,
   bus: HookBus,
   ctx: AgentContext,
   input: DeleteInput,
@@ -942,13 +943,33 @@ async function deleteConnector(
   // announces nothing.
   if (deleted && connector !== null) {
     // Agent sign-ins are keyed `account:<id>` with no owner: wipe them only for
-    // an authorized (admin) delete AND when no other live shared connector with
-    // this id survives to read them. Checked AFTER the soft-delete.
-    const survivor = await store.hasLiveSharedById(connectorId);
+    // an authorized (admin) delete of a SHARED connector AND when no other live
+    // shared connector with this id survives to read them. Checked AFTER the
+    // soft-delete. The row is already gone, so a failing check must not reject
+    // the delete (a retry would find nothing to purge): log it and keep the
+    // rows — unknown means "maybe a survivor".
+    let survivor = true;
+    let survivorCheckFailed = false;
+    if (connector.visibility === 'shared' && input.purgeGlobal === true) {
+      try {
+        survivor = await store.hasLiveSharedById(connectorId);
+      } catch (err) {
+        survivorCheckFailed = true;
+        ctx.logger.warn('connectors_delete_survivor_check_failed', {
+          connectorId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     await purgeConnectorState(bus, ctx, userId, connector, {
       purgeGlobal: input.purgeGlobal === true,
       purgeAgentSignIns: input.purgeGlobal === true && !survivor,
-      agentSignInsSkipReason: input.purgeGlobal !== true ? 'not-authorized' : 'same-id-survives',
+      agentSignInsSkipReason:
+        input.purgeGlobal !== true
+          ? 'not-authorized'
+          : survivorCheckFailed
+            ? 'survivor-check-failed'
+            : 'same-id-survives',
     });
   }
 

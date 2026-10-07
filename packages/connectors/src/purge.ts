@@ -27,7 +27,7 @@ export async function purgeConnectorState(
     /** Caller-computed: authorized AND no other live shared same-id connector survives. */
     purgeAgentSignIns: boolean;
     /** Why `purgeAgentSignIns` is false (for the skip log). */
-    agentSignInsSkipReason: 'not-authorized' | 'same-id-survives';
+    agentSignInsSkipReason: 'not-authorized' | 'same-id-survives' | 'survivor-check-failed';
   },
 ): Promise<void> {
   const connectorId = connector.id;
@@ -105,7 +105,14 @@ export async function purgeConnectorState(
     });
   } else if (connector.visibility === 'shared' && bus.hasService('credentials:purge-account')) {
     try {
-      await bus.call('credentials:purge-account', ctx, { connectorId, scopes: ['agent'] });
+      const out = await bus.call<
+        { connectorId: string; scopes: Array<'agent'> },
+        { purged: number }
+      >('credentials:purge-account', ctx, { connectorId, scopes: ['agent'] });
+      ctx.logger.info('connectors_delete_agent_signins_purged', {
+        connectorId,
+        purged: out.purged,
+      });
     } catch (err) {
       ctx.logger.warn('connectors_delete_agent_signins_purge_failed', {
         connectorId,

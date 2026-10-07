@@ -3,7 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { PluginError } from '@ax/core';
+import { createLogger, PluginError } from '@ax/core';
 import {
   createTestHarness,
   type TestHarness,
@@ -11,7 +11,7 @@ import {
   startTestContainer,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { createConnectorsPlugin } from '../plugin.js';
+import { createConnectorsPlugin, deleteConnector } from '../plugin.js';
 import {
   ClearLegacyDefaultOutputSchema,
   ListLegacyDefaultsOutputSchema,
@@ -25,6 +25,7 @@ import {
 } from '../tool-namespace.js';
 import type {
   Capabilities,
+  Connector,
   ConnectorDeletedEvent,
   ConnectorToolNamespacesChangedEvent,
   DeleteInput,
@@ -1852,7 +1853,7 @@ async function makeHarnessWithPurgeSpy(): Promise<{ h: TestHarness; purges: unkn
       'credentials:delete': async () => {},
       'credentials:purge-account': async (_ctx, input) => {
         purges.push(input);
-        return { purged: 0 };
+        return { purged: 2 };
       },
     },
     plugins: [createDatabasePostgresPlugin({ connectionString }), createConnectorsPlugin()],
@@ -1861,14 +1862,32 @@ async function makeHarnessWithPurgeSpy(): Promise<{ h: TestHarness; purges: unkn
   return { h, purges };
 }
 
+/** A ctx whose logger writes into `lines`, so a test can read what was logged. */
+function loggedCtx(h: TestHarness, userId: string, lines: string[]) {
+  return h.ctx({ userId, logger: createLogger({ reqId: 'req-del', writer: (l) => lines.push(l) }) });
+}
+
+const logged = (lines: string[], msg: string): Array<Record<string, unknown>> =>
+  lines
+    .map((l) => JSON.parse(l) as Record<string, unknown>)
+    .filter((e) => e['msg'] === msg);
+
+const sharedSf = (userId: string) =>
+  upsertInput({ userId, connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() });
+const privateSf = (userId: string) =>
+  upsertInput({ userId, connectorId: 'sf', keyMode: 'personal', visibility: 'private', capabilities: cliCaps() });
+
 describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned sign-ins slice 1)', () => {
-  it('a SHARED connector delete purges agent-scope rows for its id', async () => {
+  it('a SHARED connector delete purges agent-scope rows for its id and logs the count', async () => {
     const { h, purges } = await makeHarnessWithPurgeSpy();
-    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
-      upsertInput({ userId: 'admin', connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
-    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), sharedSf('admin'));
+    const lines: string[] = [];
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
     expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
+    expect(logged(lines, 'connectors_delete_agent_signins_purged')).toEqual([
+      expect.objectContaining({ connectorId: 'sf', purged: 2 }),
+    ]);
   });
 
   it('a PRIVATE connector delete never purges agent rows (could share a shared connector\'s id)', async () => {
@@ -1878,6 +1897,44 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userA' }),
       { userId: 'userA', connectorId: 'gdrive' });
     expect(purges).toEqual([]);
+  });
+
+  it('a PRIVATE connector delete never purges agent rows even with admin authority (purgeGlobal)', async () => {
+    // Visibility, not authority, is what rules it out: the purge is keyed on
+    // the id alone, and agent-scope rows belong to the SHARED definition.
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), privateSf('admin'));
+    const lines: string[] = [];
+    const del = await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', loggedCtx(h, 'admin', lines),
+      { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
+    expect(del.deleted).toBe(true);
+    expect(purges).toEqual([]);
+    // Not a "skip": a private connector never owned agent rows to begin with.
+    expect(logged(lines, 'connectors_delete_skipped_agent_signins_purge')).toEqual([]);
+  });
+
+  it('an admin deleting their PRIVATE same-id connector leaves the live shared one\'s agent rows alone', async () => {
+    // Plan Review Focus #2: a live shared `sf` (admin1) and a private `sf`
+    // (admin2). admin2's purgeGlobal delete of the private row must not wipe
+    // the sign-ins agents hold for admin1's shared connector.
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin1' }), sharedSf('admin1'));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin2' }), privateSf('admin2'));
+    const del = await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin2' }),
+      { userId: 'admin2', connectorId: 'sf', purgeGlobal: true });
+    expect(del.deleted).toBe(true);
+    expect(purges).toEqual([]);
+  });
+
+  it('a live PRIVATE same-id connector is not a survivor: deleting the shared one still purges', async () => {
+    // Pins hasLiveSharedById's visibility filter — agent-scope rows are only
+    // readable through a SHARED definition, so a private twin keeps nothing alive.
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin1' }), sharedSf('admin1'));
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin2' }), privateSf('admin2'));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin1' }),
+      { userId: 'admin1', connectorId: 'sf', purgeGlobal: true });
+    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
   });
 
   it('a purge failure is logged and the delete still succeeds', async () => {
@@ -1894,34 +1951,107 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
       deletedEvents.push(payload.connectorId);
       return undefined;
     });
-    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
-      upsertInput({ userId: 'admin', connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
-    const del = await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), sharedSf('admin'));
+    const lines: string[] = [];
+    const del = await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
     expect(del.deleted).toBe(true);
     expect(deletedEvents).toEqual(['sf']);
+    expect(logged(lines, 'connectors_delete_agent_signins_purge_failed')).toEqual([
+      expect.objectContaining({ level: 'warn', connectorId: 'sf', err: expect.stringContaining('boom') }),
+    ]);
+    expect(logged(lines, 'connectors_delete_agent_signins_purged')).toEqual([]);
   });
 
-  it('a shared delete without purgeGlobal never purges agent rows', async () => {
+  it('a shared delete without purgeGlobal never purges agent rows (skip logged: not-authorized)', async () => {
     const { h, purges } = await makeHarnessWithPurgeSpy();
-    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
-      upsertInput({ userId: 'admin', connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
-    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), sharedSf('admin'));
+    const lines: string[] = [];
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'sf' });
     expect(purges).toEqual([]);
+    expect(logged(lines, 'connectors_delete_skipped_agent_signins_purge')).toEqual([
+      expect.objectContaining({ connectorId: 'sf', reason: 'not-authorized' }),
+    ]);
   });
 
   it('a surviving same-id shared connector blocks the purge until the last one goes', async () => {
     const { h, purges } = await makeHarnessWithPurgeSpy();
     for (const userId of ['admin', 'admin2']) {
-      await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId }),
-        upsertInput({ userId, connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
+      await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId }), sharedSf(userId));
     }
-    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+    const lines: string[] = [];
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
     expect(purges).toEqual([]);
+    expect(logged(lines, 'connectors_delete_skipped_agent_signins_purge')).toEqual([
+      expect.objectContaining({ connectorId: 'sf', reason: 'same-id-survives' }),
+    ]);
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin2' }),
       { userId: 'admin2', connectorId: 'sf', purgeGlobal: true });
     expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
+  });
+
+  it('a failing survivor check after the soft-delete still completes the delete and keeps agent rows', async () => {
+    // The row is tombstoned before the check runs, so a throw there must not
+    // reject the hook (a retry would answer {deleted:false} and never clean
+    // up). Unknown survivor => keep the agent rows; own-key purge + the
+    // connectors:deleted announcement still happen.
+    const credDeletes: unknown[] = [];
+    const purges: unknown[] = [];
+    const h = await createTestHarness({
+      services: {
+        'credentials:delete': async (_ctx, input) => { credDeletes.push(input); },
+        'credentials:purge-account': async (_ctx, input) => { purges.push(input); return { purged: 0 }; },
+      },
+    });
+    harnesses.push(h);
+    const deletedEvents: string[] = [];
+    h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
+      deletedEvents.push(payload.connectorId);
+      return undefined;
+    });
+    const connector = {
+      id: 'sf',
+      name: 'Salesforce',
+      keyMode: 'workspace',
+      visibility: 'shared',
+      capabilities: cliCaps(),
+    } as unknown as Connector;
+    const store = {
+      getByIdNotDeleted: async () => connector,
+      softDelete: async () => true,
+      hasLiveSharedById: async (): Promise<boolean> => { throw new Error('db down'); },
+    };
+    const lines: string[] = [];
+    const out = await deleteConnector(store, h.bus, loggedCtx(h, 'admin', lines),
+      { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
+    expect(out).toEqual({ deleted: true });
+    expect(credDeletes).toEqual([{ scope: 'global', ownerId: null, ref: 'account:sf' }]);
+    expect(deletedEvents).toEqual(['sf']);
+    expect(purges).toEqual([]);
+    expect(logged(lines, 'connectors_delete_survivor_check_failed')).toEqual([
+      expect.objectContaining({ level: 'warn', connectorId: 'sf', err: 'db down' }),
+    ]);
+    expect(logged(lines, 'connectors_delete_skipped_agent_signins_purge')).toEqual([
+      expect.objectContaining({ connectorId: 'sf', reason: 'survivor-check-failed' }),
+    ]);
+  });
+
+  it('the survivor check only runs for an authorized SHARED delete', async () => {
+    let checks = 0;
+    const h = await createTestHarness({ services: { 'credentials:delete': async () => {} } });
+    harnesses.push(h);
+    for (const [visibility, purgeGlobal] of [['private', true], ['shared', false]] as const) {
+      const store = {
+        getByIdNotDeleted: async () =>
+          ({ id: 'sf', keyMode: 'workspace', visibility, capabilities: cliCaps() }) as unknown as Connector,
+        softDelete: async () => true,
+        hasLiveSharedById: async () => { checks++; return false; },
+      };
+      await deleteConnector(store, h.bus, h.ctx({ userId: 'admin' }),
+        { userId: 'admin', connectorId: 'sf', purgeGlobal });
+    }
+    expect(checks).toBe(0);
   });
 });

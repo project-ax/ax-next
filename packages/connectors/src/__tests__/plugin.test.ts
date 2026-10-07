@@ -53,7 +53,7 @@ describe('@ax/connectors plugin manifest', () => {
         {
           hook: 'credentials:purge-account',
           degradation:
-            "the connector is deleted but agents' sign-ins for it are left in the vault (unreadable once the connector is gone)",
+            "the connector is deleted but agents' sign-ins for it are left in the vault (a later connector with the same id could read them)",
         },
         {
           hook: 'tool-policy:get-connector-defaults',
