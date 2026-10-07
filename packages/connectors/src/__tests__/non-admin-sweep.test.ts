@@ -50,8 +50,11 @@ function capturePlugin(
   };
 }
 
-/** `auth:get-user` stub: 'admin' → isAdmin true, 'user' → false, 'gone' → null, 'throw' → throws. */
-function authPlugin(users: Record<string, 'admin' | 'user' | 'gone' | 'throw'>): Plugin {
+/**
+ * `auth:get-user` stub: 'admin' → isAdmin true, 'user' → false, 'gone' → null,
+ * 'throw' → throws, 'odd' → a user whose isAdmin is not a boolean.
+ */
+function authPlugin(users: Record<string, 'admin' | 'user' | 'gone' | 'throw' | 'odd'>): Plugin {
   return {
     manifest: { name: 'test/auth', version: '0.0.0', registers: ['auth:get-user'], calls: [], subscribes: [] },
     init({ bus }) {
@@ -60,6 +63,7 @@ function authPlugin(users: Record<string, 'admin' | 'user' | 'gone' | 'throw'>):
         const kind = users[userId] ?? 'gone';
         if (kind === 'throw') throw new Error('auth backend down');
         if (kind === 'gone') return null;
+        if (kind === 'odd') return { id: userId, isAdmin: 'yes' };
         return { id: userId, isAdmin: kind === 'admin' };
       });
     },
@@ -120,11 +124,11 @@ const tokenSlot = [{ slot: 'TOKEN', kind: 'api-key' }];
 const caps = (credentials: unknown[] = tokenSlot) =>
   JSON.stringify({ allowedHosts: [], credentials, mcpServers: [httpServer], packages: { npm: [], pypi: [] } });
 
-async function insertConnector(owner: string, id: string, opts: { keyMode?: string; visibility?: string } = {}) {
+async function insertConnector(owner: string, id: string, opts: { keyMode?: string; visibility?: string; capsJson?: string } = {}) {
   await sql(
     `INSERT INTO connectors_v1_connectors (owner_user_id, connector_id, name, key_mode, visibility, capabilities)
      VALUES ($1, $2, $2, $3, $4, $5::jsonb)`,
-    [owner, id, opts.keyMode ?? 'personal', opts.visibility ?? 'private', caps()],
+    [owner, id, opts.keyMode ?? 'personal', opts.visibility ?? 'private', opts.capsJson ?? caps()],
   );
 }
 
@@ -338,5 +342,56 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
     expect(await doneMarkers()).toEqual([]);
     await bootAndClose([authPlugin({ userB: 'user' }), capturePlugin([], [], [])]);
     expect(await rows()).toEqual([['userB', 'mytool', false]]);
+  });
+
+  it('keeps an unparseable non-admin row but still completes, so the sweep stays one-time', async () => {
+    await bootAndClose();
+    await insertConnector('userB', 'broken', { capsJson: JSON.stringify({ credentials: 'nope' }) });
+    await insertConnector('userB', 'good');
+    const auth = { userB: 'user' as const, userC: 'user' as const };
+    const { logs } = await captureLogs(() => bootAndClose([authPlugin(auth), capturePlugin([], [], [])]));
+    expect(await rows()).toEqual([
+      ['userB', 'broken', true],
+      ['userB', 'good', false],
+    ]);
+    expect(await doneMarkers()).toEqual(['non-admin-connector-removal']);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_swept')).toEqual([
+      expect.objectContaining({ count: 1, unparseable: 1, complete: true }),
+    ]);
+
+    await insertConnector('userC', 'newtool');
+    await boot([authPlugin(auth), capturePlugin([], [], [])]);
+    expect(await rows()).toEqual([
+      ['userB', 'broken', true],
+      ['userB', 'good', false],
+      ['userC', 'newtool', true],
+    ]);
+  });
+
+  it("removes the platform 'system' owner's connectors too (owner decision 2026-10-07) and completes", async () => {
+    await bootAndClose();
+    await insertConnector('system', 'skilltool', { visibility: 'shared' });
+    const events: ConnectorDeletedEvent[] = [];
+    const accountPurges: unknown[] = [];
+    // No auth user named 'system' (null) → non-admin, removed with full cleanup.
+    await boot([authPlugin({ system: 'gone' }), capturePlugin(events, [], accountPurges)]);
+    expect(await rows()).toEqual([['system', 'skilltool', false]]);
+    expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([['skilltool', false]]);
+    expect(accountPurges).toEqual([{ connectorId: 'skilltool', scopes: ['agent', 'user'] }]);
+    expect(await doneMarkers()).toEqual(['non-admin-connector-removal']);
+  });
+
+  it('a non-boolean isAdmin is a lookup failure: keeps the rows, writes no marker', async () => {
+    await bootAndClose();
+    await insertConnector('weird', 'keepme');
+    const { logs } = await captureLogs(() => bootAndClose([authPlugin({ weird: 'odd' }), capturePlugin([], [], [])]));
+    expect(await rows()).toEqual([['weird', 'keepme', true]]);
+    expect(await doneMarkers()).toEqual([]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_sweep_owner_check_failed')).toEqual([
+      expect.objectContaining({ ownerUserId: 'weird' }),
+    ]);
+    expect(logs.filter((l) => l['msg'] === 'connectors_non_admin_swept')).toEqual([
+      expect.objectContaining({ complete: false, ownerChecksFailed: 1 }),
+    ]);
   });
 });

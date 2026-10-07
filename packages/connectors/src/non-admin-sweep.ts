@@ -15,13 +15,18 @@
 // Fails toward KEEPING data whenever it can't be sure:
 //   - no `auth:get-user` provider (CLI / canary presets) → nothing is removed;
 //   - an `auth:get-user` throw for an owner → that owner's connectors stay;
-//   - a row whose capabilities don't parse → kept (and logged);
+//   - an `auth:get-user` answer whose `isAdmin` isn't a boolean → same as a throw;
+//   - a row whose capabilities don't parse → kept (and logged). That is
+//     permanent, not transient, so it does NOT block the one-time marker;
+
 //   - an id another live connector still carries → its GLOBAL keys, and its
 //     people's keys, stay (they may be the survivor's).
-// A deleted account (`auth:get-user` → null) counts as non-admin.
+// A deleted account (`auth:get-user` → null) counts as non-admin. So does the
+// platform owner `'system'` (skills cap-migration): DELIBERATE, owner decision
+// 2026-10-07 — skills relying on such connectors may break.
 //
 // ONE-TIME, not a standing rule: after a COMPLETE pass (no owner-lookup or
-// per-connector failure) it records the `non-admin-connector-removal` boot step
+// row-processing failure) it records the `non-admin-connector-removal` boot step
 // and never runs again, so a later-demoted admin's connectors, or one a person
 // creates before the non-admin creation paths are gone, are left alone. An
 // incomplete pass, or one skipped for no auth provider, records nothing and
@@ -84,7 +89,10 @@ export async function sweepNonAdminConnectors(
   let complete = true;
 
   // One lookup per distinct owner. `true` = remove this owner's connectors.
+  // A failed lookup keeps the owner's rows and blocks the marker (it may be
+  // transient, so the next boot asks again).
   const removeOwner = new Map<string, boolean>();
+  let ownerChecksFailed = 0;
   for (const owner of new Set(rows.map((row) => row.owner_user_id))) {
     try {
       const user = await bus.call<{ userId: string }, AuthUserLike | null>(
@@ -92,18 +100,28 @@ export async function sweepNonAdminConnectors(
         ctx,
         { userId: owner },
       );
-      removeOwner.set(owner, user?.isAdmin !== true);
+      if (user === null || user === undefined) {
+        // The account is gone — or it is the platform's 'system' owner, removed
+        // deliberately (owner decision 2026-10-07: skills relying on it may break).
+        removeOwner.set(owner, true);
+      } else if (typeof user.isAdmin === 'boolean') {
+        removeOwner.set(owner, !user.isAdmin);
+      } else {
+        throw new Error('auth:get-user answered without a boolean isAdmin');
+      }
     } catch (err) {
       ctx.logger.warn('connectors_non_admin_sweep_owner_check_failed', {
         ownerUserId: owner,
         err: errMessage(err),
       });
       removeOwner.set(owner, false);
+      ownerChecksFailed += 1;
       complete = false;
     }
   }
 
   let removed = 0;
+  let unparseable = 0;
   for (const row of rows) {
     if (removeOwner.get(row.owner_user_id) !== true) continue;
     const ownerUserId = row.owner_user_id;
@@ -123,7 +141,8 @@ export async function sweepNonAdminConnectors(
           ownerUserId,
           err: errMessage(err),
         });
-        complete = false;
+        // Permanent: kept, counted, and NOT a reason to run again next boot.
+        unparseable += 1;
         continue;
       }
 
@@ -179,6 +198,9 @@ export async function sweepNonAdminConnectors(
     }
   }
 
+  // Crash window: a crash after some removals but before this write reruns
+  // the sweep next boot. Rows already tombstoned are no longer live, so they
+  // are no-ops; only a non-admin connector created in between would also go.
   if (complete) {
     try {
       await markBootStepDone(db, NON_ADMIN_SWEEP_STEP);
@@ -188,6 +210,11 @@ export async function sweepNonAdminConnectors(
       ctx.logger.warn('connectors_non_admin_sweep_mark_failed', { err: errMessage(err) });
     }
   }
-  ctx.logger.info('connectors_non_admin_swept', { count: removed, complete });
+  ctx.logger.info('connectors_non_admin_swept', {
+    count: removed,
+    unparseable,
+    ownerChecksFailed,
+    complete,
+  });
   return { removed, complete };
 }
