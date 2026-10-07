@@ -31,7 +31,7 @@
     "@ax/core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@ax/skills-parser": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "ai": "7.0.70",
     "undici": "^6.28.0"
   },
