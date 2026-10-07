@@ -15,13 +15,27 @@ import type { ConnectorDeletedEvent, ListEffectiveInput, ListEffectiveOutput, Li
 // The sweep runs inside connectors' init, so the capture plugin must init
 // BEFORE it. Registering `credentials:delete` (an optionalCall of
 // @ax/connectors) puts this plugin ahead of it in topological order.
-function capturePlugin(events: ConnectorDeletedEvent[], purged: Array<{ scope: string; ownerId: string | null; ref: string }>): Plugin {
+function capturePlugin(
+  events: ConnectorDeletedEvent[],
+  purged: Array<{ scope: string; ownerId: string | null; ref: string }>,
+  accountPurges: unknown[] = [],
+): Plugin {
   return {
-    manifest: { name: 'test/capture', version: '0.0.0', registers: ['credentials:delete'], calls: [], subscribes: ['connectors:deleted'] },
+    manifest: {
+      name: 'test/capture',
+      version: '0.0.0',
+      registers: ['credentials:delete', 'credentials:purge-account'],
+      calls: [],
+      subscribes: ['connectors:deleted'],
+    },
     init({ bus }) {
       bus.registerService('credentials:delete', 'test/capture', async (_ctx, input) => {
         purged.push(input as { scope: string; ownerId: string | null; ref: string });
         return undefined;
+      });
+      bus.registerService('credentials:purge-account', 'test/capture', async (_ctx, input) => {
+        accountPurges.push(input);
+        return { purged: 0 };
       });
       bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, e) => {
         events.push(e);
@@ -138,6 +152,30 @@ describe('@ax/connectors stdio sweep', () => {
     const purged: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
     await boot([capturePlugin([], purged)]);
     expect(purged).toEqual([{ scope: 'global', ownerId: null, ref: 'account:teamtool' }]);
+  });
+
+  it('purges every agent\'s sign-ins for a sole shared stdio connector (system cleanup)', async () => {
+    await (await boot()).close({ onError: () => {} });
+    harnesses.pop();
+    await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    const accountPurges: unknown[] = [];
+    await boot([capturePlugin([], [], accountPurges)]);
+    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent'] }]);
+  });
+
+  it('keeps agents\' sign-ins when another admin\'s live shared http connector keeps the id', async () => {
+    await (await boot()).close({ onError: () => {} });
+    harnesses.pop();
+    await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    await insertConnector('admin2', 'teamtool', caps([httpServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace', visibility: 'shared' });
+    const events: ConnectorDeletedEvent[] = [];
+    const accountPurges: unknown[] = [];
+    await boot([capturePlugin(events, [], accountPurges)]);
+    expect(accountPurges).toEqual([]);
+    // The stdio row is still swept and announced.
+    expect(events.map((e) => e.connectorId)).toEqual(['teamtool']);
+    const rows = await sql('SELECT owner_user_id FROM connectors_v1_connectors');
+    expect(rows.map((r) => r['owner_user_id'])).toEqual(['admin2']);
   });
 
   it('keeps the GLOBAL key when another owner\'s live non-stdio connector shares the id', async () => {
