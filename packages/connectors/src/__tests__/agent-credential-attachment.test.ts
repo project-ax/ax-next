@@ -306,3 +306,58 @@ describe('agent-scope connector credential needs the connector on the agent (TAS
     expect(await ask()).toEqual({ allowed: false });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent-owned sign-ins slice 1 — the purge across the real plugin boundary:
+// connectors:delete → credentials:purge-account → the real vault. A spy on the
+// purge hook cannot catch contract drift (purge.ts swallows a rejected call);
+// this does, by reading the agent's row back after a same-id re-upsert.
+// ---------------------------------------------------------------------------
+describe('deleting a shared connector purges agents\' sign-ins in the real vault (slice 1)', () => {
+  async function deleteAndRecreate(h: TestHarness, purgeGlobal: boolean): Promise<void> {
+    const del = await h.bus.call<
+      { userId: string; connectorId: string; purgeGlobal?: boolean },
+      { deleted: boolean }
+    >('connectors:delete', h.ctx({ userId: 'admin' }), {
+      userId: 'admin',
+      connectorId: 'linear',
+      ...(purgeGlobal ? { purgeGlobal: true } : {}),
+    });
+    expect(del.deleted).toBe(true);
+    // A later connector re-uses the id (same owner, same shape).
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), {
+      userId: 'admin',
+      connectorId: 'linear',
+      name: 'Linear',
+      keyMode: 'personal',
+      visibility: 'shared',
+      capabilities: {
+        allowedHosts: ['mcp.linear.app'],
+        credentials: [{ slot: 'API_TOKEN', kind: 'api-key' }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+        services: [],
+      },
+    });
+  }
+
+  it('an admin delete (purgeGlobal) tombstones the agent row: a re-upserted same-id connector cannot read it', async () => {
+    agent = { members: ['admin', 'bob'], connectorAttachments: ['linear'], connectorExclusions: [] };
+    const h = await makeHarness();
+    await seedTeamConnector(h);
+    expect(await readOnAgent(h, 'bob')).toBe(TEAM_TOKEN);
+    await deleteAndRecreate(h, true);
+    await expectRefused(h, 'bob');
+    await expectRefused(h, 'admin');
+  });
+
+  it('KNOWN EXPOSURE (slice 2 closes it via detach-on-delete): a delete WITHOUT purgeGlobal leaves the row, and a same-id re-upsert reads the old token again', async () => {
+    agent = { members: ['admin', 'bob'], connectorAttachments: ['linear'], connectorExclusions: [] };
+    const h = await makeHarness();
+    await seedTeamConnector(h);
+    await deleteAndRecreate(h, false);
+    // Documents current behaviour, not the goal: flip this assertion when
+    // slice 2 lands (the attachment is dropped on delete, so the read refuses).
+    expect(await readOnAgent(h, 'bob')).toBe(TEAM_TOKEN);
+  });
+});
