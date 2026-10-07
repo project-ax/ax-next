@@ -316,21 +316,17 @@ export interface AdminRouteDeps {
  *   - `'admin'` — the folded Connector registry (`/admin/connectors`). The actor
  *     may curate the workspace catalog: set `visibility: 'shared'` and
  *     `keyMode: 'workspace'`. Owner is still forced from the session.
- *   - `'user'`  — user authoring (`/settings/connectors`). The actor may only
- *     ever create/edit their OWN connectors. Admin-only fields
- *     (`keyMode: 'workspace'`) are REJECTED server-side (400 — not silently
- *     dropped), and a catalog/shared connector (one already `shared` with a
- *     workspace key) is READ-ONLY:
- *     editing or deleting it through the user surface 403s. This is the
- *     server-side enforcement of "catalog/shared connectors are read-only for
- *     non-admins" — never UI-only.
+ *   - `'user'`  — the `/settings/connectors` READ surface (list/show/tool-
+ *     permissions reads + the authored-draft routes). Since slice 2a only admins
+ *     write connector definitions, so NO write route is registered in this mode;
+ *     the write handlers below keep their locked-down policy (workspace-key
+ *     fields rejected, shared rows read-only) as defence in depth, but nothing
+ *     routes to them.
  *
  * Both modes share the read paths (list/show) and the owner-forced-from-session
- * posture verbatim; mode gates the write policy AND who may call at all: the
- * `'admin'` bundle requires an admin (403 otherwise — TASK-698), while there is NO
- * role gate on the user routes — any authenticated user may author their own
- * private connectors (the human is the granting authority for their own agents; no
- * approval wall is on this path — that gates MODEL-authored reach only).
+ * posture verbatim; the `'admin'` bundle requires an admin (403 otherwise —
+ * TASK-698), while the user reads have no role gate (any authenticated user may
+ * read, e.g. the agent rail's Add list).
  */
 export type ConnectorRouteMode = 'admin' | 'user';
 
@@ -607,6 +603,8 @@ export function createConnectorRouteHandlers(
       // The route decides uniqueness, never the body (it would be an existence
       // probe for other owners' private ids).
       delete raw.requireUniqueId;
+      // Likewise `updateOnly`: only the PATCH route sets it, never the body.
+      delete raw.updateOnly;
       if (mode === 'user') {
         const rejected = rejectAdminOnlyFields(raw);
         if (rejected !== null) {
@@ -1187,11 +1185,10 @@ export async function registerAdminConnectorRoutes(
 }
 
 /**
- * Register the user-authoring routes against @ax/http-server (TASK-129). These
- * are the locked-down `/settings/connectors[/:id]` surface: same owner-scoped,
- * owner-forced-from-session bridge as the admin routes, but in `mode: 'user'`
- * so the connector is forced PRIVATE, admin-only fields are rejected, and a
- * catalog/shared connector is read-only (see `ConnectorRouteMode`).
+ * Register the `/settings/connectors` routes against @ax/http-server (TASK-129).
+ * Slice 2a: READS and the authored-draft routes only. The writes (POST, PATCH,
+ * DELETE, tool-permissions PUT) were removed: admins write connector definitions
+ * via `/admin/connectors`, so those paths 404 for a non-admin.
  *
  * NOTE: there is deliberately no `/settings/connectors/:id/test` — the Test
  * probe is an admin curation action, not part of user authoring.
@@ -1210,7 +1207,6 @@ export async function registerUserConnectorRoutes(
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
     { method: 'GET', path: '/settings/connectors', handler: handlers.list },
-    { method: 'POST', path: '/settings/connectors', handler: handlers.create },
     // The Settings "Proposed by your assistant" fallback: list the user's
     // pending authored drafts + approve one outside chat. Registered BEFORE the
     // `/:id` patterns so `authored` is never captured as an `:id`.
@@ -1234,22 +1230,14 @@ export async function registerUserConnectorRoutes(
       handler: handlers.rejectAuthored,
     },
     { method: 'GET', path: '/settings/connectors/:id', handler: handlers.show },
-    { method: 'PATCH', path: '/settings/connectors/:id', handler: handlers.update },
-    {
-      method: 'DELETE',
-      path: '/settings/connectors/:id',
-      handler: handlers.destroy,
-    },
-    // TASK-737 — a private connector's author sets its per-tool defaults.
+    // Reads only: the agent rail's Add list, the key dialogs and the skill editor
+    // read these as non-admins. Writes (POST/PATCH/DELETE, tool-permissions PUT)
+    // are admin-only and live under `/admin/connectors`; they are NOT registered
+    // here, so they 404 for everyone.
     {
       method: 'GET',
       path: '/settings/connectors/:id/tool-permissions',
       handler: handlers.toolPermissions,
-    },
-    {
-      method: 'PUT',
-      path: '/settings/connectors/:id/tool-permissions',
-      handler: handlers.setToolPermissions,
     },
   ];
   const unregisters: Array<() => void> = [];

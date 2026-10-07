@@ -541,6 +541,16 @@ describe('admin connector routes', () => {
         .map((r) => r.ownerUserId);
     }
 
+    it('a client-supplied updateOnly never reaches the store: admin POST of a NEW id still creates it (201)', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      const created = makeRes();
+      await handlers.create(makeReq({ body: { ...crm, connectorId: 'fresh-one', updateOnly: true } }), created.res);
+      expect(created.captured.status).toBe(201);
+      expect(await rowOwners(h, 'fresh-one')).toEqual(['admin1']);
+    });
+
     it('admin2 PATCHes admin1’s shared connector: 200, the change sticks, admin1 still owns it', async () => {
       const h = await makeHarness();
       const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });

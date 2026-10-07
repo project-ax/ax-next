@@ -456,25 +456,6 @@ describe('tool-permissions routes — authz', () => {
     currentActor = { id: 'u2', isAdmin: false };
     expect((await getPerms(h, 'user', 'linear')).status).toBe(404);
   });
-
-  it('a private connector author may set and read its defaults on the settings surface', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'author', isAdmin: false };
-    await create(h, 'user', { ...linear, visibility: 'private' });
-    const ns = deriveToolNamespace('author', 'linear', 'linear');
-    const put = await putPerms(h, 'user', 'linear', {
-      verdicts: [
-        { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
-        { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
-      ],
-    });
-    expect(put).toEqual({ status: 200, body: { ok: true } });
-    const got = await getPerms(h, 'user', 'linear');
-    expect((got.body as { defaults: unknown[] }).defaults).toEqual([
-      { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
-      { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
-    ]);
-  });
 });
 
 describe('tool-permissions routes — validation', () => {

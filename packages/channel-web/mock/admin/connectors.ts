@@ -33,7 +33,8 @@ import { requireSession } from '../auth';
  *
  * SECURITY parity: identity comes from the session. The `/admin/connectors*`
  * bundle is admin-only (403 `forbidden` for a signed-in non-admin, TASK-698);
- * `/settings/connectors*` is open to any signed-in user. Private foreign rows are
+ * `/settings/connectors*` is READ-ONLY (GET only; writes 404) and open to any
+ * signed-in user. Private foreign rows are
  * invisible; shared foreign rows are read-only. Credential values never appear.
  *
  * These type shapes are DUPLICATED from `@ax/connectors` (not imported):
@@ -288,7 +289,7 @@ function toolDefaultsFor(store: Store, rowId: string): Map<string, ToolVerdict> 
 
 /**
  * The shared connector-routes mock, parameterized by `base` (the bundle's path)
- * and `mode` (`'admin'` = the registry, `'user'` = locked-down authoring). One
+ * and `mode` (`'admin'` = the registry, `'user'` = the read-only /settings bundle). One
  * implementation, two registrations — user mode rejects admin-only fields.
  * Sharing grants read access while mutations stay owner-scoped.
  */
@@ -315,6 +316,10 @@ function connectorsMiddleware(
     // before any auth gate runs, because no route matches it; claiming it here
     // and answering 401/403 first would disagree with prod (TASK-790).
     if (path !== base && !idRe.test(path) && !toolPermsRe.test(path)) return false;
+    // Slice 2a: the real `/settings/connectors*` bundle registers READS only
+    // (admins write via `/admin/connectors`), so a write there is "no such route"
+    // — let it fall through to the dev server's 404, as production does.
+    if (mode === 'user' && method !== 'GET') return false;
 
     // auth:require-user — 401 with no session. The `/admin/connectors*` bundle
     // (mode 'admin') is additionally ADMIN-ONLY, mirroring the real

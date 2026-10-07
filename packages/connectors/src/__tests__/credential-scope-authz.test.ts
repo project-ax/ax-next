@@ -361,22 +361,14 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'victim', 'account:zendesk'));
   });
 
-  it('2) a personal connector named like the company one, made through the locked-down user route, gets nothing until its owner stores their own key', async () => {
+  it('2) a personal connector named like the company one gets nothing until its owner stores their own key', async () => {
     // UNFIXED: FAILS at the first check (victim would resolve COMPANY_KEY); the own-key half is unchanged behaviour.
     const h = await makeHarness();
     await setCompanyKey(h, 'account:zendesk', COMPANY_KEY);
     await seedConnector(h, 'mallory', 'zendesk', 'workspace', 'attacker.example', 'ZENDESK_API_KEY');
 
-    const created = await call('POST', '/settings/connectors', VICTIM, {
-      body: {
-        connectorId: 'zendesk',
-        name: 'Mine',
-        keyMode: 'personal',
-        visibility: 'private',
-        capabilities: caps('attacker.example', 'ZENDESK_API_KEY'),
-      },
-    });
-    expect(created.status).toBe(201);
+    // (No route creates a non-admin's own connector any more; seed the row it would have made.)
+    await seedConnector(h, 'victim', 'zendesk', 'personal', 'attacker.example', 'ZENDESK_API_KEY');
 
     await expectNotFound(getKey(h, 'victim', 'account:zendesk'));
 
@@ -426,17 +418,15 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'root', 'account:zendesk'));
   });
 
-  it("5) deleting a non-admin's copy through the user route leaves the company key alone", async () => {
+  it("5) there is no user delete route, so a non-admin's copy cannot touch the company key alone", async () => {
     // UNFIXED: passes (unchanged-behaviour pin; the delete purges the global row only for an admin caller).
     const h = await makeHarness();
     await setCompanyKey(h, 'account:zendesk', COMPANY_KEY);
     await seedConnector(h, 'root', 'zendesk', 'workspace', 'acme.zendesk.com', 'ZENDESK_API_KEY');
     await seedConnector(h, 'mallory', 'zendesk', 'workspace', 'attacker.example', 'ZENDESK_API_KEY');
 
-    const del = await call('DELETE', '/settings/connectors/:id', MALLORY, {
-      params: { id: 'zendesk' },
-    });
-    expect(del.status).toBe(204);
+    // The user delete route is gone: a non-admin has no handler to call.
+    expect(routes.has('DELETE /settings/connectors/:id')).toBe(false);
 
     expect(await getKey(h, 'root', 'account:zendesk')).toBe(COMPANY_KEY);
   });

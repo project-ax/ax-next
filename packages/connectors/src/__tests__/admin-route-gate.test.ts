@@ -363,10 +363,8 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
       visibility: 'shared',
       capabilities: caps('m.example.com'),
     };
-    // The locked-down twin refuses it (the behaviour the admin route bypassed)...
-    const viaUser = await call('POST', '/settings/connectors', MALLORY, { body });
-    expect(viaUser.status).toBe(400);
-    // ...and the admin route now does too.
+    // The locked-down twin no longer exists, and the admin route refuses a non-admin.
+    expect(routes.has('POST /settings/connectors')).toBe(false);
     const viaAdmin = await call('POST', '/admin/connectors', MALLORY, { body });
     expect(viaAdmin.status).toBe(403);
     expect(await listIds(h, MALLORY.id)).toEqual([]);
@@ -395,19 +393,35 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
     expect(foreign.status).toBe(404);
   });
 
-  it('the /settings/connectors twin stays open to a non-admin (the gate is not global)', async () => {
+  it('only the READ and authored /settings/connectors routes exist: no non-admin write route is registered (so each 404s)', async () => {
     const h = await makeHarness();
-    const created = await call('POST', '/settings/connectors', MALLORY, {
-      body: { connectorId: 'mal-mine', name: 'Mine', keyMode: 'personal', capabilities: caps('m.example.com') },
-    });
-    expect(created.status).toBe(201);
+    const settings = [...routes.keys()].filter((k) => k.split(' ')[1]?.startsWith('/settings/connectors')).sort();
+    expect(settings).toEqual(
+      [
+        'GET /settings/connectors',
+        'GET /settings/connectors/:id',
+        'GET /settings/connectors/:id/tool-permissions',
+        'GET /settings/connectors/authored',
+        'POST /settings/connectors/authored/:id/approve',
+        'DELETE /settings/connectors/authored/:id',
+      ].sort(),
+    );
+    // The removed writes: calling them as a signed-in non-admin finds no handler.
+    for (const key of [
+      'POST /settings/connectors',
+      'PATCH /settings/connectors/:id',
+      'DELETE /settings/connectors/:id',
+      'PUT /settings/connectors/:id/tool-permissions',
+    ]) {
+      await expect(call(key.split(' ')[0]!, key.split(' ')[1]!, MALLORY, { params: { id: 'x' }, body: {} })).rejects.toThrow(
+        /route not registered/,
+      );
+    }
+    // The reads stay open to a non-admin (the agent rail's Add list).
+    await seed(h, MALLORY.id, 'mal-mine');
     expect((await call('GET', '/settings/connectors', MALLORY)).status).toBe(200);
     expect((await call('GET', '/settings/connectors/:id', MALLORY, { params: { id: 'mal-mine' } })).status).toBe(200);
-    expect(
-      (await call('PATCH', '/settings/connectors/:id', MALLORY, { params: { id: 'mal-mine' }, body: { name: 'Mine 2' } })).status,
-    ).toBe(200);
-    expect((await call('DELETE', '/settings/connectors/:id', MALLORY, { params: { id: 'mal-mine' } })).status).toBe(204);
-    void h;
+    expect(await listIds(h, MALLORY.id)).toEqual(['mal-mine']);
   });
 
   it('the Test probe is admin-only even on a user-mode bundle, and is not mounted under /settings', async () => {
