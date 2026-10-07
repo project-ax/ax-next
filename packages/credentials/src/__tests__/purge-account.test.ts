@@ -137,9 +137,54 @@ describe('credentials:purge-account', () => {
     });
     const out = await bus.call('credentials:purge-account', ctx(), { connectorId: 'gmail', scopes: ['agent'] });
     expect(out).toEqual({ purged: 1 });
-    await expect(
-      bus.call('credentials:get', makeAgentContext({ sessionId: 's', agentId: 'agt1', userId: 'u' }), { ref: 'account:gmail', userId: 'u' }),
-    ).rejects.toThrow();
+    // The garbage row is now a real tombstone: a second purge finds nothing live.
+    expect(await bus.call('credentials:purge-account', ctx(), { connectorId: 'gmail', scopes: ['agent'] }))
+      .toEqual({ purged: 0 });
+  });
+
+  it('a store fault that is not an unreadable blob propagates and tombstones nothing', async () => {
+    // A store-blob backend returning a broken entry (blob: null) is a real
+    // fault, not key-rotation aftermath: the purge must fail loudly, not
+    // tombstone a row it never looked at.
+    const puts: unknown[] = [];
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [
+        {
+          manifest: {
+            name: 'broken-store',
+            version: '0.0.0',
+            registers: [
+              'credentials:store-blob:get',
+              'credentials:store-blob:put',
+              'credentials:store-blob:list',
+              'credentials:store-blob:purge-by-owner',
+            ],
+            calls: [],
+            subscribes: [],
+          },
+          async init({ bus: b }: { bus: HookBus }) {
+            b.registerService('credentials:store-blob:get', 'broken-store', async () => ({ blob: undefined }));
+            b.registerService('credentials:store-blob:put', 'broken-store', async (_c, input) => {
+              puts.push(input);
+            });
+            b.registerService('credentials:store-blob:list', 'broken-store', async () => ({
+              entries: [{ scope: 'agent', ownerId: 'agt1', ref: 'account:gmail', blob: null }],
+            }));
+            b.registerService('credentials:store-blob:purge-by-owner', 'broken-store', async () => ({ purged: 0 }));
+          },
+        },
+        createCredentialsPlugin(),
+      ],
+      config: {},
+    });
+    const err = await bus
+      .call('credentials:purge-account', ctx(), { connectorId: 'gmail', scopes: ['agent'] })
+      .then(() => undefined, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as { code?: string }).code).not.toBe('invalid-payload');
+    expect(puts).toEqual([]);
   });
 
   it.each([
@@ -149,6 +194,10 @@ describe('credentials:purge-account', () => {
     [{ connectorId: 'gmail', scopes: [] }],
     [{ connectorId: 'gmail', scopes: ['team'] }],
     [{ connectorId: 'gmail' }],
+    // 'global' is refused: no caller needs it (a company key is purged by ref).
+    [{ connectorId: 'gmail', scopes: ['global'] }],
+    [{ connectorId: 'gmail', scopes: ['agent', 'global'] }],
+    [{ scopes: ['global'] }],
   ])('rejects invalid input %j without purging anything', async (input) => {
     const { bus } = await makeHarness();
     await put(bus, 'agent', 'agt1', 'account:gmail');

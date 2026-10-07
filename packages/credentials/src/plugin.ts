@@ -325,9 +325,11 @@ export interface CredentialsPurgeByOwnerOutput {
  *
  * With `connectorId`: `account:<id>` and `account:<id>:<anything>` only — the
  * trailing `:` keeps `gmail` from matching `gmail2`. Without it: every
- * `account:` row. Only in the listed `scopes`. Other ref namespaces are never
- * touched. Used when a shared connector is deleted (agent scope) and by the
- * boot migration (user scope).
+ * `account:` row. Only in the listed `scopes`, each one of 'user' | 'agent' —
+ * 'global' is refused (invalid-payload): no caller needs it, and a company
+ * key is a connector's OWN key, purged by ref via `credentials:delete`. Other
+ * ref namespaces are never touched. Used today when a shared connector is
+ * deleted (agent scope); slice 5's boot migration will call it at user scope.
  *
  * Boundary review: alternate impl = a KMS/vault backend deleting by tag; no
  * backend vocabulary in the payload.
@@ -335,8 +337,8 @@ export interface CredentialsPurgeByOwnerOutput {
 export interface CredentialsPurgeAccountInput {
   /** Omit to purge EVERY `account:` row in `scopes`. */
   connectorId?: string;
-  /** Non-empty; each one of 'user' | 'agent' | 'global'. */
-  scopes: CredentialScope[];
+  /** Non-empty; each one of 'user' | 'agent' ('global' is rejected). */
+  scopes: Array<Exclude<CredentialScope, 'global'>>;
 }
 
 export interface CredentialsPurgeAccountOutput {
@@ -344,6 +346,16 @@ export interface CredentialsPurgeAccountOutput {
   purged: number;
 }
 
+// What `unwrapEnvelope` throws for a blob it cannot read (crypto.ts +
+// unwrapEnvelope): the row is dead weight, so purge-account tombstones it.
+const UNREADABLE_BLOB_CODES: ReadonlySet<string> = new Set([
+  'decrypt-failed',
+  'invalid-ciphertext',
+  'invalid-envelope',
+]);
+
+// Mirrors @ax/connectors' connector-id grammar (its store.ts validateConnectorId:
+// lowercase slug, 1-128 chars; no cross-plugin import — the hook bus is the API). A ':' can never appear, so `account:<id>:` is exact.
 const PURGE_CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 
 // Raw envelope primitive — `(plaintext: string) → ciphertext: Uint8Array` and
@@ -1161,6 +1173,9 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
             throw invalidPurge('scopes must be a non-empty array');
           }
           const scopes = [...new Set(input.scopes.map((s) => validateScope(s)))];
+          if (scopes.includes('global')) {
+            throw invalidPurge("scopes may only contain 'user' | 'agent'");
+          }
           let prefix: string | undefined;
           if (input.connectorId !== undefined) {
             if (typeof input.connectorId !== 'string' || !PURGE_CONNECTOR_ID_RE.test(input.connectorId)) {
@@ -1183,8 +1198,12 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
               let live = true;
               try {
                 live = !unwrapEnvelope(e.blob).isTombstone;
-              } catch {
-                // Undecryptable (key-rotation aftermath): still ours to purge.
+              } catch (err) {
+                // Undecryptable or malformed envelope (key-rotation aftermath,
+                // a truncated blob): still ours to purge. Anything else — a
+                // store returning a broken entry, a key error — is a real
+                // fault, so fail loudly rather than tombstone blind.
+                if (!(err instanceof PluginError) || !UNREADABLE_BLOB_CODES.has(err.code)) throw err;
               }
               if (!live) continue;
               await bus.call('credentials:store-blob:put', ctx, {
