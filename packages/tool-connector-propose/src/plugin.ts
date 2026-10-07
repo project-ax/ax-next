@@ -22,6 +22,17 @@ const EXECUTE_HOOK = `tool:execute:${CONNECTOR_PROPOSE_TOOL_NAME}` as const;
 const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const KEY_MODES = new Set(['personal', 'workspace']);
 
+/**
+ * Ids @ax/connectors reserves for new connectors (it owns the list; mirrored
+ * here like the stdio check below). The hook refuses them too, but its
+ * structural rejects all collapse to the generic "draft is invalid" (I9), so
+ * the model would not learn that only the id needs to change.
+ */
+const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored']);
+
+/** Model-visible reject for a reserved id. Fixed text; never echoes input. */
+const RESERVED_ID_REJECT_MESSAGE = 'That id is reserved — pick a different connectorId.';
+
 /** Model-visible reject for a stdio MCP server spec. Fixed text; never echoes input. */
 const STDIO_REJECT_MESSAGE =
   'local (stdio) MCP servers are not supported — propose a remote server with transport "http" and a url';
@@ -96,6 +107,9 @@ function normalizeInput(raw: unknown): ConnectorProposeInput {
     rejectInput(
       'connector_propose requires a lowercase "connectorId" matching /^[a-z0-9][a-z0-9_-]*/',
     );
+  }
+  if (RESERVED_CONNECTOR_IDS.has(connectorId)) {
+    rejectInput(RESERVED_ID_REJECT_MESSAGE);
   }
 
   const name = typeof input.name === 'string' ? input.name.trim() : '';

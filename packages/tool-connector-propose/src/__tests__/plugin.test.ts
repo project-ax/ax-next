@@ -181,6 +181,18 @@ describe('@ax/tool-connector-propose — plugin', () => {
     expect(installCalls).toHaveLength(0);
   });
 
+  it('rejects the reserved id `authored` with a fixed message BEFORE calling the hook', async () => {
+    const { bus, installCalls } = busWithStubs();
+    await init(bus);
+    await expect(
+      callTool(bus, { connectorId: 'authored', name: 'Authored', keyMode: 'personal' }),
+    ).rejects.toMatchObject({
+      code: 'invalid-payload',
+      message: 'That id is reserved — pick a different connectorId.',
+    });
+    expect(installCalls).toHaveLength(0);
+  });
+
   it('rejects an UNBOUND (owner-less) session before calling the hook', async () => {
     // TASK-411: this guard used to test the literal 'ipc-server', which
     // @ax/ipc-http never stamps — so an owner-less session over the TCP
