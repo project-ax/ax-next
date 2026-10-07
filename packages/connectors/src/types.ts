@@ -658,36 +658,17 @@ export interface InstallAuthoredInput {
 export interface InstallAuthoredOutput {
   connectorId: string;
   /**
-   * `pending` — a freshly installed draft grants zero reach until a human
-   * approves it at the capability wall (the common case).
+   * `pending` — a freshly installed draft grants zero reach; it waits in the
+   * workspace admins' queue until an admin creates the connector (the common
+   * case).
    *
-   * `active` — the install was a NO-OP because an equivalent connector is
-   * ALREADY approved + active in the owner's live registry (TASK-114 re-propose
-   * dedup). No pending draft was (re)created and no approval card re-fires; the
-   * model learns the connector already works rather than re-proposing it every
-   * turn. NOTE: this never grants new reach — it only reports an existing,
-   * human-approved connector.
+   * `active` — the install was a NO-OP because a live SHARED connector with
+   * this id already exists (TASK-114 re-propose dedup, reshaped in slice 2c).
+   * No draft was (re)created; the model learns it is already available to add
+   * from Connectors rather than re-proposing it every turn. NOTE: this never
+   * grants new reach — it only reports an existing connector.
    */
   status: 'pending' | 'active';
-}
-
-/** One authored connector draft, as surfaced for the approval card + the grant
- *  re-resolution. `proposal` is the declared, UNAPPROVED capability surface. */
-export interface AuthoredConnectorDraftDescriptor {
-  connectorId: string;
-  name: string;
-  usageNote: string;
-  keyMode: KeyMode;
-  status: 'pending' | 'active';
-  proposal: Capabilities;
-}
-
-export interface ListAuthoredInput {
-  ownerUserId: string;
-  agentId: string;
-}
-export interface ListAuthoredOutput {
-  drafts: AuthoredConnectorDraftDescriptor[];
 }
 
 /**
@@ -709,18 +690,8 @@ export interface PendingAuthoredProposal {
 /** `connectors:list-authored-pending-all` — admin use only; takes nothing. */
 export type ListAuthoredPendingAllInput = Record<string, never>;
 export interface ListAuthoredPendingAllOutput {
-  /** Pending proposals whose id is not already live under any owner. */
+  /** Pending proposals whose id is not already live as a SHARED connector. */
   drafts: PendingAuthoredProposal[];
-}
-
-export interface ActivateAuthoredInput {
-  ownerUserId: string;
-  agentId: string;
-  connectorId: string;
-}
-export interface ActivateAuthoredOutput {
-  /** True iff THIS call flipped a `pending` draft to `active`. */
-  activated: boolean;
 }
 
 /** `connectors:clear-authored-by-id` — admin Dismiss: every proposer's draft
@@ -899,25 +870,12 @@ export const ListEffectiveOutputSchema = z.object({
   ),
 }) as unknown as ZodType<ListEffectiveOutput>;
 
-const AuthoredConnectorDraftSchema = z.object({
-  connectorId: z.string(),
-  name: z.string(),
-  usageNote: z.string(),
-  keyMode: KeyModeSchema,
-  status: z.union([z.literal('pending'), z.literal('active')]),
-  proposal: CapabilitiesSchema,
-});
-
 export const InstallAuthoredOutputSchema = z.object({
   connectorId: z.string(),
   // `active` is returned only by the TASK-114 re-propose dedup no-op (an
   // equivalent connector is already approved/active in the live registry).
   status: z.union([z.literal('pending'), z.literal('active')]),
 }) as unknown as ZodType<InstallAuthoredOutput>;
-
-export const ListAuthoredOutputSchema = z.object({
-  drafts: z.array(AuthoredConnectorDraftSchema),
-}) as unknown as ZodType<ListAuthoredOutput>;
 
 export const ListAuthoredPendingAllOutputSchema = z.object({
   drafts: z.array(
@@ -933,10 +891,6 @@ export const ListAuthoredPendingAllOutputSchema = z.object({
     }),
   ),
 }) as unknown as ZodType<ListAuthoredPendingAllOutput>;
-
-export const ActivateAuthoredOutputSchema = z.object({
-  activated: z.boolean(),
-}) as unknown as ZodType<ActivateAuthoredOutput>;
 
 export const ClearAuthoredByIdOutputSchema = z.object({
   cleared: z.number().int().nonnegative(),

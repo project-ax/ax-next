@@ -37,8 +37,10 @@ import type { PermissionRequest } from './types.js';
 // ---------------------------------------------------------------------------
 
 /** The grant kinds that can be deferred. `host` cards are turn-scoped and
- *  deliberately excluded — see `ChunkBuffer.pendingGrantsForUser`. */
-export type DeclinableGrantKind = 'skill' | 'connector';
+ *  deliberately excluded — see `ChunkBuffer.pendingGrantsForUser`. Slice 2c
+ *  removed the in-chat connector card, so `connector` is no longer one: an
+ *  agent-proposed connector goes to the workspace admins instead. */
+export type DeclinableGrantKind = 'skill';
 
 const KEY_NAMESPACE = 'grant-decline';
 
@@ -48,11 +50,20 @@ export function grantDeclineUserPrefix(userId: string): string {
   return `${KEY_NAMESPACE}:${encodeURIComponent(userId)}:`;
 }
 
-/** `grant-decline:<enc(userId)>:<enc(agentId)>:<enc(kind)>:<enc(subjectId)>`. */
+/**
+ * `grant-decline:<enc(userId)>:<enc(agentId)>:<enc(kind)>:<enc(subjectId)>`.
+ *
+ * `kind` is a plain string here, not `DeclinableGrantKind`, because the
+ * read-back rebuilds keys for EVERY stored marker — including a pre-slice-2c
+ * `connector` "Not now". Such a marker can never match a pending card again,
+ * so it never suppresses anything and the reclaim sweeps it like any other
+ * dead marker. Writes go through `recordGrantDecline`, which takes only a
+ * declinable kind.
+ */
 export function grantDeclineKey(
   userId: string,
   agentId: string,
-  kind: DeclinableGrantKind,
+  kind: string,
   subjectId: string,
 ): string {
   return (
@@ -191,7 +202,7 @@ export async function readGrantDeclines(
       grantDeclineKey(
         parsed.userId,
         parsed.agentId,
-        parsed.kind as DeclinableGrantKind,
+        parsed.kind,
         parsed.subjectId,
       ),
       { declinedAt, raw: entry.value },
@@ -217,14 +228,12 @@ function parseDeclinedAt(value: Uint8Array | undefined): number | null {
 }
 
 /**
- * The subject a grant card is about — a skill's `skillId`, a connector's
- * `connectorId`. `null` for a host card, which has no durable subject: host
- * cards are turn-scoped and are never declined durably (see
- * `DeclinableGrantKind`).
+ * The subject a grant card is about — a skill's `skillId`. `null` for any
+ * other card: a host card has no durable subject (host cards are turn-scoped
+ * and are never declined durably — see `DeclinableGrantKind`).
  */
 export function grantSubjectId(card: PermissionRequest): string | null {
   if (card.kind === 'skill') return card.skillId;
-  if (card.kind === 'connector') return card.connectorId;
   return null;
 }
 
@@ -314,7 +323,7 @@ export function filterDeclinedGrants<
       key = grantDeclineKey(
         userId,
         row.agentId,
-        row.card.kind as DeclinableGrantKind,
+        row.card.kind,
         subjectId,
       );
     } catch (err) {

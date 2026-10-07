@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ActivateAuthoredOutputSchema,
   ClearAuthoredByIdOutputSchema,
   DeleteOutputSchema,
   GetOutputSchema,
   InstallAuthoredOutputSchema,
-  ListAuthoredOutputSchema,
   ListAuthoredPendingAllOutputSchema,
   ClearLegacyDefaultOutputSchema,
   ListEffectiveOutputSchema,
@@ -81,8 +79,6 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
     'connectors:delete': DeleteOutputSchema,
     'connectors:resolve': ResolveOutputSchema,
     'connectors:install-authored': InstallAuthoredOutputSchema,
-    'connectors:list-authored': ListAuthoredOutputSchema,
-    'connectors:activate-authored': ActivateAuthoredOutputSchema,
     'connectors:list-authored-pending-all': ListAuthoredPendingAllOutputSchema,
     'connectors:clear-authored-by-id': ClearAuthoredByIdOutputSchema,
   };

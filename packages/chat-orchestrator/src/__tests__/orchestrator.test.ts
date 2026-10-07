@@ -6428,8 +6428,14 @@ describe('chat-orchestrator', () => {
     expect(skillMd?.contents).not.toContain('# builtin body');
   });
 
-  it('TASK-94: a PENDING authored connector draft fires ONE chat:permission-request connector card', async () => {
+  // Slice 2c — an agent-proposed connector goes to the workspace admins' queue.
+  // The fresh-spawn path used to read the agent's pending drafts and fire a
+  // `kind:'connector'` approval card (TASK-94); it must fire nothing now, on any
+  // turn, and must not even ask for the drafts. Nor does the orchestrator
+  // subscribe to a proposal event any more.
+  it('slice 2c: a PENDING authored connector draft fires NO card, on any turn', async () => {
     const proxy = buildProxyHooks();
+    let draftReads = 0;
     const connectorDraft = {
       connectorId: 'linear',
       name: 'Linear',
@@ -6456,7 +6462,10 @@ describe('chat-orchestrator', () => {
       openSession: makeChatEndOpenSession(busRef),
     });
     Object.assign(mocks.services, proxy.services, {
-      'connectors:list-authored': async () => ({ drafts: [connectorDraft] }),
+      'connectors:list-authored': async () => {
+        draftReads++;
+        return { drafts: [connectorDraft] };
+      },
     } satisfies Record<string, ServiceHandler>);
     const h = await createTestHarness({
       services: mocks.services,
@@ -6464,9 +6473,9 @@ describe('chat-orchestrator', () => {
     });
     busRef.current = h.bus;
 
-    const cards: Array<Record<string, unknown>> = [];
+    const cards: unknown[] = [];
     h.bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
-      if ((p as { kind?: string }).kind === 'connector') cards.push(p as Record<string, unknown>);
+      cards.push(p);
       return undefined;
     });
 
@@ -6476,57 +6485,17 @@ describe('chat-orchestrator', () => {
         logger: createLogger({ reqId: `req-${sessionId}`, writer: () => undefined }),
       });
 
-    // First turn fires the connector card; a second turn in the SAME
-    // conversation is deduped (no second card for the same shown surface).
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctxIn('s1', 'conv-A'), { message: { role: 'user', content: 'hi' } });
+    // A proposal event mid-conversation (the pre-2c live-card trigger) reaches
+    // no orchestrator subscriber.
+    await h.bus.fire('connectors:proposed', ctxIn('s1', 'conv-A'), {
+      ownerUserId: 'test-user', agentId: 'test-agent', connectorId: 'linear', status: 'pending',
+    });
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctxIn('s2', 'conv-A'), { message: { role: 'user', content: 'hi' } });
 
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toEqual({
-      kind: 'connector', connectorId: 'linear', name: 'Linear', authored: true,
-      hosts: ['api.linear.app'],
-      // TASK-124 — single-slot connector keeps the collapsed ref; `service` is the
-      // connectorId fallback (the untagged slot), no slotTag.
-      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', service: 'linear', haveExisting: false }],
-      packages: { npm: [], pypi: [] },
-      // TASK-711 — the draft's keyMode rides the card.
-      keyMode: 'personal',
-    });
-  });
-
-  it('TASK-94: an ACTIVE authored connector draft fires NO card (already approved)', async () => {
-    const proxy = buildProxyHooks();
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({
-      agentsResolve: async () => ({
-        agent: { ...TEST_AGENT, allowedHosts: ['api.anthropic.com'], requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } }, skillAttachments: [] },
-      }),
-      openSession: makeChatEndOpenSession(busRef),
-    });
-    Object.assign(mocks.services, proxy.services, {
-      'connectors:list-authored': async () => ({
-        drafts: [{
-          connectorId: 'linear', name: 'Linear', usageNote: '', keyMode: 'personal', status: 'active',
-          proposal: { allowedHosts: ['api.linear.app'], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
-        }],
-      }),
-    } satisfies Record<string, ServiceHandler>);
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
-    });
-    busRef.current = h.bus;
-    const cards: unknown[] = [];
-    h.bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
-      if ((p as { kind?: string }).kind === 'connector') cards.push(p);
-      return undefined;
-    });
-    await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      makeAgentContext({ sessionId: 's1', agentId: 'test-agent', userId: 'test-user', conversationId: 'conv-A', logger: createLogger({ reqId: 'r', writer: () => undefined }) }),
-      { message: { role: 'user', content: 'hi' } },
-    );
     expect(cards).toEqual([]);
+    expect(draftReads).toBe(0);
+    expect(h.bus.hasService('agent:apply-authored-connector-grant')).toBe(false);
   });
 });
 

@@ -24,10 +24,8 @@ describe('@ax/connectors plugin manifest', () => {
         'connectors:tool-labels',
         // Agent-owned sign-ins slice 2b — which ids are still in use.
         'connectors:live-ids',
-        // TASK-94 — agent-authored connector drafts + the approval gate.
+        // TASK-94 — agent-authored connector drafts (the admins' queue).
         'connectors:install-authored',
-        'connectors:list-authored',
-        'connectors:activate-authored',
         // Slice 2c — the admin proposal queue and its Dismiss.
         'connectors:list-authored-pending-all',
         'connectors:clear-authored-by-id',

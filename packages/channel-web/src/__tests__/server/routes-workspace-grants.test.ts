@@ -68,13 +68,16 @@ const skill = (skillId: string) => ({
   slots: [],
 });
 
-const connector = (connectorId: string) => ({
-  kind: 'connector' as const,
-  connectorId,
-  name: connectorId,
-  hosts: [],
-  slots: [],
-});
+// Slice 2c — the in-chat connector card is gone. A pre-upgrade one is cast
+// through `unknown`: the wire type no longer has to admit it.
+const oldConnectorCard = (connectorId: string) =>
+  ({
+    kind: 'connector',
+    connectorId,
+    name: connectorId,
+    hosts: [],
+    slots: [],
+  }) as unknown as Parameters<ChunkBuffer['appendPermissionCard']>[1];
 
 describe('GET /api/workspace/grants', () => {
   let bus: HookBus;
@@ -196,7 +199,7 @@ describe('GET /api/workspace/grants', () => {
       userId: 'u-ann',
       agentId: 'a-quill',
     });
-    buffer.appendPermissionCard('cnv-ann', connector('github'), {
+    buffer.appendPermissionCard('cnv-ann', skill('github'), {
       userId: 'u-ann',
       agentId: 'a-quill',
     });
@@ -206,11 +209,26 @@ describe('GET /api/workspace/grants', () => {
     expect(captured.body).toEqual({
       grants: [
         { conversationId: 'cnv-ann', agentId: 'a-quill', request: skill('linear') },
-        {
-          conversationId: 'cnv-ann',
-          agentId: 'a-quill',
-          request: connector('github'),
-        },
+        { conversationId: 'cnv-ann', agentId: 'a-quill', request: skill('github') },
+      ],
+    });
+  });
+
+  it('never lists an old connector card (slice 2c)', async () => {
+    buffer.appendPermissionCard('cnv-ann', oldConnectorCard('github'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+    buffer.appendPermissionCard('cnv-ann', skill('linear'), {
+      userId: 'u-ann',
+      agentId: 'a-quill',
+    });
+
+    const captured = await read({ id: 'u-ann' });
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({
+      grants: [
+        { conversationId: 'cnv-ann', agentId: 'a-quill', request: skill('linear') },
       ],
     });
   });
@@ -355,9 +373,9 @@ describe('GET /api/workspace/grants', () => {
       expect(after.body).toEqual({ grants: [] });
     });
 
-    it('a connector grant declines the same way', async () => {
-      registerStorage();
-      buffer.appendPermissionCard('cnv-ann', connector('github'), {
+    it('a connector decline is refused and writes nothing (slice 2c)', async () => {
+      const store = registerStorage();
+      buffer.appendPermissionCard('cnv-ann', oldConnectorCard('github'), {
         userId: 'u-ann',
         agentId: 'a-quill',
       });
@@ -366,8 +384,27 @@ describe('GET /api/workspace/grants', () => {
         { id: 'u-ann' },
         { agentId: 'a-quill', kind: 'connector', subjectId: 'github' },
       );
-      expect(posted.statusCode).toBe(200);
-      expect((await read({ id: 'u-ann' })).body).toEqual({ grants: [] });
+      expect(posted.statusCode).toBe(400);
+      expect(posted.body).toEqual({ error: 'invalid-grant' });
+      expect(store.size).toBe(0);
+    });
+
+    it('an old connector "Not now" marker is swept like any dead marker (slice 2c)', async () => {
+      const store = registerStorage();
+      const oldKey = grantDeclineKey('u-ann', 'a-quill', 'connector', 'github');
+      store.set(oldKey, new TextEncoder().encode(JSON.stringify({ declinedAt: 1 })));
+      buffer.appendPermissionCard('cnv-ann', skill('linear'), {
+        userId: 'u-ann',
+        agentId: 'a-quill',
+      });
+
+      const captured = await read({ id: 'u-ann' });
+      expect(captured.body).toEqual({
+        grants: [
+          { conversationId: 'cnv-ann', agentId: 'a-quill', request: skill('linear') },
+        ],
+      });
+      expect(store.has(oldKey)).toBe(false);
     });
 
     it('the deferral is need-triggered, not time-triggered: only a fresh ask brings it back', async () => {

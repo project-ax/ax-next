@@ -1,7 +1,6 @@
 export { createConnectorsPlugin } from './plugin.js';
 export type { ConnectorsConfig } from './plugin.js';
 export {
-  ActivateAuthoredOutputSchema,
   AuthorizeAgentOutputSchema,
   AuthorizeGlobalOutputSchema,
   CapabilitiesSchema,
@@ -10,7 +9,6 @@ export {
   DeleteOutputSchema,
   GetOutputSchema,
   InstallAuthoredOutputSchema,
-  ListAuthoredOutputSchema,
   ListAuthoredPendingAllOutputSchema,
   ListEffectiveOutputSchema,
   ListLegacyDefaultsOutputSchema,
@@ -21,13 +19,10 @@ export {
   UpsertOutputSchema,
 } from './types.js';
 export type {
-  ActivateAuthoredInput,
-  ActivateAuthoredOutput,
   AuthorizeAgentInput,
   AuthorizeAgentOutput,
   AuthorizeGlobalInput,
   AuthorizeGlobalOutput,
-  AuthoredConnectorDraftDescriptor,
   AuthoredConnectorSlot,
   Capabilities,
   CapabilitySlot,
@@ -46,8 +41,6 @@ export type {
   InstallAuthoredInput,
   InstallAuthoredOutput,
   KeyMode,
-  ListAuthoredInput,
-  ListAuthoredOutput,
   ListAuthoredPendingAllInput,
   ListAuthoredPendingAllOutput,
   PendingAuthoredProposal,

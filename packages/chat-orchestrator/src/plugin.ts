@@ -11,8 +11,6 @@ import {
   type AgentInterruptOutput,
   type ApplyAuthoredCapabilityGrantInput,
   type ApplyAuthoredCapabilityGrantOutput,
-  type ApplyAuthoredConnectorGrantInput,
-  type ApplyAuthoredConnectorGrantOutput,
 } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
@@ -44,13 +42,6 @@ export function createChatOrchestratorPlugin(
         // OUT of `calls`.
         'agent:interrupt',
         'agent:apply-authored-capability-grant',
-        // TASK-94 — authored-CONNECTOR approval grant. Twin of the authored-
-        // skill grant; host-side only (NOT an IPC action). Its
-        // connectors:list-authored / connectors:activate-authored /
-        // skills:approved-caps-set peers are bus.hasService-gated (same
-        // convention as the authored-skill grant peers below) → stay OUT of
-        // `calls`.
-        'agent:apply-authored-connector-grant',
       ],
       // The orchestrator drives the per-chat lifecycle by calling these
       // peers. `session:create` is NOT listed — sandbox:open-session mints
@@ -175,7 +166,6 @@ export function createChatOrchestratorPlugin(
         'session:terminate',
         'event.http-egress',
         'skills:proposed',
-        'connectors:proposed',
         'system-prompt:augment-changed',
         'agents:deleted',
         // TASK-833 — fired by @ax/connectors after a delete purged the key.
@@ -261,19 +251,6 @@ export function createChatOrchestratorPlugin(
         'agent:apply-authored-capability-grant',
         PLUGIN_NAME,
         async (ctx, input) => orch.applyAuthoredCapabilityGrant(ctx, input),
-      );
-
-      // TASK-94 — authored-CONNECTOR approval grant. Twin of the authored-skill
-      // grant; the host re-resolves the agent's authored connector drafts (an
-      // unknown connectorId returns not-authored), approves the proposal under
-      // the TASK-93 connector wall, and flips the draft active. Host-side only;
-      // NOT an IPC action. `connectors:list-authored` /
-      // `connectors:activate-authored` / `skills:approved-caps-set` peers are
-      // bus.hasService-gated (same convention as above).
-      bus.registerService<ApplyAuthoredConnectorGrantInput, ApplyAuthoredConnectorGrantOutput>(
-        'agent:apply-authored-connector-grant',
-        PLUGIN_NAME,
-        async (ctx, input) => orch.applyAuthoredConnectorGrant(ctx, input),
       );
 
       bus.subscribe<{ outcome: AgentOutcome }>(
@@ -371,26 +348,6 @@ export function createChatOrchestratorPlugin(
         PLUGIN_NAME,
         async (ctx, payload) => {
           orch.onConnectorDeleted(ctx, payload);
-          return undefined;
-        },
-      );
-
-      // connectors:proposed (2026-06-03) — fire the connector approval card at
-      // proposal time. @ax/connectors fires this after install-authored persists
-      // a PENDING draft; the subscriber fires the upfront card on the proposing
-      // turn's conversation so it appears live (mirror of the skill JIT card),
-      // instead of only at the start of the user's NEXT turn. Observation-only;
-      // never vetoes/transforms.
-      bus.subscribe<{
-        ownerUserId: string;
-        agentId: string;
-        connectorId: string;
-        status: 'pending' | 'active';
-      }>(
-        'connectors:proposed',
-        PLUGIN_NAME,
-        async (ctx, event) => {
-          await orch.onConnectorProposed(ctx, event);
           return undefined;
         },
       );

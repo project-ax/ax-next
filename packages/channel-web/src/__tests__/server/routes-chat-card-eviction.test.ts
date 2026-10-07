@@ -2,7 +2,6 @@
 import { describe, expect, it } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createChatRouteHandlers, type RouteRequest, type RouteResponse } from '../../server/routes-chat';
-import { TOOL_PERMISSIONS_RESET_FAILED } from '../../lib/connectors';
 
 // ---------------------------------------------------------------------------
 // TASK-82 — the permission-decision (grant) and conversation-delete routes
@@ -52,12 +51,8 @@ function fakeRes(): { res: RouteResponse; captured: { status?: number; json?: un
 /** Bus with the services postPermissionDecision + deleteConversation reach. */
 function makeBus(opts: {
   grantFails?: boolean;
-  /** TASK-112 — register the connector grant; `applied` toggles the result. */
-  connectorGrant?: { applied: boolean };
-  /** Captures the connector-grant input for assertions. */
-  connectorGrantTrace?: Array<Record<string, unknown>>;
-  /** TASK-775 — make the connector grant throw this instead of answering. */
-  connectorGrantThrows?: Error;
+  /** Every grant/create hook the route reached, by name. */
+  calls?: string[];
 } = {}): HookBus {
   const bus = new HookBus();
   bus.registerService('auth:require-user', 'mock-auth', async () => ({
@@ -80,23 +75,26 @@ function makeBus(opts: {
     agent: { id: 'agt_test' },
   }));
   bus.registerService('agent:apply-capability-grant', 'mock-grant', async () => {
+    opts.calls?.push('agent:apply-capability-grant');
     if (opts.grantFails) {
       throw new PluginError({ code: 'internal', plugin: 'mock', message: 'boom' });
     }
     return { attached: true };
   });
-  if (opts.connectorGrant !== undefined) {
-    bus.registerService(
-      'agent:apply-authored-connector-grant',
-      'mock-connector-grant',
-      async (_ctx, input) => {
-        opts.connectorGrantTrace?.push(input as Record<string, unknown>);
-        if (opts.connectorGrantThrows !== undefined) throw opts.connectorGrantThrows;
-        return opts.connectorGrant!.applied
-          ? { applied: true, respawned: false }
-          : { applied: false, reason: 'not-authored' };
-      },
-    );
+  // Slice 2c — anything that could create or approve a connector. The
+  // connector grant no longer exists; registering a stand-in proves the route
+  // would not reach it even on a deployment where some peer still offered it.
+  for (const hook of [
+    'agent:apply-authored-capability-grant',
+    'agent:apply-authored-connector-grant',
+    'connectors:upsert',
+  ]) {
+    bus.registerService(hook, 'mock-spy', async () => {
+      opts.calls?.push(hook);
+      return hook === 'agent:apply-authored-capability-grant'
+        ? { applied: false, reason: 'not-authored' }
+        : { applied: true, respawned: false };
+    });
   }
   bus.registerService('conversations:delete', 'mock-delete', async () => undefined);
   return bus;
@@ -137,41 +135,27 @@ describe('TASK-82 — card eviction wiring', () => {
     expect(resolved).toEqual([]);
   });
 
-  // TASK-112 — a connectorId decision routes to the connector grant (NOT the
-  // skill grant) and evicts the connector card by its connectorId on success.
-  it('routes a connectorId decision to agent:apply-authored-connector-grant + evicts by connectorId', async () => {
-    const trace: Array<Record<string, unknown>> = [];
-    const bus = makeBus({ connectorGrant: { applied: true }, connectorGrantTrace: trace });
-    const resolved: Array<[string, string]> = [];
-    const handlers = createChatRouteHandlers({
-      bus,
-      initCtx,
-      onCardResolved: (c, s) => resolved.push([c, s]),
-    });
-    const { res, captured } = fakeRes();
-    await handlers.postPermissionDecision(
-      fakeReq({
+  // Slice 2c — the in-chat connector card is gone (an agent-proposed connector
+  // goes to the workspace admins). Every decision shape that names a connector
+  // is refused with a 400 and reaches no grant and no create, and no card is
+  // evicted.
+  it.each([
+    ['a connectorId alone', { conversationId: 'cnv1', connectorId: 'linear' }],
+    [
+      'a connectorId with shown',
+      {
         conversationId: 'cnv1',
         connectorId: 'linear',
         shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(200);
-    // The connector grant was called with the connectorId subject + shown guard.
-    expect(trace).toHaveLength(1);
-    expect(trace[0]).toMatchObject({
-      conversationId: 'cnv1',
-      userId: 'userA',
-      agentId: 'agt_test',
-      connectorId: 'linear',
-    });
-    // The card eviction keys off the connectorId.
-    expect(resolved).toEqual([['cnv1', 'linear']]);
-  });
-
-  it('does NOT evict when a connectorId decision is not-authored', async () => {
-    const bus = makeBus({ connectorGrant: { applied: false } });
+      },
+    ],
+    [
+      'a connectorId smuggled beside a skillId',
+      { conversationId: 'cnv1', skillId: 'github-helper', connectorId: 'linear' },
+    ],
+  ])('a connector decision (%s) answers 400 and creates nothing', async (_name, body) => {
+    const calls: string[] = [];
+    const bus = makeBus({ calls });
     const resolved: Array<[string, string]> = [];
     const handlers = createChatRouteHandlers({
       bus,
@@ -179,72 +163,21 @@ describe('TASK-82 — card eviction wiring', () => {
       onCardResolved: (c, s) => resolved.push([c, s]),
     });
     const { res, captured } = fakeRes();
-    await handlers.postPermissionDecision(
-      fakeReq({ conversationId: 'cnv1', connectorId: 'ghost' }),
-      res,
-    );
-    // not-authored → no catalog fallback for connectors → coarse 404/409-style
-    // signal; the card is NOT evicted (nothing was approved).
-    expect(captured.status).toBe(409);
+    await handlers.postPermissionDecision(fakeReq(body), res);
+    expect(captured.status).toBe(400);
+    expect(captured.json).toEqual({ error: 'invalid-payload' });
+    expect(calls).toEqual([]);
     expect(resolved).toEqual([]);
   });
 
-  // TASK-775 — a connector approval whose promotion was refused because the
-  // tool-permissions reset failed (TASK-758) answers the SAME 503 + fixed code
-  // as the Settings approve route, not the generic 500 grant-failed, and never
-  // echoes the cause's message. Nothing was approved, so the card stays.
-  it('maps a connector grant reset refusal to 503 tool-permissions-reset-failed (no eviction)', async () => {
-    const bus = makeBus({
-      connectorGrant: { applied: true },
-      connectorGrantThrows: new PluginError({
-        code: 'tool-permissions-reset-failed',
-        plugin: '@ax/connectors',
-        hookName: 'connectors:upsert',
-        message: 'secret internal detail: db row 42',
-      }),
-    });
-    const resolved: Array<[string, string]> = [];
-    const handlers = createChatRouteHandlers({
-      bus,
-      initCtx,
-      onCardResolved: (c, s) => resolved.push([c, s]),
-    });
-    const { res, captured } = fakeRes();
-    await handlers.postPermissionDecision(
-      fakeReq({ conversationId: 'cnv1', connectorId: 'linear' }),
-      res,
-    );
-    expect(captured.status).toBe(503);
-    // The body is exactly the code the chat card keys its message on.
-    expect(captured.json).toEqual({ error: TOOL_PERMISSIONS_RESET_FAILED });
-    expect(resolved).toEqual([]);
-  });
-
-  it('any OTHER connector grant failure is still the generic 500 grant-failed', async () => {
-    const bus = makeBus({
-      connectorGrant: { applied: true },
-      connectorGrantThrows: new PluginError({
-        code: 'internal',
-        plugin: '@ax/connectors',
-        message: 'boom',
-      }),
-    });
-    const handlers = createChatRouteHandlers({ bus, initCtx });
-    const { res, captured } = fakeRes();
-    await handlers.postPermissionDecision(
-      fakeReq({ conversationId: 'cnv1', connectorId: 'linear' }),
-      res,
-    );
-    expect(captured.status).toBe(500);
-    expect(captured.json).toEqual({ error: 'grant-failed' });
-  });
-
-  it('400s a decision carrying NEITHER skillId NOR connectorId', async () => {
-    const bus = makeBus({ connectorGrant: { applied: true } });
+  it('400s a decision carrying no skillId', async () => {
+    const calls: string[] = [];
+    const bus = makeBus({ calls });
     const handlers = createChatRouteHandlers({ bus, initCtx });
     const { res, captured } = fakeRes();
     await handlers.postPermissionDecision(fakeReq({ conversationId: 'cnv1' }), res);
     expect(captured.status).toBe(400);
+    expect(calls).toEqual([]);
   });
 
   it('fires onConversationDeleted on a successful delete', async () => {

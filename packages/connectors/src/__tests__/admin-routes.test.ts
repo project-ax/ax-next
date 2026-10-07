@@ -1884,10 +1884,16 @@ describe('admin proposal routes (/admin/connectors/authored)', () => {
     await handlers.create(makeReq({ body: { ...body, name: 'Drive (renamed)' } }), edited.res);
     expect(edited.captured.status).toBe(200);
     // The queue drops it (the id is live), but the row itself was not cleared.
-    const rows = await h.bus.call<{ ownerUserId: string; agentId: string }, { drafts: unknown[] }>(
-      'connectors:list-authored', h.ctx({ userId: 'carol' }), { ownerUserId: 'carol', agentId: 'c1' },
-    );
-    expect(rows.drafts).toHaveLength(1);
+    const check = new (await import('pg')).default.Client({ connectionString });
+    await check.connect();
+    try {
+      const res = await check.query(
+        `SELECT 1 FROM connectors_v1_authored WHERE owner_user_id = 'carol' AND agent_id = 'c1'`,
+      );
+      expect(res.rowCount).toBe(1);
+    } finally {
+      await check.end();
+    }
   });
 });
 

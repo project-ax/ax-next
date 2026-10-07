@@ -374,34 +374,37 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     ]);
   });
 
-  // TASK-112 (Bug 2) — a connector draft proposed mid-turn must be carded on the
-  // NEXT (warm-resume) turn. The routed/warm branch returns BEFORE the fresh-spawn
-  // connector-card block, so before this fix a pending draft on a live session was
-  // never carded (it surfaced a reactive egress wall instead). Assert the warm
-  // path fires ONE kind:'connector' chat:permission-request.
-  it('TASK-112: a pending connector draft fires ONE connector card on the WARM/routed path', async () => {
+  // Slice 2c — an agent-proposed connector goes to the workspace admins' queue,
+  // never to an in-chat approval card. The warm/routed path used to read the
+  // agent's pending drafts and fire a `kind:'connector'` card (TASK-112); it must
+  // fire nothing now, and must not even ask for the drafts.
+  it('slice 2c: a pending connector draft fires NO card on the WARM/routed path', async () => {
     const mocks = buildMocks({
       conversations: { 'conv-w': { activeSessionId: 's-warm' } },
       liveSessions: new Set(['s-warm']),
     });
+    let draftReads = 0;
     Object.assign(mocks.services, {
-      'connectors:list-authored': async () => ({
-        drafts: [
-          {
-            connectorId: 'linear',
-            name: 'Linear',
-            usageNote: '',
-            keyMode: 'personal',
-            status: 'pending',
-            proposal: {
-              allowedHosts: ['api.linear.app'],
-              credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
-              mcpServers: [],
-              packages: { npm: [], pypi: [] },
+      'connectors:list-authored': async () => {
+        draftReads++;
+        return {
+          drafts: [
+            {
+              connectorId: 'linear',
+              name: 'Linear',
+              usageNote: '',
+              keyMode: 'personal',
+              status: 'pending',
+              proposal: {
+                allowedHosts: ['api.linear.app'],
+                credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+                mcpServers: [],
+                packages: { npm: [], pypi: [] },
+              },
             },
-          },
-        ],
-      }),
+          ],
+        };
+      },
     } satisfies Record<string, ServiceHandler>);
 
     const h = await createTestHarness({
@@ -414,9 +417,9 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const cards: Array<Record<string, unknown>> = [];
+    const cards: unknown[] = [];
     h.bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
-      if ((p as { kind?: string }).kind === 'connector') cards.push(p as Record<string, unknown>);
+      cards.push(p);
       return undefined;
     });
 
@@ -429,15 +432,9 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       { message: { role: 'user', content: 'follow-up' } },
     );
 
-    // Routed warm path — NO fresh sandbox, yet the connector card still fired.
     expect(mocks.trace.sandboxOpen).toBe(0);
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({
-      kind: 'connector',
-      connectorId: 'linear',
-      name: 'Linear',
-      hosts: ['api.linear.app'],
-    });
+    expect(cards).toEqual([]);
+    expect(draftReads).toBe(0);
   });
 
   it('4) ctx.conversationId set, active_session_id stale (is-alive=false) → fresh sandbox + bind', async () => {

@@ -1433,6 +1433,94 @@ describe('permission-request replay on (re)connect (TASK-82)', () => {
     }
   });
 
+  // Slice 2c — the in-chat connector card is gone. A `kind:'connector'` card
+  // from before the upgrade (or an older peer) must never render and never
+  // crash the stream: dropped on fill, on replay and live.
+  const oldConnectorCard = (): PermissionRequest =>
+    ({
+      kind: 'connector',
+      connectorId: 'linear',
+      name: 'Linear',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+      authored: true,
+      packages: { npm: [], pypi: [] },
+    }) as unknown as PermissionRequest;
+  const kinds = (writes: string[]): unknown[] =>
+    dataFrames(writes)
+      .filter((f) => 'permissionRequest' in f)
+      .map((f) => (f.permissionRequest as { kind?: unknown }).kind);
+
+  it('drops an old connector card fired before connect; the skill card beside it still replays', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        oldConnectorCard(),
+      );
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+      expect(kinds(captured.streamWrites)).toEqual(['skill']);
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('drops an old connector card already sitting in the buffer on replay, without crashing', async () => {
+    const booted = bootHandler();
+    try {
+      // A buffer that still holds a pre-upgrade connector card next to a skill
+      // card — the shape the replay must survive even if a store ever kept one.
+      const stale = {
+        ...booted.buffer,
+        tailPermissionCardEntries: () => [
+          { card: oldConnectorCard(), raisedAt: 1 },
+          { card: skillCard(), raisedAt: 2 },
+        ],
+      };
+      const handler = createSseHandler({
+        bus: booted.bus,
+        initCtx: booted.initCtx,
+        buffer: stale,
+      });
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+      expect(kinds(captured.streamWrites)).toEqual(['skill']);
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      booted.buffer.dispose();
+    }
+  });
+
+  it('never forwards a connector card fired live while the stream is open', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        oldConnectorCard(),
+      );
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+      expect(kinds(captured.streamWrites)).toEqual(['skill']);
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
   it('replays the same pending card to a SECOND connection (reconnect)', async () => {
     const { bus, initCtx, handler, buffer } = bootHandler();
     try {
@@ -1650,7 +1738,7 @@ describe('declined grants are not replayed on stream open (TASK-444)', () => {
       await recordGrantDecline(bus, initCtx, {
         userId: 'userA',
         agentId: 'agt_other',
-        kind: 'connector',
+        kind: 'skill',
         subjectId: 'linear',
         declinedAt: 2_000,
       });

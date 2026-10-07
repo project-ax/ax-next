@@ -7,7 +7,6 @@ import {
   type AgentMessage,
   type HookBus,
 } from '@ax/core';
-import { TOOL_PERMISSIONS_RESET_FAILED } from '@ax/core/error-codes';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import {
   ApproveAuthoredSkillRequest,
@@ -232,22 +231,6 @@ interface ApplyAuthoredGrantInput {
   shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
 }
 type ApplyAuthoredGrantOutput =
-  | { applied: true; respawned: boolean }
-  | { applied: false; reason: 'not-authored' };
-
-// --- agent:apply-authored-connector-grant (TASK-94 host / TASK-112 route) ---
-// Duck-typed I/O — I2 forbids importing from @ax/chat-orchestrator. The route
-// never trusts a client subject: the grant re-resolves the agent's OWN authored
-// connector drafts host-side (server-authoritative) and returns not-authored for
-// an unknown connectorId. `shown` is the same TOCTOU guard as the skill grant.
-interface ApplyAuthoredConnectorGrantInput {
-  conversationId?: string;
-  userId: string;
-  agentId: string;
-  connectorId: string;
-  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
-}
-type ApplyAuthoredConnectorGrantOutput =
   | { applied: true; respawned: boolean }
   | { applied: false; reason: 'not-authored' };
 
@@ -896,47 +879,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         reqId: makeReqId(),
       });
       try {
-        // TASK-112 — connector subject: the upfront connector card POSTs a
-        // `connectorId` (mutually exclusive with skillId). Route it to the
-        // connector grant, which re-resolves the agent's OWN authored connector
-        // drafts host-side (server-authoritative) and grants under the TASK-93
-        // wall with a connectorId subject. There is NO catalog fallback for a
-        // connector (unlike a skill) — an unknown id is simply not this agent's
-        // draft, so not-authored → 409 (the card stays, nothing approved).
-        if (body.connectorId !== undefined) {
-          if (!bus.hasService('agent:apply-authored-connector-grant')) {
-            res.status(409).json({ error: 'connector-grant-unavailable' });
-            return;
-          }
-          const c = await bus.call<
-            ApplyAuthoredConnectorGrantInput,
-            ApplyAuthoredConnectorGrantOutput
-          >('agent:apply-authored-connector-grant', grantCtx, {
-            conversationId: body.conversationId,
-            userId,
-            agentId,
-            connectorId: body.connectorId,
-            ...(body.shown !== undefined ? { shown: body.shown } : {}),
-          });
-          if (c.applied) {
-            // TASK-82 — drop the resolved connector card from the replay buffer
-            // (keyed by its connectorId) so a later SSE (re)connect doesn't
-            // re-prompt for the now-approved connector.
-            onCardResolved?.(body.conversationId, body.connectorId);
-            res.status(200).json({ ok: true });
-            return;
-          }
-          // not-authored: the connectorId isn't one of this agent's pending drafts.
-          res.status(409).json({ error: 'not-authored' });
-          return;
-        }
-        // Skill subject (the schema's refine guarantees exactly one of skillId /
-        // connectorId — the connector branch above returned, so skillId is set).
         const skillId = body.skillId;
-        if (skillId === undefined) {
-          res.status(400).json({ error: 'invalid-payload' });
-          return;
-        }
         // Authored-first (D-B7): the host-side grant is the authority on which
         // path runs — the route never trusts a client `authored` flag. An
         // authored draft applies here; a catalog skill returns not-authored and
@@ -984,25 +927,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       } catch (err) {
         grantCtx.logger.warn('permission_decision_grant_failed', {
           conversationId: body.conversationId,
-          skillId: body.skillId ?? null,
-          connectorId: body.connectorId ?? null,
+          skillId: body.skillId,
           err: err instanceof Error ? err : new Error(String(err)),
         });
-        // TASK-775 — approving a connector promotes it through
-        // `connectors:upsert`, which refuses the whole save when it would move
-        // a server to a new address but couldn't first reset that server's
-        // tool permissions (TASK-758). Nothing was approved and the card stays,
-        // so it is retryable: the same 503 + fixed code the Settings approve
-        // route answers, so the chat card can say so plainly. Only the CODE
-        // crosses — never the cause's message.
-        if (
-          body.connectorId !== undefined &&
-          err instanceof PluginError &&
-          err.code === TOOL_PERMISSIONS_RESET_FAILED
-        ) {
-          res.status(503).json({ error: TOOL_PERMISSIONS_RESET_FAILED });
-          return;
-        }
         res.status(500).json({ error: 'grant-failed' });
       }
     },

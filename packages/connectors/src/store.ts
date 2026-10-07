@@ -346,6 +346,14 @@ export interface ConnectorStore {
    * (`connectors:live-ids`). Internal: unscoped, answers only ids it is given.
    */
   liveIds(connectorIds: readonly string[]): Promise<string[]>;
+  /**
+   * Slice 2c — the subset of `connectorIds` that at least one LIVE **shared**
+   * row (any owner) carries, deduped, in the caller's order. The batched form
+   * of `hasLiveSharedById`: the admin proposal queue hides a request only
+   * when its id is live as a shared connector. Internal: unscoped, answers
+   * only ids it is given.
+   */
+  liveSharedIds(connectorIds: readonly string[]): Promise<string[]>;
   /** Idempotent create-or-update keyed (owner, connectorId). */
   upsert(args: UpsertArgs): Promise<{ connector: Connector; created: boolean }>;
   /** Soft-delete; true iff a live row was tombstoned. */
@@ -453,6 +461,21 @@ export function createConnectorStore(
         .execute();
       const live = new Set(rows.map((row) => row.connector_id));
       // In the caller's order, so the answer is deterministic.
+      return wanted.filter((id) => live.has(id));
+    },
+
+    async liveSharedIds(connectorIds) {
+      const wanted = [...new Set(connectorIds)];
+      if (wanted.length === 0) return [];
+      const rows = await db
+        .selectFrom('connectors_v1_connectors')
+        .select('connector_id')
+        .distinct()
+        .where('connector_id', 'in', wanted)
+        .where('visibility', '=', 'shared')
+        .where('deleted_at', 'is', null)
+        .execute();
+      const live = new Set(rows.map((row) => row.connector_id));
       return wanted.filter((id) => live.has(id));
     },
 

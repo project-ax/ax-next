@@ -9,8 +9,11 @@
  *
  * A draft always lands `status: 'pending'` (zero reach — it never reaches
  * `connectors:resolve`, which reads only the LIVE `connectors_v1_connectors`
- * table). A human approval at the capability wall flips it `active` via
- * {@link AuthoredConnectorsStore.activate}. The declared, UNAPPROVED capability
+ * table). Since slice 2c a draft is a request in the workspace admins' queue:
+ * an admin approves it by creating the connector, which clears every draft
+ * with that id. Nothing flips a draft `active` any more; `active` rows are
+ * left over from the removed in-chat approval and are never listed as
+ * pending. The declared, UNAPPROVED capability
  * surface rides the opaque `capability_proposal` JSONB; it is validated against
  * the canonical schema on read (don't-trust-the-DB) and never interpreted.
  */
@@ -28,11 +31,12 @@ import type { ConnectorDatabase, ConnectorsAuthoredRow } from './migrations.js';
 
 const PLUGIN_NAME = '@ax/connectors';
 
-/** A draft's lifecycle verdict. `pending` = awaiting human approval (zero
- *  reach); `active` = approved (reach projects via the activated connector). */
+/** A draft's lifecycle verdict. `pending` = awaiting an admin (zero reach);
+ *  `active` = approved through the in-chat card that slice 2c removed. No code
+ *  writes `active` now; the value is read only from older rows. */
 export type AuthoredConnectorStatus = 'pending' | 'active';
 
-/** A model-authored connector draft, as read for the card + grant flows. */
+/** A model-authored connector draft, as read back from the store. */
 export interface AuthoredConnectorDraft {
   connectorId: string;
   name: string;
@@ -66,22 +70,10 @@ export interface AuthoredConnectorsStore {
    *  connector)). Always lands `status: 'pending'` — a re-propose re-opens the
    *  gate. Returns whether THIS call created the row (vs. replaced it). */
   upsert(input: UpsertAuthoredConnectorInput): Promise<{ created: boolean }>;
-  /** List the agent's authored connector drafts (any status), sorted by
-   *  connector_id — the card source + grant re-resolution. */
-  list(ownerUserId: string, agentId: string): Promise<AuthoredConnectorDraft[]>;
   /** Slice 2c — every owner's PENDING drafts, each carrying its owner and
    *  agent, sorted by connector_id, owner_user_id, agent_id for a stable order.
    *  A SYSTEM read: backs the admin proposal queue only. */
   listPendingAll(): Promise<PendingAuthoredConnectorDraft[]>;
-  /** Flip a `pending` draft to `active` (on approval). Status-guarded: only a
-   *  `pending` row transitions, so the call is idempotent + race-safe (a
-   *  concurrent duplicate approval flips zero rows the second time). Returns
-   *  whether THIS call flipped a row. */
-  activate(input: {
-    ownerUserId: string;
-    agentId: string;
-    connectorId: string;
-  }): Promise<{ activated: boolean }>;
   /**
    * Slice 2c — delete EVERY draft with this connector id, across owners and
    * agents, in any status. Called when a live connector with that id is created
@@ -176,13 +168,6 @@ export function createAuthoredConnectorsStore(
       return { created };
     },
 
-    async list(ownerUserId, agentId) {
-      const rows = await scopedAuthoredConnectors(db, { ownerUserId, agentId })
-        .orderBy('connector_id', 'asc')
-        .execute();
-      return rows.map((r) => rowToDraft(r as ConnectorsAuthoredRow));
-    },
-
     async listPendingAll() {
       const rows = await pendingAuthoredConnectorsForAdmins(db)
         .orderBy('connector_id', 'asc')
@@ -193,18 +178,6 @@ export function createAuthoredConnectorsStore(
         const row = r as ConnectorsAuthoredRow;
         return { ...rowToDraft(row), ownerUserId: row.owner_user_id, agentId: row.agent_id };
       });
-    },
-
-    async activate({ ownerUserId, agentId, connectorId }) {
-      const res = await db
-        .updateTable('connectors_v1_authored')
-        .set({ status: 'active', updated_at: new Date() })
-        .where('owner_user_id', '=', ownerUserId)
-        .where('agent_id', '=', agentId)
-        .where('connector_id', '=', connectorId)
-        .where('status', '=', 'pending')
-        .executeTakeFirst();
-      return { activated: Number(res.numUpdatedRows ?? 0n) > 0 };
     },
 
     async clearAllById(connectorId) {

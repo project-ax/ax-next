@@ -502,13 +502,8 @@ export interface SlotRefInput {
  * TASK-810 — this package's ONE slot → vault-ref rule, UNFILTERED: one entry
  * per slot, in slot order, each with the `account:<service>[:<slot>]` row it
  * addresses and the parts that build it (`service`, plus `slotTag` when the
- * ref is per-slot). Two readers:
- *
- *   - {@link connectorCredentialSlots}, the host's skip and the proxy plan,
- *     which drops the OAuth client-secret ref (TASK-797);
- *   - the authored-connector approval card (`connector-card.ts`), which needs
- *     every slot, because it shows each one and writes the key to exactly this
- *     row.
+ * ref is per-slot). Its reader is {@link connectorCredentialSlots}, the host's
+ * skip and the proxy plan, which drops the OAuth client-secret ref (TASK-797).
  *
  * Mirrors @ax/connectors' `deriveCredentialPlan` (invariant 2 keeps that
  * import out): the per-slot form is used when there are ≥2 non-header slots,
@@ -516,7 +511,7 @@ export interface SlotRefInput {
  * the connector id; the connectors store strips `account` from connector slots
  * on read, so for a stored connector it is always the id (skill-slot cards can
  * still carry one). `@ax/channel-web`'s `connector-credential-refs-contract`
- * test runs this, through both readers, against the other copies.
+ * test runs this, through that reader, against the other copies.
  */
 export function connectorSlotRefs<S extends SlotRefInput>(
   connectorId: string,

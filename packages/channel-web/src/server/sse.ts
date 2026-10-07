@@ -421,6 +421,9 @@ export function createSseHandler(deps: SseHandlerDeps) {
         .map((e) => ({ agentId, card: e.card, raisedAt: e.raisedAt })),
     );
     for (const { card } of pendingCards) {
+      // Only skill cards replay. Slice 2c removed the in-chat connector card,
+      // so anything else in the conversation list is dropped, never written.
+      if (card.kind !== 'skill') continue;
       safeWrite({ reqId, permissionRequest: card });
     }
     // HOST CARDS ARE NOT FILTERED, and must not be. They are turn-scoped and
@@ -602,7 +605,9 @@ export function createSseHandler(deps: SseHandlerDeps) {
           return undefined;
         }
         // Skill card (TASK-35): broker-fired, matched by conversation (the
-        // firing ctx carries the real conversationId; reqId is fresh).
+        // firing ctx carries the real conversationId; reqId is fresh). Any
+        // other kind is dropped: slice 2c removed the in-chat connector card.
+        if (payload.kind !== 'skill') return undefined;
         if (ctx.conversationId !== conversationId) return undefined;
         safeWrite({ reqId, permissionRequest: payload });
         return undefined;
@@ -857,13 +862,11 @@ export function createPermissionCardFillSubscriber(buffer: ChunkBuffer) {
     ctx: AgentContext,
     payload: PermissionRequest & { reqId?: string },
   ): Promise<undefined> {
-    // Skill AND connector cards are matched by conversationId on the SSE side
-    // (TASK-112 — the connector card is conversationId-matched like the skill
-    // card). No conversationId → nothing the replay path can key off, so don't
-    // buffer. Without this, a connector card raised during the cold-boot SSE race
-    // is lost and the orchestrator's per-conversation dedup suppresses re-emission
-    // → the pending connector is permanently un-approvable (the TASK-82 hazard).
-    if (payload.kind === 'skill' || payload.kind === 'connector') {
+    // Skill cards are matched by conversationId on the SSE side. No
+    // conversationId → nothing the replay path can key off, so don't buffer.
+    // Any kind other than skill/host is dropped: slice 2c removed the in-chat
+    // connector card.
+    if (payload.kind === 'skill') {
       if (
         typeof ctx.conversationId !== 'string' ||
         ctx.conversationId.length === 0

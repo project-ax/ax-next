@@ -962,9 +962,10 @@ export interface GrantsResponse {
 export interface DeclineGrantRequest {
   /** The agent that asked. Validated against the pending card, never trusted. */
   agentId: string;
-  /** `skill` or `connector`. Host cards are turn-scoped and not declinable. */
+  /** `skill`. Host cards are turn-scoped and not declinable, and slice 2c
+   *  removed the in-chat connector card. */
   kind: DeclinableGrantKind;
-  /** The skill id or connector id the card named. */
+  /** The skill id the card named. */
   subjectId: string;
 }
 
@@ -977,16 +978,16 @@ export interface DeclineGrantResponse {
 /**
  * Validate a decline body. Nothing here is trusted beyond its shape — the
  * handler still requires the triple to match a grant genuinely pending for the
- * caller before it writes. `kind` is checked against the two literals rather
- * than cast, so a third value (`host`, or anything invented) is a 400 and not
- * a key in a namespace nobody meant to create.
+ * caller before it writes. `kind` is checked against the one literal rather
+ * than cast, so any other value (`host`, a pre-2c `connector`, or anything
+ * invented) is a 400 and not a key in a namespace nobody meant to create.
  */
 function readDeclineBody(parsed: unknown): DeclineGrantRequest | null {
   if (typeof parsed !== 'object' || parsed === null) return null;
   const { agentId, kind, subjectId } = parsed as Record<string, unknown>;
   if (typeof agentId !== 'string' || agentId.length === 0) return null;
   if (typeof subjectId !== 'string' || subjectId.length === 0) return null;
-  if (kind !== 'skill' && kind !== 'connector') return null;
+  if (kind !== 'skill') return null;
   return { agentId, kind, subjectId };
 }
 
@@ -6052,7 +6053,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // Every segment of the marker is authoritative by now: `userId` is the
       // authenticated caller, `agentId` comes off the matched card, and the
       // match above required `kind` and `subjectId` to EQUAL that card's own
-      // (`card.kind`, `card.skillId` / `card.connectorId`) — so the body's
+      // (`card.kind`, `card.skillId`) — so the body's
       // copies are the card's values, checked rather than taken on trust.
       await recordGrantDecline(bus, initCtx, {
         userId,

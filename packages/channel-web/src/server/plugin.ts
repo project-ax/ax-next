@@ -483,12 +483,6 @@ export function createChannelWebServerPlugin(
             'an approval card is only ever applied as a catalog grant (authored skill drafts cannot be approved from chat); the My Skills early-approval route answers 501 not-supported',
         },
         {
-          // Same route, for an authored connector draft. No catalog fallback.
-          hook: 'agent:apply-authored-connector-grant',
-          degradation:
-            'approving an authored connector card answers 409 connector-grant-unavailable and the card stays',
-        },
-        {
           // Connectors tab Add (TASK-739/761).
           hook: 'agents:attach-connector',
           degradation:

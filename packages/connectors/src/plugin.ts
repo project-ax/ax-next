@@ -51,14 +51,12 @@ import {
 } from './tool-permissions.js';
 import { ceilingSourcesFor, type CeilingSourceEntry } from './ceiling-sources.js';
 import {
-  ActivateAuthoredOutputSchema,
   AuthorizeAgentOutputSchema,
   AuthorizeGlobalOutputSchema,
   ClearAuthoredByIdOutputSchema,
   DeleteOutputSchema,
   GetOutputSchema,
   InstallAuthoredOutputSchema,
-  ListAuthoredOutputSchema,
   ListAuthoredPendingAllOutputSchema,
   ClearLegacyDefaultOutputSchema,
   ListEffectiveOutputSchema,
@@ -73,8 +71,6 @@ import {
   UpsertOutputSchema,
   type ToolLabelsInput,
   type ToolLabelsOutput,
-  type ActivateAuthoredInput,
-  type ActivateAuthoredOutput,
   type AuthorizeAgentInput,
   type AuthorizeAgentOutput,
   type AuthorizeGlobalInput,
@@ -91,8 +87,6 @@ import {
   type GetOutput,
   type InstallAuthoredInput,
   type InstallAuthoredOutput,
-  type ListAuthoredInput,
-  type ListAuthoredOutput,
   type ListAuthoredPendingAllInput,
   type ListAuthoredPendingAllOutput,
   type ClearLegacyDefaultInput,
@@ -196,12 +190,8 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         // by a live connector of any owner (agents drop references to dead ids).
         'connectors:live-ids',
         // TASK-94 — agent-authored connector drafts. install-authored persists
-        // a PENDING draft (zero reach). list-authored / activate-authored serve
-        // the chat-orchestrator's in-chat approval card, which slice 2c Task 2
-        // removes together with these two.
+        // a PENDING draft (zero reach): a request in the admins' queue.
         'connectors:install-authored',
-        'connectors:list-authored',
-        'connectors:activate-authored',
         // Slice 2c — agent proposals go to admins: every person's pending
         // requests (the admin queue) and the admin Dismiss. Creating a live
         // connector with the id (`connectors:upsert`) resolves the requests.
@@ -402,34 +392,20 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         'connectors:install-authored',
         PLUGIN_NAME,
         // The live registry store is passed alongside the authored-draft store so
-        // the handler can dedup a re-propose against an already-active connector
-        // (TASK-114) — both stores are this plugin's, so no cross-plugin import.
-        // bus+ctx are threaded so a fresh PENDING write fires `connectors:proposed`
-        // (the orchestrator surfaces the approval card at proposal time).
-        async (ctx, input) =>
-          installAuthoredConnector(localAuthored, localStore, bus, ctx, input),
+        // the handler can dedup a re-propose against an already-available
+        // connector (TASK-114) — both stores are this plugin's, so no
+        // cross-plugin import.
+        async (_ctx, input) =>
+          installAuthoredConnector(localAuthored, localStore, input),
         { returns: InstallAuthoredOutputSchema },
-      );
-
-      bus.registerService<ListAuthoredInput, ListAuthoredOutput>(
-        'connectors:list-authored',
-        PLUGIN_NAME,
-        async (_ctx, input) => listAuthoredConnectors(localAuthored, input),
-        { returns: ListAuthoredOutputSchema },
-      );
-
-      bus.registerService<ActivateAuthoredInput, ActivateAuthoredOutput>(
-        'connectors:activate-authored',
-        PLUGIN_NAME,
-        async (_ctx, input) => activateAuthoredConnector(localAuthored, input),
-        { returns: ActivateAuthoredOutputSchema },
       );
 
       bus.registerService<ListAuthoredPendingAllInput, ListAuthoredPendingAllOutput>(
         'connectors:list-authored-pending-all',
         PLUGIN_NAME,
         // Admin use only (the adminOnly GET /admin/connectors/authored). The
-        // registry store drops any request whose id is already live.
+        // registry store drops any request whose id is already live as a
+        // SHARED connector.
         async () => listAuthoredPendingAll(localAuthored, localStore),
         { returns: ListAuthoredPendingAllOutputSchema },
       );
@@ -1127,10 +1103,10 @@ async function resolveConnector(
 }
 
 // ---------------------------------------------------------------------------
-// Authored-connector draft handlers (TASK-94). These mirror the authored-skill
-// flow: install persists a PENDING draft; the orchestrator fires ONE approval
-// card from the proposal; on a human grant the orchestrator writes
-// connector-subject approved-caps rows (the TASK-93 wall) + calls activate.
+// Authored-connector draft handlers (TASK-94, reshaped in slice 2c). install
+// persists a PENDING draft — a request in the workspace admins' queue. An admin
+// approves it by creating the connector (`connectors:upsert` with `created`
+// clears every draft with that id) or dismisses it.
 // ---------------------------------------------------------------------------
 
 function requireScope(
@@ -1193,8 +1169,6 @@ function assembleProposal(input: InstallAuthoredInput): Capabilities {
 async function installAuthoredConnector(
   store: AuthoredConnectorsStore,
   registry: ConnectorStore,
-  bus: HookBus,
-  ctx: AgentContext,
   input: InstallAuthoredInput,
 ): Promise<InstallAuthoredOutput> {
   const hookName = 'connectors:install-authored';
@@ -1230,53 +1204,15 @@ async function installAuthoredConnector(
     proposal,
   });
 
-  // Notify subscribers that a PENDING draft was just written so the
-  // chat-orchestrator can fire the approval card at proposal time (mid-turn) —
-  // the user sees it on the current turn rather than only at the start of their
-  // NEXT message. Storage-agnostic ids only; no capability/secret rides this
-  // event (the orchestrator re-resolves the draft via connectors:list-authored).
-  // Best-effort: the bus isolates subscriber throws, but a fire failure must not
-  // fail the install — the draft is persisted, and the turn-start card path
-  // remains a backstop. NOT fired on the alreadyActive no-op above (no new draft).
-  try {
-    await bus.fire('connectors:proposed', ctx, {
-      ownerUserId,
-      agentId,
-      connectorId,
-      status: 'pending',
-    });
-  } catch (err) {
-    ctx.logger.warn('connectors_proposed_fire_failed', {
-      connectorId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
   return { connectorId, status: 'pending' };
-}
-
-async function listAuthoredConnectors(
-  store: AuthoredConnectorsStore,
-  input: ListAuthoredInput,
-): Promise<ListAuthoredOutput> {
-  const { ownerUserId, agentId } = requireScope(input, 'connectors:list-authored');
-  const drafts = await store.list(ownerUserId, agentId);
-  return {
-    drafts: drafts.map((d) => ({
-      connectorId: d.connectorId,
-      name: d.name,
-      usageNote: d.usageNote,
-      keyMode: d.keyMode,
-      status: d.status,
-      proposal: d.proposal,
-    })),
-  };
 }
 
 /**
  * Slice 2c — the admin proposal queue: every owner's pending drafts, minus any
- * whose id is already live under any owner (it was created, or exists anyway;
- * the queue never offers to create a taken id). One batched live-id lookup.
+ * whose id is already live as a SHARED connector (any owner) — everyone can
+ * already add that one, so there is nothing left to approve. A draft whose id
+ * is only PRIVATELY live stays listed, so an admin can still see and dismiss
+ * it. One batched shared-liveness lookup.
  */
 async function listAuthoredPendingAll(
   store: AuthoredConnectorsStore,
@@ -1284,7 +1220,7 @@ async function listAuthoredPendingAll(
 ): Promise<ListAuthoredPendingAllOutput> {
   const pending = await store.listPendingAll();
   if (pending.length === 0) return { drafts: [] };
-  const live = new Set(await registry.liveIds(pending.map((d) => d.connectorId)));
+  const live = new Set(await registry.liveSharedIds(pending.map((d) => d.connectorId)));
   return {
     drafts: pending
       .filter((d) => !live.has(d.connectorId))
@@ -1310,14 +1246,3 @@ async function clearAuthoredById(
   return store.clearAllById(connectorId);
 }
 
-async function activateAuthoredConnector(
-  store: AuthoredConnectorsStore,
-  input: ActivateAuthoredInput,
-): Promise<ActivateAuthoredOutput> {
-  const { ownerUserId, agentId } = requireScope(
-    input,
-    'connectors:activate-authored',
-  );
-  const connectorId = validateConnectorId(input.connectorId);
-  return store.activate({ ownerUserId, agentId, connectorId });
-}
