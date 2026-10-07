@@ -265,6 +265,20 @@ export function isOwnerOnlyChange(err: unknown): boolean {
   return err instanceof Error && err.message === OWNER_ONLY_CHANGE;
 }
 
+/**
+ * What {@link deleteConnector} throws when the connector is already gone (the
+ * route's 404): usually another admin removed it a moment earlier.
+ */
+export const CONNECTOR_GONE = 'connector-gone';
+
+/** What the list says for {@link CONNECTOR_GONE}. */
+export const CONNECTOR_GONE_MESSAGE = 'Someone already removed this connector.';
+
+/** True when a {@link deleteConnector} failure means it was already removed. */
+export function isConnectorGone(err: unknown): boolean {
+  return err instanceof Error && err.message === CONNECTOR_GONE;
+}
+
 export async function deleteConnector(
   id: string,
   base: ConnectorWriteBase,
@@ -274,6 +288,7 @@ export async function deleteConnector(
     headers: { 'x-requested-with': 'ax-admin' },
     credentials: 'include',
   });
+  if (res.status === 404) throw new Error(CONNECTOR_GONE);
   if (!res.ok) throw new Error(`delete connector: ${res.status}`);
 }
 

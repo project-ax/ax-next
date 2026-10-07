@@ -3,6 +3,7 @@ import {
   createConnector,
   deleteConnector,
   getConnector,
+  isConnectorGone,
   listConnectors,
   patchConnector,
   type ConnectorRouteBase,
@@ -113,5 +114,14 @@ describe('connector client route base (TASK-714)', () => {
       void deleteConnector('gdrive', '/settings/connectors');
     };
     expect(typeof typeOnly).toBe('function');
+  });
+
+  it('a 404 on delete means someone already removed it', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const err = await deleteConnector('gdrive', '/admin/connectors').catch((e: unknown) => e);
+    expect(isConnectorGone(err)).toBe(true);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    const other = await deleteConnector('gdrive', '/admin/connectors').catch((e: unknown) => e);
+    expect(isConnectorGone(other)).toBe(false);
   });
 });

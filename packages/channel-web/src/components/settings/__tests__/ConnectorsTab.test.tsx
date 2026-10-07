@@ -318,6 +318,22 @@ describe('ConnectorsTab', () => {
     );
   });
 
+  it('a delete that lost the race to another admin says so plainly and reloads the list', async () => {
+    vi.spyOn(connectorsLib, 'deleteConnector').mockRejectedValue(
+      new Error(connectorsLib.CONNECTOR_GONE),
+    );
+    render(<ConnectorsTab />);
+    await screen.findByText('My Notion');
+    const listCalls = vi.mocked(connectorsLib.listConnectors).mock.calls.length;
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
+    await screen.findByText(/delete connector\?/i);
+    fireEvent.click(screen.getAllByRole('button', { name: /^delete$/i }).at(-1)!);
+    expect(await screen.findByText('Someone already removed this connector.')).toBeInTheDocument();
+    expect(screen.queryByText(/404/)).not.toBeInTheDocument();
+    expect(vi.mocked(connectorsLib.listConnectors).mock.calls.length).toBeGreaterThan(listCalls);
+  });
+
   // --- one flat list of definitions (no per-viewer status, no connect) -------
   //
   // Signing in / adding keys moved to each agent's Connectors tab, so this tab

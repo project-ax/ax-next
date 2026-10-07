@@ -27,6 +27,8 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   listConnectors,
   deleteConnector,
+  isConnectorGone,
+  CONNECTOR_GONE_MESSAGE,
   listAuthoredPending,
   rejectAuthoredConnector,
   type ConnectorSummary,
@@ -137,8 +139,15 @@ export function ConnectorsTab() {
       setPendingDelete(null);
       await refreshConnectors();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
       setPendingDelete(null);
+      if (isConnectorGone(e)) {
+        // Another admin got there first: drop it from the list, then say so
+        // (the reload clears any earlier error, so it goes first).
+        await refreshConnectors();
+        setError(CONNECTOR_GONE_MESSAGE);
+        return;
+      }
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
