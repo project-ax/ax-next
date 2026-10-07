@@ -62,6 +62,10 @@ it('ax-connector-creator drives the connector_propose authoring loop', () => {
   // not a host-only hook name — a SKILL.md naming a non-existent tool is a
   // half-wired skill (invariant #3).
   expect(s!.bodyMd).toContain('connector_propose');
+  // Requests go to a workspace admin; there is no in-chat approval card.
+  expect(s!.bodyMd).toContain('workspace admin');
+  expect(s!.bodyMd).toContain('Connectors tab');
+  expect(s!.bodyMd).not.toMatch(/approval card|approves? (one|the) card/i);
 });
 
 it('ax-skill-creator is narrowed to know-how: no capabilities block, uses skill_propose + connectors[]', () => {
@@ -75,4 +79,5 @@ it('ax-skill-creator is narrowed to know-how: no capabilities block, uses skill_
   // References connectors instead of authoring capability blocks.
   expect(body).toContain('connectors');
   expect(body).toContain('ax-connector-creator');
+  expect(body).not.toMatch(/approval card|inline card|connect-and-approve/i);
 });

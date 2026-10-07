@@ -8,12 +8,6 @@ import {
   type ToolDescriptor,
 } from '@ax/core';
 import { CONNECTOR_PROPOSE_DESCRIPTOR, CONNECTOR_PROPOSE_TOOL_NAME } from './descriptor.js';
-import {
-  registerConnectorFreshness,
-  CONNECTORS_RESOLVE_HOOK,
-  CONNECTOR_CAPTURE_HOOK,
-  CONNECTOR_CHECK_HOOK,
-} from './freshness.js';
 
 const PLUGIN_NAME = '@ax/tool-connector-propose';
 const EXECUTE_HOOK = `tool:execute:${CONNECTOR_PROPOSE_TOOL_NAME}` as const;
@@ -50,13 +44,23 @@ interface ConnectorProposeInput {
 
 interface ConnectorProposeOutput {
   connectorId: string;
-  // `pending` — a fresh draft awaiting human approval at the capability wall.
-  // `active` — TASK-114 re-propose dedup: the connector is ALREADY approved +
-  // active in the owner's registry, so this propose was a no-op. Surfacing it
-  // (rather than re-firing the approval card every turn) tells the model the
-  // connector already works.
+  // `pending` — a request is waiting for a workspace admin.
+  // `active` — a live shared connector with this id already exists; no request
+  // was filed. The person just adds it from the Connectors tab.
   status: 'pending' | 'active';
 }
+
+interface ConnectorProposeReply extends ConnectorProposeOutput {
+  message: string;
+}
+
+// Fixed, host-written text the model relays. Adds no new trust: it only says
+// what the status already means and where the person goes next.
+const REPLY_MESSAGES: Record<ConnectorProposeOutput['status'], string> = {
+  pending:
+    'Sent to your workspace admin for approval. Once they set it up, add it to this agent from the Connectors tab.',
+  active: 'This connector already exists. Add it to this agent from the Connectors tab.',
+};
 
 // Structural-validation PluginError codes the connectors:install-authored hook
 // throws for a malformed draft are all `invalid-*` (invalid-payload from the
@@ -138,8 +142,7 @@ function normalizeInput(raw: unknown): ConnectorProposeInput {
  * of `@ax/skill-broker`'s `request_capability`. It reads the (user, agent) scope
  * from the trusted tool ctx (the IPC server stamped it from the runner's bound
  * session) and calls the `connectors:install-authored` hook (TASK-94), which
- * persists a PENDING draft (zero reach) until a human approves the orchestrator's
- * one approval card.
+ * files a PENDING request (zero reach) for a workspace admin to set up.
  *
  * I2: no @ax/connectors import — the hook is reached only over the bus. The
  * `connectors:install-authored` dep is a HARD call (the tool is pointless without
@@ -152,32 +155,10 @@ export function createToolConnectorProposePlugin(): Plugin {
       version: '0.0.0',
       registers: [
         EXECUTE_HOOK,
-        // AW-7's freshness pair. A PRODUCER's two hook names are fixed strings
-        // (unlike the CONSUMER side in @ax/decisions, where the name is built
-        // from a recorded call), so they are declared here like any other
-        // service — which is also what lets the kernel's duplicate-service
-        // check catch two plugins claiming the same tool's guard.
-        CONNECTOR_CAPTURE_HOOK,
-        CONNECTOR_CHECK_HOOK,
       ],
       // Hard deps → init-ordering edges: the tool dispatcher (tool:register) and
       // the connectors store (connectors:install-authored) must init first.
       calls: ['tool:register', 'connectors:install-authored'],
-      // AW-7 — the freshness predicate is "what does this connector id resolve
-      // to for this owner right now". OPTIONAL rather than hard: the tool works
-      // without it, it just proposes unguarded. Kept out of `calls` deliberately
-      // — a preset that loads @ax/connectors always registers resolve, so a hard
-      // dep would only ever fire in a preset shape that cannot exist, while
-      // pretending the degradation is impossible.
-      optionalCalls: [
-        {
-          hook: CONNECTORS_RESOLVE_HOOK,
-          degradation:
-            'A held connector_propose carries no freshness predicate, so approving it ' +
-            'replays the recorded draft without first re-checking whether something ' +
-            'now occupies that connector id.',
-        },
-      ],
       subscribes: [],
     },
     async init({ bus }) {
@@ -195,12 +176,7 @@ export function createToolConnectorProposePlugin(): Plugin {
         CONNECTOR_PROPOSE_DESCRIPTOR,
       );
 
-      // AW-7 — `connector_propose` is held by the AW-3 rule table and replayed
-      // host-side on approval, so it can be approved hours after the human was
-      // asked. This is the half that re-reads the owner's live registry first.
-      registerConnectorFreshness(bus);
-
-      bus.registerService<{ input?: unknown } & Partial<ToolCall>, ConnectorProposeOutput>(
+      bus.registerService<{ input?: unknown } & Partial<ToolCall>, ConnectorProposeReply>(
         EXECUTE_HOOK,
         PLUGIN_NAME,
         async (toolCtx, call) => {
@@ -253,7 +229,11 @@ export function createToolConnectorProposePlugin(): Plugin {
               ...(draft.usageNote !== undefined ? { usageNote: draft.usageNote } : {}),
               keyMode: draft.keyMode,
             });
-            return { connectorId: out.connectorId, status: out.status };
+            return {
+              connectorId: out.connectorId,
+              status: out.status,
+              message: REPLY_MESSAGES[out.status],
+            };
           } catch (err) {
             // Recoverable structural author error → a fixed, model-safe message
             // (no plugin-message echo, I9) so the agent re-drafts. Other codes

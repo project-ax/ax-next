@@ -24,7 +24,11 @@ interface InstallAuthoredCall {
  * pending verdict, unless `installThrows` is set (to exercise error mapping).
  */
 function busWithStubs(
-  opts: { installThrows?: PluginError | null; registerInstall?: boolean } = {},
+  opts: {
+    installThrows?: PluginError | null;
+    registerInstall?: boolean;
+    status?: 'pending' | 'active';
+  } = {},
 ) {
   const bus = new HookBus();
   const registered: string[] = [];
@@ -41,7 +45,7 @@ function busWithStubs(
         if (opts.installThrows) throw opts.installThrows;
         const i = input as InstallAuthoredCall;
         installCalls.push(i);
-        return { connectorId: i.connectorId, status: 'pending' as const };
+        return { connectorId: i.connectorId, status: opts.status ?? ('pending' as const) };
       },
     );
   }
@@ -67,6 +71,17 @@ describe('@ax/tool-connector-propose — plugin', () => {
     expect(bus.hasService(EXECUTE_HOOK)).toBe(true);
   });
 
+  it('answers an already-existing connector with the add-it-from-Connectors message', async () => {
+    const { bus } = busWithStubs({ status: 'active' });
+    await init(bus);
+    const out = await callTool(bus, { connectorId: 'salesforce', name: 'Salesforce', keyMode: 'workspace' });
+    expect(out).toEqual({
+      connectorId: 'salesforce',
+      status: 'active',
+      message: 'This connector already exists. Add it to this agent from the Connectors tab.',
+    });
+  });
+
   it('forwards a valid draft to connectors:install-authored with ctx-derived scope', async () => {
     const { bus, installCalls } = busWithStubs();
     await init(bus);
@@ -78,9 +93,14 @@ describe('@ax/tool-connector-propose — plugin', () => {
       packages: { npm: ['@salesforce/cli'] },
       usageNote: 'Drive the sf CLI.',
       keyMode: 'workspace',
-    })) as { connectorId: string; status: string };
+    })) as { connectorId: string; status: string; message: string };
 
-    expect(out).toEqual({ connectorId: 'salesforce', status: 'pending' });
+    expect(out).toEqual({
+      connectorId: 'salesforce',
+      status: 'pending',
+      message:
+        'Sent to your workspace admin for approval. Once they set it up, add it to this agent from the Connectors tab.',
+    });
     expect(installCalls).toHaveLength(1);
     const c = installCalls[0]!;
     // Scope comes from the trusted ctx, NOT the model input (a runner can't

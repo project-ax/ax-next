@@ -131,7 +131,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   //      the host cannot replay".
   //
   // None is marked `irreversible`: approving `request_capability` grants reach
-  // that is revocable, `connector_propose` creates a pending zero-reach draft,
+  // that is revocable, `connector_propose` files a zero-reach request for an admin,
   // and an installed skill can be uninstalled. A future rule whose approval
   // cannot be taken back must set `irreversible: true`. That is what makes AW-5
   // defer an unattended replay by the undo window, so the Undo button still
@@ -158,7 +158,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     match: { tool: 'connector_propose' },
     providedBy: 'host',
     verdict: 'hold',
-    capability: 'set up a new connection for you',
+    capability: 'request a new connection from your workspace admin',
     subject: 'agent',
     provenance: 'rule',
   },

@@ -67,9 +67,9 @@ So before writing a skill that reaches a service:
 
 1. **Check whether a connector already exists** for that service.
 2. **If it doesn't, create one first** — author it with the
-   **`ax-connector-creator`** skill (it drives the connect-and-approve flow:
-   capture which hosts/key/packages/MCP, install with one approval card). Once
-   the connector is connected, note its `connectorId`.
+   **`ax-connector-creator`** skill (it drives the ask-an-admin flow:
+   capture which hosts/key/packages/MCP, then send the request to the workspace
+   admin). Once the admin has set the connector up, note its `connectorId`.
 3. **Then write the skill** referencing that connector id.
 
 (You compose these by *using* the connector-creator skill in the conversation —
@@ -161,9 +161,9 @@ What happens next:
 
 - A skill that needs no connectors becomes available on the user's **next**
   message — tell them it's ready next turn.
-- A skill that references a connector the user hasn't approved yet is held until
-  they approve that connector (on an inline card). Once approved, it's ready next
-  turn.
+- A skill that references a connector that isn't set up yet is held until a
+  workspace admin sets that connector up and it's added to this agent from the
+  Connectors tab. Once that's done, it's ready next turn.
 - **A skill you propose this turn is not available this turn** — skills are
   discovered when your session starts. Don't try to invoke it now; tell the user
   it'll be ready on their next message. If they asked you to create *and* use a
@@ -171,9 +171,10 @@ What happens next:
 
 A few points of discipline:
 
-- **Don't narrate the approval step.** Any connector card speaks for itself.
-- **Don't restate the user's keys.** They're entered privately on the connector
-  card; you never see or repeat them.
+- **Be honest about connectors.** If a connector still needs a workspace admin to
+  set it up, say so in a sentence.
+- **Don't restate any keys.** The admin enters them privately; you never see or
+  repeat them.
 
 ## Worked example — a Linear triage skill
 

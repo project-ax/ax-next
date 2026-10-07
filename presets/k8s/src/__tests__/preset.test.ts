@@ -514,14 +514,13 @@ describe('@ax/preset-k8s wiring', () => {
     expect(registered.has('tool-freshness:capture:request_capability')).toBe(true);
     expect(registered.has('tool-freshness:check:request_capability')).toBe(true);
 
-    // The one where it matters: approving writes the object that carries the
-    // agent's outward reach. Open-mode only, like the tool it guards.
-    expect(registered.has('tool-freshness:capture:connector_propose')).toBe(true);
-    expect(registered.has('tool-freshness:check:connector_propose')).toBe(true);
+    // `connector_propose` has no freshness pair: a replayed call only files a
+    // request for an admin and cannot replace a live connector.
+    expect(registered.has('tool-freshness:capture:connector_propose')).toBe(false);
+    expect(registered.has('tool-freshness:check:connector_propose')).toBe(false);
 
-    // And the world both producers read.
+    // And the world the producer reads.
     expect(registered.has('skills:get')).toBe(true);
-    expect(registered.has('connectors:resolve')).toBe(true);
   });
 
   it('loads the connector tool inventory and the producers it calls (TASK-735)', () => {

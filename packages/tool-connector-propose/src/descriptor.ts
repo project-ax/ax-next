@@ -3,37 +3,30 @@ import type { ToolDescriptor } from '@ax/core';
 export const CONNECTOR_PROPOSE_TOOL_NAME = 'connector_propose' as const;
 
 /**
- * TASK-95 (connectors-first-class, design Phase 2). The agent authors a
- * CONNECTOR — authenticated access to a data source, mechanism hidden (MCP | CLI
- * | direct API) — and submits it for approval by calling this tool. The host
+ * The agent asks for a CONNECTOR — authenticated access to a data source,
+ * mechanism hidden (MCP | CLI | direct API) — by calling this tool. The host
  * executor (this package's plugin) reads the draft args, derives the (user,
  * agent) scope from the trusted session ctx, and calls the
- * `connectors:install-authored` hook (TASK-94), which persists a PENDING draft
- * (zero reach) and lets the orchestrator fire ONE approval card.
+ * `connectors:install-authored` hook, which files a PENDING request for a
+ * workspace admin (zero reach). Only an admin can turn it into a connector; the
+ * person then adds it to the agent from the Connectors tab. There is no in-chat
+ * approval card.
  *
  * Host-executed (`executesIn: 'host'`, mirror of `request_capability`): the
- * connector's declared surface is structured JSON the model produces inline —
- * there is NO `/ephemeral/...` draft directory to read sandbox-side (unlike
- * `skill_propose`), so no sandbox executor + IPC action is needed. The host hook
- * is the authoritative validator of the (untrusted, model-authored) capability
- * proposal; this descriptor only advertises the tool to the model.
- *
- * The description carries the spawn-time-discovery constraint (design §D6, same
- * as skill_propose): an authored connector is approved + resolved when a session
- * STARTS, so it becomes usable on the user's NEXT message, not the current turn.
- * Without that guidance the agent may try to use a connector it just proposed,
- * find nothing, and get confused.
+ * connector's declared surface is structured JSON the model produces inline, so
+ * no sandbox executor + IPC action is needed. The host hook is the authoritative
+ * validator of the (untrusted, model-authored) proposal; this descriptor only
+ * advertises the tool to the model.
  */
 export const CONNECTOR_PROPOSE_DESCRIPTOR: ToolDescriptor = {
   name: CONNECTOR_PROPOSE_TOOL_NAME,
   description: [
-    'Propose a new connector — authenticated access to a service or data source —',
-    'so it can be connected for the user. A connector hides its mechanism: it may',
-    'be backed by a remote MCP server (an http URL), a CLI tool fetched from a package',
-    'registry, or direct API calls over an allowed host. Pass the access surface as',
-    'arguments; the user approves ONE card listing the hosts it reaches, the',
-    'credential slots (keys) it needs, and the package registries it pulls from.',
-    'Nothing reaches the outside world until they approve.',
+    'Ask your workspace admin to add a new connector — authenticated access to a',
+    'service or data source. A connector hides its mechanism: it may be backed by a',
+    'remote MCP server (an http URL), a CLI tool fetched from a package registry, or',
+    'direct API calls over an allowed host. Pass the access surface as arguments.',
+    'This only sends a request: an admin reviews it and sets it up, and nothing',
+    'reaches the outside world until they do.',
     '',
     'Arguments:',
     '  connectorId: lowercase id, /^[a-z0-9][a-z0-9_-]*$/, max 128 chars (e.g. "salesforce").',
@@ -43,17 +36,16 @@ export const CONNECTOR_PROPOSE_DESCRIPTOR: ToolDescriptor = {
     '               Slot names are SCREAMING_SNAKE_CASE; the only kind is "api-key".',
     '  packages:    { npm: [...], pypi: [...] } — registries it fetches binaries from. Optional.',
     '  mcpServers:  remote MCP backing — [{ name, transport: "http", url, allowedHosts, credentials }]. Optional.',
-    '  usageNote:   a short "how to use me" blurb so connecting it yields a working capability.',
-    '  keyMode:     "personal" — prompt EACH user for their own key (per-user data like a',
-    '               personal Gmail/Drive); or "workspace" — an admin provides ONE shared key',
-    '               every allowed agent spends (an org-wide system like the company Salesforce).',
+    '  usageNote:   a short "how to use me" blurb so the connector works once set up.',
+    '  keyMode:     a hint the admin decides. "personal" — each agent adds its own key',
+    '               (per-user data like a personal Gmail/Drive); or "workspace" — one',
+    '               shared key the admin enters (an org-wide system like the company',
+    '               Salesforce).',
     '',
-    'IMPORTANT: a connector you propose this turn is NOT connected this turn. After',
-    'the user approves the card, it is resolved when their next message starts — so',
-    'do not try to use it now. Tell the user it will be ready on their next message;',
-    'if they asked you to connect AND use a service in one breath, propose it and',
-    'offer to continue once they reply. Do not narrate the approval mechanics or',
-    'restate any keys — the card handles that privately.',
+    'IMPORTANT: a connector you ask for is NOT available this turn. Once an admin',
+    'sets it up, the user adds it to this agent from the Connectors tab, and it',
+    'works from their next message. Do not try to use it now. Tell the user you have',
+    'asked their admin and what happens next; do not restate any keys.',
   ].join('\n'),
   activityPhrase: 'Proposing a new connection',
   inputSchema: {
@@ -105,7 +97,7 @@ export const CONNECTOR_PROPOSE_DESCRIPTOR: ToolDescriptor = {
         type: 'string',
         enum: ['personal', 'workspace'],
         description:
-          '"personal" = prompt each user for their own key; "workspace" = one admin key shared by every allowed agent.',
+          'A hint the admin decides. "personal" = each agent adds its own key; "workspace" = one shared key the admin enters.',
       },
     },
     required: ['connectorId', 'name', 'keyMode'],
