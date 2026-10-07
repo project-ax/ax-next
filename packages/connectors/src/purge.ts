@@ -15,7 +15,8 @@ export type PurgeableConnector = Pick<Connector, 'id' | 'keyMode' | 'visibility'
 /**
  * Everything a connector delete reclaims OUTSIDE its own row: its stored
  * key(s) and the `connectors:deleted` announcement. Shared by the
- * `connectors:delete` hook and the boot-time stdio sweep (stdio-sweep.ts).
+ * `connectors:delete` hook and the boot-time sweeps (stdio-sweep.ts,
+ * non-admin-sweep.ts).
  */
 export async function purgeConnectorState(
   bus: HookBus,
@@ -35,6 +36,13 @@ export async function purgeConnectorState(
      * `connectors:deleted` event, and gates the person-scope purge below.
      */
     idStillLive: boolean;
+    /**
+     * Fire `connectors:deleted` at the end (default true). The boot non-admin
+     * sweep purges BEFORE it tombstones the row (a crash in between leaves the
+     * row for the next boot), so it passes false and calls
+     * `announceConnectorDeleted` itself once the row is gone.
+     */
+    announce?: boolean;
   },
 ): Promise<void> {
   const connectorId = connector.id;
@@ -143,18 +151,32 @@ export async function purgeConnectorState(
     }
   }
 
-  // Announce the removal so other plugins reclaim state keyed on this connector's
-  // tool namespaces (@ax/tool-policy purges its per-tool verdict rows). Fired
-  // AFTER the credential purge. Callers invoke this only when a LIVE row was
-  // actually removed — a delete of an absent / already-deleted connector
-  // announces nothing. The namespaces are derived from `ownerUserId`, the row
-  // owner, so they match what `connectors:resolve` handed out. Best-effort:
-  // HookBus.fire isolates subscriber throws, and a fire failure must never fail
-  // an already-committed delete.
+  if (opts.announce !== false) {
+    await announceConnectorDeleted(bus, ctx, ownerUserId, connector, opts.idStillLive);
+  }
+}
+
+/**
+ * Announce a removal so other plugins reclaim state keyed on this connector's
+ * tool namespaces (@ax/tool-policy purges its per-tool verdict rows; agents and
+ * mcp-oauth act on `idStillLive === false`). Callers invoke this only when a
+ * LIVE row was actually removed. The namespaces are derived from
+ * `ownerUserId`, the row owner, so they match what `connectors:resolve` handed
+ * out. Best-effort: HookBus.fire isolates subscriber throws, and a fire
+ * failure must never fail an already-committed delete.
+ */
+export async function announceConnectorDeleted(
+  bus: HookBus,
+  ctx: AgentContext,
+  ownerUserId: string,
+  connector: PurgeableConnector,
+  idStillLive: boolean,
+): Promise<void> {
+  const connectorId = connector.id;
   const event: ConnectorDeletedEvent = {
     connectorId,
     toolNamespaces: deriveToolNamespaces(ownerUserId, connector),
-    idStillLive: opts.idStillLive,
+    idStillLive,
   };
   try {
     await bus.fire('connectors:deleted', ctx, event);

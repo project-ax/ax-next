@@ -139,3 +139,42 @@ export async function hasSurvivingSameIdConnectorForSystemSweep(
     .executeTakeFirst();
   return row !== undefined;
 }
+
+/**
+ * DELIBERATELY UNSCOPED — every owner's LIVE connector rows, identity + the
+ * fields a purge derives from. The ONLY caller is the boot-time non-admin
+ * sweep (non-admin-sweep.ts, slice 2b), which runs as `system` during plugin
+ * init; no request path may use it. Ordered so the sweep is deterministic.
+ */
+export function liveConnectorRowsForSystemSweep(db: Kysely<ConnectorDatabase>) {
+  return db
+    .selectFrom('connectors_v1_connectors')
+    .select(['owner_user_id', 'connector_id', 'key_mode', 'visibility', 'capabilities'])
+    .where('deleted_at', 'is', null)
+    .orderBy('owner_user_id', 'asc')
+    .orderBy('connector_id', 'asc');
+}
+
+/**
+ * DELIBERATELY UNSCOPED — does any live connector OTHER than (ownerUserId,
+ * connectorId) carry `connectorId`? With `sharedOnly`, only shared rows count.
+ * Asked BEFORE the non-admin sweep tombstones a row, so it answers exactly
+ * what `hasLiveById` / `hasLiveSharedById` would answer after it. Only the
+ * boot-time non-admin sweep (non-admin-sweep.ts) calls this.
+ */
+export async function hasOtherLiveSameIdConnectorForSystemSweep(
+  db: Kysely<ConnectorDatabase>,
+  ownerUserId: string,
+  connectorId: string,
+  opts: { sharedOnly: boolean },
+): Promise<boolean> {
+  let query = db
+    .selectFrom('connectors_v1_connectors')
+    .select('owner_user_id')
+    .where('connector_id', '=', connectorId)
+    .where('owner_user_id', '<>', ownerUserId)
+    .where('deleted_at', 'is', null);
+  if (opts.sharedOnly) query = query.where('visibility', '=', 'shared');
+  const row = await query.limit(1).executeTakeFirst();
+  return row !== undefined;
+}

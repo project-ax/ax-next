@@ -41,6 +41,7 @@ import { listEffectiveConnectors } from './effective-connectors.js';
 import { requireUserId } from './input-guards.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
 import { purgeConnectorState } from './purge.js';
+import { sweepNonAdminConnectors } from './non-admin-sweep.js';
 import { sweepStdioConnectors } from './stdio-sweep.js';
 import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
 import {
@@ -314,6 +315,16 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       await sweepStdioConnectors(db, bus, initCtx);
       const localStore = createConnectorStore(db);
       _store = localStore;
+      // Slice 2b — only admins define connectors: remove the ones people made,
+      // once, with full delete cleanup (non-admin-sweep.ts). Skips entirely
+      // without an `auth:get-user` provider. Never fails the boot.
+      try {
+        await sweepNonAdminConnectors(db, localStore, bus, initCtx);
+      } catch (err) {
+        initCtx.logger.warn('connectors_non_admin_sweep_failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
       const localAuthored = createAuthoredConnectorsStore(db);
       _authored = localAuthored;
 
