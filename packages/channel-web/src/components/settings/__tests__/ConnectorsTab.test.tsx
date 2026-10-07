@@ -156,7 +156,7 @@ describe('ConnectorsTab', () => {
     expect(row.querySelector('b')).toBeNull();
   });
 
-  it('groups requests by connector: one row per id, naming everyone who asked', async () => {
+  it('groups requests by connector: one row per id, saying whose request it shows and who else asked', async () => {
     vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
       REQUEST_LINEAR,
       {
@@ -174,7 +174,7 @@ describe('ConnectorsTab', () => {
     const rows = screen.getAllByTestId('connector-request-linear');
     expect(rows).toHaveLength(1);
     expect(
-      within(rows[0]!).getByText('Asked for by Ada Lovelace and Bob for their agents'),
+      within(rows[0]!).getByText('Showing Bob’s request. Ada Lovelace also asked for this.'),
     ).toBeInTheDocument();
     fireEvent.click(within(rows[0]!).getByRole('button', { name: 'Dismiss' }));
     const dialog = await screen.findByRole('dialog');
@@ -184,6 +184,48 @@ describe('ConnectorsTab', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /^dismiss$/i }));
     await waitFor(() => expect(dismiss).toHaveBeenCalledTimes(1));
     expect(dismiss).toHaveBeenCalledWith('linear');
+  });
+
+  it('credits the shown request to its proposer even when they are not first in the list', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
+      REQUEST_LINEAR,
+      {
+        ...REQUEST_LINEAR,
+        name: 'Linear (Carol’s wording)',
+        updatedAt: '2026-10-09T00:00:00Z',
+        proposedBy: { userId: 'u_carol', label: 'Carol' },
+      },
+      {
+        ...REQUEST_LINEAR,
+        updatedAt: '2026-10-08T00:00:00Z',
+        proposedBy: { userId: 'u_bob', label: 'Bob' },
+      },
+    ]);
+    render(<ConnectorsTab />);
+    const row = await screen.findByTestId('connector-request-linear');
+    expect(within(row).getByText('Linear (Carol’s wording)')).toBeInTheDocument();
+    expect(
+      within(row).getByText('Showing Carol’s request. Ada Lovelace and Bob also asked for this.'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows how long ago each request was made, so a stale one is easy to spot', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-21T12:00:00'));
+    try {
+      vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
+        { ...REQUEST_LINEAR, updatedAt: '2026-10-07T12:00:00' },
+        { ...REQUEST_NOTION, updatedAt: '2026-10-21T09:00:00' },
+      ]);
+      render(<ConnectorsTab />);
+      const linear = await screen.findByTestId('connector-request-linear');
+      expect(within(linear).getByText('Requested 2 weeks ago')).toBeInTheDocument();
+      expect(
+        within(screen.getByTestId('connector-request-notion')).getByText('Requested today'),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('Set it up carries only what the editor shows, lists the rest, and fixes Sharing to Shared', async () => {
@@ -233,12 +275,40 @@ describe('ConnectorsTab', () => {
     expect(screen.queryByText(/Awaiting approval/i)).not.toBeInTheDocument();
   });
 
-  it('keeps the tab working when the request list can’t load', async () => {
-    vi.spyOn(connectorsLib, 'listAuthoredProposals').mockRejectedValue(new Error('boom'));
+  it('says so, with Retry, when the request list can’t load (and the tab keeps working)', async () => {
+    const list = vi
+      .spyOn(connectorsLib, 'listAuthoredProposals')
+      .mockRejectedValueOnce(new Error('list connector requests: 500'))
+      .mockResolvedValueOnce([REQUEST_LINEAR]);
     render(<ConnectorsTab />);
     expect(await screen.findByText('My Notion')).toBeInTheDocument();
+    const alert = await screen.findByTestId('connector-requests-failed');
+    expect(
+      within(alert).getByText('Couldn’t load requests waiting for approval.'),
+    ).toBeInTheDocument();
+    // The raw error text is not shown.
+    expect(screen.queryByText(/500/)).not.toBeInTheDocument();
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByTestId('connector-request-linear')).toBeInTheDocument();
+    expect(screen.queryByTestId('connector-requests-failed')).not.toBeInTheDocument();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows nothing at all when this preset has no request queue (the lib answers [] for a 404)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input) === '/admin/connectors/authored') {
+        return new Response(JSON.stringify({ error: 'not-found' }), { status: 404 });
+      }
+      throw new Error(`unexpected fetch ${String(input)}`);
+    });
+    vi.mocked(connectorsLib.listAuthoredProposals).mockRestore();
+    render(<ConnectorsTab />);
+    await screen.findByText('My Notion');
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledWith(
+      '/admin/connectors/authored', { credentials: 'include' },
+    ));
     expect(screen.queryByText(/Awaiting approval/i)).not.toBeInTheDocument();
-    expect(screen.queryByText('boom')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('connector-requests-failed')).not.toBeInTheDocument();
   });
 
   it('Set it up opens the create editor prefilled, and Save creates a shared connector under the requested id', async () => {

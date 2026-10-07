@@ -45,6 +45,7 @@ import {
   type ConnectorSummary,
   type ConnectorWriteBase,
 } from '@/lib/connectors';
+import { relativeDay } from '@/lib/workspace-time';
 import { ConnectorEditDialog } from './ConnectorEditDialog';
 import { RoleCard } from '@/components/admin/RoleCard';
 import { Button } from '@/components/ui/button';
@@ -72,8 +73,9 @@ function needsCaption(keyMode: ConnectorSummary['keyMode']): string {
 
 /**
  * One shelf row per requested connector id. Several people may ask for the
- * same one; "Set it up" starts from the newest request, and Dismiss clears
- * them all (the server clears every request with that id).
+ * same one; the row shows (and "Set it up" starts from) the newest request,
+ * and its caption says whose that is. Dismiss clears them all (the server
+ * clears every request with that id).
  */
 interface RequestGroup {
   connectorId: string;
@@ -106,10 +108,17 @@ function namesList(names: readonly string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
+/**
+ * Who asked. With one person, plainly that. With several, the row shows the
+ * NEWEST request (its name, reach and prefill), so the caption says whose
+ * request that is and that the others asked too, rather than crediting one
+ * person's wording to everyone.
+ */
 function askedByCaption(g: RequestGroup): string {
-  return g.people.length === 1
-    ? `Asked for by ${g.people[0]} for one of their agents`
-    : `Asked for by ${namesList(g.people)} for their agents`;
+  const shown = g.newest.proposedBy.label;
+  const others = g.people.filter((p) => p !== shown);
+  if (others.length === 0) return `Asked for by ${shown} for one of their agents`;
+  return `Showing ${shown}’s request. ${namesList(others)} also asked for this.`;
 }
 
 /** Every read and write here is the admin bundle (slice 2a). */
@@ -131,13 +140,23 @@ export function ConnectorsTab() {
   // awaiting dismiss confirmation (null = dialog closed).
   const [requests, setRequests] = useState<AuthoredProposal[]>([]);
   const [dismissing, setDismissing] = useState<RequestGroup | null>(null);
+  // The requests didn't load. A preset without the connectors plugin is not a
+  // failure (the lib answers an empty list for its 404); anything else is, and
+  // saying so beats an empty shelf that looks like "nobody asked".
+  const [requestsFailed, setRequestsFailed] = useState(false);
 
-  /** Reload the requests. Best-effort — a failure just hides the shelf rather
-   *  than blocking the tab. */
+  /** Reload the requests. A failure never blocks the tab: it shows an Alert
+   *  with Retry where the shelf would be. */
   const refreshRequests = useCallback(() => {
     return listAuthoredProposals()
-      .then((drafts) => setRequests(drafts))
-      .catch(() => setRequests([]));
+      .then((drafts) => {
+        setRequests(drafts);
+        setRequestsFailed(false);
+      })
+      .catch(() => {
+        setRequests([]);
+        setRequestsFailed(true);
+      });
   }, []);
 
   /** Reload the connector list (after a curation write). */
@@ -169,9 +188,7 @@ export function ConnectorsTab() {
         if (!cancelled) setRequests(drafts);
       })
       .catch(() => {
-        // Best-effort: a preset without the connectors plugin (or a transient
-        // failure) just hides the Awaiting approval shelf.
-        if (!cancelled) setRequests([]);
+        if (!cancelled) setRequestsFailed(true);
       });
     return () => {
       cancelled = true;
@@ -282,6 +299,22 @@ export function ConnectorsTab() {
         </p>
       )}
 
+      {requestsFailed && (
+        <Alert data-testid="connector-requests-failed">
+          <AlertDescription className="flex flex-col items-start gap-2">
+            <span>Couldn’t load requests waiting for approval.</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void refreshRequests()}
+            >
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Awaiting approval — every person's connector requests. Rendered only
           when there is at least one. */}
       {groups.length > 0 && (
@@ -303,6 +336,11 @@ export function ConnectorsTab() {
                   caption={askedByCaption(g)}
                 >
                   <div className="flex flex-col gap-3">
+                    {/* Requests from before an upgrade surface too, so the
+                        age helps an admin spot (and Dismiss) a stale one. */}
+                    <p className="text-xs text-muted-foreground">
+                      {`Requested ${relativeDay(r.updatedAt)}`}
+                    </p>
                     {reach.length > 0 && (
                       <p className="break-words text-sm text-muted-foreground">
                         {`Would reach ${reach.join(', ')}`}

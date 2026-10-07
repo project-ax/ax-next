@@ -409,10 +409,13 @@ export function normalizeProposal(raw: unknown): ConnectorCapabilities {
 
 /**
  * Every person's open connector requests (admin-only). A preset without the
- * connectors plugin answers 404 — the list just stays empty.
+ * connectors plugin answers 404 — that is an empty list. Any other failure
+ * throws, so the tab can say the requests didn't load instead of quietly
+ * showing none.
  */
 export async function listAuthoredProposals(): Promise<AuthoredProposal[]> {
   const res = await fetch('/admin/connectors/authored', { credentials: 'include' });
+  if (res.status === 404) return [];
   if (!res.ok) throw new Error(`list connector requests: ${res.status}`);
   const body = (await res.json()) as { drafts?: unknown };
   const drafts = Array.isArray(body.drafts) ? body.drafts : [];

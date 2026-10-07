@@ -101,9 +101,16 @@ describe('listAuthoredProposals', () => {
     });
   });
 
-  it('throws on a failed read (the tab hides the shelf)', async () => {
+  it('throws on a failed read (the tab says so and offers Retry)', async () => {
     stubFetch({}, 403);
     await expect(listAuthoredProposals()).rejects.toThrow(/403/);
+    stubFetch({}, 500);
+    await expect(listAuthoredProposals()).rejects.toThrow(/500/);
+  });
+
+  it('a 404 (no connectors plugin in this preset) is an empty list, not an error', async () => {
+    stubFetch({ error: 'not-found' }, 404);
+    await expect(listAuthoredProposals()).resolves.toEqual([]);
   });
 });
 
