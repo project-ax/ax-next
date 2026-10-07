@@ -850,6 +850,35 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(captured.body).toEqual({ error: 'unauthenticated' });
   });
 
+  it('POST ignores a client-supplied requireUniqueId (no existence probe of other owners\' private ids)', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'admin1', isAdmin: true };
+    await adminSeed(h.bus, {
+      connectorId: 'x',
+      name: 'X',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: mcpCaps(),
+    });
+    currentActor = { id: 'plainUser', isAdmin: false };
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    const { res, captured } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'x',
+          name: 'X',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+          requireUniqueId: true,
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(201);
+  });
+
   it('POST defaults a new connector to shared and requiring explicit attachment', async () => {
     const h = await makeHarness();
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });

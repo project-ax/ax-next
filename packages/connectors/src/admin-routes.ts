@@ -187,13 +187,13 @@ function handleHookError(err: unknown, res: RouteResponse): void {
       res.status(400).json({ error: err.message });
       return;
     }
-    // TASK-758 — an endpoint change whose tool-permission reset failed was
-    // refused before anything was written. Retryable, so a 503, and a fixed
-    // string the editors key their message on (never the cause's text).
     if (err.code === 'connector-id-taken') {
       res.status(409).json({ error: 'connector-id-taken' });
       return;
     }
+    // TASK-758 — an endpoint change whose tool-permission reset failed was
+    // refused before anything was written. Retryable, so a 503, and a fixed
+    // string the editors key their message on (never the cause's text).
     if (err.code === TOOL_PERMISSIONS_RESET_FAILED) {
       res.status(503).json({ error: TOOL_PERMISSIONS_RESET_FAILED });
       return;
@@ -503,6 +503,9 @@ export function createConnectorRouteHandlers(
         return;
       }
       const raw = (parsed.value ?? {}) as Record<string, unknown>;
+      // The route decides uniqueness, never the body (it would be an existence
+      // probe for other owners' private ids).
+      delete raw.requireUniqueId;
       if (mode === 'user') {
         const rejected = rejectAdminOnlyFields(raw);
         if (rejected !== null) {
@@ -610,6 +613,7 @@ export function createConnectorRouteHandlers(
         visibility: existing.visibility,
         capabilities: existing.capabilities,
         ...patchRaw,
+        requireUniqueId: false,
         // Re-assert the immutable identity + owner AFTER the spread so a stray
         // patch field can't rename or owner-hijack.
         userId: actor.id,
