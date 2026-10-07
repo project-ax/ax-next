@@ -525,4 +525,37 @@ describe('createMcpOAuthStore', () => {
       expect(await store.getPending('k1')).not.toBeNull();
     });
   });
+
+  describe('deleteMarkersForConnector (slice 2b)', () => {
+    it('removes the connector\'s markers for every agent and person, and keeps other connectors\'', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail-2b');
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail-2b');
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear-2b');
+      await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail-2b');
+      await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'linear-2b');
+
+      expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ user: 1, agent: 2 });
+
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail-2b')).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail-2b')).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail-2b')).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear-2b')).toBe(true);
+      expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'linear-2b')).toBe(true);
+      expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ user: 0, agent: 0 });
+    });
+
+    it('refuses an empty connectorId', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail-2b');
+      for (const bad of ['', undefined as unknown as string]) {
+        await expect(store.deleteMarkersForConnector(bad)).rejects.toThrow(/connectorId is required/);
+      }
+      expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail-2b')).toBe(true);
+    });
+  });
 });

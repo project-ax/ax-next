@@ -96,7 +96,7 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     expect(off.manifest.calls).toEqual(['database:get-instance']);
     // TASK-718: a deleted agent's in-flight handshakes go with it. Subscribed
     // whether or not the routes are mounted — the table exists either way.
-    expect(off.manifest.subscribes).toEqual(['agents:deleted']);
+    expect(off.manifest.subscribes).toEqual(['agents:deleted', 'connectors:deleted']);
 
     const on = createMcpOAuthPlugin({
       mountRoutes: true,
@@ -109,7 +109,7 @@ describe('@ax/mcp-oauth plugin manifest', () => {
       'mcp-oauth:remove-shared-sign-in',
       'mcp-oauth:remove-personal-sign-in',
     ]);
-    expect(on.manifest.subscribes).toEqual(['agents:deleted']);
+    expect(on.manifest.subscribes).toEqual(['agents:deleted', 'connectors:deleted']);
     // The route handlers call these; mountRoutes pushes them onto `calls`.
     expect(on.manifest.calls).toEqual([
       'database:get-instance',
@@ -930,6 +930,97 @@ describe('@ax/mcp-oauth agents:deleted subscriber (TASK-718)', () => {
     ]);
     expect(events.find((e) => e.level === 'error')).toMatchObject({ agentId: 'agt_del' });
     // The bus's own isolation did NOT have to catch anything: we swallowed it.
+    expect(events.some((e) => e.msg === 'hook_subscriber_failed')).toBe(false);
+  });
+});
+
+// Slice 2b — a deleted connector's reconnect markers go with it, but only when
+// no connector of any owner still carries the id.
+describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
+  async function boot(): Promise<{ h: TestHarness; store: ReturnType<typeof createMcpOAuthStore> }> {
+    const h = await createTestHarness({
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createMcpOAuthPlugin()],
+    });
+    harnesses.push(h);
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const store = createMcpOAuthStore(db);
+    await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail');
+    await store.markNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail');
+    await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail');
+    await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear');
+    return { h, store };
+  }
+  const loggedCtx = (h: TestHarness, lines: string[]) =>
+    h.ctx({ logger: createLogger({ reqId: 'req-cd', writer: (l) => lines.push(l) }) });
+  const parse = (lines: string[]): Array<Record<string, unknown>> =>
+    lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+  const ev = (over: Record<string, unknown> = {}) => ({
+    connectorId: 'gmail',
+    toolNamespaces: [],
+    idStillLive: false,
+    ...over,
+  });
+
+  it('removes the id\'s markers on two agents and a person, and keeps another connector\'s', async () => {
+    const { h, store } = await boot();
+    const lines: string[] = [];
+    const res = await h.bus.fire('connectors:deleted', loggedCtx(h, lines), ev());
+    expect(res.rejected).toBe(false);
+    expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail')).toBe(false);
+    expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail')).toBe(false);
+    expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail')).toBe(false);
+    expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear')).toBe(true);
+    expect(
+      parse(lines).find((e) => e.msg === 'mcp_oauth_markers_purged_for_deleted_connector'),
+    ).toMatchObject({ level: 'info', connectorId: 'gmail', user: 1, agent: 2 });
+  });
+
+  it.each([true, undefined, 'false', null, 0])(
+    'idStillLive=%s leaves the markers in place',
+    async (still) => {
+      const { h, store } = await boot();
+      const res = await h.bus.fire('connectors:deleted', loggedCtx(h, []), ev({ idStillLive: still }));
+      expect(res.rejected).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail')).toBe(true);
+      expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail')).toBe(true);
+    },
+  );
+
+  it('a malformed payload is logged, swallowed, and deletes nothing', async () => {
+    const { h, store } = await boot();
+    for (const bad of [{}, { connectorId: '', idStillLive: false }, { connectorId: 7, idStillLive: false }, null, 'gmail']) {
+      const lines: string[] = [];
+      const res = await h.bus.fire('connectors:deleted', loggedCtx(h, lines), bad);
+      expect(res.rejected).toBe(false);
+      const events = parse(lines);
+      expect(events.filter((e) => e.level === 'warn').map((e) => e.msg)).toEqual([
+        'mcp_oauth_marker_purge_for_deleted_connector_skipped',
+      ]);
+      expect(events.some((e) => e.msg === 'hook_subscriber_failed')).toBe(false);
+    }
+    expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail')).toBe(true);
+  });
+
+  it('a failing store is logged at error and swallowed', async () => {
+    const { h } = await boot();
+    const c = new pg.Client({ connectionString });
+    await c.connect();
+    try {
+      await c.query('DROP TABLE mcp_oauth_v1_needs_reconnect');
+    } finally {
+      await c.end().catch(() => {});
+    }
+    const lines: string[] = [];
+    const res = await h.bus.fire('connectors:deleted', loggedCtx(h, lines), ev());
+    expect(res.rejected).toBe(false);
+    const events = parse(lines);
+    expect(events.filter((e) => e.level === 'error').map((e) => e.msg)).toEqual([
+      'mcp_oauth_marker_purge_for_deleted_connector_failed',
+    ]);
     expect(events.some((e) => e.msg === 'hook_subscriber_failed')).toBe(false);
   });
 });

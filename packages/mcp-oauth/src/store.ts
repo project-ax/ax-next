@@ -59,6 +59,12 @@ export interface McpOAuthStore {
    */
   deleteAllForAgent(agentId: string): Promise<{ deleted: number; markers: number }>;
   /**
+   * Slice 2b — a deleted connector's reconnect markers (every person's and
+   * every agent's) go with it, in one transaction. THROWS on an empty
+   * `connectorId`: a delete keyed on nothing is never what a caller meant.
+   */
+  deleteMarkersForConnector(connectorId: string): Promise<{ user: number; agent: number }>;
+  /**
    * TASK-741 — record that `owner`'s sign-in to `connectorId` was rejected by
    * the authorization server (re-authorization required). Idempotent: marking
    * twice keeps one row and moves `marked_at`. TASK-756: the owner is whoever
@@ -224,6 +230,30 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
         return {
           deleted: Number(pending.numDeletedRows ?? 0n),
           markers: Number(markers.numDeletedRows ?? 0n),
+        };
+      });
+    },
+
+    async deleteMarkersForConnector(connectorId) {
+      if (typeof connectorId !== 'string' || connectorId.length === 0) {
+        throw new PluginError({
+          code: 'missing-field',
+          plugin: '@ax/mcp-oauth',
+          message: 'connectorId is required',
+        });
+      }
+      return db.transaction().execute(async (trx) => {
+        const user = await trx
+          .deleteFrom('mcp_oauth_v1_needs_reconnect')
+          .where('connector_id', '=', connectorId)
+          .executeTakeFirst();
+        const agent = await trx
+          .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
+          .where('connector_id', '=', connectorId)
+          .executeTakeFirst();
+        return {
+          user: Number(user.numDeletedRows ?? 0n),
+          agent: Number(agent.numDeletedRows ?? 0n),
         };
       });
     },

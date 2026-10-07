@@ -297,7 +297,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       // TASK-718: `@ax/agents` fires this after the agent row is gone; an
       // in-flight handshake for it can never complete. Subscribed whether or
       // not the routes are mounted — the pending table exists either way.
-      subscribes: ['agents:deleted'],
+      subscribes: ['agents:deleted', 'connectors:deleted'],
     },
 
     async init({ bus }) {
@@ -336,6 +336,38 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
           ctx.logger.info('mcp_oauth_purged_for_deleted_agent', { agentId, deleted, markers });
         } catch (err) {
           ctx.logger.error('mcp_oauth_purge_for_deleted_agent_failed', { agentId, err });
+        }
+        return undefined;
+      });
+
+      // Slice 2b — a deleted connector's reconnect markers (people's and agents')
+      // go with it. Payload (declared locally, no cross-plugin import):
+      // `{ connectorId, toolNamespaces, idStillLive }`. Act ONLY on an explicit
+      // `idStillLive === false`: true, missing or non-boolean means a live
+      // connector of some owner still carries the id, so its markers stay.
+      // K10: never throw.
+      bus.subscribe<unknown>('connectors:deleted', PLUGIN_NAME, async (ctx, payload) => {
+        const p = payload as { connectorId?: unknown; idStillLive?: unknown } | null | undefined;
+        const connectorId = p?.connectorId;
+        if (typeof connectorId !== 'string' || connectorId.length === 0) {
+          ctx.logger.warn('mcp_oauth_marker_purge_for_deleted_connector_skipped', {
+            reason: 'connectors:deleted payload has no non-empty string connectorId',
+          });
+          return undefined;
+        }
+        if (p?.idStillLive !== false) return undefined;
+        try {
+          const { user, agent } = await store.deleteMarkersForConnector(connectorId);
+          ctx.logger.info('mcp_oauth_markers_purged_for_deleted_connector', {
+            connectorId,
+            user,
+            agent,
+          });
+        } catch (err) {
+          ctx.logger.error('mcp_oauth_marker_purge_for_deleted_connector_failed', {
+            connectorId,
+            err,
+          });
         }
         return undefined;
       });
