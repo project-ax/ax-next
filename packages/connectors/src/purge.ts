@@ -85,6 +85,23 @@ export async function purgeConnectorState(
     }
   }
 
+  // Agent-owned sign-ins (2026-10-07 design): every agent's sign-in / per-agent
+  // key for this connector lives at AGENT scope under `account:<id>[:SLOT]`.
+  // Only a SHARED connector's delete may purge them: agent-scope rows are
+  // readable only for the sole shared definition (TASK-711), so a private
+  // connector that happens to share the id must never wipe them. Best-effort,
+  // like the credential purge above.
+  if (connector.visibility === 'shared' && bus.hasService('credentials:purge-account')) {
+    try {
+      await bus.call('credentials:purge-account', ctx, { connectorId, scopes: ['agent'] });
+    } catch (err) {
+      ctx.logger.warn('connectors_delete_agent_signins_purge_failed', {
+        connectorId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // Announce the removal so other plugins reclaim state keyed on this connector's
   // tool namespaces (@ax/tool-policy purges its per-tool verdict rows). Fired
   // AFTER the credential purge. Callers invoke this only when a LIVE row was

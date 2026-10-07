@@ -230,6 +230,11 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
           degradation:
             'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
         },
+        {
+          hook: 'credentials:purge-account',
+          degradation:
+            "the connector is deleted but agents' sign-ins for it are left in the vault (unreadable once the connector is gone)",
+        },
         // TASK-737 — the connector editor's per-tool permissions routes. The
         // values live in @ax/tool-policy: without it the routes answer 503
         // (the editor says it can't load them).

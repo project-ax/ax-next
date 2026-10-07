@@ -1840,3 +1840,59 @@ describe('@ax/connectors hooks — tool-labels (TASK-744)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Agent-owned sign-ins slice 1 — deleting a SHARED connector purges every
+// agent's sign-ins (agent-scope rows) for it.
+// ---------------------------------------------------------------------------
+async function makeHarnessWithPurgeSpy(): Promise<{ h: TestHarness; purges: unknown[] }> {
+  const purges: unknown[] = [];
+  const h = await createTestHarness({
+    services: {
+      'credentials:delete': async () => {},
+      'credentials:purge-account': async (_ctx, input) => {
+        purges.push(input);
+        return { purged: 0 };
+      },
+    },
+    plugins: [createDatabasePostgresPlugin({ connectionString }), createConnectorsPlugin()],
+  });
+  harnesses.push(h);
+  return { h, purges };
+}
+
+describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned sign-ins slice 1)', () => {
+  it('a SHARED connector delete purges agent-scope rows for its id', async () => {
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
+      upsertInput({ userId: 'admin', connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
+    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
+  });
+
+  it('a PRIVATE connector delete never purges agent rows (could share a shared connector\'s id)', async () => {
+    const { h, purges } = await makeHarnessWithPurgeSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userA' }),
+      upsertInput({ visibility: 'private' }));
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' });
+    expect(purges).toEqual([]);
+  });
+
+  it('a purge failure is logged and the delete still succeeds', async () => {
+    const h = await createTestHarness({
+      services: {
+        'credentials:delete': async () => {},
+        'credentials:purge-account': async () => { throw new Error('boom'); },
+      },
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createConnectorsPlugin()],
+    });
+    harnesses.push(h);
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
+      upsertInput({ userId: 'admin', connectorId: 'sf', keyMode: 'workspace', visibility: 'shared', capabilities: cliCaps() }));
+    const del = await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
+    expect(del.deleted).toBe(true);
+  });
+});
