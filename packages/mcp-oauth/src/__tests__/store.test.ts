@@ -481,11 +481,24 @@ describe('createMcpOAuthStore', () => {
         .values({ client_key: 'k|a', client_id: 'cid', client_secret: null, dynamic: true, created_at: new Date(0) })
         .execute();
 
-      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 3 });
+      expect(await store.deleteAllForAgent('agt_gone')).toMatchObject({ deleted: 3 });
 
       for (const s of ['g1', 'g2', 'g3']) expect(await store.getPending(s)).toBeNull();
       for (const s of ['k1', 'k2']) expect(await store.getPending(s)).not.toBeNull();
       expect(await store.getClient('k|a')).not.toBeNull();
+    });
+
+    it('also deletes the agent\'s reconnect markers, and only that agent\'s', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'agt_del' }, 'gmail');
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'agt_del' }, 'linear');
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'agt_keep' }, 'gmail');
+      const out = await store.deleteAllForAgent('agt_del');
+      expect(out.markers).toBe(2);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'agt_del' }, 'gmail')).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'agt_keep' }, 'gmail')).toBe(true);
     });
 
     it('is a no-op the second time', async () => {
@@ -496,7 +509,7 @@ describe('createMcpOAuthStore', () => {
       await store.putPending(makePending({ state: 'k1', agentId: 'agt_kept' }));
       await store.deleteAllForAgent('agt_gone');
 
-      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 0 });
+      expect(await store.deleteAllForAgent('agt_gone')).toMatchObject({ deleted: 0 });
       expect(await store.getPending('k1')).not.toBeNull();
     });
 

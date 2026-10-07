@@ -48,14 +48,16 @@ export interface McpOAuthStore {
    * the agent. Keyed on `agent_id` ALONE — a team agent's connect can be started
    * by several people.
    *
-   * Touches `mcp_oauth_v1_pending` only. `mcp_oauth_v1_clients` has no `agent_id`
+   * Touches `mcp_oauth_v1_pending` and `mcp_oauth_v1_needs_reconnect_agent`
+   * (the agent's reconnect markers go with it; `deleted` counts pending rows,
+   * `markers` counts marker rows). `mcp_oauth_v1_clients` has no `agent_id`
    * column (it is keyed by `${connectorId}|${authServerUrl}` and shared by every
    * agent), so it is not this method's to delete from.
    *
    * THROWS on an empty `agentId`: a delete keyed on nothing is never what a
    * caller meant, so it is refused rather than run.
    */
-  deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
+  deleteAllForAgent(agentId: string): Promise<{ deleted: number; markers: number }>;
   /**
    * TASK-741 — record that `owner`'s sign-in to `connectorId` was rejected by
    * the authorization server (re-authorization required). Idempotent: marking
@@ -210,11 +212,20 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           message: 'agentId is required',
         });
       }
-      const res = await db
-        .deleteFrom('mcp_oauth_v1_pending')
-        .where('agent_id', '=', agentId)
-        .executeTakeFirst();
-      return { deleted: Number(res.numDeletedRows ?? 0n) };
+      return db.transaction().execute(async (trx) => {
+        const pending = await trx
+          .deleteFrom('mcp_oauth_v1_pending')
+          .where('agent_id', '=', agentId)
+          .executeTakeFirst();
+        const markers = await trx
+          .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
+          .where('agent_id', '=', agentId)
+          .executeTakeFirst();
+        return {
+          deleted: Number(pending.numDeletedRows ?? 0n),
+          markers: Number(markers.numDeletedRows ?? 0n),
+        };
+      });
     },
 
     async markNeedsReconnect(owner, connectorId) {
