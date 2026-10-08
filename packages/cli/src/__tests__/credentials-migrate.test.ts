@@ -186,6 +186,35 @@ describe('ax-next credentials migrate', () => {
     }
   });
 
+  it('the dry run counts only what it would migrate, and says how many it would skip', async () => {
+    const dbPath = join(tmp, 'db.sqlite');
+    {
+      const bus = new HookBus();
+      const handle = await bootstrap({
+        bus,
+        plugins: [createStorageSqlitePlugin({ databasePath: dbPath })],
+        config: {},
+      });
+      const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'cli' });
+      for (const key of ['credential:cli:legacy-ref', 'credential:cli:account:gmail']) {
+        await bus.call('storage:set', ctx, { key, value: new Uint8Array([0x01]) });
+      }
+      await handle.shutdown();
+    }
+    const lines: string[] = [];
+    const code = await runCredentialsCommand({
+      argv: ['migrate'],
+      stdin: emptyStdin(),
+      stdout: (l) => lines.push(l),
+      stderr: (l) => lines.push(l),
+      sqlitePath: dbPath,
+    });
+    expect(code).toBe(0);
+    const text = lines.join('\n');
+    expect(text).toMatch(/would migrate 1 credentials?\b/);
+    expect(text).toContain('1 connector credential would be skipped — they now belong to agents');
+  });
+
   it('reports nothing-to-do when no v1 rows exist', async () => {
     const dbPath = join(tmp, 'db.sqlite');
     // Seed a v2 row only.
