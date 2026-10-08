@@ -24,6 +24,14 @@
 - Copy follows the CLAUDE.md voice. No user-facing string says "Private", "Shared" or "Make it Shared" any more.
 - Memory goes into a shard only: `scripts/memory-write-target.sh --shard decisions SIGNINS-9`.
 
+## Owner decision, 2026-10-08 (supersedes the boot-step design below)
+
+Existing connectors need not be preserved, since nobody is using AX yet. There is **no boot step**:
+- The migration drops the `visibility` column and the `connectors_v1_connectors_shared` index.
+- Formerly-private rows simply become usable.
+- Duplicate live ids fail closed (`getSoleLiveById` needs exactly one) until an admin deletes one.
+- Rolling the image back to before slice 7 is unsupported.
+
 ## Rulings carried into the tasks
 
 - **Dedup on flip.** For each `connector_id` with more than one live row: keep the shared row if exactly one exists. Otherwise keep the earliest `created_at`, tie-broken by `owner_user_id`, and soft-delete (`deleted_at = now()`) the others.
