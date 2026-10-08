@@ -66,7 +66,7 @@
  * dialogs stay mounted across the switch, so a sign-in started from either
  * view is never cut off.
  */
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   CircleAlert,
   KeyRound,
@@ -640,6 +640,35 @@ function ConnectorName({ id, name, account }: { id: string; name: string; accoun
   );
 }
 
+/**
+ * The agent's account atop a row menu: smaller and lighter than the actions,
+ * since it is context, not something to pick. A long account is clipped and
+ * faded out at the right edge rather than ellipsized; the fade is added only
+ * when the text really overflows, so a short account keeps every letter
+ * crisp. The fade matches the conversation list's (14px). The whole account
+ * stays in `title`.
+ * Provider text: a text node only; `bdi` keeps an RTL account from reordering.
+ */
+function AccountLabel({ account }: { account: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el !== null) setOverflow(el.scrollWidth > el.clientWidth);
+  }, [account]);
+  return (
+    <DropdownMenuLabel
+      ref={ref}
+      data-testid="row-menu-account"
+      {...(overflow ? { 'data-overflow': 'true' } : {})}
+      className="max-w-64 overflow-hidden whitespace-nowrap text-xs font-normal text-muted-foreground data-[overflow=true]:[mask-image:linear-gradient(to_right,black_calc(100%-14px),transparent)]"
+      title={account}
+    >
+      <bdi>{account}</bdi>
+    </DropdownMenuLabel>
+  );
+}
+
 function HealthIcon({ reason, tone }: { reason: string; tone: 'error' | 'neutral' }) {
   return (
     <TooltipProvider delayDuration={200}>
@@ -760,15 +789,7 @@ function RowMenu({
       <DropdownMenuContent align="end" sideOffset={4} className="shadow-popover">
         {account !== undefined && (
           <>
-            {/* Provider text: a text node only; bdi keeps an RTL account from
-                reordering. A label, not an item: nothing to pick. */}
-            <DropdownMenuLabel
-              data-testid="row-menu-account"
-              className="max-w-64 truncate font-normal text-muted-foreground"
-              title={account}
-            >
-              <bdi>{account}</bdi>
-            </DropdownMenuLabel>
+            <AccountLabel account={account} />
             <DropdownMenuSeparator />
           </>
         )}

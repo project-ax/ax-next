@@ -441,12 +441,44 @@ describe('which account the agent uses (slice 4)', () => {
     const menu = await openMenu('Gmail');
     const label = within(menu).getByTestId('row-menu-account');
     expect(label.textContent).toBe('bob@x.com');
+    // Smaller and lighter than the actions: context, not something to pick.
+    expect(label.className).toContain('text-xs');
+    expect(label.className).toContain('text-muted-foreground');
+    // Clipped, not ellipsized; it fits here, so no fade.
+    expect(label.className).toContain('overflow-hidden');
+    expect(label.className).not.toContain('truncate');
+    expect(label.dataset.overflow).toBeUndefined();
+    // Smaller and lighter than the actions: context, not something to pick.
+    expect(label.className).toContain('text-xs');
+    expect(label.className).toContain('text-muted-foreground');
     // First thing in the menu, and not something you can pick.
     expect(menu.firstElementChild?.contains(label) || menu.firstElementChild === label).toBe(true);
     expect(label.getAttribute('role')).not.toBe('menuitem');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).not.toContain('bob@x.com');
     // Provider text isolated, as on the row.
     expect(label.querySelector('bdi')?.textContent).toBe('bob@x.com');
+  });
+
+  it('a long account is clipped and faded out at the edge, never ellipsized', async () => {
+    const long = 'a-very-long-service-account-name@some-really-long-company-domain.example.com';
+    const sw = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth');
+    const cw = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get: () => 400 });
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 256 });
+    try {
+      list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn(long) })]);
+      renderTab();
+      const menu = await openMenu('Gmail');
+      const label = within(menu).getByTestId('row-menu-account');
+      await waitFor(() => expect(label.dataset.overflow).toBe('true'));
+      expect(label.className).toContain('data-[overflow=true]:[mask-image:');
+      expect(label.textContent).toBe(long);
+      // The whole account is still there on hover.
+      expect(label.getAttribute('title')).toBe(long);
+    } finally {
+      if (sw) Object.defineProperty(HTMLElement.prototype, 'scrollWidth', sw);
+      if (cw) Object.defineProperty(HTMLElement.prototype, 'clientWidth', cw);
+    }
   });
 
   it('a row menu with no recorded account has no account label', async () => {
