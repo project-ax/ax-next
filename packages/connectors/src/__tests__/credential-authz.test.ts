@@ -251,10 +251,10 @@ describe('credentials:authorize-global:account — deny paths', () => {
   });
 
   it("a user's own same-id personal connector shadows another owner's workspace one: denied", async () => {
-    // vs always-allow: FAILS. This is the ref-collision attack: same id, the
-    // reader's own row (which `getAvailableById` prefers) is not workspace-keyed.
-    // (SIGNINS-9: with no own row, the reader resolves root's connector, which
-    // every connector being shared makes readable — the allow case above.)
+    // vs always-allow: FAILS. This is the ref-collision attack: same id, two
+    // live rows. (SIGNINS-9: with no duplicate, the reader resolves root's
+    // connector, which every connector being shared makes readable — the
+    // allow case above.)
     authLookup = (userId) => (userId === 'root' ? adminUser(userId) : plainUser(userId));
     const h = await makeHarness();
     await seed(h, 'root', 'zendesk', 'workspace', 'ZENDESK_API_KEY');
@@ -262,8 +262,9 @@ describe('credentials:authorize-global:account — deny paths', () => {
     // A personal connector with the same id, owned by a non-admin.
     await seed(h, 'mallory', 'zendesk', 'personal', 'ZENDESK_API_KEY');
     expect(await authorize(h, 'mallory', 'account:zendesk')).toEqual(DENIED);
-    // The legitimate owner is unaffected.
-    expect(await authorize(h, 'root', 'account:zendesk')).toEqual(ALLOWED);
+    // Final review I2: a duplicate id fails closed for EVERY owner, the
+    // legitimate one included, until an admin deletes a copy.
+    expect(await authorize(h, 'root', 'account:zendesk')).toEqual(DENIED);
   });
 
   it('a soft-deleted connector is denied, and re-upserting it resurrects the grant', async () => {

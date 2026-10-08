@@ -23,10 +23,13 @@ import type { Connector } from '../types.js';
 
 const REF = 'account:gmail:OAUTH_CLIENT_SECRET';
 
-function ctx(): AgentContext {
+/** `denied` collects each deny's logged reason (which rule said no). */
+function ctx(denied: string[] = []): AgentContext {
   const logger: Logger = {
     debug: () => undefined,
-    info: () => undefined,
+    info: (msg: string, fields?: Record<string, unknown>) => {
+      if (msg === 'connectors_global_credential_denied') denied.push(String(fields?.reason));
+    },
     warn: () => undefined,
     error: () => undefined,
     child: () => logger,
@@ -211,14 +214,18 @@ describe('TASK-797: global read of an OAuth client secret', () => {
       'account:gmail', // the token ref
     ];
     for (const ref of nearMisses) {
-      const { store, calls } = fakeStore(ADMIN_OWNED(longer), ADMIN_OWNED(longer));
+      const { store } = fakeStore(ADMIN_OWNED(longer), ADMIN_OWNED(longer));
+      const denied: string[] = [];
       expect(
-        await authorizeGlobalAccountRead(store, fakeBus({ admin: { isAdmin: true } }), ctx(), {
+        await authorizeGlobalAccountRead(store, fakeBus({ admin: { isAdmin: true } }), ctx(denied), {
           userId: 'signer',
           ref,
         }),
       ).toEqual({ allowed: false });
-      expect(calls.sole).toEqual([]);
+      // Denied by the workspace-key rule, never routed to the client-secret one.
+      // (Both rules now ask getSoleLiveById, so the deny reason tells them apart.)
+      expect(denied).toHaveLength(1);
+      expect(denied[0]).not.toMatch(/^client-secret-/);
     }
     // And a connector that names the exact ref does not open a near miss of it.
     const { store } = fakeStore(ADMIN_OWNED(), ADMIN_OWNED());
@@ -231,16 +238,20 @@ describe('TASK-797: global read of an OAuth client secret', () => {
   });
 
   it('leaves other refs on the TASK-697 workspace-key rule', async () => {
-    // A differently tagged ref is not a client secret: the sole-definition
-    // predicate is not asked, the owned-or-available pick is.
+    // A differently tagged ref is not a client secret: the workspace-key rule
+    // decides it. Since final review I2 that rule also asks the sole-definition
+    // predicate (a duplicate id fails closed for company keys too), never the
+    // own-row-first pick; its deny reason shows which rule answered.
     const { store, calls } = fakeStore(ADMIN_OWNED(), null);
-    const out = await authorizeGlobalAccountRead(store, fakeBus({ admin: { isAdmin: true } }), ctx(), {
+    const denied: string[] = [];
+    const out = await authorizeGlobalAccountRead(store, fakeBus({ admin: { isAdmin: true } }), ctx(denied), {
       userId: 'signer',
       ref: 'account:gmail:SOMETHING_ELSE',
     });
     expect(out).toEqual({ allowed: false });
-    expect(calls.sole).toEqual([]);
-    expect(calls.available).toEqual([['signer', 'gmail']]);
+    expect(denied).toEqual(['connector-not-workspace-keyed']);
+    expect(calls.sole).toEqual([['signer', 'gmail']]);
+    expect(calls.available).toEqual([]);
   });
 });
 
