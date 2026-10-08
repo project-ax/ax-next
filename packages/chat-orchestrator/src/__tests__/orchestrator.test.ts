@@ -15,6 +15,7 @@ import {
   withBrokerDefaults,
   sessionNeedsCredentialRotation,
   CHAT_START_SUBSCRIBER_TIMEOUT_MS,
+  CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS,
   deniedToolKeys,
 } from '../orchestrator.js';
 
@@ -2870,7 +2871,7 @@ describe('chat-orchestrator', () => {
     it('a throwing or a never-settling chat:connectors-skipped subscriber does not fail the turn', async () => {
       const vault = buildVaultHooks({ rows: [PROVIDER_REF] });
       const { outcome, skippedEvents, turnErrors } = await invoke(vault, 'evt-bad-sub', { gmail: GMAIL }, {
-        config: { chatEventSubscriberTimeoutMs: 20 },
+        config: { connectorsSkippedSubscriberTimeoutMs: 20 },
         preSubscribe: (bus) => {
           bus.subscribe('chat:connectors-skipped', '@ax/test-thrower', async () => {
             throw new Error('subscriber blew up');
@@ -2882,6 +2883,43 @@ describe('chat-orchestrator', () => {
       expect(turnErrors).toEqual([]);
       // The observer after both still ran.
       expect(skippedEvents).toHaveLength(1);
+    });
+
+    // Review fix — the fire is awaited before the turn starts, so it has its
+    // own short bound (2 s default), not the 30 s chat-event one.
+    it('a hung chat:connectors-skipped subscriber delays the turn by the 2 s default bound, then the turn proceeds', async () => {
+      expect(CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS).toBe(2_000);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const vault = buildVaultHooks({ rows: [PROVIDER_REF] });
+        let hungReached!: () => void;
+        const reached = new Promise<void>((r) => {
+          hungReached = r;
+        });
+        let settled = false;
+        const run = invoke(vault, 'evt-hung-default', { gmail: GMAIL }, {
+          preSubscribe: (bus) => {
+            bus.subscribe('chat:connectors-skipped', '@ax/test-hanger', () => {
+              hungReached();
+              return new Promise<never>(() => {});
+            });
+          },
+        });
+        void run.then(() => {
+          settled = true;
+        });
+        await reached;
+        await vi.advanceTimersByTimeAsync(1_900);
+        expect(settled).toBe(false); // still held by the hung subscriber
+        expect(vault.state.openCalls).toBe(0);
+        await vi.advanceTimersByTimeAsync(200); // past 2 s: the bound gives up on it
+        const { outcome, skippedEvents, turnErrors } = await run;
+        expect(outcome.kind).toBe('complete');
+        expect(turnErrors).toEqual([]);
+        expect(skippedEvents).toHaveLength(1); // the later observer still ran
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     describe('slice 6: a ROUTINE turn goes without a connector whose sign-in needs doing again', () => {
@@ -2918,8 +2956,10 @@ describe('chat-orchestrator', () => {
         expect(vault.state.openRefs).not.toContain(GMAIL_REF);
         expect(vault.state.openRefs).toContain(LINEAR_REF);
         expect(mcpKeys(sandboxIn)).toEqual(['c0456abcdef']);
-        // The agent is told, by name.
-        expect(sandboxIn?.owner.agentConfig.systemPromptAugment).toContain('"Gmail"');
+        // The agent is told, by name, with "sign in again" wording.
+        expect(sandboxIn?.owner.agentConfig.systemPromptAugment).toMatch(
+          /^Connectors whose sign-in expired, off for this chat .*: "Gmail"\. .*sign in to it again/,
+        );
         expect(skippedEvents).toEqual([
           { reqId: 'r-rt-expired', connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }] },
         ]);

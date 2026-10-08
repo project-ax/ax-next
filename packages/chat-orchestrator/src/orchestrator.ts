@@ -164,12 +164,20 @@ export interface ChatOrchestratorConfig {
    */
   chatStartSubscriberTimeoutMs?: number;
   /**
-   * Bound on each subscriber of the `chat:end`, `chat:turn-error`,
-   * `chat:permission-request` and `chat:connectors-skipped` fires THIS plugin
-   * makes, in ms. Defaults to `CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS` (30 s).
-   * Exposed so tests need not wait.
+   * Bound on each subscriber of the `chat:end`, `chat:turn-error` and
+   * `chat:permission-request` fires THIS plugin makes, in ms. Defaults to
+   * `CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS` (30 s). Exposed so tests need not wait.
    */
   chatEventSubscriberTimeoutMs?: number;
+  /**
+   * Slice 6 — bound on each `chat:connectors-skipped` subscriber, in ms. The
+   * fire is awaited before the turn starts (so a subscriber has seen it before
+   * the turn can end), so it gets a short bound of its own rather than the
+   * 30 s chat-event one. Defaults to
+   * `CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS` (2 s). Exposed so tests need
+   * not wait.
+   */
+  connectorsSkippedSubscriberTimeoutMs?: number;
   /**
    * Slice 6 — how long a ROUTINE turn waits on `mcp-oauth:status-batch`
    * before keeping every connector. Defaults to `SIGN_IN_STATUS_TIMEOUT_MS`
@@ -1082,6 +1090,14 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
 export const CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS = 30_000;
 
 /**
+ * Slice 6 — bound on each `chat:connectors-skipped` subscriber. Awaited before
+ * the sandbox spawns, so a hung subscriber delays the turn by at most this per
+ * subscriber (subscribers run one after another). The one subscriber today
+ * (@ax/routines) only stashes the payload in memory.
+ */
+export const CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS = 2_000;
+
+/**
  * TASK-878 — bound on how long any caller here WAITS for
  * `proxy:close-session`. Today the proxy is in-process and the close is a few
  * Map deletes, so it settles in microseconds; the bound only matters if the
@@ -1570,22 +1586,33 @@ export function createOrchestrator(
     'proxyCloseTimeoutMs',
     config.proxyCloseTimeoutMs ?? PROXY_CLOSE_TIMEOUT_MS,
   );
+  const connectorsSkippedSubscriberTimeoutMs = validSubscriberBound(
+    'connectorsSkippedSubscriberTimeoutMs',
+    config.connectorsSkippedSubscriberTimeoutMs ?? CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS,
+  );
   const signInStatusTimeoutMs = validSubscriberBound(
     'signInStatusTimeoutMs',
     config.signInStatusTimeoutMs ?? SIGN_IN_STATUS_TIMEOUT_MS,
   );
 
   // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
-  // (and, slice 6, `chat:connectors-skipped`) this plugin fires goes through here, so each subscriber is bounded by
-  // `chatEventSubscriberTimeoutMs`. See CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for
-  // who waits on these. The runner-reported `chat:end` is fired by
-  // @ax/ipc-core, not here, and bounded there (TASK-555).
+  // (and, slice 6, `chat:connectors-skipped`) this plugin fires goes through
+  // here, so each subscriber is bounded by `chatEventSubscriberTimeoutMs` —
+  // except `chat:connectors-skipped`, which gets its own short bound
+  // (`connectorsSkippedSubscriberTimeoutMs`) because it is awaited before the
+  // turn starts. See CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for who waits on these.
+  // The runner-reported `chat:end` is fired by @ax/ipc-core, not here, and
+  // bounded there (TASK-555).
   function fireChatEvent<P>(
     hook: 'chat:end' | 'chat:turn-error' | 'chat:permission-request' | 'chat:connectors-skipped',
     ctx: AgentContext,
     payload: P,
   ): Promise<FireResult<P>> {
-    return bus.fire(hook, ctx, payload, { subscriberTimeoutMs: chatEventSubscriberTimeoutMs });
+    const subscriberTimeoutMs =
+      hook === 'chat:connectors-skipped'
+        ? connectorsSkippedSubscriberTimeoutMs
+        : chatEventSubscriberTimeoutMs;
+    return bus.fire(hook, ctx, payload, { subscriberTimeoutMs });
   }
   const oneShot = config.oneShot ?? true;
   const keepAlive = config.keepAlive ?? false;
@@ -3110,7 +3137,8 @@ export function createOrchestrator(
     // without a connector whose sign-in needs doing again (status-batch's
     // marker; any fault keeps it, today's behaviour). An interactive chat
     // keeps failing with connector-needs-reconnect: that error is what tells
-    // the person to sign in again.
+    // the person to sign in again. @ax/decisions' replay also stamps
+    // source:'routine' — intended: the rule is "any turn nobody is watching".
     let connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
     if (ctx.source === 'routine') {
       connectorSignIn = await skipConnectorsNeedingReconnect(
@@ -3127,9 +3155,9 @@ export function createOrchestrator(
       });
       // Slice 6 — say what this turn went without, keyed by its reqId, so a
       // routine can record "Gmail isn't signed in on Bob, so this run went
-      // without it." Observation only. Bounded per subscriber (fireChatEvent)
-      // and a throwing subscriber is isolated by the bus, so no subscriber can
-      // fail or hang the turn. Awaited (bounded) so a subscriber has seen it
+      // without it." Observation only. Each subscriber is bounded by
+      // connectorsSkippedSubscriberTimeoutMs (2 s) and a throwing subscriber
+      // is isolated by the bus, so no subscriber can fail or hang the turn. Awaited (bounded) so a subscriber has seen it
       // before the turn can end. Payload: ids, labels, reasons — never refs.
       try {
         await fireChatEvent<ConnectorsSkippedPayload>(
@@ -3515,7 +3543,8 @@ export function createOrchestrator(
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
       // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
       // turns, slice 6) has a row, so re-asking presence would answer yes and
-      // retire the session on every turn.
+      // retire the session on every turn. Latent: a kept-warm ROUTINE session
+      // would thus not re-spawn after a re-sign-in (routines always spawn fresh).
       const skippedRefs = [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))];
       if (skippedRefs.length > 0) {
         skippedConnectorRefsBySession.set(sessionId, skippedRefs);
