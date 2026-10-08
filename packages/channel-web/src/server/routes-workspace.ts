@@ -7021,7 +7021,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           return {
             ...r,
             health: health.health.get(r.id) ?? 'ok',
-            ...(health.sharedSignIn.has(r.id) ? { sharedSignIn: true as const } : {}),
+            // Only a TEAM agent's expired sign-in is "shared": a personal
+            // agent's agent-scope sign-in has no team, so it reads as the
+            // plain needs-reconnect state ("Sign in again").
+            ...(teamAgent && health.sharedSignIn.has(r.id) ? { sharedSignIn: true as const } : {}),
             ...(setup !== undefined ? { setup } : {}),
             removable: manageable,
           };
@@ -7366,6 +7369,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // have landed, and deleting an absent row is a quiet success.
       const attempted: string[] = [];
       const undo = async (): Promise<void> => {
+        // `complete`: every delete landed. A `false` means an agent-scope key
+        // row may survive (unreadable without the attachment, but still there).
+        let complete = true;
         for (const ref of attempted) {
           try {
             await bus.call<CredentialsDeleteInput, unknown>('credentials:delete', ctx, {
@@ -7374,6 +7380,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
               ref,
             });
           } catch (err) {
+            complete = false;
             initCtx.logger.warn('workspace_connector_key_rollback_failed', {
               agentId,
               connectorId,
@@ -7381,7 +7388,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             });
           }
         }
-        initCtx.logger.info('workspace_connector_key_rolled_back', { agentId, connectorId });
+        initCtx.logger.info('workspace_connector_key_rolled_back', {
+          agentId,
+          connectorId,
+          complete,
+        });
       };
       for (const { ref, key } of planned) {
         attempted.push(ref);

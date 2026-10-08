@@ -388,6 +388,7 @@ describe('agent connector routes', () => {
     // so the rail says so instead of "your sign-in".
     it('flags a needs-reconnect row whose expired sign-in is the shared one — and only that row', async () => {
       registerHealth();
+      agentRow = { ...agentRow, visibility: 'team' };
       sharedMarked = new Set(['gmail']);
       marked = new Set(['linear']);
       const rows = (await list()).body as { connectors: Array<Record<string, unknown>> };
@@ -396,6 +397,19 @@ describe('agent connector routes', () => {
       expect(byId.linear).toMatchObject({ health: 'needs-reconnect' });
       expect('sharedSignIn' in byId.linear!).toBe(false);
       expect('sharedSignIn' in byId.notes!).toBe(false);
+    });
+
+    // Slice 3 — a personal agent's sign-in is the agent's too (agent scope),
+    // but there is no team to share it with: an expired one is the plain
+    // needs-reconnect state ("Sign in again"), never "Team sign-in expired".
+    it('never flags a personal agent\'s expired agent sign-in as a team one', async () => {
+      registerHealth();
+      agentRow = { ...agentRow, visibility: 'personal' };
+      sharedMarked = new Set(['gmail']);
+      const rows = (await list()).body as { connectors: Array<Record<string, unknown>> };
+      const gmail = rows.connectors.find((r) => r.id === 'gmail')!;
+      expect(gmail.health).toBe('needs-reconnect');
+      expect('sharedSignIn' in gmail).toBe(false);
     });
 
     it('a shared flag never rides on a row that is not needs-reconnect', async () => {
@@ -1571,7 +1585,17 @@ describe('agent connector routes', () => {
         expect(deletes).toHaveLength(2);
         const line = logged.find((l) => l[0] === 'workspace_connector_key_rollback_failed');
         expect(line?.[1]).toEqual({ agentId: 'a1', connectorId: 'multi', name: expect.any(String) });
+        // The summary line says the rollback did NOT fully land.
+        const done = logged.find((l) => l[0] === 'workspace_connector_key_rolled_back');
+        expect(done?.[1]).toEqual({ agentId: 'a1', connectorId: 'multi', complete: false });
         expectNoLeak(r);
+      });
+
+      it('a rollback whose every delete lands is logged complete', async () => {
+        attachRefusal = new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
+        await attach({ connectorId: 'multi', keys: keysFor() });
+        const done = logged.find((l) => l[0] === 'workspace_connector_key_rolled_back');
+        expect(done?.[1]).toEqual({ agentId: 'a1', connectorId: 'multi', complete: true });
       });
 
       it.each([
