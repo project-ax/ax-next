@@ -484,20 +484,25 @@ describe('agent connector routes', () => {
           gmail: { account: 'una@gmail.example', signedInBy: 'u1', signedInAt: '2026-10-07T09:30:00.000Z' },
           linear: { account: null, signedInBy: 'u2', signedInAt: '2026-10-06T08:00:00.000Z' },
         };
-        const byId = rowsById(await list());
+        const r0 = await list();
+        const r0Body = r0.body;
+        const byId = rowsById(r0);
         expect(byId.gmail!.signedIn).toEqual({
           account: 'una@gmail.example',
           byName: 'Una',
           byYou: true,
           at: '2026-10-07T09:30:00.000Z',
         });
-        // A blank display name falls to the email.
+        // A blank display name: a member who is neither the signer nor a
+        // workspace admin never gets the signer's email — the client says
+        // "someone".
         expect(byId.linear!.signedIn).toEqual({
           account: null,
-          byName: 'dee@corp.example',
+          byName: null,
           byYou: false,
           at: '2026-10-06T08:00:00.000Z',
         });
+        expect(JSON.stringify(r0Body)).not.toContain('dee@corp.example');
         // No sign-in row → no key at all.
         expect('signedIn' in byId.notes!).toBe(false);
       });
@@ -540,7 +545,8 @@ describe('agent connector routes', () => {
         expect(rowsById(r).gmail!.signedIn).toMatchObject({ account: 'secret-acct@x.example', byName: null, byYou: false });
         expect(warn).toHaveBeenCalledWith(
           'workspace_connector_signed_in_by_lookup_failed',
-          expect.objectContaining({ agentId: 'a1' }),
+          // The bus wraps a foreign throw: its code, never its name or message.
+          { agentId: 'a1', code: 'unknown' },
         );
         expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-acct@x.example');
         warn.mockRestore();
@@ -553,13 +559,65 @@ describe('agent connector routes', () => {
         canManage = 'deny';
         canSetShared = 'deny';
         signIns = { gmail: { account: 'team@gmail.example', signedInBy: 'u2', signedInAt: '2026-10-07T09:30:00.000Z' } };
-        const byId = rowsById(await list());
+        const r = await list();
+        const byId = rowsById(r);
+        // u2 has no display name; u1 is a plain member, so no email either.
         expect(byId.gmail!.signedIn).toEqual({
           account: 'team@gmail.example',
-          byName: 'dee@corp.example',
+          byName: null,
           byYou: false,
           at: '2026-10-07T09:30:00.000Z',
         });
+        expect(JSON.stringify(r.body)).not.toContain('dee@corp.example');
+      });
+
+      it('a workspace admin viewer sees the email of a signer with no display name', async () => {
+        registerHealth();
+        registerGetUser();
+        caller = { id: 'u1', isAdmin: true };
+        signIns = { gmail: { account: 'a@x', signedInBy: 'u2', signedInAt: null } };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.signedIn).toMatchObject({ byName: 'dee@corp.example', byYou: false });
+      });
+
+      it('the signer themself sees their own email when they have no display name', async () => {
+        registerHealth();
+        registerGetUser();
+        // u1 (the viewer, not an admin) signed in and has no display name.
+        users.set('u1', { displayName: null, email: 'una@corp.example' });
+        signIns = { gmail: { account: 'a@x', signedInBy: 'u1', signedInAt: null } };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.signedIn).toMatchObject({ byName: 'una@corp.example', byYou: true });
+      });
+
+      it('the display name, when there is one, is shown to everyone (it is not the email)', async () => {
+        registerHealth();
+        registerGetUser();
+        signIns = { gmail: { account: 'a@x', signedInBy: 'u3', signedInAt: null } };
+        users.set('u3', { displayName: 'Tri', email: 'tri@corp.example' });
+        const r = await list();
+        expect(rowsById(r).gmail!.signedIn).toMatchObject({ byName: 'Tri', byYou: false });
+        expect(JSON.stringify(r.body)).not.toContain('tri@corp.example');
+      });
+
+      it('the signer lookup starts as soon as status-batch answers, alongside the other reads', async () => {
+        registerHealth({ inventory: false });
+        signIns = { gmail: { account: 'a@x', signedInBy: 'u2', signedInAt: null } };
+        // Hold the inventory read until the signer lookup has started: if the
+        // lookup waited for every read, this list would never resolve.
+        let release!: () => void;
+        const lookupStarted = new Promise<void>((r) => { release = r; });
+        bus.registerService('auth:get-user', 'auth', async (_c, i: unknown) => {
+          release();
+          return users.get((i as { userId: string }).userId) ?? null;
+        });
+        bus.registerService('connectors:inventory-status-batch', 'mcp-client', async () => {
+          await lookupStarted;
+          return { statuses: [] };
+        });
+        const r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(rowsById(r).gmail!.signedIn).toMatchObject({ account: 'a@x', byName: null });
       });
 
       it('ignores a signIns entry for a connector that is not in the list, and a malformed one', async () => {

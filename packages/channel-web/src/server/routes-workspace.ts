@@ -1851,6 +1851,15 @@ interface SignInIdentityRead {
 }
 
 /**
+ * Slice 4 — a signer as `auth:get-user` describes them (trimmed; blank → null).
+ * The email is shown only to a workspace admin or the signer themself.
+ */
+interface SignerName {
+  displayName: string | null;
+  email: string | null;
+}
+
+/**
  * Structural mirror of `auth:get-user` (registered by the auth plugin; no
  * import — invariant 2). Only the display fields are read.
  */
@@ -3996,11 +4005,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         marked: Set<string>;
         shared: Set<string>;
         identities: Map<string, SignInIdentityRead>;
+        names: Map<string, SignerName>;
       }> => {
         const none = {
           marked: new Set<string>(),
           shared: new Set<string>(),
           identities: new Map<string, SignInIdentityRead>(),
+          names: new Map<string, SignerName>(),
         };
         if (!bus.hasService('mcp-oauth:status-batch')) return none;
         try {
@@ -4010,12 +4021,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             { userId: string; agentId: string; connectorIds: string[] },
             McpOAuthStatusBatchOutput
           >('mcp-oauth:status-batch', ctx, { userId: callerUserId, agentId, connectorIds });
+          // Slice 4 — who the agent signed in as. A list read of stored
+          // metadata (credentials:list in mcp-oauth), never a resolve.
+          const identities = readSignIns(r?.signIns, connectorIds);
           return {
             marked: new Set(Array.isArray(r?.needsReconnect) ? r.needsReconnect : []),
             shared: new Set(Array.isArray(r?.shared) ? r.shared : []),
-            // Slice 4 — who the agent signed in as. A list read of stored
-            // metadata (credentials:list in mcp-oauth), never a resolve.
-            identities: readSignIns(r?.signIns, connectorIds),
+            identities,
+            // Chained here, not after every read: the signer lookup overlaps
+            // the inventory and presence reads. Never throws (fail-soft).
+            names: await signerNames(agentId, ctx, identities),
           };
         } catch (err) {
           initCtx.logger.warn('workspace_connector_health_signin_read_failed', {
@@ -4110,31 +4125,35 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
     // Slice 4 — "Signed in as". Every viewer of the agent gets it (a team
     // agent's members see who the agent acts as). The signer's name is looked
-    // up here, not stored: display names change.
-    const names = await signerNames(agentId, ctx, signIn.identities);
+    // up, not stored: display names change. The signer's display name is
+    // shown to everyone; their EMAIL only to a workspace admin or to the
+    // signer themself — anyone else gets `null` (the client says "someone").
     for (const [id, who] of signIn.identities) {
-      signedIn.set(id, {
-        account: who.account,
-        byName: who.signedInBy === null ? null : (names.get(who.signedInBy) ?? null),
-        byYou: who.signedInBy !== null && who.signedInBy === callerUserId,
-        at: who.signedInAt,
-      });
+      const signer = who.signedInBy === null ? undefined : signIn.names.get(who.signedInBy);
+      const byYou = who.signedInBy !== null && who.signedInBy === callerUserId;
+      const byName =
+        signer === undefined
+          ? null
+          : (signer.displayName ?? (caller.isAdmin || byYou ? signer.email : null));
+      signedIn.set(id, { account: who.account, byName, byYou, at: who.signedInAt });
     }
     return { health: out, sharedSignIn, setup, signedIn };
   }
 
   /**
-   * Slice 4 — each distinct signer's display name, else email, asked ONCE per
-   * person. Fail-soft: no `auth:get-user`, a miss or a throw leaves that
-   * person out (the row says `byName: null`). A failure is logged once, by
-   * error NAME only — never an account, a name or an email.
+   * Slice 4 — each distinct signer's display name and email (either may be
+   * null), asked ONCE per person. Which of the two a viewer may see is the
+   * caller's decision ({@link connectorHealth}). Fail-soft: no
+   * `auth:get-user`, a miss or a throw leaves that person out (the row says
+   * `byName: null`). A failure is logged once, by its stable error CODE only
+   * — never an account, a name or an email.
    */
   async function signerNames(
     agentId: string,
     ctx: AgentContext,
     identities: ReadonlyMap<string, SignInIdentityRead>,
-  ): Promise<Map<string, string>> {
-    const names = new Map<string, string>();
+  ): Promise<Map<string, SignerName>> {
+    const names = new Map<string, SignerName>();
     const userIds = new Set<string>();
     for (const who of identities.values()) {
       if (who.signedInBy !== null) userIds.add(who.signedInBy);
@@ -4151,17 +4170,22 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           );
           const name = typeof u?.displayName === 'string' ? u.displayName.trim() : '';
           const email = typeof u?.email === 'string' ? u.email.trim() : '';
-          const label = name.length > 0 ? name : email;
-          if (label.length > 0) names.set(userId, label);
+          if (name.length > 0 || email.length > 0) {
+            names.set(userId, {
+              displayName: name.length > 0 ? name : null,
+              email: email.length > 0 ? email : null,
+            });
+          }
         } catch (err) {
           failure ??= err;
         }
       }),
     );
     if (failure !== undefined) {
+      const code = (failure as { code?: unknown } | null)?.code;
       initCtx.logger.warn('workspace_connector_signed_in_by_lookup_failed', {
         agentId,
-        name: failure instanceof Error ? failure.name : 'unknown',
+        ...(typeof code === 'string' ? { code } : {}),
       });
     }
     return names;
