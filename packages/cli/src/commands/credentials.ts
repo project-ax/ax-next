@@ -202,21 +202,35 @@ async function runMigrateCommand(
     }
 
     let migrated = 0;
+    // SIGNINS-7 — connector credentials (`account:` refs) belong to agents
+    // now, never to a person. Copying one would write a person-scope
+    // `account:` row straight into storage, past the vault's own refusal, so
+    // they are skipped and counted.
+    let skipped = 0;
     for (const e of v1Entries) {
       // Key shape: `credential:<userId>:<ref>` — split on the FIRST colon
-      // after the prefix. Refs may contain `.` and `-` but never `:`, so
-      // anything after the first colon is the ref.
+      // after the prefix. A user id never contains `:`, so anything after
+      // the first colon is the ref (which may itself, e.g. `account:gmail`).
       const rest = e.key.slice('credential:'.length);
       const colon = rest.indexOf(':');
       if (colon < 0) continue;
       const userId = rest.slice(0, colon);
       const ref = rest.slice(colon + 1);
+      if (ref.startsWith('account:')) {
+        skipped++;
+        continue;
+      }
       const newKey = `credential:v2:user:${userId}:${ref}`;
       await bus.call('storage:set', ctx, { key: newKey, value: e.value });
       migrated++;
     }
 
     out(`migrated ${migrated} credentials from v1 to v2 (scope=user)`);
+    if (skipped > 0) {
+      out(
+        `${skipped} connector credential${skipped === 1 ? '' : 's'} skipped — they now belong to agents. Add them from each agent's Connectors tab.`,
+      );
+    }
     out(
       'v1 keys are still present and readable as a fallback. Remove them only after verifying.',
     );

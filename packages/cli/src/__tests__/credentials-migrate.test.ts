@@ -131,6 +131,61 @@ describe('ax-next credentials migrate', () => {
     }
   });
 
+  // SIGNINS-7 — connector credentials (`account:` refs) belong to agents now.
+  // Migrating one would write a person-scope `account:` row straight into
+  // storage, past the vault's refusal. They are skipped, and counted.
+  it('--yes skips account: refs (no user-scope row is written) and says how many', async () => {
+    const dbPath = join(tmp, 'db.sqlite');
+    {
+      const bus = new HookBus();
+      const handle = await bootstrap({
+        bus,
+        plugins: [createStorageSqlitePlugin({ databasePath: dbPath })],
+        config: {},
+      });
+      const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'cli' });
+      for (const key of [
+        'credential:cli:legacy-ref',
+        'credential:cli:account:gmail',
+        'credential:bob:account:linear:api_key',
+      ]) {
+        await bus.call('storage:set', ctx, { key, value: new Uint8Array([0x01]) });
+      }
+      await handle.shutdown();
+    }
+
+    const lines: string[] = [];
+    const code = await runCredentialsCommand({
+      argv: ['migrate', '--yes'],
+      stdin: emptyStdin(),
+      stdout: (l) => lines.push(l),
+      stderr: (l) => lines.push(l),
+      sqlitePath: dbPath,
+    });
+    expect(code).toBe(0);
+    const text = lines.join('\n');
+    expect(text).toMatch(/migrated 1 credential/i);
+    expect(text).toContain('2 connector credentials skipped — they now belong to agents');
+
+    const bus = new HookBus();
+    const handle = await bootstrap({
+      bus,
+      plugins: [createStorageSqlitePlugin({ databasePath: dbPath })],
+      config: {},
+    });
+    try {
+      const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'cli' });
+      const v2 = await bus.call<{ prefix: string }, { entries: Array<{ key: string }> }>(
+        'storage:list-prefix',
+        ctx,
+        { prefix: 'credential:v2:' },
+      );
+      expect(v2.entries.map((e) => e.key)).toEqual(['credential:v2:user:cli:legacy-ref']);
+    } finally {
+      await handle.shutdown();
+    }
+  });
+
   it('reports nothing-to-do when no v1 rows exist', async () => {
     const dbPath = join(tmp, 'db.sqlite');
     // Seed a v2 row only.
