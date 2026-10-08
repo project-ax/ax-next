@@ -233,8 +233,9 @@ async function authorizeGlobalClientSecretRead(
 //
 // THE SAME SHARED-DEFINITION RULE GATES THE WRITE. @ax/mcp-oauth calls this hook when a
 // sign-in starts: allowed => the token will be stored on the agent, denied =>
-// `begin` refuses the sign-in (403 `agent-store-refused` for an Add, 409
-// `not-on-agent` for Sign in again). Nothing is ever stored on the signer
+// `begin` refuses the sign-in with 403 `agent-store-refused`, for an Add and
+// (since SIGNINS-7) for Sign in again alike; Sign in again then also asks the
+// READ question, and a "no" there is 409 `not-on-agent`. Nothing is ever stored on the signer
 // instead. One predicate for both halves, so the writer never stores a token
 // on an agent that no reader may then read.
 //
