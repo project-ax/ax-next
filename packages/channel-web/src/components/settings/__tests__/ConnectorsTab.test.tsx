@@ -233,7 +233,7 @@ describe('ConnectorsTab', () => {
     }
   });
 
-  it('Set it up carries only what the editor shows, lists the rest, and fixes Sharing to Shared', async () => {
+  it('Set it up carries only what the editor shows, lists the rest, and sends no visibility', async () => {
     vi.spyOn(connectorsLib, 'listAuthoredProposals').mockResolvedValue([
       {
         ...REQUEST_LINEAR,
