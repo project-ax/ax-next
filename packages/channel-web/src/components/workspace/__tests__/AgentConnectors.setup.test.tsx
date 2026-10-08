@@ -401,7 +401,7 @@ describe('which account the agent uses (slice 4)', () => {
     expect(shown.map((n) => n.textContent).join('')).toBe('Gmail');
     expect(name.querySelector('.sr-only')?.textContent).toBe(', signed in as bob@x.com');
     fireEvent.pointerMove(name, { pointerType: 'mouse' });
-    expect((await screen.findByRole('tooltip')).textContent).toBe('Signed in as bob@x.com');
+    expect((await screen.findByRole('tooltip')).textContent).toBe('bob@x.com');
   });
 
   it('the account tooltip opens on keyboard focus too', async () => {
@@ -410,7 +410,7 @@ describe('which account the agent uses (slice 4)', () => {
     const name = await screen.findByTestId('connector-name-gmail');
     expect(name.getAttribute('tabindex')).toBe('0');
     name.focus();
-    expect((await screen.findByRole('tooltip')).textContent).toBe('Signed in as bob@x.com');
+    expect((await screen.findByRole('tooltip')).textContent).toBe('bob@x.com');
   });
 
   it('a row with no recorded account is just its name, with no tooltip', async () => {
@@ -433,6 +433,27 @@ describe('which account the agent uses (slice 4)', () => {
     expect(name.querySelector('bdi')?.textContent).toBe(evil);
     expect(name.querySelector('img')).toBeNull();
     expect(document.querySelector('img[src="x"]')).toBeNull();
+  });
+
+  it('the row menu starts with the account, as a plain label above the actions', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') })]);
+    renderTab();
+    const menu = await openMenu('Gmail');
+    const label = within(menu).getByTestId('row-menu-account');
+    expect(label.textContent).toBe('bob@x.com');
+    // First thing in the menu, and not something you can pick.
+    expect(menu.firstElementChild?.contains(label) || menu.firstElementChild === label).toBe(true);
+    expect(label.getAttribute('role')).not.toBe('menuitem');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).not.toContain('bob@x.com');
+    // Provider text isolated, as on the row.
+    expect(label.querySelector('bdi')?.textContent).toBe('bob@x.com');
+  });
+
+  it('a row menu with no recorded account has no account label', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: { account: null, byName: null, byYou: false, at: null } })]);
+    renderTab();
+    const menu = await openMenu('Gmail');
+    expect(within(menu).queryByTestId('row-menu-account')).toBeNull();
   });
 
   async function signInAgainAs(before: string | null, after: string | null) {

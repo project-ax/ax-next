@@ -93,6 +93,7 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -320,6 +321,7 @@ export function AgentConnectors({
       {...(withView && onView !== undefined
         ? { onView: () => onView(row.id) }
         : {})}
+      {...(withView && row.signedIn?.account != null ? { account: row.signedIn.account } : {})}
       {...(row.removable ? { onRemove: () => setConfirming(row) } : {})}
     />
   );
@@ -600,8 +602,9 @@ function NoConnectors({
  */
 /**
  * A row's name (slice 4). Which account the agent signed in as stays off the
- * row so the list is easy to scan: it shows in a tooltip on hover or keyboard
- * focus, and screen readers hear it with the name. A row with no recorded
+ * row so the list is easy to scan: the bare account shows in a tooltip on
+ * hover or keyboard focus (and atop the row menu), and screen readers hear
+ * ", signed in as …" with the name. A row with no recorded
  * account is plain text, with no tooltip and no tab stop.
  * Provider text: text nodes only, never markup; `bdi` so a right-to-left
  * account can't reorder what's around it.
@@ -630,7 +633,7 @@ function ConnectorName({ id, name, account }: { id: string; name: string; accoun
           </span>
         </TooltipTrigger>
         <TooltipContent side="top">
-          Signed in as <bdi>{account}</bdi>
+          <bdi>{account}</bdi>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
@@ -673,8 +676,12 @@ function RowMenu({
   onView,
   signInLabel = 'Sign in again',
   onRemove,
+  account,
 }: {
   row: AgentConnectorRow;
+  /** The account the agent signed in as, shown atop the menu. The list's
+   *  menu only: the details view already says it. */
+  account?: string;
   agentName: string;
   busy: boolean;
   /** The sign-in expired or is missing, and this person may redo it. */
@@ -751,6 +758,20 @@ function RowMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4} className="shadow-popover">
+        {account !== undefined && (
+          <>
+            {/* Provider text: a text node only; bdi keeps an RTL account from
+                reordering. A label, not an item: nothing to pick. */}
+            <DropdownMenuLabel
+              data-testid="row-menu-account"
+              className="max-w-64 truncate font-normal text-muted-foreground"
+              title={account}
+            >
+              <bdi>{account}</bdi>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+          </>
+        )}
         {groups.map(({ key, item }, i) => (
           <Fragment key={key}>
             {i > 0 && <DropdownMenuSeparator />}
