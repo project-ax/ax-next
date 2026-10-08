@@ -372,25 +372,28 @@ export function AgentConnectors({
           {connectors.map((row, i) => (
             <Fragment key={row.id}>
               {i > 0 && <Separator />}
-              <div className="flex h-11 items-center gap-2 pl-3 pr-1.5">
-                <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <span className="min-w-0 truncate text-[13px]">
-                    {row.name}
-                    {/* Slice 4 — which account the agent signed in as.
-                        Provider text: a text node only, never markup. */}
-                    {row.signedIn?.account != null && (
-                      <span className="text-muted-foreground" title={row.signedIn.account}>
-                        {' · '}
-                        {/* bdi: a right-to-left account can't reorder the row. */}
-                        <bdi>{row.signedIn.account}</bdi>
-                      </span>
+              <div className="flex min-h-11 items-center gap-2 py-1.5 pl-3 pr-1.5">
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 truncate text-[13px]">{row.name}</span>
+                    {row.health !== 'ok' && (
+                      <HealthIcon
+                        reason={healthReason(row, canSetAccount, isAdmin)}
+                        tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
+                      />
                     )}
-                  </span>
-                  {row.health !== 'ok' && (
-                    <HealthIcon
-                      reason={healthReason(row, canSetAccount, isAdmin)}
-                      tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
-                    />
+                  </div>
+                  {/* Slice 4 — which account the agent signed in as, on its own
+                      quieter line so the name stays easy to scan.
+                      Provider text: a text node only, never markup. */}
+                  {row.signedIn?.account != null && (
+                    <p
+                      className="truncate text-[11.5px] leading-snug text-muted-foreground"
+                      title={row.signedIn.account}
+                    >
+                      {/* bdi: a right-to-left account can't reorder the row. */}
+                      <bdi>{row.signedIn.account}</bdi>
+                    </p>
                   )}
                 </div>
                 {menuFor(row, true)}

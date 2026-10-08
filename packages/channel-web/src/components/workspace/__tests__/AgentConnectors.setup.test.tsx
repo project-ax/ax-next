@@ -390,17 +390,21 @@ describe('which account the agent uses (slice 4)', () => {
   const EXPIRED = (account: string | null) =>
     row({ id: 'gmail', name: 'Gmail', health: 'needs-reconnect', signedIn: signedIn(account) });
 
-  it('a row says "Gmail · bob@x.com", the account muted and whole on hover', async () => {
+  it('a row shows the account on its own quieter line under the name', async () => {
     list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') }), SIGN_IN]);
     renderTab();
     const account = await screen.findByTitle('bob@x.com');
-    expect(account.textContent).toBe(' · bob@x.com');
-    // Provider text is isolated, so a right-to-left account can't reorder
-    // the separator or the name around it.
-    expect(account.querySelector('bdi')?.textContent).toBe('bob@x.com');
+    // Its own line: no separator glued to the name, and the name stays alone.
+    expect(account.textContent).toBe('bob@x.com');
+    expect(screen.getByText('Gmail').textContent).toBe('Gmail');
+    expect(account.tagName).toBe('P');
+    // Smaller and lighter than the name, and cut to one line.
     expect(account.className).toContain('text-muted-foreground');
-    expect(account.parentElement?.textContent).toBe('Gmail · bob@x.com');
-    expect(account.parentElement?.className).toContain('truncate');
+    expect(account.className).toContain('text-[11.5px]');
+    expect(account.className).toContain('truncate');
+    // Provider text is isolated, so a right-to-left account can't reorder
+    // the row around it.
+    expect(account.querySelector('bdi')?.textContent).toBe('bob@x.com');
     // A row with no sign-in is just its name.
     expect(screen.getByText('Linear').textContent).toBe('Linear');
   });
@@ -410,7 +414,7 @@ describe('which account the agent uses (slice 4)', () => {
     renderTab();
     const name = await screen.findByText('Gmail');
     expect(name.textContent).toBe('Gmail');
-    expect(name.querySelector('span')).toBeNull();
+    expect(document.querySelector('[title]')?.tagName === 'P').toBe(false);
   });
 
   it('renders a hostile account as literal text, never markup', async () => {
@@ -418,7 +422,7 @@ describe('which account the agent uses (slice 4)', () => {
     list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn(evil) })]);
     renderTab();
     const account = await screen.findByTitle(evil);
-    expect(account.textContent).toBe(` · ${evil}`);
+    expect(account.textContent).toBe(evil);
     expect(account.querySelector('bdi')?.textContent).toBe(evil);
     expect(account.querySelector('img')).toBeNull();
     expect(document.querySelector('img[src="x"]')).toBeNull();
