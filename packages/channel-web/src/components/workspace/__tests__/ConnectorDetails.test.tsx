@@ -1,7 +1,8 @@
 /**
  * The connector details subview (TASK-742, connectors-rail slice 9).
  *
- * Pinned, through the real rail: "View details" swaps the whole tab for the
+ * Pinned, through the real rail: "Edit" (for everyone, members included)
+ * swaps the whole tab for the
  * subview and back; tools sit in "Looks things up" / "Makes changes"; a
  * segment looser than the admin's ceiling is refused in the browser AND says
  * why (on hover and keyboard focus); a choice is written one tool at a time
@@ -9,7 +10,7 @@
  * the segmented control works from the keyboard; an inventory that could not
  * be read says so; approved access for this connector moves here with Revoke.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError, type AgentDetail } from '@/lib/workspace-api';
 import type {
@@ -103,7 +104,9 @@ async function openDetails(name = 'Linear') {
   const trigger = await screen.findByRole('button', { name: `Actions for ${name}` });
   fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
   const menu = await screen.findByRole('menu');
-  fireEvent.click(within(menu).getByRole('menuitem', { name: 'View details' }));
+  // Slice 3 — "Edit" for everyone: a plain member's view is editable within
+  // the TASK-809 ceiling too.
+  fireEvent.click(within(menu).getByRole('menuitem', { name: 'Edit' }));
   await screen.findByRole('button', { name: 'Connectors' });
 }
 
@@ -135,11 +138,14 @@ beforeEach(() => {
 });
 
 describe('opening and closing', () => {
-  it('View details replaces the whole tab, and ‹ Connectors brings the list back', async () => {
+  it('Edit replaces the whole tab, and ‹ Connectors brings the list back', async () => {
     renderTab();
     await openDetails();
     expect(screen.getByRole('heading', { level: 3, name: 'Linear' })).toBeTruthy();
-    expect(await screen.findByText('Connected · signed in as you')).toBeTruthy();
+    // A sign-in from before slice 4 recorded no account: just the health word,
+    // and never the old guess "signed in as you".
+    expect(await screen.findByText('Connected')).toBeTruthy();
+    expect(screen.queryByText(/signed in/i)).toBeNull();
     const heading = screen.getByRole('heading', { name: /What Quill may do/ });
     expect(heading.textContent).toBe('What Quill may do3 tools');
     // The subview IS the tab: Other abilities is not drawn under it.
@@ -181,7 +187,7 @@ describe('opening and closing', () => {
     expect(screen.queryByRole('button', { name: 'Edit connector' })).toBeNull();
   });
 
-  it('the details menu offers neither View details nor Edit permissions', async () => {
+  it('the details menu offers no Edit — and no Retry: only Remove', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false,
       connectorsSupported: true,
@@ -197,7 +203,6 @@ describe('opening and closing', () => {
     });
     const menu = await screen.findByRole('menu');
     expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
-      'Retry',
       'Remove from Quill',
     ]);
   });
@@ -225,18 +230,12 @@ describe('a member on a team agent (TASK-798)', () => {
     expect(screen.queryByTestId('connector-details-footer')).toBeNull();
   });
 
-  it('has no Remove in the details menu either', async () => {
-    asMember([{ ...ROWS[0]!, health: 'unreachable', removable: false }]);
+  it('has no details menu at all — nothing in it is theirs', async () => {
+    asMember([{ ...ROWS[0]!, health: 'needs-reconnect', removable: false }]);
     renderTab();
     await openDetails();
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Actions for Linear' }), {
-      button: 0,
-      ctrlKey: false,
-    });
-    const menu = await screen.findByRole('menu');
-    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual([
-      'Retry',
-    ]);
+    await screen.findByText('Search issues');
+    expect(screen.queryByRole('button', { name: 'Actions for Linear' })).toBeNull();
   });
 
   it('an ask-owner row says to ask the agent’s owner, with no Sign in button', async () => {
@@ -245,7 +244,7 @@ describe('a member on a team agent (TASK-798)', () => {
     ]);
     renderTab();
     await openDetails();
-    expect(screen.getByText('Ask the agent’s owner to sign in')).toBeTruthy();
+    expect(screen.getByText('Ask the agent’s owner to set it up')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Sign in' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add key' })).toBeNull();
   });
@@ -499,8 +498,8 @@ describe('when the tool list cannot be read', () => {
   // TASK-817 — the tool read is where a provider's 401 on a stored token is
   // first seen; the check that saw it may have just written the "sign-in
   // expired" marker. So a needs-auth read under a row the list still calls
-  // healthy re-reads the list once, and the row (and its Reconnect) catch up.
-  it('a needs-auth tool read under a healthy row re-reads the list once; the row turns to Sign-in expired with Reconnect', async () => {
+  // healthy re-reads the list once, and the row (and its Sign in again) catch up.
+  it('a needs-auth tool read under a healthy row re-reads the list once; the row turns to Sign-in expired with Sign in again', async () => {
     const list = vi.mocked(workspaceApi.connectors);
     list.mockReset();
     list
@@ -519,7 +518,7 @@ describe('when the tool list cannot be read', () => {
     const trigger = screen.getByRole('button', { name: 'Actions for Linear' });
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
     const menu = await screen.findByRole('menu');
-    expect(within(menu).getByRole('menuitem', { name: 'Reconnect' })).toBeTruthy();
+    expect(within(menu).getByRole('menuitem', { name: 'Sign in again' })).toBeTruthy();
   });
 
   it('re-reads the list at most once per tool read when the row stays healthy', async () => {
@@ -581,7 +580,93 @@ describe('when the tool list cannot be read', () => {
   });
 });
 
+/**
+ * The date assertions below ("on 7 Oct", "14 Aug") are about the READER's
+ * calendar and language, so pin both: the zone (`process.env.TZ`, read live —
+ * see workspace-timestamp-parity.test.tsx) and the default locale (the app
+ * passes no locale, so a default `Intl.DateTimeFormat` is answered as en-GB).
+ * Without this the suite passes or fails by where the runner sits — e.g.
+ * `TZ=Pacific/Auckland` reads 12:00Z on the 7th as the 8th.
+ */
+function pinReaderClock(): void {
+  let savedTz: string | undefined;
+  beforeAll(() => {
+    savedTz = process.env.TZ;
+    process.env.TZ = 'UTC';
+    const Real = Intl.DateTimeFormat;
+    // A `function`, not an arrow: the app calls it with `new`.
+    vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (
+      locales?: string | string[],
+      options?: Intl.DateTimeFormatOptions,
+    ) {
+      return new Real(locales ?? 'en-GB', options);
+    } as unknown as typeof Intl.DateTimeFormat);
+  });
+  afterAll(() => {
+    vi.mocked(Intl.DateTimeFormat).mockRestore();
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+  });
+}
+
+describe('who the agent signed in as (slice 4)', () => {
+  pinReaderClock();
+  /** The line is split by `<bdi>`, so match the whole paragraph's text. */
+  const findLine = (text: string) =>
+    screen.findByText((_c, el) => el?.tagName === 'P' && el.textContent === text);
+  function withSignIn(signedIn: AgentConnectorRow['signedIn']) {
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false,
+      connectors: [{ ...ROWS[0]!, ...(signedIn !== undefined ? { signedIn } : {}) }],
+    });
+  }
+  const AT = '2026-10-07T12:00:00.000Z';
+
+  it('names the account the provider reported', async () => {
+    withSignIn({ account: 'bob@x.com', byName: 'Vinay', byYou: false, at: AT });
+    renderTab();
+    await openDetails();
+    const line = await findLine('Signed in as bob@x.com');
+    // The provider's account is isolated from the sentence around it.
+    expect(line.querySelector('bdi')?.textContent).toBe('bob@x.com');
+    expect(screen.getByText('Connected')).toBeTruthy();
+    expect(screen.queryByText(/Signed in by/)).toBeNull();
+  });
+
+  it.each([
+    [{ byName: 'Vinay', byYou: true }, 'Signed in by you on 7 Oct'],
+    [{ byName: 'Vinay', byYou: false }, 'Signed in by Vinay on 7 Oct'],
+    [{ byName: null, byYou: false }, 'Signed in by someone on 7 Oct'],
+  ])('with no account, says who signed in and when (%o)', async (who, text) => {
+    withSignIn({ account: null, at: AT, ...who });
+    renderTab();
+    await openDetails();
+    const line = await findLine(text);
+    // Who signed in is isolated too (a display name can be right-to-left).
+    expect(line.querySelector('bdi')?.textContent).toBe(text.replace(/^Signed in by (.*) on .*$/, '$1'));
+  });
+
+  it('a sign-in from before slice 4 (nothing recorded) adds no line at all', async () => {
+    withSignIn({ account: null, byName: null, byYou: false, at: null });
+    renderTab();
+    await openDetails();
+    expect(await screen.findByText('Connected')).toBeTruthy();
+    expect(screen.queryByText(/Signed in/)).toBeNull();
+  });
+
+  it('renders a hostile account as literal text', async () => {
+    const evil = '<img src=x onerror=alert(1)>\u202Egro.live';
+    withSignIn({ account: evil, byName: null, byYou: true, at: AT });
+    renderTab();
+    await openDetails();
+    const line = await findLine(`Signed in as ${evil}`);
+    expect(line.querySelector('bdi')?.textContent).toBe(evil);
+    expect(document.querySelector('img')).toBeNull();
+  });
+});
+
 describe('access you approved', () => {
+  pinReaderClock();
   it('moves a connector’s approved access into its details, with Revoke', async () => {
     vi.mocked(workspaceApi.rail).mockResolvedValue(
       rail({ grants: { status: 'ok', rows: [LINEAR_GRANT, siteGrant()], incomplete: false } }),
@@ -597,6 +682,8 @@ describe('access you approved', () => {
     expect(within(section).getByText('uploads.linear.app')).toBeTruthy();
     expect(within(section).queryByText('api.linear.app')).toBeNull();
     expect(within(section).getByRole('button', { name: /Revoke/ })).toBeTruthy();
+    // The grant line's date comes from the shared `shortDay` helper: day first.
+    expect(within(section).getByText('14 Aug')).toBeTruthy();
   });
 
   it('says it could not read approved access when the grants read failed, instead of hiding the section (TASK-757)', async () => {

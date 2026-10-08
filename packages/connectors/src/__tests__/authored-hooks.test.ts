@@ -3,7 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { PluginError } from '@ax/core';
+import { PluginError, type Logger } from '@ax/core';
 import {
   createTestHarness,
   type TestHarness,
@@ -13,16 +13,12 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConnectorsPlugin } from '../plugin.js';
 import type {
-  ActivateAuthoredInput,
-  ActivateAuthoredOutput,
-  ClearAuthoredInput,
-  ClearAuthoredOutput,
+  ClearAuthoredByIdInput,
+  ClearAuthoredByIdOutput,
   InstallAuthoredInput,
   InstallAuthoredOutput,
-  ListAuthoredInput,
-  ListAuthoredOutput,
-  ListAuthoredPendingInput,
-  ListAuthoredPendingOutput,
+  ListAuthoredPendingAllInput,
+  ListAuthoredPendingAllOutput,
   ResolveInput,
   ResolveOutput,
   UpsertInput,
@@ -31,7 +27,7 @@ import type {
 
 // ---------------------------------------------------------------------------
 // Authored-connector hooks through the bus against a real postgres container.
-// Covers the install → list → activate → clear path, boundary validation, and
+// Covers install, the admin proposal queue, boundary validation, and
 // the ZERO-REACH invariant: a pending authored draft is never seen by
 // connectors:resolve (which reads only the LIVE registry table).
 // ---------------------------------------------------------------------------
@@ -65,6 +61,44 @@ function installInput(over: Partial<InstallAuthoredInput> = {}): InstallAuthored
   };
 }
 
+/** One stored draft, read straight from the table (any status). Slice 2c
+ *  removed the per-agent `connectors:list-authored` read with the in-chat card,
+ *  so the tests look at the rows themselves. */
+interface StoredDraft {
+  connectorId: string;
+  name: string;
+  status: string;
+  keyMode: string;
+  proposal: {
+    allowedHosts: string[];
+    credentials: unknown[];
+    mcpServers: unknown[];
+    packages: { npm: string[]; pypi: string[] };
+  };
+}
+async function draftsOf(owner: string, agent: string): Promise<StoredDraft[]> {
+  const pg = new (await import('pg')).default.Client({ connectionString });
+  await pg.connect();
+  try {
+    const res = await pg.query(
+      `SELECT connector_id, name, status, key_mode, capability_proposal
+         FROM connectors_v1_authored
+        WHERE owner_user_id = $1 AND agent_id = $2
+        ORDER BY connector_id`,
+      [owner, agent],
+    );
+    return res.rows.map((r: Record<string, unknown>) => ({
+      connectorId: r.connector_id as string,
+      name: r.name as string,
+      status: r.status as string,
+      keyMode: r.key_mode as string,
+      proposal: r.capability_proposal as StoredDraft['proposal'],
+    }));
+  } finally {
+    await pg.end();
+  }
+}
+
 beforeAll(async () => {
   container = await startTestContainer(new PostgreSqlContainer('postgres:16-alpine'));
   connectionString = container.getConnectionUri();
@@ -90,7 +124,7 @@ afterAll(async () => {
 });
 
 describe('@ax/connectors — install_authored_connector + lifecycle', () => {
-  it('install persists a PENDING draft; list reads it back with the assembled proposal', async () => {
+  it('install persists a PENDING draft with the assembled proposal', async () => {
     const h = await makeHarness();
     const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
       'connectors:install-authored',
@@ -103,13 +137,9 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
     );
     expect(out).toEqual({ connectorId: 'linear', status: 'pending' });
 
-    const list = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
-      'connectors:list-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1' },
-    );
-    expect(list.drafts).toHaveLength(1);
-    const d = list.drafts[0]!;
+    const drafts = await draftsOf('userA', 'agent1');
+    expect(drafts).toHaveLength(1);
+    const d = drafts[0]!;
     expect(d).toMatchObject({ connectorId: 'linear', name: 'Linear', status: 'pending', keyMode: 'personal' });
     // The flat install args were assembled into the canonical Capabilities.
     expect(d.proposal.allowedHosts).toEqual(['api.linear.app']);
@@ -139,53 +169,10 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
     ).rejects.toThrow(/not found/);
   });
 
-  it('activate flips pending → active (idempotent); list reflects it', async () => {
+  it('the per-agent read and the approve flip are gone with the in-chat card (slice 2c)', async () => {
     const h = await makeHarness();
-    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
-      'connectors:install-authored',
-      h.ctx({ userId: 'userA' }),
-      installInput(),
-    );
-    const a1 = await h.bus.call<ActivateAuthoredInput, ActivateAuthoredOutput>(
-      'connectors:activate-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1', connectorId: 'linear' },
-    );
-    expect(a1.activated).toBe(true);
-    const a2 = await h.bus.call<ActivateAuthoredInput, ActivateAuthoredOutput>(
-      'connectors:activate-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1', connectorId: 'linear' },
-    );
-    expect(a2.activated).toBe(false);
-
-    const list = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
-      'connectors:list-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1' },
-    );
-    expect(list.drafts[0]!.status).toBe('active');
-  });
-
-  it('clear removes the draft (reject path)', async () => {
-    const h = await makeHarness();
-    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
-      'connectors:install-authored',
-      h.ctx({ userId: 'userA' }),
-      installInput(),
-    );
-    const c = await h.bus.call<ClearAuthoredInput, ClearAuthoredOutput>(
-      'connectors:clear-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1', connectorId: 'linear' },
-    );
-    expect(c.cleared).toBe(true);
-    const list = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
-      'connectors:list-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1' },
-    );
-    expect(list.drafts).toEqual([]);
+    expect(h.bus.hasService('connectors:list-authored')).toBe(false);
+    expect(h.bus.hasService('connectors:activate-authored')).toBe(false);
   });
 
   it('rejects a malformed credential slot (untrusted-input defense, I5)', async () => {
@@ -197,6 +184,36 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
         installInput({ slots: [{ slot: 'lower case bad', kind: 'api-key' }] }),
       ),
     ).rejects.toThrow(PluginError);
+  });
+
+  it('rejects the reserved id `authored` (it would be shadowed by the admin queue route)', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+        'connectors:install-authored',
+        h.ctx({ userId: 'userA' }),
+        installInput({ connectorId: 'authored' }),
+      ),
+    ).rejects.toThrow(/reserved/);
+    await expect(
+      h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), {
+        userId: 'admin',
+        connectorId: 'authored',
+        name: 'Authored',
+        keyMode: 'personal',
+        capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+      }),
+    ).rejects.toThrow(/reserved/);
+  });
+
+  it('the reservation is create-only: connectors:live-ids answers for `authored` without throwing', async () => {
+    const h = await makeHarness();
+    const out = await h.bus.call<{ connectorIds: string[] }, { live: string[] }>(
+      'connectors:live-ids',
+      h.ctx({ userId: 'admin' }),
+      { connectorIds: ['authored', 'x'] },
+    );
+    expect(out.live).toEqual([]);
   });
 
   it('rejects a malformed connectorId', async () => {
@@ -222,27 +239,18 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
       h.ctx({ userId: 'userA' }),
       installInput({ agentId: 'agent2', name: 'A2' }),
     );
-    const a1 = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
-      'connectors:list-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1' },
-    );
-    expect(a1.drafts.map((d) => d.name)).toEqual(['A1']);
+    expect((await draftsOf('userA', 'agent1')).map((d) => d.name)).toEqual(['A1']);
   });
 });
 
 // ---------------------------------------------------------------------------
-// TASK-114 item 1 — re-propose dedup against the live registry.
-//
-// TASK-113 made approval PROMOTE the authored draft into the LIVE registry
-// (`connectors_v1_connectors`). After that, a warm-turn re-propose of the SAME
-// connector must NOT re-create a pending authored draft (and so must NOT re-fire
-// the orchestrator's upfront approval card, which keys off pending drafts). The
-// equivalence rule is the simplest-correct one: an active (not-deleted) registry
-// connector owned by the same user with the SAME connector id.
+// TASK-114 item 1 — re-propose dedup against the live registry, reshaped in
+// slice 2c. A re-propose of an id that is already live must NOT create a draft
+// (nothing for an admin to approve). The rule is a pure id match against live
+// rows of any owner (every connector is shared, SIGNINS-9).
 // ---------------------------------------------------------------------------
 
-/** Seed an active connector into the LIVE registry (the post-approval state). */
+/** Seed a live connector into the registry (the admin-created state). */
 async function seedRegistryConnector(
   h: TestHarness,
   over: Partial<UpsertInput> = {},
@@ -255,7 +263,6 @@ async function seedRegistryConnector(
       connectorId: 'linear',
       name: 'Linear',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: {
         allowedHosts: ['api.linear.app'],
         credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', account: 'linear' }],
@@ -280,52 +287,25 @@ describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-1
     // Reports the connector is already active — not a fresh pending draft.
     expect(out).toEqual({ connectorId: 'linear', status: 'active' });
 
-    // And it must NOT have created a pending authored draft (so the orchestrator
-    // card path, which fires on a pending draft, never re-cards).
-    const list = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
-      'connectors:list-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1' },
-    );
-    expect(list.drafts).toEqual([]);
+    // And it must NOT have created a draft for the admins' queue.
+    expect(await draftsOf('userA', 'agent1')).toEqual([]);
   });
 
-  it('does NOT reset a pre-existing pending draft to a new pending when the registry already has it', async () => {
+  it('creating the live connector clears the pending draft, and a later re-propose stays a no-op', async () => {
     const h = await makeHarness();
-    // A draft exists pending (the pre-approval state), THEN it gets promoted into
-    // the registry (approval). A re-propose afterwards must leave the draft as-is.
     await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
       'connectors:install-authored',
       h.ctx({ userId: 'userA' }),
       installInput(),
     );
-    await seedRegistryConnector(h);
-    const before = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
-      'connectors:list-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1' },
-    );
-    const beforeUpdatedAt = (before.drafts[0] as { updatedAt?: string }).updatedAt;
-
+    await seedRegistryConnector(h); // creates 'linear' -> resolves the proposal
     const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
       'connectors:install-authored',
       h.ctx({ userId: 'userA' }),
       installInput({ name: 'Linear (re-proposed)' }),
     );
     expect(out.status).toBe('active');
-
-    const after = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
-      'connectors:list-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1' },
-    );
-    // The draft is untouched — same single row, name NOT overwritten by the
-    // re-propose (the no-op short-circuits before any write).
-    expect(after.drafts).toHaveLength(1);
-    expect(after.drafts[0]!.name).toBe('Linear');
-    if (beforeUpdatedAt !== undefined) {
-      expect((after.drafts[0] as { updatedAt?: string }).updatedAt).toBe(beforeUpdatedAt);
-    }
+    expect(await draftsOf('userA', 'agent1')).toEqual([]);
   });
 
   it('still writes a pending draft for a DIFFERENT id with no registry match (control)', async () => {
@@ -339,18 +319,14 @@ describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-1
     );
     expect(out).toEqual({ connectorId: 'gmail', status: 'pending' });
 
-    const list = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
-      'connectors:list-authored',
-      h.ctx({ userId: 'userA' }),
-      { ownerUserId: 'userA', agentId: 'agent1' },
-    );
-    expect(list.drafts.map((d) => d.connectorId)).toEqual(['gmail']);
-    expect(list.drafts[0]!.status).toBe('pending');
+    const drafts = await draftsOf('userA', 'agent1');
+    expect(drafts.map((d) => d.connectorId)).toEqual(['gmail']);
+    expect(drafts[0]!.status).toBe('pending');
   });
 
-  it('does NOT dedup against ANOTHER user’s registry connector (owner-scoped)', async () => {
+  it('dedups against ANY owner’s live connector with that id (slice 2c: proposals go to admins)', async () => {
     const h = await makeHarness();
-    // userB owns a 'linear' registry connector; userA's re-propose is unaffected.
+    // userB (an admin, in practice) owns a live 'linear'; userA's agent proposes it.
     await h.bus.call<UpsertInput, UpsertOutput>(
       'connectors:upsert',
       h.ctx({ userId: 'userB' }),
@@ -359,7 +335,6 @@ describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-1
         connectorId: 'linear',
         name: 'Linear',
         keyMode: 'personal',
-        visibility: 'private',
         capabilities: {
           allowedHosts: ['api.linear.app'],
           credentials: [],
@@ -374,105 +349,271 @@ describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-1
       h.ctx({ userId: 'userA' }),
       installInput(),
     );
-    // userA has no registry 'linear' → normal pending draft.
-    expect(out).toEqual({ connectorId: 'linear', status: 'pending' });
+    expect(out).toEqual({ connectorId: 'linear', status: 'active' });
+    // No draft lands in the admin queue.
+    const all = await h.bus.call<ListAuthoredPendingAllInput, ListAuthoredPendingAllOutput>(
+      'connectors:list-authored-pending-all',
+      h.ctx({ userId: 'userA' }),
+      {},
+    );
+    expect(all.drafts).toEqual([]);
   });
+
 });
 
+// Slice 2c — install-authored no longer fires `connectors:proposed`: nothing
+// opens an in-chat card any more, so the draft just waits for an admin.
 // ---------------------------------------------------------------------------
-// connectors:proposed (2026-06-03) — install-authored fires this subscriber
-// event so the chat-orchestrator can surface the approval card AT PROPOSAL
-// TIME (mid-turn), not only at the start of the user's NEXT turn. The event is
-// the trigger for the bug fix: previously a connector proposed mid-turn was
-// never carded until a turn the user might never send.
-// ---------------------------------------------------------------------------
-describe('@ax/connectors — install-authored fires connectors:proposed', () => {
-  it('fires connectors:proposed once for a fresh PENDING draft, carrying the (owner, agent, id)', async () => {
+describe('@ax/connectors — install-authored fires no proposal event (slice 2c)', () => {
+  it('writes the pending draft and fires nothing', async () => {
     const h = await makeHarness();
-    const events: Array<{ ownerUserId: string; agentId: string; connectorId: string; status: string }> = [];
-    h.bus.subscribe('connectors:proposed', 'test/capture', async (_ctx, payload) => {
-      events.push(payload as { ownerUserId: string; agentId: string; connectorId: string; status: string });
-      return undefined;
-    });
-
-    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
-      'connectors:install-authored',
-      h.ctx({ userId: 'userA' }),
-      installInput(),
-    );
-
-    expect(events).toEqual([
-      { ownerUserId: 'userA', agentId: 'agent1', connectorId: 'linear', status: 'pending' },
-    ]);
-  });
-
-  it('does NOT fire connectors:proposed on the already-active no-op path (TASK-114 dedup)', async () => {
-    const h = await makeHarness();
-    await seedRegistryConnector(h); // 'linear' already active in the registry
-
     const events: unknown[] = [];
     h.bus.subscribe('connectors:proposed', 'test/capture', async (_ctx, payload) => {
       events.push(payload);
       return undefined;
     });
-
     const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
       'connectors:install-authored',
       h.ctx({ userId: 'userA' }),
       installInput(),
     );
-    // No-op: already active → no pending draft written → no card to surface.
-    expect(out).toEqual({ connectorId: 'linear', status: 'active' });
+    expect(out).toEqual({ connectorId: 'linear', status: 'pending' });
     expect(events).toEqual([]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// connectors:list-authored-pending (2026-06-03) — the Settings fallback read.
-// Aggregates the user's PENDING drafts across all their agents and excludes any
-// id already live in the registry.
+// Slice 2c — agent proposals go to admins. `connectors:list-authored-pending-all`
+// is the admin queue (every owner's pending drafts, minus ids already live); `connectors:clear-authored-by-id` is Dismiss; and creating a live
+// connector through `connectors:upsert` resolves every proposal for that id.
 // ---------------------------------------------------------------------------
-describe('@ax/connectors — connectors:list-authored-pending', () => {
-  it('lists the user’s pending drafts across agents, each with its agentId', async () => {
-    const h = await makeHarness();
-    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
-      'connectors:install-authored',
-      h.ctx({ userId: 'userA' }),
-      installInput({ agentId: 'agent2', connectorId: 'linear', name: 'Linear' }),
-    );
-    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
-      'connectors:install-authored',
-      h.ctx({ userId: 'userA' }),
-      installInput({ agentId: 'agent1', connectorId: 'gmail', name: 'Gmail', hosts: ['gmail.googleapis.com'] }),
-    );
 
-    const out = await h.bus.call<ListAuthoredPendingInput, ListAuthoredPendingOutput>(
-      'connectors:list-authored-pending',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA' },
+function sharedUpsert(over: Partial<UpsertInput> = {}): UpsertInput {
+  return {
+    userId: 'admin',
+    connectorId: 'linear',
+    name: 'Linear',
+    keyMode: 'workspace',
+    capabilities: {
+      allowedHosts: ['api.linear.app'],
+      credentials: [],
+      mcpServers: [],
+      packages: { npm: [], pypi: [] },
+    },
+    ...over,
+  };
+}
+
+/** Write a pending draft straight into the table, bypassing the install dedup. */
+async function insertDraftBehindTheStore(owner: string, agent: string, id: string): Promise<void> {
+  const pg = new (await import('pg')).default.Client({ connectionString });
+  await pg.connect();
+  try {
+    await pg.query(
+      `INSERT INTO connectors_v1_authored (owner_user_id, agent_id, connector_id, name, usage_note, key_mode, capability_proposal, status)
+       VALUES ($1, $2, $3, $3, '', 'personal', '{"allowedHosts":[],"credentials":[],"mcpServers":[],"packages":{"npm":[],"pypi":[]}}'::jsonb, 'pending')`,
+      [owner, agent, id],
     );
-    expect(out.drafts.map((d) => ({ connectorId: d.connectorId, agentId: d.agentId }))).toEqual([
-      { connectorId: 'gmail', agentId: 'agent1' },
-      { connectorId: 'linear', agentId: 'agent2' },
+  } finally {
+    await pg.end();
+  }
+}
+
+async function pendingAll(h: TestHarness): Promise<ListAuthoredPendingAllOutput['drafts']> {
+  const out = await h.bus.call<ListAuthoredPendingAllInput, ListAuthoredPendingAllOutput>(
+    'connectors:list-authored-pending-all',
+    h.ctx({ userId: 'admin' }),
+    {},
+  );
+  return out.drafts;
+}
+
+describe('@ax/connectors — connectors:list-authored-pending-all (admin queue)', () => {
+  it('lists every proposer’s pending drafts and drops an id already live as a shared connector', async () => {
+    const h = await makeHarness();
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
+      installInput({ ownerUserId: 'userA', agentId: 'agent1', connectorId: 'linear', name: 'Linear A' }));
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userB' }),
+      installInput({ ownerUserId: 'userB', agentId: 'agent7', connectorId: 'linear', name: 'Linear B', keyMode: 'workspace' }));
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userB' }),
+      installInput({ ownerUserId: 'userB', agentId: 'agent7', connectorId: 'notion', name: 'Notion', hosts: ['api.notion.com'] }));
+    // 'gmail' is live, and a draft for it exists anyway (drift: written behind
+    // the install dedup, after creation cleared drafts). The queue must drop it.
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }),
+      sharedUpsert({ connectorId: 'gmail', name: 'Gmail' }));
+    await insertDraftBehindTheStore('userA', 'agent1', 'gmail');
+
+    const drafts = await pendingAll(h);
+    expect(drafts.map((d) => ({ connectorId: d.connectorId, ownerUserId: d.ownerUserId, agentId: d.agentId, name: d.name }))).toEqual([
+      { connectorId: 'linear', ownerUserId: 'userA', agentId: 'agent1', name: 'Linear A' },
+      { connectorId: 'linear', ownerUserId: 'userB', agentId: 'agent7', name: 'Linear B' },
+      { connectorId: 'notion', ownerUserId: 'userB', agentId: 'agent7', name: 'Notion' },
     ]);
+    const b = drafts[1]!;
+    expect(b.keyMode).toBe('workspace');
+    expect(b.usageNote).toBe('Drive the Linear API');
+    expect(b.proposal.allowedHosts).toEqual(['api.linear.app']);
+    expect(typeof b.updatedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(b.updatedAt))).toBe(false);
+  });
+});
+
+describe('@ax/connectors — one malformed request does not empty the admin queue', () => {
+  it('skips the bad row, logs it with its owner and id, and returns the good ones', async () => {
+    const h = await makeHarness();
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
+      installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query(
+        `INSERT INTO connectors_v1_authored (owner_user_id, agent_id, connector_id, name, usage_note, key_mode, capability_proposal, status)
+         VALUES ('userB', 'agent2', 'broken', 'Broken', '', 'personal', '{"allowedHosts": 5}'::jsonb, 'pending')`,
+      );
+    } finally {
+      await pg.end();
+    }
+    const warns: Array<{ msg: string; bindings?: Record<string, unknown> }> = [];
+    const logger: Logger = {
+      debug() {},
+      info() {},
+      warn(msg, bindings) {
+        warns.push({ msg, bindings });
+      },
+      error() {},
+      child() {
+        return logger;
+      },
+    };
+    const out = await h.bus.call<ListAuthoredPendingAllInput, ListAuthoredPendingAllOutput>(
+      'connectors:list-authored-pending-all',
+      h.ctx({ userId: 'admin', logger }),
+      {},
+    );
+    expect(out.drafts.map((d) => d.connectorId)).toEqual(['linear']);
+    const skipped = warns.filter((w) => w.msg === 'connectors_authored_pending_skipped_row');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.bindings).toMatchObject({ ownerUserId: 'userB', connectorId: 'broken' });
+  });
+});
+
+describe('@ax/connectors — the admin queue hides any live id (SIGNINS-9)', () => {
+  it('hides a request whose id is live under any owner, and keeps one that is not, so an admin can dismiss it', async () => {
+    const h = await makeHarness();
+    // userA's agent proposes 'linear', which nobody has defined.
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
+      installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
+    // And a draft for an id another user (not an admin) already defined,
+    // written behind the install dedup.
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'userC' }),
+      sharedUpsert({ userId: 'userC', connectorId: 'gmail', name: 'Gmail', keyMode: 'personal' }));
+    await insertDraftBehindTheStore('userA', 'agent1', 'gmail');
+
+    expect((await pendingAll(h)).map((d) => d.connectorId)).toEqual(['linear']);
+
+    // Dismissable: the admin Dismiss clears it and the queue is empty.
+    await h.bus.call<ClearAuthoredByIdInput, ClearAuthoredByIdOutput>(
+      'connectors:clear-authored-by-id', h.ctx({ userId: 'admin' }), { connectorId: 'linear' },
+    );
+    expect(await pendingAll(h)).toEqual([]);
+  });
+});
+
+describe('@ax/connectors — connectors:clear-authored-by-id (Dismiss)', () => {
+  it('clears every proposer’s draft with that id and nothing else', async () => {
+    const h = await makeHarness();
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
+      installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userB' }),
+      installInput({ ownerUserId: 'userB', agentId: 'agent2' }));
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userB' }),
+      installInput({ ownerUserId: 'userB', agentId: 'agent2', connectorId: 'notion', name: 'Notion' }));
+
+    const out = await h.bus.call<ClearAuthoredByIdInput, ClearAuthoredByIdOutput>(
+      'connectors:clear-authored-by-id',
+      h.ctx({ userId: 'admin' }),
+      { connectorId: 'linear' },
+    );
+    expect(out).toEqual({ cleared: 2 });
+    expect((await pendingAll(h)).map((d) => d.connectorId)).toEqual(['notion']);
+
+    const again = await h.bus.call<ClearAuthoredByIdInput, ClearAuthoredByIdOutput>(
+      'connectors:clear-authored-by-id',
+      h.ctx({ userId: 'admin' }),
+      { connectorId: 'linear' },
+    );
+    expect(again).toEqual({ cleared: 0 });
   });
 
-  it('excludes a pending draft whose id is already an active registry connector', async () => {
+  it('rejects a malformed id', async () => {
     const h = await makeHarness();
-    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
-      'connectors:install-authored',
-      h.ctx({ userId: 'userA' }),
-      installInput(), // pending 'linear' under agent1
-    );
-    // Promote 'linear' into the live registry (the post-approval state).
-    await seedRegistryConnector(h);
+    await expect(
+      h.bus.call('connectors:clear-authored-by-id', h.ctx({ userId: 'admin' }), { connectorId: 'Bad Id!' }),
+    ).rejects.toThrow(PluginError);
+  });
+});
 
-    const out = await h.bus.call<ListAuthoredPendingInput, ListAuthoredPendingOutput>(
-      'connectors:list-authored-pending',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA' },
+describe('@ax/connectors — creating a connector resolves its proposals', () => {
+  it('connectors:upsert that CREATES a connector clears both proposers’ drafts for that id', async () => {
+    const h = await makeHarness();
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userA' }),
+      installInput({ ownerUserId: 'userA', agentId: 'agent1' }));
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userB' }),
+      installInput({ ownerUserId: 'userB', agentId: 'agent2' }));
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: 'userB' }),
+      installInput({ ownerUserId: 'userB', agentId: 'agent2', connectorId: 'notion', name: 'Notion' }));
+
+    const up = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert', h.ctx({ userId: 'admin' }), sharedUpsert(),
     );
-    // 'linear' is already connectable on the normal shelves → not "proposed".
-    expect(out.drafts).toEqual([]);
+    expect(up.created).toBe(true);
+    expect((await pendingAll(h)).map((d) => d.connectorId)).toEqual(['notion']);
+    // Gone from the table too (no stale row left behind).
+    expect(await draftsOf('userA', 'agent1')).toEqual([]);
+  });
+
+  it('a failing clear never fails the create: upsert returns created:true and logs connectors_proposals_clear_failed', async () => {
+    const h = await makeHarness();
+    // Make the clear throw: drop the drafts table out from under the store.
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query('DROP TABLE connectors_v1_authored');
+    } finally {
+      await pg.end();
+    }
+    const warns: Array<{ msg: string; bindings?: Record<string, unknown> }> = [];
+    const logger: Logger = {
+      debug() {},
+      info() {},
+      warn(msg, bindings) {
+        warns.push({ msg, bindings });
+      },
+      error() {},
+      child() {
+        return logger;
+      },
+    };
+    const up = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert', h.ctx({ userId: 'admin', logger }), sharedUpsert(),
+    );
+    expect(up.created).toBe(true);
+    expect(up.connector.id).toBe('linear');
+    expect(warns.map((w) => w.msg)).toContain('connectors_proposals_clear_failed');
+    expect(warns.find((w) => w.msg === 'connectors_proposals_clear_failed')?.bindings).toMatchObject({
+      connectorId: 'linear',
+    });
+  });
+
+  it('an EDIT (created:false) does not clear drafts', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), sharedUpsert());
+    // A draft written behind the dedup (e.g. drift): the edit must leave it alone.
+    await insertDraftBehindTheStore('userA', 'agent1', 'linear');
+    const up = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert', h.ctx({ userId: 'admin' }), sharedUpsert({ name: 'Linear (renamed)' }),
+    );
+    expect(up.created).toBe(false);
+    expect(await draftsOf('userA', 'agent1')).toHaveLength(1);
   });
 });

@@ -566,64 +566,44 @@ describe('@ax/channel-web ChunkBuffer', () => {
       }
     });
 
-    // TASK-112 — connector cards are conversationId-matched (like skill cards),
-    // so they ride the SAME replay buffer + eviction. A connector card raised
-    // during the cold-boot SSE race would otherwise be lost (un-approvable).
-    const connector = (connectorId: string) =>
+    // Slice 2c — the in-chat connector card is gone (an agent-proposed connector
+    // goes to the workspace admins). A `kind:'connector'` card from an older
+    // peer, or one raised just before the upgrade, must be dropped: never
+    // stored, never replayed, never enumerated, and never a crash. Cast through
+    // `unknown` because the wire type no longer has to admit this shape.
+    const oldConnectorCard = (connectorId: string) =>
       ({
-        kind: 'connector' as const,
+        kind: 'connector',
         connectorId,
         name: connectorId,
         hosts: ['api.example.com'],
-        slots: [{ slot: 'KEY', kind: 'api-key' as const }],
-        authored: true as const,
+        slots: [{ slot: 'KEY', kind: 'api-key' }],
+        authored: true,
         packages: { npm: [], pypi: [] },
-      });
+      }) as unknown as PermissionRequest;
 
-    it('connector cards round-trip by conversationId alongside skill cards', () => {
+    it('drops an old connector card: not replayed, not enumerated, skill cards untouched', () => {
       const buf = createChunkBuffer();
       try {
-        buf.appendPermissionCard('cnv1', skill('s1'));
-        buf.appendPermissionCard('cnv1', connector('linear'));
-        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
-        expect(cards).toHaveLength(2);
-        expect(cards[1]?.kind).toBe('connector');
-        expect(cards[1]?.kind === 'connector' ? cards[1].connectorId : '').toBe(
-          'linear',
-        );
-      } finally {
-        buf.dispose();
-      }
-    });
-
-    it('de-dupes connector cards by connectorId — a re-proposal replaces in place', () => {
-      const buf = createChunkBuffer();
-      try {
-        buf.appendPermissionCard('cnv1', connector('linear'));
-        buf.appendPermissionCard('cnv1', {
-          ...connector('linear'),
-          hosts: ['api.linear.app', 'extra.linear.app'],
+        buf.appendPermissionCard('cnv1', skill('s1'), { userId: 'u1', agentId: 'a1' });
+        expect(() =>
+          buf.appendPermissionCard('cnv1', oldConnectorCard('linear'), {
+            userId: 'u1',
+            agentId: 'a1',
+          }),
+        ).not.toThrow();
+        buf.appendPermissionCard('cnv2', oldConnectorCard('github'), {
+          userId: 'u1',
+          agentId: 'a1',
         });
-        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
-        expect(cards).toHaveLength(1);
-        expect(cards[0]?.kind === 'connector' ? cards[0].hosts : []).toEqual([
-          'api.linear.app',
-          'extra.linear.app',
-        ]);
-      } finally {
-        buf.dispose();
-      }
-    });
-
-    it('evictPermissionCard removes a resolved connector card by connectorId', () => {
-      const buf = createChunkBuffer();
-      try {
-        buf.appendPermissionCard('cnv1', connector('linear'));
-        buf.appendPermissionCard('cnv1', skill('s1'));
+        expect(buf.tailPermissionCardEntries('cnv1').map((e) => e.card)).toEqual([skill('s1')]);
+        expect(buf.tailPermissionCardEntries('cnv2')).toEqual([]);
+        expect(buf.pendingGrantsForUser('u1').map((g) => g.card.kind)).toEqual(['skill']);
+        // Nor does it land in the reqId-keyed host list.
+        expect(buf.tailHostCards('cnv2')).toEqual([]);
+        // Evicting by the connector's id is a harmless no-op.
         buf.evictPermissionCard('cnv1', 'linear');
-        const cards = buf.tailPermissionCardEntries('cnv1').map((e) => e.card);
-        expect(cards).toHaveLength(1);
-        expect(cards[0]?.kind).toBe('skill');
+        expect(buf.tailPermissionCardEntries('cnv1').map((e) => e.card)).toEqual([skill('s1')]);
       } finally {
         buf.dispose();
       }

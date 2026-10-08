@@ -7,14 +7,14 @@
  *   PUT <base>/:id/tool-permissions  body { verdicts: [{ toolKey, verdict|null }] }
  *     → { ok: true }
  *
- * `base` is `/admin/connectors` for an admin, `/settings/connectors` otherwise
- * — the same bundle the editor's PATCH uses.
+ * `base` is always `/admin/connectors`: these routes exist only on the admin
+ * bundle, and their one client is the admin connector editor.
  *
  * SECURITY — a tool's `title` / `description` come from the third-party server
  * and are UNTRUSTED. They are rendered as plain text only, and the description
  * is clamped (`clampDescription`) before it ever reaches the DOM.
  */
-import type { ConnectorRouteBase } from './connectors';
+import type { ConnectorWriteBase } from './connectors';
 
 /** Allow = runs on its own; hold = asks first; deny = never runs. */
 export type ToolVerdict = 'allow' | 'hold' | 'deny';
@@ -69,7 +69,7 @@ const STATUSES: readonly InventoryStatus[] = [
   'unknown',
 ];
 
-function path(id: string, base: ConnectorRouteBase): string {
+function path(id: string, base: ConnectorWriteBase): string {
   return `${base}/${encodeURIComponent(id)}/tool-permissions`;
 }
 
@@ -118,7 +118,7 @@ function parse(body: unknown): ToolPermissions {
 
 export async function getToolPermissions(
   id: string,
-  base: ConnectorRouteBase,
+  base: ConnectorWriteBase,
   opts: { refresh?: boolean } = {},
 ): Promise<ToolPermissions> {
   const res = await fetch(`${path(id, base)}${opts.refresh ? '?refresh=1' : ''}`, {
@@ -131,7 +131,7 @@ export async function getToolPermissions(
 
 export async function putToolPermissions(
   id: string,
-  base: ConnectorRouteBase,
+  base: ConnectorWriteBase,
   verdicts: VerdictChange[],
 ): Promise<void> {
   // The server takes at most PUT_MAX rows per request.

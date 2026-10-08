@@ -135,17 +135,12 @@ export type PhaseKind = 'sandbox-starting' | 'sandbox-ready';
  *   browser sees it). Carries no secret; the grant route re-validates session
  *   ownership host-side.
  *
- * - `kind: 'connector'` — the upfront authored-CONNECTOR approval card (design
- *   §"Authoring", TASK-94): a connectorId + display name + the reach (hosts /
- *   slots / packages) the connector declares. Fired by @ax/chat-orchestrator,
- *   SSE-matched by ctx.conversationId (the firing ctx carries the real
- *   conversationId; same match posture as the skill card). NO `description` — a
- *   connector carries a `name`. Carries no secret; approval grants the connector
- *   under the TASK-93 wall with a connectorId subject.
+ * Slice 2c removed the `kind: 'connector'` card: an agent-proposed connector
+ * goes to the workspace admins (Admin › Connectors › Awaiting approval).
  *
- * Backend-agnostic (Invariant I1): hostnames, slot names, connectorId, name, and
- * the opaque sessionId are all public/transport-neutral fields. Re-declared here
- * (not imported from @ax/skill-broker / @ax/credential-proxy / @ax/connectors) —
+ * Backend-agnostic (Invariant I1): hostnames, slot names and the opaque
+ * sessionId are all public/transport-neutral fields. Re-declared here (not
+ * imported from @ax/skill-broker / @ax/credential-proxy / @ax/connectors) —
  * same cross-plugin duplication-with-a-comment posture as StreamChunk vs
  * @ax/ipc-protocol (I2).
  */
@@ -185,39 +180,7 @@ export type PermissionRequest =
        */
       packages?: { npm: string[]; pypi: string[] };
     }
-  | { kind: 'host'; host: string; sessionId: string }
-  | {
-      kind: 'connector';
-      connectorId: string;
-      name: string;
-      hosts: string[];
-      slots: {
-        slot: string;
-        kind: 'api-key';
-        /** service slug; when set, the key binds the shared `account:<service>` vault. */
-        account?: string;
-        /**
-         * TASK-124 — the resolved vault-key tags the card's WRITE path uses to
-         * build `{kind:'account', service, slot?}`: `service` = the slot's account
-         * (else the connector id); `slotTag` present only for a multi-slot
-         * connector's per-slot `account:<service>:<slot>` ref. Public, no secret.
-         */
-        service?: string;
-        slotTag?: string;
-        /** the user already has the matching ref; card shows "use existing". */
-        haveExisting?: boolean;
-      }[];
-      /** Open-mode banner — the agent just authored this connector (TASK-94 → true). */
-      authored?: boolean;
-      /** npm/pypi packages the connector declares; informational. No secret; forwarded verbatim. */
-      packages?: { npm: string[]; pypi: string[] };
-      /**
-       * TASK-711 — who supplies the key: each person their own (`personal`) or
-       * one shared company key (`workspace`). Optional (older cards carry none);
-       * the card renders a fixed sentence per known value and nothing otherwise.
-       */
-      keyMode?: 'personal' | 'workspace';
-    };
+  | { kind: 'host'; host: string; sessionId: string };
 
 /**
  * Inner object of the `decisionRaised` SSE frame (AW-11) — the moment

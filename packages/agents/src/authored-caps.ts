@@ -7,9 +7,11 @@
  * the orchestrator's skill→connector bridge). A model-authored skill is therefore
  * always zero-reach instruction scaffolding — there is no per-skill capability
  * proposal to intersect with an approved set, and no per-skill capability
- * approval card. A connector's reach is gated at `connectors:resolve` / the
- * connector approval card (the existing wall, connectorId subject — invariant #5,
- * no self-grant), so removing the skill-cap proposal does NOT widen reach.
+ * approval card. A connector's reach is gated at `connectors:resolve`, which
+ * reads only live connectors, and since slice 2c only an admin creates one: an
+ * agent's `connector_propose` is a held tool call that files a request, and an
+ * admin approves it by creating the connector (invariant #5, no self-grant). So
+ * removing the skill-cap proposal does NOT widen reach.
  *
  * Consequently @ax/agents does not read the approval wall at all. The wall's own
  * read shape lives in @ax/skills (`SkillsApprovedCapsListOutput`) and its reader

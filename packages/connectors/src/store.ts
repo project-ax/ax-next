@@ -7,7 +7,6 @@ import {
   type Connector,
   type ConnectorSummary,
   type KeyMode,
-  type Visibility,
 } from './types.js';
 import type { ConnectorDatabase, ConnectorsRow } from './migrations.js';
 import { availableConnectors } from './scope.js';
@@ -17,7 +16,7 @@ type StoredConnectorRow = Selectable<ConnectorsRow>;
 
 // ---------------------------------------------------------------------------
 // Validation helpers — caller-supplied values are bounded BEFORE INSERT. The
-// DB has CHECKs on key_mode / visibility; everything else (lengths, the JSONB
+// DB has a CHECK on key_mode; everything else (lengths, the JSONB
 // capabilities shape) is enforced here because length limits and structural
 // shape don't translate cleanly to SQL, and we want a structured
 // invalid-payload error close to the field rather than a raw pg error at write.
@@ -43,6 +42,24 @@ function invalid(message: string): PluginError {
     plugin: PLUGIN_NAME,
     message,
   });
+}
+
+/**
+ * Ids a NEW connector may never take because a route path uses the same
+ * segment: `/admin/connectors/authored` (slice 2c, the request queue) would
+ * shadow `/admin/connectors/:id` for a connector with that id (exact match
+ * wins). Checked on create paths only (`assertConnectorIdCreatable`), so a
+ * connector that already had this id before slice 2c can still be read,
+ * edited and deleted, and `connectors:live-ids` still answers for it.
+ */
+const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored']);
+
+/** Refuse an id no NEW connector or request may take. Call on create paths
+ *  only, after `validateConnectorId`. */
+export function assertConnectorIdCreatable(connectorId: string): void {
+  if (RESERVED_CONNECTOR_IDS.has(connectorId)) {
+    throw invalid(`connectorId '${connectorId}' is reserved`);
+  }
 }
 
 export function validateConnectorId(value: unknown): string {
@@ -108,13 +125,6 @@ export function validateSlotName(value: unknown): string {
   return value;
 }
 
-export function validateVisibility(value: unknown): Visibility {
-  if (value !== 'private' && value !== 'shared') {
-    throw invalid("visibility must be 'private' or 'shared'");
-  }
-  return value;
-}
-
 /**
  * Parse the mechanism-agnostic capability spec against the canonical schema
  * (single source of truth in @ax/skills-parser, re-declared as zod locally per
@@ -169,7 +179,6 @@ function rowToConnector(row: StoredConnectorRow): Connector {
     description: row.description,
     usageNote: row.usage_note,
     keyMode: validateKeyMode(row.key_mode),
-    visibility: validateVisibility(row.visibility),
     capabilities: validateCapabilities(row.capabilities),
     requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
@@ -186,22 +195,27 @@ function rowToSummary(
     description: row.description,
     usageNote: row.usage_note,
     keyMode: validateKeyMode(row.key_mode),
-    visibility: validateVisibility(row.visibility),
     requiresAttachment: row.requires_attachment === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
 }
 
-/** Prefer the caller's definition. Ambiguous shared ids fail closed. */
+/**
+ * Prefer the caller's definition. An id with more than one live row is a
+ * duplicate that nothing resolves (neither the agent store nor non-owners);
+ * it fails closed until an admin deletes one. A duplicate is legacy data or
+ * the loser of a concurrent create race (`requireUniqueId` is
+ * check-then-insert, with no unique index behind it — a follow-up).
+ */
 function selectAvailableRow(rows: StoredConnectorRow[], userId: string): StoredConnectorRow | null {
   return rows.find((row) => row.owner_user_id === userId) ??
     (rows.length === 1 ? rows[0]! : null);
 }
 
 /**
- * Every row `userId` can resolve (own first, otherwise an unambiguous shared
- * one — the same pick `getAvailableById` makes), newest-updated first. Shared
+ * Every row `userId` can resolve (own first, otherwise an unambiguous one —
+ * the same pick `getAvailableById` makes), newest-updated first. Shared
  * by `listForUser` and `listAvailable` so the two can never disagree about
  * which record a connector id means for this person.
  */
@@ -209,7 +223,7 @@ async function selectAvailableRows(
   db: Kysely<ConnectorDatabase>,
   userId: string,
 ): Promise<StoredConnectorRow[]> {
-  const rows = await availableConnectors(db, { userId })
+  const rows = await availableConnectors(db)
     .orderBy('updated_at', 'desc')
     .execute();
   const grouped = new Map<string, StoredConnectorRow[]>();
@@ -223,6 +237,9 @@ async function selectAvailableRows(
     .filter((row): row is StoredConnectorRow => row !== null)
     .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime());
 }
+
+/** Told about a stored row that no longer validates and was left out. */
+export type SkipRow = (connectorId: string, err: unknown) => void;
 
 export interface AvailableConnector {
   connector: Connector;
@@ -258,8 +275,25 @@ export interface UpsertArgs {
   description: string;
   usageNote: string;
   keyMode: KeyMode;
-  visibility: Visibility;
   capabilities: Capabilities;
+  /**
+   * Opt-in. When true and no live row exists for (userId, connectorId), refuse
+   * with `connector-id-taken` if ANY other owner holds a live row with this
+   * id. Tombstones never block.
+   */
+  requireUniqueId?: boolean;
+  /**
+   * When true and a live (userId, connectorId) row already exists, refuse with
+   * `connector-id-taken` instead of updating it. Atomic: the write itself only
+   * updates a tombstoned row (resurrection), never a live one.
+   */
+  createOnly?: boolean;
+  /**
+   * When true, write only a LIVE (owner, id) row, atomically (an UPDATE guarded
+   * on `deleted_at IS NULL`): no insert, no resurrection. Throws `not-found`
+   * when no live row matched.
+   */
+  updateOnly?: boolean;
 }
 
 export interface ConnectorStore {
@@ -270,7 +304,7 @@ export interface ConnectorStore {
    * reported through `onSkip` rather than failing the whole listing.
    */
   listAllLive(onSkip: (connectorId: string, err: unknown) => void): Promise<LiveConnectorRow[]>;
-  /** Owned and unambiguous shared definitions, newest-updated first. */
+  /** Owned and unambiguous live definitions, newest-updated first. */
   listForUser(userId: string): Promise<ConnectorSummary[]>;
   /**
    * TASK-808, TRANSITIONAL — every LIVE row still carrying the retired
@@ -291,21 +325,38 @@ export interface ConnectorStore {
   ): Promise<Connector | null>;
   /**
    * TASK-744 — the same set `listForUser` returns, FULL and with each row's
-   * owner, so a caller can derive owner-keyed values (tool namespaces).
+   * owner, so a caller can derive owner-keyed values (tool namespaces). A row
+   * whose stored spec no longer validates is skipped and reported through
+   * `onSkip` (the `listAllLive` posture): one bad row must not break the list
+   * for every user.
    */
-  listAvailable(userId: string): Promise<AvailableConnector[]>;
-  /** Read-only lookup: own definition first, otherwise an unambiguous shared one. */
+  listAvailable(userId: string, onSkip: SkipRow): Promise<AvailableConnector[]>;
+  /** Read-only lookup: own definition first, otherwise an unambiguous live one. */
   getAvailableById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
   /**
-   * TASK-711 — the connector `userId` resolves for this id, but ONLY when it is
-   * the one live SHARED definition with that id (exactly one shared row exists,
-   * and `getAvailableById` picks that row for this user rather than their own
-   * private one). This is "the connector every member of a team agent sees
-   * under this id": the only connector a credential stored ON an agent can
-   * belong to. Null otherwise (no shared row, two or more, or a private row of
-   * the user's own shadows the shared one).
+   * TASK-711, SIGNINS-9 — the connector `userId` resolves for this id, but ONLY
+   * when it is the one live definition with that id (exactly one live row
+   * exists, and it is the row `getAvailableById` picks). This is "the
+   * connector every member of a team agent sees under this id": the only
+   * connector a credential stored ON an agent can belong to. Null otherwise
+   * (no live row, or two or more — a duplicate: legacy data or a concurrent
+   * create race; it fails closed until an admin deletes one).
    */
-  getSoleSharedById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
+  getSoleLiveById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
+  /**
+   * Slice 2b — does any LIVE row of ANY owner carry `connectorId`? Call after
+   * a soft-delete to learn whether the id is still in use
+   * (`connectors:deleted`'s `idStillLive`) and whether a surviving definition
+   * still reads the id's agent-scope sign-ins. Internal: unscoped.
+   */
+  hasLiveById(connectorId: string): Promise<boolean>;
+  /**
+   * Slice 2b — the subset of `connectorIds` that at least one LIVE row (any
+   * owner) carries, deduped, in the caller's order. Callers validate and cap
+   * the list (`connectors:live-ids`). Internal: unscoped, answers only ids it
+   * is given.
+   */
+  liveIds(connectorIds: readonly string[]): Promise<string[]>;
   /** Idempotent create-or-update keyed (owner, connectorId). */
   upsert(args: UpsertArgs): Promise<{ connector: Connector; created: boolean }>;
   /** Soft-delete; true iff a live row was tombstoned. */
@@ -344,15 +395,23 @@ export function createConnectorStore(
         .map((row) => ({ ...rowToSummary(row), canEdit: row.owner_user_id === userId }));
     },
 
-    async listAvailable(userId) {
-      return (await selectAvailableRows(db, userId)).map((row) => ({
-        connector: { ...rowToConnector(row), canEdit: row.owner_user_id === userId },
-        ownerUserId: row.owner_user_id,
-      }));
+    async listAvailable(userId, onSkip) {
+      const out: AvailableConnector[] = [];
+      for (const row of await selectAvailableRows(db, userId)) {
+        try {
+          out.push({
+            connector: { ...rowToConnector(row), canEdit: row.owner_user_id === userId },
+            ownerUserId: row.owner_user_id,
+          });
+        } catch (err) {
+          onSkip(row.connector_id, err);
+        }
+      }
+      return out;
     },
 
     async getAvailableById(userId, connectorId) {
-      const rows = await availableConnectors(db, { userId })
+      const rows = await availableConnectors(db)
         .where('connector_id', '=', connectorId)
         .execute();
       const row = selectAvailableRow(rows, userId);
@@ -362,20 +421,45 @@ export function createConnectorStore(
       };
     },
 
-    async getSoleSharedById(userId, connectorId) {
-      const rows = await availableConnectors(db, { userId })
+    async getSoleLiveById(userId, connectorId) {
+      const rows = await availableConnectors(db)
         .where('connector_id', '=', connectorId)
         .execute();
-      // `availableConnectors` returns every live shared row (any owner) plus the
-      // caller's own rows, so this is the complete set of shared rows for the id.
-      const shared = rows.filter((row) => row.visibility === 'shared');
-      if (shared.length !== 1) return null;
-      const picked = selectAvailableRow(rows, userId);
-      if (picked === null || picked !== shared[0]) return null;
+      // `availableConnectors` returns every live row (any owner), so this is
+      // the complete set of live rows for the id.
+      // One row is exactly the row `getAvailableById` would pick too.
+      if (rows.length !== 1) return null;
+      const picked = rows[0]!;
       return {
         connector: { ...rowToConnector(picked), canEdit: picked.owner_user_id === userId },
         ownerUserId: picked.owner_user_id,
       };
+    },
+
+    async hasLiveById(connectorId) {
+      const row = await db
+        .selectFrom('connectors_v1_connectors')
+        .select('owner_user_id')
+        .where('connector_id', '=', connectorId)
+        .where('deleted_at', 'is', null)
+        .limit(1)
+        .executeTakeFirst();
+      return row !== undefined;
+    },
+
+    async liveIds(connectorIds) {
+      const wanted = [...new Set(connectorIds)];
+      if (wanted.length === 0) return [];
+      const rows = await db
+        .selectFrom('connectors_v1_connectors')
+        .select('connector_id')
+        .distinct()
+        .where('connector_id', 'in', wanted)
+        .where('deleted_at', 'is', null)
+        .execute();
+      const live = new Set(rows.map((row) => row.connector_id));
+      // In the caller's order, so the answer is deterministic.
+      return wanted.filter((id) => live.has(id));
     },
 
     async getByIdNotDeleted(userId, connectorId) {
@@ -391,6 +475,32 @@ export function createConnectorStore(
 
     async upsert(args) {
       const now = new Date();
+      if (args.updateOnly === true) {
+        const updated = await db
+          .updateTable('connectors_v1_connectors')
+          .set({
+            name: args.name,
+            description: args.description,
+            usage_note: args.usageNote,
+            key_mode: args.keyMode,
+            capabilities: sql<unknown>`${JSON.stringify(args.capabilities)}::jsonb`,
+            updated_at: now,
+          })
+          .where('owner_user_id', '=', args.userId)
+          .where('connector_id', '=', args.connectorId)
+          .where('deleted_at', 'is', null)
+          .returningAll()
+          .executeTakeFirst();
+        if (updated === undefined) {
+          throw new PluginError({
+            code: 'not-found',
+            plugin: PLUGIN_NAME,
+            hookName: 'connectors:upsert',
+            message: `connector '${args.connectorId}' not found`,
+          });
+        }
+        return { connector: rowToConnector(updated), created: false };
+      }
       // `created` = "no LIVE row existed for this (owner, id)". A tombstoned row
       // is invisible to the owner (get/list filter deleted_at IS NULL), so
       // resurrecting one reports `created: true` — from the owner's view the
@@ -405,7 +515,29 @@ export function createConnectorStore(
         .where('connector_id', '=', args.connectorId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
-      const created = existing === undefined;
+      // Under `createOnly` a successful write is always a creation (a fresh
+      // insert or a resurrected tombstone): a live row makes the guarded write
+      // below return nothing. That statement, not this read, is the check, so
+      // a live row that appears in between is still refused.
+      const created = args.createOnly === true || existing === undefined;
+      if (created && args.requireUniqueId === true) {
+        const taken = await db
+          .selectFrom('connectors_v1_connectors')
+          .select('owner_user_id')
+          .where('connector_id', '=', args.connectorId)
+          .where('owner_user_id', '<>', args.userId)
+          .where('deleted_at', 'is', null)
+          .limit(1)
+          .executeTakeFirst();
+        if (taken !== undefined) {
+          throw new PluginError({
+            code: 'connector-id-taken',
+            plugin: PLUGIN_NAME,
+            hookName: 'connectors:upsert',
+            message: `connector id '${args.connectorId}' is already in use`,
+          });
+        }
+      }
 
       // JSONB is written via an explicit `::jsonb` cast of the canonical
       // JSON so the opaque spec round-trips byte-faithfully (mirrors the
@@ -425,7 +557,6 @@ export function createConnectorStore(
         description: args.description,
         usage_note: args.usageNote,
         key_mode: args.keyMode,
-        visibility: args.visibility,
         capabilities: capabilitiesJson,
         // Resurrect a tombstoned row on upsert — re-creating a deleted
         // connector under the same id is allowed.
@@ -443,18 +574,33 @@ export function createConnectorStore(
           description: args.description,
           usage_note: args.usageNote,
           key_mode: args.keyMode,
-          visibility: args.visibility,
           capabilities: capabilitiesJson,
           requires_attachment: true,
           deleted_at: null,
           created_at: now,
           updated_at: now,
         })
-        .onConflict((oc) =>
-          oc.columns(['owner_user_id', 'connector_id']).doUpdateSet(updateSet),
-        )
+        .onConflict((oc) => {
+          const update = oc.columns(['owner_user_id', 'connector_id']).doUpdateSet(updateSet);
+          // A create may resurrect a tombstone but never overwrite a live row.
+          // Guarded in the statement itself, so a live row written between the
+          // pre-read above and this write still can't be clobbered.
+          return args.createOnly === true
+            ? update.where('connectors_v1_connectors.deleted_at', 'is not', null)
+            : update;
+        })
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (row === undefined) {
+        // Only reachable under `createOnly`: the conflict update's guard found
+        // a LIVE row, so nothing was written.
+        throw new PluginError({
+          code: 'connector-id-taken',
+          plugin: PLUGIN_NAME,
+          hookName: 'connectors:upsert',
+          message: `connector id '${args.connectorId}' is already in use`,
+        });
+      }
       return { connector: rowToConnector(row), created };
     },
 

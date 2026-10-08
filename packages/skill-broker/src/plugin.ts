@@ -45,14 +45,15 @@ export function createSkillBrokerPlugin(_config: SkillBrokerConfig = {}): Plugin
       // Hard deps → init-ordering edges: the dispatcher (tool:register) and the
       // catalog owner (skills:search-catalog / skills:get) must init first.
       calls: ['tool:register', 'skills:search-catalog', 'skills:get'],
-      // request_capability does a metadata-only vault lookup (credentials:list,
-      // user scope) so the approval card can offer "use your existing key" for an
-      // account-tagged slot (JIT P2). hasService-guarded + best-effort, so a
+      // request_capability asks the vault whether the session already resolves
+      // each connector slot (credentials:has under the session ctx: the agent,
+      // then global — never a person's own scope) so the approval card can offer
+      // "use the existing key" (JIT P2). hasService-guarded + best-effort, so a
       // credential-less preset degrades to always-prompt — optional, not a hard
       // boot dep.
       optionalCalls: [
         {
-          hook: 'credentials:list',
+          hook: 'credentials:has',
           degradation:
             'the approval card cannot offer "use your existing key"; every credential slot is always prompted',
         },

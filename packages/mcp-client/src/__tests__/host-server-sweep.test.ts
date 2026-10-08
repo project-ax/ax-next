@@ -150,7 +150,7 @@ describe('sweepHostMcpServers', () => {
         // Another server whose id shares a prefix with `a`.
         { scope: 'global', ownerId: null, ref: 'mcp:ab:header:Z' },
         { scope: 'global', ownerId: null, ref: 'mcp:a' },
-        { scope: 'user', ownerId: 'u1', ref: 'account:anthropic' },
+        { scope: 'agent', ownerId: 'ag1', ref: 'account:anthropic' },
         { scope: 'global', ownerId: null, ref: 'provider:openai:key' },
       ],
     });

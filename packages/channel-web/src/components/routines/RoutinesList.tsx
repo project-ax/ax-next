@@ -27,6 +27,7 @@ import { routines, type Routine, type Fire } from '../../lib/routines';
 import { TriggerChip } from './TriggerChip';
 import { StatusChip } from './StatusChip';
 import { FireRowsTable } from './FireRowsTable';
+import { RunWarning } from './RunWarning';
 import { FireNowControl } from './FireNowControl';
 import {
   RoutineEditor,
@@ -278,6 +279,7 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                     <span className="text-[12.5px] text-muted-foreground font-mono tracking-[0.02em] truncate">
                       {r.agentId} · {r.path}
                     </span>
+                    {r.lastWarning !== null && <RunWarning text={r.lastWarning} truncate />}
                   </span>
                   <TriggerChip trigger={r.trigger} />
                   <StatusChip status={r.lastStatus} />

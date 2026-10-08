@@ -48,19 +48,49 @@ export interface McpOAuthStore {
    * the agent. Keyed on `agent_id` ALONE — a team agent's connect can be started
    * by several people.
    *
-   * Touches `mcp_oauth_v1_pending` only. `mcp_oauth_v1_clients` has no `agent_id`
+   * Touches `mcp_oauth_v1_pending` and `mcp_oauth_v1_needs_reconnect_agent`
+   * (the agent's reconnect markers go with it; `deleted` counts pending rows,
+   * `markers` counts marker rows), and `mcp_oauth_v1_identity_scope_refused`
+   * (slice 4 — the agent's identity-scope skip flags; `identityScope`). `mcp_oauth_v1_clients` has no `agent_id`
    * column (it is keyed by `${connectorId}|${authServerUrl}` and shared by every
    * agent), so it is not this method's to delete from.
    *
    * THROWS on an empty `agentId`: a delete keyed on nothing is never what a
    * caller meant, so it is refused rather than run.
    */
-  deleteAllForAgent(agentId: string): Promise<{ deleted: number }>;
+  deleteAllForAgent(
+    agentId: string,
+  ): Promise<{ deleted: number; markers: number; identityScope: number }>;
+  /**
+   * Slice 2b — a deleted connector's reconnect markers (every agent's) go with
+   * it, in one transaction — and (slice 4) so does its identity-scope skip
+   * flag, for every authorization server. Backs the `connectors:deleted`
+   * subscriber and (slice 5) the boot sweep. THROWS on an empty `connectorId`:
+   * a delete keyed on nothing is never what a caller meant.
+   */
+  deleteMarkersForConnector(
+    connectorId: string,
+  ): Promise<{ agent: number; identityScope: number }>;
+  /**
+   * Slice 5 — every distinct connector id that carries an agent reconnect
+   * marker. The boot sweep asks `connectors:live-ids` which of them still
+   * exist. Ids and nothing else; no secret.
+   */
+  listMarkedConnectorIds(): Promise<string[]>;
+  /**
+   * Slice 4 — `authServerUrl` answered `invalid_scope` to a sign-in on
+   * `agentId` to `connectorId` that carried the `openid`/`email` add-on.
+   * Idempotent. Keyed by agent: the answer arrives through the browser, so it
+   * may only ever affect the agent that authorization was begun for.
+   */
+  markIdentityScopeRefused(agentId: string, connectorId: string, authServerUrl: string): Promise<void>;
+  /** Slice 4 — should `begin` leave the identity add-on out for this triple? */
+  isIdentityScopeRefused(agentId: string, connectorId: string, authServerUrl: string): Promise<boolean>;
   /**
    * TASK-741 — record that `owner`'s sign-in to `connectorId` was rejected by
    * the authorization server (re-authorization required). Idempotent: marking
-   * twice keeps one row and moves `marked_at`. TASK-756: the owner is whoever
-   * owns the TOKEN — a person, or an agent whose members share it.
+   * twice keeps one row and moves `marked_at`. The owner is the agent the
+   * sign-in is stored on (slice 5: sign-ins live only on agents).
    */
   markNeedsReconnect(owner: MarkerOwner, connectorId: string): Promise<void>;
   /** TASK-741 — the sign-in works again (refreshed, or signed in anew). */
@@ -73,22 +103,19 @@ export interface McpOAuthStore {
   hasNeedsReconnect(owner: MarkerOwner, connectorId: string): Promise<boolean>;
   /**
    * TASK-741/756 — which of `connectorIds` carry a needs-reconnect marker for
-   * `userId`'s own sign-in (`personal`) and, when `agentId` is given, for that
-   * agent's shared sign-in (`shared`). A pure read: it never touches a token,
-   * so it can never refresh one.
+   * `agentId`'s sign-in. A pure read: it never touches a token, so it can
+   * never refresh one.
    */
-  listNeedsReconnect(
-    userId: string,
-    agentId: string | undefined,
-    connectorIds: readonly string[],
-  ): Promise<{ personal: string[]; shared: string[] }>;
+  listNeedsReconnect(agentId: string, connectorIds: readonly string[]): Promise<string[]>;
 }
 
 /**
- * TASK-756 — who owns the token a needs-reconnect marker is about: one person
- * (their own sign-in), or an agent (a team agent's sign-in its members share).
+ * TASK-756 — who owns the token a needs-reconnect marker is about. Slice 5:
+ * only ever an agent — every sign-in is stored on one, and the per-person
+ * marker table is gone. Kept as a tagged object so a call site still says
+ * whose marker it means.
  */
-export type MarkerOwner = { kind: 'user'; userId: string } | { kind: 'agent'; agentId: string };
+export type MarkerOwner = { kind: 'agent'; agentId: string };
 
 /** Map a DB row to the domain {@link PendingAuthorization}. Shared by
  *  `getPending` and `consumePending` so the two never drift. */
@@ -104,7 +131,8 @@ function rowToPending(r: {
   client_key: string;
   resource: string;
   scope: string | null;
-  cred_scope: string;
+  mode: string;
+  identity_scope?: boolean | null;
   client_id: string | null;
   client_secret: string | null;
   created_at: Date | string | number;
@@ -127,7 +155,10 @@ function rowToPending(r: {
     ...(r.client_secret !== null ? { clientSecret: r.client_secret } : {}),
     resource: r.resource,
     scope: r.scope ?? undefined,
-    credScope: r.cred_scope === 'user' ? 'user' : 'agent',
+    // Only the exact 'add' attaches; anything else (an unknown value) is the
+    // flow that attaches nothing.
+    mode: r.mode === 'add' ? 'add' : 'sign-in-again',
+    identityScope: r.identity_scope === true,
     createdAt,
   };
 }
@@ -164,7 +195,8 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           client_key: p.clientKey,
           resource: p.resource,
           scope: p.scope ?? null,
-          cred_scope: p.credScope,
+          mode: p.mode,
+          identity_scope: p.identityScope === true,
           client_id: p.clientId ?? null,
           client_secret: p.clientSecret ?? null,
           created_at:
@@ -210,91 +242,123 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           message: 'agentId is required',
         });
       }
-      const res = await db
-        .deleteFrom('mcp_oauth_v1_pending')
+      return db.transaction().execute(async (trx) => {
+        const pending = await trx
+          .deleteFrom('mcp_oauth_v1_pending')
+          .where('agent_id', '=', agentId)
+          .executeTakeFirst();
+        const markers = await trx
+          .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
+          .where('agent_id', '=', agentId)
+          .executeTakeFirst();
+        const identityScope = await trx
+          .deleteFrom('mcp_oauth_v1_identity_scope_refused')
+          .where('agent_id', '=', agentId)
+          .executeTakeFirst();
+        return {
+          deleted: Number(pending.numDeletedRows ?? 0n),
+          markers: Number(markers.numDeletedRows ?? 0n),
+          identityScope: Number(identityScope.numDeletedRows ?? 0n),
+        };
+      });
+    },
+
+    async deleteMarkersForConnector(connectorId) {
+      if (typeof connectorId !== 'string' || connectorId.length === 0) {
+        throw new PluginError({
+          code: 'missing-field',
+          plugin: '@ax/mcp-oauth',
+          message: 'connectorId is required',
+        });
+      }
+      return db.transaction().execute(async (trx) => {
+        const agent = await trx
+          .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
+          .where('connector_id', '=', connectorId)
+          .executeTakeFirst();
+        const identityScope = await trx
+          .deleteFrom('mcp_oauth_v1_identity_scope_refused')
+          .where('connector_id', '=', connectorId)
+          .executeTakeFirst();
+        return {
+          agent: Number(agent.numDeletedRows ?? 0n),
+          identityScope: Number(identityScope.numDeletedRows ?? 0n),
+        };
+      });
+    },
+
+    async listMarkedConnectorIds() {
+      const rows = await db
+        .selectFrom('mcp_oauth_v1_needs_reconnect_agent')
+        .select('connector_id')
+        .distinct()
+        .orderBy('connector_id')
+        .execute();
+      return rows.map((r) => r.connector_id);
+    },
+
+    async markIdentityScopeRefused(agentId, connectorId, authServerUrl) {
+      await db
+        .insertInto('mcp_oauth_v1_identity_scope_refused')
+        .values({
+          agent_id: agentId,
+          connector_id: connectorId,
+          auth_server: authServerUrl,
+          created_at: new Date(),
+        })
+        .onConflict((oc) => oc.columns(['agent_id', 'connector_id', 'auth_server']).doNothing())
+        .execute();
+    },
+
+    async isIdentityScopeRefused(agentId, connectorId, authServerUrl) {
+      const row = await db
+        .selectFrom('mcp_oauth_v1_identity_scope_refused')
+        .select('connector_id')
         .where('agent_id', '=', agentId)
+        .where('connector_id', '=', connectorId)
+        .where('auth_server', '=', authServerUrl)
         .executeTakeFirst();
-      return { deleted: Number(res.numDeletedRows ?? 0n) };
+      return row !== undefined;
     },
 
     async markNeedsReconnect(owner, connectorId) {
       const markedAt = new Date();
-      if (owner.kind === 'agent') {
-        await db
-          .insertInto('mcp_oauth_v1_needs_reconnect_agent')
-          .values({ agent_id: owner.agentId, connector_id: connectorId, marked_at: markedAt })
-          .onConflict((oc) =>
-            oc.columns(['agent_id', 'connector_id']).doUpdateSet({ marked_at: markedAt }),
-          )
-          .execute();
-        return;
-      }
       await db
-        .insertInto('mcp_oauth_v1_needs_reconnect')
-        .values({ user_id: owner.userId, connector_id: connectorId, marked_at: markedAt })
+        .insertInto('mcp_oauth_v1_needs_reconnect_agent')
+        .values({ agent_id: owner.agentId, connector_id: connectorId, marked_at: markedAt })
         .onConflict((oc) =>
-          oc.columns(['user_id', 'connector_id']).doUpdateSet({ marked_at: markedAt }),
+          oc.columns(['agent_id', 'connector_id']).doUpdateSet({ marked_at: markedAt }),
         )
         .execute();
     },
 
     async clearNeedsReconnect(owner, connectorId) {
-      if (owner.kind === 'agent') {
-        await db
-          .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
-          .where('agent_id', '=', owner.agentId)
-          .where('connector_id', '=', connectorId)
-          .execute();
-        return;
-      }
       await db
-        .deleteFrom('mcp_oauth_v1_needs_reconnect')
-        .where('user_id', '=', owner.userId)
+        .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
+        .where('agent_id', '=', owner.agentId)
         .where('connector_id', '=', connectorId)
         .execute();
     },
 
     async hasNeedsReconnect(owner, connectorId) {
-      const row =
-        owner.kind === 'agent'
-          ? await db
-              .selectFrom('mcp_oauth_v1_needs_reconnect_agent')
-              .select('connector_id')
-              .where('agent_id', '=', owner.agentId)
-              .where('connector_id', '=', connectorId)
-              .executeTakeFirst()
-          : await db
-              .selectFrom('mcp_oauth_v1_needs_reconnect')
-              .select('connector_id')
-              .where('user_id', '=', owner.userId)
-              .where('connector_id', '=', connectorId)
-              .executeTakeFirst();
+      const row = await db
+        .selectFrom('mcp_oauth_v1_needs_reconnect_agent')
+        .select('connector_id')
+        .where('agent_id', '=', owner.agentId)
+        .where('connector_id', '=', connectorId)
+        .executeTakeFirst();
       return row !== undefined;
     },
 
-    async listNeedsReconnect(userId, agentId, connectorIds) {
-      if (connectorIds.length === 0) return { personal: [], shared: [] };
-      const ids = [...connectorIds];
-      const [personal, shared] = await Promise.all([
-        db
-          .selectFrom('mcp_oauth_v1_needs_reconnect')
-          .select('connector_id')
-          .where('user_id', '=', userId)
-          .where('connector_id', 'in', ids)
-          .execute(),
-        agentId === undefined || agentId.length === 0
-          ? Promise.resolve([] as Array<{ connector_id: string }>)
-          : db
-              .selectFrom('mcp_oauth_v1_needs_reconnect_agent')
-              .select('connector_id')
-              .where('agent_id', '=', agentId)
-              .where('connector_id', 'in', ids)
-              .execute(),
-      ]);
-      return {
-        personal: personal.map((r) => r.connector_id),
-        shared: shared.map((r) => r.connector_id),
-      };
+    async listNeedsReconnect(agentId, connectorIds) {
+      if (connectorIds.length === 0 || agentId.length === 0) return [];
+      const rows = await db
+        .selectFrom('mcp_oauth_v1_needs_reconnect_agent')
+        .select('connector_id')
+        .where('agent_id', '=', agentId)
+        .where('connector_id', 'in', [...connectorIds])
+        .execute();
+      return rows.map((r) => r.connector_id);
     },
   };
 }

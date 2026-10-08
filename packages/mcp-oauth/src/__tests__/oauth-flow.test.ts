@@ -19,7 +19,7 @@ const allow = new Set(['auth.example.com']);
 const resolver = async () => '93.184.216.34';
 
 describe('buildAuthorization', () => {
-  it('requests offline access and fresh consent for a pinned Google OAuth client', async () => {
+  it('requests offline access, an account picker and fresh consent for a pinned Google OAuth client', async () => {
     const { authorizationUrl } = await buildAuthorization({
       metadata: { ...meta, issuer: 'https://accounts.google.com', authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth' },
       client: { clientId: 'google-client', clientSecret: 'secret' },
@@ -30,9 +30,30 @@ describe('buildAuthorization', () => {
     });
     const url = new URL(authorizationUrl);
     expect(url.searchParams.get('access_type')).toBe('offline');
-    expect(url.searchParams.get('prompt')).toBe('consent');
+    // The picker first (which account this agent acts as), then renewed consent
+    // so Google issues a refresh token even for a previously-authorized client.
+    expect(url.searchParams.getAll('prompt')).toEqual(['select_account consent']);
     expect(url.searchParams.get('state')).toBe('google-state');
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+  });
+
+  // Slice 4 — the identity scopes ride the authorize request. They must not
+  // disturb the prompt merge: the SDK's `consent` for `offline_access` stays.
+  it('a scope carrying openid + email + offline_access: each once in the URL, and prompt keeps the SDK consent', async () => {
+    const { authorizationUrl } = await buildAuthorization({
+      metadata: meta,
+      client: { clientId: 'cid', clientSecret: undefined },
+      redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+      resource: 'https://mcp.example.com/mcp',
+      scope: 'read offline_access openid email',
+      state: 'st', allowedHosts: allow, resolver,
+    });
+    const url = new URL(authorizationUrl);
+    const scopes = url.searchParams.get('scope')!.split(' ');
+    for (const s of ['read', 'offline_access', 'openid', 'email']) {
+      expect(scopes.filter((x) => x === s)).toHaveLength(1);
+    }
+    expect(url.searchParams.getAll('prompt')).toEqual(['select_account consent']);
   });
 
   it('produces an authorize URL with state, PKCE challenge, and resource', async () => {
@@ -53,8 +74,42 @@ describe('buildAuthorization', () => {
     expect(u.searchParams.get('client_id')).toBe('cid');
     expect(u.searchParams.get('scope')).toBe('read');
     expect(u.searchParams.has('access_type')).toBe(false);
-    expect(u.searchParams.has('prompt')).toBe(false);
+    // Every sign-in belongs to an agent, so the popup always asks which account.
+    expect(u.searchParams.get('prompt')).toBe('select_account');
+    expect(u.searchParams.getAll('prompt')).toHaveLength(1);
     expect(codeVerifier.length).toBeGreaterThan(20);
+  });
+
+  it('keeps the SDK\'s consent prompt for offline_access on a non-Google server, after the account picker', async () => {
+    // The SDK appends prompt=consent when the scope asks for offline_access
+    // (OIDC Core §11). Overwriting it would cost the refresh token.
+    const { authorizationUrl } = await buildAuthorization({
+      metadata: meta,
+      client: { clientKey: 'c|a', clientId: 'cid', clientSecret: undefined, dynamic: true },
+      redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+      resource: 'https://mcp.example.com',
+      scope: 'read offline_access',
+      state: 'st-offline',
+      allowedHosts: allow,
+      resolver,
+    });
+    const u = new URL(authorizationUrl);
+    expect(u.searchParams.getAll('prompt')).toEqual(['select_account consent']);
+    expect(u.searchParams.has('access_type')).toBe(false);
+  });
+
+  it('asks Google once for the picker and consent, even when the scope has offline_access', async () => {
+    const { authorizationUrl } = await buildAuthorization({
+      metadata: { ...meta, issuer: 'https://accounts.google.com', authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth' },
+      client: { clientId: 'google-client', clientSecret: 'secret' },
+      redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+      resource: 'https://gmailmcp.googleapis.com/mcp/v1',
+      scope: 'openid offline_access',
+      state: 'g2', allowedHosts: new Set(['accounts.google.com']), resolver,
+    });
+    const url = new URL(authorizationUrl);
+    expect(url.searchParams.getAll('prompt')).toEqual(['select_account consent']);
+    expect(url.searchParams.get('access_type')).toBe('offline');
   });
 
   it('rejects when the authorization endpoint host is not allowlisted', async () => {
@@ -326,6 +381,22 @@ describe('discover', () => {
     ]);
   });
 
+  // Slice 4 reads `scopes_supported` (identity scopes) and `userinfo_endpoint`
+  // (the fallback) off the discovered AS metadata, so discovery must keep them.
+  it('keeps the AS metadata\'s scopes_supported and userinfo_endpoint', async () => {
+    const mocked = discoveryFetch();
+    mocked.mockImplementationOnce(async () => new Response(JSON.stringify({
+      ...meta,
+      scopes_supported: ['openid', 'email', 'read'],
+      userinfo_endpoint: 'https://auth.example.com/userinfo',
+    }), { headers: { 'content-type': 'application/json' } }));
+    const { metadata } = await discover({
+      resourceUrl, pinnedAuthServerUrl: meta.issuer, allowedHosts: discoveryHosts, resolver,
+    });
+    expect(metadata.scopes_supported).toEqual(['openid', 'email', 'read']);
+    expect((metadata as { userinfo_endpoint?: unknown }).userinfo_endpoint).toBe('https://auth.example.com/userinfo');
+  });
+
   it('rejects metadata whose issuer differs from the discovered authorization server', async () => {
     const mocked = discoveryFetch();
     mocked.mockImplementationOnce(async () => new Response(JSON.stringify({
@@ -420,6 +491,26 @@ describe('discover', () => {
 });
 
 describe('redeemCode', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Slice 4 reads the account from the token response's `id_token`.
+  it('returns the token response\'s id_token', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      access_token: 'at', token_type: 'Bearer', id_token: 'h.p.s',
+    }), { headers: { 'content-type': 'application/json' } })));
+    const tokens = await redeemCode({
+      metadata: meta,
+      client: { clientId: 'cid', clientSecret: undefined },
+      code: 'authcode',
+      codeVerifier: 'verifier',
+      redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+      resource: 'https://mcp.example.com',
+      allowedHosts: allow,
+      resolver,
+    });
+    expect(tokens.id_token).toBe('h.p.s');
+  });
+
   it('rejects when the token endpoint host is not allowlisted', async () => {
     await expect(
       redeemCode({

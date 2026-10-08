@@ -108,7 +108,7 @@ describe('grant-decline keys', () => {
   });
 
   it('the user prefix is a prefix of that user’s keys and of nobody else’s', () => {
-    const key = grantDeclineKey('u-ann', 'a-quill', 'connector', 'github');
+    const key = grantDeclineKey('u-ann', 'a-quill', 'skill', 'github');
     expect(key.startsWith(grantDeclineUserPrefix('u-ann'))).toBe(true);
     expect(key.startsWith(grantDeclineUserPrefix('u-annette'))).toBe(false);
   });
@@ -233,7 +233,7 @@ describe('filterDeclinedGrants', () => {
   });
 
   const declines = (
-    entries: Array<[[string, string, 'skill' | 'connector', string], number]>,
+    entries: Array<[[string, string, 'skill', string], number]>,
   ): Map<string, StoredDecline> =>
     new Map(
       entries.map(([[u, a, k, s], at]) => [
@@ -316,7 +316,7 @@ describe('filterDeclinedGrants', () => {
     // untrusted: `userId` is the authenticated caller and `agentId` is
     // server-derived on both call paths (the conversation lookup on the SSE
     // side, the card's recorded owner on the workspace side), while the
-    // skill/connector id comes out of a manifest an agent authored.
+    // skill id comes out of a manifest an agent authored.
     const loneSurrogate = 'linear-\uD800';
     // Guard the premise: if this ever stops throwing, the test below is vacuous.
     expect(() => encodeURIComponent(loneSurrogate)).toThrow(URIError);

@@ -13,7 +13,7 @@
  * sent to, and it is substituted ONLY on egress to one of them, and ONLY for the
  * session that owns it. The session allowlist answers "where may this session
  * reach"; the binding answers "where may THIS credential go" — a host the user
- * added to their own allowlist (proxy:add-host, a private connector) is
+ * added to their own allowlist (proxy:add-host, an admin-written connector) is
  * reachable but never receives an operator-paid key. There is deliberately no
  * API that substitutes without a host: an unbound placeholder is inert.
  */

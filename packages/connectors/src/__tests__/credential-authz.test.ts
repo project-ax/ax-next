@@ -3,7 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { PluginError, type Plugin } from '@ax/core';
+import { PluginError, type Logger, type Plugin } from '@ax/core';
 import {
   createTestHarness,
   type TestHarness,
@@ -13,6 +13,8 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConnectorsPlugin } from '../plugin.js';
 import type {
+  AuthorizeAgentInput,
+  AuthorizeAgentOutput,
   AuthorizeGlobalInput,
   AuthorizeGlobalOutput,
   Capabilities,
@@ -114,7 +116,6 @@ async function seed(
       connectorId,
       name: connectorId,
       keyMode,
-      visibility: 'private',
       capabilities: caps(...slots),
     },
   );
@@ -214,7 +215,7 @@ describe('credentials:authorize-global:account — deny paths', () => {
   it('shared workspace keys are authorized against the definition owner, never the reader role', async () => {
     const h = await makeHarness();
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'root' }), {
-      userId: 'root', connectorId: 'shared', name: 'Shared', keyMode: 'workspace', visibility: 'shared', capabilities: caps('TOKEN'),
+      userId: 'root', connectorId: 'shared', name: 'Shared', keyMode: 'workspace', capabilities: caps('TOKEN'),
     });
     authLookup = (id) => id === 'root' ? adminUser(id) : plainUser(id);
     expect(await authorize(h, 'reader', 'account:shared')).toEqual(ALLOWED);
@@ -249,19 +250,21 @@ describe('credentials:authorize-global:account — deny paths', () => {
     expect(authCalls).toEqual([{ userId: 'mallory' }]);
   });
 
-  it('a user who owns no connector with that id is denied, even if another user owns a workspace one', async () => {
-    // vs always-allow: FAILS. This is the ref-collision attack: same id, someone else's row.
+  it("a user's own same-id personal connector shadows another owner's workspace one: denied", async () => {
+    // vs always-allow: FAILS. This is the ref-collision attack: same id, two
+    // live rows. (SIGNINS-9: with no duplicate, the reader resolves root's
+    // connector, which every connector being shared makes readable — the
+    // allow case above.)
     authLookup = (userId) => (userId === 'root' ? adminUser(userId) : plainUser(userId));
     const h = await makeHarness();
     await seed(h, 'root', 'zendesk', 'workspace', 'ZENDESK_API_KEY');
 
-    // No connector at all.
-    expect(await authorize(h, 'mallory', 'account:zendesk')).toEqual(DENIED);
     // A personal connector with the same id, owned by a non-admin.
     await seed(h, 'mallory', 'zendesk', 'personal', 'ZENDESK_API_KEY');
     expect(await authorize(h, 'mallory', 'account:zendesk')).toEqual(DENIED);
-    // The legitimate owner is unaffected.
-    expect(await authorize(h, 'root', 'account:zendesk')).toEqual(ALLOWED);
+    // Final review I2: a duplicate id fails closed for EVERY owner, the
+    // legitimate one included, until an admin deletes a copy.
+    expect(await authorize(h, 'root', 'account:zendesk')).toEqual(DENIED);
   });
 
   it('a soft-deleted connector is denied, and re-upserting it resurrects the grant', async () => {
@@ -433,5 +436,86 @@ describe('credentials:authorize-global:account — response shape', () => {
     }
     expect(yes.allowed).toBe(true);
     expect(no.allowed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SIGNINS-9 — `credentials:authorize-agent:account` with `purpose: 'store'`:
+// may a sign-in be stored ON an agent for this connector? Every connector is
+// shared, so any live definition qualifies (whoever owns it); an id with no
+// live definition is refused with `not-the-connector`.
+// ---------------------------------------------------------------------------
+
+describe("credentials:authorize-agent:account — purpose 'store'", () => {
+  function recording(): { logger: Logger; lines: Array<{ msg: string; bindings: unknown }> } {
+    const lines: Array<{ msg: string; bindings: unknown }> = [];
+    const logger: Logger = {
+      debug: () => undefined,
+      info: (msg, bindings) => void lines.push({ msg, bindings }),
+      warn: (msg, bindings) => void lines.push({ msg, bindings }),
+      error: () => undefined,
+      child: () => logger,
+    };
+    return { logger, lines };
+  }
+
+  const store = (h: TestHarness, userId: string, ref: string, logger: Logger) =>
+    h.bus.call<AuthorizeAgentInput, AuthorizeAgentOutput>(
+      'credentials:authorize-agent:account',
+      h.ctx({ userId, logger }),
+      { userId, agentId: 'team-agent', ref, purpose: 'store' },
+    );
+
+  it('allows any live connector, including one another user defined', async () => {
+    const h = await makeHarness();
+    await seed(h, 'root', 'linear', 'personal', 'TOKEN');
+    const { logger } = recording();
+    expect(await store(h, 'root', 'account:linear', logger)).toEqual(ALLOWED);
+    expect(await store(h, 'member', 'account:linear', logger)).toEqual(ALLOWED);
+  });
+
+  it('refuses an id with no live definition: not-the-connector', async () => {
+    const h = await makeHarness();
+    await seed(h, 'root', 'linear', 'personal', 'TOKEN');
+    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'root' }), {
+      userId: 'root',
+      connectorId: 'linear',
+    });
+    const { logger, lines } = recording();
+    expect(await store(h, 'member', 'account:linear', logger)).toEqual(DENIED);
+    expect(await store(h, 'member', 'account:never-existed', logger)).toEqual(DENIED);
+    expect(lines.filter((l) => l.msg === 'connectors_agent_credential_denied')).toEqual([
+      { msg: 'connectors_agent_credential_denied', bindings: { reason: 'not-the-connector', ref: 'account:linear' } },
+      { msg: 'connectors_agent_credential_denied', bindings: { reason: 'not-the-connector', ref: 'account:never-existed' } },
+    ]);
+  });
+
+  it('a duplicated id (two live rows, inserted directly) fails closed: not-the-connector for store AND read', async () => {
+    const h = await makeHarness();
+    const c = new (await import('pg')).default.Client({ connectionString });
+    await c.connect();
+    try {
+      for (const owner of ['root', 'other']) {
+        await c.query(
+          `INSERT INTO connectors_v1_connectors (owner_user_id, connector_id, name, key_mode, capabilities)
+           VALUES ($1, 'linear', 'Linear', 'personal', $2::jsonb)`,
+          [owner, JSON.stringify(caps('TOKEN'))],
+        );
+      }
+    } finally {
+      await c.end().catch(() => {});
+    }
+    const { logger, lines } = recording();
+    expect(await store(h, 'member', 'account:linear', logger)).toEqual(DENIED);
+    const read = await h.bus.call<AuthorizeAgentInput, AuthorizeAgentOutput>(
+      'credentials:authorize-agent:account',
+      h.ctx({ userId: 'member', logger }),
+      { userId: 'member', agentId: 'team-agent', ref: 'account:linear' },
+    );
+    expect(read).toEqual(DENIED);
+    expect(lines.filter((l) => l.msg === 'connectors_agent_credential_denied')).toEqual([
+      { msg: 'connectors_agent_credential_denied', bindings: { reason: 'not-the-connector', ref: 'account:linear' } },
+      { msg: 'connectors_agent_credential_denied', bindings: { reason: 'not-the-connector', ref: 'account:linear' } },
+    ]);
   });
 });

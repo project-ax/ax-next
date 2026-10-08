@@ -49,8 +49,6 @@ export async function runConnectorsMigration<DB>(
       usage_note    TEXT NOT NULL DEFAULT '',
       key_mode      TEXT NOT NULL
         CHECK (key_mode IN ('personal', 'workspace')),
-      visibility    TEXT NOT NULL
-        CHECK (visibility IN ('private', 'shared')),
       capabilities  JSONB NOT NULL,
       deleted_at    TIMESTAMPTZ,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -85,10 +83,16 @@ export async function runConnectorsMigration<DB>(
       ADD COLUMN IF NOT EXISTS requires_attachment BOOLEAN NOT NULL DEFAULT false
   `.execute(db);
 
+  // SIGNINS-9 (slice 7) — every connector is shared: drop the retired visibility column + its index.
+  await sql`DROP INDEX IF EXISTS connectors_v1_connectors_shared`.execute(db);
+  await sql`ALTER TABLE connectors_v1_connectors DROP COLUMN IF EXISTS visibility`.execute(db);
+  // Its replacement: a NON-unique index on live ids, for every by-id lookup
+  // and the duplicate check. Deliberately not UNIQUE — an existing duplicate
+  // would fail boot; a unique index (closing the create race) is a follow-up.
   await sql`
-    CREATE INDEX IF NOT EXISTS connectors_v1_connectors_shared
+    CREATE INDEX IF NOT EXISTS connectors_v1_connectors_live_id
       ON connectors_v1_connectors (connector_id)
-      WHERE deleted_at IS NULL AND visibility = 'shared'
+      WHERE deleted_at IS NULL
   `.execute(db);
 
   // TASK-94 — agent-authored connector drafts. Keyed per-(owner, agent,
@@ -122,6 +126,16 @@ export async function runConnectorsMigration<DB>(
     CREATE INDEX IF NOT EXISTS connectors_v1_authored_owner_agent
       ON connectors_v1_authored (owner_user_id, agent_id)
   `.execute(db);
+
+  // Slice 2b — one-shot boot steps this plugin has COMPLETED, keyed by a
+  // constant step name (e.g. the non-admin connector removal). A row means
+  // "done, never run again"; it is written only after a complete pass.
+  await sql`
+    CREATE TABLE IF NOT EXISTS connectors_v1_boot_steps (
+      name    TEXT PRIMARY KEY,
+      done_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.execute(db);
 }
 
 /**
@@ -137,7 +151,6 @@ export interface ConnectorsRow {
   description: string;
   usage_note: string;
   key_mode: string;
-  visibility: string;
   capabilities: unknown;
   /**
    * TASK-97, retired by TASK-808 — see the migration header. `Generated` so no
@@ -169,7 +182,14 @@ export interface ConnectorsAuthoredRow {
   updated_at: Date;
 }
 
+/** Slice 2b — a completed one-shot boot step (see the migration). */
+export interface ConnectorsBootStepRow {
+  name: string;
+  done_at: Generated<Date>;
+}
+
 export interface ConnectorDatabase {
   connectors_v1_connectors: ConnectorsRow;
   connectors_v1_authored: ConnectorsAuthoredRow;
+  connectors_v1_boot_steps: ConnectorsBootStepRow;
 }

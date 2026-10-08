@@ -11,27 +11,40 @@
  * primary security control — any message not from `window.location.origin`,
  * not of `OAUTH_MESSAGE_TYPE`, or not naming THIS connector is silently
  * dropped. `onConnected` runs ONLY on an explicit success message; a provider
- * error, a closed popup, a blocked popup and a cancel never call it. Callers
- * that grant something on success (the rail attaches the connector) rely on
- * exactly that.
+ * error, a closed popup, a blocked popup and a cancel never call it. A failure
+ * shows fixed copy for the message's `reason` (one of four words, else the
+ * generic sentence) — never text from the message.
  *
- * `cancel()` is a client-side abandon: it closes the popup and stops
+ * The browser grants nothing on success (slice 3): for `mode:'add'` the
+ * server's callback has already attached the connector, so callers only
+ * re-read. `cancel()` is a client-side abandon: it closes the popup and stops
  * listening. If the person somehow finishes the provider's page anyway, the
- * token is stored server-side but nothing that keyed off `onConnected` runs —
- * so the rail never attaches the connector on a sign-in the person cancelled.
+ * server completes that flow on its own; the caller just doesn't re-read.
  *
  * Anything that renders a sign-in through this hook must also render
  * `<ConnectorAccessNotice>`; `connector-access-coverage.test.ts` scans for it.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { beginOAuth } from '@/lib/connectors-oauth';
+import { BeginOAuthError, beginOAuth } from '@/lib/connectors-oauth';
 import { logRequestFailure } from '@/lib/http';
 import { OAUTH_MESSAGE_TYPE } from '@/lib/oauth-callback-bridge';
+import {
+  beginRefusalMessage,
+  oauthFailureMessage,
+  parseOAuthFailureReason,
+  type OAuthMode,
+} from '@/lib/oauth-failure';
 
 export interface UseOAuthPopupArgs {
   connectorId: string;
-  /** Pass for an agent-scoped connect; omit for a user-scoped one. */
-  agentId?: string;
+  /** The agent the sign-in belongs to (slice 3: there is no other kind). */
+  agentId: string;
+  /**
+   * `'add'` — sign in AND add the connector (the server's callback attaches
+   * it, so a caller only re-reads on success). `'sign-in-again'` — replace the
+   * sign-in of a connector already on the agent.
+   */
+  mode: OAuthMode;
   /** Display name, used in the "sign-in didn't finish" message. */
   serviceName: string;
   /** The provider confirmed the sign-in. Never called on any other outcome. */
@@ -56,6 +69,7 @@ export interface OAuthPopupState {
 export function useOAuthPopup({
   connectorId,
   agentId,
+  mode,
   serviceName,
   onConnected,
   onSettled,
@@ -120,16 +134,20 @@ export function useOAuthPopup({
 
     let authorizationUrl: string;
     try {
-      const result = await beginOAuth(
-        agentId !== undefined ? { connectorId, agentId } : { connectorId },
-      );
+      const result = await beginOAuth({ connectorId, agentId, mode });
       authorizationUrl = result.authorizationUrl;
     } catch (e) {
       // Never silent (TASK-757): the person sees the sentence below, the
       // console gets the reason.
       logRequestFailure(e, `oauth-sign-in ${connectorId}`);
       if (attemptRef.current !== attempt) return;
-      setError("We couldn't start the sign-in. Please try again — if it keeps happening, let us know.");
+      // A known refusal gets its own fixed sentence (trying again won't
+      // help); anything else is the generic one. Never the server's text.
+      setError(
+        e instanceof BeginOAuthError && e.refusal !== undefined
+          ? beginRefusalMessage(e.refusal)
+          : "We couldn't start the sign-in. Please try again — if it keeps happening, let us know.",
+      );
       setBusyBoth(false);
       return;
     }
@@ -148,7 +166,9 @@ export function useOAuthPopup({
     // ── Message listener (origin-locked — load-bearing security control) ──
     const handler = (event: MessageEvent) => {
       if (event.origin !== window.location.origin) return;
-      const data = event.data as { type?: string; connector?: string; oauth?: string } | null;
+      const data = event.data as
+        | { type?: string; connector?: string; oauth?: string; reason?: unknown }
+        | null;
       if (!data || data.type !== OAUTH_MESSAGE_TYPE) return;
       // Strict connector match: a message that can't prove it's for this
       // connector is ignored, so it can't tear down another instance's flow.
@@ -157,7 +177,9 @@ export function useOAuthPopup({
       cleanup();
       setBusyBoth(false);
       if (data.oauth === 'error') {
-        setError(`Sign-in didn't finish, so ${serviceName} isn't connected. You can try again whenever you're ready.`);
+        // Fixed copy per known reason; anything else reads as the generic
+        // sentence. The message's own text never reaches the screen.
+        setError(oauthFailureMessage(parseOAuthFailureReason(data.reason), mode, serviceName));
         onSettled?.();
         return; // never onConnected on failure
       }
@@ -175,7 +197,7 @@ export function useOAuthPopup({
         onSettled?.();
       }
     }, 500);
-  }, [connectorId, agentId, serviceName, cleanup, setBusyBoth, onConnected, onSettled]);
+  }, [connectorId, agentId, mode, serviceName, cleanup, setBusyBoth, onConnected, onSettled]);
 
   return { busy, error, start, cancel };
 }

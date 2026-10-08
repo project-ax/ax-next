@@ -251,7 +251,6 @@ describe('admin connector routes', () => {
           connectorId: 'gdrive',
           name: 'Google Drive',
           keyMode: 'personal',
-          visibility: 'private',
           capabilities: mcpCaps(),
         },
       }),
@@ -312,7 +311,6 @@ describe('admin connector routes', () => {
           connectorId: 'pg-bundle',
           name: 'Postgres bundle',
           keyMode: 'personal',
-          visibility: 'private',
           capabilities: caps,
         },
       }),
@@ -347,7 +345,6 @@ describe('admin connector routes', () => {
           connectorId: 'sf',
           name: 'Salesforce',
           keyMode: 'workspace',
-          visibility: 'shared',
           capabilities: {
             allowedHosts: ['login.salesforce.com'],
             credentials: [{ slot: 'sf', kind: 'api-key' }],
@@ -375,7 +372,6 @@ describe('admin connector routes', () => {
           connectorId: 'gdrive',
           name: 'Drive',
           keyMode: 'personal',
-          visibility: 'private',
           capabilities: mcpCaps(),
         },
       }),
@@ -407,7 +403,6 @@ describe('admin connector routes', () => {
           connectorId: 'gdrive',
           name: 'Drive',
           keyMode: 'personal',
-          visibility: 'shared',
           capabilities: mcpCaps(),
         },
       }),
@@ -442,7 +437,6 @@ describe('admin connector routes', () => {
           connectorId: 'gdrive',
           name: 'Drive',
           keyMode: 'personal',
-          visibility: 'private',
           capabilities: mcpCaps(),
         },
       }),
@@ -458,45 +452,741 @@ describe('admin connector routes', () => {
     expect(gCap.status).toBe(404);
   });
 
-  it('cross-tenant: User B never sees User A’s connector and 404s on its id', async () => {
+  it('SIGNINS-9: a POST with visibility:\'private\' is 201, stored with no visibility, and listed for another user', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    const created = makeRes();
+    await handlers.create(
+      makeReq({
+        // A stale SPA tab may still send the retired field: ignored, not a 400.
+        body: { connectorId: 'gdrive', name: 'Drive', keyMode: 'personal', visibility: 'private', capabilities: mcpCaps() },
+      }),
+      created.res,
+    );
+    expect(created.captured.status).toBe(201);
+    expect((created.captured.body as { connector: object }).connector).not.toHaveProperty('visibility');
+
+    // Another user (not an admin) sees it in `connectors:list`, read-only.
+    const listed = await h.bus.call<{ userId: string }, { connectors: Array<Record<string, unknown>> }>(
+      'connectors:list',
+      h.ctx({ userId: 'userB' }),
+      { userId: 'userB' },
+    );
+    expect(listed.connectors.map((c) => [c['id'], c['canEdit']])).toEqual([['gdrive', false]]);
+    expect(listed.connectors[0]).not.toHaveProperty('visibility');
+  });
+
+  it('SIGNINS-9: the owner PATCHing visibility:\'private\' is 200 and the connector stays listed for others', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'userA', isAdmin: true };
     await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'gdrive',
-          name: 'Drive',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
+      makeReq({ body: { connectorId: 'gdrive', name: 'Drive', keyMode: 'personal', capabilities: mcpCaps() } }),
       makeRes().res,
     );
-
-    // User B is an ADMIN too: `/admin/connectors*` 403s a non-admin before
-    // ownership is ever looked at (TASK-698, admin-route-gate.test.ts), so the
-    // cross-tenant 404 is only reachable — and only worth proving — for another admin.
-    currentActor = { id: 'userB', isAdmin: true };
-    const { res: lRes, captured: lCap } = makeRes();
-    await handlers.list(makeReq({}), lRes);
-    expect((lCap.body as { connectors: Array<{ id: string }> }).connectors).toHaveLength(0);
-
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'gdrive' } }), gRes);
-    expect(gCap.status).toBe(404);
-
-    const { res: pRes, captured: pCap } = makeRes();
+    const patched = makeRes();
     await handlers.update(
-      makeReq({ params: { id: 'gdrive' }, body: { name: 'hijack' } }),
-      pRes,
+      makeReq({ params: { id: 'gdrive' }, body: { name: 'Drive (mine?)', visibility: 'private' } }),
+      patched.res,
     );
-    expect(pCap.status).toBe(404);
+    expect(patched.captured.status).toBe(200);
+    expect((patched.captured.body as { connector: object }).connector).not.toHaveProperty('visibility');
 
-    const { res: dRes, captured: dCap } = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'gdrive' } }), dRes);
-    expect(dCap.status).toBe(404);
+    const listed = await h.bus.call<{ userId: string }, { connectors: Array<Record<string, unknown>> }>(
+      'connectors:list',
+      h.ctx({ userId: 'userB' }),
+      { userId: 'userB' },
+    );
+    expect(listed.connectors.map((c) => [c['id'], c['name']])).toEqual([['gdrive', 'Drive (mine?)']]);
+  });
+
+  it('POST 409 connector-id-taken when another owner holds the id', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    const body = {
+      connectorId: 'gmail',
+      name: 'Gmail',
+      keyMode: 'personal',
+      capabilities: mcpCaps(),
+    };
+    currentActor = { id: 'admin1', isAdmin: true };
+    const first = makeRes();
+    await handlers.create(makeReq({ body }), first.res);
+    expect(first.captured.status).toBe(201);
+
+    currentActor = { id: 'admin2', isAdmin: true };
+    const second = makeRes();
+    await handlers.create(makeReq({ body }), second.res);
+    expect(second.captured.status).toBe(409);
+    expect(second.captured.body).toEqual({ error: 'connector-id-taken' });
+  });
+
+  describe('any admin may edit or delete any connector, whoever owns it (SIGNINS-9: every connector is shared)', () => {
+    const crm = {
+      connectorId: 'crm',
+      name: 'CRM',
+      keyMode: 'personal',
+      capabilities: mcpCaps(),
+    };
+
+    async function rowOwners(h: TestHarness, id: string): Promise<string[]> {
+      const { db } = await h.bus.call<unknown, { db: Kysely<ConnectorDatabase> }>(
+        'database:get-instance',
+        h.ctx(),
+        {},
+      );
+      return (await createConnectorStore(db).listAllLive(() => {}))
+        .filter((r) => r.connectorId === id)
+        .map((r) => r.ownerUserId);
+    }
+
+    it('a client-supplied updateOnly never reaches the store: admin POST of a NEW id still creates it (201)', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      const created = makeRes();
+      await handlers.create(makeReq({ body: { ...crm, connectorId: 'fresh-one', updateOnly: true } }), created.res);
+      expect(created.captured.status).toBe(201);
+      expect(await rowOwners(h, 'fresh-one')).toEqual(['admin1']);
+    });
+
+    it('admin2 PATCHes admin1’s shared connector: 200, the change sticks, admin1 still owns it', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      const created = makeRes();
+      await handlers.create(makeReq({ body: crm }), created.res);
+      expect(created.captured.status).toBe(201);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const patched = makeRes();
+      await handlers.update(
+        makeReq({ params: { id: 'crm' }, body: { name: 'CRM (edited)', userId: 'admin2' } }),
+        patched.res,
+      );
+      expect(patched.captured.status).toBe(200);
+
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.body).toMatchObject({ connector: { name: 'CRM (edited)' } });
+      // Ownership never changes on edit, and the owner id never reaches the wire.
+      expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+      expect((shown.captured.body as { connector: object }).connector).not.toHaveProperty(
+        'ownerUserId',
+      );
+
+      currentActor = { id: 'admin1', isAdmin: true };
+      const ownerView = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), ownerView.res);
+      expect(ownerView.captured.body).toMatchObject({
+        connector: { name: 'CRM (edited)', canEdit: true },
+      });
+    });
+
+    it('the admin surface reports a foreign shared connector as editable', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: crm }), makeRes().res);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const list = makeRes();
+      await handlers.list(makeReq({}), list.res);
+      expect(list.captured.body).toMatchObject({ connectors: [{ id: 'crm', canEdit: true }] });
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.body).toMatchObject({ connector: { id: 'crm', canEdit: true } });
+    });
+
+    it('admin2 DELETEs admin1’s shared connector: 204, and admin1 then 404s on it', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: crm }), makeRes().res);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const deleted = makeRes();
+      await handlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(204);
+
+      currentActor = { id: 'admin1', isAdmin: true };
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.status).toBe(404);
+      expect(await rowOwners(h, 'crm')).toEqual([]);
+    });
+
+    it('admin2 POSTing admin1’s shared id is a create, not an edit: 409, nothing changes', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: crm }), makeRes().res);
+
+      currentActor = { id: 'admin2', isAdmin: true };
+      const post = makeRes();
+      await handlers.create(makeReq({ body: { ...crm, name: 'Hijack' } }), post.res);
+      expect(post.captured.status).toBe(409);
+      expect(post.captured.body).toEqual({ error: 'connector-id-taken' });
+      expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+    });
+
+    it('a non-admin PATCH/DELETE through /admin/connectors/crm is 403 and changes nothing', async () => {
+      const h = await makeHarness();
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin1', isAdmin: true };
+      await handlers.create(makeReq({ body: crm }), makeRes().res);
+
+      currentActor = { id: 'member', isAdmin: false };
+      const patched = makeRes();
+      await handlers.update(
+        makeReq({ params: { id: 'crm' }, body: { name: 'Hijack' } }),
+        patched.res,
+      );
+      expect(patched.captured).toMatchObject({ status: 403, body: { error: 'forbidden' } });
+      const deleted = makeRes();
+      await handlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(403);
+
+      currentActor = { id: 'admin1', isAdmin: true };
+      const shown = makeRes();
+      await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+      expect(shown.captured.body).toMatchObject({ connector: { name: 'CRM' } });
+    });
+
+    it('the user surface still refuses a foreign shared connector, even for an admin', async () => {
+      const h = await makeHarness();
+      currentActor = { id: 'admin1', isAdmin: true };
+      await createAdminConnectorRouteHandlers({ bus: h.bus }).create(
+        makeReq({ body: crm }),
+        makeRes().res,
+      );
+      currentActor = { id: 'admin2', isAdmin: true };
+      const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+      const patched = makeRes();
+      await userHandlers.update(
+        makeReq({ params: { id: 'crm' }, body: { name: 'Hijack' } }),
+        patched.res,
+      );
+      expect(patched.captured).toMatchObject({ status: 403, body: { error: 'read-only' } });
+      const deleted = makeRes();
+      await userHandlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(403);
+      const listed = makeRes();
+      await userHandlers.list(makeReq({}), listed.res);
+      expect(listed.captured.body).toMatchObject({ connectors: [{ id: 'crm', canEdit: false }] });
+    });
+
+    // A NON-OWNER admin may relabel a shared connector, never retarget it — an endpoint / host / slot change would send every
+    // agent's stored sign-ins and the shared key somewhere new.
+    describe('a non-owner admin cannot change where it connects or who it is for', () => {
+      async function seedAndShow(h: TestHarness) {
+        const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+        currentActor = { id: 'admin1', isAdmin: true };
+        const created = makeRes();
+        await handlers.create(makeReq({ body: crm }), created.res);
+        expect(created.captured.status).toBe(201);
+        const shown = makeRes();
+        await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+        return {
+          handlers,
+          before: (shown.captured.body as { connector: Record<string, unknown> }).connector,
+        };
+      }
+
+      const caps = mcpCaps();
+      const server = caps.mcpServers[0]!;
+      const changes: Array<[string, Record<string, unknown>]> = [
+        ['a server url', {
+          capabilities: { ...caps, mcpServers: [{ ...server, url: 'https://evil.example.com/mcp' }] },
+        }],
+        ['allowedHosts', { capabilities: { ...caps, allowedHosts: ['evil.example.com'] } }],
+        ['a server’s allowedHosts', {
+          capabilities: { ...caps, mcpServers: [{ ...server, allowedHosts: ['evil.example.com'] }] },
+        }],
+        ['a credential slot', {
+          capabilities: { ...caps, credentials: [{ slot: 'gdrive', kind: 'api-key', headerName: 'x-leak' }] },
+        }],
+        ['packages', { capabilities: { ...caps, packages: { npm: ['evil-pkg'], pypi: [] } } }],
+        ['keyMode', { keyMode: 'workspace' }],
+      ];
+
+      for (const [what, patch] of changes) {
+        it(`refuses ${what}: 403 owner-only-change, the stored row unchanged`, async () => {
+          const h = await makeHarness();
+          const { handlers, before } = await seedAndShow(h);
+          currentActor = { id: 'admin2', isAdmin: true };
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({ params: { id: 'crm' }, body: { name: 'Renamed', ...patch } }),
+            patched.res,
+          );
+          expect(patched.captured).toMatchObject({
+            status: 403,
+            body: { error: 'owner-only-change' },
+          });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const after = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), after.res);
+          expect((after.captured.body as { connector: unknown }).connector).toEqual(before);
+        });
+      }
+
+      it('SIGNINS-9: a non-owner admin renames another admin\'s connector (200); a key_mode change is 403 owner-only-change', async () => {
+        const h = await makeHarness();
+        const { handlers } = await seedAndShow(h);
+        currentActor = { id: 'admin2', isAdmin: true };
+        const renamed = makeRes();
+        // A stale `visibility` in the body is ignored, never owner-only.
+        await handlers.update(
+          makeReq({ params: { id: 'crm' }, body: { name: 'CRM (by admin2)', visibility: 'private' } }),
+          renamed.res,
+        );
+        expect(renamed.captured.status).toBe(200);
+        expect(renamed.captured.body).toMatchObject({ connector: { name: 'CRM (by admin2)', canEdit: true } });
+        const rekeyed = makeRes();
+        await handlers.update(
+          makeReq({ params: { id: 'crm' }, body: { keyMode: 'workspace' } }),
+          rekeyed.res,
+        );
+        expect(rekeyed.captured).toMatchObject({ status: 403, body: { error: 'owner-only-change' } });
+        expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+      });
+
+      it('accepts the whole unchanged form plus a new name: 200, canEdit, no owner id', async () => {
+        const h = await makeHarness();
+        const { handlers, before } = await seedAndShow(h);
+        currentActor = { id: 'admin2', isAdmin: true };
+        const patched = makeRes();
+        await handlers.update(
+          makeReq({ params: { id: 'crm' }, body: { ...before, name: 'CRM (relabelled)', description: 'New words' } }),
+          patched.res,
+        );
+        expect(patched.captured.status).toBe(200);
+        const body = patched.captured.body as { connector: Record<string, unknown> };
+        expect(body.connector).toMatchObject({
+          name: 'CRM (relabelled)',
+          description: 'New words',
+          canEdit: true,
+          capabilities: before.capabilities,
+        });
+        expect(body.connector).not.toHaveProperty('ownerUserId');
+        expect(body).not.toHaveProperty('ownerUserId');
+        expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+      });
+
+      // An OAuth slot stored WITHOUT `clientRegistration` /
+      // `scopes` means the same as one carrying their defaults (a pinned
+      // clientId → 'custom'; no scopes → []). Editors fill those in, so a
+      // non-owner admin's rename must not read as a retarget. A real change of
+      // either value still must.
+      describe('OAuth slot defaults', () => {
+        const oauthSlot = {
+          slot: 'TOKEN',
+          kind: 'oauth' as const,
+          server: 'gdrive',
+          clientId: 'pinned-client',
+          authServerUrl: 'https://auth.example.com',
+        };
+        const oauthCrm = {
+          ...crm,
+          capabilities: { ...mcpCaps(), credentials: [oauthSlot] },
+        };
+        async function seedOAuth(h: TestHarness) {
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const created = makeRes();
+          await handlers.create(makeReq({ body: oauthCrm }), created.res);
+          expect(created.captured.status).toBe(201);
+          const shown = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+          const before = (shown.captured.body as { connector: { capabilities: Capabilities } })
+            .connector;
+          // Stored exactly as sent: neither field present.
+          expect(before.capabilities.credentials[0]).not.toHaveProperty('clientRegistration');
+          expect(before.capabilities.credentials[0]).not.toHaveProperty('scopes');
+          return { handlers, before };
+        }
+        const withSlot = (before: { capabilities: Capabilities }, slot: Record<string, unknown>) => ({
+          ...before.capabilities,
+          credentials: [{ ...oauthSlot, ...slot }],
+        });
+
+        it('accepts a rename whose slot spells out the defaults: 200, renamed, owner unchanged', async () => {
+          const h = await makeHarness();
+          const { handlers, before } = await seedOAuth(h);
+          currentActor = { id: 'admin2', isAdmin: true };
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({
+              params: { id: 'crm' },
+              body: {
+                name: 'CRM (renamed)',
+                keyMode: 'personal',
+                capabilities: withSlot(before, { clientRegistration: 'custom', scopes: [] }),
+              },
+            }),
+            patched.res,
+          );
+          expect(patched.captured.status).toBe(200);
+          expect(patched.captured.body).toMatchObject({ connector: { name: 'CRM (renamed)' } });
+          expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+        });
+
+        // The stored reach is what a non-owner admin's
+        // save writes back, byte for byte; the body's (defaults-filled) copy
+        // only decides whether to refuse.
+        it('a 200 rename leaves capabilities byte-identical to the stored row, not the defaults-filled body', async () => {
+          const h = await makeHarness();
+          const { handlers, before } = await seedOAuth(h);
+          currentActor = { id: 'admin2', isAdmin: true };
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({
+              params: { id: 'crm' },
+              body: {
+                name: 'CRM (renamed)',
+                capabilities: withSlot(before, { clientRegistration: 'custom', scopes: [] }),
+              },
+            }),
+            patched.res,
+          );
+          expect(patched.captured.status).toBe(200);
+          currentActor = { id: 'admin1', isAdmin: true };
+          const after = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), after.res);
+          const stored = (after.captured.body as { connector: { name: string; capabilities: Capabilities } })
+            .connector;
+          expect(stored.name).toBe('CRM (renamed)');
+          expect(stored.capabilities).toStrictEqual(before.capabilities);
+          expect(stored.capabilities.credentials[0]).not.toHaveProperty('clientRegistration');
+          expect(stored.capabilities.credentials[0]).not.toHaveProperty('scopes');
+        });
+
+        it('an empty pinned clientId: whatever the guard answers, the stored reach never changes', async () => {
+          const h = await makeHarness();
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const emptyClient = { ...oauthSlot, clientId: '' };
+          const created = makeRes();
+          await handlers.create(
+            makeReq({ body: { ...oauthCrm, capabilities: { ...mcpCaps(), credentials: [emptyClient] } } }),
+            created.res,
+          );
+          expect(created.captured.status).toBe(201);
+          const shown = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+          const before = (shown.captured.body as { connector: { name: string; capabilities: Capabilities } })
+            .connector;
+
+          currentActor = { id: 'admin2', isAdmin: true };
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({
+              params: { id: 'crm' },
+              body: {
+                name: 'CRM (renamed)',
+                capabilities: {
+                  ...before.capabilities,
+                  credentials: [{ ...emptyClient, clientRegistration: 'custom' }],
+                },
+              },
+            }),
+            patched.res,
+          );
+          const status = patched.captured.status;
+          expect([200, 403]).toContain(status);
+
+          currentActor = { id: 'admin1', isAdmin: true };
+          const after = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), after.res);
+          const stored = (after.captured.body as { connector: { name: string; capabilities: Capabilities } })
+            .connector;
+          expect(stored.capabilities).toStrictEqual(before.capabilities);
+          expect(stored.name).toBe(status === 200 ? 'CRM (renamed)' : before.name);
+          expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+        });
+
+        const realChanges: Array<[string, Record<string, unknown>]> = [
+          ['adds a scope', { scopes: ['read'] }],
+          ['changes clientRegistration away from its default', { clientRegistration: 'dcr' }],
+          ['changes clientRegistration and leaves the rest default', { clientRegistration: 'auto', scopes: [] }],
+          ['changes the clientId', { clientId: 'other-client' }],
+        ];
+        for (const [what, slot] of realChanges) {
+          it(`refuses a rename that ${what}: 403 owner-only-change`, async () => {
+            const h = await makeHarness();
+            const { handlers, before } = await seedOAuth(h);
+            currentActor = { id: 'admin2', isAdmin: true };
+            const patched = makeRes();
+            await handlers.update(
+              makeReq({
+                params: { id: 'crm' },
+                body: { name: 'CRM (renamed)', capabilities: withSlot(before, slot) },
+              }),
+              patched.res,
+            );
+            expect(patched.captured).toMatchObject({
+              status: 403,
+              body: { error: 'owner-only-change' },
+            });
+            expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+          });
+        }
+      });
+
+      it('the owner may still change their own server url', async () => {
+        const h = await makeHarness();
+        const { handlers } = await seedAndShow(h);
+        const patched = makeRes();
+        await handlers.update(
+          makeReq({ params: { id: 'crm' }, body: changes[0]![1] }),
+          patched.res,
+        );
+        expect(patched.captured.status).toBe(200);
+        expect(patched.captured.body).toMatchObject({
+          connector: { capabilities: { mcpServers: [{ url: 'https://evil.example.com/mcp' }] } },
+        });
+      });
+    });
+
+    // A write body must be a JSON object. A primitive used to reach the
+    // owner-only guard's `in` checks (500 on the cross-owner path) or get
+    // spread into the row on the owner path; an array is no field map either.
+    describe('a body that is not a JSON object is a 400, and writes nothing', () => {
+      const bodies = ['"x"', '5', 'true', 'null', '[]', '["name"]'];
+      for (const raw of bodies) {
+        for (const who of ['owner', 'non-owner admin'] as const) {
+          it(`PATCH ${raw} as the ${who}: 400`, async () => {
+            const h = await makeHarness();
+            const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+            currentActor = { id: 'admin1', isAdmin: true };
+            await handlers.create(makeReq({ body: crm }), makeRes().res);
+            const shown = makeRes();
+            await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+            const before = (shown.captured.body as { connector: unknown }).connector;
+
+            currentActor = { id: who === 'owner' ? 'admin1' : 'admin2', isAdmin: true };
+            const patched = makeRes();
+            await handlers.update(makeReq({ params: { id: 'crm' }, body: raw }), patched.res);
+            expect(patched.captured).toMatchObject({
+              status: 400,
+              body: { error: 'body must be a JSON object' },
+            });
+
+            currentActor = { id: 'admin1', isAdmin: true };
+            const after = makeRes();
+            await handlers.show(makeReq({ params: { id: 'crm' } }), after.res);
+            expect((after.captured.body as { connector: unknown }).connector).toEqual(before);
+            expect(await rowOwners(h, 'crm')).toEqual(['admin1']);
+          });
+        }
+        it(`POST ${raw}: 400, nothing created`, async () => {
+          const h = await makeHarness();
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const created = makeRes();
+          await handlers.create(makeReq({ body: raw }), created.res);
+          expect(created.captured).toMatchObject({
+            status: 400,
+            body: { error: 'body must be a JSON object' },
+          });
+          const listed = makeRes();
+          await handlers.list(makeReq({}), listed.res);
+          expect(listed.captured.body).toEqual({ connectors: [] });
+        });
+      }
+    });
+
+    // The PATCH route sets `updateOnly`, so a delete that lands between the
+    // route's read and the write wins (404) instead of being undone. The seam:
+    // `connectors:upsert` reads the prior row, then (for a non-OAuth server,
+    // which `mcpCaps()` has) calls `tool-policy:set-ceiling-sources` BEFORE
+    // `store.upsert`. A stub there soft-deletes the row, deterministically.
+    describe('a delete racing a PATCH wins (updateOnly)', () => {
+      for (const who of ['owner', 'non-owner admin'] as const) {
+        it(`as the ${who}: 404, and the row stays deleted`, async () => {
+          let armed = false;
+          let fired = 0;
+          const ceilingStub: Plugin = {
+            manifest: {
+              name: 'ceiling-stub',
+              version: '0.0.0',
+              registers: ['tool-policy:set-ceiling-sources'],
+              calls: [],
+              subscribes: [],
+            },
+            async init({ bus }) {
+              bus.registerService('tool-policy:set-ceiling-sources', 'ceiling-stub', async () => {
+                if (!armed) return {};
+                armed = false;
+                fired += 1;
+                const pg = new (await import('pg')).default.Client({ connectionString });
+                await pg.connect();
+                try {
+                  await pg.query(
+                    "UPDATE connectors_v1_connectors SET deleted_at = now() WHERE connector_id = 'crm'",
+                  );
+                } finally {
+                  await pg.end();
+                }
+                return {};
+              });
+            },
+          };
+          const h = await createTestHarness({
+            plugins: [
+              createDatabasePostgresPlugin({ connectionString }),
+              authStubPlugin(),
+              credentialsStubPlugin(),
+              ceilingStub,
+              createConnectorsPlugin(),
+            ],
+          });
+          harnesses.push(h);
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'admin1', isAdmin: true };
+          const created = makeRes();
+          await handlers.create(makeReq({ body: crm }), created.res);
+          expect(created.captured.status).toBe(201);
+
+          currentActor = { id: who === 'owner' ? 'admin1' : 'admin2', isAdmin: true };
+          armed = true;
+          const patched = makeRes();
+          await handlers.update(
+            makeReq({ params: { id: 'crm' }, body: { name: 'After the delete' } }),
+            patched.res,
+          );
+          expect(fired).toBe(1);
+          expect(patched.captured).toMatchObject({ status: 404, body: { error: 'not-found' } });
+          expect(await rowOwners(h, 'crm')).toEqual([]);
+          currentActor = { id: 'admin1', isAdmin: true };
+          const shown = makeRes();
+          await handlers.show(makeReq({ params: { id: 'crm' } }), shown.res);
+          expect(shown.captured.status).toBe(404);
+        });
+      }
+    });
+
+    // What the admin editor (LegacyConnectorEditDialog) sends for an unchanged
+    // connector with no MCP servers, plus a new name: the whole form, with
+    // `capabilities` rebuilt from the form (channel-web's connector-form test
+    // pins that this round trip reproduces the stored capabilities). A
+    // non-owner admin's rename must not read as a retarget.
+    const noServerCaps: Array<[string, Capabilities]> = [
+      ['direct API', {
+        allowedHosts: ['api.billing.example.com'],
+        credentials: [{ slot: 'BILLING_KEY', kind: 'api-key', description: 'API key' }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      }],
+      ['command-line tool', {
+        allowedHosts: ['registry.npmjs.org', 'api.billing.example.com'],
+        credentials: [{ slot: 'BILLING_KEY', kind: 'api-key' }],
+        mcpServers: [],
+        packages: { npm: ['billing-cli'], pypi: [] },
+      }],
+    ];
+    for (const [kind, capabilities] of noServerCaps) {
+      it(`a non-owner admin renaming a ${kind} connector through the editor’s full-form body: 200`, async () => {
+        const h = await makeHarness();
+        const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+        const noServer = {
+          connectorId: 'billing',
+          name: 'Billing',
+          description: 'Invoices.',
+          usageNote: 'Read invoices.',
+          keyMode: 'workspace',
+          capabilities,
+        };
+        currentActor = { id: 'admin1', isAdmin: true };
+        const created = makeRes();
+        await handlers.create(makeReq({ body: noServer }), created.res);
+        expect(created.captured.status).toBe(201);
+        const shown = makeRes();
+        await handlers.show(makeReq({ params: { id: 'billing' } }), shown.res);
+        const before = (shown.captured.body as { connector: { capabilities: Capabilities } }).connector;
+
+        currentActor = { id: 'admin2', isAdmin: true };
+        const patched = makeRes();
+        await handlers.update(
+          // The dialog's body shape: every field, no `services` key when there are none.
+          makeReq({ params: { id: 'billing' }, body: { ...noServer, name: 'Billing (renamed)' } }),
+          patched.res,
+        );
+        expect(patched.captured.status).toBe(200);
+        currentActor = { id: 'admin1', isAdmin: true };
+        const after = makeRes();
+        await handlers.show(makeReq({ params: { id: 'billing' } }), after.res);
+        const stored = (after.captured.body as { connector: { name: string; capabilities: Capabilities } })
+          .connector;
+        expect(stored.name).toBe('Billing (renamed)');
+        expect(stored.capabilities).toStrictEqual(before.capabilities);
+      });
+    }
+
+    it('same-id rows from two owners (a legacy duplicate), none the admin’s: PATCH and DELETE 404 (fail closed)', async () => {
+      const h = await makeHarness();
+      for (const owner of ['ownerA', 'ownerB']) {
+        await h.bus.call('connectors:upsert', h.ctx({ userId: owner }), {
+          ...crm,
+          userId: owner,
+        });
+      }
+      const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+      currentActor = { id: 'admin3', isAdmin: true };
+      const patched = makeRes();
+      await handlers.update(makeReq({ params: { id: 'crm' }, body: { name: 'X' } }), patched.res);
+      expect(patched.captured.status).toBe(404);
+      const deleted = makeRes();
+      await handlers.destroy(makeReq({ params: { id: 'crm' } }), deleted.res);
+      expect(deleted.captured.status).toBe(404);
+      expect((await rowOwners(h, 'crm')).sort()).toEqual(['ownerA', 'ownerB']);
+    });
+
+    it('an edit never resurrects a connector deleted after it was read (updateOnly)', async () => {
+      const h = await makeHarness();
+      await h.bus.call('connectors:upsert', h.ctx({ userId: 'admin1' }), {
+        ...crm,
+        userId: 'admin1',
+      });
+      // The PATCH read happened; then the owner deletes; then the PATCH writes.
+      await h.bus.call('connectors:delete', h.ctx({ userId: 'admin1' }), {
+        userId: 'admin1',
+        connectorId: 'crm',
+        purgeGlobal: true,
+      });
+      await expect(
+        h.bus.call('connectors:upsert', h.ctx({ userId: 'admin1' }), {
+          ...crm,
+          name: 'Late edit',
+          userId: 'admin1',
+          updateOnly: true,
+        }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+      expect(await rowOwners(h, 'crm')).toEqual([]);
+
+      // The store's own guard (the write itself is conditional on a live row),
+      // which closes the window after the hook's pre-check.
+      const { db } = await h.bus.call<unknown, { db: Kysely<ConnectorDatabase> }>(
+        'database:get-instance',
+        h.ctx(),
+        {},
+      );
+      await expect(
+        createConnectorStore(db).upsert({
+          userId: 'admin1',
+          connectorId: 'crm',
+          name: 'Late edit',
+          description: '',
+          usageNote: '',
+          keyMode: 'personal',
+          capabilities: mcpCaps(),
+          updateOnly: true,
+        }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+      expect(await rowOwners(h, 'crm')).toEqual([]);
+    });
   });
 
   it('400 on invalid JSON body', async () => {
@@ -531,7 +1221,6 @@ describe('admin connector routes', () => {
           connectorId: 'bad',
           name: 'Bad',
           keyMode: 'nonsense',
-          visibility: 'private',
           capabilities: mcpCaps(),
         },
       }),
@@ -563,7 +1252,6 @@ describe('admin connector routes', () => {
             connectorId: 'local',
             name: 'Local',
             keyMode: 'personal',
-            visibility: 'private',
             capabilities: stdioCaps(),
           },
         }),
@@ -586,7 +1274,6 @@ describe('admin connector routes', () => {
             connectorId: 'gdrive',
             name: 'Drive',
             keyMode: 'personal',
-            visibility: 'private',
             capabilities: mcpCaps(),
           },
         }),
@@ -636,33 +1323,23 @@ describe('admin connector routes', () => {
     expect(captured.status).toBe(401);
   });
 
-  it('test: 404 for a connector the actor does not own', async () => {
+  it('test: 404 for a connector id with no live definition', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
-    currentActor = { id: 'userA', isAdmin: true };
-    await seedConnector(handlers, {
-      connectorId: 'gdrive',
-      name: 'Google Drive',
-      keyMode: 'personal',
-      visibility: 'private',
-      capabilities: mcpCaps(),
-    });
-    // userB cannot probe userA's connector.
     currentActor = { id: 'userB', isAdmin: true };
     const { res, captured } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
     expect(captured.status).toBe(404);
   });
 
-  it('test: needs-key when a declared slot has no key in the vault', async () => {
+  it('test: needs-key when a declared shared slot has no key in the vault', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'userA', isAdmin: true };
     await seedConnector(handlers, {
       connectorId: 'gdrive',
       name: 'Google Drive',
-      keyMode: 'personal',
-      visibility: 'private',
+      keyMode: 'workspace',
       capabilities: mcpCaps(),
     });
     // No credential rows seeded ⟹ the `gdrive` slot is unfilled.
@@ -673,7 +1350,7 @@ describe('admin connector routes', () => {
     expect((captured.body as { detail?: string }).detail).toContain('gdrive');
   });
 
-  it('test: reachable when the personal slot is filled in the actor vault', async () => {
+  it('test: a personal connector is needs-key (each agent adds its key), never read from the admin vault', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'userA', isAdmin: true };
@@ -681,17 +1358,18 @@ describe('admin connector routes', () => {
       connectorId: 'gdrive',
       name: 'Google Drive',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: mcpCaps(),
     });
-    // The connector owns its own key: the ref is account:<connectorId>
-    // (account:gdrive) — the slot's legacy account tag is ignored. A personal
-    // connector resolves it at scope:'user' under the actor's id.
+    // An old person-level row for the admin must NOT make the connector look
+    // ready: connector keys live on agents, and the probe has no agent.
     credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:gdrive' }];
     const { res, captured } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
     expect(captured.status).toBe(200);
-    expect((captured.body as { status: string }).status).toBe('reachable');
+    expect((captured.body as { status: string }).status).toBe('needs-key');
+    expect((captured.body as { detail?: string }).detail).toBe(
+      "Each agent adds its own key, so there's nothing to test here.",
+    );
   });
 
   it('test: a workspace connector resolves its slot at scope:global (ownerId:null)', async () => {
@@ -702,12 +1380,11 @@ describe('admin connector routes', () => {
       connectorId: 'gdrive',
       name: 'Google Drive',
       keyMode: 'workspace',
-      visibility: 'private',
       capabilities: mcpCaps(),
     });
-    // A user-scoped row under the actor must NOT satisfy a workspace slot — the
-    // workspace key lives at scope:'global' / ownerId:null. Ref is account:gdrive.
-    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:gdrive' }];
+    // An agent-scoped row must NOT satisfy a workspace slot — the workspace key
+    // lives at scope:'global' / ownerId:null. Ref is account:gdrive.
+    credentialRows = [{ scope: 'agent', ownerId: 'agent-1', ref: 'account:gdrive' }];
     const { res: r1, captured: c1 } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), r1);
     expect((c1.body as { status: string }).status).toBe('needs-key');
@@ -726,7 +1403,6 @@ describe('admin connector routes', () => {
       connectorId: 'sf',
       name: 'Salesforce',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: {
         allowedHosts: ['login.salesforce.com'],
         credentials: [],
@@ -748,7 +1424,6 @@ describe('admin connector routes', () => {
       connectorId: 'broken',
       name: 'Broken MCP',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: {
         allowedHosts: [],
         credentials: [],
@@ -776,8 +1451,7 @@ describe('admin connector routes', () => {
     await seedConnector(handlers, {
       connectorId: 'gdrive',
       name: 'Google Drive',
-      keyMode: 'personal',
-      visibility: 'private',
+      keyMode: 'workspace',
       capabilities: mcpCaps(),
     });
     credentialsListThrows = true;
@@ -828,47 +1502,47 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(captured.body).toEqual({ error: 'unauthenticated' });
   });
 
-  it('POST defaults a new connector to shared and requiring explicit attachment', async () => {
+  // Slice 2a: the `/settings/connectors` bundle is READS only. These pin that
+  // its WRITE handlers (never routed) also refuse a non-admin, so wiring one up
+  // by mistake could not reopen non-admin authoring.
+  it('a non-admin on the user bundle: every write handler 403s, and nothing is stored or purged', async () => {
     const h = await makeHarness();
+    currentActor = { id: 'admin-own', isAdmin: true };
+    await adminSeed(h.bus, {
+      connectorId: 'user-bundle-shared',
+      name: 'Shared',
+      keyMode: 'workspace',
+      capabilities: mcpCaps(),
+    });
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'mine',
-          name: 'My connector',
-          keyMode: 'personal',
-          // No visibility supplied — new definitions default to shared.
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(201);
-    const connector = (captured.body as { connector: { visibility: string } })
-      .connector;
-    expect(connector.visibility).toBe('shared');
-    // TASK-808 — the workspace-default flag is gone from the connector shape.
-    expect(connector).not.toHaveProperty('defaultAttached');
+    currentActor = { id: 'plain-user', isAdmin: false };
+    const body = { connectorId: 'plain-new', name: 'Mine', keyMode: 'personal', capabilities: mcpCaps() };
+    const results = [
+      (r: ReturnType<typeof makeRes>) => handlers.create(makeReq({ body }), r.res),
+      (r: ReturnType<typeof makeRes>) => handlers.update(makeReq({ params: { id: 'user-bundle-shared' }, body: { name: 'x' } }), r.res),
+      (r: ReturnType<typeof makeRes>) => handlers.destroy(makeReq({ params: { id: 'user-bundle-shared' } }), r.res),
+      (r: ReturnType<typeof makeRes>) => handlers.setToolPermissions(makeReq({ params: { id: 'user-bundle-shared' }, body: { verdicts: [] } }), r.res),
+    ];
+    for (const run of results) {
+      const r = makeRes();
+      await run(r);
+      expect(r.captured.status).toBe(403);
+      expect(r.captured.body).toEqual({ error: 'forbidden' });
+    }
+    const list = makeRes();
+    await handlers.list(makeReq({}), list.res);
+    expect((list.captured.body as { connectors: Array<{ id: string }> }).connectors.map((c) => c.id)).toEqual([
+      'user-bundle-shared',
+    ]);
   });
 
-  it('a shared personal connector supports owner edits and is read-only for other users', async () => {
+  it('a connector is readable, never editable, for another user on the user bundle (reads)', async () => {
     const h = await makeHarness();
+    currentActor = { id: 'author', isAdmin: true };
+    await adminSeed(h.bus, {
+      connectorId: 'shared-personal', name: 'Shared', keyMode: 'personal', capabilities: mcpCaps(),
+    });
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'author', isAdmin: false };
-    const created = makeRes();
-    await handlers.create(makeReq({ body: {
-      connectorId: 'shared-personal', name: 'Shared', keyMode: 'personal',
-      visibility: 'shared', capabilities: mcpCaps(),
-    } }), created.res);
-    expect(created.captured.status).toBe(201);
-    const edited = makeRes();
-    await handlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Updated', requiresAttachment: false } }), edited.res);
-    expect(edited.captured.status).toBe(200);
-    expect(edited.captured.body).toMatchObject({ connector: { visibility: 'shared', requiresAttachment: true } });
-    expect((edited.captured.body as { connector: object }).connector).not.toHaveProperty('defaultAttached');
-
     currentActor = { id: 'reader', isAdmin: false };
     const list = makeRes();
     await handlers.list(makeReq({}), list.res);
@@ -876,63 +1550,120 @@ describe('user connector routes (/settings/connectors)', () => {
     const shown = makeRes();
     await handlers.show(makeReq({ params: { id: 'shared-personal' } }), shown.res);
     expect(shown.captured.status).toBe(200);
-    expect(shown.captured.body).toMatchObject({ connector: { name: 'Updated', canEdit: false } });
-    const patch = makeRes();
-    await handlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Hijack', canEdit: true } }), patch.res);
-    expect(patch.captured.status).toBe(403);
-    const post = makeRes();
-    await handlers.create(makeReq({ body: { connectorId: 'shared-personal', name: 'Hijack', keyMode: 'personal', capabilities: mcpCaps(), canEdit: true } }), post.res);
-    expect(post.captured.status).toBe(403);
-    const del = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'shared-personal' } }), del.res);
-    expect(del.captured.status).toBe(403);
-
-    currentActor = { id: 'reader', isAdmin: true };
-    const adminHandlers = createAdminConnectorRouteHandlers({ bus: h.bus });
-    const adminPatch = makeRes();
-    await adminHandlers.update(makeReq({ params: { id: 'shared-personal' }, body: { name: 'Hijack' } }), adminPatch.res);
-    expect(adminPatch.captured.status).toBe(403);
-    const adminDelete = makeRes();
-    await adminHandlers.destroy(makeReq({ params: { id: 'shared-personal' } }), adminDelete.res);
-    expect(adminDelete.captured.status).toBe(403);
-
-    currentActor = { id: 'author', isAdmin: false };
-    const ownDelete = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'shared-personal' } }), ownDelete.res);
-    expect(ownDelete.captured.status).toBe(204);
+    expect(shown.captured.body).toMatchObject({ connector: { name: 'Shared', canEdit: false } });
+    expect((shown.captured.body as { connector: object }).connector).not.toHaveProperty('ownerUserId');
   });
 
-  it('admin create defaults to shared; editing and POST upserts preserve the saved visibility and key mode', async () => {
+  // Slice 2c — POST is create-only. "Set it up" from an agent's request must
+  // never overwrite a connector the admin already has with agent-chosen reach.
+  it('POST for an id the admin already owns is a 409 and leaves the connector unchanged', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
     currentActor = { id: 'root', isAdmin: true };
-    const fresh = makeRes();
-    await handlers.create(makeReq({ body: { connectorId: 'fresh', name: 'Fresh', keyMode: 'personal', capabilities: mcpCaps() } }), fresh.res);
-    expect(fresh.captured.body).toMatchObject({ connector: { visibility: 'shared' } });
-    await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Legacy', keyMode: 'workspace', visibility: 'private', capabilities: mcpCaps() } }), makeRes().res);
+    const created = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'mine', name: 'Mine', keyMode: 'personal', capabilities: mcpCaps() } }), created.res);
+    expect(created.captured.status).toBe(201);
+    const again = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'mine',
+          name: 'Overwritten',
+          keyMode: 'personal',
+          capabilities: { ...mcpCaps(), allowedHosts: ['evil.example.com'] },
+        },
+      }),
+      again.res,
+    );
+    expect(again.captured.status).toBe(409);
+    expect(again.captured.body).toEqual({ error: 'connector-id-taken' });
+    const shown = makeRes();
+    await handlers.show(makeReq({ params: { id: 'mine' } }), shown.res);
+    expect(shown.captured.body).toMatchObject({ connector: { name: 'Mine' } });
+    expect(
+      (shown.captured.body as { connector: { capabilities: { allowedHosts: string[] } } })
+        .connector.capabilities.allowedHosts,
+    ).not.toContain('evil.example.com');
+  });
+
+  it('the connectors:upsert hook refuses createOnly for an id the caller holds', async () => {
+    const h = await makeHarness();
+    const input = { userId: 'root', connectorId: 'hooked', name: 'Hooked', keyMode: 'personal', capabilities: mcpCaps() };
+    await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), input);
+    await expect(
+      h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), { ...input, name: 'Again', createOnly: true }),
+    ).rejects.toMatchObject({ code: 'connector-id-taken' });
+    // Without the flag the hook is still an upsert (other callers rely on it).
+    const out = await h.bus.call<unknown, { created: boolean }>('connectors:upsert', h.ctx({ userId: 'root' }), { ...input, name: 'Again' });
+    expect(out.created).toBe(false);
+  });
+
+  it('a PATCH body carrying createOnly: true still edits (the route re-asserts createOnly: false)', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    await handlers.create(makeReq({ body: { connectorId: 'edited', name: 'Before', keyMode: 'personal', capabilities: mcpCaps() } }), makeRes().res);
     const patch = makeRes();
-    await handlers.update(makeReq({ params: { id: 'legacy' }, body: { name: 'Edited' } }), patch.res);
-    expect(patch.captured.body).toMatchObject({ connector: { visibility: 'private', keyMode: 'workspace' } });
-    const post = makeRes();
-    await handlers.create(makeReq({ body: { connectorId: 'legacy', name: 'Upserted', keyMode: 'workspace', capabilities: mcpCaps() } }), post.res);
-    expect(post.captured.body).toMatchObject({ connector: { visibility: 'private', keyMode: 'workspace' } });
+    await handlers.update(makeReq({ params: { id: 'edited' }, body: { name: 'After', createOnly: true } }), patch.res);
+    expect(patch.captured.status).toBe(200);
+    expect(patch.captured.body).toMatchObject({ connector: { name: 'After' }, created: false });
+  });
+
+  // Slice 2c — `authored` is reserved for NEW connectors only. A connector
+  // that already had the id (created before the reservation) stays readable,
+  // editable and deletable.
+  it('a pre-existing `authored` connector can still be read, edited and deleted', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    // Seeded through the store, below the hook: the way a connector created
+    // before the reservation exists.
+    const { db } = await h.bus.call<unknown, { db: Kysely<ConnectorDatabase> }>(
+      'database:get-instance', h.ctx(), {},
+    );
+    await createConnectorStore(db).upsert({
+      userId: 'root',
+      connectorId: 'authored',
+      name: 'Authored',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal',
+      capabilities: mcpCaps(),
+    });
+    const shown = makeRes();
+    await handlers.show(makeReq({ params: { id: 'authored' } }), shown.res);
+    expect(shown.captured.status).toBe(200);
+    const patch = makeRes();
+    await handlers.update(makeReq({ params: { id: 'authored' }, body: { name: 'Renamed' } }), patch.res);
+    expect(patch.captured.status).toBe(200);
+    const live = await h.bus.call<{ connectorIds: string[] }, { live: string[] }>(
+      'connectors:live-ids', h.ctx({ userId: 'root' }), { connectorIds: ['authored', 'x'] },
+    );
+    expect(live.live).toEqual(['authored']);
+    const del = await h.bus.call<unknown, { deleted: boolean }>(
+      'connectors:delete', h.ctx({ userId: 'root' }), { userId: 'root', connectorId: 'authored' },
+    );
+    expect(del.deleted).toBe(true);
+    // But a NEW one can't take the id.
+    const create = makeRes();
+    await handlers.create(makeReq({ body: { connectorId: 'authored', name: 'New', keyMode: 'personal', capabilities: mcpCaps() } }), create.res);
+    expect(create.captured.status).toBe(400);
+    expect(create.captured.body).toMatchObject({ error: expect.stringMatching(/reserved/) });
   });
 
   // TASK-808 — "Set default" is gone. A stale client that still sends the field
   // fails LOUDLY (400) instead of being silently dropped, for ONE release, on
-  // every write route, in both modes, whatever the value (it no longer means
+  // every admin write route, whatever the value (it no longer means
   // anything, so `false` is as stale as `true`). Nothing is stored.
   describe('defaultAttached is rejected (TASK-808)', () => {
     const MESSAGE = 'defaultAttached is no longer supported';
 
-    for (const mode of ['admin', 'user'] as const) {
+    for (const mode of ['admin'] as const) {
       for (const value of [true, false, null, 'yes']) {
         it(`${mode} POST with defaultAttached: ${JSON.stringify(value)} -> 400 and nothing is stored`, async () => {
           const h = await makeHarness();
-          const handlers = mode === 'admin'
-            ? createAdminConnectorRouteHandlers({ bus: h.bus })
-            : createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-          currentActor = { id: 'userU', isAdmin: mode === 'admin' };
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'userU', isAdmin: true };
           const { res, captured } = makeRes();
           await handlers.create(
             makeReq({
@@ -940,7 +1671,6 @@ describe('user connector routes (/settings/connectors)', () => {
                 connectorId: 'stale',
                 name: 'Stale client',
                 keyMode: 'personal',
-                visibility: 'private',
                 defaultAttached: value,
                 capabilities: mcpCaps(),
               },
@@ -956,12 +1686,10 @@ describe('user connector routes (/settings/connectors)', () => {
 
         it(`${mode} PATCH with defaultAttached: ${JSON.stringify(value)} -> 400 and the connector is unchanged`, async () => {
           const h = await makeHarness();
-          const handlers = mode === 'admin'
-            ? createAdminConnectorRouteHandlers({ bus: h.bus })
-            : createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-          currentActor = { id: 'userU', isAdmin: mode === 'admin' };
+          const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+          currentActor = { id: 'userU', isAdmin: true };
           await handlers.create(
-            makeReq({ body: { connectorId: 'kept', name: 'Kept', keyMode: 'personal', visibility: 'private', capabilities: mcpCaps() } }),
+            makeReq({ body: { connectorId: 'kept', name: 'Kept', keyMode: 'personal', capabilities: mcpCaps() } }),
             makeRes().res,
           );
           const { res, captured } = makeRes();
@@ -992,74 +1720,7 @@ describe('user connector routes (/settings/connectors)', () => {
     });
   });
 
-  it('POST rejects keyMode:workspace (admin-only) — a non-admin must never own a workspace (global-keyed) connector', async () => {
-    // SECURITY (purge-on-delete): a workspace connector derives a GLOBAL credential
-    // ref (account:<id>, owner-independent). If a non-admin could own one, deleting
-    // it would tombstone the SHARED company key. The global credential WRITE is
-    // admin-gated (/admin/destinations); the connector that drives the global purge
-    // must be too. So the user route rejects keyMode:workspace.
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'company-sf',
-          name: 'Salesforce',
-          keyMode: 'workspace',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(400);
-    expect((captured.body as { error: string }).error).toContain('admin-only');
-    // It must NOT have landed — the GET 404s, so there is no workspace connector
-    // for the non-admin to later delete (and thus no global purge they can trigger).
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'company-sf' } }), gRes);
-    expect(gCap.status).toBe(404);
-  });
-
-  it('PATCH cannot flip an owned private connector to keyMode:workspace (admin-only)', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userFlipWs', isAdmin: false };
-    // Seed an owned PRIVATE personal connector (unique id — the container persists
-    // rows across this file's tests).
-    const { res: cRes, captured: cCap } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'flip-to-ws',
-          name: 'Flip',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      cRes,
-    );
-    expect(cCap.status).toBe(201);
-    // Attempt to flip it to workspace via PATCH → rejected.
-    const { res, captured } = makeRes();
-    await handlers.update(
-      makeReq({ params: { id: 'flip-to-ws' }, body: { keyMode: 'workspace' } }),
-      res,
-    );
-    expect(captured.status).toBe(400);
-    expect((captured.body as { error: string }).error).toContain('admin-only');
-  });
-
-  it('destroy passes purgeGlobal=actor.isAdmin: an admin purges the GLOBAL key, a non-admin does not', async () => {
-    // Defense at the dangerous primitive: even if a non-admin somehow OWNS a
-    // workspace (global-keyed) connector — e.g. via the authored-connector approve
-    // path, which bypasses the HTTP keyMode gate — their delete must NOT purge the
-    // shared company key. The route passes actor.isAdmin as purgeGlobal; the hook
-    // skips the global-scope purge unless authorized. We seed the owned-state
-    // directly via the upsert hook (the user route would reject keyMode:workspace).
+  it('an admin deleting ANOTHER admin’s shared connector still purges its state (owner-keyed, purgeGlobal)', async () => {
     const deleteCalls: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
     const h = await createTestHarness({
       services: {
@@ -1075,268 +1736,47 @@ describe('user connector routes (/settings/connectors)', () => {
       ],
     });
     harnesses.push(h);
-    // Two same-id workspace connectors, one owned by a non-admin, one by an admin.
-    for (const owner of ['mallory', 'adminX']) {
-      await h.bus.call('connectors:upsert', h.ctx({ userId: owner }), {
-        userId: owner,
-        connectorId: 'ws-route',
-        name: 'Workspace svc',
-        keyMode: 'workspace',
-        visibility: 'private',
-        capabilities: mcpCaps(),
-      });
-    }
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
     const adminHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'admin' });
+    currentActor = { id: 'admin1', isAdmin: true };
+    const created = makeRes();
+    await adminHandlers.create(makeReq({ body: {
+      connectorId: 'ws-shared', name: 'Workspace svc', keyMode: 'workspace', capabilities: mcpCaps(),
+    } }), created.res);
+    expect(created.captured.status).toBe(201);
 
-    // Non-admin destroy → purgeGlobal:false → the shared global key is untouched.
-    currentActor = { id: 'mallory', isAdmin: false };
-    const { res: r1, captured: c1 } = makeRes();
-    await userHandlers.destroy(makeReq({ params: { id: 'ws-route' } }), r1);
-    expect(c1.status).toBe(204);
-    expect(deleteCalls).toEqual([]);
-
-    // Admin destroy → purgeGlobal:true → the shared global key IS purged.
-    currentActor = { id: 'adminX', isAdmin: true };
-    const { res: r2, captured: c2 } = makeRes();
-    await adminHandlers.destroy(makeReq({ params: { id: 'ws-route' } }), r2);
-    expect(c2.status).toBe(204);
+    currentActor = { id: 'admin2', isAdmin: true };
+    const deleted = makeRes();
+    await adminHandlers.destroy(makeReq({ params: { id: 'ws-shared' } }), deleted.res);
+    expect(deleted.captured.status).toBe(204);
     expect(deleteCalls).toEqual([
-      { scope: 'global', ownerId: null, ref: 'account:ws-route' },
+      { scope: 'global', ownerId: null, ref: 'account:ws-shared' },
     ]);
   });
 
-  it('full CRUD on an owned private connector: create → edit → delete', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    // Unique id per test — the postgres container persists rows across the file's
-    // tests, so a reused id would make a "create" return 200 (update) not 201.
-    currentActor = { id: 'userCrud', isAdmin: false };
-
-    const { res: cRes, captured: cCap } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'crud-conn',
-          name: 'My connector',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      cRes,
-    );
-    expect(cCap.status).toBe(201);
-
-    const { res: pRes, captured: pCap } = makeRes();
-    await handlers.update(
-      makeReq({ params: { id: 'crud-conn' }, body: { name: 'Renamed' } }),
-      pRes,
-    );
-    expect(pCap.status).toBe(200);
-    expect((pCap.body as { connector: { name: string } }).connector.name).toBe(
-      'Renamed',
-    );
-    // Still private after the edit.
-    expect(
-      (pCap.body as { connector: { visibility: string } }).connector.visibility,
-    ).toBe('private');
-
-    const { res: dRes, captured: dCap } = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'crud-conn' } }), dRes);
-    expect(dCap.status).toBe(204);
-
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'crud-conn' } }), gRes);
-    expect(gCap.status).toBe(404);
-  });
-
-  it('PATCH on a SHARED (catalog) connector is read-only — 403', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'userU', isAdmin: true };
-    // Admin-seed a SHARED connector owned by userU (a catalog item).
-    await adminSeed(h.bus, {
-      connectorId: 'catalog-conn',
-      name: 'Catalog',
-      keyMode: 'workspace',
-      visibility: 'shared',
-      capabilities: mcpCaps(),
-    });
-    // Now the SAME user hits the user route — the shared connector is read-only.
-    currentActor = { id: 'userU', isAdmin: false };
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const { res, captured } = makeRes();
-    await userHandlers.update(
-      makeReq({ params: { id: 'catalog-conn' }, body: { name: 'hijack' } }),
-      res,
-    );
-    expect(captured.status).toBe(403);
-    expect(captured.body).toEqual({ error: 'read-only' });
-  });
-
-  it('POST cannot demote an existing catalog/shared connector to private (read-only — 403)', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'userU', isAdmin: true };
-    // Admin-seed a SHARED connector owned by userU.
-    await adminSeed(h.bus, {
-      connectorId: 'demote-target',
-      name: 'Shared',
-      keyMode: 'workspace',
-      visibility: 'shared',
-      capabilities: mcpCaps(),
-    });
-    // The same user POSTs the SAME id via the user route — create-or-update must
-    // NOT silently demote the shared connector to private; it 403s (read-only).
-    currentActor = { id: 'userU', isAdmin: false };
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const { res, captured } = makeRes();
-    await userHandlers.create(
-      makeReq({
-        body: {
-          connectorId: 'demote-target',
-          name: 'Sneaky private',
-          keyMode: 'personal',
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(403);
-    expect(captured.body).toEqual({ error: 'read-only' });
-    // The connector is STILL shared — the demote never landed.
-    currentActor = { id: 'userU', isAdmin: true };
-    const { res: gRes, captured: gCap } = makeRes();
-    await createAdminConnectorRouteHandlers({ bus: h.bus }).show(
-      makeReq({ params: { id: 'demote-target' } }),
-      gRes,
-    );
-    expect(
-      (gCap.body as { connector: { visibility: string } }).connector.visibility,
-    ).toBe('shared');
-  });
-
-  it('DELETE on a catalog (shared) connector is read-only — 403', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'userU', isAdmin: true };
-    await adminSeed(h.bus, {
-      connectorId: 'catalog-conn',
-      name: 'Catalog',
-      keyMode: 'workspace',
-      visibility: 'shared',
-      capabilities: mcpCaps(),
-    });
-    currentActor = { id: 'userU', isAdmin: false };
-    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    const { res, captured } = makeRes();
-    await userHandlers.destroy(makeReq({ params: { id: 'catalog-conn' } }), res);
-    expect(captured.status).toBe(403);
-    expect(captured.body).toEqual({ error: 'read-only' });
-  });
-
-  it('forces actor id from session — a body-supplied userId cannot impersonate', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userImp', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.create(
-      makeReq({
-        body: {
-          userId: 'someoneElse',
-          connectorId: 'imp-conn',
-          name: 'Mine',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(201);
-    // The connector landed under userImp, not "someoneElse".
-    const { res: gRes, captured: gCap } = makeRes();
-    await handlers.show(makeReq({ params: { id: 'imp-conn' } }), gRes);
-    expect(gCap.status).toBe(200);
-  });
-
-  it('cross-tenant: user B cannot edit / delete user A’s private connector (404)', async () => {
-    const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userA', isAdmin: false };
-    await handlers.create(
-      makeReq({
-        body: {
-          connectorId: 'a-conn',
-          name: 'A',
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: mcpCaps(),
-        },
-      }),
-      makeRes().res,
-    );
-    currentActor = { id: 'userB', isAdmin: false };
-    const { res: pRes, captured: pCap } = makeRes();
-    await handlers.update(
-      makeReq({ params: { id: 'a-conn' }, body: { name: 'hijack' } }),
-      pRes,
-    );
-    expect(pCap.status).toBe(404);
-    const { res: dRes, captured: dCap } = makeRes();
-    await handlers.destroy(makeReq({ params: { id: 'a-conn' } }), dRes);
-    expect(dCap.status).toBe(404);
-  });
 });
 
 // ---------------------------------------------------------------------------
-// User connector AUTHORED-draft routes (2026-06-03) — the Settings "Proposed by
-// your assistant" fallback: GET /settings/connectors/authored (list pending) +
-// POST /settings/connectors/authored/:id/approve (approve outside chat). The
-// approve route forces userId from the session, ACL-gates agents:resolve, and
-// calls the orchestrator's authored-connector grant with NO conversationId
-// (approve-ahead). Both stubbed here; the real grant is tested in
-// @ax/chat-orchestrator.
+// Slice 2c — agent proposals go to admins. GET /admin/connectors/authored lists
+// every person's pending proposals (labelled with who asked, via
+// `auth:get-user`, fail-soft to the id); DELETE /admin/connectors/authored/:id
+// is Dismiss (clears that id for everyone). There is no approve route: an
+// admin approves by creating the connector (POST /admin/connectors), and
+// creation clears the proposals.
 // ---------------------------------------------------------------------------
-describe('user connector AUTHORED routes (/settings/connectors/authored)', () => {
-  // Captured grant calls + a configurable verdict the stub returns.
-  let grantCalls: Array<Record<string, unknown>>;
-  let grantApplied: boolean;
-  // When set, the grant stub throws this instead of returning a verdict.
-  let grantThrows: Error | null;
-  // agents:resolve verdict: 'ok' | 'forbidden' | 'not-found'.
-  let agentsResolveVerdict: 'ok' | 'forbidden' | 'not-found';
+describe('admin proposal routes (/admin/connectors/authored)', () => {
+  // auth:get-user behaviour per user id: a user record, null, or a throw.
+  let users: Record<string, { displayName: string | null; email: string | null } | null | 'throw'>;
 
-  async function makeAuthoredHarness(): Promise<TestHarness> {
-    grantCalls = [];
-    grantApplied = true;
-    grantThrows = null;
-    agentsResolveVerdict = 'ok';
+  async function makeProposalHarness(): Promise<TestHarness> {
+    users = {};
     const h = await createTestHarness({
       services: {
-        'agents:resolve': async (_ctx, input: unknown) => {
-          if (agentsResolveVerdict === 'forbidden') {
-            throw new PluginError({
-              code: 'forbidden',
-              plugin: 'agents-stub',
-              hookName: 'agents:resolve',
-              message: 'no',
-            });
-          }
-          if (agentsResolveVerdict === 'not-found') {
-            throw new PluginError({
-              code: 'not-found',
-              plugin: 'agents-stub',
-              hookName: 'agents:resolve',
-              message: 'gone',
-            });
-          }
-          return { agent: { id: (input as { agentId: string }).agentId } };
-        },
-        'agent:apply-authored-connector-grant': async (_ctx, input: unknown) => {
-          grantCalls.push(input as Record<string, unknown>);
-          if (grantThrows !== null) throw grantThrows;
-          return grantApplied
-            ? { applied: true, respawned: false }
-            : { applied: false, reason: 'not-authored' };
+        'auth:get-user': async (_ctx, input: unknown) => {
+          const id = (input as { userId: string }).userId;
+          const u = users[id];
+          if (u === 'throw') throw new Error('auth down');
+          if (u === undefined || u === null) return null;
+          return { id, isAdmin: false, ...u };
         },
       },
       plugins: [
@@ -1350,8 +1790,7 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
     return h;
   }
 
-  /** Seed a PENDING authored draft via the install-authored hook. */
-  async function seedDraft(
+  async function propose(
     h: TestHarness,
     over: { userId: string; agentId: string; connectorId: string; name?: string },
   ): Promise<void> {
@@ -1362,215 +1801,155 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
       name: over.name ?? over.connectorId,
       hosts: ['api.linear.app'],
       slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
-      usageNote: '',
+      usageNote: 'Track issues',
       keyMode: 'personal',
     });
   }
 
-  it('GET authored lists the session user’s pending drafts across agents (owner-scoped)', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    await seedDraft(h, { userId: 'userU', agentId: 'agent2', connectorId: 'linear' });
-    await seedDraft(h, { userId: 'userU', agentId: 'agent1', connectorId: 'gmail' });
-    await seedDraft(h, { userId: 'other', agentId: 'agent1', connectorId: 'notion' });
+  type Listed = {
+    drafts: Array<{
+      connectorId: string;
+      name: string;
+      usageNote: string;
+      keyMode: string;
+      proposal: Capabilities;
+      updatedAt: string;
+      proposedBy: { userId: string; label: string };
+    }>;
+  };
 
-    currentActor = { id: 'userU', isAdmin: false };
+  async function list(h: TestHarness): Promise<Listed['drafts']> {
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
     const { res, captured } = makeRes();
-    await handlers.listAuthoredPending(makeReq({}), res);
+    await handlers.listAuthoredProposals(makeReq({}), res);
     expect(captured.status).toBe(200);
-    const drafts = (captured.body as { drafts: Array<{ connectorId: string; agentId: string }> }).drafts;
-    // userU's two drafts only (owner-scoped), sorted by connector_id; never 'notion'.
-    expect(drafts.map((d) => ({ connectorId: d.connectorId, agentId: d.agentId }))).toEqual([
-      { connectorId: 'gmail', agentId: 'agent1' },
-      { connectorId: 'linear', agentId: 'agent2' },
+    return (captured.body as Listed).drafts;
+  }
+
+  it('GET lists every proposer’s pending requests, labelled with who asked', async () => {
+    const h = await makeProposalHarness();
+    users = {
+      alice: { displayName: 'Alice Doe', email: 'alice@example.com' },
+      bob: { displayName: null, email: 'bob@example.com' },
+    };
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'linear', name: 'Linear' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'linear', name: 'Linear please' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'notion', name: 'Notion' });
+
+    const drafts = await list(h);
+    expect(drafts.map((d) => [d.connectorId, d.name, d.proposedBy])).toEqual([
+      ['linear', 'Linear', { userId: 'alice', label: 'Alice Doe' }],
+      ['linear', 'Linear please', { userId: 'bob', label: 'bob@example.com' }],
+      ['notion', 'Notion', { userId: 'bob', label: 'bob@example.com' }],
+    ]);
+    expect(drafts[0]).toMatchObject({ usageNote: 'Track issues', keyMode: 'personal' });
+    expect(drafts[0]!.proposal.allowedHosts).toEqual(['api.linear.app']);
+    // The agent is not named, and no agent id leaves the host.
+    expect(drafts[0]).not.toHaveProperty('agentId');
+  });
+
+  it('one row per person per id, however many of their agents asked', async () => {
+    const h = await makeProposalHarness();
+    users = { alice: { displayName: 'Alice', email: null } };
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'linear' });
+    await propose(h, { userId: 'alice', agentId: 'a2', connectorId: 'linear' });
+    expect((await list(h)).map((d) => d.proposedBy.label)).toEqual(['Alice']);
+  });
+
+  it('the proposer label fails soft to the user id when the lookup returns null or throws', async () => {
+    const h = await makeProposalHarness();
+    users = { ghost: null, flaky: 'throw' };
+    await propose(h, { userId: 'ghost', agentId: 'g1', connectorId: 'gmail' });
+    await propose(h, { userId: 'flaky', agentId: 'f1', connectorId: 'linear' });
+    const drafts = await list(h);
+    expect(drafts.map((d) => d.proposedBy)).toEqual([
+      { userId: 'ghost', label: 'ghost' },
+      { userId: 'flaky', label: 'flaky' },
     ]);
   });
 
-  it('GET authored 401 when unauthenticated', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = null;
-    const { res, captured } = makeRes();
-    await handlers.listAuthoredPending(makeReq({}), res);
-    expect(captured.status).toBe(401);
+  it('GET and DELETE are admin-only (401 signed out, 403 non-admin)', async () => {
+    const h = await makeProposalHarness();
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'linear' });
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    for (const actor of [null, { id: 'alice', isAdmin: false }]) {
+      currentActor = actor;
+      const g = makeRes();
+      await handlers.listAuthoredProposals(makeReq({}), g.res);
+      expect(g.captured.status).toBe(actor === null ? 401 : 403);
+      const d = makeRes();
+      await handlers.dismissAuthoredProposal(makeReq({ params: { connectorId: 'linear' } }), d.res);
+      expect(d.captured.status).toBe(actor === null ? 401 : 403);
+    }
+    // Nothing was dismissed.
+    expect(await list(h)).toHaveLength(1);
   });
 
-  it('POST approve forces userId from session, omits conversationId, returns 200', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    await seedDraft(h, { userId: 'userU', agentId: 'agent1', connectorId: 'linear' });
-
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.approveAuthored(
-      makeReq({
-        params: { id: 'linear' },
-        body: { agentId: 'agent1', shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] } },
-      }),
-      res,
-    );
-    expect(captured.status).toBe(200);
-    expect(captured.body).toEqual({ applied: true });
-    // The grant was called with the session userId + body agentId + url id, the
-    // shown guard forwarded, and NO conversationId (approve-ahead).
-    expect(grantCalls).toHaveLength(1);
-    expect(grantCalls[0]).toMatchObject({
-      userId: 'userU',
-      agentId: 'agent1',
-      connectorId: 'linear',
-      shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] },
-    });
-    expect(grantCalls[0]).not.toHaveProperty('conversationId');
+  it('DELETE dismisses the request for everyone who asked (204), and is idempotent', async () => {
+    const h = await makeProposalHarness();
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'linear' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'linear' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'notion' });
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    const first = makeRes();
+    await handlers.dismissAuthoredProposal(makeReq({ params: { connectorId: 'linear' } }), first.res);
+    expect(first.captured.status).toBe(204);
+    expect(first.captured.ended).toBe(true);
+    expect((await list(h)).map((d) => d.connectorId)).toEqual(['notion']);
+    const again = makeRes();
+    await handlers.dismissAuthoredProposal(makeReq({ params: { connectorId: 'linear' } }), again.res);
+    expect(again.captured.status).toBe(204);
   });
 
-  it('POST approve 400 when agentId is missing', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
+  it('DELETE 400 on a malformed id', async () => {
+    const h = await makeProposalHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
     const { res, captured } = makeRes();
-    await handlers.approveAuthored(makeReq({ params: { id: 'linear' }, body: {} }), res);
-    expect(captured.status).toBe(400);
-    expect(grantCalls).toHaveLength(0);
-  });
-
-  it('POST approve 403 when the agent ACL gate forbids', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    agentsResolveVerdict = 'forbidden';
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.approveAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agentX' } }),
-      res,
-    );
-    expect(captured.status).toBe(403);
-    // The grant is never reached when the ACL gate rejects.
-    expect(grantCalls).toHaveLength(0);
-  });
-
-  it('POST approve 409 when the grant reports not-authored (unknown/foreign draft)', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    grantApplied = false;
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.approveAuthored(
-      makeReq({ params: { id: 'ghost' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(409);
-    expect((captured.body as { error: string }).error).toBe('not-authored');
-  });
-
-  // TASK-771 — approving promotes the draft via connectors:upsert, which refuses
-  // an endpoint move whose tool-permission reset failed (TASK-758). The Settings
-  // approve dialog keys its message on this exact 503 body.
-  it('POST approve 503 tool-permissions-reset-failed when the promotion’s reset fails', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    grantThrows = new PluginError({
-      code: 'tool-permissions-reset-failed',
-      plugin: '@ax/connectors',
-      hookName: 'connectors:upsert',
-      message: 'internal detail that must not reach the client',
-    });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.approveAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(503);
-    expect(captured.body).toEqual({ error: 'tool-permissions-reset-failed' });
-  });
-
-  // DELETE /settings/connectors/authored/:id — the "Dismiss" action on the
-  // "Proposed by your assistant" shelf (2026-06-04). Lets a user reject a draft
-  // their assistant proposed WITHOUT first approving it (the old trap: the only
-  // shelf action was Approve, so dismissing meant entering a real/fake key just
-  // to promote it into the registry where Delete finally appeared). Reuses the
-  // dormant `connectors:clear-authored` hook. Owner-scoped from the session.
-  it('DELETE authored clears the session user’s pending draft, returns 204', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    // A test-unique userId keeps this assertion isolated from drafts other tests
-    // seed into the shared DB (the list is owner-scoped).
-    await seedDraft(h, { userId: 'ru-clear', agentId: 'agent1', connectorId: 'linear' });
-
-    currentActor = { id: 'ru-clear', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(204);
-    expect(captured.ended).toBe(true);
-
-    // The draft is gone from this user's "Proposed" shelf.
-    const { res: lRes, captured: lCap } = makeRes();
-    await handlers.listAuthoredPending(makeReq({}), lRes);
-    expect((lCap.body as { drafts: unknown[] }).drafts).toEqual([]);
-  });
-
-  it('DELETE authored 404 when the draft belongs to another user (owner-scoped)', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    await seedDraft(h, { userId: 'ru-owner', agentId: 'agent1', connectorId: 'linear' });
-
-    // A different user cannot clear ru-owner's draft — the clear is scoped to the
-    // session owner, so zero rows match → not-found.
-    currentActor = { id: 'ru-other', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(404);
-
-    // ru-owner's draft is untouched.
-    currentActor = { id: 'ru-owner', isAdmin: false };
-    const { res: lRes, captured: lCap } = makeRes();
-    await handlers.listAuthoredPending(makeReq({}), lRes);
-    expect((lCap.body as { drafts: Array<{ connectorId: string }> }).drafts).toHaveLength(1);
-  });
-
-  it('DELETE authored 400 when agentId is missing', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'userU', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(makeReq({ params: { id: 'linear' }, body: {} }), res);
+    await handlers.dismissAuthoredProposal(makeReq({ params: { connectorId: 'Bad Id!' } }), res);
     expect(captured.status).toBe(400);
   });
 
-  it('DELETE authored 401 when unauthenticated', async () => {
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = null;
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(401);
-  });
+  it('POST /admin/connectors creating the id clears both proposers’ requests; an edit does not', async () => {
+    const h = await makeProposalHarness();
+    await propose(h, { userId: 'alice', agentId: 'a1', connectorId: 'gdrive' });
+    await propose(h, { userId: 'bob', agentId: 'b1', connectorId: 'gdrive' });
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'root', isAdmin: true };
+    const body = { connectorId: 'gdrive', name: 'Drive', keyMode: 'personal', capabilities: mcpCaps() };
+    const created = makeRes();
+    await handlers.create(makeReq({ body }), created.res);
+    expect(created.captured.status).toBe(201);
+    expect(await list(h)).toEqual([]);
 
-  it('DELETE authored succeeds even when agents:resolve would forbid (no ACL gate)', async () => {
-    // Rejecting your OWN draft must never be blocked by agent reachability — a
-    // draft authored under an agent you can no longer reach (deleted / access
-    // revoked) would otherwise be un-dismissable, the exact trap we’re fixing.
-    const h = await makeAuthoredHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    await seedDraft(h, { userId: 'ru-nogate', agentId: 'agent1', connectorId: 'linear' });
-    agentsResolveVerdict = 'forbidden';
-
-    currentActor = { id: 'ru-nogate', isAdmin: false };
-    const { res, captured } = makeRes();
-    await handlers.rejectAuthored(
-      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
-      res,
-    );
-    expect(captured.status).toBe(204);
+    // A request that arrives behind the dedup (drift) survives an edit.
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query(
+        `INSERT INTO connectors_v1_authored (owner_user_id, agent_id, connector_id, name, usage_note, key_mode, capability_proposal, status)
+         VALUES ('carol', 'c1', 'gdrive', 'Drive', '', 'personal', '{"allowedHosts":[],"credentials":[],"mcpServers":[],"packages":{"npm":[],"pypi":[]}}'::jsonb, 'pending')`,
+      );
+    } finally {
+      await pg.end();
+    }
+    currentActor = { id: 'root', isAdmin: true };
+    const edited = makeRes();
+    await handlers.update(makeReq({ params: { id: 'gdrive' }, body: { name: 'Drive (renamed)' } }), edited.res);
+    expect(edited.captured.status).toBe(200);
+    // The queue drops it (the id is live), but the row itself was not cleared.
+    const check = new (await import('pg')).default.Client({ connectionString });
+    await check.connect();
+    try {
+      const res = await check.query(
+        `SELECT 1 FROM connectors_v1_authored WHERE owner_user_id = 'carol' AND agent_id = 'c1'`,
+      );
+      expect(res.rowCount).toBe(1);
+    } finally {
+      await check.end();
+    }
   });
 });
 
@@ -1621,7 +2000,6 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
     connectorId: id,
     name: id,
     keyMode,
-    visibility: 'private',
     capabilities: oauthCaps(clientSecretRef),
   });
 
@@ -1639,10 +2017,10 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
     'account:mine:a:b',
   ];
 
-  it.each(FOREIGN_REFS)('user route POST refuses %j (400) and stores nothing', async (ref) => {
+  it.each(FOREIGN_REFS)('admin route POST refuses %j (400) and stores nothing', async (ref) => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'mallory-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'mallory-712', isAdmin: true };
     const { res, captured } = makeRes();
     await handlers.create(makeReq({ body: create('mine', ref) }), res);
     expect(captured.status).toBe(400);
@@ -1657,10 +2035,10 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
     expect(gCap.status).toBe(404);
   });
 
-  it('user route POST accepts the connector’s own ref and it round-trips', async () => {
+  it('admin route POST accepts the connector’s own ref and it round-trips', async () => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'own-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'own-712', isAdmin: true };
     const own = 'account:mine:oauth-client-secret';
     const { res, captured } = makeRes();
     await handlers.create(makeReq({ body: create('mine', own) }), res);
@@ -1675,17 +2053,17 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
 
   it('a connector without a clientSecretRef (DCR) is unaffected', async () => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'dcr-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'dcr-712', isAdmin: true };
     const { res, captured } = makeRes();
     await handlers.create(makeReq({ body: create('mine') }), res);
     expect(captured.status).toBe(201);
   });
 
-  it('user route PATCH cannot introduce a foreign ref; the stored row is untouched', async () => {
+  it('admin route PATCH cannot introduce a foreign ref; the stored row is untouched', async () => {
     const h = await makeHarness();
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'patch-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'patch-712', isAdmin: true };
     const own = 'account:mine:oauth-client-secret';
     const { res: cRes, captured: cCap } = makeRes();
     await handlers.create(makeReq({ body: create('mine', own) }), cRes);
@@ -1733,7 +2111,6 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
         connectorId: 'mine',
         name: 'mine',
         keyMode: 'personal',
-        visibility: 'private',
         capabilities: oauthCaps('provider:anthropic'),
       }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
@@ -1757,12 +2134,11 @@ describe('oauth clientSecretRef is the connector’s own account key (TASK-712)'
       description: '',
       usageNote: '',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: legacyCaps,
     });
 
-    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
-    currentActor = { id: 'legacy-712', isAdmin: false };
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'legacy-712', isAdmin: true };
     const { res: gRes, captured: gCap } = makeRes();
     await handlers.show(makeReq({ params: { id: 'mine' } }), gRes);
     expect(gCap.status).toBe(200);

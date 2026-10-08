@@ -18,11 +18,6 @@ import {
 import { formatServiceDiagnosis } from '@ax/sandbox-protocol';
 import type { AgentConfig, ProxyConfig, ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 import {
-  buildAuthoredConnectorCard,
-  authoredConnectorCardDedupKey,
-  hasConnectorShownSurface,
-} from './connector-card.js';
-import {
   skillCredentialEnvName,
   projectEnvMapToBareNames,
 } from './credential-namespace.js';
@@ -31,6 +26,9 @@ import {
   resolveSkillReferencedConnectors,
   copyConnectorDefaultsForSession,
   partitionConnectorsBySignIn,
+  skipConnectorsNeedingReconnect,
+  connectorsSkippedPayload,
+  SIGN_IN_STATUS_TIMEOUT_MS,
   skippedConnectorsPromptLine,
   foldConnectorCaps,
   stampConnectorHeaders,
@@ -38,6 +36,7 @@ import {
   reconnectDetail,
   connectorSetFingerprint,
   type ResolvedConnectorForOrch,
+  type ConnectorsSkippedPayload,
   ConnectorServiceCollisionError,
   type FoldConnectorResult,
 } from './connector-union.js';
@@ -171,6 +170,21 @@ export interface ChatOrchestratorConfig {
    */
   chatEventSubscriberTimeoutMs?: number;
   /**
+   * Slice 6 — bound on each `chat:connectors-skipped` subscriber, in ms. The
+   * fire is awaited before the turn starts (so a subscriber has seen it before
+   * the turn can end), so it gets a short bound of its own rather than the
+   * 30 s chat-event one. Defaults to
+   * `CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS` (2 s). Exposed so tests need
+   * not wait.
+   */
+  connectorsSkippedSubscriberTimeoutMs?: number;
+  /**
+   * Slice 6 — how long a ROUTINE turn waits on `mcp-oauth:status-batch`
+   * before keeping every connector. Defaults to `SIGN_IN_STATUS_TIMEOUT_MS`
+   * (2 s). Exposed so tests need not wait.
+   */
+  signInStatusTimeoutMs?: number;
+  /**
    * TASK-878 — how long a caller waits on `proxy:close-session` before it
    * logs `proxy_close_session_timeout` and moves on (to `session:terminate`,
    * to the fresh spawn, to returning the turn's outcome). Defaults to
@@ -206,6 +220,9 @@ export interface ChatOrchestratorConfig {
    *  (an explicit or default-attached skill of the same id wins). Empty by default. */
   builtinSkills?: ResolvedSkillForOrch[];
 }
+
+// Slice 6 — the `chat:connectors-skipped` payload (built in connector-union).
+export type { ConnectorsSkippedPayload };
 
 export interface AgentInvokeInput {
   message: AgentMessage;
@@ -281,72 +298,6 @@ export interface ApplyAuthoredCapabilityGrantInput {
 export type ApplyAuthoredCapabilityGrantOutput =
   | { applied: true; respawned: boolean }
   | { applied: false; reason: 'not-authored' };
-
-// TASK-94 — authored-CONNECTOR approval grant I/O. Mirrors the authored-skill
-// grant exactly (the same TOCTOU `shown` guard semantics), but the SUBJECT is a
-// connector: the grant writes connector-subject approved-caps rows (the TASK-93
-// wall, `skills:approved-caps-set` with `connectorId`) and flips the connector
-// draft pending→active (`connectors:activate-authored`). `applied:false,
-// reason:'not-authored'` signals an unknown connectorId (not one of this
-// agent's authored drafts).
-export interface ApplyAuthoredConnectorGrantInput {
-  /** OPTIONAL — present for the in-chat card (retires the warm session so the
-   *  next turn re-spawns with the now-active connector); absent for an
-   *  approve-ahead path that has no live conversation. */
-  conversationId?: string;
-  userId: string;
-  agentId: string;
-  connectorId: string;
-  /** What the card displayed — absent ⟹ approve the full current proposal. */
-  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
-}
-export type ApplyAuthoredConnectorGrantOutput =
-  | { applied: true; respawned: boolean }
-  | { applied: false; reason: 'not-authored' };
-
-// connectors:list-authored — registered by @ax/connectors (TASK-94). Duplicated
-// structurally per I2 (no @ax/connectors import). Conditionally called via
-// bus.hasService — NOT declared in the manifest, same convention as the
-// authored-skill / conversations peers.
-interface ConnectorsListAuthoredOutput {
-  drafts: Array<{
-    connectorId: string;
-    name: string;
-    usageNote: string;
-    keyMode: 'personal' | 'workspace';
-    status: 'pending' | 'active';
-    proposal: {
-      allowedHosts: string[];
-      credentials: Array<{ slot: string; kind: string; account?: string; description?: string }>;
-      mcpServers: unknown[];
-      packages: { npm: string[]; pypi: string[] };
-    };
-  }>;
-}
-
-// connectors:upsert — registered by @ax/connectors (TASK-97). Duplicated
-// structurally per I2 (no @ax/connectors import). Conditionally called via
-// bus.hasService — NOT declared in the manifest, same convention as the peers
-// above. TASK-113 — on approval the grant PROMOTES the approved authored
-// connector into the curated registry through this hook, so the EXISTING
-// registry read paths (resolveEffectiveConnectors → foldConnectorCaps, the UI
-// surfaces) pick it up with NO further changes (invariant #4 — one source of
-// truth; the authored table stays draft/proposal staging only).
-interface ConnectorsUpsertInput {
-  userId: string;
-  connectorId: string;
-  name: string;
-  description: string;
-  usageNote: string;
-  keyMode: 'personal' | 'workspace';
-  visibility: 'private' | 'shared';
-  capabilities: {
-    allowedHosts: string[];
-    credentials: Array<{ slot: string; kind: string; account?: string; description?: string }>;
-    mcpServers: unknown[];
-    packages: { npm: string[]; pypi: string[] };
-  };
-}
 
 // Shapes of the peer hooks we bus.call. Duplicated structurally on purpose —
 // I2 forbids cross-plugin imports. Drift would surface as a runtime shape
@@ -534,7 +485,7 @@ interface SkillsResolveOutput {
  * TASK-100 — a skill declares no capabilities, so there is no per-skill
  * `proposalDelta` and no per-skill capability approval card: a model-authored
  * skill is zero-reach instruction scaffolding, and its connectors' reach is
- * gated by the connector approval card. The skill's connectors[] (inherited from
+ * an admin defines when it creates the connector. The skill's connectors[] (inherited from
  * ResolvedSkillForOrch) feed the skill→connector bridge. */
 export interface AuthoredResolvedSkillForOrch extends ResolvedSkillForOrch {
   description: string;
@@ -655,23 +606,6 @@ interface SkillsProposedLike {
   agentId: string;
   skillId: string;
   status: 'active' | 'pending' | 'quarantined';
-}
-
-// The `connectors:proposed` notify @ax/connectors fires after a successful
-// `connectors:install-authored` write of a PENDING draft (the agent authored a
-// connector THIS turn via connector_propose). The orchestrator subscribes and
-// fires the upfront approval card on the proposing turn's conversation — the
-// same mid-turn live-card pattern @ax/skill-broker's request_capability uses —
-// so the user sees the card without waiting for their next message (the bug
-// this fixes: the card was previously fired only at the START of an
-// agent:invoke, so a connector proposed mid-turn was uncarded until a turn the
-// user might never send). Storage-agnostic ids; re-declared here per I2 (no
-// @ax/connectors import); the shape mirrors @ax/connectors' ConnectorProposedEvent.
-interface ConnectorProposedLike {
-  ownerUserId: string;
-  agentId: string;
-  connectorId: string;
-  status: 'pending' | 'active';
 }
 
 // AgentConfig (sent through sandbox:open-session and persisted on the session
@@ -1118,10 +1052,8 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
  *    `chat:end`, so a hang there hung the turn the same way. It is also
  *    awaited inside this plugin's `session:terminate` and `chat:end`
  *    subscribers, where a hang stalled the fire that delivered them.
- *  - `chat:permission-request` — the up-front authored-connector card is
- *    awaited during turn setup (before `chatTimeoutMs` is armed), and the
- *    reactive egress-wall card is awaited inside this plugin's
- *    `event.http-egress` subscriber.
+ *  - `chat:permission-request` — the reactive egress-wall card is awaited
+ *    inside this plugin's `event.http-egress` subscriber.
  *
  * Nothing that subscribes to them is load-bearing for the turn's outcome: the
  * subscribers write an SSE frame, persist a display event (@ax/conversations),
@@ -1156,6 +1088,14 @@ export const CHAT_START_SUBSCRIBER_TIMEOUT_MS = 60_000;
  * aborts its `signal` (TASK-552); stopping its work is up to the subscriber.
  */
 export const CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS = 30_000;
+
+/**
+ * Slice 6 — bound on each `chat:connectors-skipped` subscriber. Awaited before
+ * the sandbox spawns, so a hung subscriber delays the turn by at most this per
+ * subscriber (subscribers run one after another). The one subscriber today
+ * (@ax/routines) only stashes the payload in memory.
+ */
+export const CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS = 2_000;
 
 /**
  * TASK-878 — bound on how long any caller here WAITS for
@@ -1243,7 +1183,7 @@ function resolveRunnerBinary(
 // TASK-95: `connector_propose` joins for the SAME reason — a non-wildcard tenant
 // agent must be able to author CONNECTORS (the access the connectors-first-class
 // split lifts out of skills). The host `connectors:install-authored` hook
-// (persists a PENDING draft, zero reach until the one approval card) is the real
+// (persists a PENDING draft for the admins' queue, zero reach) is the real
 // boundary; tool visibility isn't a grant. Mirror of the skill_propose addition.
 const ALWAYS_ON_BROKER_TOOLS = [
   'search_catalog',
@@ -1336,13 +1276,8 @@ export function createOrchestrator(
     ctx: AgentContext,
     input: ApplyAuthoredCapabilityGrantInput,
   ): Promise<ApplyAuthoredCapabilityGrantOutput>;
-  applyAuthoredConnectorGrant(
-    ctx: AgentContext,
-    input: ApplyAuthoredConnectorGrantInput,
-  ): Promise<ApplyAuthoredConnectorGrantOutput>;
   onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
   onSkillsProposed(ctx: AgentContext, event: SkillsProposedLike): Promise<void>;
-  onConnectorProposed(ctx: AgentContext, event: ConnectorProposedLike): Promise<void>;
   onSystemPromptAugmentChanged(ctx: AgentContext, payload: unknown): void;
   onAgentDeleted(ctx: AgentContext, payload: unknown): Promise<void>;
   onConnectorDeleted(ctx: AgentContext, payload: unknown): void;
@@ -1387,81 +1322,6 @@ export function createOrchestrator(
   // stream with duplicate cards. Cleared per session in onSessionTerminate (the
   // session's egress is gone, so any future block under a reused id is new).
   const wallCardsByHost = new Map<string, Set<string>>(); // sessionId → hosts already carded
-  // TASK-94 — upfront authored-CONNECTOR approval cards already fired, keyed by
-  // conversationId → set of shown-surface dedup keys. Conversation-scoped so it
-  // SURVIVES a re-spawn within the conversation; cleared by the connector grant
-  // path on apply so a post-approve spawn re-evaluates. In-memory, single-replica
-  // (same posture as wallCardsByHost / respawnSessions). TASK-100 — the
-  // authored-SKILL upfront card was removed (a skill declares no caps), so there
-  // is no longer a per-skill card-dedup map or a proposing-conversation map.
-  const upfrontConnectorCardsByConv = new Map<string, Set<string>>();
-
-  // TASK-94 / TASK-112 — fire ONE upfront approval card per PENDING authored
-  // connector draft with a non-empty shown surface (hosts/slots/packages; mcp
-  // deferred — the wall rejects kind:'mcp'), deduped per (conversation,
-  // connectorId, shown-surface). Single source of truth shared by BOTH the
-  // fresh-spawn path AND the warm/routed path (TASK-112 Bug 2: a draft proposed
-  // mid-turn must be carded on the next warm turn — the routed branch returns
-  // before the fresh-spawn block, so without this the warm turn surfaces a
-  // reactive egress wall instead of the card). Best-effort + hasService-gated;
-  // a resolve failure fires NO card (fewer cards, never a wrong one) and never
-  // blocks the turn. conversationId is the SSE match key.
-  async function fireUpfrontConnectorCards(
-    ctx: AgentContext,
-    agentId: string,
-  ): Promise<void> {
-    if (ctx.conversationId === undefined || ctx.conversationId.length === 0) return;
-    if (!bus.hasService('connectors:list-authored')) return;
-
-    let drafts: ConnectorsListAuthoredOutput['drafts'] = [];
-    try {
-      const r = await bus.call<
-        { ownerUserId: string; agentId: string },
-        ConnectorsListAuthoredOutput
-      >('connectors:list-authored', ctx, { ownerUserId: ctx.userId, agentId });
-      drafts = r.drafts;
-    } catch (err) {
-      ctx.logger.warn('resolve_authored_connectors_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-
-    const cardable = drafts.filter(
-      (d) => d.status === 'pending' && hasConnectorShownSurface(d.proposal),
-    );
-    if (cardable.length === 0) return;
-
-    // Vaulted refs → haveExisting on account-tagged slots (mirror the skill
-    // card). Best-effort: a failed lookup just means the card prompts.
-    const vaultedRefs = new Set<string>();
-    if (bus.hasService('credentials:list')) {
-      try {
-        const list = await bus.call<
-          { scope: 'user'; ownerId: string },
-          { credentials: Array<{ ref: string }> }
-        >('credentials:list', ctx, { scope: 'user', ownerId: ctx.userId });
-        for (const c of list.credentials) vaultedRefs.add(c.ref);
-      } catch {
-        /* a failed lookup just means the card prompts — never block it */
-      }
-    }
-
-    const fired = upfrontConnectorCardsByConv.get(ctx.conversationId) ?? new Set<string>();
-    for (const d of cardable) {
-      const key = authoredConnectorCardDedupKey(d.connectorId, d.proposal);
-      if (fired.has(key)) continue;
-      const card = buildAuthoredConnectorCard(
-        { connectorId: d.connectorId, name: d.name, proposal: d.proposal, keyMode: d.keyMode },
-        vaultedRefs,
-      );
-      if (card === null) continue;
-      fired.add(key);
-      await fireChatEvent('chat:permission-request', ctx, card);
-    }
-    upfrontConnectorCardsByConv.set(ctx.conversationId, fired);
-  }
-
   function registerWaiter(
     sessionId: string,
     reqId: string,
@@ -1474,6 +1334,20 @@ export function createOrchestrator(
       reqIdsBySession.set(sessionId, set);
     }
     set.add(reqId);
+  }
+  /**
+   * Slice 6 — true while a turn on this session has not settled (a waiter
+   * registered for it is still pending). A routine turn never retires such a
+   * session; it queues into it.
+   */
+  function sessionBusy(sessionId: string): boolean {
+    const reqIds = reqIdsBySession.get(sessionId);
+    if (reqIds === undefined) return false;
+    for (const reqId of reqIds) {
+      const deferred = waitersByReqId.get(reqId);
+      if (deferred !== undefined && !deferred.settled) return true;
+    }
+    return false;
   }
   function unregisterWaiter(sessionId: string, reqId: string): void {
     waitersByReqId.delete(reqId);
@@ -1621,6 +1495,7 @@ export function createOrchestrator(
     respawnSessions.delete(sessionId);
     augmentGenBySession.delete(sessionId);
     skippedConnectorRefsBySession.delete(sessionId);
+    skippedConnectorsBySession.delete(sessionId);
     rotationFailedSessions.delete(sessionId);
     forgetSessionConnectors(sessionId);
   }
@@ -1713,28 +1588,6 @@ export function createOrchestrator(
     // remember; the re-spawn mark above is the whole effect.
   }
 
-  // connectors:proposed subscriber — surface the connector approval card AT
-  // PROPOSAL TIME. The agent calls connector_propose mid-turn; @ax/connectors
-  // persists the PENDING draft and fires this event on the SAME ctx (the IPC
-  // server stamps the real conversationId onto the runner-driven tool ctx). We
-  // reuse fireUpfrontConnectorCards — which resolves the agent's pending drafts,
-  // builds the card, and dedups per (conversation, connectorId, shown-surface).
-  // Because the proposing turn's SSE is still open and matched by conversationId
-  // (sse.ts live permission-request subscriber), the card delivers LIVE on the
-  // current turn. The per-conversation dedup means a later turn's
-  // fireUpfrontConnectorCards won't double-fire it.
-  //
-  // Best-effort + non-blocking, exactly like the turn-start fire sites: a
-  // resolve failure logs and fires no card (fewer cards, never a wrong one) and
-  // never affects the proposing turn. firing this event needs no manifest
-  // declaration (subscriber events are undeclared, like chat:turn-error).
-  async function onConnectorProposed(
-    ctx: AgentContext,
-    _event: ConnectorProposedLike,
-  ): Promise<void> {
-    await fireUpfrontConnectorCards(ctx, ctx.agentId);
-  }
-
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   const chatStartSubscriberTimeoutMs = validSubscriberBound(
     'chatStartSubscriberTimeoutMs',
@@ -1748,18 +1601,33 @@ export function createOrchestrator(
     'proxyCloseTimeoutMs',
     config.proxyCloseTimeoutMs ?? PROXY_CLOSE_TIMEOUT_MS,
   );
+  const connectorsSkippedSubscriberTimeoutMs = validSubscriberBound(
+    'connectorsSkippedSubscriberTimeoutMs',
+    config.connectorsSkippedSubscriberTimeoutMs ?? CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS,
+  );
+  const signInStatusTimeoutMs = validSubscriberBound(
+    'signInStatusTimeoutMs',
+    config.signInStatusTimeoutMs ?? SIGN_IN_STATUS_TIMEOUT_MS,
+  );
 
   // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
-  // this plugin fires goes through here, so each subscriber is bounded by
-  // `chatEventSubscriberTimeoutMs`. See CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for
-  // who waits on these. The runner-reported `chat:end` is fired by
-  // @ax/ipc-core, not here, and bounded there (TASK-555).
+  // (and, slice 6, `chat:connectors-skipped`) this plugin fires goes through
+  // here, so each subscriber is bounded by `chatEventSubscriberTimeoutMs` —
+  // except `chat:connectors-skipped`, which gets its own short bound
+  // (`connectorsSkippedSubscriberTimeoutMs`) because it is awaited before the
+  // turn starts. See CHAT_EVENT_SUBSCRIBER_TIMEOUT_MS for who waits on these.
+  // The runner-reported `chat:end` is fired by @ax/ipc-core, not here, and
+  // bounded there (TASK-555).
   function fireChatEvent<P>(
-    hook: 'chat:end' | 'chat:turn-error' | 'chat:permission-request',
+    hook: 'chat:end' | 'chat:turn-error' | 'chat:permission-request' | 'chat:connectors-skipped',
     ctx: AgentContext,
     payload: P,
   ): Promise<FireResult<P>> {
-    return bus.fire(hook, ctx, payload, { subscriberTimeoutMs: chatEventSubscriberTimeoutMs });
+    const subscriberTimeoutMs =
+      hook === 'chat:connectors-skipped'
+        ? connectorsSkippedSubscriberTimeoutMs
+        : chatEventSubscriberTimeoutMs;
+    return bus.fire(hook, ctx, payload, { subscriberTimeoutMs });
   }
   const oneShot = config.oneShot ?? true;
   const keepAlive = config.keepAlive ?? false;
@@ -1880,6 +1748,12 @@ export function createOrchestrator(
   // sessions that skipped something have an entry. Same lifetime + single-
   // replica posture as `augmentGenBySession`.
   const skippedConnectorRefsBySession = new Map<string, string[]>();
+  // Slice 6 — what each session went without at spawn (ids, labels, reasons;
+  // never refs), for a ROUTINE turn queued into a busy session: its tools were
+  // fixed at spawn, so these are exactly what the queued run goes without.
+  // Only sessions that skipped something have an entry; same lifetime as
+  // skippedConnectorRefsBySession (dropped at every one of its deletes).
+  const skippedConnectorsBySession = new Map<string, ConnectorsSkippedPayload['connectors']>();
 
   /** True when a ref skipped at spawn now answers present. Any fault → false. */
   async function skippedConnectorSignedIn(ctx: AgentContext, sessionId: string): Promise<boolean> {
@@ -2295,6 +2169,7 @@ export function createOrchestrator(
       { subscriberTimeoutMs: chatStartSubscriberTimeoutMs },
     );
     if (startResult.rejected) {
+      // @ax/routines keys off the `chat:start:` prefix (a pre-assembly refusal).
       const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: `chat:start:${startResult.reason}`,
@@ -2331,6 +2206,7 @@ export function createOrchestrator(
       agent = resolved.agent;
     } catch (err) {
       const code = err instanceof PluginError ? err.code : 'internal';
+      // @ax/routines keys off the `agent-resolve:` prefix (a pre-assembly refusal).
       const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: `agent-resolve:${code}`,
@@ -2458,6 +2334,16 @@ export function createOrchestrator(
             // registration. Reopen the durable conversation after restart;
             // never send a turn through an unowned credential-proxy session.
             const hostSessionMissing = keepAlive && !warmSessions.has(candidate);
+            // Slice 6 — a ROUTINE turn never reuses an IDLE warm session: it
+            // retires it and spawns fresh, so its connectors are assembled
+            // (and any it goes without are skipped and announced via
+            // chat:connectors-skipped) for THIS run. A BUSY session — another
+            // routine fire on this shared conversation still running (webhook
+            // burst, a cron shorter than the run, fire-now mid-run) — is never
+            // retired for this: that would cut the running fire and pull its
+            // credentials. The turn queues into it instead, and the routed
+            // path below announces the session's spawn-time skips.
+            const routineRetire = ctx.source === 'routine' && !sessionBusy(candidate);
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             let rotationFailed = rotationFailedSessions.has(candidate);
@@ -2470,10 +2356,17 @@ export function createOrchestrator(
             const connectorsChanged =
               connectorDeletedSessions.has(candidate) ||
               connectorSelectionChanged(candidate, agent) ||
-              (!(skillsDirty || augmentStale || hostSessionMissing || rotationFailed) &&
+              (!(
+                routineRetire ||
+                skillsDirty ||
+                augmentStale ||
+                hostSessionMissing ||
+                rotationFailed
+              ) &&
                 (await foldedConnectorsChanged(ctx, candidate, agent)));
             const connectorSignedIn =
               !(
+                routineRetire ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -2486,6 +2379,7 @@ export function createOrchestrator(
             // proxy session anyway. A failure retires it (secure direction).
             if (
               !(
+                routineRetire ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -2498,6 +2392,7 @@ export function createOrchestrator(
               rotationFailed = true;
             }
             if (
+              routineRetire ||
               skillsDirty ||
               augmentStale ||
               hostSessionMissing ||
@@ -2525,23 +2420,28 @@ export function createOrchestrator(
               // TASK-811: and when a connector was attached to or detached from
               // the agent mid-chat. The fresh spawn folds the new set.
               //
+              // Slice 6: and on a ROUTINE turn, when the session is idle (see
+              // routineRetire above).
+              //
               // TASK-833: and when a connector it folded was deleted or edited.
               // Its proxy session is closed below (TASK-871: directly, not only
               // via terminate), so a deleted connector's key stops being
               // substituted no later than this turn.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
-                reason: hostSessionMissing
-                  ? 'host-session-lost'
-                  : skillsDirty
-                    ? 'skills-proposed'
-                    : augmentStale
-                      ? 'system-prompt-augment-changed'
-                      : rotationFailed
-                        ? 'credential-rotation-failed'
-                        : connectorsChanged
-                          ? 'connectors-changed'
-                          : 'connector-signed-in',
+                reason: routineRetire
+                  ? 'routine-turn'
+                  : hostSessionMissing
+                    ? 'host-session-lost'
+                    : skillsDirty
+                      ? 'skills-proposed'
+                      : augmentStale
+                        ? 'system-prompt-augment-changed'
+                        : rotationFailed
+                          ? 'credential-rotation-failed'
+                          : connectorsChanged
+                            ? 'connectors-changed'
+                            : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -2558,6 +2458,7 @@ export function createOrchestrator(
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
               skippedConnectorRefsBySession.delete(candidate);
+              skippedConnectorsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
               forgetSessionConnectors(candidate);
               // TASK-871 — revoke the retired session's credentials HERE, not
@@ -2567,7 +2468,8 @@ export function createOrchestrator(
               // keeps substituting the OLD key until the idle reaper. Closing
               // first means a hung terminate cannot delay it either. The close
               // is idempotent, so the later `handle.exited` close is a no-op.
-              // Nothing of the old session is in flight: we are between turns.
+              // Nothing of the old session is in flight: these reasons fire
+              // between turns (a routine turn retires only an IDLE session).
               // TASK-878 — the wait is bounded: a close that hangs is logged
               // and we terminate + respawn anyway (the close keeps running).
               if (bus.hasService('proxy:close-session')) {
@@ -2657,19 +2559,35 @@ export function createOrchestrator(
         });
       }
 
-      // (TASK-112 Bug 2) Fire the upfront connector approval card on the WARM
-      //     path too. A draft proposed mid-turn (the previous turn's
-      //     connector_propose) wouldn't otherwise be carded until a re-spawn —
-      //     it would surface a reactive egress wall instead. Best-effort, after
-      //     the bind so the SSE handler can locate the row; never blocks the turn.
-      await fireUpfrontConnectorCards(ctx, agent.id);
-
       // (2) Register the waiter BEFORE enqueueing — the runner may emit
       //     chat:turn-end almost immediately on a fast model. Keyed by
       //     ctx.reqId (J9, unique per agent:invoke) — see waitersByReqId
       //     declaration for the rationale.
       const deferred = newDeferred<AgentOutcome>();
       registerWaiter(sessionId, ctx.reqId, deferred);
+
+      // Slice 6 — a ROUTINE turn routed here queued into a BUSY session (an
+      // idle one is retired above). It assembles nothing, but the session's
+      // tools were fixed at spawn, so what that spawn went without is exactly
+      // what this run goes without: announce it under THIS turn's reqId, the
+      // same bounded, isolated, awaited fire as the spawn path. Nothing
+      // skipped at spawn → nothing fired, as for a fresh spawn. AFTER
+      // registerWaiter, so this turn already counts as busy while the fire is
+      // awaited (a third fire can't see the session idle and retire it), and
+      // BEFORE queue-work, so a subscriber has seen it before the turn ends.
+      const spawnSkips = ctx.source === 'routine' ? skippedConnectorsBySession.get(sessionId) : undefined;
+      if (spawnSkips !== undefined && spawnSkips.length > 0) {
+        try {
+          await fireChatEvent<ConnectorsSkippedPayload>('chat:connectors-skipped', ctx, {
+            reqId: ctx.reqId,
+            connectors: spawnSkips.map((c) => ({ ...c })),
+          });
+        } catch (err) {
+          ctx.logger.warn('chat_connectors_skipped_fire_failed', {
+            name: err instanceof Error ? err.name : 'unknown',
+          });
+        }
+      }
 
       // (3) Enqueue the user message.
       try {
@@ -3284,11 +3202,48 @@ export function createOrchestrator(
     // an explicit "no row" skips; a presence-read fault keeps the connector
     // (see partitionConnectorsBySignIn). A rejected refresh still has a row,
     // so it is kept and surfaces as connector-needs-reconnect below.
-    const connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
+    //
+    // Slice 6 — EXCEPT on a routine turn (`ctx.source` is stamped host-side by
+    // routines' fire.ts): there nobody is watching to sign in again, and one
+    // expired connector would fail the whole run. So a routine also goes
+    // without a connector whose sign-in needs doing again (status-batch's
+    // marker; any fault keeps it, today's behaviour). An interactive chat
+    // keeps failing with connector-needs-reconnect: that error is what tells
+    // the person to sign in again. (@ax/decisions' replay also stamps
+    // source:'routine', but it calls `tool:execute:<name>` directly and never
+    // reaches agent:invoke, so it never gets here.)
+    let connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
+    if (ctx.source === 'routine') {
+      connectorSignIn = await skipConnectorsNeedingReconnect(
+        bus,
+        ctx,
+        agent.id,
+        connectorSignIn,
+        signInStatusTimeoutMs,
+      );
+    }
     if (connectorSignIn.skipped.length > 0) {
-      ctx.logger.info('connectors_skipped_not_signed_in', {
-        connectorIds: connectorSignIn.skipped.map((s) => s.connector.id),
+      ctx.logger.info('connectors_skipped', {
+        connectors: connectorSignIn.skipped.map((s) => ({ id: s.connector.id, reason: s.reason })),
       });
+      // Slice 6 — say what this turn went without, keyed by its reqId, so a
+      // routine can record "Gmail isn't signed in on Bob, so this run went
+      // without it." Observation only. Each subscriber is bounded by
+      // connectorsSkippedSubscriberTimeoutMs (2 s) and a throwing subscriber
+      // is isolated by the bus, so no subscriber can fail or hang the turn.
+      // Awaited (bounded) so a subscriber has seen it before the turn can
+      // end. Payload: ids, labels, reasons — never refs.
+      try {
+        await fireChatEvent<ConnectorsSkippedPayload>(
+          'chat:connectors-skipped',
+          ctx,
+          connectorsSkippedPayload(ctx.reqId, connectorSignIn.skipped),
+        );
+      } catch (err) {
+        ctx.logger.warn('chat_connectors_skipped_fire_failed', {
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+      }
       // Tell the agent, so it can say "sign in to Gmail first" instead of
       // acting as if the tool never existed. Normal mode only: the bootstrap
       // augment admits person-authored content alone (TASK-524), and this line
@@ -3660,10 +3615,20 @@ export function createOrchestrator(
       // TASK-811/833 — every connector resolved for this spawn, skipped ones
       // included (a skipped connector's edit or delete matters as much).
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
+      // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
+      // turns, slice 6) has a row, so re-asking presence would answer yes and
+      // retire the session on every turn. Harmless: only a routine turn makes
+      // a needs-reconnect skip, and the next routine turn retires an idle
+      // session anyway (see routineRetire); a queued one into a busy session
+      // is told the spawn-time skips instead (skippedConnectorsBySession).
+      const skippedRefs = [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))];
+      if (skippedRefs.length > 0) {
+        skippedConnectorRefsBySession.set(sessionId, skippedRefs);
+      }
       if (connectorSignIn.skipped.length > 0) {
-        skippedConnectorRefsBySession.set(
+        skippedConnectorsBySession.set(
           sessionId,
-          [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))],
+          connectorsSkippedPayload(ctx.reqId, connectorSignIn.skipped).connectors,
         );
       }
       if (keepAlive) {
@@ -3693,6 +3658,7 @@ export function createOrchestrator(
             sessionsNeedingRotation.delete(sessionId);
             augmentGenBySession.delete(sessionId);
             skippedConnectorRefsBySession.delete(sessionId);
+            skippedConnectorsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
             forgetSessionConnectors(sessionId);
             if (proxyOpened) {
@@ -3749,17 +3715,9 @@ export function createOrchestrator(
       return outcome;
     }
 
-    // TASK-100 — the authored-SKILL upfront approval card was removed: a skill
-    // declares no capabilities (its reach is the connectors it references), so a
-    // model-authored skill has no per-skill cap delta to approve. The connector
-    // approval card below is the surviving upfront-card path (a connector's reach
-    // is what a human approves); request_capability still fires the JIT card when
-    // a skill's referenced connector needs approval at first use.
-
-    // TASK-94 / TASK-112 — fire ONE upfront approval card per PENDING authored
-    // connector draft (the surviving upfront-card path). Same helper the
-    // warm/routed path calls, so both behave identically (one source of truth).
-    await fireUpfrontConnectorCards(ctx, agent.id);
+    // No upfront approval card fires here. A model-authored skill declares no
+    // capabilities (TASK-100), and an agent-proposed connector goes to the
+    // workspace admins' queue, not to an in-chat card (slice 2c).
 
     // 7. Bind the conversation row to this fresh session (J6). Same
     //    reqId/sessionId pair the SSE handler (Task 7) keys off. We bind
@@ -3959,6 +3917,7 @@ export function createOrchestrator(
         // session drops it in handle.exited; a one-shot session is done now.
         augmentGenBySession.delete(ctx.sessionId);
         skippedConnectorRefsBySession.delete(ctx.sessionId);
+        skippedConnectorsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);
         forgetSessionConnectors(ctx.sessionId);
       }
@@ -4303,8 +4262,8 @@ export function createOrchestrator(
     // TASK-100 — a skill declares NO capabilities, so there is nothing per-skill
     // to approve into the caps wall: "approving" an authored skill simply flips
     // its pending draft to active so its instruction body materializes next
-    // spawn. (A skill's connector reach is approved via the connector grant path,
-    // applyAuthoredConnectorGrant, under the connector approval card — not here.)
+    // spawn. (A skill's connector reach comes from the connectors it references,
+    // which an admin defines — not from here.)
     //
     // Flip the authored row pending→active (TASK-76, §D3). Status-guarded in the
     // store (only a pending row flips; quarantined stays quarantined). Fail-loud:
@@ -4318,17 +4277,14 @@ export function createOrchestrator(
       });
     }
 
-    // Drop the upfront connector-card dedup for this conversation so the next
-    // spawn re-evaluates (a freshly-active skill may reference connectors that
-    // still need their own approval card). The My Skills "approve early" path has
-    // no conversation, so skip when absent.
+    // The My Skills "approve early" path has no conversation, so the retire
+    // below is skipped when absent.
     const convId = input.conversationId;
-    if (convId !== undefined) upfrontConnectorCardsByConv.delete(convId);
 
     // A freshly-active instruction-only skill has no credential/host reach of its
     // own, so there is nothing to live-widen or re-spawn for here: the skill's
     // body materializes on the next turn's spawn. (Its referenced connectors'
-    // reach is wired by the connector grant path + the skill→connector bridge.)
+    // reach is wired by the skill→connector bridge.)
     // Retire the warm session so the next turn cold-spawns with the now-active
     // skill's body in the union.
     let respawned = false;
@@ -4349,215 +4305,6 @@ export function createOrchestrator(
     return { applied: true, respawned };
   }
 
-  // TASK-94 — apply a user-approved authored-CONNECTOR capability grant. The
-  // twin of applyAuthoredCapabilityGrant, but the SUBJECT is a connector: the
-  // host re-resolves the agent's authored connector drafts (server-authoritative
-  // — an unknown connectorId returns not-authored), approves the proposal
-  // (host/slot/npm/pypi; mcp deferred — the wall rejects kind:'mcp') under the
-  // TASK-93 wall with a `connectorId` subject, then flips the draft active. A
-  // credential slot → re-spawn next turn; host/pkg-only → live widen.
-  async function applyAuthoredConnectorGrant(
-    ctx: AgentContext,
-    input: ApplyAuthoredConnectorGrantInput,
-  ): Promise<ApplyAuthoredConnectorGrantOutput> {
-    // 1. Re-resolve the agent's authored connector drafts — the HOST is the
-    //    authority on which connectorIds are this agent's drafts. A resolve
-    //    failure (DB hiccup) → not-authored so the caller doesn't mis-apply.
-    let drafts: ConnectorsListAuthoredOutput['drafts'] = [];
-    if (bus.hasService('connectors:list-authored')) {
-      try {
-        const r = await bus.call<
-          { ownerUserId: string; agentId: string },
-          ConnectorsListAuthoredOutput
-        >('connectors:list-authored', ctx, {
-          ownerUserId: input.userId,
-          agentId: input.agentId,
-        });
-        drafts = r.drafts;
-      } catch (err) {
-        ctx.logger.warn('authored_connector_grant_resolve_failed', {
-          agentId: input.agentId,
-          connectorId: input.connectorId,
-          err: err instanceof Error ? err.message : String(err),
-        });
-        return { applied: false, reason: 'not-authored' };
-      }
-    }
-    const draft = drafts.find((d) => d.connectorId === input.connectorId);
-    if (draft === undefined) return { applied: false, reason: 'not-authored' };
-
-    // 2. Build the approval rows from the proposal, applying the same `shown`
-    //    TOCTOU intersection guard as the skill grant: anything in the current
-    //    proposal but NOT in `shown` is silently skipped (the client `shown`
-    //    can only NARROW, never expand). When `shown` is absent, approve the
-    //    full current proposal.
-    const proposal = draft.proposal;
-    const proposalNpm = proposal.packages?.npm ?? [];
-    const proposalPypi = proposal.packages?.pypi ?? [];
-
-    const shownHostSet = input.shown !== undefined ? new Set(input.shown.hosts) : null;
-    const shownSlotSet = input.shown !== undefined ? new Set(input.shown.slots) : null;
-    const shownNpmSet  = input.shown !== undefined ? new Set(input.shown.npm)   : null;
-    const shownPypiSet = input.shown !== undefined ? new Set(input.shown.pypi)  : null;
-
-    const approvedHosts = shownHostSet !== null
-      ? proposal.allowedHosts.filter((h) => shownHostSet.has(h))
-      : proposal.allowedHosts;
-    const approvedCreds = shownSlotSet !== null
-      ? proposal.credentials.filter((c) => shownSlotSet.has(c.slot))
-      : proposal.credentials;
-    const approvedNpm = shownNpmSet !== null
-      ? proposalNpm.filter((p) => shownNpmSet.has(p))
-      : proposalNpm;
-    const approvedPypi = shownPypiSet !== null
-      ? proposalPypi.filter((p) => shownPypiSet.has(p))
-      : proposalPypi;
-
-    const rows: Array<{
-      kind: 'host' | 'slot' | 'npm' | 'pypi';
-      value: string;
-      detail?: { kind: 'api-key'; account?: string };
-    }> = [
-      ...approvedHosts.map((h) => ({ kind: 'host' as const, value: h })),
-      ...approvedCreds.map((c) => ({
-        kind: 'slot' as const,
-        value: c.slot,
-        // `c.account` is VESTIGIAL here: this is the authored-CONNECTOR grant path
-        // and `draft.proposal` is read back through the authored store, which strips
-        // `account` (credentials-into-connectors: connectors own their own key, keyed
-        // by id). It is always undefined; retained only for shape parity.
-        detail: { kind: 'api-key' as const, ...(c.account !== undefined ? { account: c.account } : {}) },
-      })),
-      ...approvedNpm.map((p) => ({ kind: 'npm' as const, value: p })),
-      ...approvedPypi.map((p) => ({ kind: 'pypi' as const, value: p })),
-    ];
-
-    // 3. Write the approval rows under the TASK-93 connector-subject wall
-    //    (`skills:approved-caps-set` with `connectorId`). Fail-loud (propagate)
-    //    + idempotent, same posture as the skill grant. hasService-guarded.
-    if (bus.hasService('skills:approved-caps-set')) {
-      for (const row of rows) {
-        await bus.call('skills:approved-caps-set', ctx, {
-          ownerUserId: input.userId,
-          agentId: input.agentId,
-          connectorId: input.connectorId,
-          kind: row.kind,
-          value: row.value,
-          ...(row.detail !== undefined ? { detail: row.detail } : {}),
-        });
-      }
-    }
-
-    // 3a. PROMOTE the approved connector into the curated registry (TASK-113 —
-    //     the load-bearing fix). The approved-caps rows above only GATE reach;
-    //     the connector's reach is FOLDED from the registry by
-    //     resolveEffectiveConnectors → foldConnectorCaps, and the UI surfaces
-    //     read the registry too. So an approved authored connector must land in
-    //     the registry, or it never reaches the sandbox NOR the UI (the
-    //     TASK-101-walk bug: npx hits npm 403 + the reactive wall; the connector
-    //     is invisible/unattachable).
-    //
-    //     ONE SOURCE OF TRUTH (invariant #4): the REGISTRY row is authoritative
-    //     for the active connector. The authored row stays draft/proposal
-    //     staging — flipped `active` below only for the audit trail; nothing
-    //     reads the authored table for active reach or UI. We do NOT add a
-    //     second read path.
-    //
-    //     We promote the APPROVED capability surface — the `shown`-narrowed sets
-    //     computed above, NOT the full proposal — so promoted reach == approved
-    //     reach (the TOCTOU guard flows through to the registry row). mcpServers
-    //     ride from the draft proposal verbatim (no per-mcp `shown` narrowing in
-    //     the card today; the wall does not card individual MCP servers).
-    //     keyMode/name/usageNote come from the resolved draft. `visibility` is
-    //     the safe `private` default (owner-scoped reach); an admin re-curates to
-    //     shared later (mirrors the cap-migration promotion default).
-    //
-    //     Ordered BEFORE the activate flip so a promotion failure leaves the
-    //     draft `pending` (re-approvable) rather than active-but-unpromoted.
-    //     Fail-loud (propagate), like the activate flip. hasService-guarded for
-    //     back-compat with a preset that strips @ax/connectors.
-    if (bus.hasService('connectors:upsert')) {
-      const promotedCapabilities: ConnectorsUpsertInput['capabilities'] = {
-        allowedHosts: approvedHosts,
-        credentials: approvedCreds,
-        mcpServers: proposal.mcpServers,
-        packages: { npm: approvedNpm, pypi: approvedPypi },
-      };
-      const upsertInput: ConnectorsUpsertInput = {
-        userId: input.userId,
-        connectorId: input.connectorId,
-        name: draft.name,
-        description: '',
-        usageNote: draft.usageNote,
-        keyMode: draft.keyMode,
-        visibility: 'private',
-        capabilities: promotedCapabilities,
-      };
-      await bus.call('connectors:upsert', ctx, upsertInput);
-    }
-
-    // 3b. Flip the connector draft pending→active. Status-guarded + idempotent
-    //     in the store; fail-loud here. hasService-guarded.
-    if (bus.hasService('connectors:activate-authored')) {
-      await bus.call('connectors:activate-authored', ctx, {
-        ownerUserId: input.userId,
-        agentId: input.agentId,
-        connectorId: input.connectorId,
-      });
-    }
-
-    // 4. Drop the per-conversation card dedup so a post-approve spawn re-fires
-    //    only if something remains unapproved.
-    const convId = input.conversationId;
-    if (convId !== undefined) upfrontConnectorCardsByConv.delete(convId);
-
-    // 5. Re-spawn vs live-widen (same asymmetry as the skill grant): an
-    //    approved credential slot is frozen at spawn → retire the warm session
-    //    so the next turn re-spawns; host/pkg-only → live widen the warm
-    //    session. With no conversation there's nothing live — the rows +
-    //    activate are the whole effect and the next turn cold-spawns approved.
-    const needsRespawn = approvedCreds.length > 0;
-    if (needsRespawn) {
-      const warm =
-        convId !== undefined
-          ? await activeAliveSession(ctx, convId, input.userId)
-          : null;
-      let respawned = false;
-      if (warm !== null) {
-        try {
-          await bus.call('session:terminate', ctx, { sessionId: warm });
-          respawned = true;
-        } catch (err) {
-          ctx.logger.warn('authored_connector_grant_retire_failed', {
-            conversationId: input.conversationId,
-            err: err instanceof Error ? err : new Error(String(err)),
-          });
-        }
-      }
-      return { applied: true, respawned };
-    }
-
-    const liveHosts = [...approvedHosts];
-    if (approvedNpm.length > 0) liveHosts.push('registry.npmjs.org');
-    if (approvedPypi.length > 0) liveHosts.push('pypi.org', 'files.pythonhosted.org');
-    if (liveHosts.length > 0 && bus.hasService('proxy:add-host') && convId !== undefined) {
-      const warm = await activeAliveSession(ctx, convId, input.userId);
-      if (warm !== null) {
-        for (const host of liveHosts) {
-          try {
-            await bus.call('proxy:add-host', ctx, { sessionId: warm, host });
-          } catch (err) {
-            ctx.logger.warn('authored_connector_grant_add_host_failed', {
-              host,
-              err: err instanceof Error ? err : new Error(String(err)),
-            });
-          }
-        }
-      }
-    }
-    return { applied: true, respawned: false };
-  }
-
   return {
     runAgentInvoke,
     onChatEnd,
@@ -4566,10 +4313,8 @@ export function createOrchestrator(
     applyCapabilityGrant,
     interruptTurn,
     applyAuthoredCapabilityGrant,
-    applyAuthoredConnectorGrant,
     onHttpEgress,
     onSkillsProposed,
-    onConnectorProposed,
     onSystemPromptAugmentChanged,
     onAgentDeleted,
     onConnectorDeleted,

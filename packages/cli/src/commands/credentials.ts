@@ -14,6 +14,9 @@ const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
 // real auth identity. The (userId, ref) storage key (Phase 3, I14) keeps
 // the door open without forcing the change today.
 const CLI_USER_ID = 'cli';
+// Connector credential refs (`account:<connector>[:<SLOT>]`), mirrored from
+// @ax/credentials (no runtime import of its internals).
+const CONNECTOR_REF_PREFIX = 'account:';
 
 export interface RunCredentialsOptions {
   /** argv slice starting at the subcommand args, e.g. ['set', 'gh-token']. */
@@ -30,6 +33,8 @@ const USAGE = `usage:
   ax-next credentials set <ref>
     <ref> must match [a-z0-9][a-z0-9_.-]{0,127}
     the secret is read from stdin (NOT argv) — pipe or paste then EOF
+    connector credentials (account:…) aren't set here: each agent adds
+    its own from its Connectors tab
 
   ax-next credentials migrate [--yes]
     Copies legacy v1 storage keys (credential:<userId>:<ref>) to v2 keys
@@ -56,6 +61,15 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
   if (ref === undefined || ref === '') {
     err(USAGE);
     return 2;
+  }
+  // Agent-owned sign-ins, slice 5: a connector credential (`account:` ref)
+  // belongs to an agent (or is the one shared company key), never to a
+  // person, and this command only writes at its own user scope. The vault
+  // would refuse it too; say where it goes instead, before the secret is
+  // even read.
+  if (ref.startsWith(CONNECTOR_REF_PREFIX)) {
+    err("error: Connector credentials belong to agents now; add them from the agent's Connectors tab");
+    return 1;
   }
 
   // Read stdin to a Buffer (preserves bytes), then UTF-8 decode.
@@ -178,31 +192,49 @@ async function runMigrateCommand(
       return 0;
     }
 
-    if (!opts.argv.includes('--yes')) {
-      // Dry-run: informational, not an error. Exiting 0 lets shell
-      // pipelines like `credentials migrate || abort` use this as a
-      // preflight without false-positive failures. Reserve non-zero for
-      // real errors (catch block below).
-      out(`would migrate ${v1Entries.length} credentials. Re-run with --yes to proceed.`);
-      return 0;
-    }
-
-    let migrated = 0;
+    // Key shape: `credential:<userId>:<ref>` — split on the FIRST colon after
+    // the prefix. A user id never contains `:`, so anything after the first
+    // colon is the ref (which may itself, e.g. `account:gmail`).
+    //
+    // SIGNINS-7 — connector credentials (`account:` refs) belong to agents
+    // now, never to a person. Copying one would write a person-scope
+    // `account:` row straight into storage, past the vault's own refusal, so
+    // they are skipped and counted — in the dry run too.
+    const toMigrate: Array<{ newKey: string; value: Uint8Array }> = [];
+    let skipped = 0;
     for (const e of v1Entries) {
-      // Key shape: `credential:<userId>:<ref>` — split on the FIRST colon
-      // after the prefix. Refs may contain `.` and `-` but never `:`, so
-      // anything after the first colon is the ref.
       const rest = e.key.slice('credential:'.length);
       const colon = rest.indexOf(':');
       if (colon < 0) continue;
       const userId = rest.slice(0, colon);
       const ref = rest.slice(colon + 1);
-      const newKey = `credential:v2:user:${userId}:${ref}`;
-      await bus.call('storage:set', ctx, { key: newKey, value: e.value });
+      if (ref.startsWith('account:')) {
+        skipped++;
+        continue;
+      }
+      toMigrate.push({ newKey: `credential:v2:user:${userId}:${ref}`, value: e.value });
+    }
+    const skippedLine = (verb: string): string =>
+      `${skipped} connector credential${skipped === 1 ? '' : 's'} ${verb} — they now belong to agents. Add them from each agent's Connectors tab.`;
+
+    if (!opts.argv.includes('--yes')) {
+      // Dry-run: informational, not an error. Exiting 0 lets shell
+      // pipelines like `credentials migrate || abort` use this as a
+      // preflight without false-positive failures. Reserve non-zero for
+      // real errors (catch block below).
+      out(`would migrate ${toMigrate.length} credentials. Re-run with --yes to proceed.`);
+      if (skipped > 0) out(skippedLine('would be skipped'));
+      return 0;
+    }
+
+    let migrated = 0;
+    for (const m of toMigrate) {
+      await bus.call('storage:set', ctx, { key: m.newKey, value: m.value });
       migrated++;
     }
 
     out(`migrated ${migrated} credentials from v1 to v2 (scope=user)`);
+    if (skipped > 0) out(skippedLine('skipped'));
     out(
       'v1 keys are still present and readable as a fallback. Remove them only after verifying.',
     );

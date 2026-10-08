@@ -22,13 +22,13 @@ describe('@ax/connectors plugin manifest', () => {
         'connectors:resolve',
         // TASK-744 — toolNamespace → connector display name.
         'connectors:tool-labels',
-        // TASK-94 — agent-authored connector drafts + the approval gate.
+        // Agent-owned sign-ins slice 2b — which ids are still in use.
+        'connectors:live-ids',
+        // TASK-94 — agent-authored connector drafts (the admins' queue).
         'connectors:install-authored',
-        'connectors:list-authored',
-        // The Settings "Proposed by your assistant" fallback read.
-        'connectors:list-authored-pending',
-        'connectors:activate-authored',
-        'connectors:clear-authored',
+        // Slice 2c — the admin proposal queue and its Dismiss.
+        'connectors:list-authored-pending-all',
+        'connectors:clear-authored-by-id',
         // TASK-808 — TRANSITIONAL: let @ax/agents convert the retired "Set default"
         // flag into explicit attachments at boot (no HTTP / IPC surface).
         'connectors:list-legacy-defaults',
@@ -49,6 +49,11 @@ describe('@ax/connectors plugin manifest', () => {
           hook: 'credentials:delete',
           degradation:
             'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
+        },
+        {
+          hook: 'credentials:purge-account',
+          degradation:
+            "the connector is deleted but agents' sign-ins for it are left in the vault (a later connector with the same id could read them)",
         },
         {
           hook: 'tool-policy:get-connector-defaults',

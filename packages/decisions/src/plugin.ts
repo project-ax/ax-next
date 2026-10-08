@@ -387,8 +387,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       //
       // Run twice, and both times are needed. At init it catches every producer
       // that loaded BEFORE this plugin. But plugin init order is the preset's
-      // array order, and a producer pushed after @ax/decisions (the k8s
-      // preset's `connector_propose` is exactly that) has not registered
+      // array order, and a producer pushed after @ax/decisions has not registered
       // anything yet — so the audit runs again on the first maintenance pass,
       // by which time the whole boot is done. `reportedPairs` keeps each gap to
       // one log line however many times it is seen.

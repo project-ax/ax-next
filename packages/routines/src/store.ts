@@ -42,6 +42,17 @@ export interface RecordFireInput {
   status: FireStatus;
   error: string | null;
   renderedPrompt?: string | null;
+  /**
+   * Slice 6 — "Gmail isn't signed in on Bob, so this run went without it."
+   * A string or null is written to the fire row AND to the routine's
+   * `last_warning`: null means the run reached turn assembly and went
+   * without nothing, so it clears the previous run's warning. Omitted
+   * (`undefined`) means the fire failed before turn assembly (agent resolve
+   * refused, chat:start veto, dispatch error): the fire row's warning is
+   * null and the routine's `last_warning` is left UNCHANGED — such a fire
+   * says nothing about which connectors a run would go without.
+   */
+  warning?: string | null;
 }
 
 export interface UpsertDefaultInput {
@@ -218,6 +229,7 @@ function rowToRoutine(row: {
   conversation: string; prompt_body: string;
   next_run_at: Date | null; last_run_at: Date | null;
   last_status: string | null; last_error: string | null;
+  last_warning: string | null;
   definition_id: string | null;
   definition_updated_at: Date | null;
 }): RoutineRow {
@@ -238,6 +250,7 @@ function rowToRoutine(row: {
     lastRunAt: row.last_run_at,
     lastStatus: row.last_status as FireStatus | null,
     lastError: row.last_error,
+    lastWarning: row.last_warning,
     definitionId: row.definition_id,
     definitionUpdatedAt: row.definition_updated_at,
   };
@@ -248,6 +261,7 @@ function rowToFire(r: {
   agent_id: string; path: string; fired_at: Date;
   trigger_source: string; conversation_id: string | null;
   status: string; error: string | null; rendered_prompt: string | null;
+  warning: string | null;
 }): FireRow {
   return {
     id: Number(r.id),
@@ -259,6 +273,7 @@ function rowToFire(r: {
     status: r.status as FireStatus,
     error: r.error,
     renderedPrompt: r.rendered_prompt,
+    warning: r.warning,
   };
 }
 
@@ -362,6 +377,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         conversation: string; prompt_body: string;
         next_run_at: Date | null; last_run_at: Date | null;
         last_status: string | null; last_error: string | null;
+        last_warning: string | null;
         definition_id: string | null;
         definition_updated_at: Date | null;
       }>`
@@ -440,15 +456,45 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       const MAX = 64 * 1024;
       const raw = input.renderedPrompt ?? null;
       const renderedPrompt = raw !== null ? truncateUtf8(raw, MAX) : null;
-      const row = await db.insertInto('routines_v1_fires').values({
-        agent_id: input.agentId,
-        path: input.path,
-        trigger_source: input.triggerSource,
-        conversation_id: input.conversationId,
-        status: input.status,
-        error: input.error,
-        rendered_prompt: renderedPrompt,
-      }).returning('id').executeTakeFirstOrThrow();
+      // Slice 6 — omitted: a fire that never reached turn assembly. Its row
+      // carries no warning and the routine's `last_warning` is not touched.
+      if (input.warning === undefined) {
+        const row = await db.insertInto('routines_v1_fires').values({
+          agent_id: input.agentId,
+          path: input.path,
+          trigger_source: input.triggerSource,
+          conversation_id: input.conversationId,
+          status: input.status,
+          error: input.error,
+          rendered_prompt: renderedPrompt,
+        }).returning('id').executeTakeFirstOrThrow();
+        return Number(row.id);
+      }
+      const warning = input.warning;
+      // Slice 6 — the fire row and the routine's `last_warning` in ONE
+      // statement, so every path that records a fire that reached turn
+      // assembly (turn end, a terminated invoke) sets or clears the
+      // routine's warning, and neither write can land without the other.
+      // The UPDATE matches nothing when the routine has since been deleted;
+      // the fire row is still written, as before. `advance` never touches
+      // `last_warning`.
+      const res = await sql<{ id: number | string }>`
+        WITH warn AS (
+          UPDATE routines_v1_definitions
+             SET last_warning = ${warning}
+           WHERE agent_id = ${input.agentId} AND path = ${input.path}
+        )
+        INSERT INTO routines_v1_fires
+          (agent_id, path, trigger_source, conversation_id, status, error,
+           rendered_prompt, warning)
+        VALUES
+          (${input.agentId}, ${input.path}, ${input.triggerSource},
+           ${input.conversationId}, ${input.status}, ${input.error},
+           ${renderedPrompt}, ${warning})
+        RETURNING id
+      `.execute(db);
+      const row = res.rows[0];
+      if (row === undefined) throw new Error('recordFire: INSERT … RETURNING returned no row');
       return Number(row.id);
     },
 

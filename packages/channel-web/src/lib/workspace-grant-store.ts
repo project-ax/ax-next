@@ -65,7 +65,7 @@ export interface WorkspaceGrant {
    * therefore not an input to what we GRANT.
    *
    * Not part of `grantKey`, deliberately: identity is the subject. Two agents
-   * blocked on one connector is still one question, and keying on the pair is
+   * blocked on one skill is still one question, and keying on the pair is
    * exactly how one grant would become two rows.
    */
   agentId: string;
@@ -78,7 +78,7 @@ export interface WorkspaceGrant {
    * conversation am I in?" and get a useful answer. It has to be recorded when
    * the frame arrives, by the only code that knows: the view streaming the turn.
    *
-   * `/api/chat/permission-decision` requires it, so a `skill` or `connector`
+   * `/api/chat/permission-decision` requires it, so a `skill`
    * grant with none cannot be answered — the row disables Connect and renders
    * `GRANT_NO_CONVERSATION` beside it, rather than posting something the server
    * must reject or leaving a dead button unexplained. A `host` grant does not
@@ -101,20 +101,18 @@ export interface WorkspaceGrantState {
  * question. The session id still matters for the POST, which is why `raise`
  * replaces in place rather than ignoring the repeat — the newer session wins.
  *
- * The `kind` prefix keeps a skill and a connector that share a slug apart.
+ * The `kind` prefix keeps a skill and a host that share a name apart.
  */
 export function grantKey(request: PermissionRequest): string {
   switch (request.kind) {
     case 'skill':
       return `skill:${request.skillId}`;
-    case 'connector':
-      return `connector:${request.connectorId}`;
     case 'host':
       return `host:${request.host}`;
   }
 }
 
-/** The reach a `skill` and a `connector` both declare — and both ITERATE. */
+/** The reach a `skill` declares — and ITERATES. */
 function hasIterableReach(r: Record<string, unknown>): boolean {
   return (
     Array.isArray(r.hosts) &&
@@ -187,8 +185,8 @@ export function isRenderableGrant(request: unknown): boolean {
   switch (r.kind) {
     case 'skill':
       return typeof r.skillId === 'string' && hasIterableReach(r);
-    case 'connector':
-      return typeof r.connectorId === 'string' && hasIterableReach(r);
+    // Slice 2c removed the in-chat `connector` card; an older peer's falls
+    // through to `default` and is dropped.
     case 'host':
       return typeof r.host === 'string';
     default:
@@ -227,19 +225,7 @@ export function useWorkspaceGrants(): WorkspaceGrantState {
 export const getWorkspaceGrantSnapshot = (): WorkspaceGrantState => state;
 
 export const workspaceGrantActions = {
-  /**
-   * A `permissionRequest` frame landed.
-   *
-   * TASK-113 — a reactive `host` egress wall is DROPPED while a `connector`
-   * grant is open. On a warm turn the upfront connector card and a same-turn
-   * wall both fire, and the connector card is the root cause: the wall is
-   * downstream of the same missing connector. In chat's single slot the wall
-   * literally hid the actionable card; in a list it would merely add a second
-   * row, but a second row pointing at a cause the first row already names is
-   * noise on a surface where every row is a question. Chat drops it, so this
-   * drops it — one product, one answer. Connector still wins both directions,
-   * and every other transition goes through.
-   */
+  /** A `permissionRequest` frame landed. */
   raise(request: PermissionRequest, origin: GrantOrigin): void {
     // Something this build cannot key or draw. Dropped, loudly enough for
     // whoever is debugging a version skew — see `isRenderableGrant`. The person
@@ -258,12 +244,6 @@ export const workspaceGrantActions = {
       });
       return;
     }
-    if (
-      request.kind === 'host' &&
-      state.grants.some((g) => g.request.kind === 'connector')
-    ) {
-      return;
-    }
     const key = grantKey(request);
     const row: WorkspaceGrant = { key, request, ...origin };
     const at = state.grants.findIndex((g) => g.key === key);
@@ -272,7 +252,7 @@ export const workspaceGrantActions = {
       return;
     }
     // Replace in place: same row, same position, newer payload — including a
-    // newer origin. The subject is the identity, so the same connector asked
+    // newer origin. The subject is the identity, so the same skill asked
     // for by a second agent updates this row rather than adding one.
     //
     // A NOTE FOR THE NEXT PRODUCER (TASK-351 review, updated by TASK-389).

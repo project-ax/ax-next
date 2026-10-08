@@ -21,8 +21,8 @@ import type { ToolNamespaceEntry } from './tool-namespace.js';
  * Mechanism-agnostic by construction: a connector's BACKING mechanism (MCP
  * over http, a CLI package, a direct API) lives ONLY inside the
  * `Capabilities` spec (allowedHosts / credentials / mcpServers / packages).
- * The connector's own first-class fields — `keyMode` / `visibility` /
- * `usageNote` — are storage-agnostic, so no `transport` / `command` / `stdio`
+ * The connector's own first-class fields — `keyMode` / `usageNote` — are
+ * storage-agnostic, so no `transport` / `command` / `stdio`
  * / `url` / `mcp` ever appears as a first-class hook field. A subscriber keys
  * off the connector `id` + its declared `credentials` / `allowedHosts`, never
  * off "is this MCP?" — the backing mechanism can change without the connector's
@@ -57,6 +57,55 @@ export interface OAuthCapabilitySlot {
   clientSecretRef?: string;
   authServerUrl?: string;
   tokenUrl?: string;
+}
+
+/**
+ * What an OAuth slot's optional fields MEAN when they are absent — the one
+ * place this package spells it out:
+ *   - `clientRegistration` absent → `'custom'` when a `clientId` is pinned,
+ *     else `'auto'` (the sign-in flow reads it the same way);
+ *   - `scopes` absent → `[]`, and an empty list asks for nothing explicit
+ *     either way (the flow falls back to what the resource advertises).
+ *
+ * Returns the slot with those defaults written in, so two slots that differ
+ * only by spelling a default out (or leaving it out) normalize to the same
+ * value, while a real change of either value stays a difference. Pure; the
+ * input is not modified.
+ *
+ * The runtime meaning this mirrors lives in @ax/mcp-oauth `routes.ts` (no
+ * cross-plugin import, so it is restated here): `registration:
+ * slot.clientRegistration ?? (slot.clientId ? 'custom' : 'auto')` and
+ * `slot.scopes?.join(' ') || discoveredScope`. Keep the two in step — but the
+ * owner-only guard in `admin-routes.ts` does NOT rely on this for security: a
+ * non-owner admin's save always writes the stored reach back, so a mismatch
+ * here can only produce a wrong 200/403 answer, not a changed connector.
+ */
+export function withOAuthSlotDefaults(slot: OAuthCapabilitySlot): OAuthCapabilitySlot {
+  return {
+    ...slot,
+    // Truthiness, not `!== undefined`: an empty clientId pins nothing.
+    clientRegistration: slot.clientRegistration ?? (slot.clientId ? 'custom' : 'auto'),
+    scopes: slot.scopes ?? [],
+  };
+}
+
+/**
+ * {@link withOAuthSlotDefaults} applied to every OAuth slot in a Capabilities
+ * (top-level `credentials` and each server's `credentials`). Other slots and
+ * fields pass through unchanged. For comparing two capability sets by
+ * meaning, never for storing (a stored row keeps what its author wrote).
+ */
+export function withCapabilityDefaults(caps: Capabilities): Capabilities {
+  const slots = (list: CapabilitySlot[]): CapabilitySlot[] =>
+    list.map((s) => (s.kind === 'oauth' ? withOAuthSlotDefaults(s) : s));
+  return {
+    ...caps,
+    credentials: slots(caps.credentials as CapabilitySlot[]),
+    mcpServers: caps.mcpServers.map((server) => ({
+      ...server,
+      credentials: slots(server.credentials as CapabilitySlot[]),
+    })),
+  } as Capabilities;
 }
 
 /**
@@ -193,16 +242,10 @@ export const CapabilitiesSchema = z.object({
 export type KeyMode = 'personal' | 'workspace';
 
 /**
- * Whether a connector is private to its owner's agents or shared. Derived from
- * the owner/catalog model in the design; here it is a declared field on the
- * connector. Storage-agnostic.
- */
-export type Visibility = 'private' | 'shared';
-
-/**
  * The first-class Connector object: authenticated ACCESS to a data source,
- * mechanism hidden. `{ id, name, description, usageNote, keyMode, visibility }`
- * plus the neutral {@link Capabilities} spec.
+ * mechanism hidden. `{ id, name, description, usageNote, keyMode }` plus the
+ * neutral {@link Capabilities} spec. Every connector is shared (SIGNINS-9):
+ * any signed-in user can see it and attach it to an agent.
  */
 export interface Connector {
   /** Whether the requesting user owns this definition and may edit it. */
@@ -220,7 +263,6 @@ export interface Connector {
    */
   usageNote: string;
   keyMode: KeyMode;
-  visibility: Visibility;
   /**
    * The mechanism-agnostic fill (allowedHosts / credentials / mcpServers /
    * packages). The ONLY place backing-mechanism vocabulary lives.
@@ -247,7 +289,6 @@ export interface ConnectorSummary {
   description: string;
   usageNote: string;
   keyMode: KeyMode;
-  visibility: Visibility;
   createdAt: string;
   updatedAt: string;
 }
@@ -271,6 +312,13 @@ export interface GetInput {
 }
 export interface GetOutput {
   connector: Connector;
+  /**
+   * Who owns the returned definition (the row's owner, not the requester).
+   * Host-internal: the admin routes use it to act on the owner's row when an
+   * admin edits a shared connector someone else defined. Never serialized to
+   * a browser — routes send `connector` only.
+   */
+  ownerUserId: string;
 }
 
 export interface UpsertInput {
@@ -280,8 +328,22 @@ export interface UpsertInput {
   description?: string;
   usageNote?: string;
   keyMode: KeyMode;
-  visibility: Visibility;
   capabilities: Capabilities;
+  /** Refuse (`connector-id-taken`) a NEW connector whose id another owner holds live. */
+  requireUniqueId?: boolean;
+  /**
+   * Slice 2c — create only: refuse (`connector-id-taken`) when the CALLER
+   * already owns a live connector with this id, instead of updating it. The
+   * admin POST route sets it, so creating a connector from an agent's request
+   * can never overwrite an existing one (edits are a PATCH).
+   */
+  createOnly?: boolean;
+  /**
+   * Edit only: refuse (`not-found`) instead of creating — or resurrecting a
+   * deleted — connector. An edit that lost a race with a delete must not bring
+   * the connector back.
+   */
+  updateOnly?: boolean;
 }
 export interface UpsertOutput {
   connector: Connector;
@@ -294,9 +356,9 @@ export interface DeleteInput {
   connectorId: string;
   /**
    * Whether the caller is authorized to purge GLOBAL-scope (shared/company)
-   * credentials as part of the delete. Omitted/false ⟹ ONLY the caller's own
-   * per-user (`scope:'user'`, `ownerId:userId`) credential refs are purged;
-   * global-scope refs are LEFT INTACT. A global (company) key is shared
+   * credentials as part of the delete. Omitted/false ⟹ global-scope refs and
+   * agents' keys are LEFT INTACT (nothing is stored per person any more, so
+   * there is no caller-owned row to purge). A global (company) key is shared
    * infrastructure — owner-independent, keyed by the connector id — so only an
    * admin may tombstone it on delete. Routes pass `actor.isAdmin`. This is the
    * security boundary that stops a non-admin who somehow owns a workspace
@@ -323,11 +385,37 @@ export interface DeleteOutput {
  * namespace already encodes the owner) and nothing here is storage-specific.
  * Empty for a connector with no MCP servers. Best-effort: subscriber failures
  * never fail the delete.
+ *
+ * `idStillLive` (agent-owned sign-ins slice 2b) — whether ANY live connector
+ * (any owner) still carries `connectorId` after this delete.
+ * Connector ids are not unique across owners, so a subscriber that keys state
+ * on the id alone (an agent's attachment, a reconnect marker) must drop it only
+ * when this is false. Computed after the delete commits; when the check itself
+ * fails it is reported as `true` (keep data when unsure).
  */
 export interface ConnectorDeletedEvent {
   connectorId: string;
   toolNamespaces: ToolNamespaceEntry[];
+  idStillLive: boolean;
 }
+
+/**
+ * `connectors:live-ids` (agent-owned sign-ins slice 2b) — which of these ids
+ * does at least one live connector, of ANY owner, still carry? For a plugin
+ * that holds id-keyed state (agents' attachments) to drop references to ids
+ * that no longer exist, e.g. in a boot sweep. Host-internal: no HTTP / IPC
+ * surface. Answers only ids the caller already named, never lists the
+ * registry. Each id must match the connector-id grammar; at most
+ * `LIVE_IDS_MAX` per call.
+ */
+export interface LiveIdsInput {
+  connectorIds: string[];
+}
+export interface LiveIdsOutput {
+  /** The subset of the input still live, deduped. */
+  live: string[];
+}
+export const LIVE_IDS_MAX = 500;
 
 /**
  * Payload of the `connectors:tool-namespaces-changed` SUBSCRIBER event
@@ -391,13 +479,6 @@ export interface ResolveOutput {
    * `scope` is the neutral credential-scope contract, not backend vocabulary.
    */
   credentialPlan: CredentialPlanEntry[];
-  /**
-   * Whether the connect flow must surface the shared-key consent moment before
-   * the key becomes spendable (design "Consent caveat", invariant #5). True iff
-   * `keyMode === 'workspace'` (one key, every allowed agent spends it) or the
-   * connector's `visibility === 'shared'` (bound to a shared/team agent).
-   */
-  requiresSharedKeyConsent: boolean;
   /**
    * The canonical tool namespace of each MCP server this connector declares —
    * one entry per `capabilities.mcpServers[]` entry, in that order; empty when
@@ -568,71 +649,50 @@ export interface InstallAuthoredInput {
 export interface InstallAuthoredOutput {
   connectorId: string;
   /**
-   * `pending` — a freshly installed draft grants zero reach until a human
-   * approves it at the capability wall (the common case).
+   * `pending` — a freshly installed draft grants zero reach; it waits in the
+   * workspace admins' queue until an admin creates the connector (the common
+   * case).
    *
-   * `active` — the install was a NO-OP because an equivalent connector is
-   * ALREADY approved + active in the owner's live registry (TASK-114 re-propose
-   * dedup). No pending draft was (re)created and no approval card re-fires; the
-   * model learns the connector already works rather than re-proposing it every
-   * turn. NOTE: this never grants new reach — it only reports an existing,
-   * human-approved connector.
+   * `active` — the install was a NO-OP because a live connector with
+   * this id already exists (TASK-114 re-propose dedup, reshaped in slice 2c).
+   * No draft was (re)created; the model learns it is already available to add
+   * from Connectors rather than re-proposing it every turn. NOTE: this never
+   * grants new reach — it only reports an existing connector.
    */
   status: 'pending' | 'active';
 }
 
-/** One authored connector draft, as surfaced for the approval card + the grant
- *  re-resolution. `proposal` is the declared, UNAPPROVED capability surface. */
-export interface AuthoredConnectorDraftDescriptor {
+/**
+ * Slice 2c — one pending proposal in the ADMIN queue (every owner's drafts).
+ * `ownerUserId` is who asked and `agentId` the agent that asked for them; both
+ * are opaque ids. `updatedAt` is an ISO-8601 timestamp of the latest proposal.
+ */
+export interface PendingAuthoredProposal {
+  ownerUserId: string;
+  agentId: string;
   connectorId: string;
   name: string;
   usageNote: string;
   keyMode: KeyMode;
-  status: 'pending' | 'active';
   proposal: Capabilities;
+  updatedAt: string;
 }
 
-export interface ListAuthoredInput {
-  ownerUserId: string;
-  agentId: string;
-}
-export interface ListAuthoredOutput {
-  drafts: AuthoredConnectorDraftDescriptor[];
-}
-
-/** One pending draft surfaced ACROSS the user's agents (Settings fallback);
- *  carries `agentId` so the approve action knows which (user, agent) authored
- *  it. */
-export interface PendingAuthoredConnectorDescriptor
-  extends AuthoredConnectorDraftDescriptor {
-  agentId: string;
+/** `connectors:list-authored-pending-all` — admin use only; takes nothing. */
+export type ListAuthoredPendingAllInput = Record<string, never>;
+export interface ListAuthoredPendingAllOutput {
+  /** Pending proposals whose id is not already live as a connector. */
+  drafts: PendingAuthoredProposal[];
 }
 
-export interface ListAuthoredPendingInput {
-  userId: string;
-}
-export interface ListAuthoredPendingOutput {
-  drafts: PendingAuthoredConnectorDescriptor[];
-}
-
-export interface ActivateAuthoredInput {
-  ownerUserId: string;
-  agentId: string;
+/** `connectors:clear-authored-by-id` — admin Dismiss: every proposer's draft
+ *  with this id. */
+export interface ClearAuthoredByIdInput {
   connectorId: string;
 }
-export interface ActivateAuthoredOutput {
-  /** True iff THIS call flipped a `pending` draft to `active`. */
-  activated: boolean;
-}
-
-export interface ClearAuthoredInput {
-  ownerUserId: string;
-  agentId: string;
-  connectorId: string;
-}
-export interface ClearAuthoredOutput {
-  /** True iff a draft row was removed. */
-  cleared: boolean;
+export interface ClearAuthoredByIdOutput {
+  /** How many draft rows were removed (0 when none matched). */
+  cleared: number;
 }
 
 /**
@@ -665,7 +725,7 @@ export interface AuthorizeAgentInput {
    * TASK-788 — absent (or anything but `'store'`) asks the READ question,
    * which also requires the connector to be effective on the agent for this
    * user. `'store'` asks only "may a sign-in be stored on this agent?" — the
-   * shared-definition half — because a sign-in can precede the attachment.
+   * sole-definition half — because a sign-in can precede the attachment.
    */
   purpose?: 'read' | 'store';
 }
@@ -679,7 +739,6 @@ export interface AuthorizeAgentOutput {
 // ---------------------------------------------------------------------------
 
 const KeyModeSchema = z.union([z.literal('personal'), z.literal('workspace')]);
-const VisibilitySchema = z.union([z.literal('private'), z.literal('shared')]);
 
 const ConnectorSummarySchema = z.object({
   canEdit: z.boolean().optional(),
@@ -689,7 +748,6 @@ const ConnectorSummarySchema = z.object({
   description: z.string(),
   usageNote: z.string(),
   keyMode: KeyModeSchema,
-  visibility: VisibilitySchema,
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -702,7 +760,6 @@ const ConnectorSchema = z.object({
   description: z.string(),
   usageNote: z.string(),
   keyMode: KeyModeSchema,
-  visibility: VisibilitySchema,
   capabilities: CapabilitiesSchema,
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -718,6 +775,7 @@ export const ListOutputSchema = z.object({
 
 export const GetOutputSchema = z.object({
   connector: ConnectorSchema,
+  ownerUserId: z.string(),
 }) as unknown as ZodType<GetOutput>;
 
 export const UpsertOutputSchema = z.object({
@@ -729,14 +787,18 @@ export const DeleteOutputSchema = z.object({
   deleted: z.boolean(),
 }) as unknown as ZodType<DeleteOutput>;
 
-// The derived credential plan + consent gate (TASK-96). `scope` is the neutral
+export const LiveIdsOutputSchema = z.object({
+  live: z.array(z.string()),
+}) as unknown as ZodType<LiveIdsOutput>;
+
+// The derived credential plan (TASK-96). `scope` is the neutral
 // credential-scope contract (NOT backend vocab); only the two scopes the keyMode
 // derivation produces are accepted. `ref` is the opaque `account:<service>` vault
-// ref. These are storage-agnostic first-class fields (like keyMode/visibility) —
+// ref. These are storage-agnostic first-class fields (like keyMode) —
 // the leak-guard test pins that they introduce no mechanism vocabulary.
 const CredentialPlanEntrySchema = z.object({
   slot: z.string(),
-  scope: z.union([z.literal('user'), z.literal('global')]),
+  scope: z.union([z.literal('agent'), z.literal('global')]),
   ref: z.string(),
   // TASK-124 — structured destination bits so the connect-flow UI rebuilds the
   // `{kind:'account', service, slot?}` destination without string-parsing the
@@ -760,7 +822,6 @@ export const ResolveOutputSchema = z.object({
   usageNote: z.string(),
   capabilities: CapabilitiesSchema,
   credentialPlan: z.array(CredentialPlanEntrySchema),
-  requiresSharedKeyConsent: z.boolean(),
   toolNamespaces: z.array(ToolNamespaceEntrySchema),
 }) as unknown as ZodType<ResolveOutput>;
 
@@ -796,15 +857,6 @@ export const ListEffectiveOutputSchema = z.object({
   ),
 }) as unknown as ZodType<ListEffectiveOutput>;
 
-const AuthoredConnectorDraftSchema = z.object({
-  connectorId: z.string(),
-  name: z.string(),
-  usageNote: z.string(),
-  keyMode: KeyModeSchema,
-  status: z.union([z.literal('pending'), z.literal('active')]),
-  proposal: CapabilitiesSchema,
-});
-
 export const InstallAuthoredOutputSchema = z.object({
   connectorId: z.string(),
   // `active` is returned only by the TASK-114 re-propose dedup no-op (an
@@ -812,25 +864,24 @@ export const InstallAuthoredOutputSchema = z.object({
   status: z.union([z.literal('pending'), z.literal('active')]),
 }) as unknown as ZodType<InstallAuthoredOutput>;
 
-export const ListAuthoredOutputSchema = z.object({
-  drafts: z.array(AuthoredConnectorDraftSchema),
-}) as unknown as ZodType<ListAuthoredOutput>;
+export const ListAuthoredPendingAllOutputSchema = z.object({
+  drafts: z.array(
+    z.object({
+      ownerUserId: z.string(),
+      agentId: z.string(),
+      connectorId: z.string(),
+      name: z.string(),
+      usageNote: z.string(),
+      keyMode: KeyModeSchema,
+      proposal: CapabilitiesSchema,
+      updatedAt: z.string(),
+    }),
+  ),
+}) as unknown as ZodType<ListAuthoredPendingAllOutput>;
 
-const PendingAuthoredConnectorSchema = AuthoredConnectorDraftSchema.extend({
-  agentId: z.string(),
-});
-
-export const ListAuthoredPendingOutputSchema = z.object({
-  drafts: z.array(PendingAuthoredConnectorSchema),
-}) as unknown as ZodType<ListAuthoredPendingOutput>;
-
-export const ActivateAuthoredOutputSchema = z.object({
-  activated: z.boolean(),
-}) as unknown as ZodType<ActivateAuthoredOutput>;
-
-export const ClearAuthoredOutputSchema = z.object({
-  cleared: z.boolean(),
-}) as unknown as ZodType<ClearAuthoredOutput>;
+export const ClearAuthoredByIdOutputSchema = z.object({
+  cleared: z.number().int().nonnegative(),
+}) as unknown as ZodType<ClearAuthoredByIdOutput>;
 
 export const AuthorizeGlobalOutputSchema = z.object({
   allowed: z.boolean(),

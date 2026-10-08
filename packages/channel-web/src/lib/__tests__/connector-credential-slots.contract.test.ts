@@ -36,7 +36,11 @@ import {
 
 type Handler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
 
-const SETTINGS_ROUTE = '/settings/destinations/:destinationKind/credential';
+// The ADMIN route at global scope: since agent-owned sign-ins slice 5 there is
+// no /settings route for an `account` destination (connector keys are never
+// stored per person), and a shared connector's header keys and OAuth client
+// secret are written at global scope by an admin.
+const ADMIN_ROUTE = '/admin/destinations/:destinationKind/credential';
 
 async function bootRoute(): Promise<{
   post: (slot: string) => Promise<{ status: number; body: unknown }>;
@@ -48,7 +52,7 @@ async function bootRoute(): Promise<{
   const stub = (name: string, fn: (input: unknown) => unknown) =>
     bus.registerService(name, 'test', async (_ctx, input: unknown) => fn(input));
 
-  stub('auth:require-user', () => ({ user: { id: 'alice', isAdmin: false } }));
+  stub('auth:require-user', () => ({ user: { id: 'admin', isAdmin: true } }));
   stub('http:register-route', (input) => {
     const r = input as { method: string; path: string; handler: Handler };
     routes.set(`${r.method} ${r.path}`, r.handler);
@@ -68,9 +72,9 @@ async function bootRoute(): Promise<{
     config: {},
   });
 
-  const found = routes.get(`POST ${SETTINGS_ROUTE}`);
+  const found = routes.get(`POST ${ADMIN_ROUTE}`);
   if (found === undefined) {
-    throw new Error(`credentials-admin-routes no longer registers POST ${SETTINGS_ROUTE}`);
+    throw new Error(`credentials-admin-routes no longer registers POST ${ADMIN_ROUTE}`);
   }
   const handler: Handler = found;
 
@@ -100,7 +104,7 @@ async function bootRoute(): Promise<{
         body: Buffer.from(
           JSON.stringify({
             destination: { kind: 'account', service: 'remote-mcp', slot },
-            scope: 'user',
+            scope: 'global',
             ownerId: null,
             kind: 'api-key',
             payloadB64: Buffer.from('Bearer k').toString('base64'),

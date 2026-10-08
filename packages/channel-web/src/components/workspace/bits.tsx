@@ -22,6 +22,7 @@ import {
   verdictFrame,
 } from '@/lib/permission-frames';
 import { cn } from '@/lib/utils';
+import { shortDay } from '@/lib/workspace-time';
 import type {
   AgentRunState,
   CapabilityEffect,
@@ -461,7 +462,7 @@ export function GrantLine({
         )}
         {row.grantedAt !== null && (
           <span className="ml-1.5 text-[11px] text-muted-foreground">
-            {grantedDay(row.grantedAt)}
+            {shortDay(row.grantedAt)}
           </span>
         )}
       </span>
@@ -479,13 +480,6 @@ export function GrantLine({
       )}
     </div>
   );
-}
-
-/** "14 Aug", in the READER's locale. A server-formatted date is a wrong date. */
-function grantedDay(iso: string): string {
-  const at = Date.parse(iso);
-  if (Number.isNaN(at)) return '';
-  return new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
 
 /**

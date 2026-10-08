@@ -258,7 +258,6 @@ async function seedConnector(
     connectorId,
     name: connectorId,
     keyMode,
-    visibility: 'private',
     capabilities: caps(host, ...slots),
   });
 }
@@ -278,6 +277,19 @@ async function setKey(
     kind: 'api-key',
     payload: new TextEncoder().encode(value),
   });
+}
+
+/** A per-person `account:` write is refused by the vault (slice 5), and nothing is stored. */
+async function expectPersonLevelWriteRefused(h: TestHarness, userId: string, ref: string): Promise<void> {
+  await expect(setKey(h, 'user', userId, ref, VICTIM_KEY)).rejects.toSatisfy(
+    (err: unknown) => err instanceof PluginError && err.code === 'invalid-payload',
+  );
+  const listed = await h.bus.call<{ scope: string; ownerId: string }, { credentials: Array<{ ref: string }> }>(
+    'credentials:list',
+    h.ctx({ userId }),
+    { scope: 'user', ownerId: userId },
+  );
+  expect(listed.credentials.map((c) => c.ref)).not.toContain(ref);
 }
 
 /** The company key exactly as the admin connect flow stores it. */
@@ -361,30 +373,21 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'victim', 'account:zendesk'));
   });
 
-  it('2) a personal connector named like the company one, made through the locked-down user route, gets nothing until its owner stores their own key', async () => {
-    // UNFIXED: FAILS at the first check (victim would resolve COMPANY_KEY); the own-key half is unchanged behaviour.
+  it('2) a personal connector named like the company one gets nothing, and its owner cannot store a per-person key', async () => {
+    // UNFIXED: FAILS at the first check (victim would resolve COMPANY_KEY). Slice 5: a per-person copy is refused.
     const h = await makeHarness();
     await setCompanyKey(h, 'account:zendesk', COMPANY_KEY);
     await seedConnector(h, 'mallory', 'zendesk', 'workspace', 'attacker.example', 'ZENDESK_API_KEY');
 
-    const created = await call('POST', '/settings/connectors', VICTIM, {
-      body: {
-        connectorId: 'zendesk',
-        name: 'Mine',
-        keyMode: 'personal',
-        visibility: 'private',
-        capabilities: caps('attacker.example', 'ZENDESK_API_KEY'),
-      },
-    });
-    expect(created.status).toBe(201);
+    // (No route creates a non-admin's own connector any more; seed the row it would have made.)
+    await seedConnector(h, 'victim', 'zendesk', 'personal', 'attacker.example', 'ZENDESK_API_KEY');
 
     await expectNotFound(getKey(h, 'victim', 'account:zendesk'));
 
-    // Their own key, at user scope, is what resolves for them...
-    await setKey(h, 'user', 'victim', 'account:zendesk', VICTIM_KEY);
-    expect(await getKey(h, 'victim', 'account:zendesk')).toBe(VICTIM_KEY);
-
-    // ...and it is theirs alone: mallory still gets neither key.
+    // Connector keys are never stored per person (slice 5): the write is
+    // refused, and nothing resolves for either of them afterwards.
+    await expectPersonLevelWriteRefused(h, 'victim', 'account:zendesk');
+    await expectNotFound(getKey(h, 'victim', 'account:zendesk'));
     await expectNotFound(getKey(h, 'mallory', 'account:zendesk'));
   });
 
@@ -398,7 +401,6 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
         connectorId: 'zendesk',
         name: 'Zendesk',
         keyMode: 'workspace',
-        visibility: 'private',
         capabilities: caps('acme.zendesk.com', 'ZENDESK_API_KEY'),
       },
     });
@@ -426,18 +428,36 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'root', 'account:zendesk'));
   });
 
-  it("5) deleting a non-admin's copy through the user route leaves the company key alone", async () => {
-    // UNFIXED: passes (unchanged-behaviour pin; the delete purges the global row only for an admin caller).
+  it("5) a duplicate id fails closed for the company key: no copy's owner reads it until the duplicate is gone", async () => {
+    // Final review I2: the global read used to pick the caller's own row first, so
+    // the owner of EITHER copy read `account:zendesk` and the proxy spent it at
+    // that copy's hosts. A duplicate id now resolves for nobody.
     const h = await makeHarness();
     await setCompanyKey(h, 'account:zendesk', COMPANY_KEY);
     await seedConnector(h, 'root', 'zendesk', 'workspace', 'acme.zendesk.com', 'ZENDESK_API_KEY');
     await seedConnector(h, 'mallory', 'zendesk', 'workspace', 'attacker.example', 'ZENDESK_API_KEY');
 
-    const del = await call('DELETE', '/settings/connectors/:id', MALLORY, {
-      params: { id: 'zendesk' },
-    });
-    expect(del.status).toBe(204);
+    // The user delete route is gone: a non-admin has no handler to call.
+    expect(routes.has('DELETE /settings/connectors/:id')).toBe(false);
 
+    // While mallory's same-id copy is live, neither owner reads the key —
+    // including mallory, now that she is an admin (her copy would send it to
+    // attacker.example).
+    await expectNotFound(getKey(h, 'root', 'account:zendesk'));
+    users.set('mallory', { id: 'mallory', isAdmin: true });
+    await expectNotFound(getKey(h, 'mallory', 'account:zendesk'));
+
+    // Positive control: once the duplicate is gone (tombstoned directly, so the
+    // admin delete's key wipe does not muddy the check), root reads it again.
+    const pg = new (await import('pg')).default.Client({ connectionString });
+    await pg.connect();
+    try {
+      await pg.query(
+        "UPDATE connectors_v1_connectors SET deleted_at = now() WHERE owner_user_id = 'mallory' AND connector_id = 'zendesk'",
+      );
+    } finally {
+      await pg.end().catch(() => {});
+    }
     expect(await getKey(h, 'root', 'account:zendesk')).toBe(COMPANY_KEY);
   });
 
@@ -463,20 +483,22 @@ describe('TASK-697: connector-authored refs vs the company-wide credential', () 
     await expectNotFound(getKey(h, 'mallory', entry.ref));
   });
 
-  it('shared personal definitions keep each user’s vault separate; shared workspace keys require an admin owner', async () => {
+  it('shared personal definitions take no per-person key and no company key; shared workspace keys require an admin owner', async () => {
     const h = await makeHarness();
     await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), {
       userId: 'root', connectorId: 'shared-personal', name: 'Shared personal',
-      keyMode: 'personal', visibility: 'shared', capabilities: caps('acme.example', 'TOKEN'),
+      keyMode: 'personal', capabilities: caps('acme.example', 'TOKEN'),
     });
-    await setKey(h, 'user', 'root', 'account:shared-personal', 'AUTHOR-KEY');
+    // Each AGENT adds its own key; nobody can store one per person...
+    await expectPersonLevelWriteRefused(h, 'root', 'account:shared-personal');
+    await expectPersonLevelWriteRefused(h, 'victim', 'account:shared-personal');
+    // ...and a company row under the same ref is not read for a personal connector.
+    await setCompanyKey(h, 'account:shared-personal', COMPANY_KEY);
     await expectNotFound(getKey(h, 'victim', 'account:shared-personal'));
-    await setKey(h, 'user', 'victim', 'account:shared-personal', VICTIM_KEY);
-    expect(await getKey(h, 'victim', 'account:shared-personal')).toBe(VICTIM_KEY);
-    expect(await getKey(h, 'root', 'account:shared-personal')).toBe('AUTHOR-KEY');
+    await expectNotFound(getKey(h, 'root', 'account:shared-personal'));
     await h.bus.call('connectors:upsert', h.ctx({ userId: 'root' }), {
       userId: 'root', connectorId: 'shared-workspace', name: 'Shared workspace',
-      keyMode: 'workspace', visibility: 'shared', capabilities: caps('acme.example', 'TOKEN'),
+      keyMode: 'workspace', capabilities: caps('acme.example', 'TOKEN'),
     });
     await setCompanyKey(h, 'account:shared-workspace', COMPANY_KEY);
     expect(await getKey(h, 'victim', 'account:shared-workspace')).toBe(COMPANY_KEY);

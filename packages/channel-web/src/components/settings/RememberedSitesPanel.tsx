@@ -34,7 +34,7 @@ type ListState =
  * "Sites we read without asking" — the durable per-user set of hosts
  * `web_extract` approved on a first read (TASK-406). NOT the allowed-sites
  * egress allowlist above (that is per-agent, raw socket reach); this is
- * per-person, one page-read tool. See `ConnectorsTab.tsx` for the split.
+ * per-person, one page-read tool. See `SitesTab.tsx` for the split.
  *
  * `scope: 'global'` rows are admin-set for the whole deployment: shown so a
  * person can see why a site never prompts, but not revocable by them — no

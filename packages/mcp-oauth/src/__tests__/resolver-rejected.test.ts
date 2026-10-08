@@ -44,6 +44,9 @@ const input = (over: Record<string, unknown> = {}) => ({
   payload: encodeTokenBlob(unexpired),
   userId: 'u1',
   ref: 'account:gmail',
+  // Slice 5 — every sign-in lives on an agent (the only rows with a marker).
+  scope: 'agent' as const,
+  ownerId: 'a1',
   ...over,
 });
 
@@ -55,7 +58,7 @@ describe('mcp-oauth resolver — a refused unexpired token (TASK-817)', () => {
     expect(out.value).toBe('renewed');
     expect(out.refreshed).toBeDefined();
     expect(d.refresh).toHaveBeenCalledTimes(1);
-    expect(marker.clear).toHaveBeenCalledWith({ kind: 'user', userId: 'u1' }, 'gmail');
+    expect(marker.clear).toHaveBeenCalledWith({ kind: 'agent', agentId: 'a1' }, 'gmail');
   });
 
   it('rejected + the authorization server refuses the renewal → NeedsReconnectError and the owner is marked', async () => {
@@ -65,7 +68,7 @@ describe('mcp-oauth resolver — a refused unexpired token (TASK-817)', () => {
       refresh: async () => { throw new InvalidGrantError('revoked'); },
     }));
     await expect(resolve(input({ rejected: true }))).rejects.toBeInstanceOf(NeedsReconnectError);
-    expect(marker.mark).toHaveBeenCalledWith({ kind: 'user', userId: 'u1' }, 'gmail');
+    expect(marker.mark).toHaveBeenCalledWith({ kind: 'agent', agentId: 'a1' }, 'gmail');
   });
 
   it('rejected on a team (agent-scope) token marks the AGENT', async () => {

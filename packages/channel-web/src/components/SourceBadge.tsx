@@ -1,8 +1,8 @@
 /**
- * SourceBadge — the single, calm "source" tag for a skill or connector
+ * SourceBadge — the single, calm "source" tag for a skill
  * (connectors-first-class design, UI/IA reorg).
  *
- * The agent-centric settings surface gives each skill/connector AT MOST ONE
+ * The agent-centric settings surface gives each skill AT MOST ONE
  * source badge:
  *   - "Catalog" — the item comes from the workspace's shared, admin-curated
  *     catalog. You don't own its definition.
@@ -27,17 +27,6 @@ export type ItemSource = 'catalog' | 'private';
  */
 export function skillSource(scope: 'global' | 'user'): ItemSource {
   return scope === 'global' ? 'catalog' : 'private';
-}
-
-/**
- * Map a connector's visibility to its source. A connector shared into the
- * workspace is catalog-sourced; a private connector shows no badge.
- * (`visibility` is a storage-agnostic flag — never a backing-mechanism field.)
- */
-export function connectorSource(input: {
-  visibility: 'private' | 'shared';
-}): ItemSource {
-  return input.visibility === 'shared' ? 'catalog' : 'private';
 }
 
 /**

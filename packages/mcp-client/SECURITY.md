@@ -22,7 +22,7 @@ If we find a hole, we'd rather hear about it from you than read about it on Hack
 
 ## Connector tool inventory (`connectors:describe-tools`, TASK-735)
 
-The k8s preset turns on `connectorToolInventory`, which makes the host itself send one MCP `tools/list` to a connector's http server. This is new: a connector's MCP traffic from a chat session goes through the sandbox and the credential-proxy, but this request starts on the host. The connector URL is typed by whoever wrote the connector, and any signed-in user can write a private one. So we treat that URL as hostile.
+The k8s preset turns on `connectorToolInventory`, which makes the host itself send one MCP `tools/list` to a connector's http server. This is new: a connector's MCP traffic from a chat session goes through the sandbox and the credential-proxy, but this request starts on the host. Connector URLs are written by workspace admins (only admins create connectors, and every connector is shared). We still treat the URL as hostile: an admin can mistype it, a server can change hands, and a compromised admin account is in the threat model.
 
 - **Sandbox / reach:** The only network destination is the connector server's own origin.
   - The URL must be https, carry no userinfo, and not be `localhost` or a non-public IP literal.
@@ -33,7 +33,7 @@ The k8s preset turns on `connectorToolInventory`, which makes the host itself se
 - **Credentials:** Header values come from `credentials:get`, using the refs in the connector's own `credentialPlan`. These are the same refs the session's proxy spends, run as the requesting user and agent.
   - When an agent is named, `agents:resolve` must pass first, so a caller cannot borrow another agent's credential scope.
   - Secrets live only in the transport's header map for one listing. They are never logged, stored, or returned.
-  - Visibility is checked through `connectors:resolve` on every call, cache hits included.
+  - Access is checked through `connectors:resolve` on every call, cache hits included.
 - **Injection:** Tool names, titles, descriptions, and the `readOnlyHint` / `destructiveHint` / `openWorldHint` annotations are untrusted descriptions the server writes about itself.
   - Names must be printable ASCII with no whitespace, at most 128 characters. Titles are capped at 200 and descriptions at 2,000. Control characters and bidi-override characters are stripped.
   - `inputSchema` and `outputSchema` are dropped. We call `tools/list` directly instead of `client.listTools()`, so the host never compiles a JSON Schema the server supplied.

@@ -12,7 +12,6 @@ import { createChatOrchestratorPlugin } from '../index.js';
 // connector grant path).
 
 interface Trace {
-  setRows: Array<{ skillId: string; kind: string; value: string }>;
   terminate: string[];
   addHost: Array<{ sessionId: string; host: string }>;
   activate: Array<{ ownerUserId: string; agentId: string; skillId: string }>;
@@ -24,7 +23,7 @@ function buildMocks(opts: {
   liveSessions: Set<string>;
   resolveThrows?: boolean;
 }): { trace: Trace; services: Record<string, ServiceHandler> } {
-  const trace: Trace = { setRows: [], terminate: [], addHost: [], activate: [] };
+  const trace: Trace = { terminate: [], addHost: [], activate: [] };
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({
       agent: {
@@ -43,11 +42,6 @@ function buildMocks(opts: {
           bodyMd: '', manifestYaml: '', files: [], status: 'pending' as const,
         }],
       };
-    },
-    'skills:approved-caps-set': async (_c, input: unknown) => {
-      const i = input as { skillId: string; kind: string; value: string };
-      trace.setRows.push({ skillId: i.skillId, kind: i.kind, value: i.value });
-      return { created: true };
     },
     'skills:authored-activate': async (_c, input: unknown) => {
       const i = input as { ownerUserId: string; agentId: string; skillId: string };
@@ -95,7 +89,6 @@ describe('agent:apply-authored-capability-grant (TASK-100 — activate-only)', (
       });
       expect(out).toEqual({ applied: true, respawned: true });
       // No per-skill cap rows written; the skill is just activated.
-      expect(mocks.trace.setRows).toEqual([]);
       expect(mocks.trace.activate).toEqual([
         { ownerUserId: 'user-1', agentId: 'agent-1', skillId: 'linear' },
       ]);
@@ -145,7 +138,6 @@ describe('agent:apply-authored-capability-grant (TASK-100 — activate-only)', (
       expect(out).toEqual({ applied: true, respawned: false });
       expect(mocks.trace.activate).toHaveLength(1);
       expect(mocks.trace.terminate).toEqual([]);
-      expect(mocks.trace.setRows).toEqual([]);
     } finally {
       await h.close({ onError: () => {} });
     }

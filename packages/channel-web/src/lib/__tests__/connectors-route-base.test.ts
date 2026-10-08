@@ -3,9 +3,11 @@ import {
   createConnector,
   deleteConnector,
   getConnector,
+  isConnectorGone,
   listConnectors,
   patchConnector,
   type ConnectorRouteBase,
+  type ConnectorWriteBase,
   type ConnectorUpsertInput,
 } from '../connectors';
 
@@ -13,14 +15,13 @@ import {
 // default to `/admin/connectors`, which is admin-only server-side (403 for a
 // signed-in non-admin, TASK-698): any new caller a non-admin could reach that
 // forgot to pass a base silently walked into a 403. Two such callers had already
-// shipped (ConnectorConnectDialog, SkillEditor). The fix is to make the base
+// shipped (a since-deleted connect dialog, and SkillEditor). The fix is to make the base
 // required so the mistake fails at compile time instead of in production.
 
 const input: ConnectorUpsertInput = {
   connectorId: 'gdrive',
   name: 'Google Drive',
   keyMode: 'personal',
-  visibility: 'private',
   capabilities: {
     allowedHosts: [],
     credentials: [],
@@ -74,7 +75,7 @@ describe('connector client route base (TASK-714)', () => {
     // A JS caller (or a cast) that skips the base must not fall back to the
     // admin-only bundle. With the old `= '/admin/connectors'` default this hit
     // `/admin/connectors` for every call.
-    const missing = undefined as unknown as ConnectorRouteBase;
+    const missing = undefined as unknown as ConnectorWriteBase;
     await listConnectors(missing).catch(() => undefined);
     await getConnector('gdrive', missing).catch(() => undefined);
     await createConnector(input, missing).catch(() => undefined);
@@ -85,21 +86,41 @@ describe('connector client route base (TASK-714)', () => {
   });
 
   it.each<ConnectorRouteBase>(['/settings/connectors', '/admin/connectors'])(
-    'targets exactly the base the caller names (%s)',
+    'reads target exactly the base the caller names (%s)',
     async (base) => {
       await listConnectors(base);
       await getConnector('gdrive', base);
-      await createConnector(input, base);
-      await patchConnector('gdrive', { name: 'x' }, base);
-      await deleteConnector('gdrive', base);
 
-      expect(requestedUrls()).toEqual([
-        base,
-        `${base}/gdrive`,
-        base,
-        `${base}/gdrive`,
-        `${base}/gdrive`,
-      ]);
+      expect(requestedUrls()).toEqual([base, `${base}/gdrive`]);
     },
   );
+
+  it('writes target the admin bundle, and cannot be pointed at the read bundle (slice 2a)', async () => {
+    const base = '/admin/connectors';
+    await createConnector(input, base);
+    await patchConnector('gdrive', { name: 'x' }, base);
+    await deleteConnector('gdrive', base);
+    expect(requestedUrls()).toEqual([base, `${base}/gdrive`, `${base}/gdrive`]);
+
+    // The `/settings/connectors` bundle has no write routes; each call below
+    // must be a TYPE ERROR (tsc covers channel-web test files). Never run.
+    const typeOnly = () => {
+      // @ts-expect-error — writes are admin-only
+      void createConnector(input, '/settings/connectors');
+      // @ts-expect-error — writes are admin-only
+      void patchConnector('gdrive', { name: 'x' }, '/settings/connectors');
+      // @ts-expect-error — writes are admin-only
+      void deleteConnector('gdrive', '/settings/connectors');
+    };
+    expect(typeof typeOnly).toBe('function');
+  });
+
+  it('a 404 on delete means someone already removed it', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const err = await deleteConnector('gdrive', '/admin/connectors').catch((e: unknown) => e);
+    expect(isConnectorGone(err)).toBe(true);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    const other = await deleteConnector('gdrive', '/admin/connectors').catch((e: unknown) => e);
+    expect(isConnectorGone(other)).toBe(false);
+  });
 });

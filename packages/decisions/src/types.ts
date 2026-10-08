@@ -152,8 +152,7 @@ export const AUTHORISING_STATUSES: readonly DecisionStatus[] = [
  * stale (design §3.4). A producer with nothing legible to say may also send
  * null — the predicate still guards, it just has no sentence.
  *
- * AW-7 adds the first two producers: `request_capability` (@ax/skill-broker)
- * and `connector_propose` (@ax/tool-connector-propose). Every other tool
+ * `request_capability` (@ax/skill-broker) is the producer today. Every other tool
  * produces no predicate and its decisions are unguarded — correct for a call
  * with nothing meaningful to re-check, and the open question this task carries
  * forward for the rest of the catalog.

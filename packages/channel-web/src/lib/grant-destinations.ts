@@ -35,7 +35,7 @@ export interface CardSlot {
  * failure this module's header already warns about, and `{service: {}}` would
  * be carried straight into the write. Treating a non-string as ABSENT is what
  * makes that safe: every branch below already has a defined fallback for an
- * absent tag (the collapsed `account` route, then `skill-slot`/`connectorId`),
+ * absent tag (the collapsed `account` route, then `skill-slot`),
  * so a malformed frame degrades onto the id the caller passed in.
  *
  * The caller-id fallback is required only when no usable service/account
@@ -44,10 +44,10 @@ export interface CardSlot {
  * either would select a vault row the request did not name.
  * An invalid floor throws before a credential write; both grant surfaces
  * catch submission failures and keep the card visible.
- * Both grant surfaces use the user-scoped settings endpoint. The server
- * validates destinations, computes refs, and forces user scope with
- * the authenticated actor as owner. This client check is defense in depth,
- * not the authority for destination grammar or ownership.
+ * The grant card writes only `skill-slot` keys, through the user-scoped
+ * settings endpoint. The server validates destinations, computes refs, and
+ * forces user scope with the authenticated actor as owner. This client check
+ * is defense in depth, not the authority for destination grammar or ownership.
  */
 function tag(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
@@ -60,22 +60,14 @@ function requiredCallerId(value: unknown): string {
 }
 
 /**
- * TASK-124 — build the account destination for a CONNECTOR slot. Prefer the
- * resolved `service`/`slotTag` (so a multi-slot connector hits its distinct
- * per-slot `account:<service>:<slot>` row); fall back to the legacy
- * `account ?? connectorId` collapsed shape for a card without the new tags.
+ * Slice 5 — the connector a slot's key belongs to, or `undefined` for a skill's
+ * own key. A connector key (`account:<service>`) is the agent's or the
+ * workspace's, never the person answering the card, so the card never asks
+ * for one: it says who can add the connector instead. Same tag precedence as
+ * {@link accountOrSkillDestination}.
  */
-export function accountDestinationForConnectorSlot(
-  s: CardSlot,
-  connectorId: string,
-): Destination {
-  const service = tag(s.service) ?? tag(s.account) ?? requiredCallerId(connectorId);
-  const slotTag = tag(s.slotTag);
-  return {
-    kind: 'account',
-    service,
-    ...(slotTag !== undefined ? { slot: slotTag } : {}),
-  };
+export function connectorServiceOf(s: CardSlot): string | undefined {
+  return tag(s.service) ?? tag(s.account);
 }
 
 /**

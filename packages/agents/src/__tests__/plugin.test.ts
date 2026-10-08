@@ -187,12 +187,17 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
             'a converted legacy connector default keeps its flag, so the (idempotent) conversion re-runs on the next boot',
         },
         {
+          hook: 'connectors:live-ids',
+          degradation:
+            'a connector id deleted while the host was down stays on the agents that had it (the delete event itself still detaches it when it arrives)',
+        },
+        {
           hook: 'models:get-policy',
           degradation:
             "the model allow-list, the Default model and the runner rule fall back to the built-in list (today's behaviour)",
         },
       ],
-      subscribes: ['bootstrap:reset-cleanup'],
+      subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
     });
   });
 

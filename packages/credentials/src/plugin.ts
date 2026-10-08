@@ -1,5 +1,6 @@
 import { PluginError, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
 import { wipePreRedesignCredentials } from './wipe-pre-redesign.js';
+import { purgeUserAccountCredentials } from './purge-user-account.js';
 import type { Transaction } from 'kysely';
 import { encryptWithKey, decryptWithKey, parseKeyFromEnv } from './crypto.js';
 import { z, type ZodType } from 'zod';
@@ -320,6 +321,48 @@ export interface CredentialsPurgeByOwnerOutput {
   deleted: number;
 }
 
+/**
+ * `credentials:purge-account` — tombstone connector credentials (`account:` refs).
+ *
+ * With `connectorId`: `account:<id>` and `account:<id>:<anything>` only — the
+ * trailing `:` keeps `gmail` from matching `gmail2`. Without it: every
+ * `account:` row. Agent scope only (SIGNINS-7): `scopes` must be `['agent']`,
+ * and anything else — 'user' or 'global' — is refused (invalid-payload).
+ * Connector credentials live on agents or globally; a company key is a
+ * connector's OWN key, purged by ref via `credentials:delete`. Other ref
+ * namespaces are never touched. Used when a connector is deleted.
+ *
+ * The one-time boot purge of person-level connector credentials
+ * (purge-user-account.ts) needs user scope; it calls this plugin's internal
+ * function directly, so no hook caller can reach a user-scope purge.
+ *
+ * Boundary review: alternate impl = a KMS/vault backend deleting by tag; no
+ * backend vocabulary in the payload.
+ */
+export interface CredentialsPurgeAccountInput {
+  /** Omit to purge EVERY `account:` row in `scopes`. */
+  connectorId?: string;
+  /** Non-empty, and only 'agent' (SIGNINS-7) — 'user' and 'global' are rejected. */
+  scopes: Array<'agent'>;
+}
+
+export interface CredentialsPurgeAccountOutput {
+  /** Live rows tombstoned. */
+  purged: number;
+}
+
+// What `unwrapEnvelope` throws for a blob it cannot read (crypto.ts +
+// unwrapEnvelope): the row is dead weight, so purge-account tombstones it.
+const UNREADABLE_BLOB_CODES: ReadonlySet<string> = new Set([
+  'decrypt-failed',
+  'invalid-ciphertext',
+  'invalid-envelope',
+]);
+
+// Mirrors @ax/connectors' connector-id grammar (its store.ts validateConnectorId:
+// lowercase slug, 1-128 chars; no cross-plugin import — the hook bus is the API). A ':' can never appear, so `account:<id>:` is exact.
+const PURGE_CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
+
 // Raw envelope primitive — `(plaintext: string) → ciphertext: Uint8Array` and
 // the inverse. NOT the same shape as the credential-set envelope (which
 // JSON-wraps `kind` + `payloadB64` + metadata). Other plugins want a
@@ -420,6 +463,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:list',
         'credentials:list-kinds',
         'credentials:purge-by-owner',
+        'credentials:purge-account',
         'credentials:resolve:setting',
         'credentials:envelope-encrypt',
         'credentials:envelope-decrypt',
@@ -442,10 +486,11 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // start any preset that loads both. The gap is still handled: with no
       // provider loaded, `account:` refs never resolve from GLOBAL scope (fail
       // closed) - workspace-keyed connector keys stop resolving, and neither do
-      // `account:` rows stored on an agent (a team agent's shared sign-in);
-      // user-scope rows are unaffected. account-global-guard's
-      // "boots alongside a provider that depends on credentials:*" case pins
-      // that the graph stays acyclic.
+      // `account:` rows stored on an agent (a team agent's shared sign-in).
+      // `account:` refs never resolve from USER scope at all (agent-owned
+      // sign-ins, slice 5), so with no provider they don't resolve.
+      // account-global-guard's "boots alongside a provider that depends on
+      // credentials:*" case pins that the graph stays acyclic.
       calls: [
         'credentials:store-blob:get',
         'credentials:store-blob:put',
@@ -454,21 +499,24 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       ],
       // storage:get / storage:set / storage:delete-prefix are called only when
       // a producer is present (gated by bus.hasService) by the wipe-once
-      // pre-redesign-credentials routine on first boot. They are OPTIONAL, not
-      // required: test harnesses that only stub credentials:store-blob:* must
-      // still pass verifyCalls(), and a deployment with no `storage:*` backend
-      // simply skips the one-time wipe. Declared here (rather than buried in a
+      // pre-redesign-credentials routine on first boot; storage:get /
+      // storage:set also hold the purge-once marker of the person-level
+      // connector-credential purge (purge-user-account.ts). They are
+      // OPTIONAL, not required: test harnesses that only stub
+      // credentials:store-blob:* must still pass verifyCalls(), and a
+      // deployment with no `storage:*` backend simply skips the one-time wipe
+      // and purge. Declared here (rather than buried in a
       // comment) so the optional dependency is visible at the manifest level.
       optionalCalls: [
         {
           hook: 'storage:get',
           degradation:
-            'one-time pre-redesign credential wipe is skipped; new installs have nothing to wipe, so no functional impact',
+            'one-time pre-redesign credential wipe and person-level connector-credential purge are skipped; new installs have nothing to wipe or purge, and the lookup already ignores person-level connector credentials',
         },
         {
           hook: 'storage:set',
           degradation:
-            'wipe-once completion marker is not persisted, so the wipe scan re-runs (and finds nothing) on each boot until a storage backend is present',
+            'wipe-once completion marker is not persisted, so the wipe scan re-runs (and finds nothing) on each boot until a storage backend is present; the person-level connector-credential purge is skipped (it needs somewhere to record that it ran)',
         },
         {
           hook: 'storage:delete-prefix',
@@ -594,6 +642,19 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           const scope = validateScope(input.scope);
           const ownerId = validateOwnerIdForScope(scope, input.ownerId);
           const ref = validateRef(input.ref);
+          // Agent-owned sign-ins: a connector credential belongs to an agent
+          // or to the whole workspace, never to one person — an agent must
+          // never act as whoever is chatting with it. findRow never reads an
+          // `account:` row at user scope, so refuse to write one. (delete
+          // stays open so an old row can still be removed.)
+          if (scope === 'user' && ref.startsWith(GUARDED_ACCOUNT_REF_PREFIX)) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message:
+                "connector credentials ('account:' refs) can't be stored per person; store them on the agent or globally",
+            });
+          }
           const kind = validateKind(input.kind);
           if (!(input.payload instanceof Uint8Array)) {
             throw new PluginError({
@@ -761,18 +822,23 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // scope shouldn't mask a value at another. Tombstone semantics for
       // non-fallthrough are tested at the per-scope set/delete level.
       //
-      // One exception to "every ref walks every scope": an `account:` ref
-      // reaches the AGENT and GLOBAL scopes only when a provider says this
-      // user may read it there — `credentials:authorize-agent:account`
-      // (mayReadAgent, TASK-711) and `credentials:authorize-global:account`
-      // (mayReadGlobal, TASK-697). The ref is a connector id, and the
-      // connector id is chosen by the USER who authors the connector and is
-      // unique only per owner — so a bare fall-through would hand a team
-      // agent's shared sign-in, or a company-wide key, to anyone who names
-      // their own connector after it. Only the user scope stays ungated (a
-      // user row is the caller's own), and `provider:` / `skill:` /
-      // `routine:` refs are minted by the platform, not chosen by a user, so
-      // they walk the chain unchanged.
+      // `account:` refs (connector credentials) walk a shorter, gated chain:
+      //   - NO user step (agent-owned sign-ins, slice 5). A connector
+      //     credential belongs to the agent or to the workspace, never to the
+      //     person chatting — an agent must never act as that person. A
+      //     user-scope `account:` row left over from before is ignored here,
+      //     refused by credentials:set, and removed once at boot
+      //     (purge-user-account.ts).
+      //   - the AGENT and GLOBAL steps are taken only when a provider says
+      //     this user may read the row there — `credentials:authorize-agent:
+      //     account` (mayReadAgent, TASK-711) and `credentials:authorize-
+      //     global:account` (mayReadGlobal, TASK-697). The ref is a connector
+      //     id, chosen by whoever authors the connector and unique only per
+      //     owner — so a bare fall-through would hand a team agent's shared
+      //     sign-in, or a company-wide key, to anyone who names their own
+      //     connector after it.
+      // `provider:` / `skill:` / `routine:` refs are minted by the platform,
+      // not chosen by a user, so they walk the full chain unchanged.
       //
       // The walk makes no network call and never invokes a
       // `credentials:resolve:<kind>` service — store-blob:get is one cheap row
@@ -788,14 +854,14 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         | { scope: CredentialScope; ownerId: string | null; env: ReturnType<typeof unwrapEnvelope> }
         | undefined
       > {
+        const guardAccount = ref.startsWith(GUARDED_ACCOUNT_REF_PREFIX);
         const attempts: Array<{ scope: CredentialScope; ownerId: string | null }> = [];
-        attempts.push({ scope: 'user', ownerId: userId });
+        if (!guardAccount) attempts.push({ scope: 'user', ownerId: userId });
         if (ctx.agentId !== undefined && ctx.agentId !== '') {
           attempts.push({ scope: 'agent', ownerId: ctx.agentId });
         }
         attempts.push({ scope: 'global', ownerId: null });
 
-        const guardAccount = ref.startsWith(GUARDED_ACCOUNT_REF_PREFIX);
         for (const a of attempts) {
           // Gate BEFORE the read, so a denied user never even loads the row.
           if (a.scope === 'global' && guardAccount && !(await mayReadGlobal(ctx, userId, ref))) {
@@ -842,8 +908,9 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         ref: string,
         rejected: boolean,
       ): Promise<string> {
-        // user -> agent -> global -> envFallback -> not-found. The walk (and
-        // its `account:` gates) is findRow; it runs OUTSIDE the inflight mutex.
+        // user -> agent -> global -> envFallback -> not-found (agent -> global
+        // -> envFallback for `account:` refs). The walk (and its `account:`
+        // rules) is findRow; it runs OUTSIDE the inflight mutex.
         let found = await findRow(ctx, userId, ref);
         if (found !== undefined) {
           // Found the row. Mutex on the RESOLVED tuple so concurrent
@@ -922,8 +989,9 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // Non-resolving presence check: "would credentials:get find a credential
       // for this (ctx, userId, ref)?" — answered from the SAME walk (findRow +
       // envFallbackValue), so the user -> agent -> global order, tombstone
-      // skipping, the TASK-697 / TASK-711 `account:` gates and the env fallback
-      // can never drift from `credentials:get`. What it does NOT do, by design:
+      // skipping, the `account:` rules (no user step; TASK-697 / TASK-711
+      // gates) and the env fallback can never drift from `credentials:get`.
+      // What it does NOT do, by design:
       //   - call `credentials:resolve:<kind>` (so an mcp-oauth token is never
       //     refreshed and no network is touched — asking "is this connected?"
       //     must be free of side effects),
@@ -1124,6 +1192,87 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         },
       );
 
+      const invalidPurge = (message: string) =>
+        new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME, message });
+
+      /**
+       * The purge itself, for `scopes` of 'user' and/or 'agent'. INTERNAL: the
+       * hook below accepts only 'agent'; 'user' is reachable only from this
+       * plugin's own boot purge (purge-user-account.ts).
+       */
+      async function purgeAccountRows(
+        ctx: AgentContext,
+        input: { connectorId?: string; scopes: Array<'user' | 'agent'> },
+      ): Promise<CredentialsPurgeAccountOutput> {
+        if (!Array.isArray(input.scopes) || input.scopes.length === 0) {
+          throw invalidPurge('scopes must be a non-empty array');
+        }
+        const scopes = [...new Set(input.scopes.map((s) => validateScope(s)))];
+        if (scopes.includes('global')) {
+          throw invalidPurge("scopes may only contain 'user' | 'agent'");
+        }
+        let prefix: string | undefined;
+        if (input.connectorId !== undefined) {
+          if (typeof input.connectorId !== 'string' || !PURGE_CONNECTOR_ID_RE.test(input.connectorId)) {
+            throw invalidPurge('connectorId is not a valid connector id');
+          }
+          prefix = `${GUARDED_ACCOUNT_REF_PREFIX}${input.connectorId}`;
+        }
+        const matches = (ref: string): boolean =>
+          prefix === undefined
+            ? ref.startsWith(GUARDED_ACCOUNT_REF_PREFIX)
+            : ref === prefix || ref.startsWith(`${prefix}:`);
+        let purged = 0;
+        for (const scope of scopes) {
+          const out = await bus.call<
+            { scope: CredentialScope },
+            { entries: Array<{ scope: CredentialScope; ownerId: string | null; ref: string; blob: Uint8Array }> }
+          >('credentials:store-blob:list', ctx, { scope });
+          for (const e of out.entries) {
+            if (!matches(e.ref)) continue;
+            let live = true;
+            try {
+              live = !unwrapEnvelope(e.blob).isTombstone;
+            } catch (err) {
+              // Undecryptable or malformed envelope (key-rotation aftermath,
+              // a truncated blob): still ours to purge. Anything else — a
+              // store returning a broken entry, a key error — is a real
+              // fault, so fail loudly rather than tombstone blind.
+              if (!(err instanceof PluginError) || !UNREADABLE_BLOB_CODES.has(err.code)) throw err;
+            }
+            if (!live) continue;
+            await bus.call('credentials:store-blob:put', ctx, {
+              scope: e.scope,
+              ownerId: e.ownerId,
+              ref: e.ref,
+              blob: encryptWithKey(key, ''),
+            });
+            purged++;
+          }
+        }
+        return { purged };
+      }
+
+      // SIGNINS-7 — the hook purges agent scope only. Checked before any
+      // read, so a 'user' or 'global' request touches nothing.
+      bus.registerService<CredentialsPurgeAccountInput, CredentialsPurgeAccountOutput>(
+        'credentials:purge-account',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const scopes: unknown = (input as { scopes?: unknown } | null)?.scopes;
+          if (!Array.isArray(scopes) || scopes.length === 0) {
+            throw invalidPurge('scopes must be a non-empty array');
+          }
+          if (!scopes.every((s) => s === 'agent')) {
+            throw invalidPurge("scopes may only contain 'agent'");
+          }
+          return purgeAccountRows(ctx, {
+            ...(input.connectorId !== undefined ? { connectorId: input.connectorId } : {}),
+            scopes: ['agent'],
+          });
+        },
+      );
+
       // One-shot wipe of pre-redesign credential rows. Runs on every boot but
       // is a no-op after the first time (guarded by a storage marker key).
       // Must run AFTER all bus.registerService calls so that storage:* calls
@@ -1139,6 +1288,21 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         });
         await wipePreRedesignCredentials(bus, wipeCtx);
       }
+
+      // One-shot purge of person-level connector credentials (agent-owned
+      // sign-ins, slice 5): every user-scope `account:` row. Marker-guarded
+      // like the wipe above; it skips when storage:get/set are absent, and a
+      // failure only warns (no marker, retried next boot) — it never fails
+      // the boot. Calls purge-account's own function, not the bus.
+      await purgeUserAccountCredentials(
+        bus,
+        makeAgentContext({
+          sessionId: 'credentials-user-account-purge',
+          agentId: PLUGIN_NAME,
+          userId: 'system',
+        }),
+        (purgeCtx) => purgeAccountRows(purgeCtx, { scopes: ['user'] }),
+      );
     },
   };
 }

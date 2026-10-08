@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
-import { beginOAuth, discoverOAuthHosts, getOAuthStatus } from '../connectors-oauth';
+import { BeginOAuthError, beginOAuth, discoverOAuthHosts, getOAuthStatus } from '../connectors-oauth';
 
 describe('discoverOAuthHosts', () => {
   it('POSTs only the draft URL, with authentication/CSRF headers and a cancellation signal', async () => {
@@ -32,11 +32,11 @@ describe('discoverOAuthHosts', () => {
 });
 
 describe('beginOAuth', () => {
-  it('POSTs connectorId/agentId and returns authorizationUrl', async () => {
+  it('POSTs connectorId/agentId/mode and returns authorizationUrl', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ authorizationUrl: 'https://p/auth' }), { status: 200 }),
     );
-    expect(await beginOAuth({ connectorId: 'c', agentId: 'A' })).toEqual({
+    expect(await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' })).toEqual({
       authorizationUrl: 'https://p/auth',
     });
     const [url, init] = (fetch as Mock).mock.calls[0]!;
@@ -44,24 +44,72 @@ describe('beginOAuth', () => {
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       connectorId: 'c',
       agentId: 'A',
+      mode: 'add',
     });
   });
 
-  it('omits agentId when not given', async () => {
+  it('sends mode sign-in-again as given', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ authorizationUrl: 'u' }), { status: 200 }),
     );
-    await beginOAuth({ connectorId: 'c' });
+    await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'sign-in-again' });
     expect(
       JSON.parse(((fetch as Mock).mock.calls[0]![1] as RequestInit).body as string),
-    ).toEqual({ connectorId: 'c' });
+    ).toEqual({ connectorId: 'c', agentId: 'A', mode: 'sign-in-again' });
+  });
+
+  it('every sign-in belongs to an agent: agentId and mode are required by the type', () => {
+    // Compile-time pins (channel-web's tsc includes tests). Never called.
+    const noAgent = () =>
+      // @ts-expect-error — agentId is required
+      beginOAuth({ connectorId: 'c', mode: 'add' });
+    const noMode = () =>
+      // @ts-expect-error — mode is required
+      beginOAuth({ connectorId: 'c', agentId: 'A' });
+    expect(typeof noAgent).toBe('function');
+    expect(typeof noMode).toBe('function');
+  });
+
+  it.each([
+    [403, 'agent-store-refused'],
+    [409, 'not-on-agent'],
+    [409, 'already-attached'],
+  ] as const)('a %i %s refusal is named on the error, as one of three fixed words', async (status, error) => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error }), { status }));
+    const e = await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(BeginOAuthError);
+    expect((e as BeginOAuthError).status).toBe(status);
+    expect((e as BeginOAuthError).refusal).toBe(error);
+  });
+
+  it('SIGNINS-7: a 400 oauth_client_secret_unavailable is named client-secret-missing', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify({ error: 'oauth_client_secret_unavailable' }), { status: 400 }),
+    );
+    const e = await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'sign-in-again' }).catch((x: unknown) => x);
+    expect((e as BeginOAuthError).refusal).toBe('client-secret-missing');
+  });
+
+  it.each([
+    [409, 'agent-store-refused'], // right word, wrong status
+    [403, 'already-attached'],
+    [403, 'forbidden'],
+    [409, 'something else the server says'],
+    [500, 'not-on-agent'],
+    [409, 'oauth_client_secret_unavailable'], // right word, wrong status
+    [400, 'client-secret-missing'], // our word, never the server's
+  ] as const)('a %i %s is no known refusal', async (status, error) => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error }), { status }));
+    const e = await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(BeginOAuthError);
+    expect((e as BeginOAuthError).refusal).toBeUndefined();
   });
 
   it('throws the server message on non-ok', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ message: 'oauth_discovery_failed' }), { status: 502 }),
     );
-    await expect(beginOAuth({ connectorId: 'c' })).rejects.toThrow('oauth_discovery_failed');
+    await expect(beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' })).rejects.toThrow('oauth_discovery_failed');
   });
 });
 
@@ -70,17 +118,17 @@ describe('getOAuthStatus', () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ status: 'needs-reconnect' }), { status: 200 }),
     );
-    expect(await getOAuthStatus({ connectorId: 'c' })).toBe('needs-reconnect');
-    expect((fetch as Mock).mock.calls[0]![0]).toContain(
-      '/api/connectors/oauth/status?connectorId=c',
+    expect(await getOAuthStatus({ connectorId: 'c', agentId: 'A' })).toBe('needs-reconnect');
+    expect((fetch as Mock).mock.calls[0]![0]).toBe(
+      '/api/connectors/oauth/status?connectorId=c&agentId=A',
     );
   });
 
-  it('includes agentId in the query when given', async () => {
-    globalThis.fetch = vi.fn(async () =>
-      new Response(JSON.stringify({ status: 'connected' }), { status: 200 }),
-    );
-    await getOAuthStatus({ connectorId: 'c', agentId: 'A' });
-    expect((fetch as Mock).mock.calls[0]![0]).toContain('agentId=A');
+  it('every status read names its agent: agentId is required by the type', () => {
+    // Compile-time pin (channel-web's tsc includes tests). Never called.
+    const noAgent = () =>
+      // @ts-expect-error — agentId is required
+      getOAuthStatus({ connectorId: 'c' });
+    expect(typeof noAgent).toBe('function');
   });
 });

@@ -25,6 +25,7 @@ import {
 } from '@ax/core';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '../plugin.js';
+import { putLegacyRow } from './legacy-rows.js';
 
 const HOOK = 'credentials:authorize-global:account';
 const AGENT_HOOK = 'credentials:authorize-agent:account';
@@ -257,15 +258,18 @@ describe('credentials:get — account: refs gate the AGENT step (TASK-711)', () 
     ]);
   });
 
-  it('(g) PIN: a user-scope row wins and the agent provider is NEVER called', async () => {
+  it('(g) slice 5: a person\'s own user-scope row is never read; the gated agent row answers', async () => {
+    // Before slice 5 the user row won and the agent provider was never
+    // called. Now an agent never acts as the person chatting with it, so the
+    // person's row is skipped and the agent step (still gated) is taken.
     const agent = authzStub(() => ({ allowed: true }));
     const bus = await makeBus({ agent });
     await seed(bus, 'agent', 'team-agent', 'account:linear', 'TEAM-TOKEN');
-    await seed(bus, 'user', 'bob', 'account:linear', 'BOB-OWN');
+    await putLegacyRow(bus, 'user', 'bob', 'account:linear', 'BOB-OWN');
     const { ctx } = recordingCtx({ agentId: 'team-agent', userId: 'bob' });
 
-    expect(await get(bus, ctx, 'account:linear', 'bob')).toBe('BOB-OWN');
-    expect(agent.calls).toEqual([]);
+    expect(await get(bus, ctx, 'account:linear', 'bob')).toBe('TEAM-TOKEN');
+    expect(agent.calls).toEqual([{ userId: 'bob', agentId: 'team-agent', ref: 'account:linear' }]);
   });
 
   it('(h) PIN: non-account refs at agent scope resolve with NO provider and never call it', async () => {

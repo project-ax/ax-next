@@ -14,6 +14,7 @@ function makeRow(over: Partial<RoutineRow> = {}): RoutineRow {
     activeHours: null, silenceToken: null, silenceMaxChars: 300,
     conversation: 'per-fire', promptBody: 'PR {{payload.pr.title}}',
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null,
+    lastWarning: null, definitionId: null, definitionUpdatedAt: null,
     ...over,
   };
 }

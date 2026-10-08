@@ -3,8 +3,8 @@ name: ax-connector-creator
 description: >-
   Use when the user wants to connect a service or data source — "connect my
   Salesforce", "set up Google Drive", "add a GitLab integration", "hook up an
-  MCP server". Authors a connector (the access) and installs it with one
-  approval card.
+  MCP server". Drafts a connector (the access) and sends it to your
+  workspace admin.
 ---
 
 # Connecting a service for this assistant
@@ -13,7 +13,7 @@ A **connector** is authenticated access to a data source or service — your
 Salesforce, a Google Drive, an internal API, an MCP server. It's the *access*:
 the hosts it talks to, the key it spends, the binary it runs. The know-how for a
 workflow ("how we triage Linear issues") is a separate thing — a *skill* — that
-references a connector. This builtin authors the connector.
+references a connector. This builtin drafts the connector.
 
 The connector hides its mechanism. Under the hood it might be an MCP server, a
 CLI tool fetched from a package registry, or plain API calls over an allowed
@@ -22,11 +22,12 @@ matters because not every service has an MCP server: Salesforce and GitLab, for
 instance, are reached through their CLI or API, not MCP. So a connector is
 mechanism-agnostic on purpose.
 
-The safety model is the same one skills use: **you propose the access, a human
-grants it.** When you install a connector, the user sees exactly one card listing
-the hosts it reaches, the keys it needs, and the package registries it pulls
-from. Nothing reaches the outside world until they approve. So author freely —
-the approval card is the backstop, and it's the user's.
+The safety model: **you ask for the access, a human grants it.** Only a
+workspace admin can create a connector. Your proposal goes into the admin's
+"Awaiting approval" list in Admin > Connectors, showing the hosts it reaches, the
+keys it needs, and the package registries it pulls from. Nothing reaches the
+outside world until an admin sets it up. So draft freely — the admin's review is
+the backstop.
 
 ## The authoring loop
 
@@ -36,10 +37,11 @@ Four steps, all in this conversation:
    API), which hosts, which key.
 2. **Draft the connector** — decide the id, name, hosts, credential slots,
    packages, MCP backing, key mode, and a short usage note.
-3. **Install it** by calling `connector_propose({ ... })`. The user approves one
-   card and enters any key.
-4. **Test and iterate** — once it's connected, exercise it; to change it, propose
-   again with the same `connectorId`.
+3. **Send it** by calling `connector_propose({ ... })`. It goes to the workspace
+   admin, who sets it up and enters any key.
+4. **Test and iterate** — once the admin has set it up and the user has added it
+   to this agent from the Connectors tab, exercise it. To change what you asked
+   for, propose again with the same `connectorId`.
 
 ## Step 1 — Capture intent
 
@@ -59,12 +61,12 @@ Figure out:
   - **MCP server** — a service speaking MCP over `http` (a URL). Fill: `mcpServers`. Local (stdio) MCP servers are not supported.
   - A connector can mix these, but most are one mechanism.
 - **Whose key?** This is the `keyMode`, and it's important:
-  - `personal` — each user supplies **their own** key the first time they use
-    the connector; everyone acts as themselves. Right for per-user data — my
-    Gmail, my Drive.
-  - `workspace` — an admin provides **one** key that every allowed agent spends
-    as a shared service identity. Right for org-wide systems — the company
-    Salesforce.
+  It's a hint — the admin makes the final call when they set it up:
+  - `personal` — each agent adds **its own** key; everyone acts as themselves.
+    Right for per-user data — my Gmail, my Drive.
+  - `workspace` — **one** shared key that the admin enters and every allowed
+    agent spends as a shared service identity. Right for org-wide systems — the
+    company Salesforce.
 
 Confirm your understanding with the user before drafting — "here's what I'll
 connect" beats connecting the wrong thing.
@@ -72,9 +74,9 @@ connect" beats connecting the wrong thing.
 ## Step 2 — The rules specific to this system
 
 These are the mechanics. Get them right and the install goes through; get them
-wrong and it's rejected at install or hits a wall at runtime.
+wrong and the request is rejected or hits a wall at runtime.
 
-### The grammars (validated on install)
+### The grammars (validated when you send it)
 
 - **Connector id** (`connectorId`): `^[a-z0-9][a-z0-9_-]*$`, max 128 chars —
   start with a lowercase letter or digit, then lowercase letters, digits,
@@ -93,23 +95,22 @@ wrong and it's rejected at install or hits a wall at runtime.
 
 A credential slot shows up to whatever uses the connector as an environment
 variable of the same name. Declare the slot `SF_API_KEY`, and it's read as
-`$SF_API_KEY`. **Never write a literal key anywhere** — name the slot; the user
-supplies the value on the approval card. You never see it.
+`$SF_API_KEY`. **Never write a literal key anywhere** — name the slot; the admin
+supplies the value when they set it up. You never see it.
 
-### Only approved hosts are reachable
+### Only the hosts the admin sets up are reachable
 
-Network egress goes through a proxy that only lets through the hosts approved at
-install. List every host the connector talks to in `hosts` — miss one and
-requests to it fail at runtime, not at install.
+Network egress goes through a proxy that only lets through the hosts the admin set up
+for the connector. List every host it talks to in `hosts` — miss one and
+requests to it fail at runtime, not when you send the request.
 
 ### Declare packages if the connector runs a binary
 
 If the connector's mechanism is a CLI fetched via `npx` / `uvx` / `pip`, those
 registries (npmjs.org, pypi.org) are behind the same egress wall. Pass
-`packages: { npm: [...], pypi: [...] }` so the registries are allowlisted on the
-same card. npm names may be scoped (`@scope/package`).
+`packages: { npm: [...], pypi: [...] }` so the registries are allowlisted too. npm names may be scoped (`@scope/package`).
 
-## Step 3 — Install it
+## Step 3 — Send it to the admin
 
 Once you've decided the fill, call:
 
@@ -126,27 +127,29 @@ connector_propose({
 })
 ```
 
-The user is shown one card listing exactly those hosts, slots, and registries.
-They approve and enter any key. On approval the connector activates.
+The request lists exactly those hosts, slots, and registries for a workspace admin
+to review. The reply tells you whether it was sent or the connector already
+exists. Either way, the person adds it to this agent from the Connectors tab once
+it exists.
 
 A few points of discipline:
 
-- **Don't narrate the approval step.** The card speaks for itself — don't say
-  "I'll now ask you to approve."
-- **Don't restate the user's key.** They enter it privately on the card; you
-  never see or repeat it.
-- **A connector you propose this turn isn't connected this turn.** After the user
-  approves, it's resolved when their next message starts — so don't try to use it
-  in the same turn. Tell the user it'll be ready on their next message. If they
-  asked you to connect *and* use a service in one breath, propose it and offer to
-  continue once they reply.
+- **Be honest about what happened.** You've asked their admin; you haven't
+  connected anything. Say so in a sentence and say what comes next (the admin
+  sets it up, then they add it from the Connectors tab).
+- **Don't restate any key.** The admin enters it privately; you never see or
+  repeat it.
+- **A connector you ask for isn't available this turn.** Don't try to use it in
+  the same turn. If they asked you to connect *and* use a service in one breath,
+  send the request and offer to continue once it's set up.
 
 ## Step 4 — Test and iterate
 
-Once it's connected (next turn), exercise it with a realistic prompt and confirm
-it does what you intended. To change it, call `connector_propose` again with the
-**same `connectorId`** — the re-propose goes through the same one-card approval.
-Write, install, try, adjust.
+Once the admin has set it up and it's been added to this agent, exercise it with
+a realistic prompt and confirm it does what you intended. To change what you
+asked for, call `connector_propose` again with the **same `connectorId`** — it
+goes to the admin like the first request. If a connector with that id already
+exists, you'll be told so; changing a live connector is an admin's job.
 
 ## Worked examples
 
@@ -208,5 +211,5 @@ don't help anyone build one designed to exfiltrate data or facilitate
 unauthorized access. If a request's stated purpose doesn't match the access it
 asks for, that's the signal to stop.
 
-The whole approval model rests on the user trusting that the card they're shown
-describes the access they're granting. Keep that promise honest.
+The whole approval model rests on the admin trusting that the request they're
+shown describes the access they're granting. Keep that promise honest.

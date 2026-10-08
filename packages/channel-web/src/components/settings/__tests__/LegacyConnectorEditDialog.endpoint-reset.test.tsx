@@ -18,7 +18,6 @@ const SUMMARY: ConnectorSummary = {
   description: 'Drive files.',
   usageNote: '',
   keyMode: 'personal',
-  visibility: 'private',
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
 };
@@ -51,7 +50,6 @@ async function openEditor(connector: Connector) {
     <LegacyConnectorEditDialog
       target={SUMMARY}
       open
-      isAdmin
       onOpenChange={() => {}}
       onSaved={() => {}}
     />,
@@ -90,7 +88,7 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
 
   it('a new connector never warns — it has no permissions to lose', async () => {
     render(
-      <LegacyConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+      <LegacyConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'X' } });
     fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://mcp.example.com/x' } });
@@ -107,7 +105,6 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
       <LegacyConnectorEditDialog
         target={SUMMARY}
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={onSaved}
       />,
@@ -121,6 +118,40 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
     fireEvent.click(save);
     expect(await screen.findByRole('alert')).toHaveTextContent(
       connectorsLib.TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
+    );
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  // Slice 2a — any admin may edit a shared connector, but only the admin who
+  // created it may retarget it. The server answers 403 owner-only-change; the
+  // editor says what happened and what to do instead, and stays open.
+  it('a retarget refused as owner-only says who can change it, and stays open', async () => {
+    vi.spyOn(connectorsLib, 'patchConnector').mockRejectedValue(
+      new Error('owner-only-change'),
+    );
+    const onSaved = vi.fn();
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(full());
+    render(
+      <LegacyConnectorEditDialog
+        target={SUMMARY}
+        open
+        onOpenChange={() => {}}
+        onSaved={onSaved}
+      />,
+    );
+    const url = await screen.findByLabelText(/^url$/i);
+    await waitFor(() => expect(url).toHaveValue(URL_SAVED));
+    fireEvent.change(url, { target: { value: 'https://mcp.example.com/gdrive-v2' } });
+    const save = screen.getByRole('button', { name: /^save$/i });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Only the admin who created this connector can change where it connects. To point it somewhere else, delete it and add a new one.',
+    );
+    expect(connectorsLib.patchConnector).toHaveBeenCalledWith(
+      SUMMARY.id,
+      expect.anything(),
+      '/admin/connectors',
     );
     expect(onSaved).not.toHaveBeenCalled();
   });

@@ -9,8 +9,11 @@
  *
  * A draft always lands `status: 'pending'` (zero reach — it never reaches
  * `connectors:resolve`, which reads only the LIVE `connectors_v1_connectors`
- * table). A human approval at the capability wall flips it `active` via
- * {@link AuthoredConnectorsStore.activate}. The declared, UNAPPROVED capability
+ * table). Since slice 2c a draft is a request in the workspace admins' queue:
+ * an admin approves it by creating the connector, which clears every draft
+ * with that id. Nothing flips a draft `active` any more; `active` rows are
+ * left over from the removed in-chat approval and are never listed as
+ * pending. The declared, UNAPPROVED capability
  * surface rides the opaque `capability_proposal` JSONB; it is validated against
  * the canonical schema on read (don't-trust-the-DB) and never interpreted.
  */
@@ -20,18 +23,20 @@ import type { Capabilities, KeyMode } from './types.js';
 import { CapabilitiesSchema } from './types.js';
 import { validateKeyMode } from './store.js';
 import {
+  clearAuthoredConnectorsByIdForAdmins,
+  pendingAuthoredConnectorsForAdmins,
   scopedAuthoredConnectors,
-  scopedAuthoredConnectorsByUser,
 } from './scope.js';
 import type { ConnectorDatabase, ConnectorsAuthoredRow } from './migrations.js';
 
 const PLUGIN_NAME = '@ax/connectors';
 
-/** A draft's lifecycle verdict. `pending` = awaiting human approval (zero
- *  reach); `active` = approved (reach projects via the activated connector). */
+/** A draft's lifecycle verdict. `pending` = awaiting an admin (zero reach);
+ *  `active` = approved through the in-chat card that slice 2c removed. No code
+ *  writes `active` now; the value is read only from older rows. */
 export type AuthoredConnectorStatus = 'pending' | 'active';
 
-/** A model-authored connector draft, as read for the card + grant flows. */
+/** A model-authored connector draft, as read back from the store. */
 export interface AuthoredConnectorDraft {
   connectorId: string;
   name: string;
@@ -43,12 +48,18 @@ export interface AuthoredConnectorDraft {
   updatedAt: string;
 }
 
-/** A pending draft listed ACROSS the user's agents (the Settings fallback).
- *  Carries `agentId` because the approve action needs the (user, agent) the
- *  draft was authored under, and the user no longer picks the agent. */
+/** A pending draft listed ACROSS owners (slice 2c — the admin queue). Carries
+ *  who proposed it and under which agent. */
 export interface PendingAuthoredConnectorDraft extends AuthoredConnectorDraft {
+  ownerUserId: string;
   agentId: string;
 }
+
+/** Told about each pending draft `listPendingAll` had to skip. */
+export type OnSkippedDraft = (
+  draft: { ownerUserId: string; connectorId: string },
+  err: unknown,
+) => void;
 
 export interface UpsertAuthoredConnectorInput {
   ownerUserId: string;
@@ -65,28 +76,19 @@ export interface AuthoredConnectorsStore {
    *  connector)). Always lands `status: 'pending'` — a re-propose re-opens the
    *  gate. Returns whether THIS call created the row (vs. replaced it). */
   upsert(input: UpsertAuthoredConnectorInput): Promise<{ created: boolean }>;
-  /** List the agent's authored connector drafts (any status), sorted by
-   *  connector_id — the card source + grant re-resolution. */
-  list(ownerUserId: string, agentId: string): Promise<AuthoredConnectorDraft[]>;
-  /** List the user's PENDING drafts across ALL their agents, each carrying its
-   *  `agentId`, sorted by connector_id asc (then agent_id) for a stable order.
-   *  Backs the Settings "Proposed by your assistant" fallback. */
-  listPendingForUser(userId: string): Promise<PendingAuthoredConnectorDraft[]>;
-  /** Flip a `pending` draft to `active` (on approval). Status-guarded: only a
-   *  `pending` row transitions, so the call is idempotent + race-safe (a
-   *  concurrent duplicate approval flips zero rows the second time). Returns
-   *  whether THIS call flipped a row. */
-  activate(input: {
-    ownerUserId: string;
-    agentId: string;
-    connectorId: string;
-  }): Promise<{ activated: boolean }>;
-  /** Delete a draft (reject / clear). Returns whether a row was removed. */
-  clear(input: {
-    ownerUserId: string;
-    agentId: string;
-    connectorId: string;
-  }): Promise<{ cleared: boolean }>;
+  /** Slice 2c — every owner's PENDING drafts, each carrying its owner and
+   *  agent, sorted by connector_id, owner_user_id, agent_id for a stable order.
+   *  A SYSTEM read: backs the admin proposal queue only. A row that fails the
+   *  read schema is skipped and reported through `onSkip`, so one bad row from
+   *  one user can't empty the queue for every admin. */
+  listPendingAll(onSkip: OnSkippedDraft): Promise<PendingAuthoredConnectorDraft[]>;
+  /**
+   * Slice 2c — delete EVERY draft with this connector id, across owners and
+   * agents, in any status. Called when a live connector with that id is created
+   * (the proposals are resolved) and by the admin Dismiss. Throws on an empty
+   * id BEFORE any statement runs. Returns how many rows were removed.
+   */
+  clearAllById(connectorId: string): Promise<{ cleared: number }>;
   /**
    * Delete EVERY draft keyed on `agentId`, for all owner users and connector
    * ids, in any status (TASK-718 — the `agents:deleted` purge). Keyed on
@@ -174,45 +176,34 @@ export function createAuthoredConnectorsStore(
       return { created };
     },
 
-    async list(ownerUserId, agentId) {
-      const rows = await scopedAuthoredConnectors(db, { ownerUserId, agentId })
+    async listPendingAll(onSkip) {
+      const rows = await pendingAuthoredConnectorsForAdmins(db)
         .orderBy('connector_id', 'asc')
-        .execute();
-      return rows.map((r) => rowToDraft(r as ConnectorsAuthoredRow));
-    },
-
-    async listPendingForUser(userId) {
-      const rows = await scopedAuthoredConnectorsByUser(db, { userId })
-        .where('status', '=', 'pending')
-        .orderBy('connector_id', 'asc')
+        .orderBy('owner_user_id', 'asc')
         .orderBy('agent_id', 'asc')
         .execute();
-      return rows.map((r) => {
+      const out: PendingAuthoredConnectorDraft[] = [];
+      for (const r of rows) {
         const row = r as ConnectorsAuthoredRow;
-        return { ...rowToDraft(row), agentId: row.agent_id };
-      });
+        try {
+          out.push({ ...rowToDraft(row), ownerUserId: row.owner_user_id, agentId: row.agent_id });
+        } catch (err) {
+          // Same posture as the live store's `listAllLive`: skip and report.
+          onSkip({ ownerUserId: row.owner_user_id, connectorId: row.connector_id }, err);
+        }
+      }
+      return out;
     },
 
-    async activate({ ownerUserId, agentId, connectorId }) {
-      const res = await db
-        .updateTable('connectors_v1_authored')
-        .set({ status: 'active', updated_at: new Date() })
-        .where('owner_user_id', '=', ownerUserId)
-        .where('agent_id', '=', agentId)
-        .where('connector_id', '=', connectorId)
-        .where('status', '=', 'pending')
-        .executeTakeFirst();
-      return { activated: Number(res.numUpdatedRows ?? 0n) > 0 };
-    },
-
-    async clear({ ownerUserId, agentId, connectorId }) {
-      const res = await db
-        .deleteFrom('connectors_v1_authored')
-        .where('owner_user_id', '=', ownerUserId)
-        .where('agent_id', '=', agentId)
-        .where('connector_id', '=', connectorId)
-        .executeTakeFirst();
-      return { cleared: Number(res.numDeletedRows ?? 0n) > 0 };
+    async clearAllById(connectorId) {
+      if (typeof connectorId !== 'string' || connectorId.length === 0) {
+        throw new PluginError({
+          code: 'invalid-payload',
+          plugin: PLUGIN_NAME,
+          message: 'clearAllById requires a non-empty connectorId',
+        });
+      }
+      return { cleared: await clearAuthoredConnectorsByIdForAdmins(db, connectorId) };
     },
 
     async deleteAllForAgent(agentId) {

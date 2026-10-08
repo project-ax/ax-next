@@ -77,10 +77,26 @@ export function relativeDay(iso: string, now: Date = new Date()): string {
   return 'over a year ago';
 }
 
+/**
+ * A short day-and-month on the READER's calendar, in their language's own
+ * form ("7. Okt." in German, "10月7日" in Japanese). The one short-date
+ * helper: the conversation rail, a grant line's date and "Signed in by you on
+ * 7 Oct" all use it. Only English is reordered to day-then-month ("7 Oct",
+ * where en-US alone would say "Oct 7"), because the English copy reads "on 7
+ * Oct"; re-gluing the parts for any other language would break its native
+ * form. `locale` exists for tests; the app passes nothing. Empty on an
+ * instant it can't read, never "Invalid Date".
+ */
+export function shortDay(iso: string, locale?: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return '';
+  const fmt = new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short' });
+  if (fmt.resolvedOptions().locale.split('-')[0] !== 'en') return fmt.format(date);
+  const parts = fmt.formatToParts(date);
+  return `${parts.find(p => p.type === 'day')?.value} ${parts.find(p => p.type === 'month')?.value}`;
+}
+
 /** Compact date for the rail. A malformed server timestamp must not blank chat. */
 export function conversationDate(iso: string): string {
-  const date = new Date(iso);
-  if (!Number.isFinite(date.getTime())) return 'Unknown';
-  const parts = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).formatToParts(date);
-  return `${parts.find(p => p.type === 'day')?.value} ${parts.find(p => p.type === 'month')?.value}`;
+  return shortDay(iso) || 'Unknown';
 }

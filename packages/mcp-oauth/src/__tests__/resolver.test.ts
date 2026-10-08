@@ -147,6 +147,21 @@ describe('mcp-oauth resolver — per-token client (TASK-696)', () => {
     expect(next.clientSecret).toBe('issuing-secret');
     expect(next.refreshToken).toBe('rt2');
   });
+
+  // Slice 4 — the sign-in identity lives in the vault's ENVELOPE metadata. The
+  // vault re-stores a refresh with `out.refreshed.metadata ?? env.metadata`, so
+  // the resolver must not return a `metadata` of its own (even `{}` or
+  // `undefined`-as-a-key would be a reason to doubt it): no key at all.
+  it('the refreshed output carries NO metadata key, so the vault keeps the envelope\'s "signed in as"', async () => {
+    const resolve = createMcpOAuthResolver(deps());
+    const out = await resolve({
+      payload: encodeTokenBlob({ ...baseBlob, ...ISSUED }),
+      userId: 'u',
+      ref: 'account:c',
+    });
+    expect(out.refreshed).toBeDefined();
+    expect(Object.keys(out.refreshed!)).not.toContain('metadata');
+  });
 });
 
 // ---------------------------------------------------------------------------

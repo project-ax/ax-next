@@ -1,13 +1,15 @@
 /**
- * A connector nobody has set up yet (TASK-795).
+ * A connector nobody has set up yet (TASK-795, slice 3).
  *
  * Pinned: a `needs-sign-in` row wears a NEUTRAL icon (not the red error one)
  * whose reason is its accessible name and a tooltip on hover AND keyboard
- * focus; the `⋯` menu leads with the row's setup — **Sign in** (OAuth) or
- * **Add key** (API key) — and offers nothing for `ask-admin`; Sign in opens a
- * dialog around the OAuth widget on THIS agent, Add key opens the Settings key
- * dialog, and finishing either re-reads the list. The details view says the
- * same word and offers the same button.
+ * focus; the `⋯` menu leads with the row's fix — **Sign in** (OAuth; never
+ * signed in, so not "again") or **Add key** (the agent's own key) — and
+ * offers nothing for `ask-admin`; Sign in opens a dialog around the OAuth
+ * widget on THIS agent, as a
+ * sign-in-again (it is already on the agent); Add key opens the agent key
+ * dialog; finishing either re-reads the list. The details view says the same
+ * word and offers the same button.
  *
  * The OAuth widget and the key dialog are stubbed: their own tests pin what
  * they do; here we pin that the rail hands them the right connector and
@@ -31,7 +33,6 @@ vi.mock('@/lib/workspace-api', async () => {
       setAbility: vi.fn(),
       connectors: vi.fn(),
       removeConnector: vi.fn(),
-      retryConnector: vi.fn(),
       connectorTools: vi.fn(),
       setToolVerdict: vi.fn(),
     },
@@ -41,14 +42,16 @@ vi.mock('@/lib/workspace-api', async () => {
 vi.mock('@/components/settings/ConnectorOAuthConnect', () => ({
   ConnectorOAuthConnect: (props: {
     connectorId: string;
-    agentId?: string;
+    agentId: string;
+    mode: string;
     requiresConsent?: boolean;
     onConnected?: () => void;
   }) => (
     <div
       data-testid="oauth-connect"
       data-connector={props.connectorId}
-      data-agent={props.agentId ?? ''}
+      data-agent={props.agentId}
+      data-mode={props.mode}
       data-consent={String(props.requiresConsent ?? false)}
     >
       <button type="button" onClick={() => props.onConnected?.()}>
@@ -58,30 +61,27 @@ vi.mock('@/components/settings/ConnectorOAuthConnect', () => ({
   ),
 }));
 
-vi.mock('@/components/settings/ConnectorConnectDialog', () => ({
-  ConnectorConnectDialog: (props: {
+vi.mock('../AgentKeyDialog', () => ({
+  AgentKeyDialog: (props: {
+    agentId: string;
     connectorId: string;
     connectorName: string;
-    isAdmin: boolean;
-    open: boolean;
-    onConnected: () => void;
-  }) =>
-    props.open ? (
-      <div
-        data-testid="key-dialog"
-        data-connector={props.connectorId}
-        data-name={props.connectorName}
-        data-admin={String(props.isAdmin)}
-      >
-        <button type="button" onClick={props.onConnected}>
-          Finish key
-        </button>
-      </div>
-    ) : null,
+    onSaved: () => void;
+  }) => (
+    <div
+      data-testid="key-dialog"
+      data-agent={props.agentId}
+      data-connector={props.connectorId}
+      data-name={props.connectorName}
+    >
+      <button type="button" onClick={props.onSaved}>
+        Finish key
+      </button>
+    </div>
+  ),
 }));
 
 const connectorsMock = vi.mocked(workspaceApi.connectors);
-const retryMock = vi.mocked(workspaceApi.retryConnector);
 
 function row(over: Partial<AgentConnectorRow>): AgentConnectorRow {
   return {
@@ -100,6 +100,7 @@ const ADD_KEY = row({ id: 'brave', name: 'Brave', health: 'needs-sign-in', setup
 const ASK_ADMIN = row({ id: 'acme', name: 'Acme', health: 'needs-sign-in', setup: 'ask-admin' });
 const OK = row({ id: 'gmail', name: 'Gmail', health: 'ok' });
 const UNREACHABLE = row({ id: 'slack', name: 'Slack', health: 'unreachable' });
+const EDIT_REMOVE = ['Edit', 'Remove from Quill'];
 
 function detail(): AgentDetail {
   return {
@@ -208,14 +209,16 @@ describe('the row icon', () => {
 });
 
 describe('the row menu', () => {
-  it('leads with Sign in for a sign-in row, and offers no Retry or Reconnect', async () => {
+  // Ruling: a row that was never signed in says "Sign in"; only an expired
+  // one says "Sign in again".
+  it('leads with Sign in for a row never signed in', async () => {
     renderTab();
-    expect(await menuItems('Linear')).toEqual(['Sign in', 'View details', 'Edit permissions', 'Remove from Quill']);
+    expect(await menuItems('Linear')).toEqual(['Sign in', ...EDIT_REMOVE]);
   });
 
   it('leads with Add key for a key row', async () => {
     renderTab();
-    expect(await menuItems('Brave')).toEqual(['Add key', 'View details', 'Edit permissions', 'Remove from Quill']);
+    expect(await menuItems('Brave')).toEqual(['Add key', ...EDIT_REMOVE]);
   });
 
   it('offers no setup for a row only an admin can set up — the icon says who can', async () => {
@@ -223,7 +226,7 @@ describe('the row menu', () => {
     expect(
       await screen.findByRole('button', { name: 'Needs a key from a workspace admin' }),
     ).toBeTruthy();
-    expect(await menuItems('Acme')).toEqual(['View details', 'Edit permissions', 'Remove from Quill']);
+    expect(await menuItems('Acme')).toEqual(EDIT_REMOVE);
   });
 
   it('offers no setup on a healthy row beside one that has it', async () => {
@@ -232,21 +235,23 @@ describe('the row menu', () => {
     expect(within(menu).getByRole('menuitem', { name: 'Sign in' })).toBeTruthy();
     fireEvent.keyDown(menu, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
-    expect(await menuItems('Gmail')).toEqual(['View details', 'Edit permissions', 'Remove from Quill']);
+    expect(await menuItems('Gmail')).toEqual(EDIT_REMOVE);
   });
 });
 
-describe('Sign in', () => {
-  it('opens a sign-in on THIS agent, and finishing it re-reads the list', async () => {
+describe('Sign in (a row never signed in)', () => {
+  it('opens a sign-in-again on THIS agent, and finishing it re-reads the list', async () => {
     renderTab();
     const menu = await openMenu('Linear');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in' }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Sign in to Linear')).toBeTruthy();
-    expect(within(dialog).getByText('Sign in and Quill can use Linear for you.')).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Sign in to Linear' })).toBeTruthy();
+    expect(within(dialog).queryByText(/again/)).toBeNull();
+    expect(within(dialog).getByText('Sign in and Quill can use Linear.')).toBeTruthy();
     const widget = within(dialog).getByTestId('oauth-connect');
     expect(widget.dataset.connector).toBe('linear');
     expect(widget.dataset.agent).toBe('a-quill');
+    expect(widget.dataset.mode).toBe('sign-in-again');
     expect(widget.dataset.consent).toBe('false');
     const reads = connectorsMock.mock.calls.length;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish sign-in' }));
@@ -254,28 +259,28 @@ describe('Sign in', () => {
     await waitFor(() => expect(connectorsMock.mock.calls.length).toBeGreaterThan(reads));
   });
 
-  it('on a team agent, says everyone will use it as you, and asks first', async () => {
+  it('on a team agent, says your account is used for everyone on it, and asks first', async () => {
     list([SIGN_IN], true);
     renderTab();
     const menu = await openMenu('Linear');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in' }));
     const dialog = await screen.findByRole('dialog');
     expect(
-      within(dialog).getByText('Signing in here lets everyone using Quill use Linear as you.'),
+      within(dialog).getByText('Sign in, and Quill will use your Linear account for everyone who uses this agent.'),
     ).toBeTruthy();
     expect(within(dialog).getByTestId('oauth-connect').dataset.consent).toBe('true');
   });
 });
 
 describe('Add key', () => {
-  it('opens the key dialog for that connector, and finishing it re-reads the list', async () => {
+  it('opens the agent key dialog for that connector, and finishing it re-reads the list', async () => {
     renderTab();
     const menu = await openMenu('Brave');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Add key' }));
     const dialog = await screen.findByTestId('key-dialog');
     expect(dialog.dataset.connector).toBe('brave');
     expect(dialog.dataset.name).toBe('Brave');
-    expect(dialog.dataset.admin).toBe('false');
+    expect(dialog.dataset.agent).toBe('a-quill');
     const reads = connectorsMock.mock.calls.length;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish key' }));
     await waitFor(() => expect(connectorsMock.mock.calls.length).toBeGreaterThan(reads));
@@ -283,37 +288,10 @@ describe('Add key', () => {
   });
 });
 
-describe('Retry finding nobody signed in', () => {
-  it.each([
-    ['sign-in', /Slack is reachable, but nobody has signed in yet\. Choose Sign in to set it up\./, 'Sign in'],
-    ['add-key', /Slack is reachable, but no key has been added yet\. Choose Add key to set it up\./, 'Add key'],
-  ] as const)('setup %s says so and the menu follows', async (setup, note, item) => {
-    list([UNREACHABLE]);
-    retryMock.mockResolvedValueOnce({ health: 'needs-sign-in', setup });
-    renderTab();
-    const menu = await openMenu('Slack');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
-    expect(await screen.findByText(note)).toBeTruthy();
-    const next = await openMenu('Slack');
-    expect(within(next).getAllByRole('menuitem')[0]?.textContent).toBe(item);
-  });
-
-  it('ask-admin points at a workspace admin', async () => {
-    list([UNREACHABLE]);
-    retryMock.mockResolvedValueOnce({ health: 'needs-sign-in', setup: 'ask-admin' });
-    renderTab();
-    const menu = await openMenu('Slack');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Retry' }));
-    expect(
-      await screen.findByText(/Slack is reachable, but it needs a key from a workspace admin\./),
-    ).toBeTruthy();
-  });
-});
-
 describe('the details view', () => {
   async function openDetails(name: string) {
     const menu = await openMenu(name);
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'View details' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Edit' }));
     await screen.findByRole('button', { name: 'Connectors' });
   }
 
@@ -326,8 +304,10 @@ describe('the details view', () => {
     expect(screen.queryByText('Sign-in needed')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Sign in to Linear')).toBeTruthy();
-    expect(within(dialog).getByTestId('oauth-connect').dataset.agent).toBe('a-quill');
+    expect(within(dialog).getByRole('heading', { name: 'Sign in to Linear' })).toBeTruthy();
+    const widget = within(dialog).getByTestId('oauth-connect');
+    expect(widget.dataset.agent).toBe('a-quill');
+    expect(widget.dataset.mode).toBe('sign-in-again');
   });
 
   it('says “No key added yet” and its Add key button opens the key dialog', async () => {
@@ -365,7 +345,7 @@ describe('the details view', () => {
     const dialog = await screen.findByRole('dialog');
     list([row({ id: 'linear', name: 'Linear', health: 'ok' }), ADD_KEY, ASK_ADMIN, OK]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish sign-in' }));
-    expect(await screen.findByText('Connected · signed in as you')).toBeTruthy();
+    expect(await screen.findByText('Connected')).toBeTruthy();
     expect(screen.queryByText('Sign-in needed')).toBeNull();
     expect(screen.queryByText(/sign in to this connector again/i)).toBeNull();
     expect(screen.queryByText('Not signed in yet')).toBeNull();
@@ -388,7 +368,7 @@ describe('the details view', () => {
     const dialog = await screen.findByTestId('key-dialog');
     list([SIGN_IN, row({ id: 'brave', name: 'Brave', health: 'ok' }), ASK_ADMIN, OK]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish key' }));
-    expect(await screen.findByText('Connected · signed in as you')).toBeTruthy();
+    expect(await screen.findByText('Connected')).toBeTruthy();
     expect(screen.queryByText('Sign-in needed')).toBeNull();
   });
 
@@ -397,5 +377,147 @@ describe('the details view', () => {
     await openDetails('Acme');
     expect(await screen.findByText('Needs a key from a workspace admin')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^(Sign in|Add key)$/ })).toBeNull();
+  });
+});
+
+describe('which account the agent uses (slice 4)', () => {
+  const signedIn = (account: string | null) => ({
+    account,
+    byName: null,
+    byYou: true,
+    at: '2026-10-07T12:00:00.000Z',
+  });
+  const EXPIRED = (account: string | null) =>
+    row({ id: 'gmail', name: 'Gmail', health: 'needs-reconnect', signedIn: signedIn(account) });
+
+  it('a row shows only the name; the account is in a tooltip on hover', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') }), SIGN_IN]);
+    renderTab();
+    const name = await screen.findByTestId('connector-name-gmail');
+    // The row draws the name alone; the account is for screen readers only.
+    const shown = [...name.childNodes].filter(
+      (n) => !(n instanceof HTMLElement && n.classList.contains('sr-only')),
+    );
+    expect(shown.map((n) => n.textContent).join('')).toBe('Gmail');
+    expect(name.querySelector('.sr-only')?.textContent).toBe(', signed in as bob@x.com');
+    fireEvent.pointerMove(name, { pointerType: 'mouse' });
+    expect((await screen.findByRole('tooltip')).textContent).toBe('bob@x.com');
+  });
+
+  it('the account tooltip opens on keyboard focus too', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') })]);
+    renderTab();
+    const name = await screen.findByTestId('connector-name-gmail');
+    expect(name.getAttribute('tabindex')).toBe('0');
+    name.focus();
+    expect((await screen.findByRole('tooltip')).textContent).toBe('bob@x.com');
+  });
+
+  it('a row with no recorded account is just its name, with no tooltip', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: { account: null, byName: null, byYou: false, at: null } })]);
+    renderTab();
+    const name = await screen.findByTestId('connector-name-gmail');
+    expect(name.textContent).toBe('Gmail');
+    expect(name.getAttribute('tabindex')).toBeNull();
+    fireEvent.pointerMove(name, { pointerType: 'mouse' });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('renders a hostile account as literal text, never markup', async () => {
+    const evil = '<img src=x onerror=alert(1)>\u202Egro.live';
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn(evil) })]);
+    renderTab();
+    const name = await screen.findByTestId('connector-name-gmail');
+    expect(name.querySelector('.sr-only')?.textContent).toBe(`, signed in as ${evil}`);
+    expect(name.querySelector('bdi')?.textContent).toBe(evil);
+    expect(name.querySelector('img')).toBeNull();
+    expect(document.querySelector('img[src="x"]')).toBeNull();
+  });
+
+  it('the row menu starts with the account, as a plain label above the actions', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') })]);
+    renderTab();
+    const menu = await openMenu('Gmail');
+    const label = within(menu).getByTestId('row-menu-account');
+    expect(label.textContent).toBe('bob@x.com');
+    // Smaller and lighter than the actions: context, not something to pick.
+    expect(label.className).toContain('text-xs');
+    expect(label.className).toContain('text-muted-foreground');
+    // Clipped, not ellipsized; it fits here, so no fade.
+    expect(label.className).toContain('overflow-hidden');
+    expect(label.className).not.toContain('truncate');
+    expect(label.dataset.overflow).toBeUndefined();
+    // Smaller and lighter than the actions: context, not something to pick.
+    expect(label.className).toContain('text-xs');
+    expect(label.className).toContain('text-muted-foreground');
+    // First thing in the menu, and not something you can pick.
+    expect(menu.firstElementChild?.contains(label) || menu.firstElementChild === label).toBe(true);
+    expect(label.getAttribute('role')).not.toBe('menuitem');
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).not.toContain('bob@x.com');
+    // Provider text isolated, as on the row.
+    expect(label.querySelector('bdi')?.textContent).toBe('bob@x.com');
+  });
+
+  it('a long account is clipped and faded out at the edge, never ellipsized', async () => {
+    const long = 'a-very-long-service-account-name@some-really-long-company-domain.example.com';
+    const sw = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth');
+    const cw = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get: () => 400 });
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 256 });
+    try {
+      list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn(long) })]);
+      renderTab();
+      const menu = await openMenu('Gmail');
+      const label = within(menu).getByTestId('row-menu-account');
+      await waitFor(() => expect(label.dataset.overflow).toBe('true'));
+      expect(label.className).toContain('data-[overflow=true]:[mask-image:');
+      expect(label.textContent).toBe(long);
+      // The whole account is still there on hover.
+      expect(label.getAttribute('title')).toBe(long);
+    } finally {
+      if (sw) Object.defineProperty(HTMLElement.prototype, 'scrollWidth', sw);
+      if (cw) Object.defineProperty(HTMLElement.prototype, 'clientWidth', cw);
+    }
+  });
+
+  it('a row menu with no recorded account has no account label', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: { account: null, byName: null, byYou: false, at: null } })]);
+    renderTab();
+    const menu = await openMenu('Gmail');
+    expect(within(menu).queryByTestId('row-menu-account')).toBeNull();
+  });
+
+  async function signInAgainAs(before: string | null, after: string | null) {
+    list([EXPIRED(before)]);
+    renderTab();
+    const menu = await openMenu('Gmail');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in again' }));
+    const dialog = await screen.findByRole('dialog');
+    list([row({ id: 'gmail', name: 'Gmail', health: 'ok', signedIn: signedIn(after) })]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Finish sign-in' }));
+    // The re-read has landed once the row wears its new health.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(connectorsMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /Sign-in expired/ })).toBeNull(),
+    );
+  }
+
+  it('signing in again as a different account says so: "Now b@x (was a@x)", each account isolated', async () => {
+    await signInAgainAs('a@x', 'b@x');
+    const note = await screen.findByText(
+      (_c, el) => el?.tagName === 'P' && el.textContent === 'Now b@x (was a@x)',
+    );
+    expect([...note.querySelectorAll('bdi')].map((b) => b.textContent)).toEqual(['b@x', 'a@x']);
+  });
+
+  it.each([
+    ['the same account', 'a@x', 'a@x'],
+    ['no account recorded before', null, 'b@x'],
+    ['no account reported now', 'a@x', null],
+  ])('says nothing extra for %s', async (_label, before, after) => {
+    await signInAgainAs(before, after);
+    expect(screen.queryByText(/^Now /)).toBeNull();
   });
 });

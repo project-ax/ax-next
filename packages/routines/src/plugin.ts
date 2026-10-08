@@ -11,7 +11,9 @@ import {
 } from './sync.js';
 import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
-import { createFireRoutine, type PendingFires } from './fire.js';
+import {
+  createFireRoutine, stashConnectorsSkipped, warningFor, type PendingFires,
+} from './fire.js';
 import { applySilenceLogic } from './silence.js';
 import { parseRoutineRow } from './parse-routine.js';
 import { durationToSeconds } from '@ax/validator-routine';
@@ -105,6 +107,8 @@ export function createRoutinesPlugin(
       subscribes: [
         'workspace:applied',
         'chat:turn-end',
+        // Slice 6 — what a routine fire's turn went without (keyed by reqId).
+        'chat:connectors-skipped',
         'agents:webhook-token-rotated',
         'agents:deleted',
       ],
@@ -182,6 +186,27 @@ export function createRoutinesPlugin(
         },
       );
 
+      // Slice 6 — chat-orchestrator fires this (awaited, bounded) before the
+      // turn runs, for every turn that went without a connector. A routine
+      // fire's turn carries its fire's reqId, so the skips land on the
+      // pending entry before chat:turn-end takes it. Chat turns' reqIds are
+      // not in `pending` and are ignored. A map write only — it must stay
+      // fast, because the turn waits on it. Mirrors the orchestrator's
+      // `ConnectorsSkippedPayload`; validated inside, never trusted.
+      bus.subscribe<unknown>(
+        'chat:connectors-skipped', PLUGIN_NAME,
+        async (ctx, payload) => {
+          try {
+            stashConnectorsSkipped(pending, payload, ctx.logger);
+          } catch (err) {
+            ctx.logger.warn('routines_connectors_skipped_failed', {
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+          return undefined;
+        },
+      );
+
       bus.subscribe<{
         reqId?: string;
         contentBlocks?: unknown[];
@@ -192,6 +217,9 @@ export function createRoutinesPlugin(
         const pf = pending.get(reqId);
         if (pf === undefined) return undefined;
         pending.delete(reqId);
+        // Slice 6 — recorded on the fire row and as the routine's
+        // last_warning; null clears the previous run's.
+        const warning = warningFor(pf);
         try {
           const blocks = payload.contentBlocks ?? [];
           const decision = applySilenceLogic(blocks, {
@@ -246,6 +274,7 @@ export function createRoutinesPlugin(
               conversationId: pf.conversationId,
               status: 'silenced', error: null,
               renderedPrompt: pf.renderedPrompt,
+              warning,
             });
           } else {
             await localStore.recordFire({
@@ -254,6 +283,7 @@ export function createRoutinesPlugin(
               conversationId: pf.conversationId,
               status: 'ok', error: null,
               renderedPrompt: pf.renderedPrompt,
+              warning,
             });
           }
         } catch (err) {

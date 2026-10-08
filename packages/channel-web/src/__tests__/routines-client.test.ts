@@ -86,6 +86,36 @@ describe('lib/routines', () => {
     expect(out[0]!.lastRunAt).toBeNull();
   });
 
+  it('list carries lastWarning through, and reads a missing or blank one as null', async () => {
+    const row = {
+      agentId: 'agt_a',
+      path: 'p',
+      name: 'r',
+      description: 'd',
+      trigger: { kind: 'interval', every: '24h' },
+      conversation: 'shared',
+      lastStatus: 'ok',
+      lastError: null,
+      lastRunAt: '2026-05-17T00:00:00.000Z',
+    };
+    mockJson(200, {
+      routines: [
+        { ...row, lastWarning: "Gmail isn't signed in on Bob, so this run went without it." },
+        { ...row, lastWarning: null },
+        // An older host that predates the field, and a blank one: neither draws a line.
+        { ...row },
+        { ...row, lastWarning: '   ' },
+      ],
+    });
+    const out = await routines.list();
+    expect(out.map((r) => r.lastWarning)).toEqual([
+      "Gmail isn't signed in on Bob, so this run went without it.",
+      null,
+      null,
+      null,
+    ]);
+  });
+
   it('recentFires URL-encodes the agentId', async () => {
     mockJson(200, { fires: [] });
     await routines.recentFires({ agentId: 'agt:with/slash', path: 'p' });
@@ -118,6 +148,34 @@ describe('lib/routines', () => {
     });
     const out = await routines.recentFires({ agentId: 'a', path: 'p' });
     expect(out[0]!.firedAt instanceof Date).toBe(true);
+  });
+
+  it('recentFires carries a fire warning through, and reads a missing or blank one as null', async () => {
+    const fire = {
+      agentId: 'a',
+      path: 'p',
+      firedAt: '2026-05-17T01:23:45.000Z',
+      triggerSource: 'tick',
+      status: 'ok',
+      error: null,
+      conversationId: 'cnv',
+      renderedPrompt: 'hello',
+    };
+    mockJson(200, {
+      fires: [
+        { ...fire, warning: 'Gmail needs to be signed in again on Bob, so this run went without it.' },
+        { ...fire, warning: null },
+        { ...fire },
+        { ...fire, warning: '' },
+      ],
+    });
+    const out = await routines.recentFires({ agentId: 'a', path: 'p' });
+    expect(out.map((f) => f.warning)).toEqual([
+      'Gmail needs to be signed in again on Bob, so this run went without it.',
+      null,
+      null,
+      null,
+    ]);
   });
 
   it('fireNow posts payload when provided', async () => {

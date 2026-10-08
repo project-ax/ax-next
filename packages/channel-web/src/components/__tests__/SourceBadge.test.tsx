@@ -3,7 +3,6 @@ import { render, screen } from '@testing-library/react';
 import {
   SourceBadge,
   skillSource,
-  connectorSource,
 } from '../SourceBadge';
 
 describe('SourceBadge', () => {
@@ -25,18 +24,5 @@ describe('skillSource', () => {
   });
   it("maps 'user' scope → private (no badge)", () => {
     expect(skillSource('user')).toBe('private');
-  });
-});
-
-describe('connectorSource', () => {
-  it('a shared connector is catalog-sourced', () => {
-    expect(
-      connectorSource({ visibility: 'shared' }),
-    ).toBe('catalog');
-  });
-  it('a private connector shows no badge', () => {
-    expect(
-      connectorSource({ visibility: 'private' }),
-    ).toBe('private');
   });
 });

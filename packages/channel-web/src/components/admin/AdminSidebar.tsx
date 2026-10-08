@@ -13,6 +13,7 @@ import {
   Palette,
   Gauge,
   HardDrive,
+  Globe,
 } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
 import { SidebarSectionLabel } from '../SidebarSectionLabel';
@@ -21,21 +22,21 @@ import { cn } from '@/lib/utils';
 
 export type AdminTabId =
   // User tabs (every user) — the agent-centric Settings surface: Skills ·
-  // Connectors · Agents. Each connector is the single home for its own key(s);
-  // the separate Credentials tab was folded out (credentials-into-connectors).
+  // Sites · Agents. Sites holds the two per-person site lists (Allowed sites,
+  // Sites we read without asking) that used to sit under Connectors.
   // Agents are owner-scoped, so every user lists + manages their OWN agents here
-  // (attaching their own personal connectors/skills; workspace ones stay admin).
+  // (attaching connectors/skills; signing in happens in each agent's rail).
   | 'skills'
-  | 'connectors-user'
+  | 'sites'
   | 'agents'
   | 'routines'
   // TASK-690 — every person's own storage bar; an admin also sees the limit
   // form and everyone's usage inside the same tab, so the admin nav stays put.
   | 'storage'
   // Admin tabs (admins only) — genuinely workspace-level config with no user
-  // counterpart. The former catalog / admit-queue / connector-registry surfaces
-  // were folded out of the nav (settings-unified epic); their admin curation
-  // now lives inline inside the user Skills/Connectors tabs.
+  // counterpart. Connectors is one since slice 2a: only admins define
+  // connectors (each connector is still the single home for its own key(s)).
+  | 'connectors'
   | 'providers'
   | 'models'
   | 'model-config'
@@ -48,13 +49,15 @@ type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
 
 const USER_NAV: NavItem[] = [
   { id: 'skills', label: 'Skills', icon: Wrench },
-  { id: 'connectors-user', label: 'Connectors', icon: Plug },
+  { id: 'sites', label: 'Sites', icon: Globe },
   { id: 'agents', label: 'Agents', icon: User },
   { id: 'routines', label: 'Routines', icon: ListChecks },
   { id: 'storage', label: 'Storage', icon: HardDrive },
 ];
 
 export const ADMIN_NAV: NavItem[] = [
+  // Slice 2a — only admins define connectors, so it leads the Admin group.
+  { id: 'connectors', label: 'Connectors', icon: Plug },
   { id: 'providers', label: 'AI model keys', icon: KeyRound },
   { id: 'models', label: 'Models', icon: Layers },
   { id: 'model-config', label: 'Helper model', icon: Cpu },

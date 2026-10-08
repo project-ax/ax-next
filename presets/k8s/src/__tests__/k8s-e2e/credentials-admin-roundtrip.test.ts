@@ -12,12 +12,10 @@
  *      the encrypted blob never echoes in list responses.
  *   2. Scope coexistence — global + agent-scoped same `ref` are both
  *      listed and distinguishable by (scope, ownerId).
- *   3. /settings/credentials forces scope=user + ownerId=actor —
- *      proves the per-user route layer's ACL: even though the dev-
- *      bootstrap session is also the admin (single-user limitation),
- *      the route still pins ownerId=actor.id on the row. An admin
- *      GET /admin/credentials sees the result tagged scope=user with
- *      the right ownerId.
+ *
+ * (A third canary — /settings/credentials pinning scope=user — was deleted
+ * in SIGNINS-7: that per-person route is gone, and connector credentials
+ * are never stored per person.)
  *
  * (A previous OAuth /start canary lived here. Removed when I12 — provider
  * credentials are API-key-only — landed. The OAuth code paths
@@ -34,15 +32,6 @@
  *     unit-level scope-precedence.test.ts covers the resolution chain
  *     (user > agent > global) on the same plugin set; this canary's job
  *     is the wire layer + ACL, not the chat turn.
- *
- * Single-user dev-bootstrap limitation: the dev-bootstrap auth surface
- * always returns the same admin id. So scenario (3) effectively becomes
- * "admin POSTs to /settings/credentials and sees it under their own
- * ownerId" — the cross-user assertion ("alice can't see bob's") moves
- * to the unit-level settings-handlers.test.ts which already covers it.
- * What this canary uniquely proves: the LIVE cluster route correctly
- * forces ownerId=actor.id (vs. accepting whatever the body sent), and
- * the admin GET surface sees the user-scoped row with the right tags.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -50,9 +39,6 @@ import {
   seedAdminCredential,
   listAdminCredentials,
   deleteAdminCredential,
-  seedSettingsCredential,
-  listSettingsCredentials,
-  deleteSettingsCredential,
 } from './helpers.js';
 
 const SHOULD_RUN = process.env.AX_K8S_E2E === '1';
@@ -239,105 +225,6 @@ describeIfE2E('Phase F: credentials-admin canaries', () => {
             ownerId: agentOwner,
             ref,
           });
-        } catch {
-          // best-effort
-        }
-      }
-    }
-  });
-
-  // -------------------------------------------------------------------------
-  // (c) /settings/credentials forces scope=user + ownerId=actor.id.
-  //
-  // The route's load-bearing ACL: even though POST /settings/credentials
-  // only requires an authed user (no admin role), the row that lands MUST
-  // be tagged scope='user' and ownerId=actor.id — never whatever the body
-  // claimed. We verify that by:
-  //   1. POSTing as the dev-bootstrap user.
-  //   2. GET /settings/credentials — should list the new row.
-  //   3. GET /admin/credentials — should also see the row, and CRITICALLY
-  //      it must be tagged scope='user', ownerId=<actor.id>. If the route
-  //      had a bug that wrote scope='global' instead, the admin list would
-  //      show that, and this assertion would catch it.
-  //
-  // Single-user limitation: dev-bootstrap returns a single fixed admin id,
-  // so we can't run a "alice can't see bob's user creds" cross-user
-  // assertion here. That's covered by settings-handlers.test.ts at unit
-  // level (the route handler only ever returns the actor's own rows).
-  // -------------------------------------------------------------------------
-  it('/settings/credentials forces scope=user + ownerId=actor.id', async () => {
-    const { cookie, userId } = await signIn();
-    const ref = `phase-f-settings-${Date.now()}`;
-    const payload = 'sk-user-do-not-leak';
-    let seeded = false;
-
-    try {
-      // POST through /settings/credentials. The helper deliberately doesn't
-      // accept scope/ownerId — those are server-side forced. So this call
-      // shape mirrors what the SettingsPanel UI does.
-      await seedSettingsCredential(cookie, {
-        ref,
-        kind: 'api-key',
-        payload,
-      });
-      seeded = true;
-
-      // GET /settings/credentials — actor sees their own row.
-      const settingsList = await listSettingsCredentials(cookie);
-      const settingsRow = settingsList.find((c) => c.ref === ref);
-      expect(
-        settingsRow,
-        `seeded user-scoped credential not in /settings list: ${JSON.stringify(settingsList)}`,
-      ).toBeDefined();
-      expect(settingsRow).toMatchObject({
-        scope: 'user',
-        ownerId: userId,
-        ref,
-        kind: 'api-key',
-      });
-      // Same metadata-only contract as the admin route.
-      expect(JSON.stringify(settingsList)).not.toContain(payload);
-
-      // GET /admin/credentials — admin (same dev-bootstrap user) sees the
-      // user-scoped row across the full scope axis. The load-bearing tags
-      // here are scope='user' and ownerId=<actor.id>: a bug that wrote the
-      // row at scope='global' (or under a stale ownerId) would surface
-      // exactly here.
-      const adminList = await listAdminCredentials(cookie);
-      const adminRow = adminList.find(
-        (c) => c.ref === ref && c.scope === 'user',
-      );
-      expect(
-        adminRow,
-        `seeded user-scoped credential not in /admin list under scope=user: ${JSON.stringify(adminList)}`,
-      ).toBeDefined();
-      expect(adminRow).toMatchObject({
-        scope: 'user',
-        ownerId: userId,
-        ref,
-        kind: 'api-key',
-      });
-      // Defensive: no row at scope='global' or 'agent' for this ref —
-      // catches a "settings route accepted a body-supplied scope" bug.
-      expect(
-        adminList.find((c) => c.ref === ref && c.scope !== 'user'),
-        `unexpected non-user-scope row for ref ${ref}: ${JSON.stringify(adminList.filter((c) => c.ref === ref))}`,
-      ).toBeUndefined();
-
-      // DELETE through /settings/credentials. Same actor-pinning ACL
-      // applies — the route doesn't need scope/ownerId on the URL.
-      await deleteSettingsCredential(cookie, { ref });
-      seeded = false;
-
-      const afterDelete = await listSettingsCredentials(cookie);
-      expect(afterDelete.find((c) => c.ref === ref)).toBeUndefined();
-      // And the admin view also reflects the delete.
-      const adminAfter = await listAdminCredentials(cookie);
-      expect(adminAfter.find((c) => c.ref === ref)).toBeUndefined();
-    } finally {
-      if (seeded) {
-        try {
-          await deleteSettingsCredential(cookie, { ref });
         } catch {
           // best-effort
         }

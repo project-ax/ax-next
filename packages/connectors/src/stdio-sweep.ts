@@ -49,21 +49,26 @@ export async function sweepStdioConnectors(
         const connector = {
           id: row.connector_id,
           keyMode: row.key_mode,
-          visibility: row.visibility,
           capabilities: shape.data,
         } as unknown as PurgeableConnector;
         // Global refs carry no owner. If another owner's live, non-stdio
-        // connector keeps this id, its company key may be that very ref: purge
-        // only the owner-scoped (user) refs and still announce the removal.
+        // connector keeps this id, its company key may be that very ref: skip
+        // the global purge and still announce the removal.
         const shared = await hasSurvivingSameIdConnectorForSystemSweep(db, row.connector_id);
         if (shared) {
           ctx.logger.info('connectors_stdio_sweep_skipped_global_purge', {
             connectorId: row.connector_id,
-            // The owner's own (user-scope) key is still purged below.
-            ownKeyPurged: true,
           });
         }
-        await purgeConnectorState(bus, ctx, row.owner_user_id, connector, { purgeGlobal: !shared });
+        await purgeConnectorState(bus, ctx, row.owner_user_id, connector, {
+          purgeGlobal: !shared,
+          // Sign-ins are keyed by id alone: purge them even when a survivor
+          // carries the id, or it would read a token minted for the stdio one.
+          purgeAgentSignIns: true,
+          // Every stdio row with this id goes in this sweep, so the id stays in
+          // use exactly when a surviving non-stdio connector carries it.
+          idStillLive: shared,
+        });
       } else {
         ctx.logger.warn('connectors_stdio_sweep_unparseable', { connectorId: row.connector_id });
       }

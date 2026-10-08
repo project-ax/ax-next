@@ -468,27 +468,28 @@ describe('credentials:has — non-resolving presence check', () => {
       };
     }
 
+    // Connector credentials live on the agent (slice 5), so these rows are agent-scope.
     async function blobOf(bus: HookBus, ownerId: string, ref: string): Promise<Uint8Array> {
       const ctx = makeAgentContext({ sessionId: 's', agentId: 'seed', userId: 'admin' });
       const out = await bus.call<
-        { scope: 'user'; ownerId: string; ref: string },
+        { scope: 'agent'; ownerId: string; ref: string },
         { blob: Uint8Array | undefined }
-      >('credentials:store-blob:get', ctx, { scope: 'user', ownerId, ref });
+      >('credentials:store-blob:get', ctx, { scope: 'agent', ownerId, ref });
       if (out.blob === undefined) throw new Error('row missing');
       return out.blob;
     }
 
     it('an mcp-oauth row is present with ZERO resolver calls and no re-store; get DOES call it', async () => {
       const resolverCalls: unknown[] = [];
-      const bus = await makeBus({ extra: [mcpOauthResolverPlugin(resolverCalls)] });
-      await seed(bus, 'user', 'bob', 'account:linear', 'REFRESH-TOKEN-PAYLOAD', 'mcp-oauth');
-      const before = await blobOf(bus, 'bob', 'account:linear');
-      const { ctx, lines } = recordingCtx({ userId: 'bob' });
+      const bus = await makeBus({ agentAllows: true, extra: [mcpOauthResolverPlugin(resolverCalls)] });
+      await seed(bus, 'agent', 'team-agent', 'account:linear', 'REFRESH-TOKEN-PAYLOAD', 'mcp-oauth');
+      const before = await blobOf(bus, 'team-agent', 'account:linear');
+      const { ctx, lines } = recordingCtx({ agentId: 'team-agent', userId: 'bob' });
 
       // has: present, resolver untouched, stored row byte-identical (no credentials:set).
       expect(await has(bus, ctx, 'account:linear', 'bob')).toEqual({ present: true });
       expect(resolverCalls).toHaveLength(0);
-      expect(Buffer.from(await blobOf(bus, 'bob', 'account:linear')).equals(Buffer.from(before))).toBe(
+      expect(Buffer.from(await blobOf(bus, 'team-agent', 'account:linear')).equals(Buffer.from(before))).toBe(
         true,
       );
       const logged = JSON.stringify(lines);
@@ -500,14 +501,14 @@ describe('credentials:has — non-resolving presence check', () => {
       expect(await get(bus, ctx, 'account:linear', 'bob')).toBe('ACCESS-TOKEN');
       expect(resolverCalls).toHaveLength(1);
       expect(
-        Buffer.from(await blobOf(bus, 'bob', 'account:linear')).equals(Buffer.from(before)),
+        Buffer.from(await blobOf(bus, 'team-agent', 'account:linear')).equals(Buffer.from(before)),
       ).toBe(false);
     });
 
     it('a row of a kind with NO resolver loaded is still present (presence, not usability)', async () => {
-      const bus = await makeBus();
-      await seed(bus, 'user', 'bob', 'account:linear', 'X', 'mcp-oauth');
-      const { ctx } = recordingCtx({ userId: 'bob' });
+      const bus = await makeBus({ agentAllows: true });
+      await seed(bus, 'agent', 'team-agent', 'account:linear', 'X', 'mcp-oauth');
+      const { ctx } = recordingCtx({ agentId: 'team-agent', userId: 'bob' });
       expect(await has(bus, ctx, 'account:linear', 'bob')).toEqual({ present: true });
       // get fails closed on the same row — has is deliberately weaker.
       await expect(get(bus, ctx, 'account:linear', 'bob')).rejects.toMatchObject({

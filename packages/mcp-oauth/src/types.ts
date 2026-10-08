@@ -60,14 +60,24 @@ export interface PendingAuthorization {
   resource: string;
   scope: string | undefined;
   /**
-   * The credential STORAGE scope the token will be written under once the
-   * callback completes. Distinct from `scope` (the OAuth scopes string).
-   *   'user'  — personal agent: one connection, shared across all the owner's agents.
-   *   'agent' — team agent: each agent holds its own token; sharees ride along.
+   * Which flow started this authorization:
+   *   'add'           — adding the connector to the agent; the callback attaches it.
+   *   'sign-in-again' — the connector is already on the agent; nothing is attached.
+   * A row without a known value reads as 'sign-in-again', so it never attaches.
    */
-  credScope: 'user' | 'agent';
+  mode: SignInMode;
+  /**
+   * Slice 4 — `begin` added the `openid`/`email` identity scopes to `scope`.
+   * An `invalid_scope` answer to such an authorization sets the skip flag
+   * keyed per (agent, connector, authorization server) — only once the
+   * callback's agent re-check passes. Absent reads as false.
+   */
+  identityScope?: boolean;
   createdAt: number;
 }
+
+/** The two flows a sign-in can belong to (see {@link PendingAuthorization.mode}). */
+export type SignInMode = 'add' | 'sign-in-again';
 
 /** The OAuth client credentials the token-endpoint calls need. */
 export interface OAuthClientCredentials {

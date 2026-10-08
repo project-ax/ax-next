@@ -13,7 +13,8 @@ import type { MarkerOwner } from './store.js';
 export interface McpOAuthResolveInput {
   payload: Uint8Array; userId: string; ref: string;
   /** TASK-756 — the vault scope + owner of the row `payload` came from. Optional
-   *  so a direct (non-vault) caller still works; absent reads as the caller's own. */
+   *  so a direct (non-vault) caller still works; only an `agent` row has a
+   *  "sign-in expired" marker (slice 5), so anything else touches none. */
   scope?: 'user' | 'agent' | 'global';
   ownerId?: string | null;
   /** TASK-817 — the caller presented this ref's last value and the service
@@ -72,16 +73,19 @@ export interface ResolverDeps {
 
 /**
  * TASK-756 — whose sign-in a resolve is about: the token's OWNER, read from the
- * vault row it came from. An agent-scope row is a team agent's shared sign-in,
- * so its marker is the agent's — one member reconnecting clears it for all.
- * Everything else (a user row, a global row, a caller that did not say) stays
- * keyed on the person resolving, as before.
+ * vault row it came from. An agent-scope row is that agent's own sign-in (a
+ * personal agent's or a team agent's alike), so its marker is the agent's —
+ * on a team agent one admin signing in again clears it for every member.
+ *
+ * Slice 5 — every sign-in lives on an agent, so only an agent-scope row has a
+ * marker owner. Anything else (a global row, a caller that did not say) gets
+ * `null`: no marker is read, written or cleared for it.
  */
-export function markerOwnerOf(input: McpOAuthResolveInput): MarkerOwner {
+export function markerOwnerOf(input: McpOAuthResolveInput): MarkerOwner | null {
   if (input.scope === 'agent' && typeof input.ownerId === 'string' && input.ownerId.length > 0) {
     return { kind: 'agent', agentId: input.ownerId };
   }
-  return { kind: 'user', userId: input.userId };
+  return null;
 }
 
 /** The vault ref the OAuth callback stores a connector's token under. */
@@ -136,26 +140,28 @@ export function createMcpOAuthResolver(deps: ResolverDeps) {
   const resolveToken = createTokenResolver(deps, async (input) => {
     if (input.rejected === true) return true;
     const connectorId = connectorIdOfRef(input.ref);
-    if (marker?.isMarked === undefined || connectorId === null) return false;
-    return marker.isMarked(markerOwnerOf(input), connectorId).catch(() => false);
+    const owner = markerOwnerOf(input);
+    if (marker?.isMarked === undefined || connectorId === null || owner === null) return false;
+    return marker.isMarked(owner, connectorId).catch(() => false);
   });
   if (marker === undefined) return resolveToken;
   return async function resolve(input: McpOAuthResolveInput): Promise<McpOAuthResolveOutput> {
     const connectorId = connectorIdOfRef(input.ref);
+    const owner = markerOwnerOf(input);
     let out: McpOAuthResolveOutput;
     try {
       out = await resolveToken(input);
     } catch (err) {
-      if (err instanceof NeedsReconnectError && connectorId !== null) {
-        await marker.mark(markerOwnerOf(input), connectorId).catch(() => undefined);
+      if (err instanceof NeedsReconnectError && connectorId !== null && owner !== null) {
+        await marker.mark(owner, connectorId).catch(() => undefined);
       }
       throw err;
     }
     // Only a REFRESH proves the authorization server still accepts this sign-in;
     // an unexpired token answered from the blob proves nothing new, and clearing
     // on every resolve would put a write on the hot path.
-    if (out.refreshed !== undefined && connectorId !== null) {
-      await marker.clear(markerOwnerOf(input), connectorId).catch(() => undefined);
+    if (out.refreshed !== undefined && connectorId !== null && owner !== null) {
+      await marker.clear(owner, connectorId).catch(() => undefined);
     }
     return out;
   };

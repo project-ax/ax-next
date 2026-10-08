@@ -16,7 +16,6 @@ const SUMMARY: ConnectorSummary = {
   description: 'Drive files.',
   usageNote: '',
   keyMode: 'workspace',
-  visibility: 'shared',
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
 };
@@ -39,20 +38,22 @@ describe('LegacyConnectorEditDialog — whose key (TASK-827)', () => {
 
   it('editing an existing connector disables the choice and says how to change it', async () => {
     render(
-      <LegacyConnectorEditDialog target={SUMMARY} open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+      <LegacyConnectorEditDialog target={SUMMARY} open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     const trigger = await screen.findByLabelText('Whose key');
-    await waitFor(() => expect(trigger).toHaveTextContent(/Shared/));
+    await waitFor(() => expect(trigger).toHaveTextContent(/One shared key for everyone/));
     expect(trigger).toBeDisabled();
     expect(screen.getByText(LOCKED)).toBeInTheDocument();
   });
 
   it('a new connector can still pick whose key', async () => {
     render(
-      <LegacyConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+      <LegacyConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     const trigger = await screen.findByLabelText('Whose key');
     expect(trigger).toBeEnabled();
     expect(screen.queryByText(LOCKED)).not.toBeInTheDocument();
+    // Slice 5 — a per-agent key is the default, and the words say whose.
+    expect(trigger).toHaveTextContent('Each agent adds its own key');
   });
 });

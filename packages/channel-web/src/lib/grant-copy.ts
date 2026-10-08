@@ -33,25 +33,17 @@ import { humanizeId } from './humanize';
 import type { PermissionRequest } from '@/server/types';
 
 /**
- * THE TITLE IS THE SUBJECT OF THE CONSENT (see `GrantRow.tsx`'s own note on
- * why an empty/undefined connector name must fall back rather than render
- * "Connect undefined"). Pulled out here so `thread-find.ts` cannot compute a
- * different title for the same grant.
+ * THE TITLE IS THE SUBJECT OF THE CONSENT (see `GrantRow.tsx`'s own note).
+ * Pulled out here so `thread-find.ts` cannot compute a different title for the
+ * same grant.
  */
 export function grantTitle(request: PermissionRequest): string {
   if (request.kind === 'host') return `Allow access to ${request.host}?`;
-  if (request.kind === 'connector') {
-    const name =
-      typeof request.name === 'string' && request.name.trim().length > 0
-        ? request.name
-        : humanizeId(request.connectorId);
-    return `Connect ${name}`;
-  }
   return `Connect ${humanizeId(request.skillId)}`;
 }
 
 /**
- * Skill grants only — connectors and hosts have no free-text description
+ * Skill grants only — hosts have no free-text description
  * field. Coalesced to `''` rather than validated, same reasoning as
  * `GrantRow.tsx`'s own comment: a missing description is still an answerable
  * row, just a plainer-looking one.
@@ -73,7 +65,8 @@ export function grantPackagesVisible(request: PermissionRequest): boolean {
 }
 
 /**
- * The reassurance line, shared by the skill and connector cards.
+ * The reassurance line on every grant card (`GrantRow`: skill and site grants;
+ * the in-chat connector card was removed in slice 2c).
  *
  * `workspace/ApprovalCard.tsx` has said something like this for a while and it
  * is the reason that surface reads as trustworthy: it tells you what the button
@@ -86,6 +79,17 @@ export function grantPackagesVisible(request: PermissionRequest): boolean {
 export const GRANT_REASSURANCE =
   'Connecting lets this agent do this from now on. Nothing happens until you ' +
   'choose, and you can change it later in Settings.';
+
+/**
+ * Slice 5 — a connector's key or sign-in is the agent's or the workspace's,
+ * never the person answering the card, so the card asks for none. SIGNINS-7:
+ * the card can't tell a connector already on the agent (only its sign-in
+ * missing) from one not added yet, so one sentence covers both and points at
+ * the agent's Connectors tab, which fixes either.
+ */
+export function connectorSetupHint(service: string): string {
+  return `Add ${humanizeId(service)} to this agent, or sign it in, from its Connectors tab.`;
+}
 
 /**
  * The single trust moment of the product: we are asking for a secret.
@@ -150,10 +154,6 @@ export const PACKAGES_LINE =
 export const AUTHORED_SKILL_WARNING =
   'Your assistant wrote this skill itself, just now. Connect it only if you ' +
   'were expecting that.';
-
-export const AUTHORED_CONNECTOR_WARNING =
-  'Your assistant wrote this connector itself, just now. Connect it only if ' +
-  'you were expecting that.';
 
 /**
  * The reactive egress wall. Note the curly apostrophe in "isn’t" — it is the

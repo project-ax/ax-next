@@ -2,10 +2,11 @@
 // SSRF-guarded, size-capped, time-boxed fetch for the connector tool inventory.
 //
 // Why this exists: `connectors:describe-tools` makes a HOST-side request to a
-// URL that a connector author typed. Any signed-in user can author a private
-// connector, so that URL is untrusted input — pointed at
+// URL that a connector author typed. Connector URLs are admin-written, but
+// still hostile input: one can be mistyped, the server can change hands, or an
+// admin account can be compromised. Pointed at
 // `http://169.254.169.254/` or an in-cluster service it would turn the host
-// into a proxy for the user. Connector MCP traffic from a SESSION goes through
+// into a proxy for the caller. Connector MCP traffic from a SESSION goes through
 // the credential-proxy, which blocks private IPs; this module is the host-side
 // equivalent for the one request the host itself makes.
 //

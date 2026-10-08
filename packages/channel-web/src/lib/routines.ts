@@ -43,6 +43,13 @@ export interface Routine {
   lastStatus: FireStatus | null;
   lastRunAt: Date | null;
   lastError: string | null;
+  /**
+   * One plain sentence when the most recent run went without a connector
+   * ("Gmail isn't signed in on Bob, so this run went without it."), or null.
+   * The host already sanitizes and caps it; it is still drawn as text only.
+   * A clean run clears it.
+   */
+  lastWarning: string | null;
   // The editable fields. All already returned by `routines:list`
   // (RoutineRow) and relayed whole by the route — the editor seeds its form
   // from these when editing an existing routine.
@@ -68,6 +75,11 @@ export interface Fire {
   triggerSource: FireSource;
   status: FireStatus;
   error: string | null;
+  /**
+   * The same kind of sentence as `Routine.lastWarning`, for this one fire. A
+   * run that went without a connector still finished, so this is not `error`.
+   */
+  warning: string | null;
   conversationId: string | null;
   renderedPrompt: string | null;
 }
@@ -202,9 +214,17 @@ function asValidDate(s: string | null | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * A warning sentence, or null. A host that predates the field omits it and a
+ * blank string says nothing, so neither draws an empty warning line.
+ */
+function asWarning(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() !== '' ? v : null;
+}
+
 function hydrateRoutine(raw: unknown): Routine {
   const r = raw as Routine & { lastRunAt: string | null };
-  return { ...r, lastRunAt: asValidDate(r.lastRunAt) };
+  return { ...r, lastRunAt: asValidDate(r.lastRunAt), lastWarning: asWarning(r.lastWarning) };
 }
 
 function hydrateFire(raw: unknown): Fire {
@@ -213,7 +233,7 @@ function hydrateFire(raw: unknown): Fire {
   // still render *something* — `Fire.firedAt` is non-nullable per the
   // type contract, and a row missing its timestamp is a data bug we'd
   // rather surface as "Jan 1, 1970" than crash the whole panel.
-  return { ...f, firedAt: asValidDate(f.firedAt) ?? new Date(0) };
+  return { ...f, firedAt: asValidDate(f.firedAt) ?? new Date(0), warning: asWarning(f.warning) };
 }
 
 export const routines = {

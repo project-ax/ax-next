@@ -3,8 +3,8 @@
 //
 //   1. Validate input; if an agent is named, `agents:resolve` it for this user
 //      (the agent selects a credential scope, so it must be the caller's).
-//   2. `connectors:resolve {userId, connectorId}` — visibility is enforced
-//      there; a connector the user can't see throws `not-found` through us.
+//   2. `connectors:resolve {userId, connectorId}` — access is enforced
+//      there; a connector the user can't resolve throws `not-found` through us.
 //   3. Cache: (user, agent, connector) row younger than its TTL → return it,
 //      unless `force`.
 //   4. For each http server: build auth headers from the connector's
@@ -492,7 +492,7 @@ export function createDescribeTools(deps: DescribeToolsDeps) {
       agentId: input.agentId ?? '',
       connectorId: input.connectorId,
     };
-    // Resolve BEFORE reading the cache: visibility is enforced there, and a
+    // Resolve BEFORE reading the cache: access is enforced there, and a
     // cached row must never outlive the caller's access to the connector.
     const connector = await deps.bus.call<{ userId: string; connectorId: string }, ResolvedConnector>(
       'connectors:resolve',

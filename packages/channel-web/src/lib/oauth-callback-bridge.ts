@@ -5,11 +5,26 @@
  * this module detects that, posts the outcome to the opener window (origin-locked),
  * and closes the popup. The main app never renders in the popup case.
  *
+ * Slice 3 — an error may carry `reason=<r>`. It is forwarded ONLY when it is one
+ * of the four fixed words (`parseOAuthFailureReason`); anything else is dropped,
+ * so no text from the URL or the provider ever crosses to the opener.
+ *
  * If there is no opener (full-page redirect fallback), returns false so the App
  * can render and handle the params itself (Task 12 — toast + param strip).
  */
 
+import { parseOAuthFailureReason, type OAuthFailureReason } from './oauth-failure';
+
 export const OAUTH_MESSAGE_TYPE = 'ax:oauth-callback';
+
+/** What the popup posts to its opener. */
+export interface OAuthCallbackMessage {
+  type: typeof OAUTH_MESSAGE_TYPE;
+  connector: string | undefined;
+  oauth: 'success' | 'error';
+  /** Only on an error, and only one of the four known reasons. */
+  reason?: OAuthFailureReason;
+}
 
 export interface OAuthReturnEnv {
   pathname: string;
@@ -36,10 +51,14 @@ export function handleOAuthReturn(env: OAuthReturnEnv): boolean {
   if (oauth !== 'success' && oauth !== 'error') return false;
 
   if (env.opener) {
-    env.opener.postMessage(
-      { type: OAUTH_MESSAGE_TYPE, connector, oauth },
-      env.origin,
-    );
+    const reason = oauth === 'error' ? parseOAuthFailureReason(p.get('reason')) : undefined;
+    const message: OAuthCallbackMessage = {
+      type: OAUTH_MESSAGE_TYPE,
+      connector,
+      oauth,
+      ...(reason !== undefined ? { reason } : {}),
+    };
+    env.opener.postMessage(message, env.origin);
     env.closeSelf();
     return true; // popup handled — caller must NOT boot the app
   }

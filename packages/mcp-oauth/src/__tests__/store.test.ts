@@ -42,6 +42,8 @@ afterEach(async () => {
       await k.schema.dropTable('mcp_oauth_v1_pending').ifExists().execute();
       await k.schema.dropTable('mcp_oauth_v1_clients').ifExists().execute();
       await k.schema.dropTable('mcp_oauth_v1_needs_reconnect').ifExists().execute();
+      await k.schema.dropTable('mcp_oauth_v1_needs_reconnect_agent').ifExists().execute();
+      await k.schema.dropTable('mcp_oauth_v1_identity_scope_refused').ifExists().execute();
     } catch {
       /* drained pool */
     }
@@ -54,6 +56,30 @@ afterAll(async () => {
 });
 
 describe('runMcpOAuthMigration', () => {
+  // Slice 5 — person-level markers went with person-level sign-ins.
+  it('drops the person-level marker table (rows and all), and a second migrate is fine', async () => {
+    const db = makeKysely();
+    await sql`
+      CREATE TABLE mcp_oauth_v1_needs_reconnect (
+        user_id TEXT NOT NULL, connector_id TEXT NOT NULL,
+        marked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, connector_id)
+      )`.execute(db);
+    await sql`INSERT INTO mcp_oauth_v1_needs_reconnect (user_id, connector_id) VALUES ('u1', 'gmail')`.execute(db);
+    const exists = async () =>
+      (
+        await sql<{ n: number }>`SELECT count(*)::int AS n FROM information_schema.tables
+          WHERE table_name = 'mcp_oauth_v1_needs_reconnect'`.execute(db)
+      ).rows[0]!.n;
+    expect(await exists()).toBe(1);
+    await runMcpOAuthMigration(db);
+    expect(await exists()).toBe(0);
+    await runMcpOAuthMigration(db);
+    expect(await exists()).toBe(0);
+    // The agent marker table is untouched by the drop.
+    expect(await db.selectFrom('mcp_oauth_v1_needs_reconnect_agent').selectAll().execute()).toEqual([]);
+  });
+
   it('is idempotent — runs twice without error', async () => {
     const db = makeKysely();
     await runMcpOAuthMigration(db);
@@ -100,6 +126,8 @@ describe('runMcpOAuthMigration', () => {
     expect(row.client_id).toBeNull();
     expect(row.client_secret).toBeNull();
     expect(row.issuer_required).toBe(false);
+    // An in-flight authorization from before slice 3 never auto-attaches.
+    expect(row.mode).toBe('sign-in-again');
   });
 });
 
@@ -126,7 +154,7 @@ describe('createMcpOAuthStore', () => {
       clientKey: 'my-connector|https://auth.example.com',
       resource: 'https://api.example.com',
       scope: 'read write',
-      credScope: 'agent',
+      mode: 'add',
       createdAt: Date.now(),
       ...overrides,
     };
@@ -199,9 +227,6 @@ describe('createMcpOAuthStore', () => {
     expect(first!.clientKey).toBe(pending.clientKey);
     expect(first!.resource).toBe(pending.resource);
     expect(first!.scope).toBe(pending.scope);
-    // credScope round-trips (default-case 'agent' from makePending).
-    expect(first!.credScope).toBe(pending.credScope);
-    expect(first!.credScope).toBe('agent');
 
     // Second call: row is gone, returns null
     const second = await store.consumePending(pending.state, now, ttlMs);
@@ -247,8 +272,6 @@ describe('createMcpOAuthStore', () => {
     expect(first!.state).toBe(pending.state);
     expect(first!.userId).toBe(pending.userId);
     expect(first!.codeVerifier).toBe(pending.codeVerifier);
-    // credScope survives a peek (default-case 'agent' from makePending).
-    expect(first!.credScope).toBe('agent');
     const second = await store.getPending(pending.state);
     expect(second).not.toBeNull();
 
@@ -270,18 +293,59 @@ describe('createMcpOAuthStore', () => {
     expect(await store.getPending('no-such-state')).toBeNull();
   });
 
-  it('round-trips credScope through put/get/consume', async () => {
+  // Slice 3 — the `cred_scope` column is unused: a row written before it (one
+  // meant for the signer) still reads and consumes, and the value is not surfaced.
+  it('a pre-slice-3 row with cred_scope=user still reads and consumes; the column is not surfaced', async () => {
     const db = makeKysely();
     await runMcpOAuthMigration(db);
     const store = createMcpOAuthStore(db);
 
-    await store.putPending({
-      state: 'st-cs', userId: 'u', agentId: '', connectorId: 'c', slot: 'S',
-      codeVerifier: 'v', authServerUrl: 'https://auth', clientKey: 'c|a',
-      resource: 'https://mcp', scope: 'read', credScope: 'user', createdAt: 1000,
-    }, 1000);
-    expect((await store.getPending('st-cs'))?.credScope).toBe('user');
-    expect((await store.consumePending('st-cs', 2000, 600000))?.credScope).toBe('user');
+    await sql`
+      INSERT INTO mcp_oauth_v1_pending
+        (state, user_id, agent_id, connector_id, slot, code_verifier, auth_server_url,
+         client_key, resource, scope, cred_scope, created_at)
+      VALUES ('st-cs', 'u', 'a1', 'c', 'S', 'v', 'https://auth', 'c|a', 'https://mcp', 'read', 'user', ${new Date()})
+    `.execute(db);
+    const peeked = await store.getPending('st-cs');
+    expect(peeked).toMatchObject({ state: 'st-cs', agentId: 'a1', mode: 'sign-in-again' });
+    expect(peeked).not.toHaveProperty('credScope');
+    expect(await store.consumePending('st-cs', Date.now(), 600000)).toMatchObject({ state: 'st-cs' });
+  });
+
+  // Agent-owned sign-ins (slice 3): the pending row records which flow began it.
+  it.each(['add', 'sign-in-again'] as const)('round-trips mode %s through put/get/consume', async (mode) => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+
+    await store.putPending(makePending({ state: `st-mode-${mode}`, mode }));
+    expect((await store.getPending(`st-mode-${mode}`))?.mode).toBe(mode);
+    expect((await store.consumePending(`st-mode-${mode}`, Date.now(), 60_000))?.mode).toBe(mode);
+  });
+
+  // An in-flight row from before the upgrade must never auto-attach: it reads
+  // as `sign-in-again`. So does a value this code does not know.
+  it('a row inserted without a mode (pre-upgrade) and an unknown mode both read as sign-in-again', async () => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+
+    await sql`
+      INSERT INTO mcp_oauth_v1_pending
+        (state, user_id, agent_id, connector_id, slot, code_verifier, auth_server_url, client_key, resource)
+      VALUES ('st-no-mode', 'u', 'a', 'c', 's', 'v', 'https://auth', 'c|https://auth', 'https://mcp')`.execute(db);
+    const raw = await db
+      .selectFrom('mcp_oauth_v1_pending')
+      .select(['mode'])
+      .where('state', '=', 'st-no-mode')
+      .executeTakeFirstOrThrow();
+    expect(raw.mode).toBe('sign-in-again');
+    expect((await store.getPending('st-no-mode'))?.mode).toBe('sign-in-again');
+
+    await store.putPending(makePending({ state: 'st-odd-mode' }));
+    await sql`UPDATE mcp_oauth_v1_pending SET mode = 'ADD' WHERE state = 'st-odd-mode'`.execute(db);
+    expect((await store.getPending('st-odd-mode'))?.mode).toBe('sign-in-again');
+    expect((await store.consumePending('st-odd-mode', Date.now(), 60_000))?.mode).toBe('sign-in-again');
   });
 
   // --- TASK-696: the pending row carries the client the authorization started with ---
@@ -337,76 +401,54 @@ describe('createMcpOAuthStore', () => {
     }
   });
 
-  describe('needs-reconnect marker (TASK-741)', () => {
-    const u = (userId: string) => ({ kind: 'user' as const, userId });
+  describe('needs-reconnect marker (TASK-741; agent-only since slice 5)', () => {
     const a = (agentId: string) => ({ kind: 'agent' as const, agentId });
-    const personal = async (
-      store: ReturnType<typeof createMcpOAuthStore>,
-      userId: string,
-      ids: string[],
-    ) => (await store.listNeedsReconnect(userId, undefined, ids)).personal.sort();
 
-    it('mark is idempotent, list filters by user + ids, clear removes only its row', async () => {
+    it('mark is idempotent, list filters by agent + ids, clear removes only its row', async () => {
       const db = makeKysely();
       await runMcpOAuthMigration(db);
       const store = createMcpOAuthStore(db);
-      expect(await store.listNeedsReconnect('u1', undefined, [])).toEqual({ personal: [], shared: [] });
-      await store.markNeedsReconnect(u('u1'), 'gmail');
-      await store.markNeedsReconnect(u('u1'), 'gmail');
-      await store.markNeedsReconnect(u('u1'), 'slack');
-      await store.markNeedsReconnect(u('u2'), 'gmail');
-      expect(await personal(store, 'u1', ['gmail', 'slack', 'linear'])).toEqual(['gmail', 'slack']);
-      expect(await personal(store, 'u1', ['linear'])).toEqual([]);
-      await store.clearNeedsReconnect(u('u1'), 'gmail');
-      expect(await personal(store, 'u1', ['gmail', 'slack'])).toEqual(['slack']);
-      expect(await personal(store, 'u2', ['gmail'])).toEqual(['gmail']);
-      // Clearing a row that is not there is a no-op, not an error.
-      await store.clearNeedsReconnect(u('u1'), 'gmail');
-    });
-
-    // TASK-756 — a team agent's shared sign-in is marked per AGENT.
-    it('an agent marker is read for every member and cleared once for all', async () => {
-      const db = makeKysely();
-      await runMcpOAuthMigration(db);
-      const store = createMcpOAuthStore(db);
+      expect(await store.listNeedsReconnect('team-1', [])).toEqual([]);
       await store.markNeedsReconnect(a('team-1'), 'gmail');
       await store.markNeedsReconnect(a('team-1'), 'gmail');
-      await store.markNeedsReconnect(a('team-2'), 'slack');
-      for (const member of ['u1', 'u2']) {
-        expect(await store.listNeedsReconnect(member, 'team-1', ['gmail', 'slack'])).toEqual({
-          personal: [],
-          shared: ['gmail'],
-        });
-      }
-      // Without the agent named, an agent's marker is nobody's personal one.
-      expect(await store.listNeedsReconnect('u1', undefined, ['gmail'])).toEqual({ personal: [], shared: [] });
-      // A user marker and an agent marker are separate rows.
-      await store.markNeedsReconnect(u('u1'), 'gmail');
+      await store.markNeedsReconnect(a('team-1'), 'slack');
+      await store.markNeedsReconnect(a('team-2'), 'gmail');
+      expect((await store.listNeedsReconnect('team-1', ['gmail', 'slack', 'linear'])).sort()).toEqual(['gmail', 'slack']);
+      expect(await store.listNeedsReconnect('team-1', ['linear'])).toEqual([]);
+      // An empty agent id names nobody.
+      expect(await store.listNeedsReconnect('', ['gmail'])).toEqual([]);
       await store.clearNeedsReconnect(a('team-1'), 'gmail');
-      expect(await store.listNeedsReconnect('u1', 'team-1', ['gmail'])).toEqual({
-        personal: ['gmail'],
-        shared: [],
-      });
-      expect(await store.listNeedsReconnect('u2', 'team-1', ['gmail'])).toEqual({ personal: [], shared: [] });
-      expect(await store.listNeedsReconnect('u2', 'team-2', ['slack'])).toEqual({ personal: [], shared: ['slack'] });
+      expect(await store.listNeedsReconnect('team-1', ['gmail', 'slack'])).toEqual(['slack']);
+      expect(await store.listNeedsReconnect('team-2', ['gmail'])).toEqual(['gmail']);
+      // Clearing a row that is not there is a no-op, not an error.
+      await store.clearNeedsReconnect(a('team-1'), 'gmail');
     });
 
     // TASK-817 — the resolver's single-owner read.
-    it('hasNeedsReconnect answers for exactly one owner + connector', async () => {
+    it('hasNeedsReconnect answers for exactly one agent + connector', async () => {
       const db = makeKysely();
       await runMcpOAuthMigration(db);
       const store = createMcpOAuthStore(db);
-      await store.markNeedsReconnect(u('u1'), 'gmail');
       await store.markNeedsReconnect(a('team-1'), 'slack');
-      expect(await store.hasNeedsReconnect(u('u1'), 'gmail')).toBe(true);
-      expect(await store.hasNeedsReconnect(u('u1'), 'slack')).toBe(false);
-      expect(await store.hasNeedsReconnect(u('u2'), 'gmail')).toBe(false);
       expect(await store.hasNeedsReconnect(a('team-1'), 'slack')).toBe(true);
-      // A user marker is not an agent marker, and the other way round.
-      expect(await store.hasNeedsReconnect(a('u1'), 'gmail')).toBe(false);
-      expect(await store.hasNeedsReconnect(u('team-1'), 'slack')).toBe(false);
-      await store.clearNeedsReconnect(u('u1'), 'gmail');
-      expect(await store.hasNeedsReconnect(u('u1'), 'gmail')).toBe(false);
+      expect(await store.hasNeedsReconnect(a('team-1'), 'gmail')).toBe(false);
+      expect(await store.hasNeedsReconnect(a('team-2'), 'slack')).toBe(false);
+      await store.clearNeedsReconnect(a('team-1'), 'slack');
+      expect(await store.hasNeedsReconnect(a('team-1'), 'slack')).toBe(false);
+    });
+
+    // Slice 5 — what the boot sweep asks connectors about.
+    it('listMarkedConnectorIds answers each marked connector id once', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      expect(await store.listMarkedConnectorIds()).toEqual([]);
+      await store.markNeedsReconnect(a('team-1'), 'gmail');
+      await store.markNeedsReconnect(a('team-2'), 'gmail');
+      await store.markNeedsReconnect(a('team-1'), 'slack');
+      expect(await store.listMarkedConnectorIds()).toEqual(['gmail', 'slack']);
+      await store.clearNeedsReconnect(a('team-1'), 'slack');
+      expect(await store.listMarkedConnectorIds()).toEqual(['gmail']);
     });
   });
 
@@ -457,7 +499,7 @@ describe('createMcpOAuthStore', () => {
   // (it is keyed by `${connectorId}|${authServerUrl}` and shared by every
   // agent), so it is deliberately out of reach of this method.
   describe('deleteAllForAgent (TASK-718)', () => {
-    it('deletes every pending handshake for the agent — any user, any cred scope — and nothing else', async () => {
+    it('deletes every pending handshake for the agent — any user, live or expired — and nothing else', async () => {
       const db = makeKysely();
       await runMcpOAuthMigration(db);
       const store = createMcpOAuthStore(db);
@@ -467,25 +509,37 @@ describe('createMcpOAuthStore', () => {
           state: 'g2',
           agentId: 'agt_gone',
           userId: 'u2',
-          credScope: 'user',
           clientId: 'cid',
           clientSecret: 'plaintext-secret',
         }),
       );
       await store.putPending(makePending({ state: 'g3', agentId: 'agt_gone', userId: 'u3' }), Date.now() - 60 * 60_000);
       await store.putPending(makePending({ state: 'k1', agentId: 'agt_kept', userId: 'u1' }));
-      await store.putPending(makePending({ state: 'k2', agentId: 'agt_kept', userId: 'u2', credScope: 'user' }));
+      await store.putPending(makePending({ state: 'k2', agentId: 'agt_kept', userId: 'u2' }));
       // The legacy shared client row: not agent-keyed, so it must survive.
       await db
         .insertInto('mcp_oauth_v1_clients')
         .values({ client_key: 'k|a', client_id: 'cid', client_secret: null, dynamic: true, created_at: new Date(0) })
         .execute();
 
-      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 3 });
+      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 3, markers: 0, identityScope: 0 });
 
       for (const s of ['g1', 'g2', 'g3']) expect(await store.getPending(s)).toBeNull();
       for (const s of ['k1', 'k2']) expect(await store.getPending(s)).not.toBeNull();
       expect(await store.getClient('k|a')).not.toBeNull();
+    });
+
+    it('also deletes the agent\'s reconnect markers, and only that agent\'s', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'agt_del' }, 'gmail');
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'agt_del' }, 'linear');
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'agt_keep' }, 'gmail');
+      const out = await store.deleteAllForAgent('agt_del');
+      expect(out.markers).toBe(2);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'agt_del' }, 'gmail')).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'agt_keep' }, 'gmail')).toBe(true);
     });
 
     it('is a no-op the second time', async () => {
@@ -496,7 +550,7 @@ describe('createMcpOAuthStore', () => {
       await store.putPending(makePending({ state: 'k1', agentId: 'agt_kept' }));
       await store.deleteAllForAgent('agt_gone');
 
-      expect(await store.deleteAllForAgent('agt_gone')).toEqual({ deleted: 0 });
+      expect(await store.deleteAllForAgent('agt_gone')).toMatchObject({ deleted: 0 });
       expect(await store.getPending('k1')).not.toBeNull();
     });
 
@@ -510,6 +564,86 @@ describe('createMcpOAuthStore', () => {
         await expect(store.deleteAllForAgent(bad)).rejects.toThrow(/agentId is required/);
       }
       expect(await store.getPending('k1')).not.toBeNull();
+    });
+  });
+
+  describe('deleteMarkersForConnector (slice 2b)', () => {
+    it('removes the connector\'s markers for every agent, and keeps other connectors\'', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail-2b');
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail-2b');
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear-2b');
+
+      await store.markIdentityScopeRefused('a1', 'gmail-2b', 'https://auth.a');
+      await store.markIdentityScopeRefused('a2', 'gmail-2b', 'https://auth.b');
+      await store.markIdentityScopeRefused('a1', 'linear-2b', 'https://auth.a');
+
+      expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ agent: 2, identityScope: 2 });
+
+      expect(await store.isIdentityScopeRefused('a1', 'gmail-2b', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('a2', 'gmail-2b', 'https://auth.b')).toBe(false);
+      expect(await store.isIdentityScopeRefused('a1', 'linear-2b', 'https://auth.a')).toBe(true);
+
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail-2b')).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail-2b')).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear-2b')).toBe(true);
+      expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ agent: 0, identityScope: 0 });
+    });
+
+    it('refuses an empty connectorId', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail-2b');
+      for (const bad of ['', undefined as unknown as string]) {
+        await expect(store.deleteMarkersForConnector(bad)).rejects.toThrow(/connectorId is required/);
+      }
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail-2b')).toBe(true);
+    });
+  });
+  // Slice 4 — the provider answered `invalid_scope` to a sign-in that carried
+  // the openid/email add-on. Keyed (connector, authorization server); `begin`
+  // asks before adding the identity scopes again.
+  describe('identity-scope skip flag (slice 4)', () => {
+    it('is absent until marked; marking twice keeps one row; keyed on agent, connector AND auth server', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      expect(await store.isIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a')).toBe(false);
+      await store.markIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a');
+      await store.markIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a');
+      expect(await store.isIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a')).toBe(true);
+      // A flag set through agent A says nothing about agent B.
+      expect(await store.isIdentityScopeRefused('agt-B', 'gmail', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-A', 'gmail', 'https://auth.b')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-A', 'linear', 'https://auth.a')).toBe(false);
+      const rows = await db.selectFrom('mcp_oauth_v1_identity_scope_refused').selectAll().execute();
+      expect(rows).toHaveLength(1);
+    });
+
+    it("deleteAllForAgent removes that agent's flags, and only that agent's", async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.markIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a');
+      await store.markIdentityScopeRefused('agt-A', 'linear', 'https://auth.a');
+      await store.markIdentityScopeRefused('agt-B', 'gmail', 'https://auth.a');
+      expect(await store.deleteAllForAgent('agt-A')).toEqual({ deleted: 0, markers: 0, identityScope: 2 });
+      expect(await store.isIdentityScopeRefused('agt-A', 'gmail', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-A', 'linear', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('agt-B', 'gmail', 'https://auth.a')).toBe(true);
+    });
+
+    it('a pending row round-trips identityScope (absent → false)', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.putPending(makePending({ state: 'with', identityScope: true }));
+      await store.putPending(makePending({ state: 'without' }));
+      expect((await store.getPending('with'))!.identityScope).toBe(true);
+      expect((await store.getPending('without'))!.identityScope).toBe(false);
     });
   });
 });

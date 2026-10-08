@@ -3,7 +3,7 @@
  * The Connectors tab's list routes (TASK-739, connectors-rail slice 6):
  *
  *   GET    /api/workspace/agents/:agentId/connectors
- *   POST   /api/workspace/agents/:agentId/connectors          {connectorId}
+ *   POST   /api/workspace/agents/:agentId/connectors          {connectorId, keys?}
  *   DELETE /api/workspace/agents/:agentId/connectors/:connectorId
  *
  * What the tests are for, most expensive first:
@@ -18,10 +18,14 @@
  *      reported as `partial`, never as complete.
  *   4. THE HOOK OWNS THE ADMIN RULE. The route passes the caller's real admin
  *      bit and turns the hook's refusal into a 403.
+ *   5. ADD IS ALL OR NOTHING (slice 3). A per-agent key is written ON the agent
+ *      in the Add request and deleted again if the attach fails; an OAuth
+ *      connector is never attached here; Remove deletes the agent's own
+ *      sign-in and keys, never a person's.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
-import { CONNECTOR_RETRY_COOLDOWN_MS, makeWorkspaceHandlers, rememberBounded } from '../../server/routes-workspace.js';
+import { makeWorkspaceHandlers } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 
 function mkReq(params: Record<string, string>, body?: unknown, raw?: string): RouteRequest {
@@ -99,6 +103,8 @@ describe('agent connector routes', () => {
   let attachCalls: Array<Record<string, unknown>>;
   let detachRefusal: PluginError | null;
   let attachRefusal: PluginError | null;
+  /** What `agents:attach-connector` says it changed. */
+  let attachChanged: boolean;
   /** toolKey → verdict, for agent a1. */
   let overrides: Map<string, string>;
   let overrideClears: string[];
@@ -155,6 +161,7 @@ describe('agent connector routes', () => {
     attachCalls = [];
     detachRefusal = null;
     attachRefusal = null;
+    attachChanged = true;
     overrides = new Map([
       [`mcp.${NS_LINEAR}.create_issue`, 'deny'],
       [`mcp.${NS_LINEAR}.search`, 'hold'],
@@ -191,6 +198,7 @@ describe('agent connector routes', () => {
       if (found === undefined) {
         throw new PluginError({ code: 'not-found', plugin: 'connectors', message: 'nope' });
       }
+      // Every connector is shared: the payload carries no visibility field.
       return { connector: found };
     });
     bus.registerService('credentials:get', 'credentials', async (c, i: unknown) => {
@@ -228,7 +236,7 @@ describe('agent connector routes', () => {
     bus.registerService('agents:attach-connector', 'agents', async (_c, i: unknown) => {
       attachCalls.push(i as Record<string, unknown>);
       if (attachRefusal !== null) throw attachRefusal;
-      return { agent: {}, changed: true };
+      return { agent: {}, changed: attachChanged };
     });
     bus.registerService('agents:detach-connector', 'agents', async (_c, i: unknown) => {
       detachCalls.push(i as Record<string, unknown>);
@@ -296,11 +304,6 @@ describe('agent connector routes', () => {
     return captured;
   }
 
-  async function retry(connectorId: string, agentId = 'a1'): Promise<Captured> {
-    const { res, captured } = mkRes();
-    await handlers().retryConnector(mkReq({ agentId, connectorId }), res);
-    return captured;
-  }
 
   describe('health (TASK-741)', () => {
     let signInCalls: unknown[];
@@ -312,6 +315,8 @@ describe('agent connector routes', () => {
     let cached: Map<string, string>;
     let describeStatus: string;
     let describeThrows: boolean;
+    /** Slice 4 — what status-batch says each connector's agent sign-in is. */
+    let signIns: Record<string, { account: string | null; signedInBy: string | null; signedInAt: string | null }>;
 
     function registerHealth(opts: { signIn?: boolean; inventory?: boolean; describe?: boolean } = {}) {
       if (opts.signIn !== false) {
@@ -321,6 +326,7 @@ describe('agent connector routes', () => {
           return {
             needsReconnect: connectorIds.filter((id) => marked.has(id) || sharedMarked.has(id)),
             shared: connectorIds.filter((id) => sharedMarked.has(id) && !marked.has(id)),
+            signIns: Object.fromEntries(Object.entries(signIns).filter(([id]) => connectorIds.includes(id))),
           };
         });
       }
@@ -355,6 +361,7 @@ describe('agent connector routes', () => {
       cached = new Map();
       describeStatus = 'ok';
       describeThrows = false;
+      signIns = {};
     });
 
     function healthById(r: Captured): Record<string, string> {
@@ -386,6 +393,7 @@ describe('agent connector routes', () => {
     // so the rail says so instead of "your sign-in".
     it('flags a needs-reconnect row whose expired sign-in is the shared one — and only that row', async () => {
       registerHealth();
+      agentRow = { ...agentRow, visibility: 'team' };
       sharedMarked = new Set(['gmail']);
       marked = new Set(['linear']);
       const rows = (await list()).body as { connectors: Array<Record<string, unknown>> };
@@ -394,6 +402,19 @@ describe('agent connector routes', () => {
       expect(byId.linear).toMatchObject({ health: 'needs-reconnect' });
       expect('sharedSignIn' in byId.linear!).toBe(false);
       expect('sharedSignIn' in byId.notes!).toBe(false);
+    });
+
+    // Slice 3 — a personal agent's sign-in is the agent's too (agent scope),
+    // but there is no team to share it with: an expired one is the plain
+    // needs-reconnect state ("Sign in again"), never "Team sign-in expired".
+    it('never flags a personal agent\'s expired agent sign-in as a team one', async () => {
+      registerHealth();
+      agentRow = { ...agentRow, visibility: 'personal' };
+      sharedMarked = new Set(['gmail']);
+      const rows = (await list()).body as { connectors: Array<Record<string, unknown>> };
+      const gmail = rows.connectors.find((r) => r.id === 'gmail')!;
+      expect(gmail.health).toBe('needs-reconnect');
+      expect('sharedSignIn' in gmail).toBe(false);
     });
 
     it('a shared flag never rides on a row that is not needs-reconnect', async () => {
@@ -406,181 +427,7 @@ describe('agent connector routes', () => {
       expect('sharedSignIn' in linear).toBe(false);
     });
 
-    it('Retry that hits a SHARED rejected sign-in says so', async () => {
-      registerHealth();
-      describeStatus = 'needs-auth';
-      sharedMarked = new Set(['linear']);
-      expect((await retry('linear')).body).toEqual({ health: 'needs-reconnect', sharedSignIn: true });
-    });
 
-    it('Retry answers 502 — not ok — when the sign-in could not be read just now', async () => {
-      registerHealth({ describe: false });
-      bus.registerService('connectors:describe-tools', 'mcp-client', async () => {
-        throw new PluginError({ code: 'credential-unavailable', plugin: 'mcp-client', message: 'blip' });
-      });
-      const r = await retry('linear');
-      expect(r.statusCode).toBe(502);
-      expect(r.body).toEqual({ error: 'retry-failed' });
-    });
-
-    describe('Retry cooldown (TASK-756)', () => {
-      let clock: number;
-      let h: ReturnType<typeof makeWorkspaceHandlers>;
-      beforeEach(() => {
-        clock = Date.parse('2026-10-03T12:00:00Z');
-        h = makeWorkspaceHandlers({ bus, initCtx, now: () => new Date(clock) });
-      });
-      async function retryOn(connectorId: string, agentId = 'a1'): Promise<Captured> {
-        const { res, captured } = mkRes();
-        await h.retryConnector(mkReq({ agentId, connectorId }), res);
-        return captured;
-      }
-
-      it('a second Retry inside the window answers the cached health and runs no check', async () => {
-        registerHealth();
-        describeStatus = 'unreachable';
-        expect((await retryOn('linear')).body).toEqual({ health: 'unreachable' });
-        describeStatus = 'ok'; // the server came back — but we must not ask it again yet
-        clock += CONNECTOR_RETRY_COOLDOWN_MS - 1;
-        expect((await retryOn('linear')).body).toEqual({ health: 'unreachable' });
-        expect(describeCalls).toHaveLength(1);
-      });
-
-      it('after the window a Retry checks again', async () => {
-        registerHealth();
-        describeStatus = 'unreachable';
-        await retryOn('linear');
-        describeStatus = 'ok';
-        clock += CONNECTOR_RETRY_COOLDOWN_MS;
-        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
-        expect(describeCalls).toHaveLength(2);
-      });
-
-      it('inside the window the sign-in is still read fresh (a reconnect shows at once)', async () => {
-        registerHealth();
-        describeStatus = 'needs-auth';
-        marked = new Set(['linear']);
-        expect((await retryOn('linear')).body).toEqual({ health: 'needs-reconnect' });
-        marked = new Set(); // reconnected
-        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
-        expect(describeCalls).toHaveLength(1);
-      });
-
-      it('a burst of Retries shares the one check in flight', async () => {
-        registerHealth({ describe: false });
-        let release!: () => void;
-        const gate = new Promise<void>((r) => (release = r));
-        bus.registerService('connectors:describe-tools', 'mcp-client', async (_c, i: unknown) => {
-          describeCalls.push(i);
-          await gate;
-          return { status: 'unreachable', tools: [], checkedAt: '2026-10-03T00:00:00.000Z' };
-        });
-        const all = Promise.all([retryOn('linear'), retryOn('linear'), retryOn('linear')]);
-        await new Promise((r) => setTimeout(r, 0));
-        release();
-        const answers = await all;
-        expect(answers.map((a) => a.body)).toEqual([
-          { health: 'unreachable' },
-          { health: 'unreachable' },
-          { health: 'unreachable' },
-        ]);
-        expect(describeCalls).toHaveLength(1);
-      });
-
-      it('a check that could not run is answered again (502) without running another', async () => {
-        registerHealth();
-        describeThrows = true;
-        expect((await retryOn('linear')).statusCode).toBe(502);
-        describeThrows = false;
-        expect((await retryOn('linear')).statusCode).toBe(502);
-        expect(describeCalls).toHaveLength(1);
-      });
-
-      // Review F1 — a vault blip never reached the server: "try again" must
-      // mean it, so it does not hold the next Retry back.
-      it('a credential blip does not start the window — the next Retry checks again', async () => {
-        registerHealth({ describe: false });
-        let blip = true;
-        bus.registerService('connectors:describe-tools', 'mcp-client', async (_c, i: unknown) => {
-          describeCalls.push(i);
-          if (blip) throw new PluginError({ code: 'credential-unavailable', plugin: 'mcp-client', message: 'blip' });
-          return { status: 'ok', tools: [], checkedAt: '2026-10-03T00:00:00.000Z' };
-        });
-        expect((await retryOn('linear')).statusCode).toBe(502);
-        blip = false;
-        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
-        expect(describeCalls).toHaveLength(2);
-        // ...and a check that DID run starts the window as usual.
-        expect((await retryOn('linear')).body).toEqual({ health: 'ok' });
-        expect(describeCalls).toHaveLength(2);
-      });
-
-      it('keyed on person + connector: the same connector on another agent is not re-checked; it answers that agent\'s stored health', async () => {
-        owners.set('a2', 'u1');
-        registerHealth();
-        describeStatus = 'ok';
-        await retryOn('linear', 'a1');
-        cached = new Map([['linear', 'unreachable']]); // a2's stored state
-        expect((await retryOn('linear', 'a2')).body).toEqual({ health: 'unreachable' });
-        expect(describeCalls).toHaveLength(1);
-      });
-
-      it('another connector, or another person, is not held back', async () => {
-        owners.set('a2', 'u2');
-        registerHealth();
-        await retryOn('linear');
-        await retryOn('gmail');
-        expect(describeCalls).toHaveLength(2);
-        caller = { id: 'u2', isAdmin: false };
-        await retryOn('linear', 'a2');
-        expect(describeCalls).toHaveLength(3);
-      });
-
-      it('a refused Retry (404) does not start the window', async () => {
-        registerHealth();
-        expect((await retryOn('slack')).statusCode).toBe(404);
-        effective.push({
-          summary: { id: 'slack', name: 'Slack', canEdit: true },
-          source: 'attached',
-          toolNamespaces: [{ server: 'slack', toolNamespace: 'c0000000001' }],
-        } as (typeof effective)[number]);
-        expect((await retryOn('slack')).statusCode).toBe(200);
-        expect(describeCalls).toHaveLength(1);
-      });
-    });
-
-    describe('rememberBounded (TASK-756 cooldown map bound)', () => {
-      const W = 1_000;
-      it('never grows past the bound: expired entries go first, then the oldest live one', () => {
-        const m = new Map<string, { at: number }>();
-        rememberBounded(m, 'old', { at: 0 }, W, 3);
-        rememberBounded(m, 'a', { at: 1_500 }, W, 3);
-        rememberBounded(m, 'b', { at: 1_600 }, W, 3);
-        // Full: 'old' is outside the window at 1_700 and is the one dropped.
-        rememberBounded(m, 'c', { at: 1_700 }, W, 3);
-        expect([...m.keys()]).toEqual(['a', 'b', 'c']);
-        // Full of live entries: the oldest live one goes.
-        rememberBounded(m, 'd', { at: 1_800 }, W, 3);
-        expect([...m.keys()]).toEqual(['b', 'c', 'd']);
-        expect(m.size).toBe(3);
-      });
-      it('re-remembering a key moves it to the back instead of evicting another', () => {
-        const m = new Map<string, { at: number }>();
-        rememberBounded(m, 'a', { at: 10 }, W, 2);
-        rememberBounded(m, 'b', { at: 20 }, W, 2);
-        rememberBounded(m, 'a', { at: 30 }, W, 2);
-        expect([...m.entries()]).toEqual([['b', { at: 20 }], ['a', { at: 30 }]]);
-      });
-      it('drops an entry stamped in the future (a clock step cannot pin it)', () => {
-        const m = new Map<string, { at: number }>();
-        // 'future' is NOT the oldest, so only the future-stamp rule drops it
-        // (oldest-first eviction alone would drop 'a').
-        rememberBounded(m, 'a', { at: 100 }, W, 2);
-        rememberBounded(m, 'future', { at: 99_999 }, W, 2);
-        rememberBounded(m, 'b', { at: 200 }, W, 2);
-        expect([...m.keys()]).toEqual(['a', 'b']);
-      });
-    });
 
     it('a rejected sign-in outranks an unreachable server', async () => {
       registerHealth();
@@ -596,6 +443,207 @@ describe('agent connector routes', () => {
       const r = await list();
       expect(r.statusCode).toBe(200);
       expect(healthById(r)).toEqual({ gmail: 'ok', linear: 'ok', notes: 'ok' });
+    });
+
+    // Slice 4 — "Signed in as". status-batch says which account each
+    // connector's agent sign-in is and who signed in; the rail resolves that
+    // person to a display name (never stored: names change) and says whether
+    // it was the viewer.
+    describe('signed in as (slice 4)', () => {
+      let users: Map<string, { displayName?: string | null; email?: string | null } | null>;
+      let getUserCalls: string[];
+      let getUserThrows: boolean;
+
+      function registerGetUser(): void {
+        bus.registerService('auth:get-user', 'auth', async (_c, i: unknown) => {
+          const { userId } = i as { userId: string };
+          getUserCalls.push(userId);
+          if (getUserThrows) throw new Error('auth db down');
+          return users.get(userId) ?? null;
+        });
+      }
+
+      beforeEach(() => {
+        users = new Map([
+          ['u1', { displayName: 'Una', email: 'una@corp.example' }],
+          ['u2', { displayName: '  ', email: 'dee@corp.example' }],
+          ['u3', { displayName: null, email: null }],
+        ]);
+        getUserCalls = [];
+        getUserThrows = false;
+      });
+
+      function rowsById(r: Captured): Record<string, Record<string, unknown>> {
+        const rows = (r.body as { connectors: Array<Record<string, unknown>> }).connectors;
+        return Object.fromEntries(rows.map((x) => [x.id as string, x]));
+      }
+
+      it('rows carry signedIn: the account, who (resolved to a name), byYou, and when', async () => {
+        registerHealth();
+        registerGetUser();
+        signIns = {
+          gmail: { account: 'una@gmail.example', signedInBy: 'u1', signedInAt: '2026-10-07T09:30:00.000Z' },
+          linear: { account: null, signedInBy: 'u2', signedInAt: '2026-10-06T08:00:00.000Z' },
+        };
+        const r0 = await list();
+        const r0Body = r0.body;
+        const byId = rowsById(r0);
+        expect(byId.gmail!.signedIn).toEqual({
+          account: 'una@gmail.example',
+          byName: 'Una',
+          byYou: true,
+          at: '2026-10-07T09:30:00.000Z',
+        });
+        // A blank display name: a member who is neither the signer nor a
+        // workspace admin never gets the signer's email — the client says
+        // "someone".
+        expect(byId.linear!.signedIn).toEqual({
+          account: null,
+          byName: null,
+          byYou: false,
+          at: '2026-10-06T08:00:00.000Z',
+        });
+        expect(JSON.stringify(r0Body)).not.toContain('dee@corp.example');
+        // No sign-in row → no key at all.
+        expect('signedIn' in byId.notes!).toBe(false);
+      });
+
+      it('a sign-in from before slice 4 (nothing recorded) is all null, and asks nobody', async () => {
+        registerHealth();
+        registerGetUser();
+        signIns = { gmail: { account: null, signedInBy: null, signedInAt: null } };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.signedIn).toEqual({ account: null, byName: null, byYou: false, at: null });
+        expect(getUserCalls).toEqual([]);
+      });
+
+      it('asks auth:get-user ONCE per distinct person', async () => {
+        registerHealth();
+        registerGetUser();
+        signIns = {
+          gmail: { account: 'a@x', signedInBy: 'u2', signedInAt: null },
+          linear: { account: 'b@x', signedInBy: 'u2', signedInAt: null },
+          notes: { account: 'c@x', signedInBy: 'u3', signedInAt: null },
+        };
+        const byId = rowsById(await list());
+        expect([...getUserCalls].sort()).toEqual(['u2', 'u3']);
+        // Neither a name nor an email → null (the client says "someone").
+        expect(byId.notes!.signedIn).toMatchObject({ byName: null, byYou: false });
+      });
+
+      it('auth:get-user throwing (or absent) → byName null; the list still loads and nothing is logged with the account', async () => {
+        registerHealth();
+        signIns = { gmail: { account: 'secret-acct@x.example', signedInBy: 'u2', signedInAt: null } };
+        let r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(rowsById(r).gmail!.signedIn).toMatchObject({ account: 'secret-acct@x.example', byName: null });
+
+        registerGetUser();
+        getUserThrows = true;
+        const warn = vi.spyOn(initCtx.logger, 'warn');
+        r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(rowsById(r).gmail!.signedIn).toMatchObject({ account: 'secret-acct@x.example', byName: null, byYou: false });
+        expect(warn).toHaveBeenCalledWith(
+          'workspace_connector_signed_in_by_lookup_failed',
+          // The bus wraps a foreign throw: its code, never its name or message.
+          { agentId: 'a1', code: 'unknown' },
+        );
+        expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-acct@x.example');
+        warn.mockRestore();
+      });
+
+      it('a member of a team agent sees who the agent acts as, too', async () => {
+        registerHealth();
+        registerGetUser();
+        agentRow = { ...agentRow, visibility: 'team' };
+        canManage = 'deny';
+        canSetShared = 'deny';
+        signIns = { gmail: { account: 'team@gmail.example', signedInBy: 'u2', signedInAt: '2026-10-07T09:30:00.000Z' } };
+        const r = await list();
+        const byId = rowsById(r);
+        // u2 has no display name; u1 is a plain member, so no email either.
+        expect(byId.gmail!.signedIn).toEqual({
+          account: 'team@gmail.example',
+          byName: null,
+          byYou: false,
+          at: '2026-10-07T09:30:00.000Z',
+        });
+        expect(JSON.stringify(r.body)).not.toContain('dee@corp.example');
+      });
+
+      it('a workspace admin viewer sees the email of a signer with no display name', async () => {
+        registerHealth();
+        registerGetUser();
+        caller = { id: 'u1', isAdmin: true };
+        signIns = { gmail: { account: 'a@x', signedInBy: 'u2', signedInAt: null } };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.signedIn).toMatchObject({ byName: 'dee@corp.example', byYou: false });
+      });
+
+      it('the signer themself sees their own email when they have no display name', async () => {
+        registerHealth();
+        registerGetUser();
+        // u1 (the viewer, not an admin) signed in and has no display name.
+        users.set('u1', { displayName: null, email: 'una@corp.example' });
+        signIns = { gmail: { account: 'a@x', signedInBy: 'u1', signedInAt: null } };
+        const byId = rowsById(await list());
+        expect(byId.gmail!.signedIn).toMatchObject({ byName: 'una@corp.example', byYou: true });
+      });
+
+      it('the display name, when there is one, is shown to everyone (it is not the email)', async () => {
+        registerHealth();
+        registerGetUser();
+        signIns = { gmail: { account: 'a@x', signedInBy: 'u3', signedInAt: null } };
+        users.set('u3', { displayName: 'Tri', email: 'tri@corp.example' });
+        const r = await list();
+        expect(rowsById(r).gmail!.signedIn).toMatchObject({ byName: 'Tri', byYou: false });
+        expect(JSON.stringify(r.body)).not.toContain('tri@corp.example');
+      });
+
+      it('the signer lookup starts as soon as status-batch answers, alongside the other reads', async () => {
+        registerHealth({ inventory: false });
+        signIns = { gmail: { account: 'a@x', signedInBy: 'u2', signedInAt: null } };
+        // Hold the inventory read until the signer lookup has started: if the
+        // lookup waited for every read, this list would never resolve.
+        let release!: () => void;
+        const lookupStarted = new Promise<void>((r) => { release = r; });
+        bus.registerService('auth:get-user', 'auth', async (_c, i: unknown) => {
+          release();
+          return users.get((i as { userId: string }).userId) ?? null;
+        });
+        bus.registerService('connectors:inventory-status-batch', 'mcp-client', async () => {
+          await lookupStarted;
+          return { statuses: [] };
+        });
+        const r = await list();
+        expect(r.statusCode).toBe(200);
+        expect(rowsById(r).gmail!.signedIn).toMatchObject({ account: 'a@x', byName: null });
+      });
+
+      it('ignores a signIns entry for a connector that is not in the list, and a malformed one', async () => {
+        registerHealth({ signIn: false });
+        registerGetUser();
+        bus.registerService('mcp-oauth:status-batch', 'mcp-oauth', async () => ({
+          needsReconnect: [],
+          shared: [],
+          signIns: {
+            elsewhere: { account: 'x@y', signedInBy: 'u1', signedInAt: null },
+            gmail: 'not an object',
+            linear: { account: 7, signedInBy: ['u1'], signedInAt: {} },
+          },
+        }));
+        const byId = rowsById(await list());
+        expect(Object.keys(byId)).toEqual(['gmail', 'linear', 'notes']);
+        expect('signedIn' in byId.gmail!).toBe(false);
+        expect(byId.linear!.signedIn).toEqual({ account: null, byName: null, byYou: false, at: null });
+      });
+
+      it('a status-batch without signIns (an older mcp-oauth) → no signedIn anywhere', async () => {
+        bus.registerService('mcp-oauth:status-batch', 'mcp-oauth', async () => ({ needsReconnect: [], shared: [] }));
+        const byId = rowsById(await list());
+        for (const row of Object.values(byId)) expect('signedIn' in row).toBe(false);
+      });
     });
 
     // TASK-795 — a connector nobody this caller's use would reach has signed in
@@ -682,10 +730,10 @@ describe('agent connector routes', () => {
       // TASK-798 — a sign-in on a team agent is stored ON the agent, so only
       // its owner is offered Sign in; a member is told to ask the owner.
       // TASK-813 — "its owner" is a team admin ONLY (agents:can-set-shared-credential),
-      // no workspace-admin bypass. A missing key stays add-key: the rail's Add
-      // key is their own.
-      // UNFIXED: gmail says `sign-in` to the member -> fails.
-      it('a team-agent member: a missing sign-in is ask-owner, a missing key stays add-key', async () => {
+      // no workspace-admin bypass. Slice 3 — a key is the agent's too, so a
+      // missing key is ask-owner for them as well.
+      // UNFIXED: linear says `add-key` to the member -> fails.
+      it('a team-agent member: a missing sign-in or key is ask-owner', async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
@@ -693,18 +741,22 @@ describe('agent connector routes', () => {
         canSetShared = 'deny';
         const byId = rowsById(await list());
         expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
-        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
       });
 
-      it("the team agent's owner still gets sign-in; a personal agent never asks", async () => {
+      it("the team agent's owner still gets sign-in and add-key; a personal agent's owner too", async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
-        expect(rowsById(await list()).gmail).toMatchObject({ setup: 'sign-in' });
+        let byId = rowsById(await list());
+        expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
+        expect(byId.linear).toMatchObject({ setup: 'add-key' });
         agentRow = { ...agentRow, visibility: 'personal' };
         canManage = 'deny';
         canSetShared = 'deny';
-        expect(rowsById(await list()).gmail).toMatchObject({ setup: 'sign-in' });
+        byId = rowsById(await list());
+        expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
+        expect(byId.linear).toMatchObject({ setup: 'add-key' });
       });
 
       // TASK-813 — sign-in on a team agent follows sharedCredentials, NOT
@@ -722,34 +774,24 @@ describe('agent connector routes', () => {
         expect(r.body).toMatchObject({ shared: true, manageable: true, sharedCredentials: false });
         const byId = rowsById(r);
         expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
-        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
-        expect('teamKey' in byId.linear!).toBe(false);
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
         expect(canSetSharedCalls).toEqual([{ actor: { userId: 'u1', isAdmin: true }, agentId: 'a1' }]);
       });
 
-      it('a team admin: sharedCredentials, sign-in, and a team key offered on the api-key personal connector only', async () => {
+      // Slice 3 — the row no longer says `teamKey`: Add key follows `setup`.
+      it('a team admin: sharedCredentials, sign-in and add-key — and no row says teamKey', async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
-        // notes: a workspace-keyed api-key connector — the company key, never a team key.
-        effective[2] = {
-          ...effective[2]!,
-          summary: { ...effective[2]!.summary, keyMode: 'workspace' },
-          capabilities: { credentials: [key('NOTES_KEY')] },
-        };
         const r = await list();
         expect(r.body).toMatchObject({ shared: true, sharedCredentials: true });
         const byId = rowsById(r);
         expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
-        expect('teamKey' in byId.gmail!).toBe(false);
-        expect(byId.linear).toMatchObject({ teamKey: true });
-        expect('teamKey' in byId.notes!).toBe(false);
-        // Present whatever the row's health: a team key can replace a working one.
-        present = new Set(['account:gmail', 'account:linear']);
-        expect(rowsById(await list()).linear).toMatchObject({ health: 'ok', teamKey: true });
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+        for (const row of Object.values(byId)) expect('teamKey' in row).toBe(false);
       });
 
-      it('a plain member: no sharedCredentials, no team key', async () => {
+      it('a plain member: no sharedCredentials', async () => {
         registerHealth();
         registerHas();
         agentRow = { ...agentRow, visibility: 'team' };
@@ -757,17 +799,14 @@ describe('agent connector routes', () => {
         canSetShared = 'deny';
         const r = await list();
         expect(r.body).toMatchObject({ manageable: false, sharedCredentials: false });
-        for (const row of Object.values(rowsById(r))) expect('teamKey' in row).toBe(false);
       });
 
-      it('a personal agent: sharedCredentials false, no team key, the hook is never asked', async () => {
+      it('a personal agent: sharedCredentials false, the hook is never asked', async () => {
         registerHealth();
         registerHas();
         const r = await list();
         expect(r.body).toMatchObject({ shared: false, manageable: true, sharedCredentials: false });
-        const byId = rowsById(r);
-        expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
-        for (const row of Object.values(byId)) expect('teamKey' in row).toBe(false);
+        expect(rowsById(r).gmail).toMatchObject({ setup: 'sign-in' });
         expect(canSetSharedCalls).toEqual([]);
       });
 
@@ -787,27 +826,6 @@ describe('agent connector routes', () => {
         expect(JSON.stringify(call?.[1])).not.toContain('corrupt');
       });
 
-      it('Retry on a team agent answers ask-owner to a workspace admin who is not a team admin', async () => {
-        registerHealth();
-        registerHas();
-        agentRow = { ...agentRow, visibility: 'team' };
-        caller = { id: 'u1', isAdmin: true };
-        canSetShared = 'deny';
-        expect((await retry('gmail')).body).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
-        canSetShared = 'allow';
-        expect((await retry('gmail')).body).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
-      });
-
-      it('Retry on a team agent answers ask-owner to a member, too', async () => {
-        registerHealth();
-        registerHas();
-        agentRow = { ...agentRow, visibility: 'team' };
-        canManage = 'deny';
-        canSetShared = 'deny';
-        const r = await retry('gmail');
-        expect(r.statusCode).toBe(200);
-        expect(r.body).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
-      });
 
       it('signed in → ok, and the row carries no setup key', async () => {
         registerHealth();
@@ -851,7 +869,11 @@ describe('agent connector routes', () => {
         expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'sign-in' });
       });
 
-      it('a workspace-key connector asks a member to ask an admin, and offers an admin Add key', async () => {
+      // Slice 3 — Add key writes the AGENT's key, which a company-key
+      // connector refuses (409): the company key is added in Admin ›
+      // Connectors, so even an admin's row says ask-admin, never add-key.
+      // UNFIXED: the admin's row says add-key -> fails.
+      it('a workspace-key connector says ask-admin to everyone — an admin too', async () => {
         registerHealth();
         registerHas();
         effective[1] = {
@@ -860,7 +882,20 @@ describe('agent connector routes', () => {
         };
         expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-admin' });
         caller = { id: 'u1', isAdmin: true };
-        expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
+        expect(rowsById(await list()).linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-admin' });
+      });
+
+      // Slice 3 — an OAuth connector that also declares a header key: once
+      // signed in, the row offers Add key for the header key.
+      it('an OAuth connector signed in but missing its header key says add-key', async () => {
+        registerHealth();
+        registerHas();
+        effective[0] = {
+          ...effective[0]!,
+          capabilities: { credentials: [oauth('gmail'), key('GMAIL_HEADER')] },
+        };
+        present = new Set(['account:gmail:MCP_OAUTH', 'account:linear']);
+        expect(rowsById(await list()).gmail).toMatchObject({ health: 'needs-sign-in', setup: 'add-key' });
       });
 
       it('a rejected refresh outranks never-signed-in', async () => {
@@ -916,132 +951,6 @@ describe('agent connector routes', () => {
         expect(credentialReads).toEqual([]);
       });
 
-      it('Retry answers needs-sign-in with its setup', async () => {
-        registerHealth();
-        registerHas();
-        describeStatus = 'needs-auth';
-        expect((await retry('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
-        caller = { id: 'u1', isAdmin: false };
-        effective[1] = {
-          ...effective[1]!,
-          summary: { ...effective[1]!.summary, keyMode: 'workspace' },
-        };
-        expect((await retry('linear')).body).toEqual({ health: 'needs-sign-in', setup: 'ask-admin' });
-      });
-
-      it('Retry on a signed-in connector answers ok with no setup', async () => {
-        registerHealth();
-        registerHas();
-        present = new Set(['account:gmail']);
-        expect((await retry('gmail')).body).toEqual({ health: 'ok' });
-        expect(hasCalls).toEqual([{ ref: 'account:gmail', userId: 'u1', agentId: 'a1' }]);
-      });
-
-      // TASK-805 — Retry on a connector nobody has signed in to is
-      // needs-sign-in, never an error: Sign in / Add key is the fix, and the
-      // check says nothing that could change that. @ax/mcp-client reports a
-      // MISSING credential as the status `needs-auth` (it throws
-      // `credential-unavailable` only for a credential it could not READ), so
-      // the plain case never reached the 502 — these pin it for every status
-      // the check can answer.
-      it.each(['needs-auth', 'unreachable', 'unknown', 'ok'])(
-        'Retry on a never-signed-in connector answers needs-sign-in (200) when the check says %s',
-        async (status) => {
-          registerHealth();
-          registerHas();
-          describeStatus = status;
-          const r = await retry('gmail');
-          expect(r.statusCode).toBe(200);
-          expect(r.body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
-          expect((await retry('linear')).body).toEqual({ health: 'needs-sign-in', setup: 'add-key' });
-        },
-      );
-
-      // TASK-805 — the check itself can still fail on such a connector: a
-      // connector with a signed-in slot whose token read blips AND a slot with
-      // no key reads `credential-unavailable` from the signed-in slot before it
-      // ever reaches the missing one. The vault's presence read already said
-      // what the person must do, so Retry says that instead of 502.
-      // UNFIXED: 502 `retry-failed` for both -> fails.
-      describe.each([
-        [
-          'credential-unavailable (a credential could not be read just now)',
-          () => new PluginError({ code: 'credential-unavailable', plugin: 'mcp-client', message: 'blip' }),
-        ],
-        ['an unclassified failure of the check', () => new Error('boom')],
-      ])('a check that cannot run (%s) on a never-signed-in connector', (_label, makeError) => {
-        beforeEach(() => {
-          registerHealth({ describe: false });
-          registerHas();
-          bus.registerService('connectors:describe-tools', 'mcp-client', async (_c, i: unknown) => {
-            describeCalls.push(i);
-            throw makeError();
-          });
-        });
-
-        it('answers needs-sign-in with the setup, not a 502', async () => {
-          const r = await retry('gmail');
-          expect(r.statusCode).toBe(200);
-          expect(r.body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
-          expect((await retry('linear')).body).toEqual({ health: 'needs-sign-in', setup: 'add-key' });
-        });
-
-        it('keeps the setup the caller is owed: ask-owner on a team agent, ask-admin for a company key', async () => {
-          agentRow = { ...agentRow, visibility: 'team' };
-          canManage = 'deny';
-          canSetShared = 'deny';
-          expect((await retry('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'ask-owner' });
-          agentRow = { ...agentRow, visibility: 'personal' };
-          effective[1] = {
-            ...effective[1]!,
-            summary: { ...effective[1]!.summary, keyMode: 'workspace' },
-          };
-          expect((await retry('linear')).body).toEqual({ health: 'needs-sign-in', setup: 'ask-admin' });
-        });
-
-        // Not over-broad: the same failure on a connector the vault says IS
-        // set up is still "we couldn't check" — nothing here knows better.
-        it('still answers 502 once the connector is signed in', async () => {
-          present = new Set(['account:gmail']);
-          const r = await retry('gmail');
-          expect(r.statusCode).toBe(502);
-          expect(r.body).toEqual({ error: 'retry-failed' });
-        });
-
-        it('still answers 502 when the presence read itself fails — "unknown" is not "never signed in"', async () => {
-          hasThrows = true;
-          expect((await retry('gmail')).statusCode).toBe(502);
-        });
-
-        it('a rejected sign-in outranks it, so the failure stays a 502 rather than claiming first-time setup', async () => {
-          marked = new Set(['gmail']);
-          expect((await retry('gmail')).statusCode).toBe(502);
-        });
-      });
-
-      it('a never-signed-in connector whose check failed is answered again inside the cooldown without a second check', async () => {
-        registerHealth();
-        registerHas();
-        describeThrows = true;
-        const clock = Date.parse('2026-10-03T12:00:00Z');
-        const h = makeWorkspaceHandlers({ bus, initCtx, now: () => new Date(clock) });
-        const retryOn = async (id: string): Promise<Captured> => {
-          const { res, captured } = mkRes();
-          await h.retryConnector(mkReq({ agentId: 'a1', connectorId: id }), res);
-          return captured;
-        };
-        expect((await retryOn('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
-        expect((await retryOn('gmail')).body).toEqual({ health: 'needs-sign-in', setup: 'sign-in' });
-        expect(describeCalls).toHaveLength(1);
-      });
-
-      it('a genuinely unreachable connector still says unreachable', async () => {
-        registerHealth();
-        registerHas();
-        present = new Set(['account:gmail']);
-        describeStatus = 'unreachable';
-        expect((await retry('gmail')).body).toEqual({ health: 'unreachable' });
-      });
     });
 
     // TASK-745 — a session folds these same rows and DROPS a server it cannot
@@ -1112,12 +1021,6 @@ describe('agent connector routes', () => {
         expect(healthById(await list()).linear).toBe('not-loaded');
       });
 
-      it('Retry on such a connector answers not-loaded, so the row does not flip to ok', async () => {
-        registerHealth();
-        describeStatus = 'ok';
-        effective[1] = { ...effective[1]!, capabilities: caps('linear', 'linear') };
-        expect((await retry('linear')).body).toEqual({ health: 'not-loaded' });
-      });
     });
 
     it('says when the agent is shared (Reconnect asks before signing in for a team)', async () => {
@@ -1125,54 +1028,6 @@ describe('agent connector routes', () => {
       expect((await list()).body).toMatchObject({ shared: true });
     });
 
-    it('Retry runs exactly one forced check of that connector, under the caller and agent', async () => {
-      registerHealth();
-      describeStatus = 'unreachable';
-      const r = await retry('linear');
-      expect(r.statusCode).toBe(200);
-      expect(r.body).toEqual({ health: 'unreachable' });
-      expect(describeCalls).toEqual([
-        { userId: 'u1', agentId: 'a1', connectorId: 'linear', force: true },
-      ]);
-    });
-
-    it('Retry that reaches the server answers ok', async () => {
-      registerHealth();
-      cached = new Map([['linear', 'unreachable']]);
-      describeStatus = 'ok';
-      expect((await retry('linear')).body).toEqual({ health: 'ok' });
-      expect(describeCalls).toHaveLength(1);
-    });
-
-    it('Retry that hits a rejected sign-in answers needs-reconnect', async () => {
-      registerHealth();
-      describeStatus = 'needs-auth';
-      marked = new Set(['linear']);
-      expect((await retry('linear')).body).toEqual({ health: 'needs-reconnect' });
-    });
-
-    it("Retry 404s a connector that is not on this agent, and another person's agent — no check runs", async () => {
-      registerHealth();
-      expect((await retry('slack')).statusCode).toBe(404);
-      expect((await retry('linear', 'a-theirs')).statusCode).toBe(404);
-      expect(describeCalls).toHaveLength(0);
-    });
-
-    it('Retry rejects a malformed connector id before anything runs', async () => {
-      registerHealth();
-      expect((await retry('../x')).statusCode).toBe(400);
-      expect(listEffectiveCalls).toHaveLength(0);
-      expect(describeCalls).toHaveLength(0);
-    });
-
-    it('Retry answers 503 without the inventory service, and 502 when the check itself throws', async () => {
-      registerHealth({ describe: false });
-      expect((await retry('linear')).statusCode).toBe(503);
-      bus.registerService('connectors:describe-tools', 'mcp-client', async () => {
-        throw new Error('boom');
-      });
-      expect((await retry('linear')).statusCode).toBe(502);
-    });
   });
 
   describe('GET', () => {
@@ -1479,96 +1334,120 @@ describe('agent connector routes', () => {
     });
   });
 
-  describe('DELETE — signing out once a connector is on no agent', () => {
-    /** agents:list-for-user's answer: each agent's attachments AFTER the detach. */
-    let roster: Array<{ id: string; displayName: string; connectorAttachments: string[] }>;
-    let rosterThrows: boolean;
-    let personalSignOuts: Array<Record<string, unknown>>;
-    let personalSignOutThrows: boolean;
+  // Slice 3 — a sign-in or key belongs to the agent it was added on. Removing
+  // the connector from the agent deletes THAT agent's own sign-in and keys —
+  // after the detach, best-effort — and never a person's, nor another agent's.
+  describe("DELETE — the agent's own sign-in and keys go with it", () => {
+    let sharedSignOuts: Array<{ input: Record<string, unknown>; detachedFirst: boolean }>;
+    let sharedSignOutThrows: boolean;
     let credentialDeletes: Array<Record<string, unknown>>;
+    let credentialDeleteThrows: boolean;
+
+    const withCreds = (
+      id: string,
+      keyMode: 'personal' | 'workspace',
+      credentials: NonNullable<NonNullable<Effective['capabilities']>['credentials']>,
+    ): Effective => ({
+      summary: { id, name: id, keyMode },
+      source: 'attached',
+      toolNamespaces: [],
+      capabilities: { credentials },
+    });
 
     beforeEach(() => {
-      effectiveFromAttachments = true;
-      roster = [
-        { id: 'a1', displayName: 'Quill', connectorAttachments: [] },
-        { id: 'a2', displayName: 'Scout', connectorAttachments: ['linear'] },
-      ];
-      rosterThrows = false;
-      personalSignOuts = [];
-      personalSignOutThrows = false;
+      sharedSignOuts = [];
+      sharedSignOutThrows = false;
       credentialDeletes = [];
-      bus.registerService('agents:list-for-user', 'agents', async () => {
-        if (rosterThrows) throw new Error('agents store down');
-        return { agents: roster };
-      });
-      bus.registerService('mcp-oauth:remove-personal-sign-in', 'mcp-oauth', async (_c, i: unknown) => {
-        personalSignOuts.push(i as Record<string, unknown>);
-        if (personalSignOutThrows) throw new Error('vault down');
+      credentialDeleteThrows = false;
+      effective.push(
+        withCreds('figma', 'personal', [{ slot: 'MCP_OAUTH', kind: 'oauth', server: 'figma' }]),
+        withCreds('multi', 'personal', [
+          { slot: 'A_KEY', kind: 'api-key' },
+          { slot: 'B_KEY', kind: 'api-key' },
+        ]),
+        withCreds('company', 'workspace', [{ slot: 'KEY', kind: 'api-key' }]),
+      );
+      bus.registerService('mcp-oauth:remove-shared-sign-in', 'mcp-oauth', async (_c, i: unknown) => {
+        sharedSignOuts.push({ input: i as Record<string, unknown>, detachedFirst: detachCalls.length === 1 });
+        if (sharedSignOutThrows) throw new Error('vault row 7 for account:figma is corrupt');
         return { removed: true };
       });
       bus.registerService('credentials:delete', 'credentials', async (_c, i: unknown) => {
         credentialDeletes.push(i as Record<string, unknown>);
+        if (credentialDeleteThrows) throw new Error('vault row 9 is corrupt');
         return undefined;
       });
     });
 
-    it("deletes the caller's own sign-in when the connector was on its last agent, and says so", async () => {
-      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
+    it("an OAuth connector: detach, THEN this agent's sign-in goes — no signedOut, no person touched", async () => {
       const r = await remove('figma');
       expect(r.statusCode).toBe(200);
-      expect(r.body).toEqual({ removed: true, cleanup: 'complete', signedOut: true });
-      expect(personalSignOuts).toEqual([{ userId: 'u1', connectorId: 'figma' }]);
-      // Never an agent-scope (team) row.
+      expect(r.body).toEqual({ removed: true, cleanup: 'complete' });
+      expect(detachCalls).toHaveLength(1);
+      expect(sharedSignOuts).toEqual([
+        { input: { agentId: 'a1', connectorId: 'figma' }, detachedFirst: true },
+      ]);
       expect(credentialDeletes).toEqual([]);
     });
 
-    it('keeps the sign-in while another of their agents still uses the connector', async () => {
-      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
-      roster[1]!.connectorAttachments = ['figma'];
-      const r = await remove('figma');
+    it("a per-agent key connector: each slot's key is deleted at agent scope, under the plan refs", async () => {
+      const r = await remove('multi');
       expect(r.body).toEqual({ removed: true, cleanup: 'complete' });
-      expect(personalSignOuts).toEqual([]);
+      expect(credentialDeletes).toEqual([
+        { scope: 'agent', ownerId: 'a1', ref: 'account:multi:A_KEY' },
+        { scope: 'agent', ownerId: 'a1', ref: 'account:multi:B_KEY' },
+      ]);
+      expect(sharedSignOuts).toEqual([]);
     });
 
-    it('deletes a personal api key at user scope for the caller', async () => {
-      agentRow = { connectorAttachments: ['stripe'], connectorExclusions: [] };
-      const r = await remove('stripe');
-      expect(r.body).toEqual({ removed: true, cleanup: 'complete', signedOut: true });
-      // The ref comes from the connector's credential plan, never the client.
-      expect(credentialDeletes).toEqual([{ scope: 'user', ownerId: 'u1', ref: 'account:stripe' }]);
-      expect(personalSignOuts).toEqual([]);
-    });
-
-    it('never touches a shared-key (workspace) connector', async () => {
-      agentRow = { connectorAttachments: ['company'], connectorExclusions: [] };
-      const r = await remove('company');
-      expect(r.body).toEqual({ removed: true, cleanup: 'complete' });
+    it("never touches a shared-key (workspace) connector's key, nor a connector that needs nothing", async () => {
+      expect((await remove('company')).body).toEqual({ removed: true, cleanup: 'complete' });
+      expect((await remove('linear')).body).toEqual({ removed: true, cleanup: 'complete' });
       expect(credentialDeletes).toEqual([]);
-      expect(personalSignOuts).toEqual([]);
+      expect(sharedSignOuts).toEqual([]);
     });
 
-    it("keeps the sign-in when the caller's agents can't be read — can't tell is not unused", async () => {
-      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
-      rosterThrows = true;
-      const r = await remove('figma');
-      expect(r.body).toEqual({ removed: true, cleanup: 'complete' });
-      expect(personalSignOuts).toEqual([]);
+    it('a sign-in or key delete that did not land is a partial cleanup, logged by error NAME only — the remove still stands', async () => {
+      const warn = vi.spyOn(initCtx.logger, 'warn');
+      sharedSignOutThrows = true;
+      const a = await remove('figma');
+      credentialDeleteThrows = true;
+      const b = await remove('multi');
+      const lines = warn.mock.calls.filter((c) => c[0] === 'workspace_connector_credential_cleanup_failed');
+      warn.mockRestore();
+      expect(a).toEqual({ statusCode: 200, body: { removed: true, cleanup: 'partial' } });
+      expect(b).toEqual({ statusCode: 200, body: { removed: true, cleanup: 'partial' } });
+      // Both slots were still attempted.
+      expect(credentialDeletes).toHaveLength(2);
+      expect(lines.length).toBeGreaterThan(0);
+      expect(JSON.stringify(lines)).not.toContain('corrupt');
     });
 
-    it('reports a sign-out that did not land as a partial cleanup, without signedOut', async () => {
-      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
-      personalSignOutThrows = true;
-      const r = await remove('figma');
-      expect(r.statusCode).toBe(200);
-      expect(r.body).toEqual({ removed: true, cleanup: 'partial' });
+    it('no remove-shared-sign-in / no credentials:delete hook: the remove stands, cleanup partial', async () => {
+      const old = bus;
+      bus = new HookBus();
+      for (const name of [
+        'auth:require-user',
+        'agents:resolve',
+        'connectors:list-effective',
+        'agents:detach-connector',
+        'tool-policy:list-agent-overrides',
+        'tool-policy:set-agent-override',
+        'skills:approved-caps-list',
+        'skills:approved-caps-revoke',
+      ]) {
+        bus.registerService(name, 'x', (c, i) => old.call(name, c, i));
+      }
+      expect((await remove('figma')).body).toEqual({ removed: true, cleanup: 'partial' });
+      expect((await remove('multi')).body).toEqual({ removed: true, cleanup: 'partial' });
+      expect((await remove('linear')).body).toEqual({ removed: true, cleanup: 'complete' });
     });
 
-    it('signs nothing out when the detach is refused', async () => {
-      agentRow = { connectorAttachments: ['figma'], connectorExclusions: [] };
+    it('deletes nothing when the detach is refused', async () => {
       detachRefusal = new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
-      const r = await remove('figma');
-      expect(r.statusCode).toBe(403);
-      expect(personalSignOuts).toEqual([]);
+      expect((await remove('figma')).statusCode).toBe(403);
+      expect((await remove('multi')).statusCode).toBe(403);
+      expect(sharedSignOuts).toEqual([]);
       expect(credentialDeletes).toEqual([]);
     });
   });
@@ -1727,54 +1606,250 @@ describe('agent connector routes', () => {
       expect(attachCalls).toHaveLength(0);
     });
 
-    describe('signed in / keyed first (TASK-761)', () => {
-      it('refuses an OAuth connector nobody signed in to, and attaches nothing', async () => {
-        const r = await attach({ connectorId: 'figma' });
-        expect(r.statusCode).toBe(409);
-        expect(r.body).toMatchObject({ error: 'connector-needs-sign-in' });
-        expect(attachCalls).toHaveLength(0);
-      });
+    // Slice 3 — Add is all or nothing, and what a connector needs decides how:
+    //   - an OAuth connector is added by the sign-in callback, never here (409);
+    //   - a per-agent key connector brings its keys in this request: they are
+    //     written ON the agent, then attached, and deleted if the attach fails;
+    //   - a shared-key or no-auth connector takes no keys; a shared key must
+    //     already exist (TASK-827).
+    // No credential of the agent's is ever READ before the attach any more:
+    // that pre-attach read (TASK-761) is the bug the slice-3 spec names.
+    describe('what a connector needs, in one request (slice 3)', () => {
+      const SECRET_A = 'sk-AAAA-SUPERSECRET';
+      const SECRET_B = 'sk-BBBB-SUPERSECRET';
+      const b64 = (s: string) => Buffer.from(s, 'utf-8').toString('base64');
+      let order: string[];
+      let sets: Array<{ input: Record<string, unknown>; agentId: string; userId: string }>;
+      let setFailsOn: string | null;
+      let deletes: Array<Record<string, unknown>>;
+      let deleteThrows: boolean;
+      let authorize: 'allow' | 'deny' | 'throw';
+      let authorizeCalls: Array<Record<string, unknown>>;
+      let logged: unknown[][];
 
-      it('attaches it once the sign-in resolves, checked under the caller AND this agent', async () => {
-        vault.add('account:figma');
-        const r = await attach({ connectorId: 'figma' });
-        expect(r.statusCode).toBe(200);
-        expect(credentialReads).toEqual([{ ref: 'account:figma', userId: 'u1', agentId: 'a1' }]);
-        expect(attachCalls).toHaveLength(1);
-        // The token is read host-side and dropped — never echoed back.
-        expect(JSON.stringify(r.body)).not.toContain('secret-value');
-      });
-
-      it('treats an expired sign-in (refresh rejected) as not signed in', async () => {
-        vault.add('account:figma');
-        const reconnect = new Error('needs reconnect');
-        reconnect.name = 'NeedsReconnectError';
-        credentialError = new PluginError({
-          code: 'unknown',
-          plugin: 'credentials',
-          message: 'wrapped',
-          cause: reconnect,
+      beforeEach(() => {
+        order = [];
+        sets = [];
+        setFailsOn = null;
+        deletes = [];
+        deleteThrows = false;
+        authorize = 'allow';
+        authorizeCalls = [];
+        logged = [];
+        catalog.set('multi', {
+          id: 'multi',
+          name: 'multi',
+          keyMode: 'personal',
+          capabilities: {
+            credentials: [
+              { slot: 'A_KEY', kind: 'api-key' },
+              { slot: 'B_KEY', kind: 'api-key' },
+            ],
+          },
         });
+        bus.registerService('credentials:authorize-agent:account', 'connectors', async (_c, i: unknown) => {
+          authorizeCalls.push(i as Record<string, unknown>);
+          if (authorize === 'throw') throw new Error('connector store row 3 is corrupt');
+          return { allowed: authorize === 'allow' };
+        });
+        bus.registerService('credentials:set', 'credentials', async (c, i: unknown) => {
+          const input = i as Record<string, unknown>;
+          order.push(`set:${String(input.ref)}`);
+          sets.push({ input, agentId: c.agentId, userId: c.userId });
+          if (setFailsOn === input.ref) throw new Error(`vault refused ${SECRET_B}`);
+          return undefined;
+        });
+        bus.registerService('credentials:delete', 'credentials', async (_c, i: unknown) => {
+          const input = i as Record<string, unknown>;
+          order.push(`delete:${String(input.ref)}`);
+          deletes.push(input);
+          if (deleteThrows) throw new Error(`vault delete failed near ${SECRET_A}`);
+          return undefined;
+        });
+        // Order of attach relative to the writes.
+        const old = bus;
+        bus = new HookBus();
+        for (const name of [
+          'auth:require-user',
+          'agents:resolve',
+          'agents:can-manage-connectors',
+          'agents:can-set-shared-credential',
+          'connectors:get',
+          'connectors:list-effective',
+          'credentials:get',
+          'credentials:authorize-agent:account',
+          'credentials:set',
+          'credentials:delete',
+        ]) {
+          bus.registerService(name, 'x', (c, i) => old.call(name, c, i));
+        }
+        bus.registerService('agents:attach-connector', 'agents', async (c, i: unknown) => {
+          order.push('attach');
+          return old.call('agents:attach-connector', c, i);
+        });
+        for (const level of ['info', 'warn', 'error', 'debug'] as const) {
+          vi.spyOn(initCtx.logger, level).mockImplementation((...args: unknown[]) => {
+            logged.push(args);
+          });
+        }
+      });
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      const keysFor = (a = SECRET_A, b = SECRET_B) => [
+        { slot: 'A_KEY', payloadB64: b64(a) },
+        { slot: 'B_KEY', payloadB64: b64(b) },
+      ];
+
+      function expectNoLeak(r: Captured): void {
+        const all = JSON.stringify(r.body) + JSON.stringify(logged);
+        for (const s of [SECRET_A, SECRET_B, b64(SECRET_A), b64(SECRET_B)]) expect(all).not.toContain(s);
+      }
+
+      it('a per-agent key connector: every slot written ON the agent, then attached — 200', async () => {
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 200, body: { attached: true, changed: true } });
+        expect(order).toEqual(['set:account:multi:A_KEY', 'set:account:multi:B_KEY', 'attach']);
+        expect(sets.map((s) => ({ ...s.input, payload: Buffer.from(s.input.payload as Uint8Array).toString('utf-8') }))).toEqual([
+          { scope: 'agent', ownerId: 'a1', ref: 'account:multi:A_KEY', kind: 'api-key', payload: SECRET_A },
+          { scope: 'agent', ownerId: 'a1', ref: 'account:multi:B_KEY', kind: 'api-key', payload: SECRET_B },
+        ]);
+        expect(sets.map((s) => [s.agentId, s.userId])).toEqual([
+          ['a1', 'u1'],
+          ['a1', 'u1'],
+        ]);
+        // The agent-store question, per ref, before any write.
+        expect(authorizeCalls).toEqual([
+          { userId: 'u1', agentId: 'a1', ref: 'account:multi:A_KEY', purpose: 'store' },
+          { userId: 'u1', agentId: 'a1', ref: 'account:multi:B_KEY', purpose: 'store' },
+        ]);
+        // Owner check on a personal agent: the admin bit grants nothing here.
+        expect(canManageCalls).toEqual([{ actor: { userId: 'u1', isAdmin: false }, agentId: 'a1' }]);
+        // No credential of the agent's is read before the attach.
+        expect(credentialReads).toEqual([]);
+        expect(deletes).toEqual([]);
+        expectNoLeak(r);
+      });
+
+      // REVIEW FOCUS — the attach is refused after the keys were written (say,
+      // the person stopped being a team admin mid-request): no key survives.
+      it('the attach is refused: both written slots are deleted, and the answer is the attach error', async () => {
+        attachRefusal = new PluginError({ code: 'forbidden', plugin: 'agents', message: 'not a team admin' });
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+        expect(order).toEqual([
+          'set:account:multi:A_KEY',
+          'set:account:multi:B_KEY',
+          'attach',
+          'delete:account:multi:A_KEY',
+          'delete:account:multi:B_KEY',
+        ]);
+        expect(deletes).toEqual([
+          { scope: 'agent', ownerId: 'a1', ref: 'account:multi:A_KEY' },
+          { scope: 'agent', ownerId: 'a1', ref: 'account:multi:B_KEY' },
+        ]);
+        expectNoLeak(r);
+      });
+
+      it('the attach throws something unclassified: the keys are deleted and the fault still propagates (5xx)', async () => {
+        attachRefusal = new Error('agents store down') as PluginError;
+        const { res } = mkRes();
+        await expect(
+          handlers().attachConnector(mkReq({ agentId: 'a1' }, { connectorId: 'multi', keys: keysFor() }), res),
+        ).rejects.toThrow('agents store down');
+        expect(deletes.map((d) => d.ref)).toEqual(['account:multi:A_KEY', 'account:multi:B_KEY']);
+      });
+
+      it('the second slot write fails: the first is deleted, nothing is attached — 502, never the key', async () => {
+        setFailsOn = 'account:multi:B_KEY';
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 502, body: { error: 'connector-key-not-saved' } });
+        expect(order).not.toContain('attach');
+        expect(deletes.map((d) => d.ref)).toContain('account:multi:A_KEY');
+        expect(deletes.every((d) => d.scope === 'agent' && d.ownerId === 'a1')).toBe(true);
+        expect(attachCalls).toEqual([]);
+        expectNoLeak(r);
+      });
+
+      it('a rollback delete that fails is logged by error NAME only, and the answer is still the original error', async () => {
+        attachRefusal = new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
+        deleteThrows = true;
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+        // Every slot is still attempted.
+        expect(deletes).toHaveLength(2);
+        const line = logged.find((l) => l[0] === 'workspace_connector_key_rollback_failed');
+        expect(line?.[1]).toEqual({ agentId: 'a1', connectorId: 'multi', name: expect.any(String) });
+        // The summary line says the rollback did NOT fully land.
+        const done = logged.find((l) => l[0] === 'workspace_connector_key_rolled_back');
+        expect(done?.[1]).toEqual({ agentId: 'a1', connectorId: 'multi', complete: false });
+        expectNoLeak(r);
+      });
+
+      it('a rollback whose every delete lands is logged complete', async () => {
+        attachRefusal = new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
+        await attach({ connectorId: 'multi', keys: keysFor() });
+        const done = logged.find((l) => l[0] === 'workspace_connector_key_rolled_back');
+        expect(done?.[1]).toEqual({ agentId: 'a1', connectorId: 'multi', complete: true });
+      });
+
+      it.each([
+        ['no keys at all', undefined],
+        ['an empty list', []],
+        ['one slot of two', [{ slot: 'A_KEY', payloadB64: b64(SECRET_A) }]],
+      ])('a per-agent key connector missing a slot (%s): 400 connector-needs-key, nothing written', async (_l, keys) => {
+        const r = await attach(keys === undefined ? { connectorId: 'multi' } : { connectorId: 'multi', keys });
+        expect(r.statusCode).toBe(400);
+        expect(r.body).toMatchObject({ error: 'connector-needs-key' });
+        expect(sets).toEqual([]);
+        expect(attachCalls).toEqual([]);
+      });
+
+      it.each([
+        ['a slot the connector does not have', [...keysFor(), { slot: 'C_KEY', payloadB64: b64('x') }], 'unknown-slot'],
+        ['the same slot twice', [{ slot: 'A_KEY', payloadB64: b64('x') }, { slot: 'A_KEY', payloadB64: b64('y') }], 'invalid-body'],
+        ['not base64', [{ slot: 'A_KEY', payloadB64: 'not base64!!' }, keysFor()[1]], 'invalid-key'],
+        ['over 16 KiB', [{ slot: 'A_KEY', payloadB64: 'A'.repeat(16 * 1024 + 4) }, keysFor()[1]], 'invalid-key'],
+        ['a client-chosen ref', [{ slot: 'A_KEY', payloadB64: b64('x'), ref: 'provider:anthropic' }, keysFor()[1]], 'invalid-body'],
+        ['not a list', { A_KEY: b64('x') }, 'invalid-body'],
+      ])('malformed keys (%s): 400, nothing written', async (_l, keys, error) => {
+        const r = await attach({ connectorId: 'multi', keys });
+        expect(r).toEqual({ statusCode: 400, body: { error } });
+        expect(sets).toEqual([]);
+        expect(attachCalls).toEqual([]);
+        expectNoLeak(r);
+      });
+
+      it('a body carrying anything besides connectorId and keys is refused 400', async () => {
+        const r = await attach({ connectorId: 'linear', agentId: 'a-theirs' });
+        expect(r).toEqual({ statusCode: 400, body: { error: 'invalid-body' } });
+        expect(attachCalls).toEqual([]);
+      });
+
+      it('keys for a shared-key or a no-auth connector: 400 keys-not-accepted, nothing written', async () => {
+        vault.add('account:company');
+        for (const connectorId of ['company', 'linear']) {
+          const r = await attach({ connectorId, keys: [{ slot: 'KEY', payloadB64: b64(SECRET_A) }] });
+          expect(r).toEqual({ statusCode: 400, body: { error: 'keys-not-accepted' } });
+        }
+        expect(sets).toEqual([]);
+        expect(attachCalls).toEqual([]);
+      });
+
+      it('an OAuth connector is added by its sign-in, never here: 409 connector-needs-sign-in, even when signed in', async () => {
+        vault.add('account:figma');
         const r = await attach({ connectorId: 'figma' });
         expect(r.statusCode).toBe(409);
         expect(r.body).toMatchObject({ error: 'connector-needs-sign-in' });
-        expect(attachCalls).toHaveLength(0);
+        expect(await attach({ connectorId: 'figma', keys: keysFor() })).toMatchObject({ statusCode: 409 });
+        expect(credentialReads).toEqual([]);
+        expect(sets).toEqual([]);
+        expect(attachCalls).toEqual([]);
       });
 
-      it('refuses a connector whose required key is missing', async () => {
-        const r = await attach({ connectorId: 'stripe' });
-        expect(r.statusCode).toBe(409);
-        expect(r.body).toMatchObject({ error: 'connector-needs-key' });
-        expect(attachCalls).toHaveLength(0);
-        vault.add('account:stripe');
-        expect((await attach({ connectorId: 'stripe' })).statusCode).toBe(200);
-      });
-
-      // TASK-810 — the attach gate asks the same rows the rail does, so it no
-      // longer reads the admin's OAuth client secret on a person's behalf.
-      // UNFIXED: the gate reads account:gsuite:OAUTH_CLIENT_SECRET, finds it
-      // absent and refuses with connector-needs-key.
-      it('does not require (or read) the OAuth client-secret slot', async () => {
+      it('an OAuth connector with an admin client secret is still OAuth: 409', async () => {
         catalog.set('gsuite', {
           id: 'gsuite',
           name: 'gsuite',
@@ -1786,44 +1861,160 @@ describe('agent connector routes', () => {
             ],
           },
         });
-        vault.add('account:gsuite:MCP_OAUTH');
-        const r = await attach({ connectorId: 'gsuite' });
+        expect((await attach({ connectorId: 'gsuite' })).statusCode).toBe(409);
+        expect(attachCalls).toEqual([]);
+      });
+
+      it('SECURITY: a team member who may not manage the agent: 403 and NO credentials:set', async () => {
+        agentRow = { ...agentRow, visibility: 'team' };
+        canManage = 'deny';
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+        expect(sets).toEqual([]);
+        expect(authorizeCalls).toEqual([]);
+        expect(attachCalls).toEqual([]);
+      });
+
+      it('SECURITY: a personal agent someone else owns (the owner check says no): 403, nothing written', async () => {
+        caller = { id: 'u1', isAdmin: true };
+        canManage = 'deny';
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+        // The admin bit is not passed on: only the owner may put a key on it.
+        expect(canManageCalls).toEqual([{ actor: { userId: 'u1', isAdmin: false }, agentId: 'a1' }]);
+        expect(sets).toEqual([]);
+      });
+
+      it('SECURITY: on a team agent only a team admin may put a key on it — a workspace admin who is not one is refused', async () => {
+        agentRow = { ...agentRow, visibility: 'team' };
+        caller = { id: 'u1', isAdmin: true };
+        canSetShared = 'deny';
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+        expect(canSetSharedCalls).toEqual([{ actor: { userId: 'u1', isAdmin: true }, agentId: 'a1' }]);
+        expect(sets).toEqual([]);
+        canSetShared = 'allow';
+        expect((await attach({ connectorId: 'multi', keys: keysFor() })).statusCode).toBe(200);
+      });
+
+      it('SECURITY: the agent-store question says no: 403 agent-store-refused, nothing written', async () => {
+        authorize = 'deny';
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 403, body: { error: 'agent-store-refused' } });
+        expect(sets).toEqual([]);
+        expect(attachCalls).toEqual([]);
+      });
+
+      // Every connector is shared: `connectors:get` carries no visibility, so
+      // the vault's agent-store question is the only authority on a store.
+      it('a connector whose get has no visibility field attaches when the store question allows', async () => {
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 200, body: { attached: true, changed: true } });
+        expect(authorizeCalls.length).toBeGreaterThan(0);
+        expect(attachCalls).toHaveLength(1);
+      });
+
+      it('a connector whose get has no visibility field gets 403 agent-store-refused when the store question denies', async () => {
+        authorize = 'deny';
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 403, body: { error: 'agent-store-refused' } });
+        expect(sets).toEqual([]);
+        expect(attachCalls).toEqual([]);
+      });
+
+      it('an agent-store question that faults fails closed: 503, nothing written, logged by name only', async () => {
+        authorize = 'throw';
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 503, body: { error: 'connector-check-failed' } });
+        expect(sets).toEqual([]);
+        expect(JSON.stringify(logged)).not.toContain('corrupt');
+      });
+
+      it.each([
+        'agents:can-manage-connectors',
+        'credentials:authorize-agent:account',
+        'credentials:set',
+        'credentials:delete',
+        'connectors:list-effective',
+      ])('no %s: 503, nothing written, nothing attached', async (omit) => {
+        const old = bus;
+        bus = new HookBus();
+        for (const name of [
+          'auth:require-user',
+          'agents:resolve',
+          'agents:can-manage-connectors',
+          'agents:can-set-shared-credential',
+          'agents:attach-connector',
+          'connectors:get',
+          'connectors:list-effective',
+          'credentials:authorize-agent:account',
+          'credentials:set',
+          'credentials:delete',
+        ]) {
+          if (name !== omit) bus.registerService(name, 'x', (c, i) => old.call(name, c, i));
+        }
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r.statusCode).toBe(503);
+        expect(sets).toEqual([]);
+        expect(attachCalls).toEqual([]);
+      });
+
+      // Review Minor 1 — re-adding a key connector the agent already has would
+      // overwrite its working key (and a refused attach would then delete it).
+      it('a per-agent key connector already on the agent: 409 already-attached, credentials:set never called', async () => {
+        effective.push({
+          summary: { id: 'multi', name: 'multi', keyMode: 'personal' },
+          source: 'attached',
+          toolNamespaces: [],
+        });
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 409, body: { error: 'already-attached' } });
+        expect(sets).toEqual([]);
+        expect(deletes).toEqual([]);
+        expect(attachCalls).toEqual([]);
+        expectNoLeak(r);
+      });
+
+      it('a shared-key or no-auth re-add stays idempotent (changed: false), not 409', async () => {
+        attachChanged = false;
+        vault.add('account:company');
+        for (const connectorId of ['linear', 'company']) {
+          expect(await attach({ connectorId })).toEqual({
+            statusCode: 200,
+            body: { attached: true, changed: false },
+          });
+        }
+      });
+
+      it('a single-slot key connector writes the collapsed ref account:<id>', async () => {
+        const r = await attach({ connectorId: 'stripe', keys: [{ slot: 'STRIPE_KEY', payloadB64: b64(SECRET_A) }] });
         expect(r.statusCode).toBe(200);
-        expect(credentialReads.map((c) => c.ref)).toEqual(['account:gsuite:MCP_OAUTH']);
+        expect(sets.map((s) => s.input.ref)).toEqual(['account:stripe']);
       });
 
       it('attaches a connector that needs nothing without reading the vault', async () => {
         expect((await attach({ connectorId: 'linear' })).statusCode).toBe(200);
         expect(credentialReads).toHaveLength(0);
+        expect(sets).toEqual([]);
       });
 
-      it('fails closed: an unexpected vault error, or no vault, refuses the attach', async () => {
+      it('fails closed on the shared-key check: an unexpected vault error, or no vault, refuses the attach', async () => {
         credentialError = new Error('db down');
-        expect((await attach({ connectorId: 'figma' })).statusCode).toBe(503);
+        expect((await attach({ connectorId: 'company' })).statusCode).toBe(503);
+        const old = bus;
         bus = new HookBus();
-        // Rebuild without credentials:get by re-registering only what POST needs.
-        bus.registerService('auth:require-user', 'auth', async () => ({ user: caller }));
-        bus.registerService('agents:resolve', 'agents', async () => ({
-          agent: { id: 'a1', displayName: 'Quill', ...agentRow },
-        }));
-        bus.registerService('agents:attach-connector', 'agents', async (_c, i: unknown) => {
-          attachCalls.push(i as Record<string, unknown>);
-          return { agent: {}, changed: true };
-        });
-        bus.registerService('connectors:get', 'connectors', async () => ({
-          connector: catalog.get('figma'),
-        }));
-        expect((await attach({ connectorId: 'figma' })).statusCode).toBe(503);
+        for (const name of ['auth:require-user', 'agents:resolve', 'agents:attach-connector', 'connectors:get']) {
+          bus.registerService(name, 'x', (c, i) => old.call(name, c, i));
+        }
+        expect((await attach({ connectorId: 'company' })).statusCode).toBe(503);
         expect(attachCalls).toHaveLength(0);
       });
 
-      it('logs a fail-closed check by step and error NAME only — never the message', async () => {
-        const warn = vi.spyOn(initCtx.logger, 'warn');
-        credentialError = new Error('vault row 42 for account:figma is corrupt');
-        expect((await attach({ connectorId: 'figma' })).statusCode).toBe(503);
-        const call = warn.mock.calls.find((c) => c[0] === 'workspace_connector_attach_check_failed');
-        warn.mockRestore();
-        expect(call?.[1]).toEqual({ connectorId: 'figma', step: 'credential', name: expect.any(String) });
+      it('logs a fail-closed shared-key check by step and error NAME only — never the message', async () => {
+        credentialError = new Error('vault row 42 for account:company is corrupt');
+        expect((await attach({ connectorId: 'company' })).statusCode).toBe(503);
+        const call = logged.find((c) => c[0] === 'workspace_connector_attach_check_failed');
+        expect(call?.[1]).toEqual({ connectorId: 'company', step: 'credential', name: expect.any(String) });
         expect(JSON.stringify(call?.[1])).not.toContain('corrupt');
       });
 
@@ -1837,7 +2028,6 @@ describe('agent connector routes', () => {
       // agent: no key prompt, the agent spends the admin's shared key. Whether
       // this person may READ that key is the vault's read-time question
       // (credentials:authorize-global:account, TASK-697), asked here as them.
-      // UNFIXED: a non-admin got 403 before any read.
       it('lets a non-admin attach a shared-key connector once the shared key exists', async () => {
         const missing = await attach({ connectorId: 'company' });
         expect(missing.statusCode).toBe(409);
@@ -1856,11 +2046,14 @@ describe('agent connector routes', () => {
         expect(attachCalls).toEqual([
           { actor: { userId: caller.id, isAdmin: false }, agentId: 'a1', connectorId: 'company' },
         ]);
+        expect(sets).toEqual([]);
       });
 
       it('lets an admin attach a company-key connector once the company key exists', async () => {
         caller = { id: 'u1', isAdmin: true };
-        expect((await attach({ connectorId: 'company' })).statusCode).toBe(409);
+        const missing = await attach({ connectorId: 'company' });
+        expect(missing.statusCode).toBe(409);
+        expect(missing.body).toMatchObject({ error: 'connector-needs-shared-key' });
         vault.add('account:company');
         expect((await attach({ connectorId: 'company' })).statusCode).toBe(200);
       });

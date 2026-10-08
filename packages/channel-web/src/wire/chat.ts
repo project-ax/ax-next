@@ -114,25 +114,20 @@ const ShownCapsSchema = z.object({
   pypi: z.array(z.string()),
 });
 
-// TASK-112 — the decision carries EITHER a `skillId` (the JIT skill card) OR a
-// `connectorId` (the upfront connector card, TASK-94/112). Exactly one is present:
-// the card knows which kind it rendered. Both are short ids capped at 128. The
-// server stays authoritative either way (the grant self-detects authored-ness /
-// re-resolves the agent's own drafts); the subject id is only an identifier
-// matched host-side, never a capability.
+// The decision names a skill. Slice 2c removed the in-chat connector card (an
+// agent-proposed connector now goes to the workspace admins), so a body naming a
+// `connectorId` — or any other unknown key — is refused by `.strict()` with a
+// 400 rather than silently read as something else. The server stays
+// authoritative: the subject id is only an identifier matched host-side, never
+// a capability.
 export const PermissionDecisionRequest = z
   .object({
     conversationId: z.string().min(1),
-    skillId: z.string().min(1).max(128).optional(),
-    /** TASK-112 — the connector subject (mutually exclusive with skillId). */
-    connectorId: z.string().min(1).max(128).optional(),
+    skillId: z.string().min(1).max(128),
     /** What the card displayed — authored grant intersects this with the current proposal. */
     shown: ShownCapsSchema.optional(),
   })
-  .refine(
-    (v) => (v.skillId === undefined) !== (v.connectorId === undefined),
-    { message: 'exactly one of skillId or connectorId is required' },
-  );
+  .strict();
 export type PermissionDecisionRequest = z.infer<
   typeof PermissionDecisionRequest
 >;

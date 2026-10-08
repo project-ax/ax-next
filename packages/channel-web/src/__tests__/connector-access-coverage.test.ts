@@ -14,7 +14,10 @@
  *   - calls `setDestinationCredential(...)` (writes a key to the vault),
  *   - renders `<CredentialSlotForm` (a key-entry form), or
  *   - renders `<ConnectorOAuthConnect` (a sign-in that grants access), or
- *   - calls `useOAuthPopup(` (the same sign-in without the widget — TASK-740)
+ *   - calls `useOAuthPopup(` (the same sign-in without the widget — TASK-740),
+ *   - renders `<ApiKeyField` (the bare key field, slice 3), or
+ *   - calls `.attachConnector(` (adds a connector to an agent, keys and all —
+ *     slice 3: a per-agent key rides in that request)
  * must render `<ConnectorAccessNotice` too, or be on the allowlist below with a
  * stated reason. The allowlist is checked BOTH ways: a stale entry (the file no
  * longer matches, or no longer exists) fails as loudly as a missing notice, so
@@ -24,7 +27,7 @@
  * `vocabulary.test.ts` does it: prose in a comment must not count as a call.
  *
  * What this CANNOT see, stated rather than implied: a surface that gets a key
- * to the vault by a route it does not spell with one of the three names above
+ * to the vault by a route it does not spell with one of the names above
  * (a raw `fetch` to `/settings/destinations/...`). `lib/credentials.ts` is the
  * one place those routes are built, so that would have to bypass it on purpose.
  */
@@ -47,6 +50,8 @@ const TRIGGERS: Array<{ name: string; pattern: RegExp }> = [
   { name: '<CredentialSlotForm', pattern: /<CredentialSlotForm\b/ },
   { name: '<ConnectorOAuthConnect', pattern: /<ConnectorOAuthConnect\b/ },
   { name: 'useOAuthPopup(', pattern: /\buseOAuthPopup\s*\(/ },
+  { name: '<ApiKeyField', pattern: /<ApiKeyField\b/ },
+  { name: '.attachConnector(', pattern: /\.attachConnector\s*\(/ },
 ];
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -92,12 +97,13 @@ describe('connector access disclosure: coverage (TASK-700)', () => {
   it('finds the surfaces it is meant to guard (a scan that matches nothing guards nothing)', () => {
     const rels = scanned.map((s) => s.rel);
     for (const expected of [
-      'components/settings/ConnectorConnectDialog.tsx',
       'components/settings/LegacyConnectorEditDialog.tsx',
       'components/settings/RemoteMcpConnectorForm.tsx',
-      'components/settings/ProposedConnectorApproveDialog.tsx',
       'components/workspace/GrantRow.tsx',
       'components/workspace/AddConnector.tsx',
+      // Slice 3 — the per-agent key form whose save is the Add (and a row's
+      // Add key).
+      'components/workspace/AddKeyDialog.tsx',
       // TASK-799 — AgentForm no longer attaches connectors or signs a team agent
       // in; that moved to the workspace rail.
       'components/workspace/AgentConnectors.tsx',

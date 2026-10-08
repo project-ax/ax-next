@@ -5,7 +5,6 @@
  *   - GET    /admin/credentials              → { credentials: [...] }
  *   - POST   /admin/credentials              → { credential }
  *   - GET    /admin/credentials/kinds        → { kinds: [...] }
- *   - GET    /settings/credentials           (per-user list)
  *
  * Pinned behaviors (the assertions are a contract):
  *   - All requests carry `credentials: 'include'` so cookies flow.
@@ -17,8 +16,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   adminCredentials,
-  deleteDestinationCredential,
-  myCredentials,
   setDestinationCredential,
 } from '../lib/credentials';
 import { HttpError, HTTP_FAILED, HTTP_NO_ACCESS } from '../lib/http';
@@ -107,27 +104,6 @@ describe('credentials wire client', () => {
         new Response(null, { status: 500 }),
       );
       await expect(adminCredentials.list()).rejects.toThrow(/list/);
-    });
-  });
-
-  describe('myCredentials', () => {
-    it('list GETs /settings/credentials', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(jsonResponse({ credentials: [] }));
-      await myCredentials.list();
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/settings/credentials',
-        expect.objectContaining({ credentials: 'include' }),
-      );
-    });
-
-    it('listKinds shares the /admin/credentials/kinds route', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(jsonResponse({ kinds: [] }));
-      await myCredentials.listKinds();
-      expect(fetchMock.mock.calls[0]![0]).toBe('/admin/credentials/kinds');
     });
   });
 
@@ -225,81 +201,35 @@ describe('credentials wire client', () => {
       expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).payloadB64).toBe(btoa(' secret '));
     });
 
+    // Slice 5 — connector credentials belong to agents (or the workspace),
+    // never to a person. The server refuses this too; the client never asks.
+    it('refuses a connector credential at user scope without sending anything', async () => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch');
+      await expect(
+        setDestinationCredential({
+          ...input,
+          destination: { kind: 'account', service: 'linear' },
+          scope: { scope: 'user', ownerId: null },
+          payload: 'lin-secret',
+        }),
+      ).rejects.toThrow('Connector credentials belong to agents now.');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('still sends other user-scope keys to the settings route', async () => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
+      await setDestinationCredential({
+        ...input,
+        destination: { kind: 'skill-slot', skillId: 'linear-issues', slot: 'api_key' },
+        scope: { scope: 'user', ownerId: null },
+      });
+      expect(fetchMock.mock.calls[0]![0]).toBe('/settings/destinations/skill-slot/credential');
+    });
+
     it('turns transport exceptions into safe connection copy', async () => {
       vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('request failed with sk-test'));
       await expect(setDestinationCredential(input)).rejects.toBeInstanceOf(HttpError);
       await expect(setDestinationCredential(input)).rejects.toThrow(HTTP_FAILED);
-    });
-  });
-
-  describe('deleteDestinationCredential', () => {
-    const destination = {
-      kind: 'account',
-      service: 'linear',
-      slot: 'OAUTH_CLIENT_SECRET',
-    } as const;
-
-    it('DELETEs the settings route for a user-scope secret, with the CSRF header and no payload', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response(null, { status: 204 }));
-      await deleteDestinationCredential({
-        destination,
-        scope: { scope: 'user', ownerId: null },
-      });
-      expect(fetchMock.mock.calls[0]![0]).toBe(
-        '/settings/destinations/account/credential',
-      );
-      const init = fetchMock.mock.calls[0]![1]!;
-      expect(init).toMatchObject({
-        method: 'DELETE',
-        credentials: 'include',
-        headers: { 'x-requested-with': 'ax-admin' },
-      });
-      expect(JSON.parse(init.body as string)).toEqual({
-        destination,
-        scope: 'user',
-        ownerId: null,
-      });
-    });
-
-    it('DELETEs the admin route for any other scope', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response(null, { status: 204 }));
-      await deleteDestinationCredential({
-        destination,
-        scope: { scope: 'global', ownerId: null },
-      });
-      expect(fetchMock.mock.calls[0]![0]).toBe(
-        '/admin/destinations/account/credential',
-      );
-    });
-
-    it('turns a failed answer into a status-carrying error without logging the body', async () => {
-      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        jsonResponse({ error: 'sk-test' }, 403),
-      );
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      await expect(
-        deleteDestinationCredential({
-          destination,
-          scope: { scope: 'user', ownerId: null },
-        }),
-      ).rejects.toMatchObject({ status: 403, message: HTTP_NO_ACCESS });
-      expect(JSON.stringify(warn.mock.calls)).not.toContain('sk-test');
-    });
-
-    it('turns transport exceptions into safe connection copy', async () => {
-      vi.spyOn(globalThis, 'fetch').mockRejectedValue(
-        new Error('request failed with sk-test'),
-      );
-      await expect(
-        deleteDestinationCredential({
-          destination,
-          scope: { scope: 'user', ownerId: null },
-        }),
-      ).rejects.toThrow(HTTP_FAILED);
     });
   });
 });

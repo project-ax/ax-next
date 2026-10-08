@@ -147,8 +147,8 @@ describe('@ax/connectors agents:deleted subscriber (TASK-718)', () => {
     // connectors_v1_connectors has no agent column: the user's own registry.
     await c.query(
       `INSERT INTO connectors_v1_connectors
-         (owner_user_id, connector_id, name, key_mode, visibility, capabilities)
-       VALUES ('u1','linear','Linear','personal','private',
+         (owner_user_id, connector_id, name, key_mode, capabilities)
+       VALUES ('u1','linear','Linear','personal',
                '{"allowedHosts":[],"credentials":[],"mcpServers":[],"packages":{"npm":[],"pypi":[]},"services":[]}'::jsonb)`,
     );
     expect(await draftCount(c, 'agt_A')).toBe(6);

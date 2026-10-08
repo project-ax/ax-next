@@ -9,6 +9,7 @@ export type {
   AgentInterruptOutput,
   ApplyAuthoredCapabilityGrantInput,
   ApplyAuthoredCapabilityGrantOutput,
+  ConnectorsSkippedPayload,
 } from './orchestrator.js';
 export { KNOWN_PROVIDERS, type KnownProvider } from './orchestrator.js';
 // TASK-807 — the host's "which vault refs does this connector spend" derivation,
@@ -16,7 +17,7 @@ export { KNOWN_PROVIDERS, type KnownProvider } from './orchestrator.js';
 // where the rail's own copy lives) can run it against the other two copies. A
 // pure function over a capabilities literal; no bus, no state.
 export { connectorCredentialSlots } from './connector-union.js';
-// TASK-810 — the authored-connector approval card addresses vault rows too
-// (it WRITES each key to `account:<service>[:<slotTag>]`), so the same
-// contract test runs it. Pure; no bus, no state.
-export { buildAuthoredConnectorCard } from './connector-card.js';
+// Slice 6 — the `chat:connectors-skipped` payload builder, exported so
+// @ax/routines' contract test can feed the producer's REAL output into its
+// consumer. A pure function over the skipped list; no bus, no state.
+export { connectorsSkippedPayload } from './connector-union.js';

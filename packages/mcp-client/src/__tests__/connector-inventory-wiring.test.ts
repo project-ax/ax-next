@@ -47,6 +47,8 @@ const USER = 'user-747';
 const CONNECTOR_ID = 'inventory-fake';
 const HOST = 'mcp.inventory.test';
 const SECRET = 'sk-test-747';
+/** The agent `h.ctx()` names when a test does not pick one. */
+const DEFAULT_AGENT = 'test-agent';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -190,7 +192,6 @@ async function seedConnector(h: TestHarness): Promise<ResolveOutput> {
     connectorId: CONNECTOR_ID,
     name: 'Inventory fake',
     keyMode: 'personal',
-    visibility: 'private',
     capabilities: {
       allowedHosts: [HOST],
       // Bound to `primary` only: `secondary` must be listed without it.
@@ -211,22 +212,24 @@ async function seedConnector(h: TestHarness): Promise<ResolveOutput> {
   );
 }
 
-/** Store the key the way the connect flow does: at the plan's scope + ref. */
-async function storeKey(h: TestHarness, resolved: ResolveOutput): Promise<void> {
+/** Store the key the way an agent's Add does: at the plan's scope (the agent) + ref. */
+async function storeKey(h: TestHarness, resolved: ResolveOutput, agentId = DEFAULT_AGENT): Promise<void> {
   const entry = resolved.credentialPlan.find((p) => p.slot === 'key');
-  expect(entry).toMatchObject({ scope: 'user' });
-  await h.bus.call('credentials:set', h.ctx({ userId: USER }), {
-    scope: 'user',
-    ownerId: USER,
+  expect(entry).toMatchObject({ scope: 'agent' });
+  await h.bus.call('credentials:set', h.ctx({ userId: USER, agentId }), {
+    scope: 'agent',
+    ownerId: agentId,
     ref: entry!.ref,
     kind: 'api-key',
     payload: new TextEncoder().encode(SECRET),
   });
 }
 
+// Keys live on the agent (slice 5), so the check names the agent that holds them.
 function describeTools(h: TestHarness, force = false): Promise<DescribeToolsOutput> {
-  return h.bus.call<unknown, DescribeToolsOutput>('connectors:describe-tools', h.ctx({ userId: USER }), {
+  return h.bus.call<unknown, DescribeToolsOutput>('connectors:describe-tools', h.ctx({ userId: USER, agentId: DEFAULT_AGENT }), {
     userId: USER,
+    agentId: DEFAULT_AGENT,
     connectorId: CONNECTOR_ID,
     ...(force ? { force: true } : {}),
   });
@@ -305,15 +308,33 @@ describe('connectors:describe-tools through the real connectors:resolve (TASK-74
     expect(out.status).toBe('needs-auth');
     expect(seen.some((r) => r.path === '/primary')).toBe(false);
   });
+
+  it('a key at person scope is refused by the vault, so it never reaches the wire', async () => {
+    const h = await boot();
+    const resolved = await seedConnector(h);
+    const ref = resolved.credentialPlan.find((p) => p.slot === 'key')!.ref;
+    await expect(
+      h.bus.call('credentials:set', h.ctx({ userId: USER }), {
+        scope: 'user',
+        ownerId: USER,
+        ref,
+        kind: 'api-key',
+        payload: new TextEncoder().encode(SECRET),
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+    const out = await describeTools(h);
+    expect(out.status).toBe('needs-auth');
+    expect(seen.some((r) => r.path === '/primary')).toBe(false);
+  });
 });
 
 describe('a runner-reported connector auth failure re-checks it host-side (TASK-842)', () => {
   it('connectors:auth-failure-reported maps the namespace through the real effective set and checks that connector for the session agent', async () => {
     const h = await boot();
-    const resolved = await seedConnector(h);
-    await storeKey(h, resolved);
-    const nsPrimary = expectedNamespace(USER, CONNECTOR_ID, 'primary');
     const agentId = 'agent-842';
+    const resolved = await seedConnector(h);
+    await storeKey(h, resolved, agentId);
+    const nsPrimary = expectedNamespace(USER, CONNECTOR_ID, 'primary');
     const sessionCtx = h.ctx({ userId: USER, agentId });
 
     await h.bus.fire('connectors:auth-failure-reported', sessionCtx, {

@@ -2,16 +2,15 @@ import { HttpError, httpFetch } from './http';
 import type { Destination } from '@ax/credentials';
 
 /**
- * Credentials wire client — typed wrappers around `/admin/credentials*`
- * and `/settings/credentials*`.
- *
- * Two namespaces share the file because both panels speak the same
- * envelope shape and CSRF posture, just on different routes:
+ * Credentials wire client — typed wrappers around `/admin/credentials*` and
+ * the destination-credential routes (`/admin|/settings/destinations/*`).
  *
  *   - `adminCredentials` → `/admin/credentials*` (admin-only; full scope
  *     axis: global / user / agent).
- *   - `myCredentials`    → `/settings/credentials*` (any authed user;
- *     server forces scope='user' + ownerId=actor.id).
+ *
+ * Slice 5 — there is no per-person listing any more. Its one caller was the
+ * connector editor's "move your old client secret" notice, and connector
+ * credentials are never a person's now.
  *
  * Path convention matches `lib/admin.ts` (`/admin/...`, no `/api`
  * prefix). Server-side routes live in `@ax/credentials-admin-routes`.
@@ -31,10 +30,9 @@ import type { Destination } from '@ax/credentials';
  *     ambiguity (binary in JSON has no canonical form). Decode happens
  *     server-side in the credentials-admin-routes handler.
  *
- * `listKinds` is a single endpoint shared between admin and settings
- * panels: the kinds catalog isn't admin-sensitive (just "what flows
- * does this deployment support") and lives at `/admin/credentials/kinds`
- * gated only by `auth:require-user`.
+ * `listKinds` lives at `/admin/credentials/kinds`, gated only by
+ * `auth:require-user`: the kinds catalog isn't admin-sensitive (just "what
+ * flows does this deployment support").
  */
 
 export interface CredentialMeta {
@@ -119,13 +117,6 @@ export const adminCredentials = {
   },
 };
 
-// myCredentials ----------------------------------------------------------
-
-export const myCredentials = {
-  list: () => listAt('/settings/credentials'),
-  listKinds,
-};
-
 // Destination credential helpers -----------------------------------------
 
 /**
@@ -193,12 +184,21 @@ async function keyValidationMessage(res: Response, destination: Destination): Pr
   return KEY_VALIDATION_FAILED;
 }
 
+/**
+ * Slice 5 — a connector credential (`account:` destination) is the agent's or
+ * the workspace's, never a person's. The server refuses one at user scope
+ * (`400 account-not-per-person`); this never sends it in the first place.
+ */
+export const CONNECTOR_KEY_NOT_PER_PERSON = 'Connector credentials belong to agents now.';
+
 export async function setDestinationCredential(args: {
   destination: Destination;
   slot: { kind: 'api-key' };
   scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
   payload: string;
 }): Promise<void> {
+  if (args.destination.kind === 'account' && args.scope.scope === 'user')
+    throw new Error(CONNECTOR_KEY_NOT_PER_PERSON);
   const base = args.scope.scope === 'user' ? '/settings' : '/admin';
   const url = `${base}/destinations/${args.destination.kind}/credential`;
   const body = {
@@ -227,39 +227,6 @@ export async function setDestinationCredential(args: {
     throw new HttpError(url, res.status, res.status === 422
       ? await keyValidationMessage(res, args.destination)
       : undefined);
-  }
-}
-
-/**
- * Delete one destination's stored secret at the given scope. Mirrors
- * `setDestinationCredential`'s routing: `user` scope goes to the settings route
- * (the server pins the owner to the signed-in person), anything else to the
- * admin-only route. A secret was never in this request, and the failure copy
- * never carries one either.
- */
-export async function deleteDestinationCredential(args: {
-  destination: Destination;
-  scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
-}): Promise<void> {
-  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
-  const url = `${base}/destinations/${args.destination.kind}/credential`;
-  let res: Response;
-  try {
-    res = await httpFetch(url, {
-      method: 'DELETE',
-      headers: writeHeaders,
-      body: JSON.stringify({
-        destination: args.destination,
-        scope: args.scope.scope,
-        ownerId: args.scope.ownerId,
-      }),
-    });
-  } catch {
-    throw new HttpError(url, 0);
-  }
-  if (!res.ok) {
-    console.warn(`[credentials] ${url} → ${res.status}`);
-    throw new HttpError(url, res.status);
   }
 }
 

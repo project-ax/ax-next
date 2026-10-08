@@ -32,16 +32,16 @@ const deps = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
-  it('marks (user, connector) when the authorization server rejects the refresh', async () => {
+  it('marks (agent, connector) when the authorization server rejects the refresh', async () => {
     const marker = markerSpy();
     const resolve = createMcpOAuthResolver(deps({
       marker,
       refresh: async () => { throw new InvalidGrantError('revoked'); },
     }));
-    await expect(resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail' }))
+    await expect(resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail', scope: 'agent', ownerId: 'a1' }))
       .rejects.toBeInstanceOf(NeedsReconnectError);
     expect(marker.mark).toHaveBeenCalledTimes(1);
-    expect(marker.mark).toHaveBeenCalledWith({ kind: 'user', userId: 'u1' }, 'gmail');
+    expect(marker.mark).toHaveBeenCalledWith({ kind: 'agent', agentId: 'a1' }, 'gmail');
     expect(marker.clear).not.toHaveBeenCalled();
   });
 
@@ -49,9 +49,9 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
     const marker = markerSpy();
     const resolve = createMcpOAuthResolver(deps({ marker }));
     const { refreshToken: _rt, ...noRt } = baseBlob;
-    await expect(resolve({ payload: encodeTokenBlob(noRt), userId: 'u1', ref: 'account:gmail' }))
+    await expect(resolve({ payload: encodeTokenBlob(noRt), userId: 'u1', ref: 'account:gmail', scope: 'agent', ownerId: 'a1' }))
       .rejects.toBeInstanceOf(NeedsReconnectError);
-    expect(marker.mark).toHaveBeenCalledWith({ kind: 'user', userId: 'u1' }, 'gmail');
+    expect(marker.mark).toHaveBeenCalledWith({ kind: 'agent', agentId: 'a1' }, 'gmail');
   });
 
   it('does NOT mark on a transient refresh failure (the sign-in may be fine)', async () => {
@@ -60,7 +60,7 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
       marker,
       refresh: async () => { throw new TemporarilyUnavailableError('busy'); },
     }));
-    await expect(resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail' }))
+    await expect(resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail', scope: 'agent', ownerId: 'a1' }))
       .rejects.not.toBeInstanceOf(NeedsReconnectError);
     expect(marker.mark).not.toHaveBeenCalled();
     expect(marker.clear).not.toHaveBeenCalled();
@@ -69,10 +69,10 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
   it('clears the marker when a refresh succeeds', async () => {
     const marker = markerSpy();
     const resolve = createMcpOAuthResolver(deps({ marker }));
-    const out = await resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail' });
+    const out = await resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail', scope: 'agent', ownerId: 'a1' });
     expect(out.value).toBe('new');
     expect(marker.clear).toHaveBeenCalledTimes(1);
-    expect(marker.clear).toHaveBeenCalledWith({ kind: 'user', userId: 'u1' }, 'gmail');
+    expect(marker.clear).toHaveBeenCalledWith({ kind: 'agent', agentId: 'a1' }, 'gmail');
     expect(marker.mark).not.toHaveBeenCalled();
   });
 
@@ -80,7 +80,7 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
     const marker = markerSpy();
     const resolve = createMcpOAuthResolver(deps({ marker }));
     const blob = encodeTokenBlob({ ...baseBlob, expiresAt: 10_000 + 10 * 60_000 });
-    const out = await resolve({ payload: blob, userId: 'u1', ref: 'account:gmail' });
+    const out = await resolve({ payload: blob, userId: 'u1', ref: 'account:gmail', scope: 'agent', ownerId: 'a1' });
     expect(out.value).toBe('old');
     expect(marker.mark).not.toHaveBeenCalled();
     expect(marker.clear).not.toHaveBeenCalled();
@@ -93,11 +93,11 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
       marker: failing,
       refresh: async () => { throw new InvalidGrantError('revoked'); },
     }));
-    await expect(rejecting({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail' }))
+    await expect(rejecting({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail', scope: 'agent', ownerId: 'a1' }))
       .rejects.toBeInstanceOf(NeedsReconnectError);
     expect(failing.mark).toHaveBeenCalledTimes(1);
     const refreshing = createMcpOAuthResolver(deps({ marker: failing }));
-    const out = await refreshing({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail' });
+    const out = await refreshing({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail', scope: 'agent', ownerId: 'a1' });
     expect(out.value).toBe('new');
     expect(failing.clear).toHaveBeenCalledTimes(1);
   });
@@ -108,7 +108,7 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
       marker,
       refresh: async () => { throw new InvalidGrantError('revoked'); },
     }));
-    await expect(resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'something-else' }))
+    await expect(resolve({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'something-else', scope: 'agent', ownerId: 'a1' }))
       .rejects.toBeInstanceOf(NeedsReconnectError);
     expect(marker.mark).not.toHaveBeenCalled();
   });
@@ -138,13 +138,38 @@ describe('mcp-oauth resolver — needs-reconnect marker (TASK-741)', () => {
     expect(marker.clear).toHaveBeenCalledWith({ kind: 'agent', agentId: 'team-agent-1' }, 'gmail');
   });
 
-  it('markerOwnerOf keys user and global rows on the person resolving', () => {
+  // Slice 5 — every sign-in lives on an agent; a row at any other scope (a
+  // leftover person-level one, a global one, a caller that did not say) has no
+  // marker owner at all.
+  it('markerOwnerOf answers an agent for an agent-scope row, and null for anything else', () => {
     const base = { payload: new Uint8Array(), userId: 'u1', ref: 'account:gmail' };
-    expect(markerOwnerOf({ ...base, scope: 'user', ownerId: 'u1' })).toEqual({ kind: 'user', userId: 'u1' });
-    expect(markerOwnerOf({ ...base, scope: 'global', ownerId: null })).toEqual({ kind: 'user', userId: 'u1' });
-    expect(markerOwnerOf(base)).toEqual({ kind: 'user', userId: 'u1' });
-    expect(markerOwnerOf({ ...base, scope: 'agent', ownerId: '' })).toEqual({ kind: 'user', userId: 'u1' });
+    expect(markerOwnerOf({ ...base, scope: 'user', ownerId: 'u1' })).toBeNull();
+    expect(markerOwnerOf({ ...base, scope: 'global', ownerId: null })).toBeNull();
+    expect(markerOwnerOf(base)).toBeNull();
+    expect(markerOwnerOf({ ...base, scope: 'agent', ownerId: '' })).toBeNull();
     expect(markerOwnerOf({ ...base, scope: 'agent', ownerId: 'a9' })).toEqual({ kind: 'agent', agentId: 'a9' });
+  });
+
+  it.each([
+    ['user', { scope: 'user' as const, ownerId: 'u1' }],
+    ['global', { scope: 'global' as const, ownerId: null }],
+    ['no scope', {}],
+  ] as const)('a %s-scope resolve never reads, marks or clears a marker', async (_label, over) => {
+    const marker = { ...markerSpy(), isMarked: vi.fn(async () => true) };
+    const refreshing = createMcpOAuthResolver(deps({ marker }));
+    // Unexpired: a marker read would force a renewal; with no owner it is not asked.
+    const fresh = encodeTokenBlob({ ...baseBlob, expiresAt: 10_000 + 10 * 60_000 });
+    expect((await refreshing({ payload: fresh, userId: 'u1', ref: 'account:gmail', ...over })).value).toBe('old');
+    expect((await refreshing({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail', ...over })).value).toBe('new');
+    const rejecting = createMcpOAuthResolver(deps({
+      marker,
+      refresh: async () => { throw new InvalidGrantError('revoked'); },
+    }));
+    await expect(rejecting({ payload: encodeTokenBlob(baseBlob), userId: 'u1', ref: 'account:gmail', ...over }))
+      .rejects.toBeInstanceOf(NeedsReconnectError);
+    expect(marker.isMarked).not.toHaveBeenCalled();
+    expect(marker.mark).not.toHaveBeenCalled();
+    expect(marker.clear).not.toHaveBeenCalled();
   });
 
   it('connectorIdOfRef reads only the `account:<slug>` shape', () => {

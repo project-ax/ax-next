@@ -17,13 +17,14 @@ import { UsageTab } from './UsageTab';
 import { StorageTab } from './StorageTab';
 import { SkillsTab } from '../settings/SkillsTab';
 import { ConnectorsTab } from '../settings/ConnectorsTab';
+import { SitesTab } from '../settings/SitesTab';
 import { RoutinesTab } from '../routines/RoutinesTab';
 
 export interface AdminShellProps {
   /**
-   * Admins get the full set of admin tabs; every user gets the Settings tabs
-   * (Skills, Connectors — each connector owns its own key(s), so there's no
-   * separate Credentials tab). The admin-only tabs are gated here AND on the
+   * Admins get the full set of admin tabs (Connectors among them — only admins
+   * define connectors); every user gets the Settings tabs (Skills, Sites,
+   * Agents, …). The admin-only tabs are gated here AND on the
    * server — every /admin/* route enforces role === 'admin' regardless of what
    * the in-shell nav shows, so hiding the tabs is a UX nicety, not the boundary.
    */
@@ -58,7 +59,8 @@ interface TabMeta {
 const TAB_META: Record<AdminTabId, TabMeta> = {
   models: { eyebrow: 'Admin', title: 'Available models' },
   skills: { eyebrow: 'Settings', title: 'Skills' },
-  'connectors-user': { eyebrow: 'Settings', title: 'Connectors' },
+  sites: { eyebrow: 'Settings', title: 'Sites' },
+  connectors: { eyebrow: 'Admin', title: 'Connectors' },
   agents: { eyebrow: 'Settings', title: 'Agents' },
   routines: { eyebrow: 'Settings', title: 'Routines' },
   storage: { eyebrow: 'Settings', title: 'Storage' },
@@ -77,7 +79,12 @@ export function AdminShell({
   initialTab,
 }: AdminShellProps) {
   const [activeTab, setActiveTab] = useState<AdminTabId>(() =>
-    initialTab !== undefined && (isAdmin || !ADMIN_ONLY_TABS.has(initialTab))
+    initialTab !== undefined &&
+    // A tab this shell doesn't know (a retired id such as the pre-slice-2a
+    // `connectors-user`) would render no title and no body. Land on the
+    // default instead.
+    Object.hasOwn(TAB_META, initialTab) &&
+    (isAdmin || !ADMIN_ONLY_TABS.has(initialTab))
       ? initialTab
       : 'skills',
   );
@@ -132,7 +139,8 @@ export function AdminShell({
         }
       >
         {activeTab === 'skills' && <SkillsTab isAdmin={isAdmin} />}
-        {activeTab === 'connectors-user' && <ConnectorsTab isAdmin={isAdmin} />}
+        {activeTab === 'sites' && <SitesTab />}
+        {activeTab === 'connectors' && isAdmin && <ConnectorsTab />}
         {activeTab === 'providers' && <ProvidersPanel />}
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'models' && <ModelsTab onOpenKeys={() => setActiveTab('providers')} />}

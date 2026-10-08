@@ -210,6 +210,94 @@ describe('RoutinesStore.recordFire', () => {
   });
 });
 
+// Slice 6 — a run that went without a connector says so, on its fire row and
+// on the routine; the next clean fire clears the routine's.
+describe('RoutinesStore.recordFire — skipped-connector warning', () => {
+  const W = "Gmail isn't signed in on Bob, so this run went without it.";
+
+  it('writes the warning to the fire row and the routine\'s lastWarning', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'tick',
+      conversationId: 'cnv_1', status: 'ok', error: null, warning: W,
+    });
+    const [fire] = await store.recentFires({ agentId: 'agt_a', path: '.ax/routines/r.md' });
+    expect(fire!.warning).toBe(W);
+    expect((await store.findOne({ agentId: 'agt_a', path: '.ax/routines/r.md' }))!.lastWarning).toBe(W);
+    expect((await store.list({ agentId: 'agt_a' }))[0]!.lastWarning).toBe(W);
+  });
+
+  it('the next clean fire clears lastWarning; the old fire row keeps its warning', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'tick',
+      conversationId: 'cnv_1', status: 'ok', error: null, warning: W,
+    });
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'manual',
+      conversationId: 'cnv_2', status: 'error', error: 'boom', warning: null,
+    });
+    expect((await store.findOne({ agentId: 'agt_a', path: '.ax/routines/r.md' }))!.lastWarning).toBeNull();
+    const fires = await store.recentFires({ agentId: 'agt_a', path: '.ax/routines/r.md' });
+    expect(fires.map((f) => f.warning).sort()).toEqual([W, null].sort());
+  });
+
+  // Final review ruling — omitted = the fire failed before turn assembly:
+  // its row carries no warning, the routine's lastWarning is left alone.
+  it('a fire recorded with warning omitted leaves lastWarning unchanged', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'tick',
+      conversationId: 'cnv_1', status: 'ok', error: null, warning: W,
+    });
+    const id = await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'tick',
+      conversationId: null, status: 'error', error: 'forbidden: denied',
+    });
+    expect(id).toBeGreaterThan(0);
+    expect((await store.findOne({ agentId: 'agt_a', path: '.ax/routines/r.md' }))!.lastWarning).toBe(W);
+    const fires = await store.recentFires({ agentId: 'agt_a', path: '.ax/routines/r.md' });
+    expect(fires.map((f) => f.warning).sort()).toEqual([W, null].sort());
+  });
+
+  it('only the fired routine\'s lastWarning moves', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    await store.upsert(baseInput({ path: '.ax/routines/other.md', name: 'other' }));
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'tick',
+      conversationId: null, status: 'ok', error: null, warning: W,
+    });
+    expect((await store.findOne({ agentId: 'agt_a', path: '.ax/routines/other.md' }))!.lastWarning).toBeNull();
+  });
+
+  it('a fire for a routine that no longer exists is still recorded', async () => {
+    const store = createRoutinesStore(db);
+    const id = await store.recordFire({
+      agentId: 'agt_gone', path: '.ax/routines/gone.md', triggerSource: 'tick',
+      conversationId: null, status: 'ok', error: null, warning: W,
+    });
+    expect(id).toBeGreaterThan(0);
+  });
+
+  it('advance leaves lastWarning alone', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md', triggerSource: 'tick',
+      conversationId: null, status: 'ok', error: null, warning: W,
+    });
+    await store.advance({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      nextRunAt: null, lastRunAt: new Date(), lastStatus: 'ok', lastError: null,
+    });
+    expect((await store.findOne({ agentId: 'agt_a', path: '.ax/routines/r.md' }))!.lastWarning).toBe(W);
+  });
+});
+
 describe('RoutinesStore.recentFires', () => {
   it('recentFires returns fires for one routine in fired_at DESC order, honors limit', async () => {
     const store = createRoutinesStore(db);

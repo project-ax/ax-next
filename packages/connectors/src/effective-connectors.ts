@@ -1,6 +1,11 @@
-import { PluginError } from '@ax/core';
+import { PluginError, type AgentContext } from '@ax/core';
 import { requireUserId } from './input-guards.js';
-import { validateConnectorId, type AvailableConnector, type ConnectorStore } from './store.js';
+import {
+  validateConnectorId,
+  type AvailableConnector,
+  type ConnectorStore,
+  type SkipRow,
+} from './store.js';
 import { deriveToolNamespaces } from './tool-namespace.js';
 import type {
   EffectiveConnectorEntry,
@@ -38,6 +43,20 @@ function optionalIdList(value: unknown, field: string): string[] {
 }
 
 /**
+ * Final review M3 — the `onSkip` every `listAvailable` caller passes: a warn
+ * with the connector id and the validation reason, the same fields
+ * `listAllLive`'s reconcile logs. Never the owner, never the row.
+ */
+export function logSkippedRow(logger: AgentContext['logger']): SkipRow {
+  return (connectorId, err) => {
+    logger.warn('connectors_list_skipped_row', {
+      connectorId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  };
+}
+
+/**
  * TASK-739 — an agent's effective connector set. See `ListEffectiveInput` for
  * the union contract. Every source reads the user's LIVE rows only, so a
  * pending authored draft or a tombstoned connector contributes nothing.
@@ -45,6 +64,7 @@ function optionalIdList(value: unknown, field: string): string[] {
 export async function listEffectiveConnectors(
   store: ConnectorStore,
   input: ListEffectiveInput,
+  onSkip: SkipRow,
 ): Promise<ListEffectiveOutput> {
   const userId = requireUserId(input.userId, 'connectors:list-effective');
   const attachmentIds = optionalIdList(input.attachmentIds, 'attachmentIds');
@@ -85,10 +105,10 @@ export async function listEffectiveConnectors(
     if (available !== null) add(available, 'attached');
   }
 
-  // 2. LEGACY OWNED rows keep their implicit attachment. A shared definition the
+  // 2. LEGACY OWNED rows keep their implicit attachment. A definition the
   //    user does not own, or any row created after explicit attachment landed,
   //    is discoverable but never attached implicitly.
-  for (const entry of await store.listAvailable(userId)) {
+  for (const entry of await store.listAvailable(userId, onSkip)) {
     if (entry.connector.canEdit === false || entry.connector.requiresAttachment === true) continue;
     add(entry, 'legacy-owned');
   }

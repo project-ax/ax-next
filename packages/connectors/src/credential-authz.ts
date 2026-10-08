@@ -1,6 +1,6 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import { deriveCredentialPlan } from './credential-plan.js';
-import { listEffectiveConnectors } from './effective-connectors.js';
+import { listEffectiveConnectors, logSkippedRow } from './effective-connectors.js';
 import { namesOAuthClientSecretRef, oauthClientSecretRefFor } from './oauth-client-secret-ref.js';
 import type { ConnectorStore } from './store.js';
 import type {
@@ -16,7 +16,7 @@ import type {
 // THE BUG THIS CLOSES. A connector's credential ref is `account:<connectorId>`
 // (or `account:<connectorId>:<SLOT>` for a connector with two or more slots) and
 // the connector id is chosen by whoever authors the connector. @ax/credentials'
-// `credentials:get` walks user -> agent -> global for every ref, so a user who
+// `credentials:get` walked user -> agent -> global for every ref, so a user who
 // authored a connector called `zendesk` read the company's `account:zendesk` key
 // at global scope, whatever their connector's keyMode said.
 //
@@ -24,7 +24,8 @@ import type {
 // for an `account:` ref. We allow it iff, for the REQUESTING user:
 //
 //   1. the ref parses as `account:<id>` / `account:<id>:<SLOT>` with a valid id,
-//   2. that user can read a LIVE owned or unambiguous shared connector with that id,
+//   2. there is exactly ONE live connector with that id (`getSoleLiveById`;
+//      a duplicate id fails closed for every owner until an admin deletes one),
 //   3. the connector's derived credential plan contains EXACTLY this ref at
 //      scope `global` (i.e. `keyMode: 'workspace'`) — `deriveCredentialPlan` is
 //      the single function that decides both a slot's ref and its scope, so the
@@ -100,7 +101,10 @@ export async function authorizeGlobalAccountRead(
   }
 
   try {
-    const available = await store.getAvailableById(userId, connectorId);
+    // The ONE live definition with this id, or nothing: a duplicate id fails
+    // closed for the company key too. An own-row-first pick would let the
+    // owner of either copy read the key and spend it at that copy's hosts.
+    const available = await store.getSoleLiveById(userId, connectorId);
     if (available === null) return deny('no-such-connector');
     const { connector, ownerUserId } = available;
 
@@ -135,18 +139,19 @@ export async function authorizeGlobalAccountRead(
 // TASK-797 — who may read a connector's OAuth CLIENT SECRET at global scope.
 //
 // THE GAP THIS CLOSES. A custom-client OAuth connector pins a client id and a
-// client secret. The editor stored the secret at the AUTHOR's user scope, and
-// @ax/mcp-oauth's `begin` reads it as the person signing in, so only the
-// author could ever sign in (`400 oauth_client_secret_unavailable` for
-// everyone else). An admin's shared connector now stores it at global scope
-// instead, and this rule decides who may read it there.
+// client secret. The editor used to store the secret at the AUTHOR's user
+// scope, so only the author could ever sign in (`400
+// oauth_client_secret_unavailable` for everyone else). An admin's shared
+// connector stores it at global scope instead (and since slice 5 nothing is
+// stored per person), and this rule decides who may read it there.
 //
 // THE RULE. A global read of `account:<id>:OAUTH_CLIENT_SECRET` is allowed iff
 // ALL of these hold for the REQUESTING user:
 //
-//   1. the connector this user resolves for `<id>` is the ONE live SHARED
-//      definition with that id (`getSoleSharedById`, TASK-711's predicate) —
-//      not a private one (theirs or anyone's), and not one of two sharers,
+//   1. the connector this user resolves for `<id>` is the ONE live
+//      definition with that id (`getSoleLiveById`, TASK-711's predicate) —
+//      not one of two legacy duplicates (SIGNINS-9: every connector is
+//      shared, so there is no private definition to rule out),
 //   2. one of its OAuth slots names EXACTLY this ref as `clientSecretRef`,
 //   3. the ref is NOT also a credential-plan ref of that connector. The plan is
 //      what the credential proxy injects into the sandbox; a connector that
@@ -178,9 +183,9 @@ async function authorizeGlobalClientSecretRead(
   deny: (reason: string) => AuthorizeGlobalOutput,
 ): Promise<AuthorizeGlobalOutput> {
   try {
-    const shared = await store.getSoleSharedById(userId, connectorId);
-    if (shared === null) return deny('client-secret-not-the-shared-connector');
-    const { connector, ownerUserId } = shared;
+    const sole = await store.getSoleLiveById(userId, connectorId);
+    if (sole === null) return deny('client-secret-not-the-connector');
+    const { connector, ownerUserId } = sole;
 
     if (!namesOAuthClientSecretRef(connector.capabilities, ref)) {
       return deny('client-secret-ref-mismatch');
@@ -225,16 +230,20 @@ async function authorizeGlobalClientSecretRead(
 // THE RULE. @ax/credentials asks this hook before it takes the agent step for
 // an `account:` ref. We allow it iff the ref parses as `account:<id>` /
 // `account:<id>:<SLOT>` and the connector the REQUESTING user resolves for
-// `<id>` is the ONE live shared definition with that id (`getSoleSharedById`).
+// `<id>` is the ONE live definition with that id (`getSoleLiveById`).
 // That is the connector every member of the agent sees under the id, so it is
-// the only connector a credential stored on the agent can belong to. A private
-// definition (the user's own or anyone's), two shared definitions with one id,
-// or no definition at all is a deny.
+// the only connector a credential stored on the agent can belong to. Two live
+// definitions with one id (a legacy duplicate) or no definition at all is a
+// deny. (SIGNINS-9: every connector is shared, so there is no private
+// definition left to shadow the id.)
 //
-// THE SAME SHARED-DEFINITION RULE PICKS THE WRITE SCOPE. @ax/mcp-oauth calls this hook when a
-// team-agent sign-in starts: allowed => store the token on the agent, denied =>
-// store it on the signer (user scope). One predicate for both halves, so the
-// writer never stores a token on an agent that no reader may then read.
+// THE SAME SOLE-DEFINITION RULE GATES THE WRITE. @ax/mcp-oauth calls this hook when a
+// sign-in starts: allowed => the token will be stored on the agent, denied =>
+// `begin` refuses the sign-in with 403 `agent-store-refused`, for an Add and
+// (since SIGNINS-7) for Sign in again alike; Sign in again then also asks the
+// READ question, and a "no" there is 409 `not-on-agent`. Nothing is ever stored on the signer
+// instead. One predicate for both halves, so the writer never stores a token
+// on an agent that no reader may then read.
 //
 // TASK-788 — AND, for a READ, the connector must be EFFECTIVE on `agentId`
 // for this user: the same union a session on that agent folds
@@ -251,11 +260,12 @@ async function authorizeGlobalClientSecretRead(
 // would refuse every preset that loads both. It is `bus.hasService`-guarded:
 // with no @ax/agents loaded, no agent-scope `account:` credential is readable.
 //
-// THE WRITE-SCOPE QUESTION SKIPS THE ATTACHMENT HALF. @ax/mcp-oauth asks with
-// `purpose: 'store'` when a team-agent sign-in starts, and the Add-connector
-// flow signs in BEFORE it attaches (it attaches only once the sign-in worked).
-// Requiring the attachment there would land every such sign-in on the signer
-// instead of the team. Storing on the agent grants nothing by itself: the
+// THE WRITE QUESTION SKIPS THE ATTACHMENT HALF. @ax/mcp-oauth asks with
+// `purpose: 'store'` when an Add's sign-in starts, and an Add signs in BEFORE
+// it attaches (the callback attaches only once the sign-in worked). Requiring
+// the attachment there would make `begin` refuse every Add. Sign in again asks
+// WITHOUT `purpose`, so it is refused unless the connector is already on the
+// agent. Storing on the agent grants nothing by itself: the
 // token is only READ through this hook without `purpose`, which requires the
 // attachment. Any other `purpose` value is treated as a read (fail closed).
 //
@@ -291,8 +301,8 @@ export async function authorizeAgentAccountRead(
   if (connectorId === null) return deny('not-a-connector-ref');
 
   try {
-    const shared = await store.getSoleSharedById(userId, connectorId);
-    if (shared === null) return deny('not-the-shared-connector');
+    const sole = await store.getSoleLiveById(userId, connectorId);
+    if (sole === null) return deny('not-the-connector');
 
     // TASK-788 — only the exact value 'store' skips the attachment half.
     if (input.purpose === 'store') return { allowed: true };
@@ -326,11 +336,11 @@ export async function authorizeAgentAccountRead(
     const exclusions = stringList(agent.connectorExclusions);
     if (attachmentIds === null || exclusions === null) return deny('agent-lists-malformed');
 
-    const { connectors } = await listEffectiveConnectors(store, {
-      userId,
-      attachmentIds,
-      exclusions,
-    });
+    const { connectors } = await listEffectiveConnectors(
+      store,
+      { userId, attachmentIds, exclusions },
+      logSkippedRow(ctx.logger),
+    );
     if (!connectors.some((entry) => entry.summary.id === connectorId)) {
       return deny('not-effective-on-agent');
     }

@@ -70,7 +70,7 @@ const OPERATOR_PROBE_KEY = 'OPERATOR-PROBE-PROVIDER-KEY'; // global  provider:pr
 const OPERATOR_ACCOUNT_KEY = 'OPERATOR-ACCOUNT-KEY'; // global  account:opskey
 const OPERATOR_OWN_FORM_KEY = 'OPERATOR-OWN-FORM-KEY'; // global  account:cf-global:oauth-client-secret
 const ENV_KEY = 'OPERATOR-ENV-FALLBACK-KEY'; // envFallback 'anthropic-api'
-const MALLORY_OWN = 'MALLORY-OWN-USER-SCOPE-SECRET'; // user     account:mal-own:oauth-client-secret
+const MALLORY_OWN = 'MALLORY-OWN-CONNECTOR-SECRET'; // global  account:mal-own:oauth-client-secret (her shared connector's own)
 const AGENT_TOKEN = 'TEAM-AGENT-OAUTH-TOKEN'; // agent    account:cf-agent (a teammate's connector token)
 
 const ALL_SECRETS = [
@@ -266,9 +266,24 @@ async function boot() {
       const { agentId } = input as { agentId: string };
       return { agent: { id: agentId, visibility: 'team', ownerId: 'someone-else' } };
     }) as ServiceHandler,
+    // An Add's callback attaches the connector once the sign-in is stored.
+    'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,
     // TASK-798/813 — let her past the team-admin gate, so these cases still
     // exercise the client-secret-ref checks behind it.
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
+    // @ax/connectors' "may this agent hold the sign-in?" — yes to begin's STORE
+    // question only. Every vault READ (no `purpose`) is denied, exactly as when
+    // no provider is loaded, so the agent-scope read behaviour is unchanged.
+    'credentials:authorize-agent:account': (async (_c, input) => ({
+      allowed: (input as { purpose?: unknown }).purpose === 'store',
+    })) as ServiceHandler,
+    // @ax/connectors' "may this user read this global account: row?" — yes for
+    // mallory's OWN shared connector's client secret only (slice 5: a client
+    // secret lives at global scope; the vault no longer reads `account:` refs
+    // at user scope). Every other global account: row stays closed.
+    'credentials:authorize-global:account': (async (_c, input) => ({
+      allowed: (input as { ref?: unknown }).ref === 'account:mal-own:oauth-client-secret',
+    })) as ServiceHandler,
     'connectors:get': (async (_c, input) => {
       const { connectorId } = input as { connectorId: string };
       if (!refs.has(connectorId)) throw new Error(`unexpected connector ${connectorId}`);
@@ -317,7 +332,7 @@ async function boot() {
   await put('provider:probe', OPERATOR_PROBE_KEY);
   await put('account:opskey', OPERATOR_ACCOUNT_KEY);
   await put('account:cf-global:oauth-client-secret', OPERATOR_OWN_FORM_KEY);
-  await put('account:mal-own:oauth-client-secret', MALLORY_OWN, 'user', 'mallory');
+  await put('account:mal-own:oauth-client-secret', MALLORY_OWN);
   await put('account:cf-agent', AGENT_TOKEN, 'agent', 'agent-T');
 
   const route = (m: string, p: string): Handler => {
@@ -330,9 +345,10 @@ async function boot() {
 type Stack = Awaited<ReturnType<typeof boot>>;
 
 /** begin -> (attacker approves) -> callback, all as mallory, against `begin`/`callback` handlers. */
-async function runFlow(begin: Handler, callback: Handler, connectorId: string, agentId?: string) {
+async function runFlow(begin: Handler, callback: Handler, connectorId: string, agentId = 'agent-T') {
   const b = fakeRes();
-  await begin(fakeReq('mallory', { body: { connectorId, ...(agentId ? { agentId } : {}) } }), b.res);
+  // Every sign-in belongs to an agent (begin requires one): mallory's team agent.
+  await begin(fakeReq('mallory', { body: { connectorId, agentId, mode: 'add' } }), b.res);
   if (b.rec.status === 200) {
     const state = new URL(b.rec.json!.authorizationUrl!).searchParams.get('state')!;
     await callback(fakeReq('mallory', { query: { code: 'attacker-code', state } }), fakeRes().res);
@@ -363,10 +379,12 @@ async function unaccidentalHandlers(s: Stack, agentIdForVault: string) {
       );
     },
     // TASK-798/813 — begin's team-agent team-admin check fails closed when the
-    // hook is absent, so show it the real answer for THAT hook. Every other
-    // optional hook stays invisible, exactly as before this wrapper knew of it.
+    // hook is absent, and so does its "may this agent hold the sign-in?" check,
+    // so show it the real answer for THOSE hooks. Every other optional hook stays
+    // invisible, exactly as before this wrapper knew of them.
     hasService: (hook: string) =>
-      hook === 'agents:can-set-shared-credential' && s.h.bus.hasService(hook),
+      (hook === 'agents:can-set-shared-credential' || hook === 'credentials:authorize-agent:account') &&
+      s.h.bus.hasService(hook),
   };
   const handlers = createMcpOAuthRouteHandlers({
     bus: wrapped as never,
@@ -382,7 +400,7 @@ async function unaccidentalHandlers(s: Stack, agentIdForVault: string) {
 
 // ---------------------------------------------------------------------------
 describe('clientSecretRef on an author-controlled OAuth slot (TASK-712)', () => {
-  it('[CONTROL] the author’s OWN account key still works: it is resolved and reaches the token endpoint they chose', async () => {
+  it('[CONTROL] the connector’s OWN client secret (global, shared connector) still works: it is resolved and reaches the token endpoint they chose', async () => {
     // The sink is real (a resolved client secret is posted to the connector's own
     // token endpoint), so the tests below that see NO leak are not passing vacuously.
     const s = await boot();
@@ -391,6 +409,19 @@ describe('clientSecretRef on an author-controlled OAuth slot (TASK-712)', () => 
     expect(out).toEqual({ status: 200, error: undefined });
     expect(seen.some((r) => r.url === `${AS}/token`)).toBe(true);
     expect(leakedSecrets()).toEqual([MALLORY_OWN]);
+  });
+
+  it('slice 5: an author’s user-scope client secret can no longer be stored — the vault refuses it', async () => {
+    const s = await boot();
+    await expect(
+      s.h.bus.call('credentials:set', s.h.ctx({ userId: 'mallory' }), {
+        scope: 'user',
+        ownerId: 'mallory',
+        ref: 'account:mal-user:oauth-client-secret',
+        kind: 'api-key',
+        payload: new TextEncoder().encode('MALLORY-USER-SCOPE-SECRET'),
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
   it.each([

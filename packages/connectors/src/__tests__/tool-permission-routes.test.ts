@@ -241,7 +241,6 @@ const linear = {
   connectorId: 'linear',
   name: 'Linear',
   keyMode: 'personal',
-  visibility: 'shared',
   capabilities: caps(),
 };
 
@@ -417,39 +416,36 @@ describe('tool-permissions routes — authz', () => {
     expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({ defaults: [] });
   });
 
-  it('403 for an admin who is not the connector owner (canEdit is owner-only)', async () => {
+  it('another admin may read and set a SHARED connector’s defaults, keyed by the owner’s row', async () => {
     const h = await makeHarness();
     currentActor = { id: 'admin1', isAdmin: true };
     await create(h, 'admin', linear);
+    const ownerNs = deriveToolNamespace('admin1', 'linear', 'linear');
     currentActor = { id: 'admin2', isAdmin: true };
-    expect((await getPerms(h, 'admin', 'linear')).status).toBe(403);
-  });
-
-  it('404 for a private connector someone else owns', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'author', isAdmin: false };
-    await create(h, 'user', { ...linear, visibility: 'private' });
-    currentActor = { id: 'u2', isAdmin: false };
-    expect((await getPerms(h, 'user', 'linear')).status).toBe(404);
-  });
-
-  it('a private connector author may set and read its defaults on the settings surface', async () => {
-    const h = await makeHarness();
-    currentActor = { id: 'author', isAdmin: false };
-    await create(h, 'user', { ...linear, visibility: 'private' });
-    const ns = deriveToolNamespace('author', 'linear', 'linear');
-    const put = await putPerms(h, 'user', 'linear', {
-      verdicts: [
-        { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
-        { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
-      ],
+    expect((await getPerms(h, 'admin', 'linear')).status).toBe(200);
+    // The namespaces are the OWNER's: a key derived from admin2 is not this connector's.
+    const foreignNs = deriveToolNamespace('admin2', 'linear', 'linear');
+    const wrong = await putPerms(h, 'admin', 'linear', {
+      verdicts: [{ toolKey: `mcp.${foreignNs}.create_issue`, verdict: 'allow' }],
+    });
+    expect(wrong.status).toBe(400);
+    const put = await putPerms(h, 'admin', 'linear', {
+      verdicts: [{ toolKey: `mcp.${ownerNs}.create_issue`, verdict: 'allow' }],
     });
     expect(put).toEqual({ status: 200, body: { ok: true } });
-    const got = await getPerms(h, 'user', 'linear');
-    expect((got.body as { defaults: unknown[] }).defaults).toEqual([
-      { toolKey: `mcp.${ns}.create_issue`, verdict: 'hold' },
-      { toolKey: `mcp.${ns}.search_issues`, verdict: 'allow' },
-    ]);
+    currentActor = { id: 'admin1', isAdmin: true };
+    expect((await getPerms(h, 'admin', 'linear')).body).toMatchObject({
+      defaults: [{ toolKey: `mcp.${ownerNs}.create_issue`, verdict: 'allow' }],
+    });
+  });
+
+  it('404 for a connector id with no live definition', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'admin1', isAdmin: true };
+    expect((await getPerms(h, 'admin', 'linear')).status).toBe(404);
+    expect((await putPerms(h, 'admin', 'linear', { verdicts: [] })).status).toBe(404);
+    currentActor = { id: 'u2', isAdmin: false };
+    expect((await getPerms(h, 'user', 'linear')).status).toBe(404);
   });
 });
 

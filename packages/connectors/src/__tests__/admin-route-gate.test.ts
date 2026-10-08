@@ -35,7 +35,7 @@ import type {
 // THE BUG. Every handler behind `/admin/connectors*` called only `requireUser`, so
 // a signed-in NON-admin could list / create / read / patch / test / delete through
 // the admin bundle. The visible damage: `POST /admin/connectors` with
-// `keyMode: workspace, visibility: shared` returned 201 and
+// `keyMode: workspace` (then also `visibility: shared`) returned 201 and
 // stored exactly that row for a non-admin, while the same body on the locked-down
 // `/settings/connectors` twin 400s (`visibility: shared is admin-only`). And
 // `POST /admin/connectors/:id/test` told a non-admin which global `account:` keys
@@ -249,7 +249,6 @@ async function seed(h: TestHarness, owner: string, connectorId: string, keyMode:
       connectorId,
       name: `${connectorId} (seeded)`,
       keyMode,
-      visibility: 'private',
       capabilities: caps(`${connectorId}.example.com`),
     },
   );
@@ -276,12 +275,21 @@ interface RouteCase {
 
 const ADMIN_ROUTES: RouteCase[] = [
   { label: 'GET /admin/connectors', method: 'GET', path: '/admin/connectors', opts: () => ({}), adminStatus: 200 },
+  // Slice 2c — the agent-proposal queue and its Dismiss.
+  { label: 'GET /admin/connectors/authored', method: 'GET', path: '/admin/connectors/authored', opts: () => ({}), adminStatus: 200 },
+  {
+    label: 'DELETE /admin/connectors/authored/:connectorId',
+    method: 'DELETE',
+    path: '/admin/connectors/authored/:connectorId',
+    opts: (id) => ({ params: { connectorId: id } }),
+    adminStatus: 204,
+  },
   {
     label: 'POST /admin/connectors',
     method: 'POST',
     path: '/admin/connectors',
     opts: (id) => ({
-      body: { connectorId: `new-${id}`, name: 'New', keyMode: 'personal', visibility: 'private', capabilities: caps('n.example.com') },
+      body: { connectorId: `new-${id}`, name: 'New', keyMode: 'personal', capabilities: caps('n.example.com') },
     }),
     adminStatus: 201,
   },
@@ -360,13 +368,10 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
       connectorId: 'mal-shared',
       name: 'Mal shared',
       keyMode: 'workspace',
-      visibility: 'shared',
       capabilities: caps('m.example.com'),
     };
-    // The locked-down twin refuses it (the behaviour the admin route bypassed)...
-    const viaUser = await call('POST', '/settings/connectors', MALLORY, { body });
-    expect(viaUser.status).toBe(400);
-    // ...and the admin route now does too.
+    // The locked-down twin no longer exists, and the admin route refuses a non-admin.
+    expect(routes.has('POST /settings/connectors')).toBe(false);
     const viaAdmin = await call('POST', '/admin/connectors', MALLORY, { body });
     expect(viaAdmin.status).toBe(403);
     expect(await listIds(h, MALLORY.id)).toEqual([]);
@@ -383,31 +388,56 @@ describe('/admin/connectors* is admin-only (TASK-698)', () => {
     expect(credentialListCalls).toEqual([]);
   });
 
-  it('an admin still gets the probe verdict, and the gate did not close the owner scoping (foreign id 404s)', async () => {
+  it('an admin still gets the probe verdict, reads a connector someone else defined, and 404s an unknown id', async () => {
     const h = await makeHarness();
     await seed(h, ROOT.id, 'ws-conn', 'workspace');
     await seed(h, MALLORY.id, 'mal-only');
     const ok = await call('POST', '/admin/connectors/:id/test', ROOT, { params: { id: 'ws-conn' } });
     expect(ok.status).toBe(200);
     expect(ok.body).toMatchObject({ status: 'reachable' });
-    // An admin is not a super-user over other people's private connectors.
+    // SIGNINS-9 — every connector is shared, so an admin reads (and curates)
+    // one another person defined; an id nobody defined is still a 404.
     const foreign = await call('GET', '/admin/connectors/:id', ROOT, { params: { id: 'mal-only' } });
-    expect(foreign.status).toBe(404);
+    expect(foreign.status).toBe(200);
+    const missing = await call('GET', '/admin/connectors/:id', ROOT, { params: { id: 'nobody-made-this' } });
+    expect(missing.status).toBe(404);
   });
 
-  it('the /settings/connectors twin stays open to a non-admin (the gate is not global)', async () => {
+  it('only the two READ /settings/connectors routes exist: no write or authored route is registered (production answers 405 or 404)', async () => {
     const h = await makeHarness();
-    const created = await call('POST', '/settings/connectors', MALLORY, {
-      body: { connectorId: 'mal-mine', name: 'Mine', keyMode: 'personal', capabilities: caps('m.example.com') },
-    });
-    expect(created.status).toBe(201);
+    const settings = [...routes.keys()].filter((k) => k.split(' ')[1]?.startsWith('/settings/connectors')).sort();
+    expect(settings).toEqual(['GET /settings/connectors', 'GET /settings/connectors/:id']);
+    // The removed writes and (slice 2c) the per-person proposal routes: a
+    // signed-in non-admin finds no handler. Proposals now go to admins.
+    const removed = [
+      'GET /settings/connectors/authored',
+      'POST /settings/connectors/authored/:id/approve',
+      'DELETE /settings/connectors/authored/:id',
+      'POST /settings/connectors',
+      'PATCH /settings/connectors/:id',
+      'DELETE /settings/connectors/:id',
+      'PUT /settings/connectors/:id/tool-permissions',
+      'GET /settings/connectors/:id/tool-permissions',
+    ];
+    for (const key of removed) {
+      await expect(call(key.split(' ')[0]!, key.split(' ')[1]!, MALLORY, { params: { id: 'x' }, body: {} })).rejects.toThrow(
+        /route not registered/,
+      );
+    }
+    // What production answers for them: @ax/http-server's router replies 405
+    // (Allow: <the other methods>) when another method is registered on the same
+    // path, else 404. A GET still shares the first three paths; nothing is
+    // registered on the tool-permissions path any more.
+    const methodsOn = (path: string) =>
+      [...routes.keys()].filter((k) => k.split(' ')[1] === path).map((k) => k.split(' ')[0]);
+    expect(methodsOn('/settings/connectors')).toEqual(['GET']);
+    expect(methodsOn('/settings/connectors/:id')).toEqual(['GET']);
+    expect(methodsOn('/settings/connectors/:id/tool-permissions')).toEqual([]);
+    // The reads stay open to a non-admin (the agent rail's Add list).
+    await seed(h, MALLORY.id, 'mal-mine');
     expect((await call('GET', '/settings/connectors', MALLORY)).status).toBe(200);
     expect((await call('GET', '/settings/connectors/:id', MALLORY, { params: { id: 'mal-mine' } })).status).toBe(200);
-    expect(
-      (await call('PATCH', '/settings/connectors/:id', MALLORY, { params: { id: 'mal-mine' }, body: { name: 'Mine 2' } })).status,
-    ).toBe(200);
-    expect((await call('DELETE', '/settings/connectors/:id', MALLORY, { params: { id: 'mal-mine' } })).status).toBe(204);
-    void h;
+    expect(await listIds(h, MALLORY.id)).toEqual(['mal-mine']);
   });
 
   it('the Test probe is admin-only even on a user-mode bundle, and is not mounted under /settings', async () => {

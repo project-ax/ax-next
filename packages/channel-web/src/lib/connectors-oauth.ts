@@ -11,6 +11,34 @@
  * server's { message } or { error } field.
  */
 
+import type { BeginRefusal, OAuthMode } from './oauth-failure';
+
+/**
+ * A begin the server answered with a non-ok status. `refusal` is set ONLY for
+ * the known refusals at their own status (403 `agent-store-refused`, 409
+ * `not-on-agent`, 409 `already-attached`, and — SIGNINS-7 — 400
+ * `oauth_client_secret_unavailable` as `client-secret-missing`); the UI maps
+ * it to fixed copy.
+ * The message is for the console, never the screen.
+ */
+export class BeginOAuthError extends Error {
+  readonly status: number;
+  readonly refusal: BeginRefusal | undefined;
+  constructor(status: number, message: string, refusal?: BeginRefusal) {
+    super(message);
+    this.name = 'BeginOAuthError';
+    this.status = status;
+    this.refusal = refusal;
+  }
+}
+
+function beginRefusalOf(status: number, code: unknown): BeginRefusal | undefined {
+  if (status === 403 && code === 'agent-store-refused') return 'agent-store-refused';
+  if (status === 409 && (code === 'not-on-agent' || code === 'already-attached')) return code;
+  if (status === 400 && code === 'oauth_client_secret_unavailable') return 'client-secret-missing';
+  return undefined;
+}
+
 export type OAuthStatus = 'connected' | 'needs-reconnect' | 'not-connected';
 
 export async function getOAuthClientMetadata(): Promise<{ clientId: string; redirectUri: string }> {
@@ -57,15 +85,18 @@ export async function discoverOAuthHosts(url: string, signal?: AbortSignal): Pro
 /**
  * Begin an OAuth flow for a connector. Returns the provider authorization URL
  * that the caller should open in a popup (or redirect to).
+ *
+ * Slice 3 — every sign-in belongs to an agent, so `agentId` and `mode` are
+ * required: `'add'` signs in AND adds the connector (the server's callback
+ * attaches it); `'sign-in-again'` replaces the sign-in of a connector already
+ * on the agent.
  */
 export async function beginOAuth(args: {
   connectorId: string;
-  agentId?: string;
+  agentId: string;
+  mode: OAuthMode;
 }): Promise<{ authorizationUrl: string }> {
-  const body =
-    args.agentId !== undefined
-      ? { connectorId: args.connectorId, agentId: args.agentId }
-      : { connectorId: args.connectorId };
+  const body = { connectorId: args.connectorId, agentId: args.agentId, mode: args.mode };
 
   const res = await fetch('/api/connectors/oauth/begin', {
     method: 'POST',
@@ -80,27 +111,34 @@ export async function beginOAuth(args: {
   if (!res.ok) {
     const excerpt = await res.text().catch(() => '');
     let msg = '';
+    let code: unknown;
     try {
       const j = JSON.parse(excerpt) as { message?: string; error?: string };
+      code = j.error;
       msg = j.message ?? j.error ?? '';
     } catch {
       msg = excerpt;
     }
-    throw new Error(msg || `begin oauth: ${res.status}`);
+    throw new BeginOAuthError(
+      res.status,
+      msg || `begin oauth: ${res.status}`,
+      beginRefusalOf(res.status, code),
+    );
   }
 
   return (await res.json()) as { authorizationUrl: string };
 }
 
 /**
- * Check the current OAuth connection status for a connector.
+ * Check the current OAuth connection status for a connector ON an agent.
+ * Slice 3 — every sign-in is an agent's, so `agentId` is required (every
+ * caller has one).
  */
 export async function getOAuthStatus(args: {
   connectorId: string;
-  agentId?: string;
+  agentId: string;
 }): Promise<OAuthStatus> {
-  const qs = new URLSearchParams({ connectorId: args.connectorId });
-  if (args.agentId !== undefined) qs.set('agentId', args.agentId);
+  const qs = new URLSearchParams({ connectorId: args.connectorId, agentId: args.agentId });
 
   const res = await fetch(`/api/connectors/oauth/status?${qs.toString()}`, {
     credentials: 'include',

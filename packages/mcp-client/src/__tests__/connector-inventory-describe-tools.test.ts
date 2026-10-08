@@ -28,7 +28,7 @@ function connector(overrides: Record<string, unknown> = {}) {
       credentials: [{ slot: 'token', kind: 'oauth', server: 'main' }],
       mcpServers: [{ name: 'main', transport: 'http', url: 'https://mcp.linear.app/mcp' }],
     },
-    credentialPlan: [{ slot: 'token', ref: 'account:linear', scope: 'user', service: 'linear' }],
+    credentialPlan: [{ slot: 'token', ref: 'account:linear', scope: 'agent', service: 'linear' }],
     toolNamespaces: [{ server: 'main', toolNamespace: NS }],
     ...overrides,
   };
@@ -550,8 +550,8 @@ describe('connectors:describe-tools', () => {
               ],
             },
             credentialPlan: [
-              { slot: 'a', ref: 'account:linear', scope: 'user', service: 'linear' },
-              { slot: 'b', ref: 'account:other', scope: 'user', service: 'other' },
+              { slot: 'a', ref: 'account:linear', scope: 'agent', service: 'linear' },
+              { slot: 'b', ref: 'account:other', scope: 'agent', service: 'other' },
             ],
             toolNamespaces: [
               { server: 'main', toolNamespace: NS },
@@ -591,8 +591,8 @@ describe('connectors:describe-tools', () => {
             ],
           },
           credentialPlan: [
-            { slot: 'a', ref: 'account:linear', scope: 'user', service: 'linear' },
-            { slot: 'b', ref: 'account:other', scope: 'user', service: 'other' },
+            { slot: 'a', ref: 'account:linear', scope: 'agent', service: 'linear' },
+            { slot: 'b', ref: 'account:other', scope: 'agent', service: 'other' },
           ],
           toolNamespaces: [
             { server: 'main', toolNamespace: NS },
@@ -798,9 +798,9 @@ describe('connectors:describe-tools', () => {
                 ],
               },
               credentialPlan: [
-                { slot: 'a', ref: 'account:a', scope: 'user', service: 'a' },
-                { slot: 'b', ref: 'account:b', scope: 'user', service: 'b' },
-                { slot: 'c', ref: 'account:c', scope: 'user', service: 'c' },
+                { slot: 'a', ref: 'account:a', scope: 'agent', service: 'a' },
+                { slot: 'b', ref: 'account:b', scope: 'agent', service: 'b' },
+                { slot: 'c', ref: 'account:c', scope: 'agent', service: 'c' },
               ],
               toolNamespaces: [
                 { server: 'sa', toolNamespace: NS },
@@ -876,8 +876,8 @@ describe('connectors:describe-tools', () => {
               ],
             },
             credentialPlan: [
-              { slot: 'a', ref: 'account:linear', scope: 'user', service: 'linear' },
-              { slot: 'b', ref: 'account:other', scope: 'user', service: 'other' },
+              { slot: 'a', ref: 'account:linear', scope: 'agent', service: 'linear' },
+              { slot: 'b', ref: 'account:other', scope: 'agent', service: 'other' },
             ],
             toolNamespaces: [
               { server: 'main', toolNamespace: NS },

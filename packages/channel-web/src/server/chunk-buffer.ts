@@ -220,7 +220,7 @@ export interface ChunkBuffer {
    * conversation and agent it was raised on (TASK-373).
    *
    * This is what lets a grant outlive the stream it arrived on: the Today queue
-   * reads it on mount, so a skill or connector grant raised while the workspace
+   * reads it on mount, so a skill grant raised while the workspace
    * was closed is waiting when the person opens it.
    *
    * HOST CARDS ARE DELIBERATELY EXCLUDED. They are turn-scoped, and a host
@@ -256,10 +256,9 @@ export interface ChunkBuffer {
    */
   tailHostCards(reqId: string): readonly PermissionRequest[];
   /**
-   * Drop one pending conversation-keyed card by its SUBJECT id — a skill's
-   * skillId OR a connector's connectorId (TASK-112). Called when the grant is
-   * applied (the card is resolved — replaying it would re-prompt for an
-   * already-approved subject). Idempotent.
+   * Drop one pending conversation-keyed card by its skillId. Called when the
+   * grant is applied (the card is resolved — replaying it would re-prompt for
+   * an already-approved skill). Idempotent.
    */
   evictPermissionCard(conversationId: string, subjectId: string): void;
   /** Drop all pending skill cards for a conversation. Called on conversation
@@ -320,7 +319,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
   //   - hostCards: routing reqId → ordered list of pending host cards (the SSE
   //     host match key). Cleared by evictReqId at the turn boundary.
   //
-  // Skill/connector cards carry a `raisedAt` instant alongside the card rather
+  // Skill cards carry a `raisedAt` instant alongside the card rather
   // than on it: the card object itself is what the SSE replay hands the
   // browser, and this is host bookkeeping the grants route compares against a
   // durable decline marker (TASK-444).
@@ -515,17 +514,13 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
 
     appendPermissionCard(key, card, owner) {
       if (typeof key !== 'string' || key.length === 0) return;
-      // Skill AND connector cards are conversationId-matched (TASK-112) and share
-      // the same per-conversation replay list. De-dupe by the card's SUBJECT id
-      // (skillId / connectorId) so a re-proposal replaces in place rather than
-      // stacking a second prompt for the same subject.
-      if (card.kind === 'skill' || card.kind === 'connector') {
+      // Skill cards are conversationId-matched and kept in a per-conversation
+      // replay list. De-dupe by skillId so a re-proposal replaces in place
+      // rather than stacking a second prompt for the same skill.
+      if (card.kind === 'skill') {
         const list = skillCards.get(key) ?? [];
-        const idx = list.findIndex((e) =>
-          card.kind === 'skill'
-            ? e.card.kind === 'skill' && e.card.skillId === card.skillId
-            : e.card.kind === 'connector' &&
-              e.card.connectorId === card.connectorId,
+        const idx = list.findIndex(
+          (e) => e.card.kind === 'skill' && e.card.skillId === card.skillId,
         );
         // A fresh instant on BOTH branches. The replace branch is the one that
         // matters: a re-proposal is the agent asking again, and keeping the
@@ -547,6 +542,11 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         if (owner !== undefined) cardOwners.set(key, owner);
         return;
       }
+      // Anything that is neither a skill nor a host card is dropped, never
+      // stored. Slice 2c removed the in-chat connector card (an agent-proposed
+      // connector now goes to the workspace admins), so a `kind:'connector'`
+      // card from an older peer must not be buffered, replayed or enumerated.
+      if (card.kind !== 'host') return;
       // Host card.
       const list = hostCards.get(key) ?? [];
       // De-dupe by host: the same blocked host re-tried within a turn shouldn't
@@ -608,16 +608,8 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
     evictPermissionCard(conversationId, subjectId) {
       const list = skillCards.get(conversationId);
       if (list === undefined) return;
-      // TASK-112 — drop the card whose SUBJECT matches: a skill keyed by skillId
-      // OR a connector keyed by connectorId. The two id namespaces don't collide
-      // in practice, and the match is exact-string, so a single id arg suffices
-      // (the route passes whichever subject it just granted).
       const next = list.filter(
-        ({ card: c }) =>
-          !(
-            (c.kind === 'skill' && c.skillId === subjectId) ||
-            (c.kind === 'connector' && c.connectorId === subjectId)
-          ),
+        ({ card: c }) => !(c.kind === 'skill' && c.skillId === subjectId),
       );
       if (next.length === 0) {
         skillCards.delete(conversationId);

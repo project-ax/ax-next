@@ -78,7 +78,6 @@ describe('oauth credential slot', () => {
         ],
       },
       credentialPlan: [],
-      requiresSharedKeyConsent: false,
       toolNamespaces: [{ server: 'linear', toolNamespace: 'c0123456789' }],
     });
 

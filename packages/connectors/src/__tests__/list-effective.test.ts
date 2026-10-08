@@ -86,7 +86,6 @@ async function upsert(
     description: '',
     usageNote: `use ${connectorId}`,
     keyMode: 'personal',
-    visibility: 'private',
     capabilities: caps(`${connectorId}.example.com`, `${connectorId}-srv`),
     ...over,
   });
@@ -139,17 +138,19 @@ async function markLegacyDefault(ownerUserId: string, connectorId: string): Prom
  *   att1     — own, requires explicit attachment
  *   legacy1  — own, legacy (implicitly attached)
  *   legacy2  — own, legacy, older than legacy1
- *   shared1  — userB's shared definition (canEdit false for userA), legacy on B's side
- *   amb      — shared by BOTH userB and userC (ambiguous for userA → unresolvable)
+ *   shared1  — userB's definition (canEdit false for userA), legacy on B's side
+ *   amb      — defined by BOTH userB and userC (a legacy duplicate that resolves
+ *              for neither the agent store nor non-owners; it fails closed until an admin deletes one: ambiguous
+ *              for userA → unresolvable)
  */
 async function seed(h: TestHarness): Promise<void> {
   await upsert(h, 'userA', 'legacy2');
   await upsert(h, 'userA', 'def1');
   await upsert(h, 'userA', 'att1');
   await upsert(h, 'userA', 'legacy1');
-  await upsert(h, 'userB', 'shared1', { visibility: 'shared' });
-  await upsert(h, 'userB', 'amb', { visibility: 'shared' });
-  await upsert(h, 'userC', 'amb', { visibility: 'shared' });
+  await upsert(h, 'userB', 'shared1');
+  await upsert(h, 'userB', 'amb');
+  await upsert(h, 'userC', 'amb');
   await markLegacy('userA', 'legacy1');
   await markLegacy('userA', 'legacy2');
   await markLegacy('userB', 'shared1');

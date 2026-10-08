@@ -47,7 +47,10 @@ import { AdminShell } from './components/admin/AdminShell';
 import type { AdminTabId } from './components/admin/AdminSidebar';
 import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
-import { consumeOAuthFullPageReturn } from './lib/oauth-full-page-return';
+import {
+  consumeOAuthFullPageReturn,
+  oauthFullPageErrorMessage,
+} from './lib/oauth-full-page-return';
 import { toastActions } from './lib/toast-store';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { redirectRetiredChatPath } from './lib/retired-chat-path';
@@ -107,7 +110,7 @@ export const App = () => {
     if (result.toast === 'success') {
       toastActions.show({ title: "Connected. You're all set.", kind: 'info' });
     } else {
-      toastActions.error("Couldn't connect. Please try again.");
+      toastActions.error(oauthFullPageErrorMessage(result.reason));
     }
   }, []);
 

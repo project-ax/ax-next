@@ -667,6 +667,20 @@ export interface AgentStore {
     exclude: boolean,
   ): Promise<ConnectorEditResult>;
   /**
+   * A connector was deleted for good: drop its id from EVERY agent's
+   * connector_attachments and connector_exclusions. ONE UPDATE statement
+   * touching only rows that contain the id, so it is atomic, and it takes the
+   * same row lock the per-agent attach / detach path takes (an UPDATE locks each row it changes): a
+   * concurrent edit either runs first (and this sees its result) or waits for
+   * this and then re-reads. `agents` is how many rows changed.
+   */
+  removeConnectorEverywhere(connectorId: string): Promise<{ agents: number }>;
+  /**
+   * Every distinct connector id named by any agent's attachments or exclusions
+   * (the boot sweep's input).
+   */
+  listReferencedConnectorIds(): Promise<string[]>;
+  /**
    * Read-only enumeration of every agent id. Used by callers that need to
    * iterate the agent set without paying for full row hydration — e.g.,
    * the @ax/routines tick loop's lazy materialization of default rows. No
@@ -854,6 +868,31 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         .limit(1)
         .executeTakeFirst();
       return Boolean(row);
+    },
+
+    async removeConnectorEverywhere(connectorId) {
+      const idArr = sql`jsonb_build_array(${connectorId}::text)`;
+      const without = (col: ReturnType<typeof sql.ref>) =>
+        sql`COALESCE((SELECT jsonb_agg(e.v ORDER BY e.n) FROM jsonb_array_elements(${col}) WITH ORDINALITY AS e(v, n) WHERE e.v <> to_jsonb(${connectorId}::text)), '[]'::jsonb)`;
+      const res = await sql`
+        UPDATE agents_v1_agents
+        SET connector_attachments = ${without(sql.ref('connector_attachments'))},
+            connector_exclusions = ${without(sql.ref('connector_exclusions'))},
+            updated_at = now()
+        WHERE connector_attachments @> ${idArr} OR connector_exclusions @> ${idArr}
+      `.execute(db);
+      return { agents: Number(res.numAffectedRows ?? 0) };
+    },
+
+    async listReferencedConnectorIds() {
+      const res = await sql<{ id: string }>`
+        SELECT DISTINCT v AS id FROM (
+          SELECT jsonb_array_elements_text(connector_attachments) AS v FROM agents_v1_agents
+          UNION ALL
+          SELECT jsonb_array_elements_text(connector_exclusions) AS v FROM agents_v1_agents
+        ) t ORDER BY id
+      `.execute(db);
+      return res.rows.map((r) => r.id);
     },
 
     async listAllIds() {

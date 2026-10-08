@@ -13,7 +13,6 @@ const SUMMARY: ConnectorSummary = {
   description: 'Drive files.',
   usageNote: 'Read and write Drive.',
   keyMode: 'personal',
-  visibility: 'private',
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
 };
@@ -77,7 +76,7 @@ describe('ConnectorEditDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const [body, base] = vi.mocked(connectorsLib.createConnector).mock.calls[0]!;
-    expect(base).toBe('/settings/connectors');
+    expect(base).toBe('/admin/connectors');
     expect(body.capabilities.allowedHosts).toEqual(expect.arrayContaining([...gmailHosts, 'custom.example.com']));
     expect(body.capabilities.allowedHosts.filter((host) => host === 'accounts.google.com')).toHaveLength(1);
     expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledWith(gmailUrl, expect.any(AbortSignal));
@@ -101,7 +100,7 @@ describe('ConnectorEditDialog', () => {
     } };
     vi.mocked(connectorsLib.getConnector).mockResolvedValue(existing);
     vi.mocked(oauthLib.discoverOAuthHosts).mockResolvedValue(oauthResult(gmailHosts));
-    render(<ConnectorEditDialog target={existing} open isAdmin onOpenChange={() => {}} onSaved={() => {}} />);
+    render(<ConnectorEditDialog target={existing} open onOpenChange={() => {}} onSaved={() => {}} />);
     await screen.findByText('accounts.google.com', { exact: true });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.patchConnector).toHaveBeenCalled());
@@ -169,7 +168,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={onSaved}
       />,
@@ -181,7 +179,7 @@ describe('ConnectorEditDialog', () => {
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
     expect(body.connectorId).toBe('stripe-billing');
     expect(body.name).toBe('Stripe Billing');
-    expect(body.visibility).toBe('shared');
+    expect(body).not.toHaveProperty('visibility');
     expect(onSaved).toHaveBeenCalled();
   });
 
@@ -190,7 +188,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -207,7 +204,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target={SUMMARY}
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={onSaved}
       />,
@@ -233,7 +229,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -256,7 +251,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -276,7 +270,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -289,7 +282,7 @@ describe('ConnectorEditDialog', () => {
   });
 
   it('lets an HTTP MCP connector save the hosts needed for Google OAuth', async () => {
-    render(<ConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />);
+    render(<ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />);
     fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Gmail' } });
     fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://gmailmcp.googleapis.com/mcp/v1' } });
     await waitFor(() => expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled());
@@ -309,7 +302,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -334,7 +326,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -365,7 +356,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target={SUMMARY}
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -378,47 +368,44 @@ describe('ConnectorEditDialog', () => {
 
   // --- admin vs user variant ----------------------------------------------
 
-  it('admin variant exposes Sharing (and no default-on control)', async () => {
+  it('admin variant has no Sharing control and no default-on control', async () => {
     render(
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
     );
     await screen.findByLabelText(/service name/i);
-    expect(screen.getByText(/^Sharing$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Sharing$/i)).toBeNull();
     expect(screen.queryByText(/default-on/i)).toBeNull();
   });
 
-  it('user variant hides Sharing and defaults new connectors to shared', async () => {
+  it('creates a new connector with no visibility in the body', async () => {
     render(
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin={false}
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
     );
     const name = await screen.findByLabelText(/service name/i);
-    expect(screen.queryByText(/^Sharing$/i)).toBeNull();
     fireEvent.change(name, { target: { value: 'My Private' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
-    expect(body.visibility).toBe('shared');
+    expect(body).not.toHaveProperty('visibility');
     expect(body).not.toHaveProperty('defaultAttached');
   });
 
-  it('user variant creates through the /settings/connectors route base (TASK-129)', async () => {
+  // Slice 2a: the /settings/connectors write routes are gone.
+  it('creates through the /admin/connectors route base', async () => {
     render(
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin={false}
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -428,7 +415,7 @@ describe('ConnectorEditDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const base = vi.mocked(connectorsLib.createConnector).mock.calls[0]![1];
-    expect(base).toBe('/settings/connectors');
+    expect(base).toBe('/admin/connectors');
   });
 
   // --- services section (TASK-154 — service bundle) -----------------------
@@ -440,7 +427,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -461,7 +447,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -489,7 +474,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -512,7 +496,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -533,7 +516,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -561,7 +543,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -604,7 +585,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target={SUMMARY}
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -623,7 +603,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -643,7 +622,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -705,7 +683,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target={SUMMARY}
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -763,7 +740,6 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
-        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -834,53 +810,6 @@ describe('ConnectorEditDialog', () => {
     // The raw secret must NOT appear anywhere in the connector body.
     expect(JSON.stringify(body)).not.toContain('super-secret-value');
   });
-
-  // TASK-797 — the other two answers to "where does the secret go". Only a
-  // shared connector written by an admin may keep it at the workspace.
-  it.each([
-    ['an admin makes the connector private', true, true],
-    ['a non-admin writes it', false, false],
-  ])(
-    'keeps the client secret with its author when %s',
-    async (_who, isAdmin, makePrivate) => {
-      render(
-        <ConnectorEditDialog
-          target="new"
-          open
-          isAdmin={isAdmin}
-          onOpenChange={() => {}}
-          onSaved={() => {}}
-        />,
-      );
-      fireEvent.change(await screen.findByLabelText(/service name/i), {
-        target: { value: 'My OAuth Svc' },
-      });
-      if (makePrivate) {
-        fireEvent.click(screen.getByRole('combobox', { name: /sharing/i }));
-        fireEvent.click(await screen.findByRole('option', { name: /^private/i }));
-      }
-      fireEvent.click(screen.getByRole('button', { name: /add (key|secret)/i }));
-      fireEvent.click(screen.getByRole('radio', { name: /^oauth$/i }));
-      await waitFor(() => expect(screen.getByLabelText(/scopes/i)).toBeInTheDocument());
-      const machineNames = screen.getAllByLabelText(/machine name/i);
-      fireEvent.change(machineNames[machineNames.length - 1]!, {
-        target: { value: 'MY_OAUTH' },
-      });
-      fireEvent.click(screen.getByRole('combobox', { name: /mcp server/i }));
-      fireEvent.click(await screen.findByRole('option', { name: 'my-oauth-svc' }));
-      fireEvent.click(
-        screen.getByRole('button', { name: /advanced — custom oauth client/i }),
-      );
-      fireEvent.change(await screen.findByLabelText(/client secret/i), {
-        target: { value: 'super-secret-value' },
-      });
-      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
-      await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
-      expect(credentialsLib.setDestinationCredential).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: { scope: 'user', ownerId: null } }),
-      );
-    },
-  );
 });
 
 // TASK-700 — the launch disclosure (TASK-328) on the authoring form. Defining a
@@ -899,12 +828,9 @@ describe('ConnectorEditDialog — access disclosure (TASK-700)', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it.each([
-    ['admin', true],
-    ['user', false],
-  ])('%s variant, editing a connector that takes a key: shows the author notice above the key rows', async (_l, isAdmin) => {
+  it('editing a connector that takes a key: shows the author notice above the key rows', async () => {
     render(
-      <ConnectorEditDialog target={SUMMARY} open isAdmin={isAdmin} onOpenChange={() => {}} onSaved={() => {}} />,
+      <ConnectorEditDialog target={SUMMARY} open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     // FULL declares one key, loaded asynchronously into the form.
     const keyRow = await screen.findByText('Key 1');
@@ -919,7 +845,7 @@ describe('ConnectorEditDialog — access disclosure (TASK-700)', () => {
 
   it('a new connector with no keys yet shows no notice; adding a key brings it, removing the key takes it away', async () => {
     render(
-      <ConnectorEditDialog target="new" open isAdmin={false} onOpenChange={() => {}} onSaved={() => {}} />,
+      <ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     await screen.findByLabelText(/service name/i);
     expect(screen.getByText(/No keys needed/i)).toBeInTheDocument();
@@ -934,7 +860,7 @@ describe('ConnectorEditDialog — access disclosure (TASK-700)', () => {
 
   it('two key rows still get ONE notice', async () => {
     render(
-      <ConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+      <ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     await screen.findByLabelText(/service name/i);
     const add = screen.getByRole('button', { name: /^add (key|secret)$/i });
@@ -947,7 +873,7 @@ describe('ConnectorEditDialog — access disclosure (TASK-700)', () => {
   it('a notice is not a save error: the destructive alert stays the only role=alert', async () => {
     vi.mocked(connectorsLib.createConnector).mockRejectedValue(new Error('nope'));
     render(
-      <ConnectorEditDialog target="new" open isAdmin onOpenChange={() => {}} onSaved={() => {}} />,
+      <ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Stripe' } });
     fireEvent.click(screen.getByRole('button', { name: /^add (key|secret)$/i }));

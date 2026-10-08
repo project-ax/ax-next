@@ -4,7 +4,8 @@
  * rows, and that's what we use here. Keeps the install footprint flat.
  *
  * Each row shows: timestamp · status chip · rendered prompt (mono,
- * truncated at 120 chars with show-more) · error (if any). No
+ * truncated at 120 chars with show-more) · warning (if the run went without a
+ * connector; muted, NOT an error) · error (if any). No
  * conversation link in Phase D — routine-fired conversations are hidden
  * from the sidebar and per-fire transcripts aren't persisted, so a
  * click-through would land on an empty conversation. Deferred to a
@@ -31,6 +32,7 @@
  */
 import { useState } from 'react';
 import type { Fire } from '../../lib/routines';
+import { RunWarning } from './RunWarning';
 import { StatusChip } from './StatusChip';
 
 function formatTimestamp(d: Date): string {
@@ -84,6 +86,7 @@ export function FireRowsTable({ fires }: { fires: Fire[] }) {
           {f.renderedPrompt !== null && (
             <PromptCell prompt={f.renderedPrompt} />
           )}
+          {f.warning !== null && <RunWarning text={f.warning} />}
           {f.error !== null && (
             <span className="text-[11.5px] text-destructive break-words">{f.error}</span>
           )}

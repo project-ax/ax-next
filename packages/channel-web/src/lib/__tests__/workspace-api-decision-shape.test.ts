@@ -267,7 +267,7 @@ describe('the grants read-back (TASK-373)', () => {
     );
   });
 
-  it('accepts all three kinds it CAN draw', async () => {
+  it('accepts both kinds it CAN draw', async () => {
     /*
       The positive control for the two rejections above: without it they would
       pass just as well against a guard that refused everything, and a grants
@@ -280,11 +280,6 @@ describe('the grants read-back (TASK-373)', () => {
         request: { kind: 'skill', skillId: 'linear', description: '', hosts: [], slots: [] },
       },
       {
-        conversationId: 'cnv-2',
-        agentId: 'a-quill',
-        request: { kind: 'connector', connectorId: 'linear', name: 'Linear', hosts: [], slots: [] },
-      },
-      {
         conversationId: 'cnv-3',
         agentId: 'a-scout',
         request: { kind: 'host', host: 'example.org', sessionId: 's-1' },
@@ -292,6 +287,28 @@ describe('the grants read-back (TASK-373)', () => {
     ];
     respondWith({ grants });
     await expect(workspaceApi.grants()).resolves.toEqual({ grants });
+  });
+
+  it('drops a retired in-chat connector card instead of failing the whole read (slice 2c)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const skillRow = {
+      conversationId: 'cnv-1',
+      agentId: 'a-quill',
+      request: { kind: 'skill', skillId: 'linear', description: '', hosts: [], slots: [] },
+    };
+    respondWith({
+      grants: [
+        skillRow,
+        {
+          conversationId: 'cnv-2',
+          agentId: 'a-quill',
+          request: { kind: 'connector', connectorId: 'linear', name: 'Linear', hosts: [], slots: [] },
+        },
+      ],
+    });
+    await expect(workspaceApi.grants()).resolves.toEqual({ grants: [skillRow] });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('accepts an honestly empty page', async () => {

@@ -164,6 +164,7 @@ function reflectionRow(over: Partial<RoutineRow> = {}): RoutineRow {
     lastRunAt: null,
     lastStatus: null,
     lastError: null,
+    lastWarning: null,
     definitionId: 'skill-reflection',
     definitionUpdatedAt: null,
     ...over,

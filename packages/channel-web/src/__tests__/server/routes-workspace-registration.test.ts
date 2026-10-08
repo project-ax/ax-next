@@ -66,6 +66,24 @@ describe('registerWorkspaceRoutes (no flag)', () => {
     expect(routes).toContain('GET /api/workspace/grants');
   });
 
+  // Slice 3 — the agent's connector routes, exactly: the rail's row menu needs
+  // list / add / remove / Add key (PUT only) / tools / verdicts. The old
+  // flow's retry, team sign-in, and key GET / DELETE are gone, not mounted.
+  it('mounts exactly the connector routes the rail uses', async () => {
+    const connectors = (await registeredRoutes())
+      .filter((r) => r.path.startsWith('/api/workspace/agents/:agentId/connectors'))
+      .map((r) => `${r.method} ${r.path}`)
+      .sort();
+    expect(connectors).toEqual([
+      'DELETE /api/workspace/agents/:agentId/connectors/:connectorId',
+      'GET /api/workspace/agents/:agentId/connectors',
+      'GET /api/workspace/agents/:agentId/connectors/:connectorId/tools',
+      'POST /api/workspace/agents/:agentId/connectors',
+      'PUT /api/workspace/agents/:agentId/connectors/:connectorId/key',
+      'PUT /api/workspace/agents/:agentId/connectors/:connectorId/tool-verdicts',
+    ]);
+  });
+
   it('mounts the whole decisions collection', async () => {
     const decisions = (await registeredRoutes())
       .filter((r) => r.path.startsWith('/api/workspace/decisions'))

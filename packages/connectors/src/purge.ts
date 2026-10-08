@@ -8,94 +8,174 @@ import { deriveToolNamespaces } from './tool-namespace.js';
 import type { Capabilities, Connector, ConnectorDeletedEvent } from './types.js';
 
 /** What `purgeConnectorState` reads from a connector — no more. */
-export type PurgeableConnector = Pick<Connector, 'id' | 'keyMode' | 'visibility'> & {
+export type PurgeableConnector = Pick<Connector, 'id' | 'keyMode'> & {
   capabilities: Pick<Capabilities, 'credentials' | 'mcpServers'>;
 };
 
 /**
  * Everything a connector delete reclaims OUTSIDE its own row: its stored
  * key(s) and the `connectors:deleted` announcement. Shared by the
- * `connectors:delete` hook and the boot-time stdio sweep (stdio-sweep.ts).
+ * `connectors:delete` hook and the boot-time sweeps (stdio-sweep.ts,
+ * non-admin-sweep.ts).
+ *
+ * Every purge step is best-effort (logged + swallowed) so a credential hiccup
+ * never wedges a delete, but the steps that failed are RETURNED: the boot
+ * non-admin sweep must not tombstone a row whose keys are still stored (a later
+ * same-id connector would inherit them), so it keeps the row and retries. The
+ * admin delete path and the stdio sweep ignore the result.
  */
 export async function purgeConnectorState(
   bus: HookBus,
   ctx: AgentContext,
   ownerUserId: string,
   connector: PurgeableConnector,
-  opts: { purgeGlobal: boolean },
-): Promise<void> {
+  opts: {
+    purgeGlobal: boolean;
+    /**
+     * Caller-computed: authorized. A same-id survivor does NOT withhold it: the
+     * sign-ins are keyed by id alone, so the survivor would otherwise read a
+     * token minted for the deleted definition.
+     */
+    purgeAgentSignIns: boolean;
+    /**
+     * Slice 2b — caller-computed AFTER the row is removed: does any live
+     * connector (any owner) still carry this id? A failed check
+     * must be passed as `true` (keep data when unsure). Rides the
+     * `connectors:deleted` event.
+     */
+    idStillLive: boolean;
+    /**
+     * Fire `connectors:deleted` at the end (default true). The boot non-admin
+     * sweep purges BEFORE it tombstones the row (a crash in between leaves the
+     * row for the next boot), so it passes false and calls
+     * `announceConnectorDeleted` itself once the row is gone.
+     */
+    announce?: boolean;
+  },
+): Promise<{ failed: string[] }> {
   const connectorId = connector.id;
+  // Which purge steps failed, e.g. `credentials:delete:global:account:x` or
+  // `credentials:purge-account`. Empty = every attempted purge succeeded.
+  const failed: string[] = [];
 
-  // Purge the connector's OWN stored key(s) so a secret never lingers with no UI
-  // home. Soft-dep: only attempted when credentials:delete is present (a preset
-  // without @ax/credentials still deletes the connector). The purge targets ONLY
-  // the deleted connector's derived refs, at the scope it declares.
+  // Purge the connector's OWN stored company key(s) so a secret never lingers
+  // with no UI home. Soft-dep: only attempted when credentials:delete is present
+  // (a preset without @ax/credentials still deletes the connector). The purge
+  // targets ONLY the deleted connector's derived refs.
   //
-  // SECURITY (invariant #5): a per-user ref (scope:'user', ownerId:ownerUserId) is
-  // unambiguously the row owner's own — always safe to purge. A GLOBAL ref
-  // (scope:'global', shared company key, owner-independent) is purged ONLY when
-  // the caller is authorized (opts.purgeGlobal — routes pass actor.isAdmin).
-  // Gating the PURGE here, not just the HTTP create route, closes EVERY path to
-  // a non-admin global-credential wipe (incl. the authored-connector approve
-  // path, which promotes a draft straight through connectors:upsert). Each
+  // Only GLOBAL rows are deleted here. A `personal` connector's plan entries are
+  // at AGENT scope (one row per agent it was added to), so they go through
+  // `credentials:purge-account` below, which reaches every agent at once.
+  // Nothing is stored per PERSON any more (agent-owned sign-ins, slice 5), so
+  // there is no user-scope row to delete.
+  //
+  // SECURITY (invariant #5): a GLOBAL ref (shared company key, owner-
+  // independent) is purged ONLY when the caller is authorized (opts.purgeGlobal —
+  // `connectors:delete` passes the caller's `purgeGlobal`, which only the
+  // admin-only DELETE route sets; the boot stdio sweep sets it unless another
+  // owner's same-id connector survives). Gating the PURGE here, not just the HTTP
+  // create route, closes EVERY path to a non-admin global-credential wipe. Each
   // failure is logged + swallowed so a credential hiccup never wedges the delete.
   if (bus.hasService('credentials:delete')) {
     const purgeGlobal = opts.purgeGlobal;
     // TASK-797 — the connector's OAuth client secret is not a plan slot, but it
-    // is the connector's own key too: the editor stores it at the author's user
-    // scope, or at global for an admin's shared connector. Purge it from both
-    // (global under the same purgeGlobal gate), or a later connector with the
-    // same id would silently inherit it.
+    // is the connector's own key too: the editor stores it at global. Like the
+    // plan's global refs it is owner-independent, so it is purged only with
+    // `purgeGlobal`. What callers pass: `deleteConnector` passes the caller's
+    // `purgeGlobal` straight through (the admin-only DELETE route sets it), even
+    // while another same-id connector survives; the boot stdio and non-admin
+    // sweeps withhold it while another live connector carries the id.
+    // SIGNINS-9: every connector is shared, so there is no private definition
+    // whose delete must be kept away from it.
     const clientSecretRef = oauthClientSecretRefFor(connectorId);
     const ownsClientSecret = namesOAuthClientSecretRef(connector.capabilities, clientSecretRef);
-    // Only a SHARED connector's secret is ever read at global (credential-authz),
-    // so only a shared connector's delete may purge it there: a private
-    // connector that happens to share the id must not wipe the shared one's.
-    const purgeEntries: Array<{ scope: 'user' | 'global'; ref: string }> = [
-      ...deriveCredentialPlan(connector),
-      ...(ownsClientSecret ? [{ scope: 'user' as const, ref: clientSecretRef }] : []),
-      ...(ownsClientSecret && connector.visibility === 'shared'
-        ? [{ scope: 'global' as const, ref: clientSecretRef }]
-        : []),
+    const globalRefs: string[] = [
+      ...deriveCredentialPlan(connector)
+        .filter((entry) => entry.scope === 'global')
+        .map((entry) => entry.ref),
+      ...(ownsClientSecret ? [clientSecretRef] : []),
     ];
-    for (const entry of purgeEntries) {
-      if (entry.scope === 'global' && !purgeGlobal) {
+    for (const ref of globalRefs) {
+      if (!purgeGlobal) {
         // Unauthorized to purge a shared/company key — leave it intact. (An admin
         // delete passes purgeGlobal:true; a non-admin's never does.)
-        ctx.logger.info('connectors_delete_skipped_global_purge', {
-          connectorId,
-          ref: entry.ref,
-        });
+        ctx.logger.info('connectors_delete_skipped_global_purge', { connectorId, ref });
         continue;
       }
-      const ownerId = entry.scope === 'user' ? ownerUserId : null;
       try {
-        await bus.call('credentials:delete', ctx, {
-          scope: entry.scope,
-          ownerId,
-          ref: entry.ref,
-        });
+        await bus.call('credentials:delete', ctx, { scope: 'global', ownerId: null, ref });
       } catch (err) {
+        failed.push(`credentials:delete:global:${ref}`);
         ctx.logger.warn('connectors_delete_credential_purge_failed', {
           connectorId,
-          ref: entry.ref,
+          ref,
           err: err instanceof Error ? err.message : String(err),
         });
       }
     }
   }
 
-  // Announce the removal so other plugins reclaim state keyed on this connector's
-  // tool namespaces (@ax/tool-policy purges its per-tool verdict rows). Fired
-  // AFTER the credential purge. Callers invoke this only when a LIVE row was
-  // actually removed — a delete of an absent / already-deleted connector
-  // announces nothing. The namespaces are derived from `ownerUserId`, the row
-  // owner, so they match what `connectors:resolve` handed out. Best-effort:
-  // HookBus.fire isolates subscriber throws, and a fire failure must never fail
-  // an already-committed delete.
+  // Agent-owned sign-ins (2026-10-07 design): every agent's sign-in / per-agent
+  // key for this connector lives at AGENT scope under `account:<id>[:SLOT]`.
+  // Best-effort, like the credential purge above. Requires admin authority
+  // (purgeGlobal) and runs even when a same-id connector survives (ids are not
+  // unique across owners): the survivor would otherwise read a token minted for
+  // the deleted definition. SIGNINS-9: every connector is shared, so every
+  // delete is a candidate.
+  if (!opts.purgeAgentSignIns) {
+    ctx.logger.info('connectors_delete_skipped_agent_signins_purge', {
+      connectorId,
+      reason: 'not-authorized',
+    });
+  } else if (bus.hasService('credentials:purge-account')) {
+    const scopes: Array<'agent'> = ['agent'];
+    try {
+      const out = await bus.call<
+        { connectorId: string; scopes: Array<'agent'> },
+        { purged: number }
+      >('credentials:purge-account', ctx, { connectorId, scopes });
+      ctx.logger.info('connectors_delete_agent_signins_purged', {
+        connectorId,
+        scopes,
+        purged: out.purged,
+      });
+    } catch (err) {
+      failed.push('credentials:purge-account');
+      ctx.logger.warn('connectors_delete_agent_signins_purge_failed', {
+        connectorId,
+        scopes,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (opts.announce !== false) {
+    await announceConnectorDeleted(bus, ctx, ownerUserId, connector, opts.idStillLive);
+  }
+  return { failed };
+}
+
+/**
+ * Announce a removal so other plugins reclaim state keyed on this connector's
+ * tool namespaces (@ax/tool-policy purges its per-tool verdict rows; agents and
+ * mcp-oauth act on `idStillLive === false`). Callers invoke this only when a
+ * LIVE row was actually removed. The namespaces are derived from
+ * `ownerUserId`, the row owner, so they match what `connectors:resolve` handed
+ * out. Best-effort: HookBus.fire isolates subscriber throws, and a fire
+ * failure must never fail an already-committed delete.
+ */
+export async function announceConnectorDeleted(
+  bus: HookBus,
+  ctx: AgentContext,
+  ownerUserId: string,
+  connector: PurgeableConnector,
+  idStillLive: boolean,
+): Promise<void> {
+  const connectorId = connector.id;
   const event: ConnectorDeletedEvent = {
     connectorId,
     toolNamespaces: deriveToolNamespaces(ownerUserId, connector),
+    idStillLive,
   };
   try {
     await bus.fire('connectors:deleted', ctx, event);

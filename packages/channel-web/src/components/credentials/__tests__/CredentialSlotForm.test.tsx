@@ -113,32 +113,4 @@ describe('CredentialSlotForm', () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(message)).toBeNull();
   });
-
-  it('TASK-813: a `save` override replaces the destination write, and its error shows', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch');
-    const save = vi
-      .fn<(payload: string) => Promise<void>>()
-      .mockRejectedValueOnce(new Error('Only the team’s admins can add a team key.'))
-      .mockResolvedValueOnce(undefined);
-    const onSaved = vi.fn();
-    render(
-      <CredentialSlotForm
-        destination={{ kind: 'account', service: 'linear' }}
-        slot={{ label: 'LINEAR_API_KEY', kind: 'api-key' }}
-        scope={{ scope: 'agent', ownerId: 'agt-1' }}
-        current={{ set: false }}
-        onSaved={onSaved}
-        save={save}
-      />,
-    );
-    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: 'lin-1' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-    expect(await screen.findByText('Only the team’s admins can add a team key.')).toBeInTheDocument();
-    expect(onSaved).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: 'lin-2' } });
-    fireEvent.click(screen.getByRole('button', { name: /save/i }));
-    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
-    expect(save.mock.calls).toEqual([['lin-1'], ['lin-2']]);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
 });

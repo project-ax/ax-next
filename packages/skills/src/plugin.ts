@@ -49,7 +49,6 @@ import {
   SkillsQuarantineGetOutputSchema,
   SkillsQuarantineListOutputSchema,
   SkillsApprovedCapsListOutputSchema,
-  SkillsApprovedCapsSetOutputSchema,
   SkillsApprovedCapsRevokeOutputSchema,
   SkillsProposeOutputSchema,
   SkillsListAuthoredOutputSchema,
@@ -96,8 +95,6 @@ import type {
   SkillsQuarantineListOutput,
   SkillsApprovedCapsListInput,
   SkillsApprovedCapsListOutput,
-  SkillsApprovedCapsSetInput,
-  SkillsApprovedCapsSetOutput,
   SkillsApprovedCapsRevokeInput,
   SkillsApprovedCapsRevokeOutput,
   SkillsProposeInput,
@@ -220,7 +217,6 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         'skills:quarantine-get',
         'skills:quarantine-list',
         'skills:approved-caps-list',
-        'skills:approved-caps-set',
         'skills:approved-caps-revoke',
         // TASK-74 (out-of-git Part D): the skill_propose chokepoint + the
         // authored-skill projection read that re-backs agents:resolve-authored-
@@ -254,27 +250,6 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         'blob:put',
         'blob:get',
       ],
-      optionalCalls: [
-        {
-          // TASK-100 — the cap→connector data migration (run at init) lifts each
-          // legacy skill `capabilities:` block into a connector via this hook.
-          // Optional (init-ordering edge so @ax/connectors is up first); when the
-          // connectors plugin is absent the migration still STRIPS the cap block
-          // so the manifest stays schema-valid (the skill loses that reach until
-          // a connector is created). No call-graph cycle: connectors never calls
-          // skills.
-          hook: 'connectors:upsert',
-          degradation:
-            'the TASK-100 cap→connector migration strips the legacy capability block but cannot create the connector (no connectors store) — the skill loses that reach until a connector is authored',
-        },
-        {
-          // TASK-100 — the migration reads connectors:get to avoid CLOBBERING a
-          // pre-existing connector of the same id (it only creates when absent).
-          hook: 'connectors:get',
-          degradation:
-            'the migration cannot pre-check for an existing connector and falls back to creating one (still owner+id scoped, never cross-tenant)',
-        },
-      ],
       // TASK-718 — `@ax/agents` fires `agents:deleted` after the agent row is
       // gone. The four agent-keyed tables have no FK to it, so this plugin
       // deletes its own rows keyed on the agent.
@@ -300,13 +275,12 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
       db = shared as Kysely<SkillsDatabase>;
       await runSkillsMigration(db);
 
-      // TASK-100 — split any stored skill's legacy `capabilities:` block into a
-      // connector (via the connectors:upsert HOOK — invariant #4) and rewrite the
-      // skill to reference it. Idempotent + re-runnable; greenfield typically
-      // migrates zero rows. Best-effort: a failure logs + never wedges boot (so a
-      // connector hiccup can't block the skills store coming up).
+      // Strip any stored skill's legacy `capabilities:` block so its manifest
+      // parses. Creates no connectors (only admins define those); a skill that
+      // relied on the block loses that reach, logged per row. Idempotent.
+      // Best-effort: a failure logs + never wedges boot.
       try {
-        await migrateSkillCapabilitiesToConnectors(db, bus, initCtx);
+        await migrateSkillCapabilitiesToConnectors(db, initCtx);
       } catch (err) {
         initCtx.logger.warn('skill_cap_migration_failed', {
           error: err instanceof Error ? err.message : String(err),
@@ -998,33 +972,6 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
           };
         },
         { returns: SkillsApprovedCapsListOutputSchema },
-      );
-      bus.registerService<SkillsApprovedCapsSetInput, SkillsApprovedCapsSetOutput>(
-        'skills:approved-caps-set',
-        PLUGIN_NAME,
-        async (_ctx, input) => {
-          // FIX 3 (defense-in-depth): MCP approval is deferred — no caller
-          // should write an mcp approval row yet. Reject at the store layer so
-          // even a future caller that forgets the caller-side exclusion can't
-          // silently persist a partially-implemented MCP grant.
-          if (input.kind === 'mcp') {
-            throw new PluginError({
-              code: 'not-supported',
-              plugin: PLUGIN_NAME,
-              message: "approved-caps-set: kind 'mcp' is not yet supported",
-            });
-          }
-          const subject = resolveApprovedCapSubject(input);
-          return approvedCapsStore.set({
-            ownerUserId: input.ownerUserId,
-            agentId: input.agentId,
-            kind: input.kind,
-            value: input.value,
-            ...(input.detail !== undefined ? { detail: input.detail } : {}),
-            ...subject,
-          });
-        },
-        { returns: SkillsApprovedCapsSetOutputSchema },
       );
       bus.registerService<SkillsApprovedCapsRevokeInput, SkillsApprovedCapsRevokeOutput>(
         'skills:approved-caps-revoke',

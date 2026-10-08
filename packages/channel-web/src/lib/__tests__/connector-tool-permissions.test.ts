@@ -145,7 +145,7 @@ describe('fetch wrappers', () => {
   });
   it('throws with the status on a non-ok GET', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 403 })));
-    const err = await getToolPermissions('x', '/settings/connectors').catch((e: unknown) => e);
+    const err = await getToolPermissions('x', '/admin/connectors').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ToolPermissionsError);
     expect((err as ToolPermissionsError).status).toBe(403);
   });
@@ -153,10 +153,10 @@ describe('fetch wrappers', () => {
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response('{"ok":true}'));
     vi.stubGlobal('fetch', fetchMock);
     const rows = Array.from({ length: 501 }, (_, i) => ({ toolKey: `k${i}`, verdict: 'deny' as const }));
-    await putToolPermissions('x', '/settings/connectors', rows);
+    await putToolPermissions('x', '/admin/connectors', rows);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('/settings/connectors/x/tool-permissions');
+    expect(url).toBe('/admin/connectors/x/tool-permissions');
     expect(init).toMatchObject({ method: 'PUT', credentials: 'include' });
     expect((init!.headers as Record<string, string>)['x-requested-with']).toBe('ax-admin');
     expect(JSON.parse(String(init!.body)).verdicts).toHaveLength(500);

@@ -390,7 +390,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         expect(bus.hasService('memory:facts:clear')).toBe(true);
         expect(bus.hasService('memory:facts:reindex')).toBe(true);
         // TASK-735: connectors:describe-tools is reachable in the production
-        // graph and resolves through the REAL @ax/connectors visibility check —
+        // graph and resolves through the REAL @ax/connectors availability check —
         // an unknown connector is refused before any network or cache work.
         expect(bus.hasService('connectors:describe-tools')).toBe(true);
         await expect(

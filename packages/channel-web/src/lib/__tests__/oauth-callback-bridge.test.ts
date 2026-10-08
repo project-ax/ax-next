@@ -75,4 +75,46 @@ describe('handleOAuthReturn', () => {
     );
     expect(close).toHaveBeenCalled();
   });
+
+  // Slice 3 — the popup learns WHY an Add failed, but only as one of four
+  // fixed words. Anything else in the URL never reaches the opener.
+  function postedFor(search: string): unknown {
+    const post = vi.fn();
+    handleOAuthReturn({
+      pathname: '/oauth/connected',
+      search,
+      origin: 'https://app',
+      opener: { postMessage: post } as unknown as Window,
+      closeSelf: vi.fn(),
+    });
+    return post.mock.calls[0]![0];
+  }
+
+  it.each(['cancelled', 'not-allowed', 'add-failed', 'sign-in-failed'])(
+    'forwards the known reason %s',
+    (reason) => {
+      expect(postedFor(`?oauth=error&connector=c&reason=${reason}`)).toEqual({
+        type: OAUTH_MESSAGE_TYPE,
+        connector: 'c',
+        oauth: 'error',
+        reason,
+      });
+    },
+  );
+
+  it('drops an unknown reason (no provider text crosses to the opener)', () => {
+    expect(postedFor('?oauth=error&connector=c&reason=Provider%20said%20no')).toEqual({
+      type: OAUTH_MESSAGE_TYPE,
+      connector: 'c',
+      oauth: 'error',
+    });
+  });
+
+  it('a success carries no reason even if the URL has one', () => {
+    expect(postedFor('?oauth=success&connector=c&reason=cancelled')).toEqual({
+      type: OAUTH_MESSAGE_TYPE,
+      connector: 'c',
+      oauth: 'success',
+    });
+  });
 });

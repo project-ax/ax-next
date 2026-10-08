@@ -20,7 +20,6 @@ const fixture: Connector = {
   description: '',
   usageNote: '',
   keyMode: 'personal',
-  visibility: 'shared',
   createdAt: '',
   updatedAt: '',
   capabilities: {

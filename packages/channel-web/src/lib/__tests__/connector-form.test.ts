@@ -28,7 +28,6 @@ const baseConnector = (over: Partial<Connector> = {}): Connector => ({
   description: 'Drive files.',
   usageNote: 'Read and write Drive.',
   keyMode: 'personal',
-  visibility: 'private',
   createdAt: '2026-06-01T00:00:00Z',
   updatedAt: '2026-06-01T00:00:00Z',
   capabilities: emptyCapabilities(),
@@ -36,10 +35,9 @@ const baseConnector = (over: Partial<Connector> = {}): Connector => ({
 });
 
 describe('connector-form helpers', () => {
-  it('emptyConnectorForm is a shared, personal MCP form with no url yet', () => {
+  it('emptyConnectorForm is a personal MCP form with no url yet', () => {
     const f = emptyConnectorForm();
     expect(f.keyMode).toBe('personal');
-    expect(f.visibility).toBe('shared');
     expect(f).not.toHaveProperty('defaultAttached');
     expect(f.mechanism).toBe('mcp');
     expect(f.url).toBe('');
@@ -76,7 +74,6 @@ describe('connector-form helpers', () => {
       name: 'Linear (OAuth)',
       mechanism: 'mcp',
       url: 'https://mcp.linear.app/mcp',
-      visibility: 'shared',
       // The author toggled the slot to oauth + named it + scoped it, but never
       // re-picked the (sole, pre-displayed) server — so `server` is empty.
       credentialSlots: [
@@ -116,7 +113,6 @@ describe('connector-form helpers', () => {
   it('formFromConnector infers MCP from a leading mcp server + reads its fields', () => {
     const c = baseConnector({
       keyMode: 'workspace',
-      visibility: 'shared',
       capabilities: {
         ...emptyCapabilities(),
         allowedHosts: ['drive.googleapis.com'],
@@ -135,7 +131,6 @@ describe('connector-form helpers', () => {
     const f = formFromConnector(c);
     expect(f.mechanism).toBe('mcp');
     expect(f.keyMode).toBe('workspace');
-    expect(f.visibility).toBe('shared');
     expect(f.url).toBe('https://mcp.example.com/gdrive');
     expect(f.allowedHosts).toBe('drive.googleapis.com');
     expect(f.credentialSlots).toEqual([
@@ -604,7 +599,7 @@ services:
       credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'example', scopes: ['read'] }],
     };
     const form = formFromConnector({ id:'x', name:'X', description:'', usageNote:'',
-      keyMode:'personal', visibility:'private',
+      keyMode:'personal',
       createdAt:'', updatedAt:'', capabilities: caps as never });
     expect(form.credentialSlots[0]).toMatchObject({ kind: 'oauth', server: 'example' });
     const back = capabilitiesFromForm(form);
@@ -615,7 +610,7 @@ services:
     const caps = { allowedHosts: [], packages: { npm: [], pypi: [] }, mcpServers: [],
       credentials: [{ slot: 'X', kind: 'api-key', description: 'tok' }] };
     const form = formFromConnector({ id:'x', name:'X', description:'', usageNote:'',
-      keyMode:'personal', visibility:'private',
+      keyMode:'personal',
       createdAt:'', updatedAt:'', capabilities: caps as never });
     expect(form.credentialSlots[0]).toMatchObject({ kind: 'api-key', description: 'tok' });
     expect(capabilitiesFromForm(form).credentials[0]).toMatchObject({ slot: 'X', kind: 'api-key', description: 'tok' });
@@ -628,7 +623,6 @@ services:
       description: 'd',
       usageNote: 'u',
       keyMode: 'workspace',
-      visibility: 'private',
       createdAt: 'x',
       updatedAt: 'y',
     });
@@ -714,4 +708,33 @@ describe('TOOL_PERMISSIONS_RESET_FAILED (TASK-758)', () => {
     expect(isToolPermissionsResetFailure(new Error('connector id taken'))).toBe(false);
     expect(isToolPermissionsResetFailure('tool-permissions-reset-failed')).toBe(false);
   });
+});
+
+// Slice 2a — a non-owner admin may relabel a shared connector but the server
+// refuses (403 owner-only-change) a save whose capabilities differ from the
+// stored ones. The legacy editor sends capabilitiesFromForm(formFromConnector(c))
+// for an untouched connector, so for one with no MCP servers that round trip
+// must reproduce the stored capabilities exactly (the same fixtures
+// @ax/connectors' admin-routes test PATCHes cross-owner and expects a 200).
+describe('an untouched no-server connector round-trips its capabilities', () => {
+  const cases: Array<[string, Connector['capabilities']]> = [
+    ['direct API', {
+      allowedHosts: ['api.billing.example.com'],
+      credentials: [{ slot: 'BILLING_KEY', kind: 'api-key', description: 'API key' }],
+      mcpServers: [],
+      packages: { npm: [], pypi: [] },
+    }],
+    ['command-line tool', {
+      allowedHosts: ['registry.npmjs.org', 'api.billing.example.com'],
+      credentials: [{ slot: 'BILLING_KEY', kind: 'api-key' }],
+      mcpServers: [],
+      packages: { npm: ['billing-cli'], pypi: [] },
+    }],
+  ];
+  for (const [kind, capabilities] of cases) {
+    it(kind, () => {
+      const c = baseConnector({ capabilities });
+      expect(capabilitiesFromForm({ ...formFromConnector(c), name: 'Renamed' })).toStrictEqual(capabilities);
+    });
+  }
 });

@@ -18,8 +18,10 @@ import type { Capabilities } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Authored-connector draft store (TASK-94) against a real postgres container.
-// Covers: upsert lands pending, list, idempotent status-guarded activate,
-// clear, and per-(owner, agent) isolation.
+// Covers: upsert lands pending, the all-owners pending read + clear-by-id, and
+// per-(owner, agent) isolation. Slice 2c removed the per-agent `list` and the
+// `activate` flip with the in-chat card; `active` rows still exist from before,
+// so `markActive` writes one the way the old flip did.
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -46,6 +48,42 @@ function caps(): Capabilities {
     // parse; set it here so the read-back round-trip assertions stay exact.
     services: [],
   };
+}
+
+/** The drafts stored for one (owner, agent), any status, read straight from
+ *  the table in connector_id order. */
+async function rowsOf(db: Kysely<ConnectorDatabase>, owner: string, agent: string) {
+  const rows = await db
+    .selectFrom('connectors_v1_authored')
+    .selectAll()
+    .where('owner_user_id', '=', owner)
+    .where('agent_id', '=', agent)
+    .orderBy('connector_id', 'asc')
+    .execute();
+  return rows.map((r) => ({
+    connectorId: r.connector_id,
+    name: r.name,
+    usageNote: r.usage_note,
+    keyMode: r.key_mode,
+    status: r.status,
+    proposal: r.capability_proposal as unknown as Capabilities,
+  }));
+}
+
+/** A legacy `active` row, as the removed in-chat approval left it. */
+async function markActive(
+  db: Kysely<ConnectorDatabase>,
+  owner: string,
+  agent: string,
+  connectorId: string,
+): Promise<void> {
+  await db
+    .updateTable('connectors_v1_authored')
+    .set({ status: 'active' })
+    .where('owner_user_id', '=', owner)
+    .where('agent_id', '=', agent)
+    .where('connector_id', '=', connectorId)
+    .execute();
 }
 
 beforeAll(async () => {
@@ -76,7 +114,7 @@ describe('runConnectorsMigration — authored table', () => {
     await runConnectorsMigration(db);
     await runConnectorsMigration(db);
     const store = createAuthoredConnectorsStore(db);
-    expect(await store.list('u', 'a')).toEqual([]);
+    expect(await store.listPendingAll(() => {})).toEqual([]);
   });
 
   it('enforces status / key_mode CHECK constraints at the DB level', async () => {
@@ -103,7 +141,7 @@ describe('runConnectorsMigration — authored table', () => {
 });
 
 describe('createAuthoredConnectorsStore', () => {
-  it('upsert lands a PENDING draft; list reads it back with the proposal', async () => {
+  it('upsert lands a PENDING draft with the proposal', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createAuthoredConnectorsStore(db);
@@ -119,7 +157,7 @@ describe('createAuthoredConnectorsStore', () => {
     });
     expect(created).toBe(true);
 
-    const drafts = await store.list('u', 'a');
+    const drafts = await rowsOf(db, 'u', 'a');
     expect(drafts).toHaveLength(1);
     expect(drafts[0]).toMatchObject({
       connectorId: 'linear',
@@ -131,27 +169,78 @@ describe('createAuthoredConnectorsStore', () => {
     expect(drafts[0]!.proposal).toEqual(caps());
   });
 
-  it('listPendingForUser returns only PENDING drafts across the user’s agents, each carrying agentId', async () => {
+  it('listPendingAll returns every owner’s PENDING drafts (system read), each carrying owner + agent', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createAuthoredConnectorsStore(db);
 
-    // Two pending drafts under different agents + one that gets activated.
     await store.upsert({ ownerUserId: 'u', agentId: 'a2', connectorId: 'linear', name: 'Linear', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.upsert({ ownerUserId: 'other', agentId: 'a1', connectorId: 'linear', name: 'Linear too', usageNote: '', keyMode: 'workspace', proposal: caps() });
     await store.upsert({ ownerUserId: 'u', agentId: 'a1', connectorId: 'gmail', name: 'Gmail', usageNote: '', keyMode: 'personal', proposal: caps() });
     await store.upsert({ ownerUserId: 'u', agentId: 'a1', connectorId: 'slack', name: 'Slack', usageNote: '', keyMode: 'personal', proposal: caps() });
-    // A different user's pending draft must NOT leak.
-    await store.upsert({ ownerUserId: 'other', agentId: 'a1', connectorId: 'notion', name: 'Notion', usageNote: '', keyMode: 'personal', proposal: caps() });
-    // Activate one of u's drafts — it's approved, so it must drop off the pending list.
-    await store.activate({ ownerUserId: 'u', agentId: 'a1', connectorId: 'slack' });
+    // An ACTIVE draft is not pending: it must not appear.
+    await markActive(db, 'u', 'a1', 'slack');
 
-    const pending = await store.listPendingForUser('u');
-    // Deterministic order: connector_id asc (gmail, linear), each with its agentId.
-    expect(pending.map((d) => ({ connectorId: d.connectorId, agentId: d.agentId, status: d.status }))).toEqual([
-      { connectorId: 'gmail', agentId: 'a1', status: 'pending' },
-      { connectorId: 'linear', agentId: 'a2', status: 'pending' },
+    const pending = await store.listPendingAll(() => {});
+    // Deterministic order: connector_id, then owner, then agent.
+    expect(pending.map((d) => ({ connectorId: d.connectorId, ownerUserId: d.ownerUserId, agentId: d.agentId }))).toEqual([
+      { connectorId: 'gmail', ownerUserId: 'u', agentId: 'a1' },
+      { connectorId: 'linear', ownerUserId: 'other', agentId: 'a1' },
+      { connectorId: 'linear', ownerUserId: 'u', agentId: 'a2' },
     ]);
+    expect(pending.every((d) => d.status === 'pending')).toBe(true);
     expect(pending[0]!.proposal).toEqual(caps());
+  });
+
+  it('listPendingAll skips a draft with a malformed proposal, reports it, and still returns the good ones', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+    await store.upsert({ ownerUserId: 'u', agentId: 'a1', connectorId: 'linear', name: 'Linear', usageNote: '', keyMode: 'personal', proposal: caps() });
+    // One user's corrupt row (hand-edited / older shape) must not empty the
+    // queue for every admin.
+    await sql`
+      INSERT INTO connectors_v1_authored
+        (owner_user_id, agent_id, connector_id, name, usage_note, key_mode, capability_proposal, status)
+      VALUES ('bad-owner', 'a9', 'broken', 'Broken', '', 'personal', '{"allowedHosts": 5}'::jsonb, 'pending')
+    `.execute(db);
+
+    const skipped: Array<{ ownerUserId: string; connectorId: string; err: unknown }> = [];
+    const pending = await store.listPendingAll((draft, err) => skipped.push({ ...draft, err }));
+
+    expect(pending.map((d) => d.connectorId)).toEqual(['linear']);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toMatchObject({ ownerUserId: 'bad-owner', connectorId: 'broken' });
+    expect(String((skipped[0]!.err as Error).message)).toMatch(/malformed capability_proposal/);
+  });
+
+  it('clearAllById removes every draft with that id across owners and agents, any status', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'linear', name: 'L', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.upsert({ ownerUserId: 'u2', agentId: 'a9', connectorId: 'linear', name: 'L', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a2', connectorId: 'linear', name: 'L', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await markActive(db, 'u1', 'a2', 'linear');
+    // A different id stays.
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'gmail', name: 'G', usageNote: '', keyMode: 'personal', proposal: caps() });
+
+    expect(await store.clearAllById('linear')).toEqual({ cleared: 3 });
+    expect(await rowsOf(db, 'u1', 'a1')).toHaveLength(1);
+    expect(await rowsOf(db, 'u1', 'a2')).toEqual([]);
+    expect(await rowsOf(db, 'u2', 'a9')).toEqual([]);
+    // Again: nothing left to clear.
+    expect(await store.clearAllById('linear')).toEqual({ cleared: 0 });
+  });
+
+  it('clearAllById refuses an empty id before any statement runs', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'linear', name: 'L', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await expect(store.clearAllById('')).rejects.toThrow(/connectorId/);
+    expect(await rowsOf(db, 'u1', 'a1')).toHaveLength(1);
   });
 
   it('re-propose REPLACES the row (created:false) and re-opens the gate to pending', async () => {
@@ -168,9 +257,8 @@ describe('createAuthoredConnectorsStore', () => {
       keyMode: 'personal',
       proposal: caps(),
     });
-    // Approve it (pending → active).
-    expect(await store.activate({ ownerUserId: 'u', agentId: 'a', connectorId: 'linear' }))
-      .toEqual({ activated: true });
+    // A legacy approved row (pending → active, before slice 2c).
+    await markActive(db, 'u', 'a', 'linear');
 
     // A re-propose with a new name resets to pending (the gate re-opens).
     const { created } = await store.upsert({
@@ -183,56 +271,8 @@ describe('createAuthoredConnectorsStore', () => {
       proposal: caps(),
     });
     expect(created).toBe(false);
-    const drafts = await store.list('u', 'a');
+    const drafts = await rowsOf(db, 'u', 'a');
     expect(drafts[0]).toMatchObject({ name: 'Linear v2', keyMode: 'workspace', status: 'pending' });
-  });
-
-  it('activate is status-guarded + idempotent (only a pending row flips)', async () => {
-    const db = makeKysely();
-    await runConnectorsMigration(db);
-    const store = createAuthoredConnectorsStore(db);
-
-    await store.upsert({
-      ownerUserId: 'u',
-      agentId: 'a',
-      connectorId: 'linear',
-      name: 'Linear',
-      usageNote: '',
-      keyMode: 'personal',
-      proposal: caps(),
-    });
-    // First flip succeeds; second is a no-op (already active).
-    expect(await store.activate({ ownerUserId: 'u', agentId: 'a', connectorId: 'linear' }))
-      .toEqual({ activated: true });
-    expect(await store.activate({ ownerUserId: 'u', agentId: 'a', connectorId: 'linear' }))
-      .toEqual({ activated: false });
-    expect((await store.list('u', 'a'))[0]!.status).toBe('active');
-
-    // Activating a non-existent draft flips nothing.
-    expect(await store.activate({ ownerUserId: 'u', agentId: 'a', connectorId: 'nope' }))
-      .toEqual({ activated: false });
-  });
-
-  it('clear removes the draft (reject path)', async () => {
-    const db = makeKysely();
-    await runConnectorsMigration(db);
-    const store = createAuthoredConnectorsStore(db);
-
-    await store.upsert({
-      ownerUserId: 'u',
-      agentId: 'a',
-      connectorId: 'linear',
-      name: 'Linear',
-      usageNote: '',
-      keyMode: 'personal',
-      proposal: caps(),
-    });
-    expect(await store.clear({ ownerUserId: 'u', agentId: 'a', connectorId: 'linear' }))
-      .toEqual({ cleared: true });
-    expect(await store.list('u', 'a')).toEqual([]);
-    // Clearing again is a no-op.
-    expect(await store.clear({ ownerUserId: 'u', agentId: 'a', connectorId: 'linear' }))
-      .toEqual({ cleared: false });
   });
 
   it('drafts are isolated per (owner, agent)', async () => {
@@ -268,14 +308,22 @@ describe('createAuthoredConnectorsStore', () => {
       proposal: caps(),
     });
 
-    expect((await store.list('u1', 'a1')).map((d) => d.name)).toEqual(['U1 Linear']);
-    expect((await store.list('u1', 'a2')).map((d) => d.name)).toEqual(['U1 A2 Linear']);
-    expect((await store.list('u2', 'a1')).map((d) => d.name)).toEqual(['U2 Linear']);
+    expect((await rowsOf(db, 'u1', 'a1')).map((d) => d.name)).toEqual(['U1 Linear']);
+    expect((await rowsOf(db, 'u1', 'a2')).map((d) => d.name)).toEqual(['U1 A2 Linear']);
+    expect((await rowsOf(db, 'u2', 'a1')).map((d) => d.name)).toEqual(['U2 Linear']);
 
-    // Activating u1/a1's draft must not touch u1/a2 or u2/a1.
-    await store.activate({ ownerUserId: 'u1', agentId: 'a1', connectorId: 'linear' });
-    expect((await store.list('u1', 'a2'))[0]!.status).toBe('pending');
-    expect((await store.list('u2', 'a1'))[0]!.status).toBe('pending');
+    // Re-proposing u1/a1's draft must not touch u1/a2 or u2/a1.
+    await store.upsert({
+      ownerUserId: 'u1',
+      agentId: 'a1',
+      connectorId: 'linear',
+      name: 'U1 Linear v2',
+      usageNote: '',
+      keyMode: 'personal',
+      proposal: caps(),
+    });
+    expect((await rowsOf(db, 'u1', 'a2')).map((d) => d.name)).toEqual(['U1 A2 Linear']);
+    expect((await rowsOf(db, 'u2', 'a1')).map((d) => d.name)).toEqual(['U2 Linear']);
   });
 });
 
@@ -318,7 +366,7 @@ describe('AuthoredConnectorsStore.deleteAllForAgent (TASK-718)', () => {
     // A team agent: drafts for several owner users, several connectors.
     await seed(store, 'agt_A', ['u1', 'u2', 'u3'], ['linear', 'notion']);
     // One draft already approved: an `active` row is still the agent's row.
-    await store.activate({ ownerUserId: 'u2', agentId: 'agt_A', connectorId: 'notion' });
+    await markActive(db, 'u2', 'agt_A', 'notion');
     expect(await count(db, 'agt_A')).toBe(6);
 
     const removed = await store.deleteAllForAgent('agt_A');
@@ -338,8 +386,8 @@ describe('AuthoredConnectorsStore.deleteAllForAgent (TASK-718)', () => {
     // registry, not the agent's data, so the purge must not reach it.
     await sql`
       INSERT INTO connectors_v1_connectors
-        (owner_user_id, connector_id, name, key_mode, visibility, capabilities)
-      VALUES ('u1', 'linear', 'Linear', 'personal', 'private', ${JSON.stringify(caps())}::jsonb)
+        (owner_user_id, connector_id, name, key_mode, capabilities)
+      VALUES ('u1', 'linear', 'Linear', 'personal', ${JSON.stringify(caps())}::jsonb)
     `.execute(db);
 
     await store.deleteAllForAgent('agt_A');

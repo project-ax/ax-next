@@ -52,7 +52,7 @@ describe('the prose is host-authored', () => {
    * described hold names no tool, whatever the tool is called.
    */
   it.each([
-    ['connector_propose', 'set up a new connection for you'],
+    ['connector_propose', 'request a new connection from your workspace admin'],
     ['skill_propose', 'install a skill it wrote for itself'],
     ['request_capability', CAP],
   ])('never prints %s on a consent surface that has a clause', (tool, capability) => {

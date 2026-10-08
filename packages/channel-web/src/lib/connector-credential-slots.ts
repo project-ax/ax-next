@@ -22,31 +22,3 @@ export const OAUTH_CLIENT_SECRET_SLOT = 'OAUTH_CLIENT_SECRET';
 export function newHeaderSlot(): string {
   return `HEADER_${crypto.randomUUID().replace(/-/g, '').toUpperCase()}`;
 }
-
-/**
- * Where the editors store a connector's custom OAuth client secret.
- *
- * `'global'` is readable workspace-wide, which is what lets people other than
- * the author sign in. It is only safe to read that widely when the connector
- * itself is workspace-wide, so the host serves a global secret only to signers
- * of a connector that is shared AND admin-owned. That decides the rule here:
- *
- *   - a workspace-key connector keeps its secret at the workspace, as ever;
- *   - a shared connector written by an admin does too, so everyone can sign in
- *     with the OAuth app the admin registered;
- *   - a PRIVATE admin connector stays at the author's own scope. A global
- *     secret would be unreadable even by its owner (it is not shared), so the
- *     only person who could sign in would be locked out;
- *   - a non-admin author can't write a global secret at all (that route is
- *     admin-only), so theirs stays at their own scope, and only they can sign in.
- */
-export function clientSecretScope(args: {
-  isAdmin: boolean;
-  keyMode: 'personal' | 'workspace';
-  visibility: 'private' | 'shared';
-}): 'global' | 'user' {
-  return args.keyMode === 'workspace' ||
-    (args.isAdmin && args.visibility === 'shared')
-    ? 'global'
-    : 'user';
-}

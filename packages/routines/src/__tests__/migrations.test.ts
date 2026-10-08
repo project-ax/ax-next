@@ -107,6 +107,53 @@ describe('runRoutinesMigration', () => {
     expect(names).toContain('rendered_prompt');
   });
 
+  // Slice 6 — skipped-connector warnings: nullable TEXT on both tables,
+  // added idempotently, and pre-existing rows read null. The pre-slice-6
+  // database is built by migrating and then dropping the two new columns, so
+  // every earlier step sees the full real schema it expects.
+  it('adds nullable warning (fires) and last_warning (definitions) to a pre-slice-6 database, idempotently', async () => {
+    await runRoutinesMigration(db);
+    await sql`ALTER TABLE routines_v1_fires DROP COLUMN warning`.execute(db);
+    await sql`ALTER TABLE routines_v1_definitions DROP COLUMN last_warning`.execute(db);
+    await sql`
+      INSERT INTO routines_v1_definitions
+        (agent_id, path, owner_user_id, name, description, spec_hash,
+         trigger_kind, trigger_spec, conversation, prompt_body)
+      VALUES ('agt_w', 'w.md', 'u1', 'w', 'd', 'h',
+              'interval', ${'{"kind":"interval","every":"60s"}'}::jsonb,
+              'per-fire', 'body')
+    `.execute(db);
+    await sql`
+      INSERT INTO routines_v1_fires (agent_id, path, trigger_source, status)
+      VALUES ('agt_w', 'w.md', 'tick', 'error')
+    `.execute(db);
+
+    await runRoutinesMigration(db);
+    await runRoutinesMigration(db);
+
+    const cols = await sql<{ table_name: string; column_name: string; data_type: string; is_nullable: string }>`
+      SELECT table_name, column_name, data_type, is_nullable
+        FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND ((table_name = 'routines_v1_fires' AND column_name = 'warning')
+           OR (table_name = 'routines_v1_definitions' AND column_name = 'last_warning'))
+    `.execute(db);
+    expect(cols.rows).toHaveLength(2);
+    for (const c of cols.rows) {
+      expect(c).toMatchObject({ data_type: 'text', is_nullable: 'YES' });
+    }
+    const def = await sql<{ last_warning: string | null }>`
+      SELECT last_warning FROM routines_v1_definitions WHERE agent_id = 'agt_w'
+    `.execute(db);
+    expect(def.rows).toHaveLength(1);
+    expect(def.rows[0]!.last_warning).toBeNull();
+    const fire = await sql<{ warning: string | null }>`
+      SELECT warning FROM routines_v1_fires WHERE agent_id = 'agt_w'
+    `.execute(db);
+    expect(fire.rows).toHaveLength(1);
+    expect(fire.rows[0]!.warning).toBeNull();
+  });
+
   it('default_routines_v1 table has expected schema', async () => {
     await runRoutinesMigration(db);
     const cols = await sql<{ column_name: string; data_type: string; is_nullable: string }>`

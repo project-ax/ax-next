@@ -4,9 +4,9 @@ import { requireSession } from '../auth';
 
 /**
  * Offline Vite mock for the connector REST surface. Both route bundles list
- * owned and shared definitions; writes stay owner-only. New definitions default
- * to shared with automatic attachment off. User routes reject workspace keys
- * and automatic attachment. Mirrors the real connectors plugin.
+ * every definition (every connector is shared). Only the admin bundle writes
+ * (slice 2a); any admin may edit or delete any definition, but changing
+ * keyMode or capabilities is owner-only. Mirrors the real connectors plugin.
  *
  * The real backend registers these routes in `@ax/connectors`
  * (`mountAdminRoutes` → `admin-routes.ts`), bridging the `connectors:*` service
@@ -19,22 +19,30 @@ import { requireSession } from '../auth';
  * `lib/connectors.ts` (where `<base>` is the bundle's base path):
  *
  *   GET    <base>      → { connectors: ConnectorSummary[] }
- *   POST   <base>      body ConnectorUpsertInput → { connector, created }
+ *   POST   <base>      body ConnectorUpsertInput → 201 { connector, created }
+ *          (create only: a live id, the caller's own included, is a 409)
  *   GET    <base>/:id  → { connector: Connector }
  *   PATCH  <base>/:id  body Partial<ConnectorUpsertInput> → { connector, created:false }
  *   DELETE <base>/:id  → 204
  *   GET    <base>/:id/tool-permissions[?refresh=1]
  *          → { status, checkedAt, tools: InventoryTool[], defaults: SavedDefault[] }
  *   PUT    <base>/:id/tool-permissions  body { verdicts: [{ toolKey, verdict|null }] }
- *          → { ok: true }   (TASK-737; editors only, 403 otherwise)
+ *          → { ok: true }   (TASK-737; admin bundle only)
+ *   GET    /admin/connectors/authored              → { drafts: ConnectorRequestView[] }
+ *   DELETE /admin/connectors/authored/:connectorId → 204
+ *          (slice 2c — "Awaiting approval": every person's connector requests;
+ *          admin bundle only. A create clears every request with its id;
+ *          the id `authored` is reserved.)
  *
  * Note the path has NO `/api/` prefix — it matches the real `@ax/connectors`
  * routes, which the UI hits directly.
  *
  * SECURITY parity: identity comes from the session. The `/admin/connectors*`
  * bundle is admin-only (403 `forbidden` for a signed-in non-admin, TASK-698);
- * `/settings/connectors*` is open to any signed-in user. Private foreign rows are
- * invisible; shared foreign rows are read-only. Credential values never appear.
+ * `/settings/connectors*` is READ-ONLY and open to any signed-in user: list +
+ * show only. A write on those paths answers 405 (Allow: GET), as production's
+ * router does, and `<base>/:id/tool-permissions` has no route there (404).
+ * Foreign rows are read-only on the user surface. Credential values never appear.
  *
  * These type shapes are DUPLICATED from `@ax/connectors` (not imported):
  * channel-web is not a `@ax/connectors` dependency and plugins talk through the
@@ -46,7 +54,6 @@ import { requireSession } from '../auth';
 type RouteMode = 'admin' | 'user';
 
 type KeyMode = 'personal' | 'workspace';
-type Visibility = 'private' | 'shared';
 
 interface CapabilitySlot {
   slot: string;
@@ -79,7 +86,6 @@ export interface ConnectorSummary {
   description: string;
   usageNote: string;
   keyMode: KeyMode;
-  visibility: Visibility;
   createdAt: string;
   updatedAt: string;
 }
@@ -107,6 +113,38 @@ const ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const NAME_MAX = 200;
 
 const COLLECTION = 'connectors';
+const REQUESTS = 'connector_requests';
+/** Mirrors `@ax/connectors` `RESERVED_CONNECTOR_IDS`. */
+const RESERVED_IDS: ReadonlySet<string> = new Set(['authored']);
+
+/**
+ * An agent's pending request for a connector nobody has defined (slice 2c).
+ * Keyed `${owner}::${agent}::${connectorId}`, like the real authored table's
+ * (owner, agent, id) key. The proposal is agent-written: stored verbatim.
+ */
+interface StoredConnectorRequest {
+  id: string;
+  ownerUserId: string;
+  agentId: string;
+  connectorId: string;
+  name: string;
+  usageNote: string;
+  keyMode: KeyMode;
+  proposal: Capabilities;
+  updatedAt: string;
+}
+
+/** Test/dev helper: file a request as an agent would (`connector_propose`). */
+export function seedConnectorRequest(
+  store: Store,
+  r: Omit<StoredConnectorRequest, 'id' | 'updatedAt'> & { updatedAt?: string },
+): void {
+  store.collection<StoredConnectorRequest>(REQUESTS).upsert({
+    ...r,
+    id: `${r.ownerUserId}::${r.agentId}::${r.connectorId}`,
+    updatedAt: r.updatedAt ?? new Date().toISOString(),
+  });
+}
 
 function rowKey(userId: string, connectorId: string): string {
   return `${userId}::${connectorId}`;
@@ -116,23 +154,22 @@ function emptyCapabilities(): Capabilities {
   return { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
 }
 
-function toSummary(row: StoredConnector, actorId: string): ConnectorSummary {
+function toSummary(row: StoredConnector, actorId: string, mode: RouteMode): ConnectorSummary {
   return {
-    canEdit: row.userId === actorId,
+    canEdit: row.userId === actorId || mode === 'admin',
     requiresAttachment: row.requiresAttachment ?? false,
     id: row.connectorId,
     name: row.name,
     description: row.description,
     usageNote: row.usageNote,
     keyMode: row.keyMode,
-    visibility: row.visibility,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
-function toConnector(row: StoredConnector, actorId: string): Connector {
-  return { ...toSummary(row, actorId), capabilities: row.capabilities };
+function toConnector(row: StoredConnector, actorId: string, mode: RouteMode): Connector {
+  return { ...toSummary(row, actorId, mode), capabilities: row.capabilities };
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -172,7 +209,7 @@ type Validated =
 
 /**
  * Lightweight validation mirroring the SHAPE the real `connectors:upsert` hook
- * enforces (slug grammar + required name/keyMode/visibility). The mock does NOT
+ * enforces (slug grammar + required name/keyMode). The mock does NOT
  * re-implement the full zod capability parse — it stores `capabilities` verbatim
  * (defaulting to empty) because the mock is offline UI parity and the real route
  * owns strict validation. `existing` supplies merge defaults for a PATCH.
@@ -207,11 +244,6 @@ function validateUpsert(
     return { ok: false, message: "keyMode must be 'personal' or 'workspace'" };
   }
 
-  const visibility = body.visibility ?? existing?.visibility ?? 'shared';
-  if (visibility !== 'private' && visibility !== 'shared') {
-    return { ok: false, message: "visibility must be 'private' or 'shared'" };
-  }
-
   const description = body.description ?? existing?.description ?? '';
   const usageNote = body.usageNote ?? existing?.usageNote ?? '';
   if (typeof description !== 'string' || typeof usageNote !== 'string') {
@@ -222,13 +254,36 @@ function validateUpsert(
 
   return {
     ok: true,
-    value: { id: connectorId, name, description, usageNote, keyMode, visibility, capabilities },
+    value: { id: connectorId, name, description, usageNote, keyMode, capabilities },
   };
 }
 
+// The user surface is read-only for foreign rows; on the admin surface any admin
+// may edit or delete any connector (mirrors the real route's `writeOwner`).
 function isReadOnly(row: StoredConnector, actorId: string, mode: RouteMode): boolean {
-  return row.userId !== actorId || (mode === 'user' &&
-    (row.visibility === 'shared' && row.keyMode === 'workspace'));
+  return mode === 'user' && (row.userId !== actorId || row.keyMode === 'workspace');
+}
+
+/** Stable JSON: object keys sorted, so key order never reads as a change
+ *  (the real route's `canonicalJson`). */
+function canonicalJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val: unknown) =>
+    val !== null && typeof val === 'object' && !Array.isArray(val)
+      ? Object.fromEntries(
+          Object.entries(val as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+      : val,
+  );
+}
+
+/** Mirrors the real `changesOwnerOnlyFields`: keyMode and capabilities,
+ *  compared key-order-insensitively. (The mock skips the real route's zod
+ *  parse and OAuth slot defaults.) */
+function changesOwnerOnlyFields(existing: StoredConnector, body: Record<string, unknown>): boolean {
+  if ('keyMode' in body && body.keyMode !== existing.keyMode) return true;
+  if ('capabilities' in body && canonicalJson(body.capabilities) !== canonicalJson(existing.capabilities))
+    return true;
+  return false;
 }
 
 /** Reject admin-only write fields on the user surface (mirrors the real route's
@@ -288,7 +343,7 @@ function toolDefaultsFor(store: Store, rowId: string): Map<string, ToolVerdict> 
 
 /**
  * The shared connector-routes mock, parameterized by `base` (the bundle's path)
- * and `mode` (`'admin'` = the registry, `'user'` = locked-down authoring). One
+ * and `mode` (`'admin'` = the registry, `'user'` = the read-only /settings bundle). One
  * implementation, two registrations — user mode rejects admin-only fields.
  * Sharing grants read access while mutations stay owner-scoped.
  */
@@ -301,6 +356,10 @@ function connectorsMiddleware(
   // pattern matches the literal prefix whatever it contains.
   const escapedBase = base.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
   const idRe = new RegExp(`^${escapedBase}\\/([^/]+)$`);
+  // Slice 2c — the request queue. Admin bundle only; exact paths win over
+  // `:id` in production's router, so these are matched first.
+  const requestsPath = `${base}/authored`;
+  const requestIdRe = new RegExp(`^${escapedBase}\\/authored\\/([^/]+)$`);
   const toolPermsRe = new RegExp(`^${escapedBase}\\/([^/]+)\\/tool-permissions$`);
   return async (req, res) => {
     const url = req.url ?? '';
@@ -314,7 +373,21 @@ function connectorsMiddleware(
     // 404s anything else under the prefix (`/admin/connectorsx`, `<base>/a/b`)
     // before any auth gate runs, because no route matches it; claiming it here
     // and answering 401/403 first would disagree with prod (TASK-790).
-    if (path !== base && !idRe.test(path) && !toolPermsRe.test(path)) return false;
+    const isRequestRoute =
+      mode === 'admin' && (path === requestsPath || requestIdRe.test(path));
+    if (path !== base && !idRe.test(path) && !toolPermsRe.test(path) && !isRequestRoute)
+      return false;
+    // Slice 2a: the real `/settings/connectors*` bundle registers list + show
+    // only (admins write via `/admin/connectors`). Production's router answers a
+    // write on a path a GET shares with 405 before any auth runs, and has no
+    // route at all for `<base>/:id/tool-permissions` (404 — fall through).
+    if (mode === 'user') {
+      if (toolPermsRe.test(path)) return false;
+      if (method !== 'GET') {
+        send(res, 405, { error: 'method-not-allowed' }, { Allow: 'GET' });
+        return true;
+      }
+    }
 
     // auth:require-user — 401 with no session. The `/admin/connectors*` bundle
     // (mode 'admin') is additionally ADMIN-ONLY, mirroring the real
@@ -338,7 +411,6 @@ function connectorsMiddleware(
     const availableRows = () => {
       const grouped = new Map<string, StoredConnector[]>();
       for (const row of connectors.list()) {
-        if (row.userId !== actor.id && row.visibility !== 'shared') continue;
         const group = grouped.get(row.connectorId) ?? [];
         group.push(row);
         grouped.set(row.connectorId, group);
@@ -349,10 +421,62 @@ function connectorsMiddleware(
       });
     };
     const availableById = (id: string) => availableRows().find((row) => row.connectorId === id);
+    const requests = store.collection<StoredConnectorRequest>(REQUESTS);
+    const clearRequests = (connectorId: string): void => {
+      for (const r of requests.list()) if (r.connectorId === connectorId) requests.remove(r.id);
+    };
+
+    // ---- /admin/connectors/authored[/:connectorId] (slice 2c) ---------------
+    if (isRequestRoute) {
+      if (path === requestsPath && method === 'GET') {
+        // Ids already live as a connector are hidden; one row per
+        // (person, id) — the newest of that person's agents' requests.
+        const live = new Set(
+          connectors.list().map((c) => c.connectorId),
+        );
+        const newest = new Map<string, StoredConnectorRequest>();
+        for (const r of requests.list()) {
+          if (live.has(r.connectorId)) continue;
+          const key = `${r.ownerUserId}\u0000${r.connectorId}`;
+          const seen = newest.get(key);
+          if (!seen || r.updatedAt > seen.updatedAt) newest.set(key, r);
+        }
+        const users = store.collection<{ id: string; email?: string; name?: string }>('users');
+        const label = (userId: string): string => {
+          const u = users.get(userId);
+          return u?.name?.trim() || u?.email?.trim() || userId;
+        };
+        const drafts = [...newest.values()]
+          .sort((a, b) =>
+            a.connectorId === b.connectorId
+              ? a.ownerUserId.localeCompare(b.ownerUserId)
+              : a.connectorId.localeCompare(b.connectorId),
+          )
+          .map((r) => ({
+            connectorId: r.connectorId,
+            name: r.name,
+            usageNote: r.usageNote,
+            keyMode: r.keyMode,
+            proposal: r.proposal,
+            updatedAt: r.updatedAt,
+            proposedBy: { userId: r.ownerUserId, label: label(r.ownerUserId) },
+          }));
+        send(res, 200, { drafts });
+        return true;
+      }
+      const requestMatch = path.match(requestIdRe);
+      if (requestMatch?.[1] && method === 'DELETE') {
+        clearRequests(decodeURIComponent(requestMatch[1]));
+        send(res, 204);
+        return true;
+      }
+      // Any other method falls through to the `:id` routes, as production's
+      // router does (`authored` is reserved, so none of them finds a row).
+    }
 
     // ---- collection routes -------------------------------------------------
     if (path === base && method === 'GET') {
-      send(res, 200, { connectors: availableRows().map((row) => toSummary(row, actor.id)) });
+      send(res, 200, { connectors: availableRows().map((row) => toSummary(row, actor.id, mode)) });
       return true;
     }
 
@@ -365,7 +489,20 @@ function connectorsMiddleware(
           return true;
         }
       }
+      if (typeof body.connectorId === 'string' && RESERVED_IDS.has(body.connectorId)) {
+        send(res, 400, { error: `connectorId '${body.connectorId}' is reserved` });
+        return true;
+      }
       const available = typeof body.connectorId === 'string' ? availableById(body.connectorId) : undefined;
+      // Slice 2c — the admin POST is CREATE only, like the real route: any
+      // live connector with this id (the caller's own included, any owner) is a 409. Edits are a PATCH.
+      if (
+        mode === 'admin' &&
+        connectors.list().some((row) => row.connectorId === body.connectorId)
+      ) {
+        send(res, 409, { error: 'connector-id-taken' });
+        return true;
+      }
       if (available && isReadOnly(available, actor.id, mode)) {
         send(res, 403, { error: 'read-only' });
         return true;
@@ -390,7 +527,10 @@ function connectorsMiddleware(
         updatedAt: now,
       };
       connectors.upsert(row);
-      send(res, existing ? 200 : 201, { connector: toConnector(row, actor.id), created: !existing });
+      // Slice 2c — approval is creation: a new connector resolves every
+      // request for its id, whoever asked.
+      if (!existing) clearRequests(row.connectorId);
+      send(res, existing ? 200 : 201, { connector: toConnector(row, actor.id, mode), created: !existing });
       return true;
     }
 
@@ -453,7 +593,6 @@ function connectorsMiddleware(
     const idMatch = path.match(idRe);
     if (idMatch && idMatch[1]) {
       const connectorId = decodeURIComponent(idMatch[1]);
-      const key = rowKey(actor.id, connectorId);
 
       if (method === 'GET') {
         const row = availableById(connectorId);
@@ -461,7 +600,7 @@ function connectorsMiddleware(
           send(res, 404, { error: 'not-found' });
           return true;
         }
-        send(res, 200, { connector: toConnector(row, actor.id) });
+        send(res, 200, { connector: toConnector(row, actor.id, mode) });
         return true;
       }
 
@@ -486,6 +625,13 @@ function connectorsMiddleware(
             return true;
           }
         }
+        // Another admin may relabel a connector, but keyMode and capabilities
+        // stay the owner's (mirrors the real route).
+        const crossOwner = existing.userId !== actor.id;
+        if (crossOwner && changesOwnerOnlyFields(existing, body)) {
+          send(res, 403, { error: 'owner-only-change' });
+          return true;
+        }
         // TASK-827 — whose key a connector uses is fixed once it exists
         // (mirrors the real route). Re-sending the same value is fine.
         if (body.keyMode !== undefined && body.keyMode !== existing.keyMode) {
@@ -501,15 +647,15 @@ function connectorsMiddleware(
         // URL slug is authoritative, so a body field can't rename or hijack.
         const row: StoredConnector = {
           ...result.value,
-          id: key,
-          userId: actor.id,
+          id: existing.id,
+          userId: existing.userId,
           connectorId,
           requiresAttachment: existing.requiresAttachment ?? false,
           createdAt: existing.createdAt,
           updatedAt: new Date().toISOString(),
         };
         connectors.upsert(row);
-        send(res, 200, { connector: toConnector(row, actor.id), created: false });
+        send(res, 200, { connector: toConnector(row, actor.id, mode), created: false });
         return true;
       }
 
@@ -526,7 +672,7 @@ function connectorsMiddleware(
           send(res, 403, { error: 'read-only' });
           return true;
         }
-        connectors.remove(key);
+        connectors.remove(existing.id);
         send(res, 204);
         return true;
       }
@@ -544,7 +690,7 @@ export function adminConnectorsMiddleware(
   return connectorsMiddleware(store, { base: '/admin/connectors', mode: 'admin' });
 }
 
-/** The user-authoring mock (`/settings/connectors[/:id]`, TASK-129). */
+/** The read-only `/settings/connectors[/:id]` mock (TASK-129; reads only since slice 2a). */
 export function settingsConnectorsMiddleware(
   store: Store,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {

@@ -1,36 +1,33 @@
 export { createConnectorsPlugin } from './plugin.js';
 export type { ConnectorsConfig } from './plugin.js';
 export {
-  ActivateAuthoredOutputSchema,
   AuthorizeAgentOutputSchema,
   AuthorizeGlobalOutputSchema,
   CapabilitiesSchema,
-  ClearAuthoredOutputSchema,
+  ClearAuthoredByIdOutputSchema,
   ClearLegacyDefaultOutputSchema,
   DeleteOutputSchema,
   GetOutputSchema,
   InstallAuthoredOutputSchema,
-  ListAuthoredOutputSchema,
+  ListAuthoredPendingAllOutputSchema,
   ListEffectiveOutputSchema,
   ListLegacyDefaultsOutputSchema,
   ListOutputSchema,
+  LiveIdsOutputSchema,
   ResolveOutputSchema,
   ToolLabelsOutputSchema,
   UpsertOutputSchema,
 } from './types.js';
 export type {
-  ActivateAuthoredInput,
-  ActivateAuthoredOutput,
   AuthorizeAgentInput,
   AuthorizeAgentOutput,
   AuthorizeGlobalInput,
   AuthorizeGlobalOutput,
-  AuthoredConnectorDraftDescriptor,
   AuthoredConnectorSlot,
   Capabilities,
   CapabilitySlot,
-  ClearAuthoredInput,
-  ClearAuthoredOutput,
+  ClearAuthoredByIdInput,
+  ClearAuthoredByIdOutput,
   ClearLegacyDefaultInput,
   ClearLegacyDefaultOutput,
   Connector,
@@ -44,8 +41,8 @@ export type {
   InstallAuthoredInput,
   InstallAuthoredOutput,
   KeyMode,
-  ListAuthoredInput,
-  ListAuthoredOutput,
+  ListAuthoredPendingAllInput,
+  ListAuthoredPendingAllOutput,
   ListEffectiveInput,
   ListEffectiveOutput,
   EffectiveConnectorEntry,
@@ -54,16 +51,18 @@ export type {
   ListLegacyDefaultsInput,
   ListLegacyDefaultsOutput,
   ListOutput,
+  LiveIdsInput,
+  LiveIdsOutput,
   McpServerSpec,
   OAuthCapabilitySlot,
   PackagesSpec,
+  PendingAuthoredProposal,
   ResolveInput,
   ResolveOutput,
   ToolLabelsInput,
   ToolLabelsOutput,
   UpsertInput,
   UpsertOutput,
-  Visibility,
 } from './types.js';
 export { authorizeAgentAccountRead, authorizeGlobalAccountRead } from './credential-authz.js';
 export { runConnectorsMigration } from './migrations.js';
@@ -92,10 +91,7 @@ export { scopedConnectors, scopedAuthoredConnectors } from './scope.js';
 export type { ConnectorScope, AuthoredConnectorScope } from './scope.js';
 export {
   deriveCredentialPlan,
-  requiresSharedKeyConsent,
   serviceTagForSlot,
   accountRef,
-  sharedKeyConsentMessage,
-  SHARED_KEY_CONSENT_COPY,
 } from './credential-plan.js';
 export type { CredentialPlanEntry, CredentialScope } from './credential-plan.js';

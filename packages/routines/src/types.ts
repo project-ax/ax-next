@@ -41,6 +41,13 @@ export interface RoutineRow {
   lastRunAt: Date | null;
   lastStatus: FireStatus | null;
   lastError: string | null;
+  /**
+   * Slice 6 — the most recently recorded fire's skipped-connector warning
+   * ("Gmail isn't signed in on Bob, so this run went without it."), or null
+   * when that fire went without nothing. Untrusted-derived text: render it as
+   * text.
+   */
+  lastWarning: string | null;
   definitionId: string | null;
   definitionUpdatedAt: Date | null;
 }
@@ -55,6 +62,8 @@ export interface FireRow {
   status: FireStatus;
   error: string | null;
   renderedPrompt: string | null;
+  /** Slice 6 — which connectors this run went without, as a sentence; or null. */
+  warning: string | null;
 }
 
 export interface FireNowInput {
@@ -287,6 +296,7 @@ const RoutineRowSchema = z.object({
   lastRunAt: z.date().nullable(),
   lastStatus: FireStatusSchema.nullable(),
   lastError: z.string().nullable(),
+  lastWarning: z.string().nullable(),
   definitionId: z.string().nullable(),
   definitionUpdatedAt: z.date().nullable(),
 });
@@ -301,6 +311,7 @@ const FireRowSchema = z.object({
   status: FireStatusSchema,
   error: z.string().nullable(),
   renderedPrompt: z.string().nullable(),
+  warning: z.string().nullable(),
 });
 
 /**

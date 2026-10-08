@@ -1,5 +1,5 @@
 /**
- * ConnectorsTab — the Settings "Connectors" surface: the connector
+ * ConnectorsTab — the Admin › Connectors surface: the connector
  * DEFINITIONS (what a service is and how we reach it), one list.
  *
  * Signing in and adding keys are NOT here. A person connects a service where
@@ -9,86 +9,154 @@
  * (workspace) key is part of the definition and is set in its editor. Nor is
  * there a Test button: the rail checks a connector's health where it's used.
  *
- * Each row is the service's name, what it needs (a personal or a shared key)
- * and, for someone who may change it, Edit and Delete — nothing else.
+ * Each row is the service's name, what it needs (a key each agent adds, or
+ * one shared key) and, when the server allows it, Edit and Delete — nothing
+ * else.
  *
- * AUTHORING: users and admins configure integrations here. New definitions
- * are shared. Authors may edit/delete their personal definitions; definitions
- * owned by someone else are read-only. The actor’s role selects
- * `/settings/connectors` or `/admin/connectors` for writes.
+ * AUTHORING (slice 2a): only admins define connectors, so this tab is mounted
+ * only for an admin (AdminShell gates it; the server gates every write), and
+ * every read and write goes through `/admin/connectors`. Any admin may edit or
+ * delete a connector; the server says so per row (`canEdit`). The site
+ * lists that used to sit at the bottom moved to Settings › Sites.
  *
- * Untrusted text (connector name / description) renders through React text
- * nodes (auto-escaped) — never raw HTML. shadcn primitives + semantic tokens
+ * AWAITING APPROVAL (slice 2c): an agent that needs a connector nobody has
+ * defined files a request, and every admin sees every person's requests here.
+ * Approval is creation — "Set it up" opens the normal create editor prefilled
+ * from the request, and the server clears the request when the
+ * connector is created. "Dismiss" clears it without creating anything.
+ *
+ * Untrusted text (connector name / description, and everything in a request,
+ * which an agent wrote) renders through React text nodes (auto-escaped) —
+ * never raw HTML. shadcn primitives + semantic tokens
  * only (invariant #6).
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
   listConnectors,
   deleteConnector,
-  listAuthoredPending,
-  rejectAuthoredConnector,
+  isConnectorGone,
+  CONNECTOR_GONE_MESSAGE,
+  listAuthoredProposals,
+  dismissAuthoredProposal,
+  prefillFromProposal,
+  proposalReach,
+  type AuthoredProposal,
+  type ConnectorPrefill,
   type ConnectorSummary,
-  type ConnectorRouteBase,
-  type PendingAuthoredConnector,
+  type ConnectorWriteBase,
 } from '@/lib/connectors';
-import { ProposedConnectorApproveDialog } from './ProposedConnectorApproveDialog';
+import { relativeDay } from '@/lib/workspace-time';
 import { ConnectorEditDialog } from './ConnectorEditDialog';
-import { connectorSource } from '@/components/SourceBadge';
 import { RoleCard } from '@/components/admin/RoleCard';
-import { StatusDot } from '@/components/admin/StatusDot';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { AllowedSitesPanel } from './AllowedSitesPanel';
-import { RememberedSitesPanel } from './RememberedSitesPanel';
 
-/** Mechanism-free "what it needs" caption — keyMode only, no transport vocab. */
-function needsCaption(c: ConnectorSummary): string {
-  return c.keyMode === 'workspace' ? 'Needs a shared key' : 'Needs a personal key';
+/**
+ * Mechanism-free "what it needs" caption — keyMode only, no transport vocab.
+ * The stored value is still `'personal'` (not renamed, slice 2a ruling); a
+ * per-person key is added per agent, so that is what the words say. The shared
+ * wording matches the editor's own choice ("One shared key for everyone").
+ */
+function needsCaption(keyMode: ConnectorSummary['keyMode']): string {
+  return keyMode === 'workspace'
+    ? 'One shared key for everyone'
+    : 'Each agent adds its own key';
 }
 
-export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
-  // The route bundle every CRUD call targets (TASK-129): admins curate via
-  // `/admin/connectors`; non-admin authors read/write their OWN PRIVATE
-  // connectors via the locked-down `/settings/connectors` (owner forced,
-  // visibility forced private, admin-only fields rejected, catalog/shared
-  // read-only — server-side). Both bundles are owner-scoped, so the list/get a
-  // user sees is identical; only the write policy differs.
-  const base: ConnectorRouteBase = isAdmin
-    ? '/admin/connectors'
-    : '/settings/connectors';
+/**
+ * One shelf row per requested connector id. Several people may ask for the
+ * same one; the row shows (and "Set it up" starts from) the newest request,
+ * and its caption says whose that is. Dismiss clears them all (the server
+ * clears every request with that id).
+ */
+interface RequestGroup {
+  connectorId: string;
+  newest: AuthoredProposal;
+  /** Who asked, de-duplicated, in list order. */
+  people: string[];
+}
+
+function groupRequests(requests: readonly AuthoredProposal[]): RequestGroup[] {
+  const groups = new Map<string, RequestGroup>();
+  for (const r of requests) {
+    const g = groups.get(r.connectorId);
+    if (!g) {
+      groups.set(r.connectorId, {
+        connectorId: r.connectorId,
+        newest: r,
+        people: [r.proposedBy.label],
+      });
+      continue;
+    }
+    if (r.updatedAt > g.newest.updatedAt) g.newest = r;
+    if (!g.people.includes(r.proposedBy.label)) g.people.push(r.proposedBy.label);
+  }
+  return [...groups.values()];
+}
+
+/** "Alice", "Alice and Bob", "Alice, Bob and Carol". */
+function namesList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/**
+ * Who asked. With one person, plainly that. With several, the row shows the
+ * NEWEST request (its name, reach and prefill), so the caption says whose
+ * request that is and that the others asked too, rather than crediting one
+ * person's wording to everyone.
+ */
+function askedByCaption(g: RequestGroup): string {
+  const shown = g.newest.proposedBy.label;
+  const others = g.people.filter((p) => p !== shown);
+  if (others.length === 0) return `Asked for by ${shown} for one of their agents`;
+  return `Showing ${shown}’s request. ${namesList(others)} also asked for this.`;
+}
+
+/** Every read and write here is the admin bundle (slice 2a). */
+const base: ConnectorWriteBase = '/admin/connectors';
+
+export function ConnectorsTab() {
   const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Authoring: the connector being created/edited (null = closed). Admins curate
-  // any connector; non-admins author only their own PRIVATE ones.
+  // Authoring: the connector being created/edited (null = closed).
   const [editing, setEditing] = useState<ConnectorSummary | 'new' | null>(null);
+  // "Set it up": the request the create editor starts from (null = blank).
+  const [prefill, setPrefill] = useState<ConnectorPrefill | null>(null);
   // Authoring: the connector awaiting delete confirmation (null = none).
   const [pendingDelete, setPendingDelete] = useState<ConnectorSummary | null>(
     null,
   );
 
-  // "Proposed by your assistant" fallback: pending authored drafts the assistant
-  // proposed mid-turn (the approval-card twin for a missed/dismissed card). The
-  // draft currently being approved (null = dialog closed).
-  const [proposed, setProposed] = useState<PendingAuthoredConnector[]>([]);
-  const [approving, setApproving] = useState<PendingAuthoredConnector | null>(null);
-  // The proposed draft awaiting dismiss confirmation (null = dialog closed).
-  const [dismissing, setDismissing] = useState<PendingAuthoredConnector | null>(
-    null,
-  );
+  // Awaiting approval: every person's open connector requests, and the one
+  // awaiting dismiss confirmation (null = dialog closed).
+  const [requests, setRequests] = useState<AuthoredProposal[]>([]);
+  const [dismissing, setDismissing] = useState<RequestGroup | null>(null);
+  // The requests didn't load. A preset without the connectors plugin is not a
+  // failure (the lib answers an empty list for its 404); anything else is, and
+  // saying so beats an empty shelf that looks like "nobody asked".
+  const [requestsFailed, setRequestsFailed] = useState(false);
 
-  /** Reload the pending authored drafts ("Proposed by your assistant"). Always
-   *  the owner-scoped `/settings/connectors/authored` surface; best-effort — a
-   *  failure just leaves the shelf empty rather than blocking the tab. */
-  const refreshProposed = useCallback(() => {
-    return listAuthoredPending()
-      .then((drafts) => setProposed(drafts))
-      .catch(() => setProposed([]));
+  /** Reload the requests. A failure never blocks the tab: it shows an Alert
+   *  with Retry where the shelf would be. */
+  const refreshRequests = useCallback(() => {
+    return listAuthoredProposals()
+      .then((drafts) => {
+        setRequests(drafts);
+        setRequestsFailed(false);
+      })
+      .catch(() => {
+        setRequests([]);
+        setRequestsFailed(true);
+      });
   }, []);
 
   /** Reload the connector list (after a curation write). */
@@ -100,7 +168,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         setError(e instanceof Error ? e.message : String(e));
         setConnectors([]);
       });
-  }, [base]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,19 +183,17 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
           setConnectors([]);
         }
       });
-    listAuthoredPending()
+    listAuthoredProposals()
       .then((drafts) => {
-        if (!cancelled) setProposed(drafts);
+        if (!cancelled) setRequests(drafts);
       })
       .catch(() => {
-        // Best-effort: a preset without the connectors plugin (or a transient
-        // failure) just hides the Proposed shelf.
-        if (!cancelled) setProposed([]);
+        if (!cancelled) setRequestsFailed(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [base]);
+  }, []);
 
   // --- admin curation actions ----------------------------------------------
 
@@ -138,19 +204,24 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
       setPendingDelete(null);
       await refreshConnectors();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
       setPendingDelete(null);
+      if (isConnectorGone(e)) {
+        // Another admin got there first: drop it from the list, then say so
+        // (the reload clears any earlier error, so it goes first).
+        await refreshConnectors();
+        setError(CONNECTOR_GONE_MESSAGE);
+        return;
+      }
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
   const confirmDismiss = async () => {
     if (!dismissing) return;
     try {
-      await rejectAuthoredConnector(dismissing.connectorId, {
-        agentId: dismissing.agentId,
-      });
+      await dismissAuthoredProposal(dismissing.connectorId);
       setDismissing(null);
-      refreshProposed();
+      void refreshRequests();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
       setDismissing(null);
@@ -158,31 +229,32 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   };
 
   const list = connectors ?? [];
+  const groups = groupRequests(requests);
 
   /** One connector row: name, what it needs, and Edit / Delete when allowed. */
   const renderTile = (c: ConnectorSummary) => {
-    const source = connectorSource(c);
-    // Availability and edit permission are separate: shared definitions stay
-    // editable by their author and read-only for everyone else.
-    const canEdit = (c.canEdit ?? (isAdmin || source === 'private')) &&
-      (isAdmin || !(c.visibility === 'shared' && c.keyMode === 'workspace'));
+    // The server decides per row (any admin may edit a shared connector). A
+    // row without the flag is the admin's to edit, as it always was here.
+    const canEdit = c.canEdit ?? true;
     return (
       <div key={c.id} data-testid={`connector-tile-${c.id}`}>
-        <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
-          {canEdit && (
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => setEditing(c)}>
-                Edit
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setPendingDelete(c)}
-              >
-                Delete
-              </Button>
-            </div>
-          )}
+        <RoleCard pill="service" title={c.name} caption={needsCaption(c.keyMode)}>
+          <div className="flex flex-col gap-3">
+            {canEdit && (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setEditing(c)}>
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPendingDelete(c)}
+                >
+                  Delete
+                </Button>
+              </div>
+            )}
+          </div>
         </RoleCard>
       </div>
     );
@@ -192,9 +264,8 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     <div className="flex flex-col gap-4 max-w-2xl">
       <div className="flex items-start justify-between gap-3">
         <div>
-          {/* `h2` under the pane title's `h1` (TASK-446) — this and the two
-              site panels at the bottom of the tab are the tab's three top-level
-              sections; the shelves inside each one are `h3`. */}
+          {/* `h2` under the pane title's `h1` (TASK-446) — the tab's one
+              top-level section; the Awaiting approval shelf inside it is `h3`. */}
           <h2 className="text-sm font-medium text-foreground">Connectors</h2>
           <p className="text-xs text-muted-foreground">
             Services your assistant can reach. Each one bundles what it needs —
@@ -202,9 +273,14 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
             from each agent’s Connectors tab.
           </p>
         </div>
-        {/* New definitions are shared; credential and edit permissions remain
-            scoped to the user. The role determines which route bundle saves. */}
-        <Button size="sm" onClick={() => setEditing('new')}>
+        {/* Every connector is shared with the workspace. */}
+        <Button
+          size="sm"
+          onClick={() => {
+            setPrefill(null);
+            setEditing('new');
+          }}
+        >
           New connector
         </Button>
       </div>
@@ -221,50 +297,80 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
 
       {connectors !== null && list.length === 0 && !error && (
         <p className="text-sm text-muted-foreground">
-          No connectors yet.{' '}
-          {isAdmin
-            ? 'Add one to make it available to the workspace.'
-            : 'Add one with “New connector,” or your assistant will offer to connect a service when it needs one.'}
+          No connectors yet. Add one to make it available to the workspace.
         </p>
       )}
 
-      {/* Proposed by your assistant — pending authored drafts the assistant
-          proposed mid-turn. The approval-card twin: if the in-chat card was
-          missed/dismissed, approve the connector here. Rendered only when there
-          is at least one pending draft. */}
-      {proposed.length > 0 && (
+      {requestsFailed && (
+        <Alert data-testid="connector-requests-failed">
+          <AlertDescription className="flex flex-col items-start gap-2">
+            <span>Couldn’t load requests waiting for approval.</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void refreshRequests()}
+            >
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Awaiting approval — every person's connector requests. Rendered only
+          when there is at least one. */}
+      {groups.length > 0 && (
         <section className="flex flex-col gap-3.5">
           <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Proposed by your assistant ({proposed.length})
+            Awaiting approval ({groups.length})
           </h3>
-          {proposed.map((d) => (
-            <div key={d.connectorId} data-testid={`proposed-connector-${d.connectorId}`}>
-              <RoleCard
-                pill="service"
-                title={d.name}
-                caption={
-                  d.keyMode === 'workspace' ? 'Needs a shared key' : 'Needs a personal key'
-                }
+          {groups.map((g) => {
+            const r = g.newest;
+            const reach = proposalReach(r.proposal);
+            return (
+              <div
+                key={g.connectorId}
+                data-testid={`connector-request-${g.connectorId}`}
               >
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground mr-auto">
-                    <StatusDot variant="pending" />
-                    Awaiting your approval
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setDismissing(d)}
-                  >
-                    Dismiss
-                  </Button>
-                  <Button size="sm" onClick={() => setApproving(d)}>
-                    Approve
-                  </Button>
-                </div>
-              </RoleCard>
-            </div>
-          ))}
+                <RoleCard
+                  pill="request"
+                  title={r.name}
+                  caption={askedByCaption(g)}
+                >
+                  <div className="flex flex-col gap-3">
+                    {/* Requests from before an upgrade surface too, so the
+                        age helps an admin spot (and Dismiss) a stale one. */}
+                    <p className="text-xs text-muted-foreground">
+                      {`Requested ${relativeDay(r.updatedAt)}`}
+                    </p>
+                    {reach.length > 0 && (
+                      <p className="break-words text-sm text-muted-foreground">
+                        {`Would reach ${reach.join(', ')}`}
+                      </p>
+                    )}
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDismissing(g)}
+                      >
+                        Dismiss
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setPrefill(prefillFromProposal(r));
+                          setEditing('new');
+                        }}
+                      >
+                        Set it up
+                      </Button>
+                    </div>
+                  </div>
+                </RoleCard>
+              </div>
+            );
+          })}
         </section>
       )}
 
@@ -274,37 +380,21 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         </section>
       )}
 
-      {/* Approve a proposed (pending authored) connector — the Settings twin of
-          the in-chat approval card. On approval the draft is promoted into the
-          registry; we refresh both shelves so it leaves "Proposed" and appears as
-          a real connector. */}
-      {approving && (
-        <ProposedConnectorApproveDialog
-          draft={approving}
-          open
-          onOpenChange={(o) => {
-            if (!o) setApproving(null);
-          }}
-          onApproved={() => {
-            setApproving(null);
-            void refreshProposed();
-            void refreshConnectors();
-          }}
-        />
-      )}
-
-      {/* Admin curation: create / edit the connector definition. */}
+      {/* Admin curation: create / edit the connector definition. "Set it up"
+          is the same create, started from a request; the server clears the
+          request when it's created, so both lists refresh. */}
       {editing !== null && (
         <ConnectorEditDialog
           target={editing}
+          {...(editing === 'new' && prefill ? { prefill } : {})}
           open
-          isAdmin={isAdmin}
           onOpenChange={(o) => {
             if (!o) setEditing(null);
           }}
           onSaved={() => {
             setEditing(null);
             void refreshConnectors();
+            void refreshRequests();
           }}
         />
       )}
@@ -340,9 +430,8 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         </Dialog>
       )}
 
-      {/* Dismiss a proposed (pending authored) draft — reject it outright, no
-          approve and no key entry. Low-stakes + reversible (the assistant can
-          propose it again), so the copy is light and blameless. */}
+      {/* Dismiss a request: nothing is created, and the person isn't told.
+          Their agent can ask again if it still needs it. */}
       {dismissing !== null && (
         <Dialog
           open
@@ -352,41 +441,24 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         >
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Dismiss this suggestion?</DialogTitle>
+              <DialogTitle>Dismiss this request?</DialogTitle>
+              <DialogDescription>
+                {dismissing.people.length === 1
+                  ? 'The person who asked won’t be notified.'
+                  : 'The people who asked won’t be notified.'}
+              </DialogDescription>
             </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              We'll remove{' '}
-              <span className="font-medium text-foreground">
-                {dismissing.name}
-              </span>{' '}
-              from your proposals. No key needed — and your assistant can always
-              suggest it again later.
-            </p>
-            <div className="flex justify-end gap-2">
+            <DialogFooter>
               <Button variant="outline" onClick={() => setDismissing(null)}>
                 Keep
               </Button>
               <Button variant="destructive" onClick={() => void confirmDismiss()}>
                 Dismiss
               </Button>
-            </div>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       )}
-
-      {/* Allowed sites — its OWN section (set off by a top border from the
-          connector shelves above). NOT connectors: individual egress hosts the
-          user's agents may reach. One list across all agents, each host showing
-          which agents it applies to (see AllowedSitesPanel). */}
-      <AllowedSitesPanel />
-
-      {/* Sites we read without asking — a DIFFERENT store from Allowed sites
-          above, deliberately kept separate: Allowed sites is which hosts an
-          agent's SANDBOX may open raw network connections to (per agent);
-          this is which hosts `web_extract` may fetch a page from without
-          stopping to ask (per person). Folding them together would mean
-          approving one page read also opened raw sockets to that host. */}
-      <RememberedSitesPanel />
     </div>
   );
 }

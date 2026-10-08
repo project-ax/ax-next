@@ -1,5 +1,5 @@
 /**
- * ConnectorOAuthConnect — reusable OAuth connect/reconnect widget for a single
+ * ConnectorOAuthConnect — reusable OAuth sign-in widget for a single
  * MCP connector. Handles:
  *
  *   - Status polling (on mount + after a successful OAuth round-trip).
@@ -22,13 +22,16 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { getOAuthStatus, type OAuthStatus } from '@/lib/connectors-oauth';
+import type { OAuthMode } from '@/lib/oauth-failure';
 import { useOAuthPopup } from '@/lib/use-oauth-popup';
 
 export interface ConnectorOAuthConnectProps {
   connectorId: string;
   serviceName: string;
-  /** Pass for a team-agent (agent-scope) connect; omit for personal/Connectors-tab. */
-  agentId?: string;
+  /** The agent the sign-in belongs to (slice 3: every sign-in has one). */
+  agentId: string;
+  /** `'add'` signs in and adds; `'sign-in-again'` replaces an attached connector's sign-in. */
+  mode: OAuthMode;
   /**
    * When true (team agent), show the shared-key consent line before connecting.
    * The Connect button is not reachable until the user accepts.
@@ -43,22 +46,16 @@ export interface ConnectorOAuthConnectProps {
   showAccessNotice?: boolean;
   /** Called after a successful connect so the parent can refresh. */
   onConnected?: () => void;
-  /**
-   * TASK-774 — what the fix is called when the sign-in expired. Defaults to
-   * "Reconnect"; the connectors rail says "Sign in again" for a team-agent
-   * member's own (personal) sign-in, so the dialog matches the menu item.
-   */
-  reconnectLabel?: string;
 }
 
 export function ConnectorOAuthConnect({
   connectorId,
   agentId,
+  mode,
   serviceName,
   requiresConsent = false,
   showAccessNotice = true,
   onConnected,
-  reconnectLabel = 'Reconnect',
 }: ConnectorOAuthConnectProps) {
   // 'checking' while the status request is in flight; 'error' if the fetch threw.
   const [status, setStatus] = useState<OAuthStatus | 'checking' | 'error'>('checking');
@@ -67,9 +64,7 @@ export function ConnectorOAuthConnect({
   const fetchStatus = useCallback(async () => {
     setStatus('checking');
     try {
-      const s = await getOAuthStatus(
-        agentId !== undefined ? { connectorId, agentId } : { connectorId },
-      );
+      const s = await getOAuthStatus({ connectorId, agentId });
       setStatus(s);
     } catch {
       // On status fetch failure, surface a distinct 'error' state (design §8 —
@@ -88,7 +83,8 @@ export function ConnectorOAuthConnect({
   // connectors rail's Add subview. Every way the flow ends re-reads the badge.
   const popup = useOAuthPopup({
     connectorId,
-    ...(agentId !== undefined ? { agentId } : {}),
+    agentId,
+    mode,
     serviceName,
     onSettled: () => void fetchStatus(),
     ...(onConnected !== undefined ? { onConnected } : {}),
@@ -116,10 +112,12 @@ export function ConnectorOAuthConnect({
       return <Badge variant="secondary">Connected</Badge>;
     }
     if (status === 'needs-reconnect') {
+      // Slice 3 — the sign-in is the agent's, not "yours", and the fix is
+      // called "Sign in again" everywhere (menu, dialog, button).
       return (
         <>
-          <Badge variant="destructive">Reconnect needed</Badge>
-          <span className="text-xs text-muted-foreground">Your sign-in to {serviceName} needs a refresh. {reconnectLabel} to keep this working.</span>
+          <Badge variant="destructive">Sign-in expired</Badge>
+          <span className="text-xs text-muted-foreground">The sign-in to {serviceName} expired. Sign in again to keep it working.</span>
         </>
       );
     }
@@ -129,8 +127,9 @@ export function ConnectorOAuthConnect({
 
   // ── Connect button label ──────────────────────────────────────────────────
 
-  const connectLabel =
-    status === 'needs-reconnect' ? reconnectLabel : `Connect with ${serviceName}`;
+  // "Sign in again" only for an expired sign-in; anything else (never signed
+  // in, or replacing one that works) is a plain "Sign in".
+  const connectLabel = status === 'needs-reconnect' ? 'Sign in again' : 'Sign in';
 
   // ── Consent gate (only when requiresConsent && not yet accepted) ──────────
 
@@ -160,7 +159,7 @@ export function ConnectorOAuthConnect({
         <div className="flex flex-col gap-4">
           <Alert>
             <AlertDescription>
-              {`Authorizing lets anyone who uses this shared agent act as you on ${serviceName}. Only people already on this agent are affected.`}
+              {`Signing in lets this agent use your ${serviceName} account for everyone who uses this agent. Only people already on it are affected.`}
             </AlertDescription>
           </Alert>
           <div className="flex justify-end">

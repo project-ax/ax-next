@@ -29,7 +29,8 @@ const skill = (skillId = 'linear'): PermissionRequest => ({
   slots: [{ slot: 'api_key', kind: 'api-key' }],
 });
 
-const connector = (connectorId = 'linear'): PermissionRequest => ({
+/** An in-chat connector card from before slice 2c — no longer a kind. */
+const oldConnectorCard = (connectorId = 'linear'): unknown => ({
   kind: 'connector',
   connectorId,
   name: 'Linear',
@@ -64,18 +65,13 @@ beforeEach(() => {
 describe('grantKey — identity per kind', () => {
   test('a grant is identified by its subject, not by the frame that carried it', () => {
     expect(grantKey(skill('linear'))).toBe('skill:linear');
-    expect(grantKey(connector('linear'))).toBe('connector:linear');
     expect(grantKey(host('example.org'))).toBe('host:example.org');
   });
 
-  test('the three kinds cannot collide on one subject name', () => {
-    // A skill and a connector can share a slug — they are still two grants.
-    const keys = new Set([
-      grantKey(skill('linear')),
-      grantKey(connector('linear')),
-      grantKey(host('linear')),
-    ]);
-    expect(keys.size).toBe(3);
+  test('the two kinds cannot collide on one subject name', () => {
+    // A skill and a host can share a name — they are still two grants.
+    const keys = new Set([grantKey(skill('linear')), grantKey(host('linear'))]);
+    expect(keys.size).toBe(2);
   });
 
   test("a host's key ignores the session it was raised on", () => {
@@ -134,8 +130,8 @@ describe('raise — the origin rides along (TASK-351)', () => {
     // pair would put two rows in the queue for one question — which, with a
     // second render site added, is exactly the two live copies invariant 4
     // forbids. The newer origin wins, as the newer payload does.
-    workspaceGrantActions.raise(connector('linear'), from('a-quill'));
-    workspaceGrantActions.raise(connector('linear'), from('a-scout'));
+    workspaceGrantActions.raise(skill('linear'), from('a-quill'));
+    workspaceGrantActions.raise(skill('linear'), from('a-scout'));
 
     const grants = getWorkspaceGrantSnapshot().grants;
     expect(grants).toHaveLength(1);
@@ -204,15 +200,14 @@ describe('raise — a kind this build cannot draw', () => {
     warn.mockRestore();
   });
 
-  test('isRenderableGrant accepts the three kinds this build draws', () => {
+  test('isRenderableGrant accepts the two kinds this build draws', () => {
     // The positive half, and it has to come first: every rejection below would
     // pass equally well against a predicate that refused everything, and a
     // guard that drops all grants is a worse bug than the one it fixes. Pinned
-    // here, where the predicate lives, so a fourth kind added to `grantKey`
+    // here, where the predicate lives, so a third kind added to `grantKey`
     // without adding it here reddens a test rather than silently dropping
     // every grant of that kind at both call sites.
     expect(isRenderableGrant(skill('linear'))).toBe(true);
-    expect(isRenderableGrant(connector('linear'))).toBe(true);
     expect(isRenderableGrant(host('example.org'))).toBe(true);
   });
 
@@ -222,6 +217,27 @@ describe('raise — a kind this build cannot draw', () => {
     expect(isRenderableGrant(null)).toBe(false);
     expect(isRenderableGrant('skill')).toBe(false);
     expect(isRenderableGrant([])).toBe(false);
+  });
+
+  test('an old in-chat connector card is not drawn (slice 2c)', () => {
+    // Agent-proposed connectors go to the workspace admins now. A card from an
+    // older peer must not come back as a row with a dead Connect button.
+    expect(isRenderableGrant(oldConnectorCard('linear'))).toBe(false);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    workspaceGrantActions.raise(
+      oldConnectorCard('linear') as PermissionRequest,
+      from(),
+    );
+    expect(getWorkspaceGrantSnapshot().grants).toEqual([]);
+  });
+
+  test('a host grant is not held back by anything a connector card used to do', () => {
+    // TASK-113 dropped a host wall while a connector card was open. With no
+    // connector card left, a wall always arrives.
+    workspaceGrantActions.raise(host('api.linear.app'), from());
+    expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
+      'host:api.linear.app',
+    ]);
   });
 
   test('isRenderableGrant refuses a right kind with a missing crash-surface field', () => {
@@ -240,9 +256,6 @@ describe('raise — a kind this build cannot draw', () => {
     expect(
       isRenderableGrant({ kind: 'skill', hosts: [], slots: [] }),
     ).toBe(false);
-    expect(
-      isRenderableGrant({ kind: 'connector', connectorId: 'linear', hosts: [] }),
-    ).toBe(false);
     // A slot the row cannot name is no better than no slots at all.
     expect(
       isRenderableGrant({
@@ -257,7 +270,7 @@ describe('raise — a kind this build cannot draw', () => {
 
   test('isRenderableGrant lets through what the ROW is known to tolerate', () => {
     /*
-      `description`, `name`, `sessionId` and `packages` are not required here,
+      `description`, `sessionId` and `packages` are not required here,
       on purpose: none of them decides whether the question can be ANSWERED, so
       refusing a grant over one would trade a plain-looking row for a question
       that silently never gets asked.
@@ -270,11 +283,6 @@ describe('raise — a kind this build cannot draw', () => {
       regression tests) rather than to this guard, which is what makes the
       sentence above true and keeps the answerable grant.
 
-      A SECOND round of review then caught the same mistake on `name`, cleared
-      because interpolation "cannot throw" — true, and the wrong test. It
-      renders "Connect undefined" over a password field instead, which is
-      quieter and worse.
-
       So these assertions are only meaningful next to the render-site tests: a
       guard may leave a field out ONLY if the renderer is known to tolerate its
       absence, where TOLERATE means "renders something a person can act on",
@@ -284,68 +292,7 @@ describe('raise — a kind this build cannot draw', () => {
     expect(
       isRenderableGrant({ kind: 'skill', skillId: 'linear', hosts: [], slots: [] }),
     ).toBe(true);
-    // A connector with no `name`. Renderable on purpose — and `GrantRow` has a
-    // real fallback for it (`humanizeId(connectorId)`), pinned over there in
-    // `GrantRow.test.tsx`. Without that fallback this assertion was licensing
-    // a card titled "Connect undefined" above a password field: the second
-    // time this suite cleared a field on "it cannot throw" rather than on what
-    // the person would actually see.
-    expect(
-      isRenderableGrant({
-        kind: 'connector',
-        connectorId: 'linear',
-        hosts: [],
-        slots: [],
-      }),
-    ).toBe(true);
     expect(isRenderableGrant({ kind: 'host', host: 'example.org' })).toBe(true);
-  });
-});
-
-describe('raise — TASK-113: the wall does not speak over the connector card', () => {
-  test('a host grant is dropped while a connector grant is open', () => {
-    // On a warm turn the upfront connector card and a same-turn reactive egress
-    // wall both fire. The connector card is the ROOT CAUSE — the wall is
-    // downstream of the same missing connector — so a second row would point at
-    // a cause the first row already names.
-    workspaceGrantActions.raise(connector('linear'), from());
-    workspaceGrantActions.raise(host('api.linear.app'), from());
-
-    expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
-      'connector:linear',
-    ]);
-  });
-
-  test('a connector grant still arrives while a host grant is open', () => {
-    // Connector wins both directions.
-    workspaceGrantActions.raise(host('api.linear.app'), from());
-    workspaceGrantActions.raise(connector('linear'), from());
-
-    expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
-      'host:api.linear.app',
-      'connector:linear',
-    ]);
-  });
-
-  test('a host grant is NOT dropped while only a skill grant is open', () => {
-    // The guard is exactly one condition. A skill card is not the wall's cause.
-    workspaceGrantActions.raise(skill('linear'), from());
-    workspaceGrantActions.raise(host('example.org'), from());
-
-    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(2);
-  });
-
-  test('once the connector grant is resolved, the wall can be raised again', () => {
-    workspaceGrantActions.raise(connector('linear'), from());
-    workspaceGrantActions.raise(host('api.linear.app'), from());
-    expect(getWorkspaceGrantSnapshot().grants).toHaveLength(1);
-
-    workspaceGrantActions.resolve('connector:linear');
-    workspaceGrantActions.raise(host('api.linear.app'), from());
-
-    expect(getWorkspaceGrantSnapshot().grants.map((g) => g.key)).toEqual([
-      'host:api.linear.app',
-    ]);
   });
 });
 

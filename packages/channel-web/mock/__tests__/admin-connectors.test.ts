@@ -8,6 +8,7 @@ import { authMiddleware } from '../auth';
 import {
   adminConnectorsMiddleware,
   settingsConnectorsMiddleware,
+  seedConnectorRequest,
 } from '../admin/connectors';
 import { expectStatus } from './expect-status';
 
@@ -50,7 +51,6 @@ function upsertBody(over: Record<string, unknown> = {}): Record<string, unknown>
     description: 'Files in my Drive',
     usageNote: 'Ask me about your documents.',
     keyMode: 'personal',
-    visibility: 'private',
     capabilities: {
       allowedHosts: ['www.googleapis.com'],
       credentials: [{ slot: 'GDRIVE_API_KEY', kind: 'api-key' }],
@@ -122,7 +122,7 @@ describe('mock admin connectors', () => {
       const seeded = await fetch(`${url}/admin/connectors`, {
         method: 'POST',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn', visibility: 'shared' })),
+        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn' })),
       });
       await expectStatus(seeded, 201);
 
@@ -210,7 +210,6 @@ describe('mock admin connectors', () => {
         id: 'gdrive',
         name: 'Google Drive',
         keyMode: 'personal',
-        visibility: 'private',
       });
       expect(body.connector).not.toHaveProperty('defaultAttached');
       expect(body.connector.capabilities.allowedHosts).toEqual(['www.googleapis.com']);
@@ -332,7 +331,7 @@ describe('mock admin connectors', () => {
     }
   });
 
-  it('is owner-scoped: one user cannot see/get/patch/delete another user\'s connector', async () => {
+  it('every connector is shared: any admin sees and edits it, but keyMode and capabilities stay the owner’s', async () => {
     const { url, close } = await startServer(store);
     try {
       // A second admin (u3) creates a connector.
@@ -342,30 +341,63 @@ describe('mock admin connectors', () => {
         body: JSON.stringify(upsertBody()),
       });
 
-      // Admin (a different user) does not see it in their list.
+      // The other admin sees it, editable, with no visibility field.
       const adminList = await fetch(`${url}/admin/connectors`, { headers: { cookie: ADMIN } });
-      expect((await adminList.json()).connectors).toEqual([]);
+      const listed = (await adminList.json()).connectors;
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ id: 'gdrive', canEdit: true });
+      expect(listed[0]).not.toHaveProperty('visibility');
 
-      // Cross-tenant get/patch/delete all surface as 404 (not 403).
       const get = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN } });
-      await expectStatus(get, 404);
+      await expectStatus(get, 200);
 
+      // Another admin's relabel is fine, and lands on the owner's row.
       const patch = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'PATCH',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'hijack' }),
+        body: JSON.stringify({ name: 'Renamed' }),
       });
-      await expectStatus(patch, 404);
+      await expectStatus(patch, 200);
+      const ownerGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
+      const owned = (await ownerGet.json()).connector;
+      expect(owned.name).toBe('Renamed');
+      expect(owned.canEdit).toBe(true);
 
+      // Changing keyMode is refused the way the real route refuses it.
+      const keyMode = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ keyMode: 'workspace' }),
+      });
+      await expectStatus(keyMode, 403);
+      expect(await keyMode.json()).toEqual({ error: 'owner-only-change' });
+      const caps = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ capabilities: { allowedHosts: ['evil.example'], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } } }),
+      });
+      await expectStatus(caps, 403);
+      // The SAME capabilities with their keys in another order are not a
+      // change (the real route compares canonical JSON), so the save is a 200.
+      const reorder = (v: unknown): unknown =>
+        v !== null && typeof v === 'object' && !Array.isArray(v)
+          ? Object.fromEntries(Object.entries(v as Record<string, unknown>).reverse().map(([k, x]) => [k, reorder(x)]))
+          : Array.isArray(v) ? v.map(reorder) : v;
+      const sameCaps = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed again', capabilities: reorder(owned.capabilities) }),
+      });
+      await expectStatus(sameCaps, 200);
+
+      // Any admin may delete it.
       const del = await fetch(`${url}/admin/connectors/gdrive`, {
         method: 'DELETE',
         headers: { cookie: ADMIN },
       });
-      await expectStatus(del, 404);
-
-      // The second admin's connector is untouched.
-      const ownerGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
-      expect((await ownerGet.json()).connector.name).toBe('Google Drive');
+      await expectStatus(del, 204);
+      const gone = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
+      await expectStatus(gone, 404);
     } finally {
       await close();
     }
@@ -382,11 +414,14 @@ describe('mock admin connectors', () => {
       });
       await expectStatus(create, 201);
 
-      // It belongs to u3 (session), not the forged u1.
-      const adminGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN } });
-      await expectStatus(adminGet, 404);
-      const ownerGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ADMIN2 } });
-      await expectStatus(ownerGet, 200);
+      // It belongs to u3 (session), not the forged u1: u1's keyMode change is
+      // refused as owner-only, while u3's own passes the owner check.
+      const forged = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ keyMode: 'workspace' }),
+      });
+      await expectStatus(forged, 403);
     } finally {
       await close();
     }
@@ -394,9 +429,9 @@ describe('mock admin connectors', () => {
 });
 
 // ---------------------------------------------------------------------------
-// User-authoring mock — /settings/connectors[/:id] (TASK-129). Same offline UI
-// parity as the admin mock: shared reads, owner-only writes, and admin-only
-// workspace keys/default attachment.
+// /settings/connectors mock — READ-ONLY (slice 2a). Same offline UI parity as the
+// real routes: shared reads; a write on a path a GET shares answers 405 (Allow:
+// GET), and tool-permissions has no route there (404). Admins write via /admin.
 // ---------------------------------------------------------------------------
 
 async function startUserServer(
@@ -445,50 +480,71 @@ describe('mock user connectors (/settings/connectors)', () => {
     }
   });
 
-  it('POST defaults a new connector to shared and requires an explicit attachment', async () => {
+  it('a shared connector an admin made is readable (not editable) on the /settings read bundle', async () => {
     const { url, close } = await startUserServer(store);
     try {
-      const res = await fetch(`${url}/settings/connectors`, {
+      const seed = await fetch(`${url}/admin/connectors`, {
         method: 'POST',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ visibility: undefined })),
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody()),
       });
-      await expectStatus(res, 201);
-      const body = (await res.json()) as { connector: { visibility: string } };
-      expect(body.connector.visibility).toBe('shared');
-      expect(body.connector).toMatchObject({ requiresAttachment: true });
-      expect(body.connector).not.toHaveProperty('defaultAttached');
+      await expectStatus(seed, 201);
+      const shown = await fetch(`${url}/settings/connectors/gdrive`, { headers: { cookie: ALICE } });
+      await expectStatus(shown, 200);
+      expect(await shown.json()).toMatchObject({ connector: { canEdit: false } });
+      const list = await fetch(`${url}/settings/connectors`, { headers: { cookie: ALICE } });
+      expect(await list.json()).toMatchObject({ connectors: [{ id: 'gdrive', canEdit: false }] });
     } finally {
       await close();
     }
   });
 
-  it('POST permits a shared personal definition', async () => {
+  it('every write on /settings/connectors answers 405 or 404 like production, and stores nothing', async () => {
     const { url, close } = await startUserServer(store);
     try {
-      const res = await fetch(`${url}/settings/connectors`, {
+      const seed = await fetch(`${url}/admin/connectors`, {
         method: 'POST',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ visibility: 'shared' })),
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn' })),
       });
-      await expectStatus(res, 201);
-      const shown = await fetch(`${url}/settings/connectors/gdrive`, { headers: { cookie: ADMIN } });
-      await expectStatus(shown, 200);
-      expect(await shown.json()).toMatchObject({ connector: { canEdit: false, visibility: 'shared' } });
+      await expectStatus(seed, 201);
+      const json = { cookie: ALICE, 'content-type': 'application/json' };
+      // A GET shares these paths, so the router answers 405 (Allow: GET).
+      const shared: Array<[string, string, string | undefined]> = [
+        ['POST', '/settings/connectors', JSON.stringify(upsertBody({ connectorId: 'mine' }))],
+        ['PATCH', '/settings/connectors/shared-conn', JSON.stringify({ name: 'hijack' })],
+        ['DELETE', '/settings/connectors/shared-conn', undefined],
+      ];
+      for (const [method, path, body] of shared) {
+        const res = await fetch(`${url}${path}`, { method, headers: json, ...(body ? { body } : {}) });
+        await expectStatus(res, 405);
+        expect(res.headers.get('allow')).toBe('GET');
+      }
+      // Nothing is registered on the tool-permissions path any more (404).
+      for (const method of ['GET', 'PUT']) {
+        const res = await fetch(`${url}/settings/connectors/shared-conn/tool-permissions`, {
+          method,
+          headers: json,
+          ...(method === 'PUT' ? { body: JSON.stringify({ verdicts: [] }) } : {}),
+        });
+        await expectStatus(res, 404);
+      }
+      const list = await fetch(`${url}/admin/connectors`, { headers: { cookie: ADMIN } });
+      const ids = ((await list.json()) as { connectors: { id: string }[] }).connectors.map((c) => c.id);
+      expect(ids).toEqual(['shared-conn']);
+      const get = await fetch(`${url}/admin/connectors/shared-conn`, { headers: { cookie: ADMIN } });
+      expect(((await get.json()) as { connector: { name: string } }).connector.name).not.toBe('hijack');
     } finally {
       await close();
     }
   });
 
   it.each([true, false])(
-    'POST rejects a body carrying defaultAttached:%s with 400 on both bundles (the flag is retired)',
+    'POST rejects a body carrying defaultAttached:%s with 400 (the flag is retired)',
     async (value) => {
       const { url, close } = await startUserServer(store);
       try {
-        for (const [path, cookie] of [
-          ['/settings/connectors', ALICE],
-          ['/admin/connectors', ADMIN2],
-        ] as const) {
+        for (const [path, cookie] of [['/admin/connectors', ADMIN2]] as const) {
           const res = await fetch(`${url}${path}`, {
             method: 'POST',
             headers: { cookie, 'content-type': 'application/json' },
@@ -528,122 +584,6 @@ describe('mock user connectors (/settings/connectors)', () => {
       await close();
     }
   });
-
-  it('full CRUD on an owned private connector', async () => {
-    const { url, close } = await startUserServer(store);
-    try {
-      const create = await fetch(`${url}/settings/connectors`, {
-        method: 'POST',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody()),
-      });
-      await expectStatus(create, 201);
-
-      const patch = await fetch(`${url}/settings/connectors/gdrive`, {
-        method: 'PATCH',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'Renamed Drive' }),
-      });
-      await expectStatus(patch, 200);
-      const patched = (await patch.json()) as {
-        connector: { name: string; visibility: string };
-      };
-      expect(patched.connector.name).toBe('Renamed Drive');
-      expect(patched.connector.visibility).toBe('private');
-
-      const del = await fetch(`${url}/settings/connectors/gdrive`, {
-        method: 'DELETE',
-        headers: { cookie: ALICE },
-      });
-      await expectStatus(del, 204);
-      const get = await fetch(`${url}/settings/connectors/gdrive`, {
-        headers: { cookie: ALICE },
-      });
-      await expectStatus(get, 404);
-    } finally {
-      await close();
-    }
-  });
-
-  it('PATCH / DELETE on a catalog (shared) connector is read-only — 403', async () => {
-    const { url, close } = await startUserServer(store);
-    try {
-      // Seed a shared definition owned by the second admin; other users may read only.
-      const seed = await fetch(`${url}/admin/connectors`, {
-        method: 'POST',
-        headers: { cookie: ADMIN2, 'content-type': 'application/json' },
-        body: JSON.stringify(
-          upsertBody({ connectorId: 'shared-conn', visibility: 'shared' }),
-        ),
-      });
-      await expectStatus(seed, 201);
-
-      const patch = await fetch(`${url}/settings/connectors/shared-conn`, {
-        method: 'PATCH',
-        headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'hijack' }),
-      });
-      await expectStatus(patch, 403);
-
-      const del = await fetch(`${url}/settings/connectors/shared-conn`, {
-        method: 'DELETE',
-        headers: { cookie: ADMIN },
-      });
-      await expectStatus(del, 403);
-    } finally {
-      await close();
-    }
-  });
-
-  it('POST cannot demote an existing catalog/shared connector to private (403)', async () => {
-    const { url, close } = await startUserServer(store);
-    try {
-      // Seed a SHARED connector via the admin route.
-      await fetch(`${url}/admin/connectors`, {
-        method: 'POST',
-        headers: { cookie: ADMIN2, 'content-type': 'application/json' },
-        body: JSON.stringify(
-          upsertBody({ connectorId: 'shared-conn', visibility: 'shared' }),
-        ),
-      });
-      // A re-POST of the same id via the user route must 403, not demote it.
-      const res = await fetch(`${url}/settings/connectors`, {
-        method: 'POST',
-        headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn' })),
-      });
-      await expectStatus(res, 403);
-      // Still shared.
-      const get = await fetch(`${url}/admin/connectors/shared-conn`, {
-        headers: { cookie: ADMIN2 },
-      });
-      const body = (await get.json()) as { connector: { visibility: string } };
-      expect(body.connector.visibility).toBe('shared');
-    } finally {
-      await close();
-    }
-  });
-
-  it('cross-tenant: user cannot edit another user’s private connector (404)', async () => {
-    const { url, close } = await startUserServer(store);
-    try {
-      // Alice creates a private connector.
-      await fetch(`${url}/settings/connectors`, {
-        method: 'POST',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
-        body: JSON.stringify(upsertBody({ connectorId: 'alice-conn' })),
-      });
-      // The admin user (u1, a different session) cannot touch it.
-      const patch = await fetch(`${url}/settings/connectors/alice-conn`, {
-        method: 'PATCH',
-        headers: { cookie: ADMIN, 'content-type': 'application/json' },
-        body: JSON.stringify({ name: 'hijack' }),
-      });
-      await expectStatus(patch, 404);
-    } finally {
-      await close();
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -667,7 +607,6 @@ describe('mock connector tool permissions', () => {
     upsertBody({
       connectorId: 'linear',
       name: 'Linear',
-      visibility: 'shared',
       capabilities: {
         allowedHosts: ['mcp.linear.app'],
         credentials: [],
@@ -696,8 +635,8 @@ describe('mock connector tool permissions', () => {
   it('lists a Linear-like inventory, saves defaults, and clears one with null', async () => {
     const { url, close } = await startUserServer(store);
     try {
-      await create(url, '/settings/connectors', ADMIN);
-      const first = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+      await create(url, '/admin/connectors', ADMIN);
+      const first = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
         headers: { cookie: ADMIN },
       });
       await expectStatus(first, 200);
@@ -718,7 +657,7 @@ describe('mock connector tool permissions', () => {
         'mcp.linear.delete_issue',
       ]);
 
-      const put = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+      const put = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
         method: 'PUT',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -731,7 +670,6 @@ describe('mock connector tool permissions', () => {
       await expectStatus(put, 200);
       expect(await put.json()).toEqual({ ok: true });
 
-      // The admin bundle sees and edits the same defaults.
       const clear = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
         method: 'PUT',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
@@ -742,7 +680,7 @@ describe('mock connector tool permissions', () => {
       await expectStatus(clear, 200);
 
       const after = await fetch(
-        `${url}/settings/connectors/linear/tool-permissions?refresh=1`,
+        `${url}/admin/connectors/linear/tool-permissions?refresh=1`,
         { headers: { cookie: ADMIN } },
       );
       expect(((await after.json()) as { defaults: unknown[] }).defaults).toEqual([
@@ -756,10 +694,10 @@ describe('mock connector tool permissions', () => {
   it('rejects a bad verdict with the offending toolKey and keeps prior defaults', async () => {
     const { url, close } = await startUserServer(store);
     try {
-      await create(url, '/settings/connectors', ALICE);
-      const res = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+      await create(url, '/admin/connectors', ADMIN);
+      const res = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
         method: 'PUT',
-        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({
           verdicts: [
             { toolKey: 'mcp.linear.get_issue', verdict: 'allow' },
@@ -771,8 +709,8 @@ describe('mock connector tool permissions', () => {
       expect(((await res.json()) as { toolKey: string }).toolKey).toBe(
         'mcp.linear.create_issue',
       );
-      const after = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
-        headers: { cookie: ALICE },
+      const after = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
+        headers: { cookie: ADMIN },
       });
       expect(((await after.json()) as { defaults: unknown[] }).defaults).toEqual([]);
     } finally {
@@ -780,20 +718,215 @@ describe('mock connector tool permissions', () => {
     }
   });
 
-  it('403s someone who can read the connector but not edit it, and 404s an unknown one', async () => {
+  it('403s a non-admin, and 404s an unknown connector for an admin', async () => {
     const { url, close } = await startUserServer(store);
     try {
       await create(url, '/admin/connectors', ADMIN);
-      const foreign = await fetch(`${url}/settings/connectors/linear/tool-permissions`, {
+      const nonAdmin = await fetch(`${url}/admin/connectors/linear/tool-permissions`, {
         headers: { cookie: ALICE },
       });
-      await expectStatus(foreign, 403);
-      const missing = await fetch(`${url}/settings/connectors/nope/tool-permissions`, {
-        headers: { cookie: ALICE },
+      await expectStatus(nonAdmin, 403);
+      const missing = await fetch(`${url}/admin/connectors/nope/tool-permissions`, {
+        headers: { cookie: ADMIN },
       });
       await expectStatus(missing, 404);
     } finally {
       await close();
     }
+  });
+
+
+  // --- Awaiting approval (slice 2c) -----------------------------------------
+  // Mirrors `@ax/connectors` admin-routes: every person's requests, admin-only;
+  // a shared create clears every request with its id; Dismiss clears them.
+  describe('connector requests', () => {
+    const proposal = {
+      allowedHosts: ['api.linear.app'],
+      credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+      mcpServers: [],
+      packages: { npm: [], pypi: [] },
+    };
+    function seedTwo(): void {
+      seedConnectorRequest(store, {
+        ownerUserId: 'u2',
+        agentId: 'a-alice',
+        connectorId: 'linear',
+        name: 'Linear',
+        usageNote: 'Track issues.',
+        keyMode: 'personal',
+        proposal,
+      });
+      seedConnectorRequest(store, {
+        ownerUserId: 'u3',
+        agentId: 'a-admin2',
+        connectorId: 'linear',
+        name: 'Linear',
+        usageNote: '',
+        keyMode: 'workspace',
+        proposal,
+      });
+    }
+    async function list(url: string, cookie = ADMIN): Promise<Response> {
+      return fetch(`${url}/admin/connectors/authored`, { headers: { cookie } });
+    }
+
+    it('lists every person’s requests, labelled with who asked', async () => {
+      seedTwo();
+      const { url, close } = await startServer(store);
+      try {
+        const res = await list(url);
+        await expectStatus(res, 200);
+        const body = (await res.json()) as {
+          drafts: { connectorId: string; proposedBy: { userId: string; label: string } }[];
+        };
+        expect(body.drafts.map((d) => [d.connectorId, d.proposedBy])).toEqual([
+          ['linear', { userId: 'u2', label: 'Alice' }],
+          ['linear', { userId: 'u3', label: 'Admin Two' }],
+        ]);
+        expect(body.drafts[0]).toMatchObject({
+          name: 'Linear',
+          usageNote: 'Track issues.',
+          keyMode: 'personal',
+          proposal,
+        });
+      } finally {
+        await close();
+      }
+    });
+
+    it('is admin-only: 401 without a session, 403 for a non-admin', async () => {
+      seedTwo();
+      const { url, close } = await startServer(store);
+      try {
+        await expectStatus(await fetch(`${url}/admin/connectors/authored`), 401);
+        await expectStatus(await list(url, ALICE), 403);
+        const del = await fetch(`${url}/admin/connectors/authored/linear`, {
+          method: 'DELETE',
+          headers: { cookie: ALICE },
+        });
+        await expectStatus(del, 403);
+        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toHaveLength(2);
+      } finally {
+        await close();
+      }
+    });
+
+    it('Dismiss clears every request with that id (204, idempotent)', async () => {
+      seedTwo();
+      const { url, close } = await startServer(store);
+      try {
+        for (let i = 0; i < 2; i++) {
+          const res = await fetch(`${url}/admin/connectors/authored/linear`, {
+            method: 'DELETE',
+            headers: { cookie: ADMIN },
+          });
+          await expectStatus(res, 204);
+        }
+        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toEqual([]);
+      } finally {
+        await close();
+      }
+    });
+
+    it('a create clears every request with its id, and only that id', async () => {
+      seedTwo();
+      seedConnectorRequest(store, {
+        ownerUserId: 'u2',
+        agentId: 'a-alice',
+        connectorId: 'notion',
+        name: 'Notion',
+        usageNote: '',
+        keyMode: 'personal',
+        proposal,
+      });
+      const { url, close } = await startServer(store);
+      const ids = async () =>
+        ((await (await list(url)).json()) as { drafts: { connectorId: string }[] }).drafts.map(
+          (d) => d.connectorId,
+        );
+      try {
+        expect(await ids()).toEqual(['linear', 'linear', 'notion']);
+        const created = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear' })),
+        });
+        await expectStatus(created, 201);
+        expect(await ids()).toEqual(['notion']);
+      } finally {
+        await close();
+      }
+    });
+
+    it('POST is create-only: the admin’s own live id is a 409 and stays unchanged', async () => {
+      const { url, close } = await startServer(store);
+      try {
+        const post = (name: string) =>
+          fetch(`${url}/admin/connectors`, {
+            method: 'POST',
+            headers: { cookie: ADMIN, 'content-type': 'application/json' },
+            body: JSON.stringify(upsertBody({ connectorId: 'mine', name })),
+          });
+        await expectStatus(await post('Mine'), 201);
+        const again = await post('Overwritten');
+        await expectStatus(again, 409);
+        expect(await again.json()).toEqual({ error: 'connector-id-taken' });
+        const shown = await fetch(`${url}/admin/connectors/mine`, { headers: { cookie: ADMIN } });
+        expect(((await shown.json()) as { connector: { name: string } }).connector.name).toBe('Mine');
+      } finally {
+        await close();
+      }
+    });
+
+    it('hides a request whose id is already live as a connector', async () => {
+      const { url, close } = await startServer(store);
+      try {
+        const created = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear' })),
+        });
+        await expectStatus(created, 201);
+        seedTwo();
+        expect(((await (await list(url)).json()) as { drafts: unknown[] }).drafts).toEqual([]);
+      } finally {
+        await close();
+      }
+    });
+
+    it('creating another admin’s shared id is a 409 connector-id-taken', async () => {
+      const { url, close } = await startServer(store);
+      try {
+        const first = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear' })),
+        });
+        await expectStatus(first, 201);
+        const second = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN2, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'linear' })),
+        });
+        await expectStatus(second, 409);
+        expect(await second.json()).toEqual({ error: 'connector-id-taken' });
+      } finally {
+        await close();
+      }
+    });
+
+    it('the id `authored` is reserved', async () => {
+      const { url, close } = await startServer(store);
+      try {
+        const res = await fetch(`${url}/admin/connectors`, {
+          method: 'POST',
+          headers: { cookie: ADMIN, 'content-type': 'application/json' },
+          body: JSON.stringify(upsertBody({ connectorId: 'authored' })),
+        });
+        await expectStatus(res, 400);
+      } finally {
+        await close();
+      }
+    });
   });
 });

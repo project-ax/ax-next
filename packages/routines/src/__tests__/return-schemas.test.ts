@@ -47,6 +47,7 @@ const routineRow: RoutineRow = {
   lastRunAt: new Date('2026-01-31T09:00:00.000Z'),
   lastStatus: 'ok',
   lastError: null,
+  lastWarning: "Gmail isn't signed in on Bob, so this run went without it.",
   definitionId: 'def1',
   definitionUpdatedAt: new Date('2026-01-30T00:00:00.000Z'),
 };
@@ -61,6 +62,7 @@ const fireRow: FireRow = {
   status: 'ok',
   error: null,
   renderedPrompt: 'rendered',
+  warning: 'Gmail needs to be signed in again on Bob, so this run went without it.',
 };
 
 const defaultSummary: DefaultRoutineSummary = {
@@ -102,6 +104,19 @@ describe('routines return schemas', () => {
   // array it receives. Shipping it anyway is reach nobody asked for
   // (invariant 5), and it is also the field most likely to be stale, since it
   // is re-derived from the agent on every tick.
+  // Slice 6 — a zod object strips undeclared keys, so a warning missing from
+  // the schema would vanish at the bus edge without a sound.
+  it('routines:list carries lastWarning, and both fires hooks carry warning', () => {
+    const list: ListOutput = ListOutputSchema.parse({ routines: [routineRow] });
+    expect(list.routines[0]!.lastWarning).toBe(routineRow.lastWarning);
+    expect(ListOutputSchema.parse({ routines: [{ ...routineRow, lastWarning: null }] }).routines[0]!.lastWarning)
+      .toBeNull();
+    const fires: RecentFiresOutput = RecentFiresOutputSchema.parse({ fires: [fireRow] });
+    expect(fires.fires[0]!.warning).toBe(fireRow.warning);
+    const forAgent: RecentFiresForAgentOutput = RecentFiresForAgentOutputSchema.parse({ fires: [fireRow] });
+    expect(forAgent.fires[0]!.warning).toBe(fireRow.warning);
+  });
+
   it('routines:list DROPS ownerUserId (the identity a routine fires as)', () => {
     const out: ListOutput = ListOutputSchema.parse({ routines: [routineRow] });
     expect('ownerUserId' in out.routines[0]!).toBe(false);

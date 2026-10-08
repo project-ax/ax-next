@@ -157,7 +157,6 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:quarantine-get',
         'skills:quarantine-list',
         'skills:approved-caps-list',
-        'skills:approved-caps-set',
         'skills:approved-caps-revoke',
         'skills:propose',
         'skills:list-authored',
@@ -171,18 +170,6 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'auth:require-user',
         'blob:put',
         'blob:get',
-      ],
-      optionalCalls: [
-        {
-          hook: 'connectors:upsert',
-          degradation:
-            'the TASK-100 cap→connector migration strips the legacy capability block but cannot create the connector (no connectors store) — the skill loses that reach until a connector is authored',
-        },
-        {
-          hook: 'connectors:get',
-          degradation:
-            'the migration cannot pre-check for an existing connector and falls back to creating one (still owner+id scoped, never cross-tenant)',
-        },
       ],
       // TASK-718 — a deleted agent's skills rows go with it. TASK-776 — four of
       // our tables store blob shas, so we answer blob:collect-refs.
@@ -1392,77 +1379,39 @@ describe('skills quarantine services', () => {
 });
 
 // ---------------------------------------------------------------------------
-// FIX 3 — skills:approved-caps-set rejects kind:'mcp'; host/slot/npm/pypi succeed
-// ---------------------------------------------------------------------------
-describe('@ax/skills skills:approved-caps-set FIX 3 (mcp rejection)', () => {
-  const key = { ownerUserId: 'u1', agentId: 'a1', skillId: 'test-skill' };
-
-  it('kind:mcp is rejected with not-supported PluginError', async () => {
-    const h = await makeHarness();
-    await expect(
-      h.bus.call(
-        'skills:approved-caps-set',
-        h.ctx(),
-        { ...key, kind: 'mcp', value: 'some-mcp-server' },
-      ),
-    ).rejects.toMatchObject({
-      code: 'not-supported',
-      message: expect.stringContaining("kind 'mcp' is not yet supported"),
-    });
-  });
-
-  it('kind:host still succeeds after the mcp guard', async () => {
-    const h = await makeHarness();
-    const result = await h.bus.call(
-      'skills:approved-caps-set',
-      h.ctx(),
-      { ...key, kind: 'host', value: 'api.example.com' },
-    );
-    expect(result).toEqual({ created: true });
-  });
-
-  it('kind:slot still succeeds after the mcp guard', async () => {
-    const h = await makeHarness();
-    const result = await h.bus.call(
-      'skills:approved-caps-set',
-      h.ctx(),
-      { ...key, kind: 'slot', value: 'MY_API_KEY', detail: { kind: 'api-key' } },
-    );
-    expect(result).toEqual({ created: true });
-  });
-
-  it('kind:npm still succeeds after the mcp guard', async () => {
-    const h = await makeHarness();
-    const result = await h.bus.call(
-      'skills:approved-caps-set',
-      h.ctx(),
-      { ...key, kind: 'npm', value: 'left-pad' },
-    );
-    expect(result).toEqual({ created: true });
-  });
-
-  it('kind:pypi still succeeds after the mcp guard', async () => {
-    const h = await makeHarness();
-    const result = await h.bus.call(
-      'skills:approved-caps-set',
-      h.ctx(),
-      { ...key, kind: 'pypi', value: 'requests' },
-    );
-    expect(result).toEqual({ created: true });
-  });
-});
-
-// ---------------------------------------------------------------------------
 // TASK-93 — approved-caps hooks accept a connector subject; exactly-one is
 // enforced; the skill-scoped path is unchanged (additive).
 // ---------------------------------------------------------------------------
+// Rows are legacy data now (nothing writes them); seed directly.
+async function seedApprovedCap(row: {
+  ownerUserId: string;
+  agentId: string;
+  skillId?: string;
+  connectorId?: string;
+  kind: string;
+  value: string;
+}): Promise<void> {
+  const c = new (await import('pg')).default.Client({ connectionString });
+  await c.connect();
+  try {
+    await c.query(
+      `INSERT INTO skills_v1_approved_caps
+         (owner_user_id, agent_id, skill_id, connector_id, cap_kind, cap_value, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+      [row.ownerUserId, row.agentId, row.skillId ?? '', row.connectorId ?? '', row.kind, row.value],
+    );
+  } finally {
+    await c.end().catch(() => {});
+  }
+}
+
 describe('@ax/skills approved-caps connector subject (TASK-93)', () => {
   const owner = { ownerUserId: 'u1', agentId: 'a1' };
 
-  it('connector-scoped set → list → revoke round-trips through the bus', async () => {
+  it('connector-scoped list → revoke round-trips through the bus', async () => {
     const h = await makeHarness();
     const subj = { ...owner, connectorId: 'salesforce' };
-    expect(await h.bus.call('skills:approved-caps-set', h.ctx(), { ...subj, kind: 'host', value: 'api.salesforce.com' })).toEqual({ created: true });
+    await seedApprovedCap({ ...subj, kind: 'host', value: 'api.salesforce.com' });
     expect(await h.bus.call('skills:approved-caps-list', h.ctx(), subj)).toEqual({
       capabilities: [{ kind: 'host', value: 'api.salesforce.com' }],
     });
@@ -1472,8 +1421,8 @@ describe('@ax/skills approved-caps connector subject (TASK-93)', () => {
 
   it('a skill grant and a connector grant with the same id stay disjoint', async () => {
     const h = await makeHarness();
-    await h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, skillId: 'linear', kind: 'host', value: 'skill-host' });
-    await h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, connectorId: 'linear', kind: 'host', value: 'connector-host' });
+    await seedApprovedCap({ ...owner, skillId: 'linear', kind: 'host', value: 'skill-host' });
+    await seedApprovedCap({ ...owner, connectorId: 'linear', kind: 'host', value: 'connector-host' });
     expect(await h.bus.call('skills:approved-caps-list', h.ctx(), { ...owner, skillId: 'linear' })).toEqual({
       capabilities: [{ kind: 'host', value: 'skill-host' }],
     });
@@ -1482,17 +1431,17 @@ describe('@ax/skills approved-caps connector subject (TASK-93)', () => {
     });
   });
 
-  it('rejects a grant with BOTH skillId and connectorId', async () => {
+  it('revoke rejects a request with BOTH skillId and connectorId', async () => {
     const h = await makeHarness();
     await expect(
-      h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, skillId: 's', connectorId: 'c', kind: 'host', value: 'h' }),
+      h.bus.call('skills:approved-caps-revoke', h.ctx(), { ...owner, skillId: 's', connectorId: 'c', kind: 'host', value: 'h' }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
-  it('rejects a grant with NEITHER skillId nor connectorId', async () => {
+  it('revoke rejects a request with NEITHER skillId nor connectorId', async () => {
     const h = await makeHarness();
     await expect(
-      h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, kind: 'host', value: 'h' }),
+      h.bus.call('skills:approved-caps-revoke', h.ctx(), { ...owner, kind: 'host', value: 'h' }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
@@ -1503,9 +1452,9 @@ describe('@ax/skills approved-caps connector subject (TASK-93)', () => {
     });
   });
 
-  it('skill-scoped path is unchanged (still works)', async () => {
+  it('skill-scoped path still works', async () => {
     const h = await makeHarness();
-    await h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, skillId: 'github', kind: 'npm', value: 'left-pad' });
+    await seedApprovedCap({ ...owner, skillId: 'github', kind: 'npm', value: 'left-pad' });
     expect(await h.bus.call('skills:approved-caps-list', h.ctx(), { ...owner, skillId: 'github' })).toEqual({
       capabilities: [{ kind: 'npm', value: 'left-pad' }],
     });

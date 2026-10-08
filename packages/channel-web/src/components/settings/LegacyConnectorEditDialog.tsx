@@ -1,11 +1,8 @@
 /**
- * ConnectorEditDialog — the SHARED, mechanism-first connector create/edit form
- * (TASK-128, settings-unified epic). One component, two variants:
- *   - admin curation (the folded Connector Registry, `isAdmin`) — exposes the
- *     workspace-level fields (Sharing).
- *   - user authoring (`isAdmin={false}`) — hides those fields and forces the
- *     connector private. (The user-facing ENTRY points + owner-scoped routes are
- *     TASK-129; this component is the variant-aware form they reuse.)
+ * ConnectorEditDialog — the mechanism-first connector create/edit form
+ * (TASK-128, settings-unified epic). Admin-only since slice 2a: opened from
+ * Admin › Connectors, it exposes the workspace-level fields and reads
+ * and writes through `/admin/connectors`.
  *
  * MECHANISM-FIRST. A segmented picker at the top — MCP server / Direct API /
  * Command-line tool — reshapes the visible fields (the old "Advanced — how it
@@ -43,11 +40,16 @@ import {
   patchConnector,
   isToolPermissionsResetFailure,
   TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
+  isOwnerOnlyChange,
+  OWNER_ONLY_CHANGE_MESSAGE,
+  isConnectorIdTaken,
+  CONNECTOR_ID_TAKEN_MESSAGE,
+  CONNECTOR_ID_TAKEN_REQUEST_MESSAGE,
   type Connector,
+  type ConnectorPrefill,
   type ConnectorSummary,
   type ConnectorKeyMode,
-  type ConnectorVisibility,
-  type ConnectorRouteBase,
+  type ConnectorWriteBase,
   type ServiceDescriptor,
 } from '@/lib/connectors';
 import {
@@ -91,11 +93,11 @@ import {
   CardDescription,
 } from '@/components/ui/card';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
+import { RequestLeftOutNotice } from './RequestLeftOutNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { discoverOAuthHosts } from '@/lib/connectors-oauth';
 import {
   OAUTH_CLIENT_SECRET_SLOT,
-  clientSecretScope,
 } from '@/lib/connector-credential-slots';
 import {
   Select,
@@ -119,11 +121,12 @@ export interface ConnectorEditDialogProps {
   /** Called after a successful create/update so the caller can refresh + close. */
   onSaved: () => void;
   /**
-   * Admin variant. When true the workspace-level fields (Sharing) are
-   * exposed. User edits preserve saved sharing settings; new definitions are
-   * shared. Defaults to false.
+   * Slice 2c — "Set it up" from Admin › Connectors › Awaiting approval: a
+   * `'new'` target starts from this request instead of blank, under the
+   * requested id (creating it is what clears the request). Agent-written and
+   * untrusted; the admin reviews every field and makes the key choice.
    */
-  isAdmin?: boolean;
+  prefill?: ConnectorPrefill;
 }
 
 /** Per-mechanism "what the secrets are" label (truthful per the design). */
@@ -475,9 +478,11 @@ export function LegacyConnectorEditDialog({
   open,
   onOpenChange,
   onSaved,
-  isAdmin = false,
   connector,
+  prefill,
 }: ConnectorEditDialogProps & { connector?: Connector }) {
+  // Slice 2c — opened by "Set it up": approval is a create.
+  const fromRequest = target === 'new' && prefill !== undefined;
   const [form, setForm] = useState<ConnectorFormState>(() =>
     connector ? formFromConnector(connector) : emptyConnectorForm(),
   );
@@ -525,13 +530,10 @@ export function LegacyConnectorEditDialog({
     Record<number, string>
   >({});
 
-  // The route bundle this variant targets (TASK-129): the admin variant curates
-  // via `/admin/connectors`; the user variant authors via the locked-down
-  // `/settings/connectors` (owner forced; workspace keys rejected
-  // server-side; shared definitions owned by others are read-only).
-  const base: ConnectorRouteBase = isAdmin
-    ? '/admin/connectors'
-    : '/settings/connectors';
+  // Slice 2a: only admins define connectors, and this editor opens only from
+  // Admin › Connectors, so every read and write is the admin bundle. (The
+  // `/settings/connectors` write routes are gone.)
+  const base: ConnectorWriteBase = '/admin/connectors';
 
   // The shared wrapper supplies the full connector before mounting this editor.
   // Initialize synchronously from it so Save never serializes summary-only data.
@@ -584,9 +586,6 @@ export function LegacyConnectorEditDialog({
     const connectorId = form.connectorId || connectorIdFromName(form.name);
     setBusy(true);
     setError(null);
-    // Preserve sharing on user edits. Workspace keys remain admin-only on the
-    // server.
-    const visibility: ConnectorVisibility = isAdmin ? form.visibility : connector?.visibility ?? 'shared';
 
     // --- oauth client_secret persistence ------------------------------------
     // For each oauth slot that has a newly-entered client_secret: write the
@@ -598,12 +597,8 @@ export function LegacyConnectorEditDialog({
     // self-healing on re-save; the reverse order would leave the connector
     // pointing at a missing ref.
     //
-    // NOTE: where the secret is stored decides who can sign in (see
-    // `clientSecretScope`): a workspace-key connector and a shared connector an
-    // admin writes keep it at the workspace, so anyone can; any other connector
-    // keeps it at its author's own scope, where only the author can sign in. DCR
-    // (blank client) avoids this entirely. There is no migration here for an
-    // admin's older copy at their own scope; the remote-server form offers that.
+    // NOTE: the secret is always stored at the workspace (global), so anyone
+    // who signs in can use it. Nothing is stored per person (slice 5).
     let updatedSlots = form.credentialSlots;
     try {
       const slotPatches: Record<number, { clientSecretRef: string }> = {};
@@ -619,14 +614,7 @@ export function LegacyConnectorEditDialog({
         await setDestinationCredential({
           destination,
           slot: { kind: 'api-key' },
-          scope: {
-            scope: clientSecretScope({
-              isAdmin,
-              keyMode: form.keyMode,
-              visibility,
-            }),
-            ownerId: null,
-          },
+          scope: { scope: 'global', ownerId: null },
           payload: secret,
         });
         slotPatches[idx] = {
@@ -662,7 +650,6 @@ export function LegacyConnectorEditDialog({
       description: form.description,
       usageNote: form.usageNote,
       keyMode: form.keyMode,
-      visibility,
       capabilities: capabilitiesFromForm(formWithSecretRefs),
     };
     try {
@@ -676,7 +663,13 @@ export function LegacyConnectorEditDialog({
       setError(
         isToolPermissionsResetFailure(err)
           ? TOOL_PERMISSIONS_RESET_FAILED_MESSAGE
-          : "We couldn't save this connector. Please try again.",
+          : isOwnerOnlyChange(err)
+            ? OWNER_ONLY_CHANGE_MESSAGE
+            : isConnectorIdTaken(err)
+              ? fromRequest
+                ? CONNECTOR_ID_TAKEN_REQUEST_MESSAGE
+                : CONNECTOR_ID_TAKEN_MESSAGE
+              : "We couldn't save this connector. Please try again.",
       );
     } finally {
       setBusy(false);
@@ -720,13 +713,12 @@ export function LegacyConnectorEditDialog({
             {target === 'new' ? 'New connector' : `Edit ${form.name || 'connector'}`}
           </DialogTitle>
           <DialogDescription>
-            {isAdmin
-              ? 'Curate a service the workspace can connect to. Sharing makes it available to everyone’s agents.'
-              : 'Add a service your assistant can connect to. It stays private to your agents.'}
+            Curate a service the workspace can connect to. Sharing makes it available to everyone’s agents.
           </DialogDescription>
         </DialogHeader>
 
         <form className="flex flex-col gap-4" onSubmit={(e) => void submit(e)}>
+          {fromRequest && <RequestLeftOutNotice items={prefill?.leftOut ?? []} />}
           {/* Mechanism picker — leads the form, reshapes the fields below. */}
           <div className="flex flex-col gap-2">
             <Label>How it connects</Label>
@@ -807,10 +799,10 @@ export function LegacyConnectorEditDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="personal">
-                  Personal — each user brings their own key
+                  Each agent adds its own key
                 </SelectItem>
                 <SelectItem value="workspace">
-                  Shared — one key the whole workspace spends
+                  One shared key for everyone
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -820,34 +812,6 @@ export function LegacyConnectorEditDialog({
               </p>
             )}
           </div>
-
-          {/* Admin-only workspace fields. Hidden + forced off in the user variant. */}
-          {isAdmin && (
-            <>
-              {/* Sharing (visibility) */}
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="connector-visibility">Sharing</Label>
-                <Select
-                  value={form.visibility}
-                  onValueChange={(v) =>
-                    setForm((f) => ({ ...f, visibility: v as ConnectorVisibility }))
-                  }
-                >
-                  <SelectTrigger id="connector-visibility">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="private">
-                      Private — just your agents
-                    </SelectItem>
-                    <SelectItem value="shared">
-                      Shared — agents others can use
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </>
-          )}
 
           {/* Per-mechanism fields. */}
           <div className="flex flex-col gap-4 border-t border-border pt-4">

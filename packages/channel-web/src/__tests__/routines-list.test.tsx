@@ -57,6 +57,7 @@ const sampleRoutine = {
   conversation: 'shared',
   lastStatus: 'ok',
   lastError: null,
+  lastWarning: null,
   lastRunAt: '2026-05-17T00:00:00.000Z',
   promptBody: 'do the thing',
   activeHours: null,
@@ -141,6 +142,85 @@ describe('RoutinesList', () => {
     await waitFor(() => expect(screen.getByText(hostile)).toBeTruthy());
     // The string lives in textContent only; no <img> reaches the DOM.
     expect(container.querySelector('img')).toBeNull();
+  });
+
+  describe('went-without-a-connector warning', () => {
+    const WARNING = "Gmail isn't signed in on Bob, so this run went without it.";
+
+    it("shows a routine's lastWarning under its name, with the full text in title", async () => {
+      mockJsonOnce(200, { routines: [{ ...sampleRoutine, lastWarning: WARNING }] });
+      render(<RoutinesList onFired={() => {}} />);
+      const line = await screen.findByTestId('routine-warning');
+      expect(line.textContent).toContain(WARNING);
+      expect(line.getAttribute('title')).toBe(WARNING);
+      // Same cell as the name, not a separate row of the list.
+      const nameCell = screen.getByText('heartbeat').parentElement!;
+      expect(nameCell.contains(line)).toBe(true);
+      // A note, not a failure: neither the line nor anything inside it.
+      expect(line.className).not.toContain('destructive');
+      expect(line.querySelector('[class*="destructive"]')).toBeNull();
+      // One line with an ellipsis in a list row; the full text is in title.
+      const text = line.querySelector('[dir="auto"]')!;
+      expect(text.className).toContain('truncate');
+      expect(text.className).not.toContain('break-words');
+      expect(text.textContent).toContain(WARNING);
+    });
+
+    it('shows nothing for a routine with no lastWarning', async () => {
+      mockJsonOnce(200, { routines: [sampleRoutine] });
+      render(<RoutinesList onFired={() => {}} />);
+      await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
+      expect(screen.queryByTestId('routine-warning')).toBeNull();
+    });
+
+    it('only the routine that carries a warning shows one', async () => {
+      mockJsonOnce(200, {
+        routines: [
+          { ...sampleRoutine, lastWarning: WARNING },
+          { ...sampleRoutine, path: 'other.md', name: 'other' },
+        ],
+      });
+      render(<RoutinesList onFired={() => {}} />);
+      await waitFor(() => expect(screen.getByText('other')).toBeTruthy());
+      expect(screen.getAllByTestId('routine-warning')).toHaveLength(1);
+    });
+
+    it('renders a hostile lastWarning as literal text', async () => {
+      const hostile = '<img src=x onerror=alert(1)>\u202Egnp.exe <b>bold</b>';
+      mockJsonOnce(200, { routines: [{ ...sampleRoutine, lastWarning: hostile }] });
+      const { container } = render(<RoutinesList onFired={() => {}} />);
+      const line = await screen.findByTestId('routine-warning');
+      expect(line.textContent).toContain(hostile);
+      expect(container.querySelector('img')).toBeNull();
+      expect(container.querySelector('b')).toBeNull();
+    });
+
+    it("shows a fire's warning in the expanded run history", async () => {
+      mockJsonOnce(200, { routines: [sampleRoutine] });
+      render(<RoutinesList onFired={() => {}} />);
+      await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
+
+      mockJsonOnce(200, {
+        fires: [
+          {
+            agentId: 'agt_a',
+            path: 'heartbeat.md',
+            firedAt: '2026-05-17T01:00:00.000Z',
+            triggerSource: 'tick',
+            status: 'ok',
+            error: null,
+            warning: WARNING,
+            conversationId: 'cnv',
+            renderedPrompt: 'hello world',
+          },
+        ],
+      });
+      fireEvent.click(screen.getByRole('button', { name: /Expand heartbeat/i }));
+      await waitFor(() => expect(screen.getByText(/hello world/)).toBeTruthy());
+      const line = screen.getByTestId('routine-warning');
+      expect(line.textContent).toContain(WARNING);
+      expect(line.className).not.toContain('destructive');
+    });
   });
 
   it('surfaces a list-level error from the server', async () => {

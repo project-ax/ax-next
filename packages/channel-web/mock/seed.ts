@@ -62,6 +62,35 @@ export const defaultSeeds: Record<string, unknown[]> = {
     { id: 't1:u1', teamId: 't1', userId: 'u1' },
     { id: 't1:u2', teamId: 't1', userId: 'u2' },
   ],
+  // Slice 2c — one agent request for a connector nobody has defined yet, so
+  // Admin › Connectors › Awaiting approval has something to show under
+  // `pnpm dev`. Shape: `admin/connectors.ts` `StoredConnectorRequest`.
+  connector_requests: [
+    {
+      id: 'u2::mercy::linear',
+      ownerUserId: 'u2',
+      agentId: 'mercy',
+      connectorId: 'linear',
+      name: 'Linear',
+      usageNote: 'Use Linear to look up and file issues for the team.',
+      keyMode: 'personal',
+      proposal: {
+        allowedHosts: [],
+        credentials: [],
+        mcpServers: [
+          {
+            name: 'linear',
+            transport: 'http',
+            url: 'https://mcp.linear.app/mcp',
+            allowedHosts: [],
+            credentials: [],
+          },
+        ],
+        packages: { npm: [], pypi: [] },
+      },
+      updatedAt: '2026-10-07T00:00:00.000Z',
+    },
+  ],
   sessions: [],
   messages: [],
 };

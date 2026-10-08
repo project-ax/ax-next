@@ -29,8 +29,14 @@ import { validateProviderKey } from './provider-validator.js';
 // naming convention — the ref is always derived from a validated destination
 // shape.
 //
-// Admin routes: full scope axis (global / user / agent).
+// Admin routes: full scope axis (global / user / agent), except that an
+// `account` (connector) key is never stored per person: `account` at user
+// scope is a 400 (`account-not-per-person`), and at agent scope a 403 (the
+// agent's own key route owns it).
 // Settings routes: scope forced to 'user', ownerId forced to the actor's id.
+// There is NO settings route for the `account` kind (404): connector keys
+// belong to agents, or are the one shared company key (agent-owned sign-ins,
+// slice 5).
 //
 // The :destinationKind URL param must match destination.kind in the body
 // (400 otherwise). This guards against routing confusion where a client
@@ -126,7 +132,8 @@ const DestinationSchema = z.discriminatedUnion('kind', [
       routinePath: z.string().min(1).max(256),
     })
     .strict(),
-  // JIT P2 — service-keyed user vault. The service grammar is re-validated
+  // A connector key (`account:<service>[:<slot>]`), written on the admin route
+  // only (global; see the scope rules above). The service grammar is re-validated
   // independently here (no shared import — invariant I2): lowercase slug,
   // starts with a letter, no ':' (also re-asserted by refForDestination's
   // assertNoColon). Identical to ACCOUNT_RE in @ax/skills-parser.
@@ -209,6 +216,33 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
   });
 
   /**
+   * Agent-owned sign-ins, slice 5: a connector key (`account` destination) is
+   * never stored or removed per person. The vault refuses the write too; this
+   * answers before it is reached, with a route-level error. The /settings
+   * routes never get here for `account` (they 404 first).
+   */
+  function refusePersonLevelAccount(
+    res: RouteResponse,
+    scope: 'global' | 'user' | 'agent',
+    kind: Destination['kind'],
+  ): boolean {
+    if (scope !== 'user' || kind !== 'account') return false;
+    res.status(400).json({ error: 'account-not-per-person' });
+    return true;
+  }
+
+  /**
+   * The /settings tree has no `account` destination: connector keys belong to
+   * agents (or are the shared company key), never to the person. Answered as
+   * a missing route, before auth or the body is read.
+   */
+  function settingsRouteGone(req: RouteRequest, res: RouteResponse): boolean {
+    if (req.params.destinationKind !== 'account') return false;
+    res.status(404).json({ error: 'not-found' });
+    return true;
+  }
+
+  /**
    * Core create logic. forceUser is non-null for /settings routes; the
    * scope and ownerId from the body are ignored and overridden to
    * scope='user' / ownerId=forceUser.id.
@@ -249,10 +283,14 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     const scope = forceUser !== null ? ('user' as const) : data.scope;
     const ownerId = forceUser !== null ? forceUser.id : data.ownerId;
 
+    if (refusePersonLevelAccount(res, scope, data.destination.kind)) return;
+
     // TASK-813 — a connector key stored ON an agent (`account:` at scope
-    // `agent`) is the account every member of a team agent acts as, and only
-    // that team's admins may choose it — through the agent's own team-key
-    // route (channel-web), which asks @ax/agents. Being a workspace admin is
+    // `agent`) is the account that agent acts as, and only whoever manages
+    // the agent may choose it (a team agent's team admin, a personal agent's
+    // owner) — through the agent key route (channel-web,
+    // `PUT …/agents/:agentId/connectors/:connectorId/key`), which asks
+    // @ax/agents. Being a workspace admin is
     // not enough, so this admin route refuses that one combination outright
     // rather than becoming a second door around the team-admin check.
     // Provider / other refs at agent scope are unchanged; deletes refuse the
@@ -361,10 +399,14 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     const scope = forceUser !== null ? ('user' as const) : data.scope;
     const ownerId = forceUser !== null ? forceUser.id : data.ownerId;
 
-    // TASK-854 — the delete twin of the create refusal above: removing a team
-    // agent's team key is the team admins' call too, through the agent's own
-    // team-key route. A workspace admin is refused here before the vault is
-    // touched, so this route is not a second door for removing it either.
+    if (refusePersonLevelAccount(res, scope, data.destination.kind)) return;
+
+    // TASK-854 — the delete twin of the create refusal above: removing an
+    // agent's key is the agent manager's call too. Since slice 3 there is no
+    // delete route for it: the agent key route is PUT only, and the key goes
+    // when the connector is removed from the agent. A workspace admin is
+    // refused here before the vault is touched, so this route is not a
+    // second door for removing it either.
     if (scope === 'agent' && data.destination.kind === 'account') {
       res.status(403).json({ error: 'team-key-via-agent' });
       return;
@@ -395,8 +437,9 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       await doCreate(req, res, null);
     },
 
-    /** POST /settings/destinations/:destinationKind/credential */
+    /** POST /settings/destinations/:destinationKind/credential (not `account`) */
     async createSettings(req: RouteRequest, res: RouteResponse): Promise<void> {
+      if (settingsRouteGone(req, res)) return;
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
       await doCreate(req, res, { id: actor.id });
@@ -409,8 +452,9 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       await doDelete(req, res, null);
     },
 
-    /** DELETE /settings/destinations/:destinationKind/credential */
+    /** DELETE /settings/destinations/:destinationKind/credential (not `account`) */
     async destroySettings(req: RouteRequest, res: RouteResponse): Promise<void> {
+      if (settingsRouteGone(req, res)) return;
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
       await doDelete(req, res, { id: actor.id });

@@ -2,18 +2,19 @@
  * TASK-827 — the Add subview's data rules for shared-key connectors.
  */
 import { describe, expect, it } from 'vitest';
-import { addActionFor, availableConnectors } from '../add-connector';
+import { addActionFor, agentKeyEntries, availableConnectors } from '../add-connector';
 import { emptyCapabilities, type Connector, type ConnectorSummary } from '../connectors';
-import type { CredentialMeta } from '../credentials';
 
-function summary(id: string, keyMode: 'personal' | 'workspace'): ConnectorSummary {
+function summary(
+  id: string,
+  keyMode: 'personal' | 'workspace',
+): ConnectorSummary {
   return {
     id,
     name: id,
     description: '',
     usageNote: '',
     keyMode,
-    visibility: 'shared',
     createdAt: '',
     updatedAt: '',
   };
@@ -25,14 +26,6 @@ function withKey(id: string, keyMode: 'personal' | 'workspace'): Connector {
   return { ...summary(id, keyMode), capabilities: caps };
 }
 
-const sharedKey: CredentialMeta = {
-  scope: 'global',
-  ownerId: null,
-  ref: 'account:crm',
-  kind: 'api-key',
-  createdAt: '',
-};
-
 describe('availableConnectors', () => {
   it('lists shared-key connectors (for everyone) minus what the agent already has', () => {
     const list = availableConnectors(
@@ -41,24 +34,51 @@ describe('availableConnectors', () => {
     );
     expect(list.map((c) => c.id)).toEqual(['a', 'b']);
   });
+
+  it('offers every connector that is not already on the agent, whatever its key mode', () => {
+    const list = availableConnectors(
+      [summary('p', 'personal'), summary('w', 'workspace'), summary('s', 'personal')],
+      new Set(['s']),
+    );
+    expect(list.map((c) => c.id)).toEqual(['p', 'w']);
+  });
 });
 
-describe('addActionFor — shared keys', () => {
-  it('null workspace keys (a non-admin) counts the shared key as present: "Add"', async () => {
-    expect(
-      await addActionFor(withKey('crm', 'workspace'), { agentId: 'a', userCreds: [], globalCreds: null }),
-    ).toBe('add');
+// Slice 3 — what Add does is decided by the connector's KIND alone. Nobody's
+// saved keys or sign-ins are read: every Add signs in (OAuth) or takes the
+// agent's own keys (per-agent key), all or nothing.
+describe('addActionFor — by connector kind', () => {
+  function withOAuth(id: string): Connector {
+    const caps = emptyCapabilities();
+    caps.credentials = [{ slot: 'notion', kind: 'oauth', server: 'notion' }];
+    return { ...summary(id, 'personal'), capabilities: caps };
+  }
+
+  it('an OAuth connector signs in — even one that also declares a header key', () => {
+    expect(addActionFor(withOAuth('notion'))).toBe('sign-in');
+    const both = withOAuth('both');
+    both.capabilities.credentials.push({ slot: 'TOKEN', kind: 'api-key' });
+    expect(addActionFor(both)).toBe('sign-in');
   });
 
-  it('an admin with the shared key missing gets "Add key"; with it present, "Add"', async () => {
-    const c = withKey('crm', 'workspace');
-    expect(await addActionFor(c, { agentId: 'a', userCreds: [], globalCreds: [] })).toBe('key');
-    expect(await addActionFor(c, { agentId: 'a', userCreds: [], globalCreds: [sharedKey] })).toBe('add');
+  it('a per-agent key connector asks for its key', () => {
+    expect(addActionFor(withKey('zen', 'personal'))).toBe('key');
   });
 
-  it('a per-person key is still asked for when globalCreds is null', async () => {
-    expect(
-      await addActionFor(withKey('zen', 'personal'), { agentId: 'a', userCreds: [], globalCreds: null }),
-    ).toBe('key');
+  it('a shared-key connector adds straight away (the server checks the key is there)', () => {
+    expect(addActionFor(withKey('crm', 'workspace'))).toBe('add');
+  });
+
+  it('a connector with nothing to set up adds straight away', () => {
+    expect(addActionFor({ ...summary('open', 'personal'), capabilities: emptyCapabilities() })).toBe('add');
+  });
+});
+
+describe('agentKeyEntries', () => {
+  it("lists the api-key slots, never the connector's own OAuth client secret", () => {
+    const c = withKey('multi', 'personal');
+    c.capabilities.credentials.push({ slot: 'SECOND', kind: 'api-key' });
+    c.capabilities.credentials.push({ slot: 'OAUTH_CLIENT_SECRET', kind: 'api-key' });
+    expect(agentKeyEntries(c).map((e) => e.slot)).toEqual(['token', 'SECOND']);
   });
 });

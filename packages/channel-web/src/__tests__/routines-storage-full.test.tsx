@@ -54,6 +54,7 @@ const heartbeat = {
   conversation: 'shared',
   lastStatus: 'ok',
   lastError: null,
+  lastWarning: null,
   lastRunAt: '2026-05-17T00:00:00.000Z',
   promptBody: 'do the thing',
   activeHours: null,

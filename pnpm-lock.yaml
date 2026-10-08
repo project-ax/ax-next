@@ -1889,6 +1889,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@ax/chat-orchestrator':
+        specifier: workspace:*
+        version: link:../chat-orchestrator
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
@@ -2107,6 +2110,12 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@ax/credentials':
+        specifier: workspace:*
+        version: link:../credentials
+      '@ax/credentials-store-db':
+        specifier: workspace:*
+        version: link:../credentials-store-db
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0

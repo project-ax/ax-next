@@ -39,7 +39,6 @@ interface StubSlot {
 /** The subset of `connectors:resolve` output a test stub returns. */
 interface StubResolve {
   keyMode?: 'personal' | 'workspace';
-  requiresSharedKeyConsent?: boolean;
   /**
    * The connector's model-facing blurb. Present here ONLY so a test can prove
    * the digest ignores it — it is prose, not reach, and rewording it must not
@@ -236,6 +235,22 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
   };
   const REACHES: StubResolve = { capabilities: REACH_CAPS };
 
+  it('PINS the digest: a resolve with no shared-key bit hashes to what `requiresSharedKeyConsent: true` hashed to before SIGNINS-9', async () => {
+    // Every connector is shared now, so `connectors:resolve` no longer says
+    // whether approving spends a key that is not only this person's, and
+    // `reachShape` carries `sharedKeyConsent: true` as a literal. That literal
+    // is what keeps an in-flight approval for a connector that WAS shared from
+    // going stale on the deploy. The string below was produced by the old code
+    // (`resolved.requiresSharedKeyConsent === true`) fed a resolve that said
+    // `requiresSharedKeyConsent: true`; a resolve with no such field has to land
+    // on the same bytes. If this fails, the shape moved and every in-flight
+    // request_capability row for a connector re-asks.
+    const catalog: Catalog = { linear: PRESENT, registry: { linear: REACHES } };
+    const bus = await bootWith(catalog);
+    const { predicate } = await capture(bus, 'linear');
+    expect((predicate as { value: string }).value).toBe('linear@83c589cad3b30036');
+  });
+
   it('DISAGREES when a connector reaches somewhere new under a STABLE id', async () => {
     const catalog: Catalog = { linear: PRESENT, registry: { linear: REACHES } };
     const bus = await bootWith(catalog);
@@ -263,8 +278,8 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
       {
         capabilities: {
           ...REACH_CAPS,
-          // The sibling producer omits mcpServers from its digest even though
-          // resolve returns it. This producer does not inherit that blind spot.
+          // mcpServers is part of the digest even though resolve returns it
+          // as its own field.
           mcpServers: [
             { name: 'linear', transport: 'http', url: 'https://mcp.linear.app', allowedHosts: ['mcp.linear.app'], credentials: [] },
           ],
@@ -277,9 +292,6 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
         },
       },
       { keyMode: 'workspace', capabilities: REACH_CAPS },
-      // The shared-key consent bit is a first-class field on ResolveOutput, and
-      // approving means spending a key that is not this person's.
-      { requiresSharedKeyConsent: true, capabilities: REACH_CAPS },
     ];
     for (const moved of moves) {
       const catalog: Catalog = { linear: PRESENT, registry: { linear: REACHES } };
@@ -619,12 +631,10 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
   });
 
   it('still guards the catalog entry with NO connectors:resolve on the bus at all', async () => {
-    // THE REGRESSION GUARD. The sibling producer (@ax/tool-connector-propose)
-    // returns `{predicate:null}` when connectors:resolve is missing, because
-    // without it that producer has no world to read at all. Copying that shape
-    // HERE would blank this predicate and delete the working catalog guard in
-    // every connector-less preset. The gate belongs on the reach FOLD, never on
-    // the predicate.
+    // THE REGRESSION GUARD. Returning `{predicate:null}` when connectors:resolve
+    // is missing would blank this predicate and delete the working catalog guard
+    // in every connector-less preset. The gate belongs on the reach FOLD, never
+    // on the predicate.
     const catalog: Catalog = { linear: PRESENT };
     const bus = await bootWith(catalog);
     expect(bus.hasService('connectors:resolve')).toBe(false);

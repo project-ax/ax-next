@@ -22,18 +22,35 @@ import { sql, type Kysely } from 'kysely';
  *     nullable `client_secret`) so the callback redeems the code as that client;
  *     both are NULL on a row written before TASK-696.
  *
- *   mcp_oauth_v1_needs_reconnect — TASK-741. One row per (user, connector) whose
- *     sign-in the authorization server has REJECTED (the resolver threw
- *     NeedsReconnectError while resolving that user's `account:<connectorId>`
- *     token). Written by the resolver, cleared by a successful refresh or a
- *     completed sign-in, read by `mcp-oauth:status-batch` so the connectors rail
- *     can show "Sign-in expired" from stored state — never by probing a token.
- *     Holds no secret: ids and a timestamp only.
+ *   mcp_oauth_v1_needs_reconnect_agent — TASK-741/756. One row per (agent,
+ *     connector) whose sign-in the authorization server has REJECTED (the
+ *     resolver threw NeedsReconnectError while resolving that agent's
+ *     `account:<connectorId>` token). Written by the resolver, cleared by a
+ *     successful refresh or a completed sign-in, read by
+ *     `mcp-oauth:status-batch` so the connectors rail can show "Sign-in
+ *     expired" from stored state — never by probing a token. Keyed by agent so
+ *     on a team agent one admin's reconnect clears it for every member.
+ *     Cleaned on agent delete (`deleteAllForAgent`, via `agents:deleted`), on
+ *     connector delete (`deleteMarkersForConnector`, via `connectors:deleted`),
+ *     and by the boot sweep for connector ids no longer live (slice 5). Holds
+ *     no secret: ids and a timestamp only.
  *
- *   mcp_oauth_v1_needs_reconnect_agent — TASK-756. The same marker for a token
- *     an AGENT owns (a team agent's shared sign-in, vault scope `agent`), keyed
- *     (agent, connector) so one member's reconnect clears it for every member.
- *     The per-user table above keeps the markers for tokens a person owns.
+ *   mcp_oauth_v1_needs_reconnect — DROPPED (slice 5). It held the same marker
+ *     per (person, connector) for person-level sign-ins; those are gone (every
+ *     sign-in lives on an agent), so the table is dropped on every migrate —
+ *     `DROP TABLE IF EXISTS`, idempotent, no marker needed.
+ *
+ *   mcp_oauth_v1_identity_scope_refused — slice 4. One row per (agent,
+ *     connector, authorization server) that answered `invalid_scope` to a
+ *     sign-in which carried the `openid`/`email` add-on ("Signed in as").
+ *     `begin` leaves the add-on out while the row exists, so one failed sign-in
+ *     heals the next. Keyed by AGENT on purpose: the callback's `error` comes
+ *     through the browser, so whoever holds a state can forge it — scoping the
+ *     flag to the agent that state was begun for means a person can only ever
+ *     turn identity capture off for an agent they may sign in on. Cleaned with
+ *     the agent (`deleteAllForAgent`, via `agents:deleted`) and with the
+ *     connector (`deleteMarkersForConnector`, via `connectors:deleted`). Holds
+ *     no secret: ids, a URL and a timestamp.
  */
 export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
@@ -58,23 +75,36 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
       scope         TEXT,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`.execute(db);
+  // Unused since slice 3 (every sign-in is stored on its agent); kept, default 'agent'.
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS cred_scope TEXT NOT NULL DEFAULT 'agent'`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_id TEXT`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_secret TEXT`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS issuer_required BOOLEAN NOT NULL DEFAULT false`.execute(db);
-  await sql`
-    CREATE TABLE IF NOT EXISTS mcp_oauth_v1_needs_reconnect (
-      user_id       TEXT NOT NULL,
-      connector_id  TEXT NOT NULL,
-      marked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (user_id, connector_id)
-    )`.execute(db);
+  // Agent-owned sign-ins: 'add' | 'sign-in-again'. The default is the flow that
+  // never attaches, so an authorization in flight across the upgrade can't add a
+  // connector nobody asked to add.
+  await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'sign-in-again'`.execute(db);
+  // Slice 4: did `begin` add the openid/email identity scopes to this
+  // authorization? The callback needs it to tell an `invalid_scope` the add-on
+  // caused from one it didn't. A row from before slice 4 never carried it.
+  await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS identity_scope BOOLEAN NOT NULL DEFAULT false`.execute(db);
+  // Slice 5 — person-level "sign-in expired" markers went with person-level
+  // sign-ins. Idempotent: a second migrate finds nothing to drop.
+  await sql`DROP TABLE IF EXISTS mcp_oauth_v1_needs_reconnect`.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS mcp_oauth_v1_needs_reconnect_agent (
       agent_id      TEXT NOT NULL,
       connector_id  TEXT NOT NULL,
       marked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (agent_id, connector_id)
+    )`.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS mcp_oauth_v1_identity_scope_refused (
+      agent_id      TEXT NOT NULL,
+      connector_id  TEXT NOT NULL,
+      auth_server   TEXT NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (agent_id, connector_id, auth_server)
     )`.execute(db);
 }
 
@@ -98,17 +128,14 @@ export interface McpOAuthPendingRow {
   client_key: string;
   resource: string;
   scope: string | null;
-  cred_scope: string;
+  /** 'add' | 'sign-in-again'; the column default is 'sign-in-again'. */
+  mode: string;
+  /** Slice 4: the openid/email add-on was requested; default false. */
+  identity_scope: boolean;
   /** The client this authorization started with; NULL on a pre-TASK-696 row. */
   client_id: string | null;
   client_secret: string | null;
   created_at: Date;
-}
-
-export interface McpOAuthNeedsReconnectRow {
-  user_id: string;
-  connector_id: string;
-  marked_at: Date;
 }
 
 export interface McpOAuthNeedsReconnectAgentRow {
@@ -117,9 +144,16 @@ export interface McpOAuthNeedsReconnectAgentRow {
   marked_at: Date;
 }
 
+export interface McpOAuthIdentityScopeRefusedRow {
+  agent_id: string;
+  connector_id: string;
+  auth_server: string;
+  created_at: Date;
+}
+
 export interface McpOAuthDatabase {
   mcp_oauth_v1_clients: McpOAuthClientRow;
   mcp_oauth_v1_pending: McpOAuthPendingRow;
-  mcp_oauth_v1_needs_reconnect: McpOAuthNeedsReconnectRow;
   mcp_oauth_v1_needs_reconnect_agent: McpOAuthNeedsReconnectAgentRow;
+  mcp_oauth_v1_identity_scope_refused: McpOAuthIdentityScopeRefusedRow;
 }

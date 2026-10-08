@@ -166,6 +166,11 @@ describe('routines plugin manifest', () => {
     const p = createRoutinesPlugin();
     expect(p.manifest.subscribes).toContain('agents:deleted');
   });
+
+  it('manifest.subscribes includes chat:connectors-skipped (slice 6)', () => {
+    const p = createRoutinesPlugin();
+    expect(p.manifest.subscribes).toContain('chat:connectors-skipped');
+  });
 });
 
 // TASK-680 — deleting an agent stops its routines. @ax/agents fires

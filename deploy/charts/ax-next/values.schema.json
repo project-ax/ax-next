@@ -49,7 +49,7 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "CAPABILITY GATE. Mounts /admin/credentials* and /settings/credentials*."
+              "description": "CAPABILITY GATE. Mounts /admin/credentials* and /admin|/settings/destinations/*."
             }
           }
         }

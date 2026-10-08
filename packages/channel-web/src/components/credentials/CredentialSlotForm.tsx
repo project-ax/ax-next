@@ -1,9 +1,8 @@
-import { useId, useState } from 'react';
+import { useState } from 'react';
 import { Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ApiKeyField } from '@/components/credentials/ApiKeyField';
 import type { Destination } from '@ax/credentials';
 import { setDestinationCredential } from '@/lib/credentials';
 
@@ -13,12 +12,6 @@ export interface CredentialSlotFormProps {
   scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
   current: { set: boolean; rotatedAt?: string };
   onSaved: () => void;
-  /**
-   * TASK-813 — where the key goes instead of the destination's own route (the
-   * team-key dialog saves through the agent's team-key PUT). Absent: the
-   * default `setDestinationCredential` write. A rejection's message is shown.
-   */
-  save?: (payload: string) => Promise<void>;
 }
 
 export function CredentialSlotForm({
@@ -27,15 +20,10 @@ export function CredentialSlotForm({
   scope,
   current,
   onSaved,
-  save,
 }: CredentialSlotFormProps) {
   const [payload, setPayload] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // TASK-124 — a multi-slot connector renders one CredentialSlotForm PER slot, so
-  // a static input id would collide across slots (ambiguous <label htmlFor>). A
-  // per-instance id keeps each field's label association unique and accessible.
-  const inputId = useId();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -43,8 +31,7 @@ export function CredentialSlotForm({
     setBusy(true);
     setError(null);
     try {
-      if (save) await save(payload);
-      else await setDestinationCredential({ destination, slot, scope, payload });
+      await setDestinationCredential({ destination, slot, scope, payload });
       setPayload('');
       onSaved();
     } catch (err) {
@@ -74,18 +61,13 @@ export function CredentialSlotForm({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-      <div className="grid gap-1.5">
-        <Label htmlFor={inputId}>{current.set ? 'Replace API key' : 'API key'}</Label>
-        <Input
-          id={inputId}
-          type="password"
-          autoComplete="off"
-          placeholder={current.set ? 'Enter a new key' : ''}
-          value={payload}
-          onChange={(e) => setPayload(e.target.value)}
-          required
-        />
-      </div>
+      {/* The same field the rail's Add key form draws (ApiKeyField). */}
+      <ApiKeyField
+        label={current.set ? 'Replace API key' : 'API key'}
+        placeholder={current.set ? 'Enter a new key' : ''}
+        value={payload}
+        onChange={setPayload}
+      />
       <div className="flex justify-end gap-2">
         <Button type="submit" disabled={busy || payload.trim().length === 0}>
           {busy ? 'Saving…' : current.set ? 'Replace' : 'Save'}

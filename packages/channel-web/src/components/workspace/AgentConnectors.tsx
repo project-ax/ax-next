@@ -1,98 +1,80 @@
 /**
- * The agent's connector list (TASK-739, connectors-rail slice 6).
+ * The agent's connector list (TASK-739, connectors-rail slice 6; menu reworked
+ * in slice 3 of agent-owned sign-ins).
  *
  * "Connectors <n>", then one card of rows. A row is the connector's name and a
  * `⋯` menu — nothing else (product owner's call: no icon tiles, no tool-count
- * subtitle). The menu holds what is wired today:
+ * subtitle).
  *
- *   - **Edit permissions** — what THIS agent may do with each of the
- *     connector's tools (Allow / Ask first / Deny), in a dialog
- *     (`EditPermissionsDialog`). Never the connector's own settings: those are
- *     a workspace admin's, in Settings › Connectors.
- *   - **Remove from <agent>** — destructive, behind a confirmation. Removing
- *     touches THIS agent only: the connector, and every other agent using it,
- *     stay as they are. When it was on none of this person's other agents,
- *     the server also signs them out of it (their own sign-in / keys), so the
- *     next agent it's added to asks them to sign in again.
+ * THE MENU. Since slice 3 the account a connector acts as belongs to the
+ * agent, and whoever may choose it — a personal agent's owner, a team agent's
+ * team admin (`canSetAccount`) — gets:
  *
- * Who may change a TEAM agent's connectors (TASK-798): only the agent's owner
- * (a team admin) or a workspace admin may add or remove one. The server
- * answers `manageable` (and each row's `removable`, the same answer) and
- * enforces it; for everyone else the rail simply does not offer those actions
- * — no "+ Add", no "Add connector", no Remove.
+ *   - **Sign in again**, first, only on a row that needs it: its sign-in
+ *     expired (`needs-reconnect`) — or **Sign in** when it was never signed
+ *     in (`setup: 'sign-in'`). A dialog
+ *     around the OAuth widget, which opens the popup as a `sign-in-again` on
+ *     THIS agent: it replaces the agent's sign-in and leaves the connector,
+ *     and what this agent may do with its tools, as they are. On a team agent
+ *     the widget asks first — everyone using the agent acts as the signer.
+ *   - **Add key**, only on a row whose agent key is missing
+ *     (`setup: 'add-key'`) — a personal agent's too, and an OAuth connector's
+ *     header key after its sign-in. The key form (`AgentKeyDialog`), saved
+ *     with `PUT …/key`. Replacing a key that works is Remove, then Add.
+ *   - **Edit** — the in-rail details view (`ConnectorDetails`): per-tool
+ *     Allow / Ask first / Deny for THIS agent. Never the connector's own
+ *     settings: those are a workspace admin's, in Admin › Connectors.
+ *   - **Remove from <agent>** — destructive, behind a confirmation. It takes
+ *     the connector off THIS agent and deletes this agent's sign-in and keys
+ *     for it; the connector, and every other agent using it, stay as they are.
  *
- * Who may put a credential ON a team agent (TASK-813) is narrower: only an
- * admin of the team that owns it (`sharedCredentials`) — a workspace admin
- * who is not one may still add and remove connectors, but not sign in for the
- * team. Everyone else gets no Sign in (the row's setup is `ask-owner`: "Ask
- * the agent’s owner to sign in") and no Reconnect for the team's shared
- * sign-in ("Team sign-in expired. Ask the agent’s owner to sign in again.").
- * The team's admins also get **Team key** on a row that says `teamKey`: a
- * key stored on the agent that everyone using it uses unless they've added
- * their own (`TeamKeyDialog`). And **Remove team sign-in** (TASK-858) on a
- * row that says `teamSignIn` — a sign-in saved ON the agent that everyone
- * using it acts as — behind a confirmation. It removes only that one; anyone
- * who signed in with their own account keeps theirs. What stays everyone's: Add key (it stores their
- * own key), Sign in again for their own expired sign-in, Retry, View details
- * and Edit permissions.
+ * Remove follows the server's `removable` (TASK-798: a team agent's owner, or
+ * a workspace admin; the agent's owner on a personal agent) — so a workspace
+ * admin who is not the team's admin may remove a connector but not sign the
+ * team in. Everyone else is a member, who sees who the agent acts as and has
+ * no actions: no Sign in again, no Add key, no Remove — only **Edit**, the
+ * same view (editable within the TASK-809 ceiling, so not "View details").
+ * Every write asks the server again.
  *
  * Connector health (TASK-741, slice 8): a row whose sign-in was rejected or
  * whose server could not be reached gets ONE red `CircleAlert` right after its
- * name — no inline error text (product owner's call). The reason ("Sign-in
- * expired" / "Can’t reach it") is the icon's accessible name and its tooltip,
- * which opens on hover AND keyboard focus. The fix sits at the top of the
- * `⋯` menu, on errored rows only: **Reconnect** (sign in again, in a dialog
- * around the same OAuth widget Settings uses) or **Retry** (one fresh check).
- * Health is read from stored state; drawing the list never probes anything.
+ * name — no inline error text (product owner's call). The reason ("Your
+ * sign-in expired" / "Team sign-in expired" / "Can’t reach it") is the icon's
+ * accessible name and its tooltip, which opens on hover AND keyboard focus;
+ * someone who can't sign in again is told who can. Health is read from stored
+ * state; drawing the list never probes anything. An unreachable row offers no
+ * fix: the next check (a session, or the details view) tries again.
  *
- * On a team agent, Reconnect is the fix for the agent's SHARED sign-in (the
- * one every member uses — "Team sign-in expired"). When the sign-in that
- * expired is this member's OWN personal one (TASK-774: no `sharedSignIn` on
- * the row), Reconnect would sign in for the team and leave theirs expired —
- * their personal sign-in is reached first — so the menu offers **Sign in
- * again** instead, which runs a personal sign-in (no agent, so it is stored
- * for this person only). A personal agent's sign-in is always personal, and
- * its Reconnect already signs in that way, so it keeps Reconnect.
- *
- * A connector nobody has set up yet (TASK-795, health `needs-sign-in`: no
- * sign-in or key this person's use of the agent would reach) is not broken,
- * so its icon is the same `CircleAlert` in muted grey, never red. The row's
- * `setup` picks the reason and the fix: "Not signed in yet" → **Sign in** (a
- * dialog around the OAuth widget, on THIS agent — on a team agent it says
- * everyone will use it as the signer, and the widget asks first); "No key
- * added yet" → **Add key** (the Settings key dialog); "Needs a key from a
- * workspace admin" → nothing to click. Sign in / Add key lead the `⋯` menu,
- * and the details view offers the same button beside the same word. Neither
- * Retry nor Reconnect is offered: there is nothing to retry or reconnect.
+ * A connector nobody has set up yet (TASK-795, health `needs-sign-in`) is not
+ * broken, so its icon is the same `CircleAlert` in muted grey, never red. The
+ * row's `setup` picks the reason ("Not signed in yet" / "No key added yet" /
+ * "Needs a key from a workspace admin" / "Ask the agent’s owner to set it
+ * up") and the fix; the details view offers the same button beside the same
+ * word.
  *
  * A connector a session cannot fully load (TASK-745 — e.g. two of its servers
- * share a name) wears the same icon, reason "Couldn’t load it". Reconnect and
- * Retry cannot fix that, so neither is offered; the tooltip points at the fix:
- * Settings › Connectors for a workspace admin, else asking one.
+ * share a name) wears the same icon, reason "Couldn’t load it". Signing in
+ * again cannot fix that, so it isn't offered; the tooltip points at the fix:
+ * Admin › Connectors for a workspace admin, else asking one.
  *
  * "+ Add" and the empty state's "Add connector" (TASK-740) open the Add
  * subview (`AddConnector`); the Connectors tab swaps it in for this list.
  *
- * **View details** (TASK-742) opens the in-rail details subview with per-tool
- * Allow / Ask first / Deny (`ConnectorDetails`). Which connector is open is
- * the tab's state (`viewing`), because the subview replaces the whole tab,
- * "Other abilities" included. The subview's `⋯` is this same menu (minus View
- * details and Edit permissions — the subview IS the permissions), so
- * Reconnect / Retry are there too — and the dialogs stay mounted
- * across the switch, so a sign-in started from either view is never cut off.
+ * Which connector's details are open is the tab's state (`viewing`), because
+ * the subview replaces the whole tab, "Other abilities" included. The
+ * subview's `⋯` is this same menu minus Edit (the subview IS it), and the
+ * dialogs stay mounted across the switch, so a sign-in started from either
+ * view is never cut off.
  */
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
   CircleAlert,
-  Info,
   KeyRound,
   LogIn,
-  LogOut,
   MoreHorizontal,
+  Pencil,
   Plug,
   Plus,
-  RotateCw,
-  SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -111,6 +93,7 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
@@ -131,41 +114,38 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
-import { ConnectorConnectDialog } from '@/components/settings/ConnectorConnectDialog';
 import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConnect';
 import { useAgentConnectors } from '@/lib/agent-connectors';
 import { useUser } from '@/lib/user-context';
-import { HttpError } from '@/lib/http';
-import { workspaceApi, type GrantRow } from '@/lib/workspace-api';
+import type { GrantRow } from '@/lib/workspace-api';
 import { cn } from '@/lib/utils';
 import type {
   AgentConnectorHealth,
   AgentConnectorRow,
 } from '@/lib/workspace-types';
+import { AgentKeyDialog } from './AgentKeyDialog';
 import {
   ConnectorDetails,
   ConnectorsUnsupported,
-  EditPermissionsDialog,
   SETUP_REASON,
   SETUP_UNKNOWN_REASON,
 } from './ConnectorDetails';
-import { TeamKeyDialog } from './TeamKeyDialog';
 
 /** Why a row wears the error icon — its accessible name and its tooltip. */
 const HEALTH_REASON: Record<
   Exclude<AgentConnectorHealth, 'ok' | 'not-loaded' | 'needs-sign-in'>,
   string
 > = {
-  'needs-reconnect': 'Your sign-in expired',
+  'needs-reconnect': 'Sign-in expired',
   unreachable: 'Can’t reach it',
 };
 
-/** TASK-798 — a team agent's shared sign-in, for someone who can't redo it. */
-const TEAM_SIGN_IN_ASK_OWNER = 'Team sign-in expired. Ask the agent’s owner to sign in again.';
+/** Slice 3 — an expired sign-in, for someone who can't choose the agent's account. */
+const EXPIRED_ASK_OWNER = 'Sign-in expired. Ask the agent’s owner to sign in again.';
 
 function healthReason(
   row: AgentConnectorRow,
-  sharedCredentials: boolean,
+  canSetAccount: boolean,
   isAdmin: boolean,
 ): string {
   if (row.health === 'needs-sign-in') {
@@ -173,23 +153,36 @@ function healthReason(
   }
   if (row.health === 'not-loaded') {
     return isAdmin
-      ? 'Couldn’t load it. Fix it in Settings › Connectors.'
+      ? 'Couldn’t load it. Fix it in Admin › Connectors.'
       : 'Couldn’t load it. Ask a workspace admin to fix it.';
   }
-  // TASK-756 — a team agent's shared sign-in is the team's, not this person's.
-  // TASK-813 — only the team's admins may redo it.
-  if (row.health === 'needs-reconnect' && row.sharedSignIn === true) {
-    return sharedCredentials ? 'Team sign-in expired' : TEAM_SIGN_IN_ASK_OWNER;
+  if (row.health === 'needs-reconnect') {
+    if (!canSetAccount) return EXPIRED_ASK_OWNER;
+    // TASK-756 — a team agent's shared sign-in is the team's, not this person's.
+    if (row.sharedSignIn === true) return 'Team sign-in expired';
   }
   return row.health === 'ok' ? '' : HEALTH_REASON[row.health];
 }
 
+/** Slice 3 — the row's sign-in expired or is missing: Sign in again fixes it. */
+function needsSignIn(row: AgentConnectorRow): boolean {
+  return (
+    row.health === 'needs-reconnect' ||
+    (row.health === 'needs-sign-in' && row.setup === 'sign-in')
+  );
+}
+
 /**
- * TASK-774 — a team agent's row whose expired sign-in is this person's OWN.
- * Its fix is a personal sign-in ("Sign in again"), never Reconnect.
+ * Ruling (slice 3): a row that was never signed in says "Sign in"; only an
+ * expired sign-in says "Sign in again". Menu item and dialog title alike.
  */
-function personalExpiry(row: AgentConnectorRow, teamAgent: boolean): boolean {
-  return teamAgent && row.health === 'needs-reconnect' && row.sharedSignIn !== true;
+function signInLabelFor(row: AgentConnectorRow): 'Sign in' | 'Sign in again' {
+  return row.health === 'needs-reconnect' ? 'Sign in again' : 'Sign in';
+}
+
+/** Slice 3 — the row's agent key is missing: Add key fixes it. */
+function needsKey(row: AgentConnectorRow): boolean {
+  return row.health === 'needs-sign-in' && row.setup === 'add-key';
 }
 
 interface Props {
@@ -240,10 +233,8 @@ export function AgentConnectors({
     remove,
     shared,
     manageable,
-    sharedCredentials,
+    canSetAccount,
     connectorsSupported,
-    retrying,
-    retry,
     refresh,
   } = useAgentConnectors(agentId);
   // TASK-761 — an agent whose model gets no connector tools (a runner that
@@ -254,97 +245,25 @@ export function AgentConnectors({
   const isAdmin = useUser()?.role === 'admin';
   const [confirming, setConfirming] = useState<AgentConnectorRow | null>(null);
   const [notice, setNotice] = useState<
-    { tone: 'error' | 'note'; text: string } | null
+    { tone: 'error' | 'note'; text: ReactNode } | null
   >(null);
-  const [editingPermissions, setEditingPermissions] = useState<AgentConnectorRow | null>(null);
-  const [reconnecting, setReconnecting] = useState<AgentConnectorRow | null>(null);
-  // TASK-774 — a team-agent member re-signing in for themselves only.
   const [signingIn, setSigningIn] = useState<AgentConnectorRow | null>(null);
-  // TASK-795 — first-time setup of a `needs-sign-in` row: an OAuth sign-in on
-  // this agent, or the Settings key dialog.
-  const [firstSignIn, setFirstSignIn] = useState<AgentConnectorRow | null>(null);
   const [addingKey, setAddingKey] = useState<AgentConnectorRow | null>(null);
-  // TASK-813 — a team admin adding the key everyone on this agent uses.
-  const [addingTeamKey, setAddingTeamKey] = useState<AgentConnectorRow | null>(null);
-  // TASK-858 — a team admin removing the sign-in everyone on this agent uses.
-  const [removingSignIn, setRemovingSignIn] = useState<AgentConnectorRow | null>(null);
-  const [signInBusy, setSignInBusy] = useState(false);
 
-  async function onRemoveTeamSignIn(row: AgentConnectorRow) {
+  function onSignInAgain(row: AgentConnectorRow) {
     setNotice(null);
-    setSignInBusy(true);
-    try {
-      await workspaceApi.removeTeamSignIn(agentId, row.id);
-    } catch (e) {
-      setRemovingSignIn(null);
-      setNotice({
-        tone: 'error',
-        // An HttpError's message is authored copy; anything else is not shown.
-        text:
-          e instanceof HttpError
-            ? e.message
-            : `We couldn’t remove the team sign-in to ${row.name} just now. Nothing changed.`,
-      });
-      return;
-    } finally {
-      setSignInBusy(false);
-    }
-    setRemovingSignIn(null);
-    setNotice({ tone: 'note', text: `Removed the team sign-in to ${row.name}.` });
-    refresh();
+    setSigningIn(row);
   }
 
-  /** The row's first-time setup, from the menu or the details view. */
+  function onAddKey(row: AgentConnectorRow) {
+    setNotice(null);
+    setAddingKey(row);
+  }
+
+  /** The details view's setup button: the same fix the `⋯` menu leads with. */
   function onSetUp(row: AgentConnectorRow) {
-    setNotice(null);
-    if (row.setup === 'sign-in') setFirstSignIn(row);
-    else if (row.setup === 'add-key') setAddingKey(row);
-  }
-
-  async function onRetry(row: AgentConnectorRow) {
-    setNotice(null);
-    const { outcome, sharedSignIn, setup } = await retry(row.id);
-    if (outcome === 'failed') {
-      setNotice({
-        tone: 'error',
-        text: `We couldn’t check ${row.name} just now. Please try again.`,
-      });
-      return;
-    }
-    if (outcome === 'unreachable') {
-      setNotice({
-        tone: 'note',
-        text: `Still can’t reach ${row.name}. It may be down for a bit — try again later.`,
-      });
-      return;
-    }
-    if (outcome === 'needs-reconnect') {
-      setNotice({
-        tone: 'note',
-        text:
-          shared && !sharedSignIn
-            ? `${row.name} is reachable, but your sign-in expired. Choose Sign in again to fix it.`
-            : sharedSignIn && !sharedCredentials
-              ? `${row.name} is reachable, but its team sign-in expired. Ask the agent’s owner to sign in again.`
-              : `${row.name} is reachable, but its sign-in expired. Choose Reconnect to sign in again.`,
-      });
-      return;
-    }
-    if (outcome === 'needs-sign-in') {
-      setNotice({
-        tone: 'note',
-        text:
-          setup === 'sign-in'
-            ? `${row.name} is reachable, but nobody has signed in yet. Choose Sign in to set it up.`
-            : setup === 'add-key'
-              ? `${row.name} is reachable, but no key has been added yet. Choose Add key to set it up.`
-              : setup === 'ask-owner'
-                ? `${row.name} is reachable, but nobody has signed in yet. Ask the agent’s owner to sign in.`
-                : setup === 'ask-admin'
-                  ? `${row.name} is reachable, but it needs a key from a workspace admin.`
-                  : `${row.name} is reachable, but it isn’t set up yet.`,
-      });
-    }
+    if (needsSignIn(row)) onSignInAgain(row);
+    else if (needsKey(row)) onAddKey(row);
   }
 
   async function onRemove(row: AgentConnectorRow) {
@@ -358,16 +277,12 @@ export function AgentConnectors({
       });
       return;
     }
-    if (outcome === 'removed-signed-out') {
-      setNotice({
-        tone: 'note',
-        text: `Removed ${row.name}. None of your agents use it now, so we signed you out of it too — adding it again will ask you to sign in.`,
-      });
-    }
     if (outcome === 'removed-partial') {
       setNotice({
         tone: 'note',
-        text: `Removed ${row.name}. Some of what you’d approved for it couldn’t be cleared just now — it no longer applies while ${row.name} is off this agent.`,
+        // Neutral: the step that failed may be approved access, or this
+        // agent's sign-in or key for it.
+        text: `Removed ${row.name}. Some of ${row.name}’s details couldn’t be cleaned up.`,
       });
     }
     onChanged?.();
@@ -398,37 +313,16 @@ export function AgentConnectors({
     <RowMenu
       row={row}
       agentName={name}
-      busy={removing.has(row.id) || retrying.has(row.id)}
-      personalSignIn={personalExpiry(row, shared)}
-      canReconnect={sharedCredentials || row.sharedSignIn !== true}
-      onReconnect={() => {
-        setNotice(null);
-        setReconnecting(row);
-      }}
-      onAddTeamKey={() => {
-        setNotice(null);
-        setAddingTeamKey(row);
-      }}
-      onRemoveTeamSignIn={() => {
-        setNotice(null);
-        setRemovingSignIn(row);
-      }}
-      onSignInAgain={() => {
-        setNotice(null);
-        setSigningIn(row);
-      }}
-      onRetry={() => void onRetry(row)}
-      onSetUp={() => onSetUp(row)}
-      {...(withView && onView !== undefined ? { onView: () => onView(row.id) } : {})}
-      {...(withView
-        ? {
-            onEditPermissions: () => {
-              setNotice(null);
-              setEditingPermissions(row);
-            },
-          }
+      busy={removing.has(row.id)}
+      {...(canSetAccount && needsSignIn(row)
+        ? { onSignInAgain: () => onSignInAgain(row), signInLabel: signInLabelFor(row) }
         : {})}
-      onRemove={() => setConfirming(row)}
+      {...(canSetAccount && needsKey(row) ? { onAddKey: () => onAddKey(row) } : {})}
+      {...(withView && onView !== undefined
+        ? { onView: () => onView(row.id) }
+        : {})}
+      {...(withView && row.signedIn?.account != null ? { account: row.signedIn.account } : {})}
+      {...(row.removable ? { onRemove: () => setConfirming(row) } : {})}
     />
   );
 
@@ -452,7 +346,7 @@ export function AgentConnectors({
           {...(connectorsSupported ? {} : { unsupported: true })}
           onBack={() => onView?.(null)}
           onRemove={() => setConfirming(open)}
-          onSetUp={() => onSetUp(open)}
+          {...(canSetAccount ? { onSetUp: () => onSetUp(open) } : {})}
           onHealthStale={refresh}
         />
       ) : (
@@ -482,10 +376,10 @@ export function AgentConnectors({
               {i > 0 && <Separator />}
               <div className="flex h-11 items-center gap-2 pl-3 pr-1.5">
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <span className="min-w-0 truncate text-[13px]">{row.name}</span>
+                  <ConnectorName id={row.id} name={row.name} account={row.signedIn?.account ?? null} />
                   {row.health !== 'ok' && (
                     <HealthIcon
-                      reason={healthReason(row, sharedCredentials, isAdmin)}
+                      reason={healthReason(row, canSetAccount, isAdmin)}
                       tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
                     />
                   )}
@@ -521,8 +415,8 @@ export function AgentConnectors({
               Remove {confirming?.name} from {name}?
             </DialogTitle>
             <DialogDescription>
-              {name} won’t be able to use {confirming?.name} any more, and
-              anything you approved for it here is taken back. The connector
+              This removes {confirming?.name} from {name}, including its sign-in
+              and keys, and anything you approved for it here. The connector
               itself stays, and so do your other agents that use it.
             </DialogDescription>
           </DialogHeader>
@@ -542,82 +436,6 @@ export function AgentConnectors({
         </DialogContent>
       </Dialog>
       <Dialog
-        open={removingSignIn !== null}
-        onOpenChange={(open) => {
-          if (!open && !signInBusy) setRemovingSignIn(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Remove the team sign-in to {removingSignIn?.name}?</DialogTitle>
-            <DialogDescription>
-              Everyone using {name} loses access to {removingSignIn?.name} until a
-              team admin signs in again. Anyone who signed in with their own
-              account keeps it.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={signInBusy}
-              onClick={() => setRemovingSignIn(null)}
-            >
-              Keep it
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={signInBusy}
-              onClick={() => {
-                if (removingSignIn !== null) void onRemoveTeamSignIn(removingSignIn);
-              }}
-            >
-              {signInBusy ? 'Removing…' : 'Remove'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={reconnecting !== null}
-        onOpenChange={(open) => {
-          if (!open) setReconnecting(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Reconnect {reconnecting?.name}</DialogTitle>
-            <DialogDescription>
-              {reconnecting?.sharedSignIn === true ? (
-                <>
-                  The team sign-in to {reconnecting.name} expired. Sign in again and
-                  everyone using {name} can keep using it.
-                </>
-              ) : (
-                <>
-                  Your sign-in to {reconnecting?.name} expired. Sign in again and{' '}
-                  {name} can keep using it.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          {/* What signing in hands the assistant — drawn here, in the file that
-              starts the sign-in, so the TASK-700 coverage scan sees it. */}
-          <ConnectorAccessNotice kind="sign-in" />
-          {reconnecting !== null && (
-            <ConnectorOAuthConnect
-              connectorId={reconnecting.id}
-              serviceName={reconnecting.name}
-              agentId={agentId}
-              requiresConsent={shared}
-              showAccessNotice={false}
-              onConnected={() => {
-                setReconnecting(null);
-                refresh();
-              }}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
-      <Dialog
         open={signingIn !== null}
         onOpenChange={(open) => {
           if (!open) setSigningIn(null);
@@ -625,113 +443,84 @@ export function AgentConnectors({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Sign in to {signingIn?.name} again</DialogTitle>
+            <DialogTitle>
+              {signingIn !== null && signInLabelFor(signingIn) === 'Sign in'
+                ? `Sign in to ${signingIn.name}`
+                : `Sign in to ${signingIn?.name ?? ''} again`}
+            </DialogTitle>
             <DialogDescription>
-              Your sign-in to {signingIn?.name} expired. Sign in again and {name} can
-              keep using it for you. This only affects you — everyone else on {name}{' '}
-              stays as they are.
+              {shared
+                ? `Sign in, and ${name} will use your ${signingIn?.name ?? ''} account for everyone who uses this agent.`
+                : signingIn !== null && signInLabelFor(signingIn) === 'Sign in'
+                  ? `Sign in and ${name} can use ${signingIn.name}.`
+                  : `Sign in and ${name} can keep using ${signingIn?.name ?? ''}.`}
             </DialogDescription>
           </DialogHeader>
           {/* What signing in hands the assistant — drawn here, in the file that
               starts the sign-in, so the TASK-700 coverage scan sees it. */}
           <ConnectorAccessNotice kind="sign-in" />
           {signingIn !== null && (
-            // No agentId on purpose: the flow is then personal (stored for this
-            // person only), which is the sign-in their use of this team agent
-            // reaches first. With the agent it would sign in for the team.
-            // No shared-agent consent either — nobody else acts as them.
             <ConnectorOAuthConnect
               connectorId={signingIn.id}
               serviceName={signingIn.name}
-              showAccessNotice={false}
-              reconnectLabel="Sign in again"
-              onConnected={() => {
-                setSigningIn(null);
-                refresh();
-              }}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={firstSignIn !== null}
-        onOpenChange={(open) => {
-          if (!open) setFirstSignIn(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Sign in to {firstSignIn?.name}</DialogTitle>
-            <DialogDescription>
-              {shared
-                ? `Signing in here lets everyone using ${name} use ${firstSignIn?.name ?? ''} as you.`
-                : `Sign in and ${name} can use ${firstSignIn?.name ?? ''} for you.`}
-            </DialogDescription>
-          </DialogHeader>
-          {/* What signing in hands the assistant — drawn here, in the file that
-              starts the sign-in, so the TASK-700 coverage scan sees it. */}
-          <ConnectorAccessNotice kind="sign-in" />
-          {firstSignIn !== null && (
-            <ConnectorOAuthConnect
-              connectorId={firstSignIn.id}
-              serviceName={firstSignIn.name}
               agentId={agentId}
+              // Already on the agent: this replaces its sign-in, nothing else.
+              mode="sign-in-again"
               requiresConsent={shared}
               showAccessNotice={false}
               onConnected={() => {
-                setFirstSignIn(null);
-                refresh();
+                const before = signingIn;
+                setSigningIn(null);
+                // Slice 4 — compare against the rows THIS re-read returned,
+                // not whatever the list holds when some effect next runs.
+                void refresh().then((rows) => {
+                  const after = rows?.find((r) => r.id === before.id);
+                  const text = accountChanged(
+                    before.signedIn?.account ?? null,
+                    after?.signedIn?.account ?? null,
+                  );
+                  if (text !== null) setNotice({ tone: 'note', text });
+                });
               }}
             />
           )}
         </DialogContent>
       </Dialog>
       {addingKey !== null && (
-        <ConnectorConnectDialog
+        <AgentKeyDialog
+          // A different connector is a different form: start it fresh.
+          key={addingKey.id}
+          agentId={agentId}
+          agentName={name}
+          teamAgent={shared}
           connectorId={addingKey.id}
           connectorName={addingKey.name}
           isAdmin={isAdmin}
-          open
           onOpenChange={(open) => {
             if (!open) setAddingKey(null);
           }}
-          onConnected={() => {
-            setAddingKey(null);
-            refresh();
-          }}
-        />
-      )}
-      {addingTeamKey !== null && (
-        <TeamKeyDialog
-          agentId={agentId}
-          agentName={name}
-          connectorId={addingTeamKey.id}
-          connectorName={addingTeamKey.name}
-          isAdmin={isAdmin}
-          open
-          onOpenChange={(open) => {
-            if (!open) setAddingTeamKey(null);
-          }}
           onSaved={() => {
-            setAddingTeamKey(null);
-            refresh();
-          }}
-          // TASK-854 — a removed team key can change the row's setup: re-read.
-          onRemoved={refresh}
-        />
-      )}
-      {editingPermissions !== null && (
-        <EditPermissionsDialog
-          // A different connector is a different read: start it fresh.
-          key={editingPermissions.id}
-          agentId={agentId}
-          agentName={name}
-          row={editingPermissions}
-          onOpenChange={(open) => {
-            if (!open) setEditingPermissions(null);
+            setAddingKey(null);
+            void refresh();
           }}
         />
       )}
+    </>
+  );
+}
+
+/**
+ * Slice 4 — "Now b@x (was a@x)" after Sign in again landed on a different
+ * account; `null` (say nothing) when it's the same one, or when either side
+ * is unknown: a sign-in from before slice 4 recorded no account, and a
+ * provider may report none. Each account is provider text in its own `<bdi>`,
+ * so a right-to-left one can't reorder the sentence.
+ */
+function accountChanged(was: string | null, now: string | null): ReactNode {
+  if (was === null || now === null || was === now) return null;
+  return (
+    <>
+      Now <bdi>{now}</bdi> (was <bdi>{was}</bdi>)
     </>
   );
 }
@@ -811,6 +600,75 @@ function NoConnectors({
  * coloured: red for an error, muted for `neutral` (TASK-795 — not set up yet,
  * which is nothing broken).
  */
+/**
+ * A row's name (slice 4). Which account the agent signed in as stays off the
+ * row so the list is easy to scan: the bare account shows in a tooltip on
+ * hover or keyboard focus (and atop the row menu), and screen readers hear
+ * ", signed in as …" with the name. A row with no recorded
+ * account is plain text, with no tooltip and no tab stop.
+ * Provider text: text nodes only, never markup; `bdi` so a right-to-left
+ * account can't reorder what's around it.
+ */
+function ConnectorName({ id, name, account }: { id: string; name: string; account: string | null }) {
+  if (account === null) {
+    return (
+      <span data-testid={`connector-name-${id}`} className="min-w-0 truncate text-[13px]">
+        {name}
+      </span>
+    );
+  }
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            data-testid={`connector-name-${id}`}
+            tabIndex={0}
+            className="min-w-0 truncate rounded-sm text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {name}
+            <span className="sr-only">
+              , signed in as <bdi>{account}</bdi>
+            </span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          <bdi>{account}</bdi>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/**
+ * The agent's account atop a row menu: smaller and lighter than the actions,
+ * since it is context, not something to pick. A long account is clipped and
+ * faded out at the right edge rather than ellipsized; the fade is added only
+ * when the text really overflows, so a short account keeps every letter
+ * crisp. The fade matches the conversation list's (14px). The whole account
+ * stays in `title`.
+ * Provider text: a text node only; `bdi` keeps an RTL account from reordering.
+ */
+function AccountLabel({ account }: { account: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el !== null) setOverflow(el.scrollWidth > el.clientWidth);
+  }, [account]);
+  return (
+    <DropdownMenuLabel
+      ref={ref}
+      data-testid="row-menu-account"
+      {...(overflow ? { 'data-overflow': 'true' } : {})}
+      className="max-w-64 overflow-hidden whitespace-nowrap text-xs font-normal text-muted-foreground data-[overflow=true]:[mask-image:linear-gradient(to_right,black_calc(100%-14px),transparent)]"
+      title={account}
+    >
+      <bdi>{account}</bdi>
+    </DropdownMenuLabel>
+  );
+}
+
 function HealthIcon({ reason, tone }: { reason: string; tone: 'error' | 'neutral' }) {
   return (
     <TooltipProvider delayDuration={200}>
@@ -833,88 +691,59 @@ function HealthIcon({ reason, tone }: { reason: string; tone: 'error' | 'neutral
   );
 }
 
+/**
+ * One row's `⋯` menu (slice 3): each item is present only when its handler
+ * is — Sign in (again), Add key, Edit, Remove.
+ * Hidden, never drawn disabled.
+ */
 function RowMenu({
   row,
   agentName,
   busy,
-  personalSignIn,
-  canReconnect,
-  onReconnect,
-  onAddTeamKey,
-  onRemoveTeamSignIn,
   onSignInAgain,
-  onRetry,
-  onSetUp,
+  onAddKey,
   onView,
-  onEditPermissions,
+  signInLabel = 'Sign in again',
   onRemove,
+  account,
 }: {
   row: AgentConnectorRow;
+  /** The account the agent signed in as, shown atop the menu. The list's
+   *  menu only: the details view already says it. */
+  account?: string;
   agentName: string;
   busy: boolean;
-  /** TASK-774 — the fix is this person's own sign-in, not Reconnect. */
-  personalSignIn: boolean;
-  /**
-   * TASK-798 / TASK-813 — false for a team agent's shared sign-in when this
-   * person may not sign in on the agent (not the team's admin): the server
-   * would refuse, so it isn't offered.
-   */
-  canReconnect: boolean;
-  onReconnect: () => void;
-  /** TASK-813 — "Team key" (add, replace, remove — TASK-854), on a row that says `teamKey`. */
-  onAddTeamKey: () => void;
-  /** TASK-858 — "Remove team sign-in", on a row that says `teamSignIn`. */
-  onRemoveTeamSignIn: () => void;
-  onSignInAgain: () => void;
-  onRetry: () => void;
-  /** TASK-795 — Sign in / Add key on a `needs-sign-in` row. */
-  onSetUp: () => void;
-  /** Absent inside the details view itself. */
+  /** The sign-in expired or is missing, and this person may redo it. */
+  onSignInAgain?: () => void;
+  /** "Sign in" for a row never signed in; "Sign in again" when it expired. */
+  signInLabel?: 'Sign in' | 'Sign in again';
+  /** The agent key is missing, and this person may add it. */
+  onAddKey?: () => void;
+  /** Absent inside the details view itself: it already is the details. */
   onView?: () => void;
-  /** Absent inside the details view: it already shows the permissions. */
-  onEditPermissions?: () => void;
-  onRemove: () => void;
+  /** TASK-798 — absent for anyone who may not remove it. */
+  onRemove?: () => void;
 }) {
   // One group per kind of action, separated — only the groups this row has.
   const groups: { key: string; item: ReactNode }[] = [];
-  if (row.health === 'needs-sign-in' && (row.setup === 'sign-in' || row.setup === 'add-key')) {
+  if (onSignInAgain !== undefined) {
     groups.push({
-      key: 'setup',
+      key: 'sign-in',
       item: (
-        <DropdownMenuItem onSelect={onSetUp}>
-          {row.setup === 'sign-in' ? <LogIn aria-hidden="true" /> : <KeyRound aria-hidden="true" />}
-          {row.setup === 'sign-in' ? 'Sign in' : 'Add key'}
+        <DropdownMenuItem onSelect={onSignInAgain}>
+          <LogIn aria-hidden="true" />
+          {signInLabel}
         </DropdownMenuItem>
       ),
     });
   }
-  if (row.health === 'needs-reconnect' && personalSignIn) {
+  if (onAddKey !== undefined) {
     groups.push({
-      key: 'fix',
+      key: 'add-key',
       item: (
-        <DropdownMenuItem onSelect={onSignInAgain}>
-          <LogIn aria-hidden="true" />
-          Sign in again
-        </DropdownMenuItem>
-      ),
-    });
-  } else if (row.health === 'needs-reconnect' && canReconnect) {
-    groups.push({
-      key: 'fix',
-      item: (
-        <DropdownMenuItem onSelect={onReconnect}>
-          <LogIn aria-hidden="true" />
-          Reconnect
-        </DropdownMenuItem>
-      ),
-    });
-  } else if (row.health === 'unreachable') {
-    groups.push({
-      key: 'fix',
-      item: (
-        <DropdownMenuItem onSelect={onRetry}>
-          <RotateCw aria-hidden="true" />
-          Retry
+        <DropdownMenuItem onSelect={onAddKey}>
+          <KeyRound aria-hidden="true" />
+          Add key
         </DropdownMenuItem>
       ),
     });
@@ -924,50 +753,13 @@ function RowMenu({
       key: 'view',
       item: (
         <DropdownMenuItem onSelect={onView}>
-          <Info aria-hidden="true" />
-          View details
+          <Pencil aria-hidden="true" />
+          Edit
         </DropdownMenuItem>
       ),
     });
   }
-  if (onEditPermissions !== undefined) {
-    groups.push({
-      key: 'permissions',
-      item: (
-        <DropdownMenuItem onSelect={onEditPermissions}>
-          <SlidersHorizontal aria-hidden="true" />
-          Edit permissions
-        </DropdownMenuItem>
-      ),
-    });
-  }
-  // TASK-813 — only the team's admins see it; the server decides again.
-  if (row.teamKey === true) {
-    groups.push({
-      key: 'team-key',
-      item: (
-        <DropdownMenuItem onSelect={onAddTeamKey}>
-          <KeyRound aria-hidden="true" />
-          Team key
-        </DropdownMenuItem>
-      ),
-    });
-  }
-  // TASK-858 — the server sends `teamSignIn` only to the team's admins, and
-  // only when a team sign-in is saved; it decides again on removal.
-  if (row.teamSignIn === true) {
-    groups.push({
-      key: 'team-sign-in',
-      item: (
-        <DropdownMenuItem onSelect={onRemoveTeamSignIn}>
-          <LogOut aria-hidden="true" />
-          Remove team sign-in
-        </DropdownMenuItem>
-      ),
-    });
-  }
-  // TASK-798 — hidden, not drawn disabled, for anyone who may not remove it.
-  if (row.removable) {
+  if (onRemove !== undefined) {
     groups.push({
       key: 'remove',
       item: (
@@ -995,6 +787,12 @@ function RowMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={4} className="shadow-popover">
+        {account !== undefined && (
+          <>
+            <AccountLabel account={account} />
+            <DropdownMenuSeparator />
+          </>
+        )}
         {groups.map(({ key, item }, i) => (
           <Fragment key={key}>
             {i > 0 && <DropdownMenuSeparator />}

@@ -44,6 +44,10 @@ describe('CONNECTOR_PROPOSE_DESCRIPTOR', () => {
     // The spawn-time-discovery constraint (a proposed connector is usable next
     // turn, not this one) — same posture as skill_propose.
     expect(d).toMatch(/next/i);
+    // The request goes to an admin; there is no card the user approves.
+    expect(d).toMatch(/workspace admin/i);
+    expect(d).toMatch(/Connectors tab/);
+    expect(d).not.toMatch(/approves? (ONE|the) card/i);
   });
 
   it('carries a non-empty activityPhrase (<=40 chars)', () => {

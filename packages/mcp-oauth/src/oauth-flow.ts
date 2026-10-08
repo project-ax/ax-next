@@ -247,13 +247,29 @@ export async function buildAuthorization(opts: {
     resource: new URL(resource),
   });
 
-  // Google's web clients need offline access for a refresh token, and renewed
-  // consent to issue one when this client was authorized previously. Without it
-  // a successful Gmail connection stops working when its access token expires.
-  if (metadata.issuer === 'https://accounts.google.com') {
-    authorizationUrl.searchParams.set('access_type', 'offline');
-    authorizationUrl.searchParams.set('prompt', 'consent');
-  }
+  // Every sign-in belongs to one agent, and two agents of one person may act
+  // as two different accounts. So the provider is always asked to show its
+  // account picker instead of silently reusing the browser's current session.
+  // `prompt` is an OIDC parameter; a plain OAuth server ignores it (RFC 6749
+  // §3.1: unrecognized request parameters MUST be ignored).
+  //
+  // Google's web clients also need offline access for a refresh token, and
+  // renewed consent to issue one when this client was authorized previously.
+  // Without it a successful Gmail connection stops working when its access
+  // token expires. OIDC allows several space-separated `prompt` values.
+  //
+  // The values are MERGED, never overwritten: the SDK already appends
+  // `prompt=consent` when the scope asks for `offline_access` (OIDC Core §11),
+  // and dropping it would cost the refresh token. Exactly one `prompt` param
+  // goes out, picker first, de-duplicated.
+  const isGoogle = metadata.issuer === 'https://accounts.google.com';
+  const existing = authorizationUrl.searchParams
+    .getAll('prompt')
+    .flatMap((v) => v.split(/\s+/))
+    .filter((v) => v.length > 0);
+  const prompt = [...new Set(['select_account', ...(isGoogle ? ['consent'] : []), ...existing])];
+  if (isGoogle) authorizationUrl.searchParams.set('access_type', 'offline');
+  authorizationUrl.searchParams.set('prompt', prompt.join(' '));
 
   return { authorizationUrl: authorizationUrl.toString(), codeVerifier };
 }

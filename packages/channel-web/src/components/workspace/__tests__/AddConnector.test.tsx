@@ -1,14 +1,20 @@
 /**
  * The rail's Add subview (TASK-740, connectors-rail slice 7).
  *
- * The rule pinned hardest: a connector is attached ONLY after its sign-in or
- * key has succeeded. Cancelled, failed and half-finished set-ups attach
- * nothing. Also pinned: what "Available" means, name-only rows with one
- * action, the search, the team-agent consent, and attach failure + Retry.
+ * Slice 3 — Add is one step that fully happens or leaves nothing:
+ *   - an OAuth connector's Add opens the sign-in popup (`mode:'add'`); the
+ *     server's callback attaches, so the browser only re-reads on success and
+ *     NEVER calls attach itself;
+ *   - a per-agent key connector's Add opens a key form whose save posts the
+ *     keys with the attach, in one request;
+ *   - a shared-key or no-auth connector's Add attaches straight away, with no
+ *     keys in the body at all.
+ * Also pinned: what "Available" means, name-only rows with one action, the
+ * search, the team-agent consent, and the fixed copy for each failure.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
+import { AttachConnectorError, workspaceApi } from '@/lib/workspace-api';
 import {
   emptyCapabilities,
   getConnector,
@@ -16,8 +22,9 @@ import {
   type Connector,
   type ConnectorSummary,
 } from '@/lib/connectors';
-import { beginOAuth, getOAuthStatus } from '@/lib/connectors-oauth';
-import { myCredentials, adminCredentials, type CredentialMeta } from '@/lib/credentials';
+import { BeginOAuthError, beginOAuth, getOAuthStatus } from '@/lib/connectors-oauth';
+import { HttpError } from '@/lib/http';
+import { adminCredentials } from '@/lib/credentials';
 import { OAUTH_MESSAGE_TYPE } from '@/lib/oauth-callback-bridge';
 import { UserProvider } from '@/lib/user-context';
 import { AddConnector } from '../AddConnector';
@@ -41,20 +48,9 @@ vi.mock('@/lib/credentials', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/credentials');
   return {
     ...actual,
-    myCredentials: { list: vi.fn() },
     adminCredentials: { list: vi.fn() },
   };
 });
-// The real key dialog is tested on its own; here it only has to report a save.
-vi.mock('@/components/settings/ConnectorConnectDialog', () => ({
-  ConnectorConnectDialog: (p: { connectorName: string; onConnected: () => void }) => (
-    <div role="dialog" aria-label={`Key for ${p.connectorName}`}>
-      <button type="button" onClick={p.onConnected}>
-        Save key
-      </button>
-    </div>
-  ),
-}));
 
 const attachMock = vi.mocked(workspaceApi.attachConnector);
 
@@ -65,7 +61,6 @@ function summary(id: string, name: string, extra: Partial<ConnectorSummary> = {}
     description: '',
     usageNote: '',
     keyMode: 'personal',
-    visibility: 'shared',
     createdAt: '2026-10-01T00:00:00Z',
     updatedAt: '2026-10-01T00:00:00Z',
     ...extra,
@@ -85,16 +80,14 @@ function full(id: string): Connector {
   const caps = emptyCapabilities();
   if (id === 'notion') caps.credentials = [{ slot: 'notion', kind: 'oauth', server: 'notion' }];
   if (id === 'zendesk' || id === 'company-crm')
-    caps.credentials = [{ slot: 'token', kind: 'api-key' }];
+    caps.credentials = [{ slot: 'token', kind: 'api-key', description: 'Paste a Zendesk API token.' }];
   return { ...s, capabilities: caps };
 }
 
-let userCreds: CredentialMeta[] = [];
 let popup: { closed: boolean; close: ReturnType<typeof vi.fn> };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  userCreds = [];
   popup = { closed: false, close: vi.fn() };
   vi.spyOn(window, 'open').mockImplementation(() => popup as unknown as Window);
   vi.mocked(workspaceApi.connectors).mockResolvedValue({
@@ -106,7 +99,6 @@ beforeEach(() => {
   vi.mocked(getConnector).mockImplementation(async (id) => full(id));
   vi.mocked(getOAuthStatus).mockResolvedValue('not-connected');
   vi.mocked(beginOAuth).mockResolvedValue({ authorizationUrl: 'https://provider.example/auth' });
-  vi.mocked(myCredentials.list).mockImplementation(async () => userCreds);
   vi.mocked(adminCredentials.list).mockResolvedValue([]);
   attachMock.mockResolvedValue({ attached: true, changed: true });
 });
@@ -128,17 +120,18 @@ function row(name: string): HTMLElement {
 }
 
 async function ready() {
-  await screen.findByRole('button', { name: 'Sign in — Notion' });
-  await screen.findByRole('button', { name: 'Add key — Zendesk' });
-  await screen.findByRole('button', { name: 'Add — Stripe' });
+  // Every row's one action is "Add", whatever it takes to add it.
+  for (const name of ['Notion', 'Zendesk', 'Stripe', 'Company CRM']) {
+    await screen.findByRole('button', { name: `Add — ${name}` });
+  }
 }
 
-function postOAuth(connector: string, oauth: 'success' | 'error') {
+function postOAuth(connector: string, oauth: 'success' | 'error', reason?: string) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent('message', {
         origin: window.location.origin,
-        data: { type: OAUTH_MESSAGE_TYPE, connector, oauth },
+        data: { type: OAUTH_MESSAGE_TYPE, connector, oauth, ...(reason !== undefined ? { reason } : {}) },
       }),
     );
   });
@@ -150,7 +143,7 @@ describe('what it shows', () => {
     await ready();
     expect(screen.getByRole('heading', { name: 'Add a connector' })).toBeTruthy();
     expect(
-      screen.getByText(/Pick one your workspace offers\. If it needs a sign-in, we add it to Quill once you’ve signed in\./),
+      screen.getByText(/Pick one your workspace offers\. If it needs a sign-in or a key, we add it to Quill once that’s done\./),
     ).toBeTruthy();
     expect(screen.getByRole('heading', { name: /^Available/ }).textContent).toBe('Available4');
     expect(screen.queryByText('Linear')).toBeNull();
@@ -163,25 +156,24 @@ describe('what it shows', () => {
     expect(attachMock).not.toHaveBeenCalled();
   });
 
-  // TASK-827 — a shared-key connector is one anyone may add: the admin added
-  // the key once, so a non-admin sees a plain "Add" (they can't read the
-  // workspace keys; the server's attach re-checks the key is there).
-  it('shows a shared-key connector to a non-admin with a plain "Add"', async () => {
-    renderAdd('user');
-    await ready();
-    expect(await screen.findByRole('button', { name: 'Add — Company CRM' })).toBeTruthy();
-    expect(adminCredentials.list).not.toHaveBeenCalled();
+  it('a connector whose details do not load says so on its row and offers nothing to click', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getConnector).mockImplementation(async (id) => {
+      if (id === 'zendesk') throw new Error('blip');
+      return full(id);
+    });
+    renderAdd();
+    await screen.findByRole('button', { name: 'Add — Stripe' });
+    expect(await within(row('Zendesk')).findByText('Couldn’t load it')).toBeTruthy();
+    expect(within(row('Zendesk')).queryByRole('button')).toBeNull();
+    warn.mockRestore();
   });
 
-  it('a non-admin still sees "Add key" for a connector where each person adds their own key', async () => {
-    renderAdd('user');
-    await ready();
-    expect(screen.getByRole('button', { name: 'Add key — Zendesk' })).toBeTruthy();
-  });
-
-  it('an admin sees company-key connectors', async () => {
+  it("reads nobody's saved keys or sign-ins to decide what Add does", async () => {
     renderAdd('admin');
-    expect(await screen.findByRole('button', { name: 'Add key — Company CRM' })).toBeTruthy();
+    await ready();
+    expect(getOAuthStatus).not.toHaveBeenCalled();
+    expect(adminCredentials.list).not.toHaveBeenCalled();
     expect(listConnectors).toHaveBeenCalledWith('/admin/connectors');
   });
 
@@ -192,19 +184,12 @@ describe('what it shows', () => {
       target: { value: 'zen' },
     });
     expect(screen.getByRole('heading', { name: /^Available/ }).textContent).toBe('Available1');
-    expect(screen.getByRole('button', { name: 'Add key — Zendesk' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Sign in — Notion' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add — Zendesk' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add — Notion' })).toBeNull();
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search connectors' }), {
       target: { value: 'nothing-like-this' },
     });
     expect(screen.getByText('Nothing matches that search.')).toBeTruthy();
-  });
-
-  it('a connector already signed in reads "Add"', async () => {
-    vi.mocked(getOAuthStatus).mockResolvedValue('connected');
-    renderAdd();
-    expect(await screen.findByRole('button', { name: 'Add — Notion' })).toBeTruthy();
-    expect(getOAuthStatus).toHaveBeenCalledWith({ connectorId: 'notion', agentId: 'a-quill' });
   });
 
   it('says so when it cannot load the list, and Try again re-reads', async () => {
@@ -216,93 +201,134 @@ describe('what it shows', () => {
 });
 
 describe('a swallowed failure is never silent (TASK-757)', () => {
-  function warnSpy() {
-    return vi.spyOn(console, 'warn').mockImplementation(() => {});
-  }
-  const logged = (warn: ReturnType<typeof warnSpy>, tag: string) =>
-    warn.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes(`[${tag}]`));
-
-  it('a failed sign-in status read is logged and falls back to "Sign in"', async () => {
-    const warn = warnSpy();
-    vi.mocked(getOAuthStatus).mockRejectedValue(new Error('status down'));
-    renderAdd();
-    expect(await screen.findByRole('button', { name: 'Sign in — Notion' })).toBeTruthy();
-    expect(logged(warn, 'add-connector oauth-status notion')).toBe(true);
-    warn.mockRestore();
-  });
-
-  it('a failed personal key read is logged and falls back to asking for the key', async () => {
-    const warn = warnSpy();
-    vi.mocked(myCredentials.list).mockRejectedValue(new Error('creds down'));
-    renderAdd();
-    expect(await screen.findByRole('button', { name: 'Add key — Zendesk' })).toBeTruthy();
-    expect(logged(warn, 'add-connector my-credentials')).toBe(true);
-    warn.mockRestore();
-  });
-
-  it("an admin's failed workspace key read is logged", async () => {
-    const warn = warnSpy();
-    vi.mocked(adminCredentials.list).mockRejectedValue(new Error('creds down'));
-    renderAdd('admin');
-    await screen.findByRole('button', { name: 'Add key — Zendesk' });
-    await waitFor(() => expect(logged(warn, 'add-connector workspace-credentials')).toBe(true));
-    warn.mockRestore();
-  });
-
   it('a sign-in that cannot start is logged, says so with a next step, and attaches nothing', async () => {
-    const warn = warnSpy();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(beginOAuth).mockRejectedValue(new Error('begin down'));
     renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     expect(await screen.findByText(/We couldn't start the sign-in\. Please try again/)).toBeTruthy();
-    expect(logged(warn, 'oauth-sign-in notion')).toBe(true);
+    expect(
+      warn.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('[oauth-sign-in notion]')),
+    ).toBe(true);
     expect(window.open).not.toHaveBeenCalled();
     expect(attachMock).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 });
 
-describe('sign in, then attach', () => {
-  it('attaches only after the provider says the sign-in succeeded', async () => {
-    const { onAttached } = renderAdd();
-    await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
-    await waitFor(() => expect(window.open).toHaveBeenCalled());
-    expect(beginOAuth).toHaveBeenCalledWith({ connectorId: 'notion', agentId: 'a-quill' });
-    // Pending: spinner + Cancel, and nothing attached yet.
-    expect(within(row('Notion')).getByRole('button', { name: 'Cancel' })).toBeTruthy();
-    expect(within(row('Notion')).getByLabelText('Waiting for sign-in')).toBeTruthy();
-    expect(attachMock).not.toHaveBeenCalled();
-
-    vi.mocked(getOAuthStatus).mockResolvedValue('connected');
-    postOAuth('notion', 'success');
-    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'notion'));
-    await waitFor(() => expect(onAttached).toHaveBeenCalled());
-  });
-
-  it('attaches even when the status read lags the success message', async () => {
+describe('a sign-in the server refuses before the popup says why, in our words', () => {
+  it.each([
+    [403, 'agent-store-refused', "This connector can't be added to agents right now. Ask a workspace admin."],
+    [409, 'already-attached', "It's already on this agent."],
+    [400, 'client-secret-missing', "This connector's client secret is missing. Ask a workspace admin to enter it again."],
+  ] as const)('%i %s → "%s"', async (status, refusal, copy) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(beginOAuth).mockRejectedValue(new BeginOAuthError(status, 'server text', refusal));
     renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
-    await waitFor(() => expect(window.open).toHaveBeenCalled());
-    // getOAuthStatus still answers not-connected.
-    postOAuth('notion', 'success');
-    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'notion'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    expect(await screen.findByText(copy)).toBeTruthy();
+    expect(screen.queryByText(/server text/)).toBeNull();
+    expect(screen.queryByText(/Please try again/)).toBeNull();
+    expect(window.open).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
+});
 
-  it('Cancel closes the sign-in and leaves nothing attached — even if a success arrives later', async () => {
+describe('OAuth: Add opens the sign-in, and the server adds it', () => {
+  it('Add begins an Add sign-in on this agent straight away — even if a sign-in exists somewhere', async () => {
+    vi.mocked(getOAuthStatus).mockResolvedValue('connected');
     const { onAttached } = renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    expect(beginOAuth).toHaveBeenCalledWith({ connectorId: 'notion', agentId: 'a-quill', mode: 'add' });
+    expect(getOAuthStatus).not.toHaveBeenCalled();
+    // Pending: spinner + Cancel.
+    expect(within(row('Notion')).getByRole('button', { name: 'Cancel' })).toBeTruthy();
+    expect(within(row('Notion')).getByLabelText('Waiting for sign-in')).toBeTruthy();
+
+    postOAuth('notion', 'success');
+    // The callback already attached it: re-read, never attach from here.
+    await waitFor(() => expect(onAttached).toHaveBeenCalled());
+    expect(attachMock).not.toHaveBeenCalled();
+  });
+
+  it('Cancel closes the sign-in — and a success arriving later re-reads nothing', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
     fireEvent.click(within(row('Notion')).getByRole('button', { name: 'Cancel' }));
     expect(popup.close).toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Sign in — Notion' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add — Notion' })).toBeTruthy();
     postOAuth('notion', 'success');
     await new Promise((r) => setTimeout(r, 20));
-    expect(attachMock).not.toHaveBeenCalled();
     expect(onAttached).not.toHaveBeenCalled();
+    expect(attachMock).not.toHaveBeenCalled();
+  });
+
+  // Review focus — the popup closed mid-flow with no answer: nothing is added,
+  // no spinner is left behind, and the row offers Add again.
+  it('a popup closed without any message puts the row back to Add — no spinner, no attach', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    expect(within(row('Notion')).getByLabelText('Waiting for sign-in')).toBeTruthy();
+    popup.closed = true;
+    expect(
+      await screen.findByRole('button', { name: 'Add — Notion' }, { timeout: 2000 }),
+    ).toBeTruthy();
+    expect(within(row('Notion')).queryByLabelText('Waiting for sign-in')).toBeNull();
+    expect(within(row('Notion')).queryByRole('button', { name: 'Cancel' })).toBeNull();
+    // Nobody is listening any more: a late answer adds nothing either.
+    postOAuth('notion', 'success');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onAttached).not.toHaveBeenCalled();
+    expect(attachMock).not.toHaveBeenCalled();
+  });
+
+  // The popup's success message can be lost (the person closed it as the
+  // callback finished). The server attached it anyway, so a settle re-reads
+  // and an Add that DID land is treated as one.
+  it('a popup closed with no message, after the server already added it, still counts as added', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      connectors: [
+        { id: 'linear', name: 'Linear', source: 'attached', editable: false, health: 'ok', removable: true },
+        { id: 'notion', name: 'Notion', source: 'attached', editable: false, health: 'ok', removable: true },
+      ],
+      shared: false,
+      connectorsSupported: true, manageable: true, sharedCredentials: false,
+    });
+    const reads = vi.mocked(workspaceApi.connectors).mock.calls.length;
+    popup.closed = true;
+    await waitFor(() => expect(onAttached).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    expect(vi.mocked(workspaceApi.connectors).mock.calls.length).toBe(reads + 1);
+    expect(attachMock).not.toHaveBeenCalled();
+  });
+
+  it('a settle re-read that finds nothing added leaves the row offering Add', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    const reads = vi.mocked(workspaceApi.connectors).mock.calls.length;
+    postOAuth('notion', 'error', 'cancelled');
+    expect(await screen.findByText('Sign-in was cancelled, so nothing was added.')).toBeTruthy();
+    await waitFor(() =>
+      expect(vi.mocked(workspaceApi.connectors).mock.calls.length).toBe(reads + 1),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onAttached).not.toHaveBeenCalled();
+    // The failure sentence survives the quiet re-read.
+    expect(screen.getByText('Sign-in was cancelled, so nothing was added.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add — Notion' })).toBeTruthy();
   });
 
   it('Cancel while the sign-in is still starting never opens the popup', async () => {
@@ -314,81 +340,72 @@ describe('sign in, then attach', () => {
     );
     renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     fireEvent.click(await within(row('Notion')).findByRole('button', { name: 'Cancel' }));
     await act(async () => {
       resolveBegin({ authorizationUrl: 'https://provider.example/auth' });
     });
     expect(window.open).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Sign in — Notion' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add — Notion' })).toBeTruthy();
   });
 
   it('a pending sign-in survives a search that hides its row', async () => {
-    renderAdd();
+    const { onAttached } = renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
     const search = screen.getByRole('searchbox', { name: 'Search connectors' });
     fireEvent.change(search, { target: { value: 'stripe' } });
     fireEvent.change(search, { target: { value: '' } });
     expect(popup.close).not.toHaveBeenCalled();
     postOAuth('notion', 'success');
-    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'notion'));
+    await waitFor(() => expect(onAttached).toHaveBeenCalled());
   });
 
-  it('a sign-in + key connector: sign in, then the key, then attach — even while the status read lags', async () => {
+  it('an OAuth connector that also declares a header key still adds by signing in alone', async () => {
     vi.mocked(getConnector).mockImplementation(async (id) => {
       const c = full(id);
-      if (id === 'notion') c.capabilities.credentials.push({ slot: 'token', kind: 'api-key' });
+      if (id === 'notion') c.capabilities.credentials.push({ slot: 'TOKEN', kind: 'api-key' });
       return c;
     });
     const { onAttached } = renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
-    // getOAuthStatus keeps answering not-connected throughout.
     postOAuth('notion', 'success');
-    const dialog = await screen.findByRole('dialog', { name: 'Key for Notion' });
+    await waitFor(() => expect(onAttached).toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(attachMock).not.toHaveBeenCalled();
-    userCreds = [
-      { scope: 'user', ownerId: 'u1', ref: 'account:notion:token', kind: 'api-key', createdAt: '' },
-      { scope: 'user', ownerId: 'u1', ref: 'account:notion:notion', kind: 'oauth', createdAt: '' },
-    ];
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save key' }));
-    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'notion'));
-    expect(onAttached).toHaveBeenCalled();
-    expect(beginOAuth).toHaveBeenCalledTimes(1);
   });
 
-  it('a failed re-check after a good sign-in offers Retry that re-reads, not a second sign-in', async () => {
+  it.each([
+    ['cancelled', 'Sign-in was cancelled, so nothing was added.'],
+    ['not-allowed', "You can't add connectors to this agent any more."],
+    [
+      'add-failed',
+      "You signed in, but we couldn't add it to this agent. Nothing was saved; try again.",
+    ],
+    ['sign-in-failed', "Sign-in didn't finish, so Notion isn't connected. You can try again whenever you're ready."],
+    [undefined, "Sign-in didn't finish, so Notion isn't connected. You can try again whenever you're ready."],
+    // Anything not on the list reads as the generic sentence — never as text.
+    ['<b>provider said</b>', "Sign-in didn't finish, so Notion isn't connected. You can try again whenever you're ready."],
+  ])('a failed sign-in (reason %s) shows fixed copy, adds nothing, and the row is still offered', async (reason, copy) => {
     const { onAttached } = renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
-    vi.mocked(getConnector).mockRejectedValueOnce(new Error('blip'));
-    postOAuth('notion', 'success');
-    expect(await screen.findByText('We couldn’t check Notion just now. Please try again.')).toBeTruthy();
+    postOAuth('notion', 'error', reason);
+    expect(await within(row('Notion').parentElement!).findByText(copy)).toBeTruthy();
+    expect(screen.queryByText(/provider said/)).toBeNull();
+    expect(onAttached).not.toHaveBeenCalled();
     expect(attachMock).not.toHaveBeenCalled();
-    fireEvent.click(within(row('Notion')).getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'notion'));
-    expect(onAttached).toHaveBeenCalled();
-    expect(beginOAuth).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Add — Notion' })).toBeTruthy();
   });
 
-  it('a failed sign-in attaches nothing and says so', async () => {
-    renderAdd();
+  it('a message for another connector, or from another origin, does nothing', async () => {
+    const { onAttached } = renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
-    await waitFor(() => expect(window.open).toHaveBeenCalled());
-    postOAuth('notion', 'error');
-    expect(await screen.findByText(/Sign-in didn't finish, so Notion isn't connected/)).toBeTruthy();
-    expect(attachMock).not.toHaveBeenCalled();
-  });
-
-  it('a message for another connector, or from another origin, attaches nothing', async () => {
-    renderAdd();
-    await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
     postOAuth('zendesk', 'success');
     act(() => {
@@ -400,7 +417,7 @@ describe('sign in, then attach', () => {
       );
     });
     await new Promise((r) => setTimeout(r, 20));
-    expect(attachMock).not.toHaveBeenCalled();
+    expect(onAttached).not.toHaveBeenCalled();
     expect(within(row('Notion')).getByRole('button', { name: 'Cancel' })).toBeTruthy();
   });
 
@@ -408,148 +425,194 @@ describe('sign in, then attach', () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true, connectorsSupported: true, manageable: true, sharedCredentials: true });
     renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     expect(
-      await screen.findByText(/lets anyone who uses Quill act as you on Notion/),
+      await screen.findByText(/lets Quill use your Notion account for everyone who uses this agent/),
     ).toBeTruthy();
     expect(beginOAuth).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    await waitFor(() => expect(beginOAuth).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(beginOAuth).toHaveBeenCalledWith({ connectorId: 'notion', agentId: 'a-quill', mode: 'add' }),
+    );
   });
 
-  // TASK-813 — only the team's admins may sign in ON a team agent; a workspace
-  // admin who isn't one would be refused by the sign-in itself.
-  it('a team agent offers no Sign in to someone who may not sign in on it — key and Add stay', async () => {
+  // TASK-813 — only the team's admins may put a sign-in or key ON a team
+  // agent; the server refuses everyone else (slice 3: keys too).
+  it('a team agent offers no sign-in or key Add to someone who may not set them — plain Add stays', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: true, connectorsSupported: true, manageable: true, sharedCredentials: false });
     renderAdd('admin');
-    await screen.findByRole('button', { name: 'Add key — Zendesk' });
     await screen.findByRole('button', { name: 'Add — Stripe' });
     await waitFor(() =>
       expect(within(row('Notion')).getByText('Ask the agent’s owner to sign in')).toBeTruthy(),
     );
-    expect(screen.queryByRole('button', { name: 'Sign in — Notion' })).toBeNull();
     expect(within(row('Notion')).queryByRole('button')).toBeNull();
+    expect(within(row('Zendesk')).getByText('Ask the agent’s owner to add its key')).toBeTruthy();
+    expect(within(row('Zendesk')).queryByRole('button')).toBeNull();
     expect(beginOAuth).not.toHaveBeenCalled();
   });
 
-  it('a personal agent keeps Sign in whatever sharedCredentials says', async () => {
+  it('a personal agent signs in without the consent step', async () => {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({ connectors: [], shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
     renderAdd();
     await ready();
     expect(screen.queryByText('Ask the agent’s owner to sign in')).toBeNull();
-  });
-
-  it('a personal agent signs in without the consent step', async () => {
-    renderAdd();
-    await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(beginOAuth).toHaveBeenCalled());
-    expect(screen.queryByText(/act as you on Notion/)).toBeNull();
-  });
-
-  it('attach failing after a good sign-in shows the error and Retry', async () => {
-    attachMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors', 500));
-    const { onAttached } = renderAdd();
-    await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in — Notion' }));
-    await waitFor(() => expect(window.open).toHaveBeenCalled());
-    postOAuth('notion', 'success');
-    expect(await screen.findByText(/We couldn’t add Notion to Quill just now/)).toBeTruthy();
-    expect(onAttached).not.toHaveBeenCalled();
-    fireEvent.click(within(row('Notion')).getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(onAttached).toHaveBeenCalled());
-    expect(attachMock).toHaveBeenCalledTimes(2);
-    // Retry re-attaches; it never starts a second sign-in.
-    expect(beginOAuth).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/use your Notion account/)).toBeNull();
   });
 });
 
-describe('add key, then attach', () => {
-  it('attaches once the key is saved', async () => {
+describe('per-agent key: the key form, saved with the Add', () => {
+  async function openKeyForm() {
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Zendesk' }));
+    return screen.findByRole('dialog', { name: 'Add Zendesk' });
+  }
+
+  it('posts the keys with the attach, in one request, then re-reads', async () => {
     const { onAttached } = renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Add key — Zendesk' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Key for Zendesk' });
+    const dialog = await openKeyForm();
+    expect(within(dialog).getByText('Paste a Zendesk API token.')).toBeTruthy();
+    expect(within(dialog).getByTestId('connector-access-notice')).toBeTruthy();
+    const input = within(dialog).getByLabelText(/token/i) as HTMLInputElement;
+    expect(input.type).toBe('password');
     expect(attachMock).not.toHaveBeenCalled();
-    userCreds = [
-      { scope: 'user', ownerId: 'u1', ref: 'account:zendesk', kind: 'api-key', createdAt: '' },
-    ];
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save key' }));
-    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'zendesk'));
+    fireEvent.change(input, { target: { value: 'sk-123' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+    await waitFor(() =>
+      expect(attachMock).toHaveBeenCalledWith('a-quill', 'zendesk', [{ slot: 'token', payload: 'sk-123' }]),
+    );
     await waitFor(() => expect(onAttached).toHaveBeenCalled());
   });
 
-  it('does not attach while a key is still missing (multi-key connector, closed early)', async () => {
+  it('trims spaces and newlines around a pasted key before sending it', async () => {
     renderAdd();
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Add key — Zendesk' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Key for Zendesk' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save key' }));
-    await waitFor(() => expect(getConnector).toHaveBeenCalledTimes(5));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(attachMock).not.toHaveBeenCalled();
+    const dialog = await openKeyForm();
+    const input = within(dialog).getByLabelText(/token/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '\n sk-123 \n' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+    await waitFor(() =>
+      expect(attachMock).toHaveBeenCalledWith('a-quill', 'zendesk', [{ slot: 'token', payload: 'sk-123' }]),
+    );
   });
 
-  it('a company-key refusal says an admin must add it, with no Retry', async () => {
-    attachMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors', 403));
+  it('cannot be saved with a key missing, and closing it adds nothing', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    const dialog = await openKeyForm();
+    expect((within(dialog).getByRole('button', { name: 'Add' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(attachMock).not.toHaveBeenCalled();
+    expect(onAttached).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, 'connector-needs-key', 'Zendesk needs every key filled in before it can be added.'],
+    [409, 'connector-needs-sign-in', 'Zendesk is added by signing in. Go back and open Add again.'],
+    [400, 'keys-not-accepted', 'Zendesk doesn’t take a key any more. Go back and open Add again.'],
+    [409, 'already-attached', 'Zendesk is already on Quill. To change its key, remove it and add it again.'],
+    // The vault's store question said no. Say so, not "you can't".
+    [403, 'agent-store-refused', "This connector can't be added to agents right now. Ask a workspace admin."],
+    [403, 'forbidden', 'You can’t add keys to Quill. Ask the agent’s owner.'],
+    [503, 'connector-check-failed', 'We couldn’t add Zendesk to Quill just now. Nothing was saved — please try again.'],
+  ])('a %i %s refusal shows fixed copy in the form, and nothing is added', async (status, code, copy) => {
+    attachMock.mockRejectedValueOnce(new AttachConnectorError('/agents/a-quill/connectors', status, code));
+    const { onAttached } = renderAdd();
+    await ready();
+    const dialog = await openKeyForm();
+    fireEvent.change(within(dialog).getByLabelText(/token/i), { target: { value: 'sk-123' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+    expect(await within(dialog).findByText(copy)).toBeTruthy();
+    expect(onAttached).not.toHaveBeenCalled();
+    // The key stays typed: saving again is one click.
+    expect((within(dialog).getByLabelText(/token/i) as HTMLInputElement).value).toBe('sk-123');
+  });
+});
+
+describe('shared key or nothing to set up: Add adds straight away', () => {
+  it('"Add" attaches with NO keys in the request at all', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
+    await waitFor(() => expect(attachMock).toHaveBeenCalledTimes(1));
+    expect(attachMock.mock.calls[0]).toEqual(['a-quill', 'stripe']);
+    expect(onAttached).toHaveBeenCalled();
+    expect(beginOAuth).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a shared-key connector adds straight away for anyone — no key form', async () => {
+    const { onAttached } = renderAdd('admin');
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Company CRM' }));
+    await waitFor(() => expect(attachMock).toHaveBeenCalledTimes(1));
+    expect(attachMock.mock.calls[0]).toEqual(['a-quill', 'company-crm']);
+    expect(onAttached).toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a refusal says only an admin can add it, with no Retry', async () => {
+    attachMock.mockRejectedValueOnce(new AttachConnectorError('/agents/a-quill/connectors', 403, 'forbidden'));
     renderAdd();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
     expect(await screen.findByText('Only a workspace admin can add Stripe to Quill.')).toBeTruthy();
     expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
   });
-});
 
-describe('server refuses the attach until set up (TASK-761)', () => {
-  it('a 409 says it is not set up yet and offers Retry that re-checks, not a blind attach', async () => {
-    attachMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors', 409));
-    const { onAttached } = renderAdd();
-    await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
-    expect(
-      await screen.findByText(
-        'Stripe isn’t signed in or set up yet, so we didn’t add it to Quill. Try again to finish setting it up.',
-      ),
-    ).toBeTruthy();
-    expect(onAttached).not.toHaveBeenCalled();
-    expect(within(row('Stripe')).getByRole('button', { name: 'Retry' })).toBeTruthy();
-  });
-});
-
-describe('shared-key connectors (TASK-827)', () => {
-  it('a non-admin adds one straight away — no key dialog', async () => {
+  it('a missing shared key says who can add it, with no Retry', async () => {
+    attachMock.mockRejectedValueOnce(
+      new AttachConnectorError('/agents/a-quill/connectors', 409, 'connector-needs-shared-key'),
+    );
     const { onAttached } = renderAdd('user');
     await ready();
-    fireEvent.click(await screen.findByRole('button', { name: 'Add — Company CRM' }));
-    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'company-crm'));
-    expect(onAttached).toHaveBeenCalled();
-    expect(screen.queryByRole('dialog')).toBeNull();
-  });
-
-  it('a 409 for a non-admin says the shared key is missing and offers no Retry', async () => {
-    attachMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors', 409));
-    const { onAttached } = renderAdd('user');
-    await ready();
-    fireEvent.click(await screen.findByRole('button', { name: 'Add — Company CRM' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Company CRM' }));
     expect(
-      await screen.findByText(
-        'Company CRM doesn’t have its shared key yet. Ask a workspace admin to add it.',
-      ),
+      await screen.findByText('Company CRM doesn’t have its shared key yet. Ask a workspace admin to add it.'),
     ).toBeTruthy();
     expect(onAttached).not.toHaveBeenCalled();
     expect(within(row('Company CRM')).queryByRole('button', { name: 'Retry' })).toBeNull();
   });
-});
 
-describe('ready connectors', () => {
-  it('"Add" attaches straight away, with no sign-in and no key dialog', async () => {
+  it('an admin is told where to add the missing shared key', async () => {
+    attachMock.mockRejectedValueOnce(
+      new AttachConnectorError('/agents/a-quill/connectors', 409, 'connector-needs-shared-key'),
+    );
+    renderAdd('admin');
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Company CRM' }));
+    expect(
+      await screen.findByText('Company CRM doesn’t have its shared key yet. Add it in Admin › Connectors, then try again.'),
+    ).toBeTruthy();
+  });
+
+  it.each([
+    [409, 'connector-needs-sign-in', 'Stripe is added by signing in. Go back and open Add again.'],
+    [400, 'connector-needs-key', 'Stripe needs a key first. Go back and open Add again.'],
+  ])('a %i %s (the list was out of date) says so, with no Retry', async (status, code, copy) => {
+    attachMock.mockRejectedValueOnce(new AttachConnectorError('/agents/a-quill/connectors', status, code));
+    renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
+    expect(await screen.findByText(copy)).toBeTruthy();
+    expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('a network failure offers a plain Retry that tries the same Add again', async () => {
+    attachMock.mockRejectedValueOnce(new HttpError('/api/workspace/agents/a-quill/connectors', 0));
     const { onAttached } = renderAdd();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
-    await waitFor(() => expect(attachMock).toHaveBeenCalledWith('a-quill', 'stripe'));
-    expect(onAttached).toHaveBeenCalled();
-    expect(beginOAuth).not.toHaveBeenCalled();
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(
+      await screen.findByText('We couldn’t add Stripe to Quill just now. Nothing was saved — please try again.'),
+    ).toBeTruthy();
+    expect(onAttached).not.toHaveBeenCalled();
+    fireEvent.click(within(row('Stripe')).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(onAttached).toHaveBeenCalled());
+    expect(attachMock).toHaveBeenCalledTimes(2);
+    expect(attachMock.mock.calls[1]).toEqual(['a-quill', 'stripe']);
   });
 
   it('"‹ Connectors" goes back without attaching anything', async () => {

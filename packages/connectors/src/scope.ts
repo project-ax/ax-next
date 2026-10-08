@@ -4,8 +4,8 @@ import type { ConnectorDatabase } from './migrations.js';
 /**
  * Tenant-scoping helper (Invariant I7).
  *
- * Owner-only multi-row reads go through this helper; shared-definition reads
- * use availableConnectors below. The lint rule `local/no-bare-tenant-tables` enforces that a bare
+ * Owner-only multi-row reads go through this helper; definition reads (every
+ * live connector, any owner) use availableConnectors below. The lint rule `local/no-bare-tenant-tables` enforces that a bare
  * `db.selectFrom('connectors_v1_*')` only appears in `store.ts` / `scope.ts` /
  * test files.
  *
@@ -36,18 +36,18 @@ export function scopedConnectors(
     .where('deleted_at', 'is', null);
 }
 
-/** Shared definitions are readable by signed-in users; mutations remain owner-scoped. */
-export function availableConnectors(
-  db: Kysely<ConnectorDatabase>,
-  scope: ConnectorScope,
-) {
+/**
+ * Every live definition, of every owner (SIGNINS-9: every connector is
+ * shared). Deliberately unscoped — mutations stay owner-scoped through
+ * `scopedConnectors`. Which row an id means is the store's call:
+ * `selectAvailableRow` for reads (own row first, else the only one) and
+ * `getSoleLiveById` wherever credentials are involved (a duplicate id fails
+ * closed for everyone).
+ */
+export function availableConnectors(db: Kysely<ConnectorDatabase>) {
   return db
     .selectFrom('connectors_v1_connectors')
     .selectAll('connectors_v1_connectors')
-    .where((eb) => eb.or([
-      eb('owner_user_id', '=', scope.userId),
-      eb('visibility', '=', 'shared'),
-    ]))
     .where('deleted_at', 'is', null);
 }
 
@@ -76,22 +76,36 @@ export function scopedAuthoredConnectors(
 }
 
 /**
- * Owner-only authored-draft scope — every draft the user owns ACROSS all their
- * agents (no agent_id predicate). Backs `listPendingForUser`, the Settings
- * "Proposed by your assistant" fallback: a connector proposed mid-turn is
- * per-(owner, agent), but the user shouldn't have to know which agent proposed
- * it, so the fallback aggregates by owner. Routed through this helper so the
- * bare-tenant-table read lives in `scope.ts` (lint I7), same as the scoped reads
- * above. Still owner-scoped — a foreign user's draft can never be observed.
+ * DELIBERATELY UNSCOPED — every owner's PENDING authored drafts (slice 2c:
+ * agent proposals go to admins). The only caller is the store's
+ * `listPendingAll`, behind `connectors:list-authored-pending-all`, whose only
+ * HTTP caller is the adminOnly `GET /admin/connectors/authored`. Routed through
+ * this file so the cross-tenant read stays where lint I7 can see it.
  */
-export function scopedAuthoredConnectorsByUser(
-  db: Kysely<ConnectorDatabase>,
-  scope: { userId: string },
-) {
+export function pendingAuthoredConnectorsForAdmins(db: Kysely<ConnectorDatabase>) {
   return db
     .selectFrom('connectors_v1_authored')
     .selectAll('connectors_v1_authored')
-    .where('owner_user_id', '=', scope.userId);
+    .where('status', '=', 'pending');
+}
+
+/**
+ * DELIBERATELY UNSCOPED — delete every authored draft with this connector id,
+ * whoever proposed it and under whichever agent, in any status. Two callers,
+ * both admin-or-system: creating a live connector (`connectors:upsert` with
+ * `created`) resolves the proposals for its id, and the adminOnly Dismiss
+ * (`connectors:clear-authored-by-id`). The caller validates the id. Returns the
+ * number of rows removed.
+ */
+export async function clearAuthoredConnectorsByIdForAdmins(
+  db: Kysely<ConnectorDatabase>,
+  connectorId: string,
+): Promise<number> {
+  const res = await db
+    .deleteFrom('connectors_v1_authored')
+    .where('connector_id', '=', connectorId)
+    .executeTakeFirst();
+  return Number(res.numDeletedRows ?? 0n);
 }
 
 /**
@@ -114,7 +128,7 @@ export function hasStdioMcpServer(column: 'capabilities' | 'capability_proposal'
 export function stdioConnectorRowsForSystemSweep(db: Kysely<ConnectorDatabase>) {
   return db
     .selectFrom('connectors_v1_connectors')
-    .select(['owner_user_id', 'connector_id', 'key_mode', 'visibility', 'capabilities', 'deleted_at'])
+    .select(['owner_user_id', 'connector_id', 'key_mode', 'capabilities', 'deleted_at'])
     .where(hasStdioMcpServer('capabilities'));
 }
 
@@ -138,4 +152,64 @@ export async function hasSurvivingSameIdConnectorForSystemSweep(
     .limit(1)
     .executeTakeFirst();
   return row !== undefined;
+}
+
+/**
+ * DELIBERATELY UNSCOPED — every owner's LIVE connector rows, identity + the
+ * fields a purge derives from. The ONLY caller is the boot-time non-admin
+ * sweep (non-admin-sweep.ts, slice 2b), which runs as `system` during plugin
+ * init; no request path may use it. Ordered so the sweep is deterministic.
+ */
+export function liveConnectorRowsForSystemSweep(db: Kysely<ConnectorDatabase>) {
+  return db
+    .selectFrom('connectors_v1_connectors')
+    .select(['owner_user_id', 'connector_id', 'key_mode', 'capabilities'])
+    .where('deleted_at', 'is', null)
+    .orderBy('owner_user_id', 'asc')
+    .orderBy('connector_id', 'asc');
+}
+
+/**
+ * DELIBERATELY UNSCOPED — does any live connector OTHER than (ownerUserId,
+ * connectorId) carry `connectorId`? Asked BEFORE the non-admin sweep
+ * tombstones a row, so it answers exactly what `hasLiveById` would answer
+ * after it. Only the boot-time non-admin sweep (non-admin-sweep.ts) calls this.
+ */
+export async function hasOtherLiveSameIdConnectorForSystemSweep(
+  db: Kysely<ConnectorDatabase>,
+  ownerUserId: string,
+  connectorId: string,
+): Promise<boolean> {
+  const row = await db
+    .selectFrom('connectors_v1_connectors')
+    .select('owner_user_id')
+    .where('connector_id', '=', connectorId)
+    .where('owner_user_id', '<>', ownerUserId)
+    .where('deleted_at', 'is', null)
+    .limit(1)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
+/**
+ * Slice 2b — has the one-shot boot step `name` completed? System-level (no
+ * tenant); lives here so the bare `connectors_v1_*` read stays where lint I7
+ * can see it. Only boot sweeps call these two.
+ */
+export async function isBootStepDone(db: Kysely<ConnectorDatabase>, name: string): Promise<boolean> {
+  const row = await db
+    .selectFrom('connectors_v1_boot_steps')
+    .select('name')
+    .where('name', '=', name)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
+/** Record the one-shot boot step `name` as completed (idempotent). */
+export async function markBootStepDone(db: Kysely<ConnectorDatabase>, name: string): Promise<void> {
+  await db
+    .insertInto('connectors_v1_boot_steps')
+    .values({ name })
+    .onConflict((oc) => oc.column('name').doNothing())
+    .execute();
 }

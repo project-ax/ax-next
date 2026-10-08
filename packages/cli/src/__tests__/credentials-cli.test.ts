@@ -131,4 +131,73 @@ describe('ax-next credentials set <id>', () => {
     // The secret must NEVER appear in stderr.
     expect(stderrAll).not.toContain('UNIQUE-SECRET-MARKER');
   });
+
+  // Agent-owned sign-ins, slice 5: connector credentials (`account:` refs)
+  // belong to agents. The CLI only ever writes at its own user scope, so it
+  // refuses them up front with a pointer to the right place.
+  it.each(['account:linear', 'account:github:GITHUB_TOKEN'])(
+    'refuses a connector credential (%s), exits 1, and stores nothing',
+    async (ref) => {
+      const sqlitePath = join(tmp, 'db.sqlite');
+      const stdoutLines: string[] = [];
+      const stderrLines: string[] = [];
+      const code = await runCredentialsCommand({
+        argv: ['set', ref],
+        stdin: stdinFromString('UNIQUE-SECRET-MARKER'),
+        stdout: (l) => stdoutLines.push(l),
+        stderr: (l) => stderrLines.push(l),
+        sqlitePath,
+      });
+      expect(code).toBe(1);
+      expect(stdoutLines).toEqual([]);
+      expect(stderrLines).toEqual([
+        "error: Connector credentials belong to agents now; add them from the agent's Connectors tab",
+      ]);
+
+      const bus = new HookBus();
+      await bootstrap({
+        bus,
+        plugins: [
+          createStorageSqlitePlugin({ databasePath: sqlitePath }),
+          createCredentialsStoreDbPlugin(),
+          createCredentialsPlugin(),
+        ],
+        config: {},
+      });
+      const listed = await bus.call<object, { credentials: Array<{ ref: string }> }>(
+        'credentials:list',
+        makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }),
+        {},
+      );
+      expect(listed.credentials).toEqual([]);
+    },
+  );
+
+  it('still stores a provider: credential', async () => {
+    const sqlitePath = join(tmp, 'db.sqlite');
+    const code = await runCredentialsCommand({
+      argv: ['set', 'provider:anthropic'],
+      stdin: stdinFromString('sk-ant-123'),
+      stdout: () => {},
+      stderr: () => {},
+      sqlitePath,
+    });
+    expect(code).toBe(0);
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [
+        createStorageSqlitePlugin({ databasePath: sqlitePath }),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+      ],
+      config: {},
+    });
+    const got = await bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }),
+      { ref: 'provider:anthropic', userId: 'cli' },
+    );
+    expect(got).toBe('sk-ant-123');
+  });
 });

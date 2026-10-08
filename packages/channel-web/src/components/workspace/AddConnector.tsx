@@ -3,31 +3,34 @@
  *
  * "‹ Connectors", "Add a connector", one line of intro, a search box, then
  * "Available <n>" — the connectors this person may use that the agent doesn't
- * have yet. A row is the connector's NAME and one action (product owner's
- * call: no icon tiles, no subtitles):
+ * have yet. A row is the connector's NAME and one action, **Add** (product
+ * owner's call: no icon tiles, no subtitles).
  *
- *   - **Sign in** — opens the provider's sign-in. While it is open the row
- *     shows a spinner and **Cancel**.
- *   - **Add key** — the same key dialog Settings › Connectors uses.
- *   - **Add** — nothing to set up; attaches straight away.
+ * THE RULE THIS FILE EXISTS TO KEEP (slice 3): Add is one step that either
+ * fully happens or leaves nothing. What it does depends on the connector's
+ * kind (`addActionFor`), never on anybody's saved keys or sign-ins:
  *
- * THE RULE THIS FILE EXISTS TO KEEP: the connector is attached to the agent
- * ONLY after its sign-in / key has succeeded. A cancelled or failed sign-in,
- * or a key dialog closed early, attaches nothing. If the attach itself fails
- * after a good sign-in, the row says so and offers Retry — the sign-in stays
- * saved, and it grants this agent nothing until the attach lands.
+ *   - **Sign-in connector** — Add opens the provider's sign-in popup straight
+ *     away (`mode:'add'`). The server's callback saves the sign-in on the agent
+ *     AND attaches the connector, or neither, so on success this view only
+ *     re-reads (`onAttached`) and never attaches anything itself. While the
+ *     popup is open the row shows a spinner and **Cancel**. A failure shows
+ *     fixed copy for its reason (`oauthFailureMessage`) and the row stays.
+ *   - **Per-agent key connector** — Add opens the key form (`AddKeyDialog`);
+ *     saving sends every key WITH the attach, in one request.
+ *   - **Shared-key or no-auth connector** — Add attaches straight away, with
+ *     no keys in the request at all.
  *
  * A team agent's sign-in is stored ON THE AGENT, so everyone using it acts as
- * the person who signed in. That gets the same consent line the rail's Reconnect
- * shows before the sign-in starts. Whether the agent is a team agent comes
- * from the server, on the same read as its connector list (`shared`, the flag
- * Reconnect already uses — TASK-741).
+ * the person who signed in. That gets the same consent line the rail's Sign in
+ * again shows before the sign-in starts. Whether the agent is a team agent
+ * comes from the server, on the same read as its connector list (`shared`,
+ * the flag Sign in again uses too — TASK-741).
  *
- * Only an admin of the team that owns a team agent may sign in ON it
- * (TASK-813, `sharedCredentials` on the same read) — a workspace admin who
- * isn't one is refused by the sign-in itself. For them a row whose action is
- * Sign in shows "Ask the agent’s owner to sign in" instead of a button. Add
- * key (their own key) and Add are unchanged.
+ * Only an admin of the team that owns a team agent may put a sign-in or a key
+ * ON it (TASK-813, `sharedCredentials` on the same read). For anyone else a
+ * sign-in row says "Ask the agent’s owner to sign in" and a key row "Ask the
+ * agent’s owner to add its key" instead of a button. A plain Add is unchanged.
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
@@ -44,7 +47,6 @@ import {
 } from '@/components/ui/input-group';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
-import { ConnectorConnectDialog } from '@/components/settings/ConnectorConnectDialog';
 import {
   addActionFor,
   availableConnectors,
@@ -54,14 +56,15 @@ import {
 import {
   getConnector,
   listConnectors,
+  type Connector,
   type ConnectorSummary,
 } from '@/lib/connectors';
-import { adminCredentials, myCredentials, type CredentialMeta } from '@/lib/credentials';
 import { HttpError, logRequestFailure } from '@/lib/http';
+import { beginRefusalMessage } from '@/lib/oauth-failure';
 import { useOAuthPopup } from '@/lib/use-oauth-popup';
 import { useUser } from '@/lib/user-context';
-import { workspaceApi } from '@/lib/workspace-api';
-import { SETUP_REASON } from './ConnectorDetails';
+import { AttachConnectorError, workspaceApi, type AgentConnectorKey } from '@/lib/workspace-api';
+import { AddKeyDialog } from './AddKeyDialog';
 
 interface Props {
   agentId: string;
@@ -69,20 +72,86 @@ interface Props {
   name: string;
   /** "‹ Connectors". */
   onBack: () => void;
-  /** A connector was attached. The parent returns to the list and re-reads. */
+  /** A connector was added. The parent returns to the list and re-reads. */
   onAttached: () => void;
 }
 
-type RowAction = AddAction | 'checking';
+/** `checking` until the connector's details load; `unloaded` if they didn't. */
+type RowAction = AddAction | 'checking' | 'unloaded';
 
 interface RowProblem {
   text: string;
-  /**
-   * What Retry does. `attach` re-attaches (the sign-in / key is already
-   * done); `recheck` re-reads what the connector still needs. Neither ever
-   * starts a second sign-in.
-   */
-  retry: 'attach' | 'recheck' | null;
+  /** Offer a plain Retry of the same Add (a network or server hiccup only). */
+  retry: boolean;
+}
+
+/** A sign-in / key row on a team agent this person may not put an account on. */
+const ASK_OWNER_SIGN_IN = 'Ask the agent’s owner to sign in';
+const ASK_OWNER_KEY = 'Ask the agent’s owner to add its key';
+
+/** A fresh read that the connector's details couldn't load. */
+const UNLOADED = 'Couldn’t load it';
+
+/**
+ * Fixed copy for a refused Add. Only the status and a known code are read —
+ * never the server's text. `null` code: anything we don't word specially.
+ */
+function refusalCopy(
+  e: unknown,
+  c: ConnectorSummary,
+  agentName: string,
+  opts: { isAdmin: boolean; withKeys: boolean },
+): RowProblem {
+  const status = e instanceof HttpError ? e.status : -1;
+  const code = e instanceof AttachConnectorError ? e.code : undefined;
+  if (code === 'already-attached') {
+    return {
+      text: `${c.name} is already on ${agentName}. To change its key, remove it and add it again.`,
+      retry: false,
+    };
+  }
+  if (code === 'connector-needs-sign-in') {
+    return { text: `${c.name} is added by signing in. Go back and open Add again.`, retry: false };
+  }
+  if (code === 'keys-not-accepted') {
+    // Its definition changed since the list was read: it no longer takes a
+    // key of the agent's own.
+    return { text: `${c.name} doesn’t take a key any more. Go back and open Add again.`, retry: false };
+  }
+  if (code === 'connector-needs-key') {
+    return {
+      text: opts.withKeys
+        ? `${c.name} needs every key filled in before it can be added.`
+        : `${c.name} needs a key first. Go back and open Add again.`,
+      retry: false,
+    };
+  }
+  if (code === 'agent-store-refused') {
+    // The workspace refused to store a key for this connector. An admin
+    // fixes that; trying again won't.
+    return { text: beginRefusalMessage('agent-store-refused'), retry: false };
+  }
+  if (code === 'connector-needs-shared-key') {
+    // TASK-827 — the shared key is the workspace's. No Retry: it would meet
+    // the same refusal until an admin adds the key.
+    return {
+      text: opts.isAdmin
+        ? `${c.name} doesn’t have its shared key yet. Add it in Admin › Connectors, then try again.`
+        : `${c.name} doesn’t have its shared key yet. Ask a workspace admin to add it.`,
+      retry: false,
+    };
+  }
+  if (status === 403) {
+    return opts.withKeys
+      ? { text: `You can’t add keys to ${agentName}. Ask the agent’s owner.`, retry: false }
+      : { text: `Only a workspace admin can add ${c.name} to ${agentName}.`, retry: false };
+  }
+  // A network failure (status 0), a server error, or a refusal we don't word:
+  // nothing was saved, and trying the same Add again is safe.
+  return {
+    text: `We couldn’t add ${c.name} to ${agentName} just now. Nothing was saved — please try again.`,
+    retry: status === 0 || status >= 500,
+  };
 }
 
 export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
@@ -91,65 +160,31 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
   const [load, setLoad] = useState<'loading' | 'ok' | 'failed'>('loading');
   const [available, setAvailable] = useState<ConnectorSummary[]>([]);
   const [actions, setActions] = useState<Record<string, RowAction>>({});
+  // Each row's full record, once loaded: the key form needs its slots.
+  const [details, setDetails] = useState<Record<string, Connector>>({});
   const [problems, setProblems] = useState<Record<string, RowProblem>>({});
   const [attaching, setAttaching] = useState<ReadonlySet<string>>(new Set());
-  const [keying, setKeying] = useState<ConnectorSummary | null>(null);
+  const [keying, setKeying] = useState<Connector | null>(null);
   // Until the read lands no row is drawn, so this default is never shown;
   // it errs on asking.
   const [teamAgent, setTeamAgent] = useState(true);
-  // TASK-813 — may sign in ON this (team) agent. Errs on not offering.
+  // TASK-813 — may put a sign-in or key ON this (team) agent. Errs on not offering.
   const [sharedCredentials, setSharedCredentials] = useState(false);
   const [attempt, setAttempt] = useState(0);
   // Only the newest load lands, and nothing lands after unmount.
   const scope = useRef(0);
 
-  const readCreds = useCallback(async (): Promise<{
-    user: CredentialMeta[];
-    global: CredentialMeta[] | null;
-  }> => {
-    // Presence only. A failed read reads as "absent", which can only ask for
-    // a key that is already there — never attach one that isn't. Logged
-    // (TASK-757): a safe fallback is still not a silent one. A non-admin
-    // can't read workspace keys at all: `null`, and the attach re-checks.
-    const user = await myCredentials.list().catch((e: unknown) => {
-      logRequestFailure(e, 'add-connector my-credentials');
-      return [];
-    });
-    const global = isAdmin
-      ? await adminCredentials.list().catch((e: unknown) => {
-          logRequestFailure(e, 'add-connector workspace-credentials');
-          return [];
-        })
-      : null;
-    return { user, global };
-  }, [isAdmin]);
-
-  /** Work out one row's action from a fresh read. */
-  const actionFor = useCallback(
-    async (id: string, signedIn = false): Promise<AddAction> => {
-      const [full, creds] = await Promise.all([
-        getConnector(id, isAdmin ? '/admin/connectors' : '/settings/connectors'),
-        readCreds(),
-      ]);
-      return addActionFor(full, {
-        agentId,
-        userCreds: creds.user,
-        globalCreds: creds.global,
-        signedIn,
-      });
-    },
-    [agentId, isAdmin, readCreds],
-  );
-
   useEffect(() => {
     const id = ++scope.current;
+    const base = isAdmin ? '/admin/connectors' : '/settings/connectors';
     setLoad('loading');
     setActions({});
+    setDetails({});
     setProblems({});
     void (async () => {
       try {
         const [catalog, effective] = await Promise.all([
-          listConnectors(isAdmin ? '/admin/connectors' : '/settings/connectors'),
+          listConnectors(base),
           workspaceApi.connectors(agentId),
         ]);
         if (scope.current !== id) return;
@@ -164,15 +199,17 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         setLoad('ok');
         await Promise.all(
           list.map(async (c) => {
-            let action: AddAction;
+            let action: RowAction;
             try {
-              action = await actionFor(c.id);
+              const full = await getConnector(c.id, base);
+              if (scope.current !== id) return;
+              setDetails((prev) => ({ ...prev, [c.id]: full }));
+              action = addActionFor(full);
             } catch (e) {
+              // Never a guess: without its details we can't tell a sign-in
+              // from a key from a plain Add, so the row offers nothing.
               logRequestFailure(e, 'add-connector');
-              // The full record didn't load. "Add key" opens the key dialog,
-              // which re-reads it and says plainly if it still can't — it
-              // never attaches on its own.
-              action = 'key';
+              action = 'unloaded';
             }
             if (scope.current !== id) return;
             setActions((prev) => ({ ...prev, [c.id]: action }));
@@ -187,7 +224,32 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
     return () => {
       scope.current += 1;
     };
-  }, [agentId, isAdmin, actionFor, attempt]);
+  }, [agentId, isAdmin, attempt]);
+
+  // A sign-in's success message can be lost (the popup closed as the
+  // callback finished), yet the server's callback attached it. So when a
+  // sign-in settles, quietly re-read the agent's connectors: one that IS on
+  // the agent now counts as added. A failed re-read changes nothing (logged).
+  // After `onAttached` this view unmounts, so a late answer lands nowhere.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const recheckAdded = useCallback(
+    async (connectorId: string) => {
+      try {
+        const effective = await workspaceApi.connectors(agentId);
+        if (!mounted.current) return;
+        if (effective.connectors.some((c) => c.id === connectorId)) onAttached();
+      } catch (e) {
+        logRequestFailure(e, 'add-connector');
+      }
+    },
+    [agentId, onAttached],
+  );
 
   const setProblem = (id: string, problem: RowProblem | null) =>
     setProblems((prev) => {
@@ -197,7 +259,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
       return next;
     });
 
-  /** The ONLY place this subview attaches anything. */
+  /** A shared-key or no-auth Add: attach, with no keys in the request. */
   const attach = useCallback(
     async (c: ConnectorSummary) => {
       setProblem(c.id, null);
@@ -207,31 +269,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         onAttached();
       } catch (e) {
         logRequestFailure(e, 'add-connector');
-        setProblem(
-          c.id,
-          e instanceof HttpError && e.status === 403
-            ? { text: `Only a workspace admin can add ${c.name} to ${name}.`, retry: null }
-            : e instanceof HttpError && e.status === 409 && !isAdmin && c.keyMode === 'workspace'
-              ? {
-                  // TASK-827 — the shared key is missing and only an admin can
-                  // add it. No Retry: re-checking would read "Add" again (a
-                  // non-admin can't see the key) and loop on the same 409.
-                  text: `${c.name} doesn’t have its shared key yet. Ask a workspace admin to add it.`,
-                  retry: null,
-                }
-              : e instanceof HttpError && e.status === 409
-              ? {
-                  // TASK-761 — the server holds the same line this subview
-                  // does: no attach until the sign-in / key resolves. Retry
-                  // re-reads what is still needed; it never attaches blind.
-                  text: `${c.name} isn’t signed in or set up yet, so we didn’t add it to ${name}. Try again to finish setting it up.`,
-                  retry: 'recheck',
-                }
-              : {
-                text: `We couldn’t add ${c.name} to ${name} just now. What you set up is saved — ${name} just can’t use it until it’s added.`,
-                retry: 'attach',
-              },
-        );
+        setProblem(c.id, refusalCopy(e, c, name, { isAdmin, withKeys: false }));
       } finally {
         setAttaching((prev) => {
           const next = new Set(prev);
@@ -243,38 +281,19 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
     [agentId, name, onAttached, isAdmin],
   );
 
-  /**
-   * A sign-in or key just succeeded: re-read what the connector still needs,
-   * then do the next step. Attach only when nothing is left.
-   */
-  // Connectors whose sign-in succeeded in this subview. The status read can
-  // lag the callback, so a later re-check (after a key, or a Retry) must not
-  // send the person back to "Sign in" for a sign-in they just finished.
-  const signedIn = useRef(new Set<string>());
-
-  const advance = useCallback(
-    async (c: ConnectorSummary) => {
-      let next: AddAction;
+  /** A per-agent key Add: the keys ride with the attach. Throws copy on refusal. */
+  const attachWithKeys = useCallback(
+    async (c: Connector, keys: AgentConnectorKey[]) => {
       try {
-        next = await actionFor(c.id, signedIn.current.has(c.id));
+        await workspaceApi.attachConnector(agentId, c.id, keys);
       } catch (e) {
         logRequestFailure(e, 'add-connector');
-        setProblem(c.id, {
-          text: `We couldn’t check ${c.name} just now. Please try again.`,
-          retry: 'recheck',
-        });
-        return;
+        throw new Error(refusalCopy(e, c, name, { isAdmin, withKeys: true }).text);
       }
-      setProblem(c.id, null);
-      setActions((prev) => ({ ...prev, [c.id]: next }));
-      if (next === 'add') {
-        setKeying(null);
-        await attach(c);
-      } else if (next === 'key') {
-        setKeying(c);
-      }
+      setKeying(null);
+      onAttached();
     },
-    [actionFor, attach],
+    [agentId, name, onAttached, isAdmin],
   );
 
   const shown = useMemo(
@@ -296,8 +315,8 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
       </Button>
       <h3 className="text-[15px] font-semibold">Add a connector</h3>
       <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
-        Pick one your workspace offers. If it needs a sign-in, we add it to {name} once
-        you’ve signed in.
+        Pick one your workspace offers. If it needs a sign-in or a key, we add it to {name}{' '}
+        once that’s done.
       </p>
       <InputGroup className="mt-4">
         <InputGroupAddon>
@@ -357,17 +376,17 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
               attaching={attaching.has(c.id)}
               problem={problems[c.id] ?? null}
               teamAgent={teamAgent}
-              canSignIn={!teamAgent || sharedCredentials}
-              onSignedIn={() => {
-                signedIn.current.add(c.id);
-                void advance(c);
-              }}
+              canSetCredential={!teamAgent || sharedCredentials}
+              // The callback already added it: re-read, never attach here.
+              onSignedIn={onAttached}
+              onSignInSettled={() => void recheckAdded(c.id)}
               onAddKey={() => {
+                const full = details[c.id];
+                if (full === undefined) return;
                 setProblem(c.id, null);
-                setKeying(c);
+                setKeying(full);
               }}
               onAdd={() => void attach(c)}
-              onRecheck={() => void advance(c)}
             />
           ))}
         </Card>
@@ -377,17 +396,15 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         Don’t see the one you need? Ask a workspace admin to set it up.
       </p>
       {keying !== null && (
-        <ConnectorConnectDialog
-          connectorId={keying.id}
-          connectorName={keying.name}
-          isAdmin={isAdmin}
+        <AddKeyDialog
+          connector={keying}
+          agentName={name}
+          teamAgent={teamAgent}
           open
           onOpenChange={(open) => {
             if (!open) setKeying(null);
           }}
-          // A key was saved. Attach only once EVERY key it needs is there —
-          // a multi-key connector calls this once per key.
-          onConnected={() => void advance(keying)}
+          onSave={(keys) => attachWithKeys(keying, keys)}
         />
       )}
     </>
@@ -403,11 +420,11 @@ function AvailableRow({
   attaching,
   problem,
   teamAgent,
-  canSignIn,
+  canSetCredential,
   onSignedIn,
+  onSignInSettled,
   onAddKey,
   onAdd,
-  onRecheck,
 }: {
   hidden: boolean;
   connector: ConnectorSummary;
@@ -417,19 +434,22 @@ function AvailableRow({
   attaching: boolean;
   problem: RowProblem | null;
   teamAgent: boolean;
-  /** TASK-813 — false: a team agent this person may not sign in on. */
-  canSignIn: boolean;
+  /** TASK-813 — false: a team agent this person may not put a sign-in or key on. */
+  canSetCredential: boolean;
   onSignedIn: () => void;
+  /** The sign-in ended without a cancel, whatever the popup said. */
+  onSignInSettled: () => void;
   onAddKey: () => void;
   onAdd: () => void;
-  onRecheck: () => void;
 }) {
   const [consenting, setConsenting] = useState(false);
   const signIn = useOAuthPopup({
     connectorId: connector.id,
     agentId,
+    mode: 'add',
     serviceName: connector.name,
     onConnected: onSignedIn,
+    onSettled: onSignInSettled,
   });
   const pending = signIn.busy;
 
@@ -447,33 +467,33 @@ function AvailableRow({
         aria-label={`Adding ${connector.name}`}
       />
     );
-  } else if (problem !== null && problem.retry !== null) {
+  } else if (problem !== null && problem.retry) {
+    // A plain Retry of the same Add — only ever a no-keys Add (a key Add's
+    // failure stays in its form).
     control = (
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-7 px-2.5 text-[12px]"
-        onClick={problem.retry === 'attach' ? onAdd : onRecheck}
-      >
+      <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]" onClick={onAdd}>
         Retry
       </Button>
     );
   } else if (action === 'checking') {
     control = <Skeleton className="mr-1 h-7 w-16" aria-label="Checking" />;
-  } else if (action === 'sign-in' && !canSignIn) {
+  } else if (action === 'unloaded') {
+    control = (
+      <span className="mr-1.5 shrink-0 text-[12px] text-muted-foreground">{UNLOADED}</span>
+    );
+  } else if ((action === 'sign-in' || action === 'key') && !canSetCredential) {
     control = (
       <span className="mr-1.5 shrink-0 text-[12px] text-muted-foreground">
-        {SETUP_REASON['ask-owner']}
+        {action === 'sign-in' ? ASK_OWNER_SIGN_IN : ASK_OWNER_KEY}
       </span>
     );
   } else {
-    const label = action === 'sign-in' ? 'Sign in' : action === 'key' ? 'Add key' : 'Add';
     control = (
       <Button
         variant="outline"
         size="sm"
         className="h-7 px-2.5 text-[12px]"
-        aria-label={`${label} — ${connector.name}`}
+        aria-label={`Add — ${connector.name}`}
         disabled={consenting}
         onClick={() => {
           if (action === 'sign-in') {
@@ -483,7 +503,7 @@ function AvailableRow({
           else onAdd();
         }}
       >
-        {label}
+        Add
       </Button>
     );
   }
@@ -507,7 +527,7 @@ function AvailableRow({
         <div className="flex flex-col gap-2 px-3 pb-3">
           <Alert>
             <AlertDescription className="text-[12px]">
-              {`Signing in here lets anyone who uses ${agentName} act as you on ${connector.name}. Only people already on this agent are affected.`}
+              {`Signing in here lets ${agentName} use your ${connector.name} account for everyone who uses this agent. Only people already on it are affected.`}
             </AlertDescription>
           </Alert>
           <div className="flex justify-end gap-2">

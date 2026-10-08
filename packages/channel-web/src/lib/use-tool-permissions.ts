@@ -7,7 +7,7 @@
  * the person already picked.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ConnectorRouteBase } from './connectors';
+import type { ConnectorWriteBase } from './connectors';
 import {
   changedRows,
   getToolPermissions,
@@ -42,7 +42,7 @@ export interface ToolPermissionsState {
 
 export function useToolPermissions(
   connectorId: string | undefined,
-  base: ConnectorRouteBase,
+  base: ConnectorWriteBase,
 ): ToolPermissionsState {
   const [load, setLoad] = useState<ToolPermissionsLoad>(
     connectorId ? { kind: 'loading' } : { kind: 'hidden' },

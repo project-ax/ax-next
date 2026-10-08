@@ -311,6 +311,8 @@ describe('TASK-397 — migration', () => {
       const names = cols.rows.map((r) => r.column_name);
       expect(names).toContain('owner_user_id');
       expect(names).not.toContain('author_user_id');
+      // Slice 6 — the additive column lands on a legacy table too.
+      expect(names).toContain('last_warning');
 
       const row = await sql<{ owner_user_id: string }>`
         SELECT owner_user_id FROM routines_v1_definitions WHERE agent_id = 'agt_legacy'

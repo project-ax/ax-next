@@ -40,6 +40,8 @@ export interface RoutinesDefinitionsRow {
   last_run_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   last_status: 'ok' | 'silenced' | 'error' | null;
   last_error: string | null;
+  /** Slice 6 — the last recorded fire's skipped-connector warning, or null. */
+  last_warning: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, Date | undefined, Date>;
   updated_at: ColumnType<Date, Date | undefined, Date>;
   definition_id: string | null;
@@ -56,6 +58,8 @@ export interface RoutinesFiresRow {
   status: 'ok' | 'silenced' | 'error';
   error: string | null;
   rendered_prompt: string | null;
+  /** Slice 6 — "Gmail isn't signed in on Bob, so this run went without it." */
+  warning: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface DefaultRoutinesRow {
@@ -208,6 +212,20 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
   await sql`
     ALTER TABLE routines_v1_fires
       ADD COLUMN IF NOT EXISTS rendered_prompt TEXT
+  `.execute(db);
+
+  // Slice 6 — when a run went without a connector (not signed in on the
+  // agent, or its sign-in needs doing again), the fire says so, and the
+  // routine carries the latest fire's warning (null after a clean run).
+  // Additive and nullable: rolling-deploy safe, idempotent on re-run.
+  await sql`
+    ALTER TABLE routines_v1_fires
+      ADD COLUMN IF NOT EXISTS warning TEXT
+  `.execute(db);
+
+  await sql`
+    ALTER TABLE routines_v1_definitions
+      ADD COLUMN IF NOT EXISTS last_warning TEXT
   `.execute(db);
 
   await sql`

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
+import { logSkippedRow } from '../effective-connectors.js';
 import {
   stopPostgresContainer,
   startTestContainer,
@@ -14,11 +15,11 @@ import {
   type ConnectorDatabase,
 } from '../migrations.js';
 import {
+  assertConnectorIdCreatable,
   createConnectorStore,
   validateCapabilities,
   validateConnectorId,
   validateKeyMode,
-  validateVisibility,
 } from '../store.js';
 import { scopedConnectors } from '../scope.js';
 import type { Capabilities } from '../types.js';
@@ -85,7 +86,7 @@ describe('runConnectorsMigration', () => {
     expect(await store.listForUser('nobody')).toEqual([]);
   });
 
-  it('enforces the key_mode / visibility CHECK constraints at the DB level', async () => {
+  it('enforces the key_mode CHECK constraint at the DB level', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     // Bypass the store's boundary validators to prove the DB CHECK is the
@@ -100,7 +101,6 @@ describe('runConnectorsMigration', () => {
           description: '',
           usage_note: '',
           key_mode: 'nope',
-          visibility: 'private',
           capabilities: JSON.stringify(caps()) as unknown as object,
           deleted_at: null,
           created_at: new Date(),
@@ -124,7 +124,6 @@ describe('createConnectorStore', () => {
       description: 'd',
       usageNote: 'u',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: caps(),
     });
     expect(created).toBe(true);
@@ -138,16 +137,112 @@ describe('createConnectorStore', () => {
     expect(await store.softDelete('u', 'c')).toBe(false);
   });
 
-  it('shared reads do not grant writes, leak private rows, or attach connectors by default', async () => {
+  describe('requireUniqueId', () => {
+    const base = {
+      connectorId: 'gmail',
+      name: 'Gmail',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal' as const,
+      capabilities: caps(),
+    };
+
+    it('rejects a new row when another owner holds a live row with the id', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert({ ...base, userId: 'idA' });
+      await expect(
+        store.upsert({ ...base, userId: 'idB', requireUniqueId: true }),
+      ).rejects.toMatchObject({ code: 'connector-id-taken' });
+      expect(await store.getByIdNotDeleted('idB', 'gmail')).toBeNull();
+    });
+
+    it('is opt-in: without the flag a second owner may reuse the id', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert({ ...base, userId: 'idA' });
+      const out = await store.upsert({ ...base, userId: 'idB' });
+      expect(out.created).toBe(true);
+    });
+
+    it('a tombstoned row never blocks', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert({ ...base, userId: 'idA' });
+      await store.softDelete('idA', 'gmail');
+      const out = await store.upsert({ ...base, userId: 'idB', requireUniqueId: true });
+      expect(out.created).toBe(true);
+    });
+
+    it('re-upserting your own live row with the flag succeeds', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert({ ...base, userId: 'idA' });
+      const out = await store.upsert({ ...base, userId: 'idA', requireUniqueId: true });
+      expect(out.created).toBe(false);
+    });
+  });
+
+  describe('createOnly', () => {
+    const base = {
+      userId: 'idA',
+      connectorId: 'gmail',
+      name: 'Gmail',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal' as const,
+      capabilities: caps(),
+    };
+
+    it('refuses a same-owner live row with connector-id-taken and leaves the row unchanged', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert(base);
+      const before = await store.getByIdNotDeleted('idA', 'gmail');
+      await expect(
+        store.upsert({ ...base, name: 'Overwritten', createOnly: true }),
+      ).rejects.toMatchObject({ code: 'connector-id-taken' });
+      const after = await store.getByIdNotDeleted('idA', 'gmail');
+      expect(after).toEqual(before);
+      expect(after?.name).toBe('Gmail');
+    });
+
+    it('still resurrects a tombstone (created: true)', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      await store.upsert(base);
+      await store.softDelete('idA', 'gmail');
+      const out = await store.upsert({ ...base, name: 'Gmail again', createOnly: true });
+      expect(out.created).toBe(true);
+      expect((await store.getByIdNotDeleted('idA', 'gmail'))?.name).toBe('Gmail again');
+    });
+
+    it('creates a fresh row', async () => {
+      const db = makeKysely();
+      await runConnectorsMigration(db);
+      const store = createConnectorStore(db);
+      const out = await store.upsert({ ...base, createOnly: true });
+      expect(out.created).toBe(true);
+    });
+  });
+
+  it('every live connector is readable by others, without granting writes (SIGNINS-9)', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createConnectorStore(db);
     const base = { userId: 'author', name: 'Connector', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
-    await store.upsert({ ...base, connectorId: 'shared', visibility: 'shared' });
-    await store.upsert({ ...base, connectorId: 'private', visibility: 'private' });
+    await store.upsert({ ...base, connectorId: 'shared' });
     expect(await store.listForUser('reader')).toMatchObject([{ id: 'shared', canEdit: false }]);
     expect(await store.getAvailableById('reader', 'shared')).toMatchObject({ ownerUserId: 'author', connector: { id: 'shared', canEdit: false } });
-    expect(await store.getAvailableById('reader', 'private')).toBeNull();
+    // No visibility on either shape.
+    expect((await store.listForUser('reader'))[0]).not.toHaveProperty('visibility');
+    expect((await store.getAvailableById('reader', 'shared'))!.connector).not.toHaveProperty('visibility');
     expect(await store.getByIdNotDeleted('reader', 'shared')).toBeNull();
     expect(await store.softDelete('reader', 'shared')).toBe(false);
     await store.softDelete('author', 'shared');
@@ -162,72 +257,113 @@ describe('createConnectorStore', () => {
     const base = { userId: 'author', name: 'Connector', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
     await db.insertInto('connectors_v1_connectors').values({
       owner_user_id: 'author', connector_id: 'legacy', name: 'Legacy', description: '', usage_note: '',
-      key_mode: 'workspace', visibility: 'private', default_attached: true,
+      key_mode: 'workspace', default_attached: true,
       capabilities: JSON.stringify(caps()) as unknown as object, deleted_at: null,
       created_at: new Date(), updated_at: new Date(),
     }).execute();
     await runConnectorsMigration(db);
     await runConnectorsMigration(db);
     const store = createConnectorStore(db);
-    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false, visibility: 'private', keyMode: 'workspace' });
+    expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false, keyMode: 'workspace' });
     // The legacy default flag survives the migration and an edit — only the
     // conversion hooks read it (TASK-808) — but never reaches the domain shape.
     expect(await store.listLegacyDefaults()).toEqual([{ ownerUserId: 'author', connectorId: 'legacy' }]);
     expect(await store.getByIdNotDeleted('author', 'legacy')).not.toHaveProperty('defaultAttached');
-    await store.upsert({ ...base, connectorId: 'legacy', keyMode: 'workspace', visibility: 'private' });
+    await store.upsert({ ...base, connectorId: 'legacy', keyMode: 'workspace' });
     expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: false });
     expect(await store.listLegacyDefaults()).toEqual([{ ownerUserId: 'author', connectorId: 'legacy' }]);
-    await store.upsert({ ...base, connectorId: 'new', visibility: 'shared' });
+    await store.upsert({ ...base, connectorId: 'new' });
     expect(await store.getByIdNotDeleted('author', 'new')).toMatchObject({ requiresAttachment: true });
     await store.softDelete('author', 'legacy');
-    await store.upsert({ ...base, connectorId: 'legacy', visibility: 'shared' });
+    await store.upsert({ ...base, connectorId: 'legacy' });
     expect(await store.getByIdNotDeleted('author', 'legacy')).toMatchObject({ requiresAttachment: true });
     // Re-creating a tombstoned flagged id starts clean: the stale flag is reset.
     expect(await store.listLegacyDefaults()).toEqual([]);
   });
 
-  it('prefers owned ids and denies ambiguous shared ids consistently', async () => {
+  it('prefers owned ids and denies ambiguous ids (a legacy duplicate) consistently', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createConnectorStore(db);
-    const base = { connectorId: 'duplicate', name: 'Connector', description: '', usageNote: '', keyMode: 'personal' as const, visibility: 'shared' as const, capabilities: caps() };
+    const base = { connectorId: 'duplicate', name: 'Connector', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
     await store.upsert({ ...base, userId: 'alice', name: 'Alice' });
     await store.upsert({ ...base, userId: 'bob', name: 'Bob' });
     expect(await store.getAvailableById('reader', 'duplicate')).toBeNull();
     expect(await store.listForUser('reader')).toEqual([]);
     expect(await store.getAvailableById('alice', 'duplicate')).toMatchObject({ ownerUserId: 'alice', connector: { name: 'Alice', canEdit: true } });
-    await store.upsert({ ...base, userId: 'reader', name: 'Private override', visibility: 'private' });
-    expect(await store.listForUser('reader')).toMatchObject([{ id: 'duplicate', name: 'Private override', canEdit: true }]);
-    expect(await store.getAvailableById('reader', 'duplicate')).toMatchObject({ ownerUserId: 'reader', connector: { visibility: 'private' } });
+    await store.upsert({ ...base, userId: 'reader', name: 'Own' });
+    expect(await store.listForUser('reader')).toMatchObject([{ id: 'duplicate', name: 'Own', canEdit: true }]);
+    expect(await store.getAvailableById('reader', 'duplicate')).toMatchObject({ ownerUserId: 'reader', connector: { name: 'Own' } });
   });
 
-  it('getSoleSharedById (TASK-711): only the one shared definition, never a shadowing private row or an ambiguous id', async () => {
+  it('getSoleLiveById (TASK-711, SIGNINS-9): only the one live definition, never an ambiguous id', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);
     const store = createConnectorStore(db);
     const base = { connectorId: 'linear', name: 'Team Linear', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
-    // No shared definition yet: nobody gets one, not even the private owner.
-    await store.upsert({ ...base, userId: 'owner', visibility: 'private' });
-    expect(await store.getSoleSharedById('owner', 'linear')).toBeNull();
-    // The owner shares it: the owner and every member see the same row.
-    await store.upsert({ ...base, userId: 'owner', visibility: 'shared' });
-    expect(await store.getSoleSharedById('owner', 'linear')).toMatchObject({ ownerUserId: 'owner' });
-    expect(await store.getSoleSharedById('member', 'linear')).toMatchObject({ ownerUserId: 'owner', connector: { canEdit: false } });
-    // The attack shape: a member's OWN private definition with the same id
-    // shadows the shared one for them (getAvailableById picks it) — denied.
-    await store.upsert({ ...base, userId: 'mallory', name: 'Mine', visibility: 'private' });
+    // No definition yet: nobody gets one.
+    expect(await store.getSoleLiveById('owner', 'linear')).toBeNull();
+    // One definition: the owner and every member see the same row.
+    await store.upsert({ ...base, userId: 'owner' });
+    expect(await store.getSoleLiveById('owner', 'linear')).toMatchObject({ ownerUserId: 'owner', connector: { canEdit: true } });
+    expect(await store.getSoleLiveById('member', 'linear')).toMatchObject({ ownerUserId: 'owner', connector: { canEdit: false } });
+    // The attack shape: a second live definition with the same id (legacy
+    // data, or a concurrent create race — `requireUniqueId` is
+    // check-then-insert). Mallory resolves her own, the others resolve
+    // nothing — so the id is ambiguous for EVERYONE, and fails closed until
+    // an admin deletes one.
+    await store.upsert({ ...base, userId: 'mallory', name: 'Mine' });
     expect(await store.getAvailableById('mallory', 'linear')).toMatchObject({ ownerUserId: 'mallory' });
-    expect(await store.getSoleSharedById('mallory', 'linear')).toBeNull();
-    // Other members are unaffected by mallory's private row.
-    expect(await store.getSoleSharedById('member', 'linear')).toMatchObject({ ownerUserId: 'owner' });
-    // Mallory shares hers too: two shared definitions, so the id is ambiguous for everyone.
-    await store.upsert({ ...base, userId: 'mallory', name: 'Mine', visibility: 'shared' });
-    expect(await store.getSoleSharedById('mallory', 'linear')).toBeNull();
-    expect(await store.getSoleSharedById('owner', 'linear')).toBeNull();
-    expect(await store.getSoleSharedById('member', 'linear')).toBeNull();
+    expect(await store.getSoleLiveById('mallory', 'linear')).toBeNull();
+    expect(await store.getSoleLiveById('owner', 'linear')).toBeNull();
+    expect(await store.getSoleLiveById('member', 'linear')).toBeNull();
     // A deleted definition does not count.
     await store.softDelete('mallory', 'linear');
-    expect(await store.getSoleSharedById('member', 'linear')).toMatchObject({ ownerUserId: 'owner' });
+    expect(await store.getSoleLiveById('member', 'linear')).toMatchObject({ ownerUserId: 'owner' });
+    expect(await store.getSoleLiveById('mallory', 'linear')).toMatchObject({ ownerUserId: 'owner' });
+  });
+
+  it('listAvailable skips a malformed row and reports it once, instead of failing the whole list', async () => {
+    // Final review M3: one bad row used to make listAvailable throw, which broke
+    // tool labels and the effective connector set for EVERY user.
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    await store.upsert({
+      userId: 'admin', connectorId: 'good', name: 'Good', description: '', usageNote: '',
+      keyMode: 'personal', capabilities: caps(),
+    });
+    // A row the narrowed schema refuses (a stored stdio server), written past the store.
+    await db
+      .insertInto('connectors_v1_connectors')
+      .values({
+        owner_user_id: 'admin',
+        connector_id: 'bad',
+        name: 'Bad',
+        description: '',
+        usage_note: '',
+        key_mode: 'personal',
+        capabilities: JSON.stringify({
+          ...caps(),
+          mcpServers: [{ name: 'local', transport: 'stdio', command: 'npx', allowedHosts: [], credentials: [] }],
+        }) as unknown as object,
+        deleted_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+
+    // The callers' reporter: one warn, the id and the reason — never the owner.
+    const warn = vi.fn();
+    const logger = { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Parameters<typeof logSkippedRow>[0];
+    const available = await store.listAvailable('reader', logSkippedRow(logger));
+    expect(available.map((entry) => entry.connector.id)).toEqual(['good']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('connectors_list_skipped_row', {
+      connectorId: 'bad',
+      err: 'Local (stdio) MCP servers are no longer supported. Use a remote MCP server URL.',
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('admin');
   });
 
   it('connector and summary shapes carry no defaultAttached key (TASK-808 negative space)', async () => {
@@ -240,7 +376,6 @@ describe('createConnectorStore', () => {
       description: '',
       usageNote: '',
       keyMode: 'personal' as const,
-      visibility: 'private' as const,
       capabilities: caps(),
     };
     const { connector } = await store.upsert({ ...base, connectorId: 'c' });
@@ -253,7 +388,7 @@ describe('createConnectorStore', () => {
       expect(summary).not.toHaveProperty('capabilities');
     }
     expect(await store.getByIdNotDeleted('u', 'c')).not.toHaveProperty('defaultAttached');
-    for (const entry of await store.listAvailable('u')) {
+    for (const entry of await store.listAvailable('u', () => { throw new Error('no row should be skipped'); })) {
       expect(entry.connector).not.toHaveProperty('defaultAttached');
     }
     expect(await store.getAvailableById('u', 'c')).not.toHaveProperty('connector.defaultAttached');
@@ -270,7 +405,6 @@ describe('createConnectorStore', () => {
       description: '',
       usageNote: '',
       keyMode: 'personal' as const,
-      visibility: 'private' as const,
       capabilities: caps(),
     };
     await store.upsert(base);
@@ -291,7 +425,6 @@ describe('createConnectorStore', () => {
       description: '',
       usageNote: '',
       keyMode: 'personal' as const,
-      visibility: 'private' as const,
       capabilities: caps(),
     });
     const flag = (userId: string, connectorId: string) =>
@@ -324,7 +457,6 @@ describe('createConnectorStore', () => {
       description: '',
       usageNote: '',
       keyMode: 'personal' as const,
-      visibility: 'private' as const,
       capabilities: caps(),
     });
     await store.upsert(base('u1', 'a'));
@@ -351,7 +483,6 @@ describe('createConnectorStore', () => {
       description: '',
       usageNote: '',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: caps(),
     });
     await store.upsert({
@@ -361,7 +492,6 @@ describe('createConnectorStore', () => {
       description: '',
       usageNote: '',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: caps(),
     });
     await store.softDelete('u1', 'a');
@@ -372,7 +502,6 @@ describe('createConnectorStore', () => {
       description: '',
       usageNote: '',
       keyMode: 'personal',
-      visibility: 'private',
       capabilities: caps(),
     });
 
@@ -390,11 +519,15 @@ describe('boundary validators', () => {
     expect(() => validateConnectorId('')).toThrow();
   });
 
-  it('validateKeyMode / validateVisibility reject out-of-enum', () => {
+  it('validateConnectorId accepts `authored` (reserved only on create), assertConnectorIdCreatable refuses it', () => {
+    expect(validateConnectorId('authored')).toBe('authored');
+    expect(() => assertConnectorIdCreatable('authored')).toThrow(/reserved/);
+    expect(() => assertConnectorIdCreatable('linear')).not.toThrow();
+  });
+
+  it('validateKeyMode rejects out-of-enum', () => {
     expect(validateKeyMode('workspace')).toBe('workspace');
     expect(() => validateKeyMode('admin')).toThrow();
-    expect(validateVisibility('shared')).toBe('shared');
-    expect(() => validateVisibility('public')).toThrow();
   });
 
   it('validateCapabilities round-trips a valid spec and rejects garbage', () => {
@@ -482,5 +615,36 @@ describe('validateCapabilities — stdio removed', () => {
         ],
       }),
     ).not.toThrow();
+  });
+});
+
+describe('createConnectorStore — id liveness across owners (slice 2b)', () => {
+  it('hasLiveById counts any owner, never a tombstone', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = { name: 'CRM', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
+    expect(await store.hasLiveById('crm')).toBe(false);
+    await store.upsert({ ...base, userId: 'a', connectorId: 'crm' });
+    await store.upsert({ ...base, userId: 'b', connectorId: 'crm' });
+    expect(await store.hasLiveById('crm')).toBe(true);
+    await store.softDelete('b', 'crm');
+    // Another owner's row still keeps the id live.
+    expect(await store.hasLiveById('crm')).toBe(true);
+    await store.softDelete('a', 'crm');
+    expect(await store.hasLiveById('crm')).toBe(false);
+  });
+
+  it('liveIds returns the live subset (any owner), deduped, and nothing for an empty list', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+    const base = { name: 'X', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
+    await store.upsert({ ...base, userId: 'a', connectorId: 'crm' });
+    await store.upsert({ ...base, userId: 'b', connectorId: 'crm' });
+    await store.upsert({ ...base, userId: 'b', connectorId: 'gone' });
+    await store.softDelete('b', 'gone');
+    expect((await store.liveIds(['crm', 'gone', 'never', 'crm'])).sort()).toEqual(['crm']);
+    expect(await store.liveIds([])).toEqual([]);
   });
 });

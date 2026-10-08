@@ -88,6 +88,12 @@ const mockFetchBootstrapStatus = vi.mocked(fetchBootstrapStatus);
 const ALICE: AuthSession = {
   user: { id: 'u2', email: 'alice@local', name: 'Alice', role: 'user' },
 };
+// Connectors is an Admin tab since slice 2a, so the tab-switch case that moves
+// to it runs as Alice the admin (same name: the account-menu helper finds her
+// by it).
+const ALICE_ADMIN: AuthSession = {
+  user: { ...ALICE.user, role: 'admin' },
+};
 
 function installShellFetch(): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -282,11 +288,12 @@ describe('opening Settings moves focus into it (TASK-510)', () => {
   });
 
   it('does not pull focus back to the heading when the person switches tabs', async () => {
+    mockGetSession.mockResolvedValue(ALICE_ADMIN);
     render(<App />);
     await openSettingsFromWorkspace();
     await expectHeadingHoldsFocus();
 
-    const connectors = screen.getByRole('button', { name: /Connectors/ });
+    const connectors = screen.getByRole('button', { name: /^Connectors$/ });
     connectors.focus();
     fireEvent.click(connectors);
 

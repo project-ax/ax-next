@@ -542,8 +542,8 @@ export interface K8sPresetConfig {
   };
   /**
    * When true, load @ax/credentials-admin-routes — mounts
-   * /admin/credentials* (admin-only CRUD over the full scope axis) and
-   * /settings/credentials* (per-user CRUD restricted to scope='user').
+   * /admin/credentials* (admin-only reads over the full scope axis) and the
+   * /admin|/settings/destinations/* credential write routes.
    * Off by default; the chart flips it via
    * `--set credentials.admin.enabled=true` which in turn sets
    * `AX_CREDENTIALS_ADMIN_ENABLED=true` on the host pod.
@@ -1223,13 +1223,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // `tool:execute:<name>`, @ax/decisions can declare nothing about them in its
   // manifest, not even an `optionalCalls` entry. That means a producer quietly
   // disappearing from this preset would silently unguard every decision for
-  // that tool with nothing failing. `preset.test.ts` asserts the two producers
-  // AW-7 ships are loaded here and that neither ever ships as a half-pair;
+  // that tool with nothing failing. `preset.test.ts` asserts the producer
+  // AW-7 ships is loaded here and that neither ever ships as a half-pair;
   // that assertion IS the safety net.
   //
   // The producers themselves live with their tools, above and below:
-  // `request_capability` in @ax/skill-broker (unconditional) and
-  // `connector_propose` in @ax/tool-connector-propose (open-mode only). Every
+  // `request_capability` in @ax/skill-broker (unconditional). `connector_propose`
+  // has none: a replay only files an admin request. Every
   // other tool produces no predicate and its decisions execute unguarded on
   // approval — right for a call with nothing meaningful to re-check, and the
   // open question AW-7 carries forward for the rest of the catalog.
@@ -1296,7 +1296,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // TASK-91 (connectors-first-class, design Phase 1). Registers the five
   // `connectors:*` service hooks (list/get/upsert/delete/resolve) backed by its
   // own `connectors_v1_*` table — the one source of truth for the first-class
-  // Connector object `{ id, name, description, usageNote, keyMode, visibility } +
+  // Connector object `{ id, name, description, usageNote, keyMode } +
   // Capabilities` (the neutral capability shape lifted into @ax/skills-parser by
   // TASK-90). Calls `database:get-instance` (loaded above; topo-sort orders it).
   //
@@ -1378,26 +1378,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     plugins.push(createToolSkillProposePlugin());
   }
 
-  // TASK-95 (connectors-first-class, design Phase 2): registers the
-  // `connector_propose` HOST-executed tool (mirror of @ax/skill-broker's
-  // request_capability — pure-JSON args, no /ephemeral draft dir to read, so no
-  // sandbox executor). It calls the `connectors:install-authored` hook (TASK-94,
-  // registered by @ax/connectors above) which persists a PENDING connector draft;
-  // the chat-orchestrator then fires ONE approval card per pending draft. Gated
-  // on the SAME open-mode flag as the builtin authoring skills + skill_propose —
-  // ax-connector-creator (a builtin loaded by loadBuiltinSkills, also gated on
-  // this flag) drives it. The hard `connectors:install-authored` dep means this
-  // is only ever pushed where @ax/connectors is loaded (k8s, just above).
-  //
-  // TASK-228 (AW-7): it also registers the FRESHNESS PAIR for
-  // `connector_propose`, and this is the producer that proves the guard MATTERS
-  // rather than merely fires. A connector carries the hosts the agent may reach
-  // and the slot the user's key lands in; approving a held propose replays the
-  // recorded draft into the owner's namespace under the id the model chose. If
-  // a human set that connection up in the meantime, the replay would write the
-  // agent's older draft over a live, human-approved one. The predicate is
-  // `connectors:resolve` on that id — declared `optionalCalls`, because without
-  // it the tool still works, it just proposes unguarded.
+  // Registers the `connector_propose` HOST-executed tool (mirror of
+  // @ax/skill-broker's request_capability — pure-JSON args, no sandbox
+  // executor). It calls the `connectors:install-authored` hook (registered by
+  // @ax/connectors above), which files a PENDING request for a workspace admin
+  // to set up in Admin > Connectors. Gated on the SAME open-mode flag as the
+  // builtin authoring skills + skill_propose — ax-connector-creator (a builtin
+  // loaded by loadBuiltinSkills, also gated on this flag) drives it. The hard
+  // `connectors:install-authored` dep means this is only ever pushed where
+  // @ax/connectors is loaded (k8s, just above).
   if (config.allowUserInstalledSkills) {
     plugins.push(createToolConnectorProposePlugin());
   }

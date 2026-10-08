@@ -6,9 +6,10 @@
  * Deny segmented control, grouped "Looks things up" / "Makes changes".
  * "Remove" stays pinned at the bottom while the list scrolls. There is no
  * "Edit connector" here: a connector's settings are a workspace admin's, in
- * Settings › Connectors. What a person may change is what this agent may do
- * with it — this view, or the list's "Edit permissions" dialog
- * ({@link EditPermissionsDialog}), which draws the same tool list.
+ * Admin › Connectors. What a person may change is what this agent may do
+ * with it — this view, which the row menu's "Edit" opens (a plain member's
+ * read-only "View details" opens it too; the store still refuses anything
+ * above their ceiling).
  *
  * WHAT THE CONTROL CAN DO. It writes this agent's own choice through
  * `PUT …/tool-verdicts`, and the store refuses anything looser than the
@@ -25,7 +26,7 @@
  * description is deliberately not drawn here (the editor in Settings shows it,
  * fenced); the rail is too narrow to set it apart as "their words".
  */
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ChevronLeft,
   CircleAlert,
@@ -37,13 +38,6 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
@@ -63,10 +57,12 @@ import {
 } from '@/lib/agent-connector-tools';
 import { cn } from '@/lib/utils';
 import type { GrantRow } from '@/lib/workspace-api';
+import { shortDay } from '@/lib/workspace-time';
 import type {
   AgentConnectorHealth,
   AgentConnectorRow,
   AgentConnectorSetup,
+  AgentConnectorSignedIn,
   AgentConnectorTool,
   AgentConnectorToolsRead,
   AgentToolVerdict,
@@ -81,8 +77,9 @@ export const SETUP_REASON: Record<AgentConnectorSetup, string> = {
   'sign-in': 'Not signed in yet',
   'add-key': 'No key added yet',
   'ask-admin': 'Needs a key from a workspace admin',
-  // TASK-798 — a team agent's sign-in is its owner's (or an admin's) to make.
-  'ask-owner': 'Ask the agent’s owner to sign in',
+  // TASK-798 / slice 3 — a team agent's sign-in and key are its team admin's
+  // to choose.
+  'ask-owner': 'Ask the agent’s owner to set it up',
 };
 
 /** An older server may send `needs-sign-in` without a setup: no action then. */
@@ -114,7 +111,8 @@ interface Props {
   unsupported?: boolean;
   /**
    * TASK-795 — Sign in / Add key for a `needs-sign-in` row: the same dialogs
-   * the `⋯` menu opens.
+   * the `⋯` menu opens. Absent for someone who may not choose the agent's
+   * account (slice 3): no button then.
    */
   onSetUp?: () => void;
   /**
@@ -163,8 +161,8 @@ export function ConnectorDetails({
   const { data } = state;
   // TASK-812 — the list's health word is the source of truth for sign-in;
   // this view's tool read is only as fresh as when it was taken. When the
-  // list's word changes (a sign-in or key just finished, a Retry or
-  // Reconnect landed), that read is stale by definition: take a new one.
+  // list's word changes (a sign-in or key just finished), that read is
+  // stale by definition: take a new one.
   // Forced, because an unforced read is answered from the server's cache of
   // the very check that said "needs sign-in" a moment ago.
   const { reload } = state;
@@ -202,7 +200,10 @@ export function ConnectorDetails({
       {row.health === 'needs-sign-in' ? (
         <SetupLine setup={row.setup} onSetUp={onSetUp} />
       ) : (
-        <ConnectionLine data={data} health={row.health} />
+        <>
+          <ConnectionLine data={data} health={row.health} />
+          <SignedInLine signedIn={row.signedIn} />
+        </>
       )}
       {unsupported && (
         <div className="mt-4">
@@ -279,8 +280,7 @@ export function ConnectorDetails({
 
 /**
  * What this agent may do with one connector: the loading / failed states and
- * the per-tool list. Shared by the details view and {@link EditPermissionsDialog}
- * so the two never disagree.
+ * the per-tool list.
  */
 function ToolPermissions({
   agentName,
@@ -328,47 +328,11 @@ function ToolPermissions({
 }
 
 /**
- * "Edit permissions" from a row's `⋯` menu: the same per-tool Allow / Ask
- * first / Deny list as the details view, in a dialog. Only what THIS agent may
- * do with the connector — the connector's own settings stay a workspace
- * admin's, in Settings › Connectors. Every change saves as it is made (same
- * write as the details view), so there is no Save button to forget.
- */
-export function EditPermissionsDialog({
-  agentId,
-  agentName,
-  row,
-  onOpenChange,
-}: {
-  agentId: string;
-  agentName: string;
-  row: AgentConnectorRow;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const state = useConnectorTools(agentId, row.id);
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Edit permissions · {row.name}</DialogTitle>
-          <DialogDescription>
-            Choose what {agentName} may do with each of {row.name}’s tools. Changes
-            save as you make them.
-          </DialogDescription>
-        </DialogHeader>
-        <div>
-          <ToolPermissions agentName={agentName} row={row} state={state} />
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/**
- * "Connected · signed in as you". Only what we know: the row's stored health
- * (the same word the list's error icon uses), else the last time we asked the
- * connector for its tools; "as you" is said only for a connector that acts
- * with the person's own access.
+ * "Connected". Only what we know: the row's stored health (the same word the
+ * list's error icon uses), else the last time we asked the connector for its
+ * tools. Who the agent signed in as is {@link SignedInLine}'s job — slice 4
+ * retired the old guess "signed in as you", which an agent's own sign-in made
+ * untrue. A workspace connector still says it uses the workspace's account.
  */
 function ConnectionLine({
   data,
@@ -398,7 +362,7 @@ function ConnectionLine({
         : data.status === 'unreachable'
           ? 'Can’t reach it'
           : 'We can’t check this one from here';
-  const who = data.connector.access === 'workspace' ? 'uses your workspace’s account' : 'signed in as you';
+  const who = data.connector.access === 'workspace' ? 'uses your workspace’s account' : null;
   const Icon = ok ? CircleCheck : CircleAlert;
   return (
     <p
@@ -412,18 +376,58 @@ function ConnectionLine({
       <Icon aria-hidden="true" className="size-3.5 shrink-0" />
       <span>
         {word}
-        {ok && ` · ${who}`}
+        {ok && who !== null && ` · ${who}`}
       </span>
     </p>
   );
 }
 
 /**
+ * Slice 4 — who the agent acts as. "Signed in as bob@x.com" when the provider
+ * named the account; else "Signed in by you|Vinay|someone on 7 Oct"; nothing
+ * for a sign-in from before slice 4 (no account, no date). The account is
+ * UNTRUSTED provider text: a text node only, truncated, whole in `title`.
+ */
+function SignedInLine({ signedIn }: { signedIn: AgentConnectorSignedIn | undefined }) {
+  if (signedIn === undefined) return null;
+  // `title` is the whole sentence as plain text; the visible line isolates
+  // the provider's account (or the signer's name) in a `<bdi>`, so
+  // right-to-left text can't reorder the words around it.
+  let text: string | null = null;
+  let line: ReactNode = null;
+  if (signedIn.account !== null) {
+    text = `Signed in as ${signedIn.account}`;
+    line = (
+      <>
+        Signed in as <bdi>{signedIn.account}</bdi>
+      </>
+    );
+  } else if (signedIn.at !== null) {
+    const day = shortDay(signedIn.at);
+    const by = signedIn.byYou ? 'you' : (signedIn.byName ?? 'someone');
+    if (day !== '') {
+      text = `Signed in by ${by} on ${day}`;
+      line = (
+        <>
+          Signed in by <bdi>{by}</bdi> on {day}
+        </>
+      );
+    }
+  }
+  if (text === null) return null;
+  return (
+    <p className="mt-0.5 truncate text-[12px] text-muted-foreground" title={text}>
+      {line}
+    </p>
+  );
+}
+
+/**
  * TASK-795 — nobody has set this connector up yet. Muted, not red: nothing is
- * broken. The button is the same first-time setup the `⋯` menu leads with;
- * `ask-admin` has none (only a workspace admin can add that key), and nor
- * does `ask-owner` (TASK-798: only the team agent's owner or an admin can
- * sign in on it).
+ * broken. The button is the same fix the `⋯` menu leads with; `ask-admin`
+ * has none (only a workspace admin can add that key), and nor does
+ * `ask-owner` (TASK-798 / slice 3: only the team agent's team admin chooses
+ * its account).
  */
 function SetupLine({
   setup,
