@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   accountFromIdToken,
   fetchUserinfoAccount,
+  fetchUserinfoIdentity,
   requestScopeWithIdentity,
   sanitizeAccount,
 } from '../identity.js';
@@ -28,10 +29,19 @@ describe('sanitizeAccount', () => {
   });
 
   it('strips the bidi controls U+200E, U+200F, U+202A–U+202E, U+2066–U+2069', () => {
-    const bidi = '‎‏‪‫‬‭‮⁦⁧⁨⁩';
+    const bidi = '\u200E\u200F\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069';
     expect(sanitizeAccount(`a${bidi}b@example.com`)).toBe('ab@example.com');
     // A right-to-left override that would visually reverse the tail is gone.
-    expect(sanitizeAccount('evil‮moc.elgoog@x')).toBe('evilmoc.elgoog@x');
+    expect(sanitizeAccount('evil\u202Emoc.elgoog@x')).toBe('evilmoc.elgoog@x');
+  });
+
+  it('strips format characters (Cf): zero-width, word joiner, BOM, the Arabic letter mark', () => {
+    // U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ, U+2060 WJ, U+FEFF BOM, U+061C ALM.
+    expect(sanitizeAccount('a\u200Bb\u200C\u200Dc\u2060d\uFEFFe\u061C@example.com')).toBe('abcde@example.com');
+  });
+
+  it('strips the line and paragraph separators U+2028 / U+2029', () => {
+    expect(sanitizeAccount('alice\u2028@exa\u2029mple.com')).toBe('alice@example.com');
   });
 
   it('keeps ordinary non-ASCII text', () => {
@@ -93,17 +103,29 @@ describe('accountFromIdToken', () => {
     expect(accountFromIdToken(token)).toBeNull();
   });
 
+  it('email_verified: false → the email is skipped (preferred_username, then sub)', () => {
+    expect(accountFromIdToken(jwt({ email: 'mallory@victim.example', email_verified: false, preferred_username: 'mal', sub: '9' })))
+      .toBe('mal');
+    expect(accountFromIdToken(jwt({ email: 'mallory@victim.example', email_verified: false, sub: '9' }))).toBe('9');
+  });
+
+  it('email_verified true, absent or not a boolean → the email is used', () => {
+    for (const v of [true, undefined, 'false', 0]) {
+      expect(accountFromIdToken(jwt({ email: 'alice@example.com', email_verified: v, sub: '1' }))).toBe('alice@example.com');
+    }
+  });
+
   it('email a number → falls through to the next claim', () => {
     expect(accountFromIdToken(jwt({ email: 12345, preferred_username: 'alice' }))).toBe('alice');
     expect(accountFromIdToken(jwt({ email: 12345 }))).toBeNull();
   });
 
   it('a hostile email (2,000 chars, RLO, newlines, <script>) is stripped and capped — kept as literal text', () => {
-    const hostile = `‮<script>alert(1)</script>\n\r${'x'.repeat(2000)}@evil.example`;
+    const hostile = `\u202E<script>alert(1)</script>\n\r${'x'.repeat(2000)}@evil.example`;
     const out = accountFromIdToken(jwt({ email: hostile }))!;
     expect(out).not.toBeNull();
     expect([...out]).toHaveLength(254);
-    expect(out).not.toMatch(/[‮\n\r]/);
+    expect(out).not.toMatch(/[\u202E\n\r]/);
     // Not HTML-escaped here: rendering as a text node is the UI's job.
     expect(out.startsWith('<script>alert(1)</script>')).toBe(true);
   });
@@ -241,8 +263,39 @@ describe('fetchUserinfoAccount', () => {
   });
 
   it('a hostile email is sanitized', async () => {
-    const fetchImpl = vi.fn(async () => json({ email: '‮alice\n@example.com' }));
+    const fetchImpl = vi.fn(async () => json({ email: '\u202Ealice\n@example.com' }));
     expect(await fetchUserinfoAccount({ endpoint, accessToken: 'AT', allowedHosts, fetchImpl, resolver })).toBe('alice@example.com');
+  });
+});
+
+// Slice 4 fix wave — the one info line the callback logs needs a FIXED reason
+// for a userinfo miss (never the account, never the token, never a body).
+describe('fetchUserinfoIdentity reasons', () => {
+  const endpoint = 'https://auth.example.com/userinfo';
+  const allowedHosts = new Set(['auth.example.com']);
+  const resolver = async () => '93.184.216.34';
+  const run = (fetchImpl: ReturnType<typeof vi.fn>, over: Record<string, unknown> = {}) =>
+    fetchUserinfoIdentity({ endpoint, accessToken: 'AT', allowedHosts, fetchImpl, resolver, ...over });
+  const json = (body: unknown, init: ResponseInit = {}) =>
+    new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' }, ...init });
+
+  it('found → { account } with no reason', async () => {
+    expect(await run(vi.fn(async () => json({ email: 'alice@example.com' })))).toEqual({ account: 'alice@example.com' });
+  });
+
+  it.each([
+    ['not_allowlisted', { endpoint: 'https://evil.example.net/userinfo' }, async () => json({ email: 'a@b.c' })],
+    ['redirect', {}, async () => new Response(null, { status: 302, headers: { location: 'https://x.example' } })],
+    ['http_status', {}, async () => json({ email: 'a@b.c' }, { status: 401 })],
+    ['http_status', {}, async () => { throw new Error('ECONNRESET'); }],
+    ['timeout', { timeoutMs: 20 }, () => new Promise<Response>(() => {})],
+    ['too_large', { maxBytes: 4 }, async () => json({ email: 'alice@example.com' })],
+    ['bad_json', {}, async () => new Response('<html>nope</html>', { status: 200 })],
+    ['no_claim', {}, async () => json({ name: 'Alice' })],
+    ['no_claim', {}, async () => json(['alice@example.com'])],
+  ] as const)('%s', async (reason, over, make) => {
+    const out = await run(vi.fn(make), over);
+    expect(out).toEqual({ account: null, reason });
   });
 });
 

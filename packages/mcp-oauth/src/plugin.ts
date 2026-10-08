@@ -379,7 +379,8 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       });
 
       // Slice 2b — a deleted connector's reconnect markers (people's and agents')
-      // go with it. Payload (declared locally, no cross-plugin import):
+      // go with it, and (slice 4) so does its identity-scope skip flag.
+      // Payload (declared locally, no cross-plugin import):
       // `{ connectorId, toolNamespaces, idStillLive }`. Act ONLY on an explicit
       // `idStillLive === false`: true, missing or non-boolean means a live
       // connector of some owner still carries the id, so its markers stay.
@@ -395,11 +396,12 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         }
         if (p?.idStillLive !== false) return undefined;
         try {
-          const { user, agent } = await store.deleteMarkersForConnector(connectorId);
+          const { user, agent, identityScope } = await store.deleteMarkersForConnector(connectorId);
           ctx.logger.info('mcp_oauth_markers_purged_for_deleted_connector', {
             connectorId,
             user,
             agent,
+            identityScope,
           });
         } catch (err) {
           ctx.logger.error('mcp_oauth_marker_purge_for_deleted_connector_failed', {
@@ -528,7 +530,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
             // Fail-soft: a vault fault leaves the health answer standing.
             agentId === undefined
               ? Promise.resolve({})
-              : readAgentSignIns({ bus, ctx, logger: initCtx.logger, agentId, connectorIds }),
+              : readAgentSignIns({ bus, ctx, logger: ctx.logger, agentId, connectorIds }),
           ]);
           const own = new Set(personal);
           const sharedOnly = shared.filter((id) => !own.has(id));

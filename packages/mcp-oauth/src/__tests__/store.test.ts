@@ -42,6 +42,7 @@ afterEach(async () => {
       await k.schema.dropTable('mcp_oauth_v1_pending').ifExists().execute();
       await k.schema.dropTable('mcp_oauth_v1_clients').ifExists().execute();
       await k.schema.dropTable('mcp_oauth_v1_needs_reconnect').ifExists().execute();
+      await k.schema.dropTable('mcp_oauth_v1_identity_scope_refused').ifExists().execute();
     } catch {
       /* drained pool */
     }
@@ -574,14 +575,22 @@ describe('createMcpOAuthStore', () => {
       await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail-2b');
       await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'linear-2b');
 
-      expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ user: 1, agent: 2 });
+      await store.markIdentityScopeRefused('gmail-2b', 'https://auth.a');
+      await store.markIdentityScopeRefused('gmail-2b', 'https://auth.b');
+      await store.markIdentityScopeRefused('linear-2b', 'https://auth.a');
+
+      expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ user: 1, agent: 2, identityScope: 2 });
+
+      expect(await store.isIdentityScopeRefused('gmail-2b', 'https://auth.a')).toBe(false);
+      expect(await store.isIdentityScopeRefused('gmail-2b', 'https://auth.b')).toBe(false);
+      expect(await store.isIdentityScopeRefused('linear-2b', 'https://auth.a')).toBe(true);
 
       expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail-2b')).toBe(false);
       expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail-2b')).toBe(false);
       expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail-2b')).toBe(false);
       expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear-2b')).toBe(true);
       expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'linear-2b')).toBe(true);
-      expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ user: 0, agent: 0 });
+      expect(await store.deleteMarkersForConnector('gmail-2b')).toEqual({ user: 0, agent: 0, identityScope: 0 });
     });
 
     it('refuses an empty connectorId', async () => {
@@ -593,6 +602,34 @@ describe('createMcpOAuthStore', () => {
         await expect(store.deleteMarkersForConnector(bad)).rejects.toThrow(/connectorId is required/);
       }
       expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail-2b')).toBe(true);
+    });
+  });
+  // Slice 4 — the provider answered `invalid_scope` to a sign-in that carried
+  // the openid/email add-on. Keyed (connector, authorization server); `begin`
+  // asks before adding the identity scopes again.
+  describe('identity-scope skip flag (slice 4)', () => {
+    it('is absent until marked; marking twice keeps one row; keyed on BOTH connector and auth server', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      expect(await store.isIdentityScopeRefused('gmail', 'https://auth.a')).toBe(false);
+      await store.markIdentityScopeRefused('gmail', 'https://auth.a');
+      await store.markIdentityScopeRefused('gmail', 'https://auth.a');
+      expect(await store.isIdentityScopeRefused('gmail', 'https://auth.a')).toBe(true);
+      expect(await store.isIdentityScopeRefused('gmail', 'https://auth.b')).toBe(false);
+      expect(await store.isIdentityScopeRefused('linear', 'https://auth.a')).toBe(false);
+      const rows = await db.selectFrom('mcp_oauth_v1_identity_scope_refused').selectAll().execute();
+      expect(rows).toHaveLength(1);
+    });
+
+    it('a pending row round-trips identityScope (absent → false)', async () => {
+      const db = makeKysely();
+      await runMcpOAuthMigration(db);
+      const store = createMcpOAuthStore(db);
+      await store.putPending(makePending({ state: 'with', identityScope: true }));
+      await store.putPending(makePending({ state: 'without' }));
+      expect((await store.getPending('with'))!.identityScope).toBe(true);
+      expect((await store.getPending('without'))!.identityScope).toBe(false);
     });
   });
 });

@@ -12,8 +12,10 @@ import { discoverOAuthHosts, metadataUrl } from './host-discovery.js';
 import { DEFAULT_CLIENT_NAME } from './client-name.js';
 import {
   accountFromIdToken,
-  fetchUserinfoAccount,
+  fetchUserinfoIdentity,
+  type IdentityMissReason,
   requestScopeWithIdentity,
+  type UserinfoIdentity,
   userinfoEndpointOf,
 } from './identity.js';
 import type { McpOAuthStore } from './store.js';
@@ -140,14 +142,14 @@ export interface McpOAuthRouteDeps {
     redeemCode: typeof redeemCode;
     /**
      * Slice 4 — the guarded userinfo lookup (`identity.ts`). Optional so tests
-     * can swap it; production uses `fetchUserinfoAccount` (SSRF pre-check, no
+     * can swap it; production uses `fetchUserinfoIdentity` (SSRF pre-check, no
      * redirects, 5 s, 64 KiB). Must never throw (the callback guards anyway).
      */
-    userinfoAccount?: (opts: {
+    userinfoIdentity?: (opts: {
       endpoint: string;
       accessToken: string;
       allowedHosts: Set<string>;
-    }) => Promise<string | null>;
+    }) => Promise<UserinfoIdentity>;
   };
   config: McpOAuthRouteConfig;
   /** `crypto.randomBytes(32).toString('hex')` in prod; deterministic in tests. */
@@ -167,8 +169,27 @@ export interface McpOAuthRouteDeps {
    * authorization code, code_verifier, client secret, or a raw provider error
    * body (see the redeem path: name only).
    */
-  logger?: { error(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void };
+  logger?: {
+    error(msg: string, meta?: unknown): void;
+    warn(msg: string, meta?: unknown): void;
+    info(msg: string, meta?: unknown): void;
+  };
 }
+
+/**
+ * RFC 6749 §4.1.2.1 — the registered authorization-error codes. The callback
+ * logs a provider error as one of these, or `other`: the parameter is
+ * provider-controlled text, so an unregistered value is never echoed.
+ */
+const PROVIDER_ERROR_CODES = new Set([
+  'invalid_request',
+  'unauthorized_client',
+  'access_denied',
+  'unsupported_response_type',
+  'invalid_scope',
+  'server_error',
+  'temporarily_unavailable',
+]);
 
 // --- connector shapes (type-only re-declaration; invariant #2). We read only
 // the fields we need off `connectors:get`, treating the rest as opaque. ------
@@ -229,7 +250,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   clientMetadata(req: RouteRequest, res: RouteResponse): Promise<void>;
 } {
   const { bus, store, flow, config, genState, now, pendingTtlMs } = deps;
-  const userinfoAccount = flow.userinfoAccount ?? fetchUserinfoAccount;
+  const userinfoIdentity = flow.userinfoIdentity ?? fetchUserinfoIdentity;
   const clientName = deps.clientName ?? (async () => DEFAULT_CLIENT_NAME);
   const redirectUri = `${config.publicOrigin}/api/connectors/oauth/callback`;
   const clientMetadataUrl = `${config.publicOrigin}/api/connectors/oauth/client-metadata`;
@@ -621,7 +642,26 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       // advertised requirements consistently for DCR, consent and token storage.
       const scope = slot.scopes?.join(' ') || discoveredScope;
 
+      // Slice 4 — also ask for the account identity (`openid`, `email`) when
+      // the AUTHORIZATION SERVER advertises them, so the rail can say which
+      // account this agent signed in as — unless this server already answered
+      // `invalid_scope` to that add-on for this connector (the skip flag the
+      // callback sets), in which case the connector's scope goes out as-is.
+      // Fail-soft: a failed flag read asks for the add-on (worst case, one
+      // more refused sign-in, which sets the flag again).
+      let identityRefused = false;
+      try {
+        identityRefused = await store.isIdentityScopeRefused(connectorId, authServerUrl);
+      } catch (err) {
+        logger.warn('mcp_oauth_identity_scope_check_failed', { connectorId, ...errFields(err) });
+      }
+      const requestScope = identityRefused ? scope : requestScopeWithIdentity(scope, metadata);
+
       const clientKey = clientKeyOf(connectorId, authServerUrl);
+      // A dynamically registered client is registered fresh on every begin,
+      // so it registers the SAME scope this authorization asks for (a client
+      // registered without the add-on could be refused it). A pinned or
+      // published client never registers, so this changes nothing for them.
       const client = await flow.ensureClient({
         metadata,
         clientKey,
@@ -629,7 +669,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         registration: slot.clientRegistration ?? (slot.clientId ? 'custom' : 'auto'),
         clientName: await clientName(),
         ...(new URL(config.publicOrigin).protocol === 'https:' ? { clientMetadataUrl } : {}),
-        ...(scope !== undefined ? { scope } : {}),
+        ...(requestScope !== undefined ? { scope: requestScope } : {}),
         ...(pinned !== undefined ? { pinned } : {}),
         allowedHosts,
       });
@@ -643,13 +683,6 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       } catch (err) {
         logger.warn('mcp_oauth_begin_purge_failed', errFields(err));
       }
-
-      // Slice 4 — also ask for the account identity (`openid`, `email`) when
-      // the AUTHORIZATION SERVER advertises them, so the rail can say which
-      // account this agent signed in as. Authorize request + pending row only:
-      // the registration above keeps the plain scope, so a client registered
-      // before this change is not invalidated.
-      const requestScope = requestScopeWithIdentity(scope, metadata);
 
       const state = genState();
       const { authorizationUrl, codeVerifier } = await flow.buildAuthorization({
@@ -682,6 +715,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         resource,
         scope: requestScope,
         mode,
+        identityScope: requestScope !== scope,
         createdAt: now(),
       };
       await store.putPending(pending);
@@ -762,7 +796,22 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // id so the popup can notify its own connect widget, and discard the pending
     // verifier/client secret. A retry starts with a fresh state and PKCE pair.
     // Only the error CODE picks the reason; the provider's text goes nowhere.
+    // The operator gets the code too — a registered RFC 6749 value or `other`,
+    // never `error_description` (free text that can echo user data).
     if (providerError) {
+      const errorCode = PROVIDER_ERROR_CODES.has(providerError) ? providerError : 'other';
+      logger.warn('mcp_oauth_callback_provider_error', { connectorId, error: errorCode });
+      // Slice 4 — a server that refuses the openid/email add-on we asked for
+      // would refuse every sign-in that carries it. Remember that for this
+      // (connector, authorization server) so the next `begin` leaves it out;
+      // the person just tries again. The popup still says sign-in-failed.
+      if (errorCode === 'invalid_scope' && pending.identityScope === true) {
+        try {
+          await store.markIdentityScopeRefused(connectorId, pending.authServerUrl);
+        } catch (err) {
+          logger.warn('mcp_oauth_identity_scope_flag_failed', { connectorId, ...errFields(err) });
+        }
+      }
       fail(providerError === 'access_denied' ? 'cancelled' : 'sign-in-failed');
       return;
     }
@@ -954,21 +1003,42 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // Slice 4 — which account did the agent sign in as? Best effort and display
     // only: the id_token first, then (only without a usable one) one guarded
     // userinfo GET. Any failure is `account: null`; it never changes the outcome
-    // or the reason, and nothing about it is logged (token or account).
+    // or the reason. ONE info line says where the account came from, or the
+    // fixed reason there is none — never the account, never a token:
+    //   source none: no_id_token (none was issued) or no_userinfo_endpoint (one
+    //     was issued with no usable claim, and there is nowhere to fall back).
     let account: string | null = null;
+    let source: 'id_token' | 'userinfo' | 'none' = 'none';
+    let missReason: IdentityMissReason | undefined;
     try {
       account = accountFromIdToken(tokens.id_token);
-      const userinfoEndpoint = account === null ? userinfoEndpointOf(metadata) : undefined;
-      if (userinfoEndpoint !== undefined) {
-        account = await userinfoAccount({
-          endpoint: userinfoEndpoint,
-          accessToken: tokens.access_token,
-          allowedHosts,
-        });
+      if (account !== null) {
+        source = 'id_token';
+      } else {
+        const userinfoEndpoint = userinfoEndpointOf(metadata);
+        if (userinfoEndpoint === undefined) {
+          missReason = tokens.id_token === undefined ? 'no_id_token' : 'no_userinfo_endpoint';
+        } else {
+          source = 'userinfo';
+          const found = await userinfoIdentity({
+            endpoint: userinfoEndpoint,
+            accessToken: tokens.access_token,
+            allowedHosts,
+          });
+          account = found.account;
+          if (found.account === null) missReason = found.reason;
+        }
       }
     } catch {
+      // The lookup never throws by contract; a seam that does is "no response".
       account = null;
+      missReason = 'http_status';
     }
+    logger.info('mcp_oauth_identity', {
+      connectorId,
+      source,
+      ...(missReason !== undefined ? { reason: missReason } : {}),
+    });
     // Envelope metadata only — never inside the token blob. The vault keeps it
     // across a refresh (the resolver returns no metadata of its own).
     const metadataOut: SignInMetadata = {

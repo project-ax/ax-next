@@ -36,6 +36,13 @@ import { sql, type Kysely } from 'kysely';
  *     The per-user table above keeps the markers for tokens a person owns.
  *     Cleaned on agent delete (`deleteAllForAgent`, via `agents:deleted`), so a
  *     deleted agent leaves no marker behind.
+ *
+ *   mcp_oauth_v1_identity_scope_refused — slice 4. One row per (connector,
+ *     authorization server) that answered `invalid_scope` to a sign-in which
+ *     carried the `openid`/`email` add-on ("Signed in as"). `begin` leaves the
+ *     add-on out while the row exists, so one failed sign-in heals the next.
+ *     Cleaned with the connector (`deleteMarkersForConnector`, via
+ *     `connectors:deleted`). Holds no secret: ids, a URL and a timestamp.
  */
 export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
@@ -69,6 +76,10 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   // never attaches, so an authorization in flight across the upgrade can't add a
   // connector nobody asked to add.
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'sign-in-again'`.execute(db);
+  // Slice 4: did `begin` add the openid/email identity scopes to this
+  // authorization? The callback needs it to tell an `invalid_scope` the add-on
+  // caused from one it didn't. A row from before slice 4 never carried it.
+  await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS identity_scope BOOLEAN NOT NULL DEFAULT false`.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS mcp_oauth_v1_needs_reconnect (
       user_id       TEXT NOT NULL,
@@ -82,6 +93,13 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
       connector_id  TEXT NOT NULL,
       marked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (agent_id, connector_id)
+    )`.execute(db);
+  await sql`
+    CREATE TABLE IF NOT EXISTS mcp_oauth_v1_identity_scope_refused (
+      connector_id  TEXT NOT NULL,
+      auth_server   TEXT NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (connector_id, auth_server)
     )`.execute(db);
 }
 
@@ -107,6 +125,8 @@ export interface McpOAuthPendingRow {
   scope: string | null;
   /** 'add' | 'sign-in-again'; the column default is 'sign-in-again'. */
   mode: string;
+  /** Slice 4: the openid/email add-on was requested; default false. */
+  identity_scope: boolean;
   /** The client this authorization started with; NULL on a pre-TASK-696 row. */
   client_id: string | null;
   client_secret: string | null;
@@ -125,9 +145,16 @@ export interface McpOAuthNeedsReconnectAgentRow {
   marked_at: Date;
 }
 
+export interface McpOAuthIdentityScopeRefusedRow {
+  connector_id: string;
+  auth_server: string;
+  created_at: Date;
+}
+
 export interface McpOAuthDatabase {
   mcp_oauth_v1_clients: McpOAuthClientRow;
   mcp_oauth_v1_pending: McpOAuthPendingRow;
   mcp_oauth_v1_needs_reconnect: McpOAuthNeedsReconnectRow;
   mcp_oauth_v1_needs_reconnect_agent: McpOAuthNeedsReconnectAgentRow;
+  mcp_oauth_v1_identity_scope_refused: McpOAuthIdentityScopeRefusedRow;
 }

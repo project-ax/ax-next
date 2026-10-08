@@ -6,9 +6,10 @@ import { sanitizeAccount } from './identity.js';
 // signed in as, for `mcp-oauth:status-batch`'s `signIns`.
 //
 // The callback stores the identity as ENVELOPE METADATA on the agent-scope
-// `account:<connectorId>` row (`{account, signedInBy, signedInAt}`), and
-// `credentials:list` hands metadata back without decrypting a payload — so
-// this never resolves, refreshes or even reads a token.
+// `account:<connectorId>` row (`{account, signedInBy, signedInAt}`), read here
+// through `credentials:list`. That list decrypts each row's envelope to read
+// the metadata back, but it never resolves or refreshes a token — so this
+// never reaches the authorization server, and never sees a token itself.
 //
 // Everything read here is display-only and treated as untrusted: the account
 // is re-sanitized on the way out (a row written by an older build, or by
@@ -62,7 +63,8 @@ export interface ReadAgentSignInsOptions {
  * `account:<connectorId>:<slot>` — and only on a row of the sign-in kind.
  *
  * Fail-soft: no `credentials:list`, a throw or a malformed reply → `{}`. A
- * throw is logged once, by error NAME only (a message could carry a value).
+ * throw is logged once, by its stable error CODE only, when it has one (a
+ * message could carry a value).
  */
 export async function readAgentSignIns(
   opts: ReadAgentSignInsOptions,
@@ -77,9 +79,10 @@ export async function readAgentSignIns(
       { scope: 'agent', ownerId: agentId },
     );
   } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
     logger.warn('mcp_oauth_sign_in_identity_read_failed', {
       agentId,
-      name: err instanceof Error ? err.name : 'unknown',
+      ...(typeof code === 'string' ? { code } : {}),
     });
     return {};
   }

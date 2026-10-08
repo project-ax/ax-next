@@ -79,6 +79,8 @@ function fakeStore(over: Partial<McpOAuthRouteDeps['store']> = {}) {
   const getPending = vi.fn(async (): Promise<PendingAuthorization | null> => null);
   const consumePending = vi.fn(async (): Promise<PendingAuthorization | null> => null);
   const clearNeedsReconnect = vi.fn(async (_userId: string, _connectorId: string) => {});
+  const isIdentityScopeRefused = vi.fn(async (_connectorId: string, _authServerUrl: string) => false);
+  const markIdentityScopeRefused = vi.fn(async (_connectorId: string, _authServerUrl: string) => {});
   return {
     putPending,
     purgeExpiredPending,
@@ -86,8 +88,12 @@ function fakeStore(over: Partial<McpOAuthRouteDeps['store']> = {}) {
     getPending,
     consumePending,
     clearNeedsReconnect,
+    isIdentityScopeRefused,
+    markIdentityScopeRefused,
     ...over,
   } as McpOAuthRouteDeps['store'] & {
+    isIdentityScopeRefused: typeof isIdentityScopeRefused;
+    markIdentityScopeRefused: typeof markIdentityScopeRefused;
     clearNeedsReconnect: typeof clearNeedsReconnect;
     putPending: typeof putPending;
     purgeExpiredPending: typeof purgeExpiredPending;
@@ -180,7 +186,7 @@ function makeDeps(stubs: BusStubs, opts: { store?: ReturnType<typeof fakeStore>;
   });
   const store = opts.store ?? fakeStore();
   const flow = opts.flow ?? fakeFlow();
-  const logger = { error: vi.fn(), warn: vi.fn() };
+  const logger = { error: vi.fn(), warn: vi.fn(), info: vi.fn() };
   const deps: McpOAuthRouteDeps = {
     bus,
     store,
@@ -388,10 +394,16 @@ describe('mcp-oauth begin route', () => {
   });
 
   // Slice 4 — ask for the account identity too (openid/email) when the
-  // AUTHORIZATION SERVER supports it. Authorize request + pending row only:
-  // registration keeps today's scope so an existing client stays valid.
+  // AUTHORIZATION SERVER supports it. A dynamically registered client is
+  // registered fresh on every begin, so it registers the SAME scope it then
+  // asks for (a pinned / published client never registers). A provider that
+  // refused the add-on once (`invalid_scope`) is not asked again.
   describe('identity scopes (slice 4)', () => {
-    async function beginWith(scopesSupported: string[] | undefined, slotScopes: string[] = ['read', 'write']) {
+    async function beginWith(
+      scopesSupported: string[] | undefined,
+      slotScopes: string[] = ['read', 'write'],
+      store = fakeStore(),
+    ) {
       const flow = fakeFlow({ discover: vi.fn(async () => ({
         authServerUrl: 'https://auth.example.com',
         metadata: {
@@ -402,13 +414,13 @@ describe('mcp-oauth begin route', () => {
           ...(scopesSupported ? { scopes_supported: scopesSupported } : {}),
         },
       })) });
-      const { deps, store } = makeDeps({
+      const { deps } = makeDeps({
         'auth:require-user': () => OK_USER,
         'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
         'connectors:get': () => connectorFixture({ credentials: [{
           slot: 'oauth-main', kind: 'oauth', server: 'srv', scopes: slotScopes,
         }] }),
-      }, { flow });
+      }, { flow, store });
       const { res, state } = fakeRes();
       await createMcpOAuthRouteHandlers(deps).begin(
         fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }), res as never,
@@ -416,10 +428,12 @@ describe('mcp-oauth begin route', () => {
       expect(state.status).toBe(200);
       const scopeOf = (fn: unknown) =>
         ((fn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as { scope?: string }).scope;
+      const pendingRow = (store.putPending as ReturnType<typeof vi.fn>).mock.calls[0]![0] as PendingAuthorization;
       return {
         registration: scopeOf(flow.ensureClient),
         authorize: scopeOf(flow.buildAuthorization),
         pending: scopeOf(store.putPending),
+        identityScope: pendingRow.identityScope,
       };
     }
 
@@ -428,19 +442,56 @@ describe('mcp-oauth begin route', () => {
       expect(out.authorize).toBe('read openid write email');
       expect(out.authorize!.split(' ').filter((s) => s === 'openid')).toHaveLength(1);
       expect(out.pending).toBe(out.authorize);
+      expect(out.identityScope).toBe(true);
     });
 
-    it('the registration scope is unchanged', async () => {
+    it('registration asks for the SAME scope as the authorize request (a dynamic client is registered per begin)', async () => {
       const out = await beginWith(['openid', 'email', 'read', 'write']);
-      expect(out.registration).toBe('read write');
+      expect(out.registration).toBe('read write openid email');
       expect(out.authorize).toBe('read write openid email');
     });
 
-    it('without openid in scopes_supported → unchanged everywhere', async () => {
+    it('without openid in scopes_supported → unchanged everywhere, and the pending row says no add-on', async () => {
       const out = await beginWith(['read', 'write', 'email']);
-      expect(out).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write' });
+      expect(out).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write', identityScope: false });
       const none = await beginWith(undefined);
-      expect(none).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write' });
+      expect(none).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write', identityScope: false });
+    });
+
+    it('a provider that refused the add-on before (skip flag for this connector + auth server) → no add-on anywhere', async () => {
+      const store = fakeStore({ isIdentityScopeRefused: vi.fn(async () => true) });
+      const out = await beginWith(['openid', 'email', 'read', 'write'], ['read', 'write'], store);
+      expect(out).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write', identityScope: false });
+      expect(store.isIdentityScopeRefused).toHaveBeenCalledWith('conn-1', 'https://auth.example.com');
+    });
+
+    it('a failing skip-flag read is logged by name/code and the add-on is still asked for (fail-soft)', async () => {
+      const store = fakeStore({
+        isIdentityScopeRefused: vi.fn(async () => { throw new Error('db down SECRET'); }),
+      });
+      const flow = fakeFlow({ discover: vi.fn(async () => ({
+        authServerUrl: 'https://auth.example.com',
+        metadata: {
+          issuer: 'https://auth.example.com',
+          authorization_endpoint: 'https://auth.example.com/authorize',
+          token_endpoint: 'https://auth.example.com/token',
+          response_types_supported: ['code'],
+          scopes_supported: ['openid', 'email'],
+        },
+      })) });
+      const { deps, logger } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'connectors:get': () => connectorFixture(),
+      }, { flow, store });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }), res as never,
+      );
+      expect(state.status).toBe(200);
+      expect(store.putPending).toHaveBeenCalledWith(expect.objectContaining({ scope: 'read write openid email', identityScope: true }));
+      expect(logger.warn).toHaveBeenCalledWith('mcp_oauth_identity_scope_check_failed', expect.objectContaining({ connectorId: 'conn-1', name: 'Error' }));
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('SECRET');
     });
   });
 
@@ -1571,10 +1622,10 @@ describe('mcp-oauth callback route', () => {
     async function runIdentity(opts: {
       tokens?: Record<string, unknown>;
       userinfoEndpoint?: string;
-      userinfoAccount?: ReturnType<typeof vi.fn>;
+      userinfoIdentity?: ReturnType<typeof vi.fn>;
     }) {
       const setArgs: Array<Record<string, unknown>> = [];
-      const userinfoAccount = opts.userinfoAccount ?? vi.fn(async () => null);
+      const userinfoIdentity = opts.userinfoIdentity ?? vi.fn(async () => ({ account: null, reason: 'no_claim' }));
       const flow = fakeFlow({
         discover: vi.fn(async () => ({
           authServerUrl: 'https://auth.example.com',
@@ -1590,7 +1641,7 @@ describe('mcp-oauth callback route', () => {
           token_type: 'Bearer',
           ...opts.tokens,
         })),
-        userinfoAccount,
+        userinfoIdentity,
       } as never);
       const { deps, logger } = makeCbDeps(
         {
@@ -1605,7 +1656,7 @@ describe('mcp-oauth callback route', () => {
         fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }),
         res as never,
       );
-      return { setArgs, state, logger, userinfoAccount };
+      return { setArgs, state, logger, userinfoIdentity };
     }
 
     const SIGNED_AT = new Date(1_000_000).toISOString();
@@ -1622,55 +1673,81 @@ describe('mcp-oauth callback route', () => {
         signedInBy: 'user-1',
         signedInAt: SIGNED_AT,
       });
-      expect(out.userinfoAccount).not.toHaveBeenCalled();
+      expect(out.userinfoIdentity).not.toHaveBeenCalled();
+      expect(out.logger.info).toHaveBeenCalledWith('mcp_oauth_identity', { connectorId: 'conn-1', source: 'id_token' });
     });
 
     it('no id_token + a userinfo endpoint → one guarded userinfo lookup with the connector allowlist; its account is stored', async () => {
-      const userinfoAccount = vi.fn(async (_opts: unknown) => 'bob@example.com');
-      const out = await runIdentity({ userinfoEndpoint: 'https://auth.example.com/userinfo', userinfoAccount });
-      expect(userinfoAccount).toHaveBeenCalledTimes(1);
-      const arg = userinfoAccount.mock.calls[0]![0] as { endpoint: string; accessToken: string; allowedHosts: Set<string> };
+      const userinfoIdentity = vi.fn(async (_opts: unknown) => ({ account: 'bob@example.com' }));
+      const out = await runIdentity({ userinfoEndpoint: 'https://auth.example.com/userinfo', userinfoIdentity });
+      expect(userinfoIdentity).toHaveBeenCalledTimes(1);
+      const arg = userinfoIdentity.mock.calls[0]![0] as { endpoint: string; accessToken: string; allowedHosts: Set<string> };
       expect(arg.endpoint).toBe('https://auth.example.com/userinfo');
       expect(arg.accessToken).toBe('at-123');
       expect([...arg.allowedHosts].sort()).toEqual(['auth.example.com', 'mcp.example.com']);
       expect(out.setArgs[0]!.metadata).toEqual({ account: 'bob@example.com', signedInBy: 'user-1', signedInAt: SIGNED_AT });
       expect(out.state.redirectUrl).toContain('oauth=success');
+      expect(out.logger.info).toHaveBeenCalledWith('mcp_oauth_identity', { connectorId: 'conn-1', source: 'userinfo' });
     });
 
     it('a malformed id_token falls back to userinfo', async () => {
-      const userinfoAccount = vi.fn(async () => 'bob@example.com');
+      const userinfoIdentity = vi.fn(async () => ({ account: 'bob@example.com' }));
       const out = await runIdentity({
         tokens: { id_token: 'not-a-jwt' },
         userinfoEndpoint: 'https://auth.example.com/userinfo',
-        userinfoAccount,
+        userinfoIdentity,
       });
-      expect(userinfoAccount).toHaveBeenCalledTimes(1);
+      expect(userinfoIdentity).toHaveBeenCalledTimes(1);
       expect((out.setArgs[0]!.metadata as { account: unknown }).account).toBe('bob@example.com');
     });
 
     it('neither an id_token nor a userinfo endpoint → account: null, still signedInBy/signedInAt; no lookup', async () => {
       const out = await runIdentity({});
-      expect(out.userinfoAccount).not.toHaveBeenCalled();
+      expect(out.userinfoIdentity).not.toHaveBeenCalled();
       expect(out.setArgs[0]!.metadata).toEqual({ account: null, signedInBy: 'user-1', signedInAt: SIGNED_AT });
       expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+      expect(out.logger.info).toHaveBeenCalledWith('mcp_oauth_identity', { connectorId: 'conn-1', source: 'none', reason: 'no_id_token' });
+    });
+
+    it('an unusable id_token and no userinfo endpoint → source none, reason no_userinfo_endpoint', async () => {
+      const out = await runIdentity({ tokens: { id_token: idToken({ name: 'Alice' }) } });
+      expect(out.logger.info).toHaveBeenCalledWith('mcp_oauth_identity', { connectorId: 'conn-1', source: 'none', reason: 'no_userinfo_endpoint' });
+    });
+
+    it('a userinfo miss logs ONE info line with its fixed reason — never the account or the token', async () => {
+      const userinfoIdentity = vi.fn(async () => ({ account: null, reason: 'redirect' }));
+      const out = await runIdentity({ userinfoEndpoint: 'https://auth.example.com/userinfo', userinfoIdentity });
+      const lines = out.logger.info.mock.calls.filter((c) => c[0] === 'mcp_oauth_identity');
+      expect(lines).toEqual([['mcp_oauth_identity', { connectorId: 'conn-1', source: 'userinfo', reason: 'redirect' }]]);
+    });
+
+    it('the identity line never carries the account or a token', async () => {
+      const out = await runIdentity({
+        tokens: { id_token: idToken({ email: 'alice@example.com' }) },
+      });
+      const all = JSON.stringify(out.logger.info.mock.calls);
+      expect(all).not.toContain('alice@example.com');
+      expect(all).not.toContain('at-123');
+      expect(all).not.toContain('rt-456');
     });
 
     it('an identity lookup that THROWS never changes the outcome: success redirect, account null, no reason', async () => {
-      const userinfoAccount = vi.fn(async () => { throw new Error('boom at-123'); });
-      const out = await runIdentity({ userinfoEndpoint: 'https://auth.example.com/userinfo', userinfoAccount });
+      const userinfoIdentity = vi.fn(async () => { throw new Error('boom at-123'); });
+      const out = await runIdentity({ userinfoEndpoint: 'https://auth.example.com/userinfo', userinfoIdentity });
       expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
       expect((out.setArgs[0]!.metadata as { account: unknown }).account).toBeNull();
       // Nothing about the identity step (or the token) reaches the logs.
-      expect(JSON.stringify([out.logger.warn.mock.calls, out.logger.error.mock.calls])).not.toContain('at-123');
+      expect(JSON.stringify([out.logger.warn.mock.calls, out.logger.error.mock.calls, out.logger.info.mock.calls])).not.toContain('at-123');
+      expect(out.logger.info).toHaveBeenCalledWith('mcp_oauth_identity', { connectorId: 'conn-1', source: 'userinfo', reason: 'http_status' });
     });
 
     it('a hostile id_token email is stored stripped and capped', async () => {
       const out = await runIdentity({
-        tokens: { id_token: idToken({ email: `‮<script>x</script>\n${'a'.repeat(2000)}` }) },
+        tokens: { id_token: idToken({ email: `\u202E<script>x</script>\n${'a'.repeat(2000)}` }) },
       });
       const account = (out.setArgs[0]!.metadata as { account: string }).account;
       expect([...account]).toHaveLength(254);
-      expect(account).not.toMatch(/[‮\n]/);
+      expect(account).not.toMatch(/[\u202E\n]/);
     });
 
     it('the identity is NOT written into the token blob (envelope metadata only)', async () => {
@@ -2081,6 +2158,75 @@ describe('mcp-oauth callback route', () => {
     expect(setSpy).not.toHaveBeenCalled();
   });
 
+  // Slice 4 — the provider's RFC 6749 §4.1.2.1 error CODE is logged (one of
+  // the registered values, else 'other'); its free-text description never is.
+  it.each([
+    ['access_denied', 'access_denied'],
+    ['invalid_request', 'invalid_request'],
+    ['unauthorized_client', 'unauthorized_client'],
+    ['unsupported_response_type', 'unsupported_response_type'],
+    ['invalid_scope', 'invalid_scope'],
+    ['server_error', 'server_error'],
+    ['temporarily_unavailable', 'temporarily_unavailable'],
+    ['interaction_required', 'other'],
+    ['alice@example.com', 'other'],
+  ])('a provider error=%s is logged as %s, never with its description', async (providerError, logged) => {
+    const store = storeWithPending(pending);
+    const { deps, logger } = makeCbDeps({ 'auth:require-user': () => OK_USER }, { store });
+    const { res } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).callback(
+      fakeReq({ query: { error: providerError, error_description: 'DESC-bob@example.com', state: 'STATE0' } }),
+      res,
+    );
+    expect(logger.warn).toHaveBeenCalledWith('mcp_oauth_callback_provider_error', { connectorId: 'conn-1', error: logged });
+    const all = JSON.stringify([logger.warn.mock.calls, logger.error.mock.calls, logger.info.mock.calls]);
+    expect(all).not.toContain('DESC-');
+    if (logged === 'other') expect(all).not.toContain(providerError);
+  });
+
+  describe('invalid_scope after the identity add-on (slice 4)', () => {
+    async function refuse(over: Partial<PendingAuthorization>, providerError = 'invalid_scope', storeOver = {}) {
+      const p = { ...pending, scope: 'read write openid email', identityScope: true, ...over };
+      const store = storeWithPending(p, storeOver);
+      const { deps, logger } = makeCbDeps({ 'auth:require-user': () => OK_USER }, { store });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).callback(
+        fakeReq({ query: { error: providerError, state: 'STATE0' } }),
+        res,
+      );
+      return { store, state, logger };
+    }
+
+    it('sets the skip flag for (connector, auth server); the popup still says sign-in-failed', async () => {
+      const { store, state } = await refuse({});
+      expect(store.markIdentityScopeRefused).toHaveBeenCalledTimes(1);
+      expect(store.markIdentityScopeRefused).toHaveBeenCalledWith('conn-1', 'https://auth.example.com');
+      expect(state.redirectUrl).toBe(
+        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=sign-in-failed',
+      );
+    });
+
+    it('no add-on on that authorization → no flag (the connector\'s own scope was refused)', async () => {
+      const { store } = await refuse({ identityScope: false, scope: 'read write' });
+      expect(store.markIdentityScopeRefused).not.toHaveBeenCalled();
+    });
+
+    it('a different error with the add-on → no flag', async () => {
+      for (const err of ['server_error', 'access_denied', 'invalid_request']) {
+        const { store } = await refuse({}, err);
+        expect(store.markIdentityScopeRefused).not.toHaveBeenCalled();
+      }
+    });
+
+    it('a failing flag write is logged and the popup still says sign-in-failed', async () => {
+      const { state, logger } = await refuse({}, 'invalid_scope', {
+        markIdentityScopeRefused: vi.fn(async () => { throw new Error('db down'); }),
+      });
+      expect(state.redirectUrl).toContain('reason=sign-in-failed');
+      expect(logger.warn).toHaveBeenCalledWith('mcp_oauth_identity_scope_flag_failed', expect.objectContaining({ connectorId: 'conn-1' }));
+    });
+  });
+
   it('another user cannot cancel a pending authorization with a provider error', async () => {
     const store = storeWithPending(pending);
     const { deps, flow } = makeCbDeps({
@@ -2338,7 +2484,7 @@ describe('mcp-oauth callback route', () => {
       genState: () => 'STATE0',
       now: () => 1_000_000,
       pendingTtlMs: 10 * 60_000,
-      logger: { error: vi.fn(), warn: vi.fn() },
+      logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
     };
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();

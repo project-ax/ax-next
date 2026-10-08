@@ -60,10 +60,20 @@ export interface McpOAuthStore {
   deleteAllForAgent(agentId: string): Promise<{ deleted: number; markers: number }>;
   /**
    * Slice 2b — a deleted connector's reconnect markers (every person's and
-   * every agent's) go with it, in one transaction. THROWS on an empty
-   * `connectorId`: a delete keyed on nothing is never what a caller meant.
+   * every agent's) go with it, in one transaction — and (slice 4) so does its
+   * identity-scope skip flag, for every authorization server. THROWS on an
+   * empty `connectorId`: a delete keyed on nothing is never what a caller meant.
    */
-  deleteMarkersForConnector(connectorId: string): Promise<{ user: number; agent: number }>;
+  deleteMarkersForConnector(
+    connectorId: string,
+  ): Promise<{ user: number; agent: number; identityScope: number }>;
+  /**
+   * Slice 4 — `authServerUrl` answered `invalid_scope` to a sign-in to
+   * `connectorId` that carried the `openid`/`email` add-on. Idempotent.
+   */
+  markIdentityScopeRefused(connectorId: string, authServerUrl: string): Promise<void>;
+  /** Slice 4 — should `begin` leave the identity add-on out for this pair? */
+  isIdentityScopeRefused(connectorId: string, authServerUrl: string): Promise<boolean>;
   /**
    * TASK-741 — record that `owner`'s sign-in to `connectorId` was rejected by
    * the authorization server (re-authorization required). Idempotent: marking
@@ -113,6 +123,7 @@ function rowToPending(r: {
   resource: string;
   scope: string | null;
   mode: string;
+  identity_scope?: boolean | null;
   client_id: string | null;
   client_secret: string | null;
   created_at: Date | string | number;
@@ -138,6 +149,7 @@ function rowToPending(r: {
     // Only the exact 'add' attaches; anything else (an unknown value) is the
     // flow that attaches nothing.
     mode: r.mode === 'add' ? 'add' : 'sign-in-again',
+    identityScope: r.identity_scope === true,
     createdAt,
   };
 }
@@ -175,6 +187,7 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           resource: p.resource,
           scope: p.scope ?? null,
           mode: p.mode,
+          identity_scope: p.identityScope === true,
           client_id: p.clientId ?? null,
           client_secret: p.clientSecret ?? null,
           created_at:
@@ -253,11 +266,34 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           .deleteFrom('mcp_oauth_v1_needs_reconnect_agent')
           .where('connector_id', '=', connectorId)
           .executeTakeFirst();
+        const identityScope = await trx
+          .deleteFrom('mcp_oauth_v1_identity_scope_refused')
+          .where('connector_id', '=', connectorId)
+          .executeTakeFirst();
         return {
           user: Number(user.numDeletedRows ?? 0n),
           agent: Number(agent.numDeletedRows ?? 0n),
+          identityScope: Number(identityScope.numDeletedRows ?? 0n),
         };
       });
+    },
+
+    async markIdentityScopeRefused(connectorId, authServerUrl) {
+      await db
+        .insertInto('mcp_oauth_v1_identity_scope_refused')
+        .values({ connector_id: connectorId, auth_server: authServerUrl, created_at: new Date() })
+        .onConflict((oc) => oc.columns(['connector_id', 'auth_server']).doNothing())
+        .execute();
+    },
+
+    async isIdentityScopeRefused(connectorId, authServerUrl) {
+      const row = await db
+        .selectFrom('mcp_oauth_v1_identity_scope_refused')
+        .select('connector_id')
+        .where('connector_id', '=', connectorId)
+        .where('auth_server', '=', authServerUrl)
+        .executeTakeFirst();
+      return row !== undefined;
     },
 
     async markNeedsReconnect(owner, connectorId) {

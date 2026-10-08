@@ -66,6 +66,12 @@ export interface PendingAuthorization {
    * A row without a known value reads as 'sign-in-again', so it never attaches.
    */
   mode: SignInMode;
+  /**
+   * Slice 4 — `begin` added the `openid`/`email` identity scopes to `scope`.
+   * An `invalid_scope` answer to such an authorization sets the per-(connector,
+   * authorization server) skip flag. Absent reads as false.
+   */
+  identityScope?: boolean;
   createdAt: number;
 }
 

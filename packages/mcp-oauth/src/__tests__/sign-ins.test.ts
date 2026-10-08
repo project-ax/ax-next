@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HookBus, makeAgentContext, type Logger } from '@ax/core';
+import { HookBus, makeAgentContext, PluginError, type Logger } from '@ax/core';
 import { readAgentSignIns } from '../sign-ins.js';
 
 // Slice 4 — `mcp-oauth:status-batch`'s `signIns`: which account each of an
@@ -126,7 +126,7 @@ describe('readAgentSignIns', () => {
         { ref: 'account:gmail', metadata: { account: 42, signedInBy: { id: 'x' }, signedInAt: ['2026'] } },
         {
           ref: 'account:slack',
-          metadata: { account: `  evil‮moc.x@y\n${'a'.repeat(400)}`, signedInBy: '', signedInAt: 7 },
+          metadata: { account: `  evil\u202Emoc.x@y\n${'a'.repeat(400)}`, signedInBy: '', signedInAt: 7 },
         },
       ],
     });
@@ -134,7 +134,7 @@ describe('readAgentSignIns', () => {
     expect(out.gmail).toEqual({ account: null, signedInBy: null, signedInAt: null });
     const slack = out.slack!;
     expect(slack.account!.startsWith('evilmoc.x@y')).toBe(true);
-    expect(slack.account).not.toMatch(/[‮\n]/);
+    expect(slack.account).not.toMatch(/[\u202E\n]/);
     expect([...slack.account!]).toHaveLength(254);
     expect(slack.signedInBy).toBeNull();
     expect(slack.signedInAt).toBeNull();
@@ -148,7 +148,7 @@ describe('readAgentSignIns', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it('a throwing credentials:list → {} and ONE warn naming the error, never a value', async () => {
+  it('a throwing credentials:list → {} and ONE warn with the error CODE, never a value', async () => {
     const bus = new HookBus();
     bus.registerService('credentials:list', 'credentials', async () => {
       throw new TypeError('bob@example.com is in this message');
@@ -160,9 +160,21 @@ describe('readAgentSignIns', () => {
     expect(logger.warn).toHaveBeenCalledTimes(1);
     const [msg, fields] = logger.warn.mock.calls[0]!;
     expect(msg).toBe('mcp_oauth_sign_in_identity_read_failed');
-    // The bus wraps a handler's throw, so the name is the wrapper's.
-    expect(fields).toEqual({ agentId: 'agent-A', name: 'PluginError' });
+    // The bus wraps a foreign throw as PluginError{code:'unknown'}: the code
+    // is the wrapper's, and the error's name and message go nowhere.
+    expect(fields).toEqual({ agentId: 'agent-A', code: 'unknown' });
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('bob@example.com');
+  });
+
+  it("a PluginError from the vault → its own code is logged (the operator's signal)", async () => {
+    const bus = new HookBus();
+    bus.registerService('credentials:list', 'credentials', async () => {
+      throw new PluginError({ code: 'storage-unavailable', plugin: '@ax/credentials', message: 'carol@example.com' });
+    });
+    const logger = fakeLogger();
+    await readAgentSignIns({ bus, ctx, logger, agentId: 'agent-A', connectorIds: ['gmail'] });
+    expect(logger.warn.mock.calls[0]![1]).toEqual({ agentId: 'agent-A', code: 'storage-unavailable' });
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('carol@example.com');
   });
 
   it('a malformed list reply → {} (never a throw)', async () => {
