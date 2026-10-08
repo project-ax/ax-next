@@ -29,9 +29,12 @@ import {
 //      against the authenticated session user before storing anything.
 //   2. Agent-ownership authz. Binding a token to an agent is gated by
 //      `agents:resolve`, whose ACL only resolves a personal agent for its owner
-//      and a team agent for members — a successful resolve IS the authorization.
+//      and a team agent for members — a successful resolve IS the authorization
+//      (plus, on a team agent, the team-admin check). `callback` asks both again
+//      before it writes anything: the agent may be gone, or the signer demoted.
 //   3. The vault write only happens after 1+2 pass, with `scope: 'agent'` and a
-//      ref keyed by the connector id.
+//      ref keyed by the connector id. An Add then attaches the connector; if the
+//      attach fails the token is deleted again (all or nothing).
 //
 //   4. The token is bound to the OAuth client it was ISSUED to. `begin` records
 //      the client it started the authorization with on the pending row; `callback`
@@ -79,6 +82,35 @@ const AUTHORIZE_AGENT_ACCOUNT_HOOK = 'credentials:authorize-agent:account';
  * here, not imported (I2).
  */
 const CAN_SET_SHARED_CREDENTIAL_HOOK = 'agents:can-set-shared-credential';
+
+/**
+ * @ax/agents' attach — a type-only mirror of its `AttachConnectorInput` /
+ * `AttachConnectorOutput` (invariant #2: no @ax/agents import). An Add's
+ * callback attaches the connector once its sign-in is stored. We read nothing
+ * off the output: returning at all is the success.
+ */
+interface AttachConnectorInput {
+  actor: { userId: string; isAdmin: boolean };
+  agentId: string;
+  connectorId: string;
+}
+interface AttachConnectorOutput {
+  agent: unknown;
+  changed: boolean;
+}
+
+/**
+ * Why a callback did not complete, as the popup learns it (`&reason=`). A FIXED
+ * set: the popup maps each value to its own copy, so no provider text (an
+ * `error_description`, a token-endpoint body) ever reaches the person.
+ *   cancelled      — the provider answered `error=access_denied`.
+ *   not-allowed    — the agent gate said no on the re-check (the agent is gone,
+ *                    or the signer is no longer allowed to sign in for it).
+ *   add-failed     — the token was stored but the attach failed, so the token
+ *                    was deleted again: nothing was added.
+ *   sign-in-failed — anything else.
+ */
+export type OAuthFailureReason = 'cancelled' | 'not-allowed' | 'add-failed' | 'sign-in-failed';
 
 export interface McpOAuthRouteConfig {
   /** Public origin we serve under; the OAuth redirect_uri is derived from it. */
@@ -364,6 +396,12 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(400).json({ error: 'invalid-json' });
       return;
     }
+    // Valid JSON that is not an object (`null`, an array, a scalar) names no
+    // connector or agent. `null` would otherwise throw on the field reads below.
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      res.status(400).json({ error: 'body must be a JSON object' });
+      return;
+    }
     const body = parsed as { connectorId?: unknown; agentId?: unknown; mode?: unknown };
     const connectorId = body.connectorId;
     const agentId = body.agentId;
@@ -394,11 +432,11 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // check; on a team agent the team-admin check below (TASK-798, TASK-813) is
     // the "may sign in for everyone" one. The token is always stored on the
     // agent, whatever its visibility.
-    let agent: { visibility: 'personal' | 'team'; ownerId: string };
+    let agent: { visibility: 'personal' | 'team' };
     try {
       const out = await bus.call<
         { agentId: string; userId: string },
-        { agent: { visibility: 'personal' | 'team'; ownerId: string } }
+        { agent: { visibility: 'personal' | 'team' } }
       >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
       agent = out.agent;
     } catch (err) {
@@ -616,8 +654,13 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
   }
 
-  function returnUrl(connectorId: string, outcome: 'success' | 'error'): string {
-    return `${config.publicOrigin}${config.connectorReturnPath}?connector=${encodeURIComponent(connectorId)}&oauth=${outcome}`;
+  function returnUrl(
+    connectorId: string,
+    outcome: 'success' | 'error',
+    reason?: OAuthFailureReason,
+  ): string {
+    const url = `${config.publicOrigin}${config.connectorReturnPath}?connector=${encodeURIComponent(connectorId)}&oauth=${outcome}`;
+    return reason === undefined ? url : `${url}&reason=${reason}`;
   }
 
   async function callback(req: RouteRequest, res: RouteResponse): Promise<void> {
@@ -665,16 +708,70 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       return;
     }
 
+    const connectorId = pending.connectorId;
+    const agentId = pending.agentId;
+    /** Redirect the popup with a failure. Nothing has been written, or it was undone. */
+    const fail = (reason: OAuthFailureReason): void => {
+      res.redirect(returnUrl(connectorId, 'error', reason));
+    };
+
     // A denied grant ends this authorization too. Return the trusted connector
     // id so the popup can notify its own connect widget, and discard the pending
     // verifier/client secret. A retry starts with a fresh state and PKCE pair.
+    // Only the error CODE picks the reason; the provider's text goes nowhere.
     if (providerError) {
-      res.redirect(returnUrl(pending.connectorId, 'error'));
+      fail(providerError === 'access_denied' ? 'cancelled' : 'sign-in-failed');
       return;
     }
     if (!code) {
       res.status(400).json({ error: 'missing code or state' });
       return;
+    }
+
+    // Re-check the agent gate `begin` passed, as the same signer (the session
+    // user IS `pending.userId`, checked above): up to `pendingTtlMs` has gone by,
+    // and in that time the agent may have been deleted or the signer removed or
+    // demoted from its team. A "no" writes nothing — no connector read, no token
+    // exchange, no vault write, no attach. A row with no agent can only be one
+    // begun before every sign-in belonged to an agent; it has nowhere to go.
+    if (!agentId) {
+      logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'no-agent' });
+      fail('not-allowed');
+      return;
+    }
+    let visibility: unknown;
+    try {
+      const out = await bus.call<
+        { agentId: string; userId: string },
+        { agent: { visibility: 'personal' | 'team' } }
+      >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
+      visibility = out?.agent?.visibility;
+    } catch (err) {
+      if (isReject(err)) {
+        logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'resolve', ...errFields(err) });
+        fail('not-allowed');
+        return;
+      }
+      logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
+      fail('sign-in-failed');
+      return;
+    }
+    // Anything but a personal agent is held to the team rule (fail closed): only
+    // a team admin may choose the account every member's runs act as.
+    if (visibility !== 'personal') {
+      let allowed: boolean;
+      try {
+        allowed = await maySetSharedCredential(user, agentId);
+      } catch (err) {
+        logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
+        fail('sign-in-failed');
+        return;
+      }
+      if (!allowed) {
+        logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'team-admin' });
+        fail('not-allowed');
+        return;
+      }
     }
 
     // Re-fetch the connector to re-derive allowedHosts for the redeem hop
@@ -686,12 +783,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         { connector: ConnectorView }
       >('connectors:get', ctxFor(pending.userId), {
         userId: pending.userId,
-        connectorId: pending.connectorId,
+        connectorId,
       });
       connector = out.connector;
     } catch (err) {
       if (isReject(err)) {
-        res.status(404).json({ error: 'not-found' });
+        // The connector vanished (or is no longer visible to the signer) while
+        // the popup was open. The popup still gets a redirect, not a bare 404.
+        logger.warn('mcp_oauth_callback_failed', { stage: 'connector', connectorId, ...errFields(err) });
+        fail('sign-in-failed');
         return;
       }
       // A non-reject connectors:get failure is a SERVER fault, not "OAuth
@@ -699,10 +799,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       // the browser the same clean oauth=error redirect.
       logger.error('mcp_oauth_callback_failed', {
         stage: 'connector',
-        connectorId: pending.connectorId,
+        connectorId,
         ...errFields(err),
       });
-      res.redirect(returnUrl(pending.connectorId, 'error'));
+      fail('sign-in-failed');
       return;
     }
     const allowedHosts = new Set(connector.capabilities.allowedHosts);
@@ -726,19 +826,19 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       } catch (err) {
         logger.error('mcp_oauth_callback_failed', {
           stage: 'getClient',
-          connectorId: pending.connectorId,
+          connectorId,
           ...errFields(err),
         });
-        res.redirect(returnUrl(pending.connectorId, 'error'));
+        fail('sign-in-failed');
         return;
       }
       if (!legacy) {
         logger.error('mcp_oauth_callback_failed', {
           stage: 'getClient',
-          connectorId: pending.connectorId,
+          connectorId,
           reason: 'client_registration_missing',
         });
-        res.redirect(returnUrl(pending.connectorId, 'error'));
+        fail('sign-in-failed');
         return;
       }
       client = legacy;
@@ -756,10 +856,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     } catch (err) {
       logger.error('mcp_oauth_callback_failed', {
         stage: 'discover',
-        connectorId: pending.connectorId,
+        connectorId,
         ...errFields(err),
       });
-      res.redirect(returnUrl(pending.connectorId, 'error'));
+      fail('sign-in-failed');
       return;
     }
 
@@ -780,10 +880,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       });
     } catch (err) {
       logger.warn('mcp_oauth_redeem_failed', {
-        connectorId: pending.connectorId,
+        connectorId,
         name: err instanceof Error ? err.name : 'unknown',
       });
-      res.redirect(returnUrl(pending.connectorId, 'error'));
+      fail('sign-in-failed');
       return;
     }
 
@@ -810,15 +910,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
     // The vault write. A throw is a SERVER/DB fault (NOT "OAuth failed") → log
     // it so the operator can tell a storage outage from a provider rejection.
-    // credScope drives where the token is stored:
-    //   'user'  → personal agent: stored on the user so all their agents share it.
-    //   'agent' → team agent: stored on the agent so sharees each ride on it.
-    const writeScope = pending.credScope; // 'user' | 'agent'
-    const writeOwnerId = writeScope === 'agent' ? pending.agentId : pending.userId;
+    // Every sign-in belongs to an agent, so the token is always stored ON the
+    // agent — never on the signer. That includes a row `begin` wrote before that
+    // rule (`credScope: 'user'`) and still in flight: it lands on its agent,
+    // where it is read only if the connector is on the agent.
+    const ref = `account:${connectorId}`;
     try {
       await bus.call<
         {
-          scope: 'user' | 'agent';
+          scope: 'agent';
           ownerId: string;
           ref: string;
           kind: string;
@@ -827,9 +927,9 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         },
         void
       >('credentials:set', ctxFor(pending.userId), {
-        scope: writeScope,
-        ownerId: writeOwnerId,
-        ref: `account:${pending.connectorId}`,
+        scope: 'agent',
+        ownerId: agentId,
+        ref,
         kind: 'mcp-oauth',
         payload: encodeTokenBlob(blob),
         ...(blob.expiresAt !== undefined ? { expiresAt: blob.expiresAt } : {}),
@@ -837,33 +937,66 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     } catch (err) {
       logger.error('mcp_oauth_callback_failed', {
         stage: 'store',
-        connectorId: pending.connectorId,
+        connectorId,
         ...errFields(err),
       });
-      res.redirect(returnUrl(pending.connectorId, 'error'));
+      fail('sign-in-failed');
       return;
     }
 
+    // An Add is all or nothing: the sign-in IS part of adding the connector, so
+    // the connector is attached only now that the token is stored — and if the
+    // attach fails (refused, e.g. the signer lost the right to manage this
+    // agent's connectors mid-flow, or a fault), the token is deleted again so
+    // nothing is half-added. @ax/agents decides who may attach; we pass the real
+    // actor. Seeding the connector's tool settings is @ax/agents' own
+    // best-effort step inside the attach; it is not undone here.
+    // Sign in again never attaches: the connector is already on the agent (and
+    // if it was removed meanwhile, a token on the agent is unreadable without it).
+    if (pending.mode === 'add') {
+      try {
+        await bus.call<AttachConnectorInput, AttachConnectorOutput>(
+          'agents:attach-connector',
+          ctxFor(user.id),
+          { actor: { userId: user.id, isAdmin: user.isAdmin }, agentId, connectorId },
+        );
+      } catch (err) {
+        try {
+          await bus.call<{ scope: 'agent'; ownerId: string; ref: string }, void>(
+            'credentials:delete',
+            ctxFor(user.id),
+            { scope: 'agent', ownerId: agentId, ref },
+          );
+        } catch (deleteErr) {
+          // The token outlives the failed Add. It is unreadable while the
+          // connector is not on the agent, but an operator should know.
+          logger.error('mcp_oauth_add_compensation_failed', {
+            connectorId,
+            agentId,
+            ...errFields(deleteErr),
+          });
+        }
+        logger.warn('mcp_oauth_add_attach_failed', { connectorId, agentId, ...errFields(err) });
+        // The marker is NOT cleared: nothing was added.
+        fail('add-failed');
+        return;
+      }
+    }
+
     // TASK-741 — a completed sign-in renews this access, so the rail's
-    // "Sign-in expired" marker goes. TASK-756: the marker is the token OWNER's —
-    // a team agent's shared sign-in clears for every member, a personal one for
-    // this person only. Best-effort: the token is already stored, and a stale
-    // marker only costs one unnecessary Reconnect.
+    // "Sign-in expired" marker goes. TASK-756: the marker is the token OWNER's,
+    // and the owner is the agent — it clears for every member. Best-effort: the
+    // sign-in is complete, and a stale marker only costs one unnecessary Reconnect.
     try {
-      await store.clearNeedsReconnect(
-        writeScope === 'agent'
-          ? { kind: 'agent', agentId: pending.agentId }
-          : { kind: 'user', userId: pending.userId },
-        pending.connectorId,
-      );
+      await store.clearNeedsReconnect({ kind: 'agent', agentId }, connectorId);
     } catch (err) {
       logger.warn('mcp_oauth_needs_reconnect_clear_failed', {
-        connectorId: pending.connectorId,
+        connectorId,
         name: err instanceof Error ? err.name : 'unknown',
       });
     }
 
-    res.redirect(returnUrl(pending.connectorId, 'success'));
+    res.redirect(returnUrl(connectorId, 'success'));
   }
 
   async function status(req: RouteRequest, res: RouteResponse): Promise<void> {

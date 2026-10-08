@@ -54,6 +54,7 @@ function routeStubServices(recorded: RouteRecord[]): Record<string, ServiceHandl
     'credentials:get': (async () => '') as ServiceHandler,
     'credentials:set': (async () => undefined) as ServiceHandler,
     'credentials:delete': (async () => undefined) as ServiceHandler,
+    'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,
   };
 }
 
@@ -120,6 +121,8 @@ describe('@ax/mcp-oauth plugin manifest', () => {
       'credentials:get',
       'credentials:set',
       'credentials:delete',
+      // Slice 3 — an Add's callback attaches the connector (hard: it is the Add).
+      'agents:attach-connector',
     ]);
     // TASK-813 — the team-admin check is declared (optional: without
     // @ax/agents nobody may start a sign-in on a team agent), and the wider

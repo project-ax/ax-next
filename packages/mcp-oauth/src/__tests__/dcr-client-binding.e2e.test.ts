@@ -410,6 +410,8 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
     'agents:resolve': (async (_c, input) => ({
       agent: { id: (input as { agentId: string }).agentId, visibility: opts.visibility, ownerId: 'alice' },
     })) as ServiceHandler,
+    // An Add's callback attaches the connector once the sign-in is stored.
+    'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,
     // TASK-798/813 — every signer here may sign in for the agent (a team admin).
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
     // TASK-711 — @ax/connectors' "is this the one shared connector" answer: yes,

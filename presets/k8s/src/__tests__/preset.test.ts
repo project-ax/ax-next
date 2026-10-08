@@ -1121,6 +1121,8 @@ describe('@ax/preset-k8s wiring', () => {
       'credentials:get',
       'credentials:set',
       'credentials:delete',
+      // Slice 3 — an Add's callback attaches the connector (@ax/agents, loaded above).
+      'agents:attach-connector',
     ]);
   });
 

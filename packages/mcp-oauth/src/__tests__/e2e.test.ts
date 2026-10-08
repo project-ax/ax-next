@@ -362,6 +362,8 @@ function captureRouteServices(routes: CapturedRoute[]): Record<string, ServiceHa
     // so the credential is stored agent-bound (scope:'agent', ownerId:'agent-A'),
     // matching the sharee-resolves design this canary exercises.
     'agents:resolve': (async () => ({ agent: { id: 'agent-A', visibility: 'team', ownerId: 'team-1' } })) as ServiceHandler,
+    // An Add's callback attaches the connector once the sign-in is stored.
+    'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,
     // TASK-798/813 — bob is a team admin of agent-A's team, so he may sign in for it.
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
     // TASK-711 — @ax/connectors' answer to "is conn-1 the one shared connector
@@ -518,6 +520,110 @@ describe('@ax/mcp-oauth e2e canary — begin→callback lands an agent-bound blo
       { ref: 'account:conn-1', userId: 'carol' },
     );
     expect(resolved).toBe('callback-AT');
+  });
+});
+
+// Slice 3 — every sign-in belongs to an agent. One person, two of their own
+// agents, the same connector, two different accounts: each Add lands its own
+// agent-scope row (owner A, owner B), attaches to its own agent, and neither
+// overwrites the other.
+describe('@ax/mcp-oauth e2e canary — two agents of one owner keep two separate sign-ins', () => {
+  it('Add on agent-A then on agent-B writes ownerId A and ownerId B; each agent resolves its own account', async () => {
+    const routes: CapturedRoute[] = [];
+    const metadata = {
+      issuer: 'https://auth.example.com',
+      authorization_endpoint: 'https://auth.example.com/authorize',
+      token_endpoint: 'https://auth.example.com/token',
+      response_types_supported: ['code'],
+    };
+    // The provider hands out a different account's token per redemption.
+    const issued = ['account-1-AT', 'account-2-AT'];
+    let redemptions = 0;
+    const attaches: unknown[] = [];
+    const services = captureRouteServices(routes);
+    // bob's own PERSONAL agents: resolve hands back whichever agent was asked for.
+    services['agents:resolve'] = (async (_c, input) => ({
+      agent: { id: (input as { agentId: string }).agentId, visibility: 'personal', ownerId: 'bob' },
+    })) as ServiceHandler;
+    services['agents:attach-connector'] = (async (_c, input) => {
+      attaches.push(input);
+      return { agent: {}, changed: true };
+    }) as ServiceHandler;
+    const h = await createTestHarness({
+      services,
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createStoragePostgresPlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+        createMcpOAuthPlugin({
+          mountRoutes: true,
+          publicOrigin: 'https://app.example.com',
+          testOverrides: {
+            discover: (async () => ({ authServerUrl: 'https://auth.example.com', metadata })) as never,
+            ensureClient: (async () => ({
+              clientKey: 'conn-1|https://auth.example.com',
+              clientId: 'cid',
+              clientSecret: undefined,
+              dynamic: true,
+            })) as never,
+            buildAuthorization: (async () => ({
+              authorizationUrl: 'https://auth.example.com/authorize?state=STATE0',
+              codeVerifier: 'verifier-0',
+            })) as never,
+            redeemCode: (async () => ({
+              access_token: issued[redemptions++]!,
+              expires_in: 3600,
+              token_type: 'Bearer',
+              scope: 'read',
+            })) as never,
+          },
+        }),
+      ],
+    });
+    harnesses.push(h);
+    const begin = routes.find((r) => r.path === '/api/connectors/oauth/begin')!;
+    const callback = routes.find((r) => r.path === '/api/connectors/oauth/callback')!;
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+
+    const addOn = async (agentId: string) => {
+      const { res: beginRes, rec: beginRec } = fakeRes();
+      await begin.handler(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId, mode: 'add' })) }),
+        beginRes,
+      );
+      expect(beginRec.statusCode).toBe(200);
+      const row = await db
+        .selectFrom('mcp_oauth_v1_pending')
+        .select('state')
+        .where('agent_id', '=', agentId)
+        .executeTakeFirstOrThrow();
+      const { res: cbRes, rec: cbRec } = fakeRes();
+      await callback.handler(fakeReq({ query: { code: `code-${agentId}`, state: row.state } }), cbRes);
+      expect(cbRec.redirectUrl).toBe('https://app.example.com/oauth/connected?connector=conn-1&oauth=success');
+    };
+    await addOn('agent-A');
+    await addOn('agent-B');
+
+    // Each Add attached the connector to ITS agent, as bob.
+    expect(attaches).toEqual([
+      { actor: { userId: 'bob', isAdmin: false }, agentId: 'agent-A', connectorId: 'conn-1' },
+      { actor: { userId: 'bob', isAdmin: false }, agentId: 'agent-B', connectorId: 'conn-1' },
+    ]);
+    // Two agent-scope rows, owners A and B — and nothing on bob himself.
+    const get = (agentId: string) =>
+      h.bus.call<{ ref: string; userId: string }, string>(
+        'credentials:get',
+        h.ctx({ agentId, userId: 'bob' }),
+        { ref: 'account:conn-1', userId: 'bob' },
+      );
+    expect(await get('agent-A')).toBe('account-1-AT');
+    expect(await get('agent-B')).toBe('account-2-AT');
+    await expect(get('')).rejects.toMatchObject({ code: 'credential-not-found' });
   });
 });
 

@@ -258,6 +258,8 @@ async function boot() {
       const { agentId, userId } = input as { agentId: string; userId: string };
       return { agent: { id: agentId, visibility: 'personal', ownerId: userId } };
     }) as ServiceHandler,
+    // An Add's callback attaches the connector once the sign-in is stored.
+    'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,
   };
   globalThis.fetch = ((i: string | URL, init?: RequestInit) => {
     const host = new URL(typeof i === 'string' ? i : i.toString()).host;

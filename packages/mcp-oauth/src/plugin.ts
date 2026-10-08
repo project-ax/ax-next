@@ -261,6 +261,10 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       // callback wrote, so it exists only where the routes (and so the vault
       // they write to) are mounted.
       'credentials:delete',
+      // An Add's callback attaches the connector once its sign-in is stored
+      // (and deletes the token again if the attach fails). No cycle: nothing
+      // @ax/agents calls reaches this plugin.
+      'agents:attach-connector',
     );
     registers.push('mcp-oauth:remove-shared-sign-in', 'mcp-oauth:remove-personal-sign-in');
   }

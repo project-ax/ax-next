@@ -231,10 +231,12 @@ async function authorizeGlobalClientSecretRead(
 // definition (the user's own or anyone's), two shared definitions with one id,
 // or no definition at all is a deny.
 //
-// THE SAME SHARED-DEFINITION RULE PICKS THE WRITE SCOPE. @ax/mcp-oauth calls this hook when a
-// team-agent sign-in starts: allowed => store the token on the agent, denied =>
-// store it on the signer (user scope). One predicate for both halves, so the
-// writer never stores a token on an agent that no reader may then read.
+// THE SAME SHARED-DEFINITION RULE GATES THE WRITE. @ax/mcp-oauth calls this hook when a
+// sign-in starts: allowed => the token will be stored on the agent, denied =>
+// `begin` refuses the sign-in (403 `agent-store-refused` for an Add, 409
+// `not-on-agent` for Sign in again). Nothing is ever stored on the signer
+// instead. One predicate for both halves, so the writer never stores a token
+// on an agent that no reader may then read.
 //
 // TASK-788 — AND, for a READ, the connector must be EFFECTIVE on `agentId`
 // for this user: the same union a session on that agent folds
@@ -251,11 +253,12 @@ async function authorizeGlobalClientSecretRead(
 // would refuse every preset that loads both. It is `bus.hasService`-guarded:
 // with no @ax/agents loaded, no agent-scope `account:` credential is readable.
 //
-// THE WRITE-SCOPE QUESTION SKIPS THE ATTACHMENT HALF. @ax/mcp-oauth asks with
-// `purpose: 'store'` when a team-agent sign-in starts, and the Add-connector
-// flow signs in BEFORE it attaches (it attaches only once the sign-in worked).
-// Requiring the attachment there would land every such sign-in on the signer
-// instead of the team. Storing on the agent grants nothing by itself: the
+// THE WRITE QUESTION SKIPS THE ATTACHMENT HALF. @ax/mcp-oauth asks with
+// `purpose: 'store'` when an Add's sign-in starts, and an Add signs in BEFORE
+// it attaches (the callback attaches only once the sign-in worked). Requiring
+// the attachment there would make `begin` refuse every Add. Sign in again asks
+// WITHOUT `purpose`, so it is refused unless the connector is already on the
+// agent. Storing on the agent grants nothing by itself: the
 // token is only READ through this hook without `purpose`, which requires the
 // attachment. Any other `purpose` value is treated as a read (fail closed).
 //

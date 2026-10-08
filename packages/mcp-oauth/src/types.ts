@@ -63,8 +63,10 @@ export interface PendingAuthorization {
    * The credential STORAGE scope the token will be written under once the
    * callback completes. Distinct from `scope` (the OAuth scopes string).
    * Every sign-in belongs to an agent, so `begin` always writes 'agent' (the
-   * agent holds its own token; a team agent's members ride along). 'user' is
-   * read back only from a row written before that rule, still in flight.
+   * agent holds its own token; a team agent's members ride along). The callback
+   * no longer reads it: it always stores on `agentId`, including for a 'user'
+   * row written before that rule and still in flight. Kept only because the
+   * pending table's column still carries it.
    */
   credScope: 'user' | 'agent';
   /**

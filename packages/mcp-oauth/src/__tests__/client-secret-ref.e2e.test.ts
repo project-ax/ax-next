@@ -266,6 +266,8 @@ async function boot() {
       const { agentId } = input as { agentId: string };
       return { agent: { id: agentId, visibility: 'team', ownerId: 'someone-else' } };
     }) as ServiceHandler,
+    // An Add's callback attaches the connector once the sign-in is stored.
+    'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,
     // TASK-798/813 — let her past the team-admin gate, so these cases still
     // exercise the client-secret-ref checks behind it.
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,

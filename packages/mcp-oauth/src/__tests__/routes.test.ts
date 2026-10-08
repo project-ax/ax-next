@@ -43,6 +43,8 @@ interface BusStubs {
   'connectors:get'?: (input: unknown) => unknown;
   'credentials:get'?: (input: unknown) => unknown;
   'credentials:set'?: (input: unknown) => unknown;
+  'credentials:delete'?: (input: unknown) => unknown;
+  'agents:attach-connector'?: (input: unknown) => unknown;
   /** `undefined` models "no provider loaded" (overrides makeDeps' default). */
   'credentials:authorize-agent:account'?: ((input: unknown) => unknown) | undefined;
 }
@@ -664,6 +666,21 @@ describe('mcp-oauth begin route', () => {
     );
     expect(state.status).toBe(400);
   });
+
+  // Valid JSON that is not an object (`null` used to throw a TypeError → 500).
+  it.each(['null', '[]', '5', '"conn-1"', 'true'])(
+    'a JSON body of %s → 400 body must be a JSON object; nothing read, nothing written',
+    async (raw) => {
+      const { deps, store, flow, calls } = makeDeps({ 'auth:require-user': () => OK_USER });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(fakeReq({ body: Buffer.from(raw) }), res);
+      expect(state.status).toBe(400);
+      expect(state.json).toEqual({ error: 'body must be a JSON object' });
+      expect(calls.map((c) => c.hook)).toEqual(['auth:require-user']);
+      expect(store.putPending).not.toHaveBeenCalled();
+      expect(flow.discover).not.toHaveBeenCalled();
+    },
+  );
 
   // Every sign-in belongs to an agent: there is no "connect once for all my
   // agents" sign-in any more, so a begin that names no agent is refused before
@@ -1365,10 +1382,30 @@ describe('mcp-oauth callback route', () => {
   // deploy): it has only the legacy clientKey index.
   const { clientId: _cid, clientSecret: _csec, ...legacyPending } = pending;
 
+  /**
+   * The callback re-checks the agent (`agents:resolve`) and, for an Add,
+   * attaches the connector. Default both to "yes" — a personal agent of
+   * user-1's, and an attach that works — so tests about other steps needn't
+   * repeat them; a test about either step overrides it.
+   */
+  function makeCbDeps(
+    stubs: BusStubs,
+    opts: { store?: ReturnType<typeof fakeStore>; flow?: McpOAuthRouteDeps['flow'] } = {},
+  ) {
+    return makeDeps(
+      {
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'agents:attach-connector': () => ({ agent: { id: 'agent-1' }, changed: true }),
+        ...stubs,
+      },
+      opts,
+    );
+  }
+
   it('4 + 4b. happy → credentials:set once (agent/ownerId/ref/kind + decoded blob); redirect oauth=success', async () => {
     const setArgs: unknown[] = [];
     const store = storeWithPending(pending);
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1412,9 +1449,9 @@ describe('mcp-oauth callback route', () => {
     expect(blob.clientKey).toBe('conn-1|https://auth.example.com');
     expect(blob.scope).toBe('read write');
 
-    expect(state.redirectUrl).toContain('oauth=success');
-    expect(state.redirectUrl).toContain('connector=conn-1');
-    expect(state.redirectUrl).toContain('https://app.example.com/settings/connectors');
+    expect(state.redirectUrl).toBe(
+      'https://app.example.com/settings/connectors?connector=conn-1&oauth=success',
+    );
   });
 
   // --- TASK-696: redeem AS, and record, the client the authorization started with ---
@@ -1435,7 +1472,7 @@ describe('mcp-oauth callback route', () => {
         ? ({ redeemCode: vi.fn(async () => opts.redeemResult) } as never)
         : {},
     );
-    const { deps, logger } = makeDeps(
+    const { deps, logger } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1539,7 +1576,7 @@ describe('mcp-oauth callback route', () => {
         throw new Error('boom');
       }),
     });
-    const { deps, logger } = makeDeps(
+    const { deps, logger } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1569,7 +1606,7 @@ describe('mcp-oauth callback route', () => {
         order.push('clear');
       }),
     });
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1590,12 +1627,12 @@ describe('mcp-oauth callback route', () => {
     expect(state.redirectUrl).toContain('oauth=success');
   });
 
-  it('TASK-756: a PERSONAL sign-in clears only the signer\'s own marker', async () => {
+  it('a pre-upgrade row with NO agent is refused: reason=not-allowed; no agent lookup, no token exchange, no write, no marker', async () => {
     const store = storeWithPending(
-      { ...pending, state: 'STATE-USER', credScope: 'user', agentId: '', userId: 'alice' },
+      { ...pending, state: 'STATE-USER', credScope: 'user', agentId: '', userId: 'alice', mode: 'sign-in-again' },
       { clearNeedsReconnect: vi.fn(async () => {}) },
     );
-    const { deps } = makeDeps(
+    const { deps, calls, flow } = makeCbDeps(
       {
         'auth:require-user': () => ({ user: { id: 'alice', isAdmin: false } }),
         'connectors:get': () => connectorFixture(),
@@ -1606,14 +1643,15 @@ describe('mcp-oauth callback route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.callback(fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE-USER' } }), res);
-    expect(store.clearNeedsReconnect).toHaveBeenCalledTimes(1);
-    expect(store.clearNeedsReconnect).toHaveBeenCalledWith({ kind: 'user', userId: 'alice' }, 'conn-1');
-    expect(state.redirectUrl).toContain('oauth=success');
+    expect(state.redirectUrl).toContain('oauth=error&reason=not-allowed');
+    expect(calls.map((c) => c.hook)).toEqual(['auth:require-user']);
+    expect(flow.redeemCode).not.toHaveBeenCalled();
+    expect(store.clearNeedsReconnect).not.toHaveBeenCalled();
   });
 
   it('TASK-741: a sign-in whose token could not be stored leaves the marker alone', async () => {
     const store = storeWithPending(pending);
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1627,7 +1665,7 @@ describe('mcp-oauth callback route', () => {
     const { res, state } = fakeRes();
     await handlers.callback(fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }), res);
     expect(store.clearNeedsReconnect).not.toHaveBeenCalled();
-    expect(state.redirectUrl).toContain('oauth=error');
+    expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
   });
 
   it('TASK-741: a failing marker clear is logged and the sign-in still succeeds', async () => {
@@ -1636,7 +1674,7 @@ describe('mcp-oauth callback route', () => {
         throw new Error('db down');
       }),
     });
-    const { deps, logger } = makeDeps(
+    const { deps, logger } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1654,17 +1692,18 @@ describe('mcp-oauth callback route', () => {
     expect(state.redirectUrl).toContain('oauth=success');
   });
 
-  it('credScope=user: callback writes credentials:set with scope=user, ownerId=userId', async () => {
+  it('a pre-upgrade row (credScope=user) for an agent is written at AGENT scope on that agent — never on the signer', async () => {
     const userScopedPending: PendingAuthorization = {
       ...pending,
       state: 'STATE-USER',
       credScope: 'user',
-      agentId: '',
+      agentId: 'A',
       userId: 'alice',
+      mode: 'sign-in-again',
     };
     const setArgs: unknown[] = [];
     const store = storeWithPending(userScopedPending);
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => ({ user: { id: 'alice', isAdmin: false } }),
         'connectors:get': () => connectorFixture(),
@@ -1680,8 +1719,8 @@ describe('mcp-oauth callback route', () => {
     );
     expect(setArgs).toHaveLength(1);
     const arg = setArgs[0] as { scope: string; ownerId: string; ref: string; kind: string };
-    expect(arg.scope).toBe('user');
-    expect(arg.ownerId).toBe('alice');
+    expect(arg.scope).toBe('agent');
+    expect(arg.ownerId).toBe('A');
     expect(arg.ref).toBe('account:conn-1');
     expect(arg.kind).toBe('mcp-oauth');
     expect(state.redirectUrl).toContain('oauth=success');
@@ -1697,7 +1736,7 @@ describe('mcp-oauth callback route', () => {
     };
     const setArgs: unknown[] = [];
     const store = storeWithPending(agentScopedPending);
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => ({ user: { id: 'alice', isAdmin: false } }),
         'connectors:get': () => connectorFixture(),
@@ -1726,7 +1765,7 @@ describe('mcp-oauth callback route', () => {
     const store = fakeStore({
       getPending: vi.fn(async () => ({ ...pending, userId: 'someone-else' })),
     });
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1747,7 +1786,7 @@ describe('mcp-oauth callback route', () => {
   it('6. unknown/expired state (getPending → null) → 400; no redirect; credentials:set NOT called', async () => {
     const setSpy = vi.fn();
     const store = fakeStore({ getPending: vi.fn(async () => null) });
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'credentials:set': setSpy,
@@ -1771,7 +1810,7 @@ describe('mcp-oauth callback route', () => {
       getPending: vi.fn(async () => pending),
       consumePending: vi.fn(async () => null),
     });
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'credentials:set': setSpy,
@@ -1787,24 +1826,34 @@ describe('mcp-oauth callback route', () => {
     expect(setSpy).not.toHaveBeenCalled();
   });
 
-  it('provider denial consumes the user-bound state and returns the connector so the popup can report failure', async () => {
+  it.each([
+    ['access_denied', 'cancelled'],
+    ['server_error', 'sign-in-failed'],
+    ['invalid_scope', 'sign-in-failed'],
+  ])('provider error=%s consumes the user-bound state and redirects reason=%s; no agent lookup, no token, no attach', async (providerError, reason) => {
     const setSpy = vi.fn();
+    const attachSpy = vi.fn();
     const store = storeWithPending(pending);
-    const { deps } = makeDeps(
+    const { deps, calls } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'credentials:set': setSpy,
+        'agents:attach-connector': attachSpy,
       },
       { store },
     );
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.callback(
-      fakeReq({ query: { error: 'access_denied', state: 'STATE0' } }),
+      fakeReq({ query: { error: providerError, state: 'STATE0' } }),
       res,
     );
-    expect(state.redirectUrl).toContain('oauth=error');
-    expect(state.redirectUrl).toContain('connector=conn-1');
+    expect(state.redirectUrl).toBe(
+      `https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=${reason}`,
+    );
+    expect(calls.map((c) => c.hook)).toEqual(['auth:require-user']);
+    expect(attachSpy).not.toHaveBeenCalled();
+    expect(store.clearNeedsReconnect).not.toHaveBeenCalled();
     expect(store.getPending).toHaveBeenCalledWith('STATE0');
     expect(store.consumePending).toHaveBeenCalledTimes(1);
     expect(setSpy).not.toHaveBeenCalled();
@@ -1812,7 +1861,7 @@ describe('mcp-oauth callback route', () => {
 
   it('another user cannot cancel a pending authorization with a provider error', async () => {
     const store = storeWithPending(pending);
-    const { deps, flow } = makeDeps({
+    const { deps, flow } = makeCbDeps({
       'auth:require-user': () => ({ user: { id: 'other-user', isAdmin: false } }),
     }, { store });
     const { res, state } = fakeRes();
@@ -1826,7 +1875,7 @@ describe('mcp-oauth callback route', () => {
   });
 
   it('a provider denial with no state is rejected without touching pending authorizations', async () => {
-    const { deps, store } = makeDeps({ 'auth:require-user': () => OK_USER });
+    const { deps, store } = makeCbDeps({ 'auth:require-user': () => OK_USER });
     const { res, state } = fakeRes();
     await createMcpOAuthRouteHandlers(deps).callback(fakeReq({ query: { error: 'access_denied' } }), res);
     expect(state.status).toBe(400);
@@ -1835,7 +1884,7 @@ describe('mcp-oauth callback route', () => {
 
   it.each([{ code: 'c' }, { error: 'access_denied' }])('rejects a mismatching response issuer before consuming state: %j', async (response) => {
     const store = storeWithPending(pending);
-    const { deps, flow } = makeDeps({ 'auth:require-user': () => OK_USER }, { store });
+    const { deps, flow } = makeCbDeps({ 'auth:require-user': () => OK_USER }, { store });
     const { res, state } = fakeRes();
     await createMcpOAuthRouteHandlers(deps).callback(
       fakeReq({ query: { ...response, state: 'STATE0', iss: 'https://other.example.com' } }), res,
@@ -1848,7 +1897,7 @@ describe('mcp-oauth callback route', () => {
 
   it('accepts a response issuer matching the pending authorization server', async () => {
     const store = storeWithPending(pending);
-    const { deps, flow } = makeDeps({
+    const { deps, flow } = makeCbDeps({
       'auth:require-user': () => OK_USER,
       'connectors:get': () => connectorFixture(),
       'credentials:set': () => undefined,
@@ -1863,7 +1912,7 @@ describe('mcp-oauth callback route', () => {
 
   it('requires iss when the authorization server advertised issuer identification', async () => {
     const store = storeWithPending({ ...pending, issuerRequired: true });
-    const { deps, flow } = makeDeps({ 'auth:require-user': () => OK_USER }, { store });
+    const { deps, flow } = makeCbDeps({ 'auth:require-user': () => OK_USER }, { store });
     const { res, state } = fakeRes();
     await createMcpOAuthRouteHandlers(deps).callback(
       fakeReq({ query: { code: 'c', state: 'STATE0' } }), res,
@@ -1875,7 +1924,7 @@ describe('mcp-oauth callback route', () => {
   });
 
   it('unauthenticated callback → 401', async () => {
-    const { deps } = makeDeps({
+    const { deps } = makeCbDeps({
       'auth:require-user': () => rejectThrow('no session'),
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
@@ -1885,7 +1934,7 @@ describe('mcp-oauth callback route', () => {
   });
 
   it('missing code or state → 400', async () => {
-    const { deps } = makeDeps({
+    const { deps } = makeCbDeps({
       'auth:require-user': () => OK_USER,
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
@@ -1896,7 +1945,7 @@ describe('mcp-oauth callback route', () => {
 
   it('LEGACY pending row (no clientId): client registration missing (getClient → null) → logger.error(stage:getClient) + oauth=error redirect (no 500 leak)', async () => {
     const store = storeWithPending(legacyPending, { getClient: vi.fn(async () => null) });
-    const { deps, logger } = makeDeps(
+    const { deps, logger } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1907,7 +1956,7 @@ describe('mcp-oauth callback route', () => {
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.callback(fakeReq({ query: { code: 'c', state: 'STATE0' } }), res);
-    expect(state.redirectUrl).toContain('oauth=error');
+    expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
     expect(state.status).toBeUndefined();
     expect(logger.error).toHaveBeenCalledTimes(1);
     const meta = logger.error.mock.calls[0]![1] as { stage: string; reason?: string };
@@ -1922,7 +1971,7 @@ describe('mcp-oauth callback route', () => {
     const flow = fakeFlow({
       redeemCode: vi.fn(async () => ({ access_token: 'at-only', token_type: 'Bearer' })),
     });
-    const { deps } = makeDeps(
+    const { deps } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1950,7 +1999,7 @@ describe('mcp-oauth callback route', () => {
         throw new Error('connection refused');
       }),
     });
-    const { deps, logger } = makeDeps(
+    const { deps, logger } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1964,12 +2013,12 @@ describe('mcp-oauth callback route', () => {
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect((logger.error.mock.calls[0]![1] as { stage: string }).stage).toBe('getClient');
     expect(setSpy).not.toHaveBeenCalled();
-    expect(state.redirectUrl).toContain('oauth=error');
+    expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
   });
 
   it('Fix2b. credentials:set throws (vault fault) → logger.error(stage:store); oauth=error', async () => {
     const store = storeWithPending(pending);
-    const { deps, logger } = makeDeps(
+    const { deps, logger } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -1984,7 +2033,7 @@ describe('mcp-oauth callback route', () => {
     await handlers.callback(fakeReq({ query: { code: 'c', state: 'STATE0' } }), res);
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect((logger.error.mock.calls[0]![1] as { stage: string }).stage).toBe('store');
-    expect(state.redirectUrl).toContain('oauth=error');
+    expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
   });
 
   it('Fix2c. redeemCode throws (provider rejects code) → logger.WARN name-only; set NOT called; oauth=error', async () => {
@@ -1999,7 +2048,7 @@ describe('mcp-oauth callback route', () => {
         throw e;
       }),
     });
-    const { deps, logger } = makeDeps(
+    const { deps, logger } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -2021,12 +2070,12 @@ describe('mcp-oauth callback route', () => {
     expect(JSON.stringify(meta)).not.toContain('invalid_grant');
     expect(JSON.stringify(meta)).not.toContain('cid-secret-xyz');
     expect(setSpy).not.toHaveBeenCalled();
-    expect(state.redirectUrl).toContain('oauth=error');
+    expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
   });
 
   it('Fix2d. connectors:get throws a non-reject (server fault) → logger.error(stage:connector); oauth=error', async () => {
     const store = storeWithPending(pending);
-    const { deps, logger } = makeDeps(
+    const { deps, logger } = makeCbDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => {
@@ -2041,7 +2090,7 @@ describe('mcp-oauth callback route', () => {
     await handlers.callback(fakeReq({ query: { code: 'c', state: 'STATE0' } }), res);
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect((logger.error.mock.calls[0]![1] as { stage: string }).stage).toBe('connector');
-    expect(state.redirectUrl).toContain('oauth=error');
+    expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
   });
 
   // --- Fix 3: peek-then-consume — a wrong-user hit does NOT burn the row ----
@@ -2051,8 +2100,10 @@ describe('mcp-oauth callback route', () => {
     const store = storeWithPending(pending);
     const { bus } = fakeBus({
       'auth:require-user': () => OK_USER,
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
       'connectors:get': () => connectorFixture(),
       'credentials:set': () => {},
+      'agents:attach-connector': () => ({ agent: { id: 'agent-1' }, changed: true }),
     });
     const deps: McpOAuthRouteDeps = {
       bus,
@@ -2075,7 +2126,195 @@ describe('mcp-oauth callback route', () => {
     );
     expect(state.redirectUrl).toContain('/oauth/connected?');
     expect(state.redirectUrl).toContain('oauth=success');
+    expect(state.redirectUrl).not.toContain('reason=');
     expect(state.redirectUrl).not.toContain('/settings/connectors');
+  });
+
+  // --- Slice 3: an Add signs in and attaches together, or leaves nothing ---
+
+  describe('Add: the callback attaches the connector, or deletes the token it just wrote', () => {
+    const TEAM_AGENT = { agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } };
+    const ADMIN_USER = { user: { id: 'user-1', isAdmin: true } };
+
+    /** Run one callback; record every hook call in order, plus the store marker clear. */
+    async function run(opts: {
+      pending?: PendingAuthorization;
+      stubs?: BusStubs;
+      /** What attach / delete do (default: succeed). Each call is recorded in `order`. */
+      attach?: () => unknown;
+      del?: () => unknown;
+      user?: { user: { id: string; isAdmin: boolean } };
+    }) {
+      const order: string[] = [];
+      const store = storeWithPending(opts.pending ?? pending, {
+        clearNeedsReconnect: vi.fn(async () => {
+          order.push('clear');
+        }),
+      });
+      const setSpy = vi.fn(() => {
+        order.push('set');
+      });
+      const deleteSpy = vi.fn((_input: unknown) => {
+        order.push('delete');
+        return opts.del?.();
+      });
+      const attachSpy = vi.fn((_input: unknown) => {
+        order.push('attach');
+        return opts.attach ? opts.attach() : { agent: { id: 'agent-1' }, changed: true };
+      });
+      const { deps, calls, flow, logger } = makeCbDeps(
+        {
+          'auth:require-user': () => opts.user ?? OK_USER,
+          'connectors:get': () => connectorFixture(),
+          'credentials:set': setSpy,
+          'credentials:delete': deleteSpy,
+          'agents:attach-connector': attachSpy,
+          ...opts.stubs,
+        },
+        { store },
+      );
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).callback(
+        fakeReq({ query: { code: 'auth-code-xyz', state: (opts.pending ?? pending).state } }),
+        res,
+      );
+      return { order, store, setSpy, deleteSpy, attachSpy, calls, flow, logger, state };
+    }
+
+    it('mode add: writes the token, THEN attaches as the signer, then clears the marker; success has no reason', async () => {
+      const out = await run({ user: ADMIN_USER });
+      expect(out.order).toEqual(['set', 'attach', 'clear']);
+      expect(out.attachSpy).toHaveBeenCalledTimes(1);
+      expect(out.attachSpy).toHaveBeenCalledWith({
+        actor: { userId: 'user-1', isAdmin: true },
+        agentId: 'agent-1',
+        connectorId: 'conn-1',
+      });
+      expect(out.store.clearNeedsReconnect).toHaveBeenCalledWith({ kind: 'agent', agentId: 'agent-1' }, 'conn-1');
+      expect(out.deleteSpy).not.toHaveBeenCalled();
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+    });
+
+    it.each([
+      ['refuses (a rejection)', () => rejectThrow('not allowed to manage connectors')],
+      ['throws (a server fault)', () => { throw new Error('db down'); }],
+    ])('mode add: attach %s → the token is deleted (exact scope/owner/ref), reason=add-failed, the marker stays', async (_label, attach) => {
+      const out = await run({ attach });
+      expect(out.deleteSpy).toHaveBeenCalledTimes(1);
+      expect(out.deleteSpy).toHaveBeenCalledWith({ scope: 'agent', ownerId: 'agent-1', ref: 'account:conn-1' });
+      expect(out.order).toEqual(['set', 'attach', 'delete']);
+      expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
+      expect(out.state.redirectUrl).toBe(
+        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=add-failed',
+      );
+      expect(out.logger.warn).toHaveBeenCalledWith(
+        'mcp_oauth_add_attach_failed',
+        expect.objectContaining({ connectorId: 'conn-1', agentId: 'agent-1' }),
+      );
+      expect(out.logger.error).not.toHaveBeenCalledWith('mcp_oauth_add_compensation_failed', expect.anything());
+    });
+
+    it('mode add: attach throws AND the delete throws → still reason=add-failed, plus a compensation log with no secret in it', async () => {
+      const out = await run({
+        attach: () => rejectThrow('not allowed'),
+        del: () => {
+          throw new Error('vault down: at-123 pending-secret');
+        },
+      });
+      expect(out.deleteSpy).toHaveBeenCalledTimes(1);
+      expect(out.state.redirectUrl).toBe(
+        'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=add-failed',
+      );
+      expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
+      expect(out.logger.error).toHaveBeenCalledWith(
+        'mcp_oauth_add_compensation_failed',
+        expect.objectContaining({ connectorId: 'conn-1', agentId: 'agent-1' }),
+      );
+      expect(out.logger.warn).toHaveBeenCalledWith('mcp_oauth_add_attach_failed', expect.anything());
+      const logged = JSON.stringify([...out.logger.error.mock.calls, ...out.logger.warn.mock.calls]);
+      for (const secret of ['at-123', 'rt-456', 'pending-secret', 'auth-code-xyz', 'verifier-0', 'vault down']) {
+        expect(logged).not.toContain(secret);
+      }
+    });
+
+    it('mode sign-in-again: writes the token and never attaches; success; marker cleared', async () => {
+      const out = await run({ pending: { ...pending, mode: 'sign-in-again' } });
+      expect(out.attachSpy).not.toHaveBeenCalled();
+      expect(out.calls.map((c) => c.hook)).not.toContain('agents:attach-connector');
+      expect(out.order).toEqual(['set', 'clear']);
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+    });
+
+    describe('re-check: the agent gate is asked again, as the signer, before anything else', () => {
+      it('the signer and the pending agent are what agents:resolve is asked about', async () => {
+        const out = await run({});
+        const resolve = out.calls.find((c) => c.hook === 'agents:resolve');
+        expect(resolve?.input).toEqual({ agentId: 'agent-1', userId: 'user-1' });
+        // Before the connector re-read and the token exchange.
+        const hooks = out.calls.map((c) => c.hook);
+        expect(hooks.indexOf('agents:resolve')).toBeLessThan(hooks.indexOf('connectors:get'));
+      });
+
+      it('SECURITY: the agent was deleted (agents:resolve rejects) → reason=not-allowed; no connector read, no token exchange, no write, no attach', async () => {
+        const out = await run({ stubs: { 'agents:resolve': () => rejectThrow('agent not found') } });
+        expect(out.state.redirectUrl).toBe(
+          'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=not-allowed',
+        );
+        expect(out.calls.map((c) => c.hook)).not.toContain('connectors:get');
+        expect(out.flow.redeemCode).not.toHaveBeenCalled();
+        expect(out.setSpy).not.toHaveBeenCalled();
+        expect(out.attachSpy).not.toHaveBeenCalled();
+        expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
+      });
+
+      it('agents:resolve fails with a server fault → reason=sign-in-failed; nothing written', async () => {
+        const out = await run({ stubs: { 'agents:resolve': () => { throw new Error('db down'); } } });
+        expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+        expect(out.flow.redeemCode).not.toHaveBeenCalled();
+        expect(out.setSpy).not.toHaveBeenCalled();
+        expect(out.attachSpy).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['@ax/agents says no (demoted from team admin)', { 'agents:can-set-shared-credential': () => ({ allowed: false }) }],
+        ['the team-admin hook refuses', { 'agents:can-set-shared-credential': () => rejectThrow('not a member') }],
+        ['no team-admin provider is loaded', {}],
+        ['an answer that is not exactly allowed:true', { 'agents:can-set-shared-credential': () => ({ allowed: 'yes' }) }],
+      ])('SECURITY: team agent, %s → reason=not-allowed; no token exchange, no write, no attach', async (_label, stubs) => {
+        const out = await run({ stubs: { 'agents:resolve': () => TEAM_AGENT, ...stubs } });
+        expect(out.state.redirectUrl).toBe(
+          'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=not-allowed',
+        );
+        expect(out.flow.redeemCode).not.toHaveBeenCalled();
+        expect(out.setSpy).not.toHaveBeenCalled();
+        expect(out.attachSpy).not.toHaveBeenCalled();
+      });
+
+      it('SECURITY: an agent whose visibility is neither personal nor team is held to the team rule (fail closed)', async () => {
+        const out = await run({ stubs: { 'agents:resolve': () => ({ agent: { id: 'agent-1' } }) } });
+        expect(out.state.redirectUrl).toContain('reason=not-allowed');
+        expect(out.setSpy).not.toHaveBeenCalled();
+      });
+
+      it('team agent whose signer is still a team admin → the team-admin hook is asked with the real actor; success', async () => {
+        const canSet = vi.fn(() => ({ allowed: true }));
+        const out = await run({
+          user: ADMIN_USER,
+          stubs: { 'agents:resolve': () => TEAM_AGENT, 'agents:can-set-shared-credential': canSet },
+        });
+        expect(canSet).toHaveBeenCalledWith({ actor: { userId: 'user-1', isAdmin: true }, agentId: 'agent-1' });
+        expect(out.order).toEqual(['set', 'attach', 'clear']);
+        expect(out.state.redirectUrl).toContain('oauth=success');
+      });
+    });
+
+    it('the connector vanished mid-flow (connectors:get rejects) → reason=sign-in-failed redirect, not a bare 404; nothing written', async () => {
+      const out = await run({ stubs: { 'connectors:get': () => rejectThrow('not found') } });
+      expect(out.state.status).toBeUndefined();
+      expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+      expect(out.setSpy).not.toHaveBeenCalled();
+      expect(out.attachSpy).not.toHaveBeenCalled();
+    });
   });
 
   it('Fix3. wrong-user callback returns 403 without consuming; a SUBSEQUENT legitimate consume still succeeds', async () => {
@@ -2091,7 +2330,7 @@ describe('mcp-oauth callback route', () => {
     });
     const handlersFor = (sessionUser: { id: string; isAdmin: boolean }) =>
       createMcpOAuthRouteHandlers(
-        makeDeps(
+        makeCbDeps(
           {
             'auth:require-user': () => ({ user: sessionUser }),
             'connectors:get': () => connectorFixture(),
