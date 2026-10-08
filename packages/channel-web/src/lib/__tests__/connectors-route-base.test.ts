@@ -15,7 +15,7 @@ import {
 // default to `/admin/connectors`, which is admin-only server-side (403 for a
 // signed-in non-admin, TASK-698): any new caller a non-admin could reach that
 // forgot to pass a base silently walked into a 403. Two such callers had already
-// shipped (ConnectorConnectDialog, SkillEditor). The fix is to make the base
+// shipped (a since-deleted connect dialog, and SkillEditor). The fix is to make the base
 // required so the mistake fails at compile time instead of in production.
 
 const input: ConnectorUpsertInput = {

@@ -129,8 +129,12 @@ const StatusBatchOutputSchema = z.object({
 }) as unknown as z.ZodType<StatusBatchOutput>;
 
 /**
- * `mcp-oauth:remove-shared-sign-in` (TASK-858). A team admin removes the
- * sign-in a team agent's members SHARE for one connector. Boundary review:
+ * `mcp-oauth:remove-shared-sign-in` (TASK-858). Removes an AGENT's own
+ * sign-in to one connector — the agent-scope token row and the agent's
+ * "sign-in expired" marker. Since slice 3 every agent's sign-in is the
+ * agent's (a personal agent's as much as a team agent's), so this is no
+ * longer team-only: the host calls it when a connector is removed from any
+ * agent, after the caller's permission was checked there. Boundary review:
  * `{agentId, connectorId}` → `{removed: true}` names no storage or transport;
  * an alternate impl (a vault that tracks sign-in health itself) answers the
  * same shape, and no payload field is backend-specific.
@@ -138,7 +142,7 @@ const StatusBatchOutputSchema = z.object({
  * It is a hook of its own — not a bare `credentials:delete` from the caller —
  * because this plugin writes that row AND owns the agent's "sign-in expired"
  * marker: deleting the row alone would leave the marker behind, and the rail
- * would go on saying "Team sign-in expired" for a sign-in that no longer exists.
+ * would go on saying the sign-in expired for a sign-in that no longer exists.
  * A hook that only CLEARED the marker would be worse: a capability to re-trust a
  * rejected, unexpired token (TASK-817). Delete-then-clear is bundled so that
  * cannot be asked for.
@@ -172,9 +176,13 @@ const RemoveSharedSignInOutputSchema = z.object({
 /**
  * `mcp-oauth:remove-personal-sign-in`. A person's OWN sign-in to one
  * connector goes — the user-scope token row and that person's "sign-in
- * expired" marker. The host calls it once the connector is on none of the
- * agents that person uses, so adding it to an agent later asks them to sign
- * in again rather than quietly reusing an old grant.
+ * expired" marker.
+ *
+ * NO PRODUCTION CALLER since slice 3: the host's `signOutIfUnused` (its only
+ * caller) was deleted when sign-ins moved onto agents, and Remove now deletes
+ * the agent's own sign-in (`mcp-oauth:remove-shared-sign-in`). It stays
+ * registered only until slice 5 flips lookup off user-scope rows and purges
+ * them, which retires this hook with them.
  *
  * Boundary review: `{userId, connectorId}` → `{removed: true}` names no
  * storage or transport; an alternate impl (a vault that tracks sign-in
@@ -182,8 +190,8 @@ const RemoveSharedSignInOutputSchema = z.object({
  * reason as the team one: the row and the marker are this plugin's, and
  * delete-then-clear is bundled so a bare marker-clear can't be asked for.
  *
- * Never touches an agent-scope row or marker: a team's shared sign-in is the
- * team's (that one is `mcp-oauth:remove-shared-sign-in`).
+ * Never touches an agent-scope row or marker: an agent's sign-in is the
+ * agent's (that one is `mcp-oauth:remove-shared-sign-in`).
  */
 export interface RemovePersonalSignInInput {
   userId: string;

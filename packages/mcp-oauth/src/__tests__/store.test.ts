@@ -495,7 +495,7 @@ describe('createMcpOAuthStore', () => {
   // (it is keyed by `${connectorId}|${authServerUrl}` and shared by every
   // agent), so it is deliberately out of reach of this method.
   describe('deleteAllForAgent (TASK-718)', () => {
-    it('deletes every pending handshake for the agent — any user, any cred scope — and nothing else', async () => {
+    it('deletes every pending handshake for the agent — any user, live or expired — and nothing else', async () => {
       const db = makeKysely();
       await runMcpOAuthMigration(db);
       const store = createMcpOAuthStore(db);

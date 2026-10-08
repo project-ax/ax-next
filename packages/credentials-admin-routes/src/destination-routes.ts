@@ -250,9 +250,11 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     const ownerId = forceUser !== null ? forceUser.id : data.ownerId;
 
     // TASK-813 — a connector key stored ON an agent (`account:` at scope
-    // `agent`) is the account every member of a team agent acts as, and only
-    // that team's admins may choose it — through the agent's own team-key
-    // route (channel-web), which asks @ax/agents. Being a workspace admin is
+    // `agent`) is the account that agent acts as, and only whoever manages
+    // the agent may choose it (a team agent's team admin, a personal agent's
+    // owner) — through the agent key route (channel-web,
+    // `PUT …/agents/:agentId/connectors/:connectorId/key`), which asks
+    // @ax/agents. Being a workspace admin is
     // not enough, so this admin route refuses that one combination outright
     // rather than becoming a second door around the team-admin check.
     // Provider / other refs at agent scope are unchanged; deletes refuse the
@@ -361,10 +363,12 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     const scope = forceUser !== null ? ('user' as const) : data.scope;
     const ownerId = forceUser !== null ? forceUser.id : data.ownerId;
 
-    // TASK-854 — the delete twin of the create refusal above: removing a team
-    // agent's team key is the team admins' call too, through the agent's own
-    // team-key route. A workspace admin is refused here before the vault is
-    // touched, so this route is not a second door for removing it either.
+    // TASK-854 — the delete twin of the create refusal above: removing an
+    // agent's key is the agent manager's call too. Since slice 3 there is no
+    // delete route for it: the agent key route is PUT only, and the key goes
+    // when the connector is removed from the agent. A workspace admin is
+    // refused here before the vault is touched, so this route is not a
+    // second door for removing it either.
     if (scope === 'agent' && data.destination.kind === 'account') {
       res.status(403).json({ error: 'team-key-via-agent' });
       return;

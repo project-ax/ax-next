@@ -1054,7 +1054,8 @@ export type AgentConnectorSource = 'attached' | 'legacy-owned';
  * A connector's health on the rail (TASK-741, connectors-rail slice 8), read
  * from stored state only — rendering the list never probes a connector.
  *
- *   - `needs-reconnect` — the caller's sign-in was rejected (fix: Reconnect).
+ *   - `needs-reconnect` — the sign-in was rejected or expired (fix: Sign in
+ *     again).
  *   - `needs-sign-in` (TASK-795) — nobody this caller's use would reach has
  *     signed in to it / added its key yet: no credential resolves along the
  *     vault's lookup order for (caller, agent). A presence read, never a
@@ -1101,10 +1102,11 @@ export interface AgentConnectorRow {
   editable: boolean;
   health: AgentConnectorHealth;
   /**
-   * TASK-756 — present (true) when `health` is `needs-reconnect` and the
-   * expired sign-in is the agent's SHARED one (a team agent's token, used by
-   * every member), so one member reconnecting fixes it for all. Absent: it is
-   * the caller's own sign-in.
+   * TASK-756 — present (true) when `health` is `needs-reconnect`, the agent
+   * is a TEAM agent, and the expired sign-in is the agent's (used by every
+   * member), so one team admin signing in again fixes it for all. Never set
+   * on a personal agent: its agent sign-in has no team, so it reads as the
+   * plain expired state.
    */
   sharedSignIn?: true;
   /** TASK-795 — present iff `health` is `needs-sign-in`. */
@@ -1122,7 +1124,8 @@ export interface AgentConnectorsRead {
   connectors: AgentConnectorRow[];
   /**
    * The agent is a team agent: signing a connector in again on it lets
-   * everyone who uses the agent act as the signer, so Reconnect asks first.
+   * everyone who uses the agent act as the signer, so Sign in again asks
+   * first.
    */
   shared: boolean;
   /**
