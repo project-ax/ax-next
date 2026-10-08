@@ -132,7 +132,6 @@ describe('purgeConnectorState — no user-scope deletes, no user-scope purge-acc
     return {
       purgeGlobal: true,
       purgeAgentSignIns: true,
-      agentSignInsSkipReason: 'not-authorized',
       idStillLive: false,
       announce: false,
       ...over,

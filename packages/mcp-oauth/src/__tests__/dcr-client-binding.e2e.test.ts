@@ -426,7 +426,7 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
     }) as ServiceHandler,
     // TASK-798/813 — every signer here may sign in for the agent (a team admin).
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
-    // TASK-711 — @ax/connectors' "is this the one shared connector" answer: yes,
+    // TASK-711 — @ax/connectors' "is this the connector's sole definition" answer: yes,
     // so a team-agent sign-in is stored on the agent and members read it there
     // once it is attached.
     'credentials:authorize-agent:account': (async (_c, input) => {

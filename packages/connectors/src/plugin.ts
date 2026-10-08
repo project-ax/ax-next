@@ -982,25 +982,11 @@ export async function deleteConnector(
   // connector (or one that lost a race to a concurrent delete) purges and
   // announces nothing.
   if (deleted && connector !== null) {
-    // Agent sign-ins are keyed `account:<id>` with no owner: wipe them only for
-    // an authorized (admin) delete AND when no other live connector with this
-    // id survives to read them. Checked AFTER the soft-delete. The row is
-    // already gone, so a failing check must not reject the delete (a retry
-    // would find nothing to purge): log it and keep the rows — unknown means
-    // "maybe a survivor".
-    let survivor = true;
-    let survivorCheckFailed = false;
-    if (input.purgeGlobal === true) {
-      try {
-        survivor = await store.hasLiveById(connectorId);
-      } catch (err) {
-        survivorCheckFailed = true;
-        ctx.logger.warn('connectors_delete_survivor_check_failed', {
-          connectorId,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+    // Agent sign-ins are keyed `account:<id>` with no owner, so a token minted
+    // for THIS definition would become readable through a same-id survivor that
+    // may point at other hosts. They are therefore wiped on every authorized
+    // (admin) delete, survivor or not; the survivor's agents sign in again.
+
     // Slice 2b — is the id still in use by ANY live connector (any owner)?
     // Same post-soft-delete rule: a failed check never rejects the delete, and
     // unknown means "still live" (subscribers keep id-keyed state).
@@ -1016,13 +1002,7 @@ export async function deleteConnector(
     await purgeConnectorState(bus, ctx, userId, connector, {
       idStillLive,
       purgeGlobal: input.purgeGlobal === true,
-      purgeAgentSignIns: input.purgeGlobal === true && !survivor,
-      agentSignInsSkipReason:
-        input.purgeGlobal !== true
-          ? 'not-authorized'
-          : survivorCheckFailed
-            ? 'survivor-check-failed'
-            : 'same-id-survives',
+      purgeAgentSignIns: input.purgeGlobal === true,
     });
   }
 

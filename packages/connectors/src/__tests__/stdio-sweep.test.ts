@@ -167,7 +167,7 @@ describe('@ax/connectors stdio sweep', () => {
     expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent'] }]);
   });
 
-  it('keeps agents\' sign-ins when another admin\'s live shared http connector keeps the id', async () => {
+  it('purges agents\' sign-ins even when another admin\'s live http connector keeps the id', async () => {
     await (await boot()).close({ onError: () => {} });
     harnesses.pop();
     await insertConnector('admin1', 'teamtool', caps([stdioServer], [{ slot: 'TOKEN', kind: 'api-key' }]), { keyMode: 'workspace' });
@@ -175,7 +175,8 @@ describe('@ax/connectors stdio sweep', () => {
     const events: ConnectorDeletedEvent[] = [];
     const accountPurges: unknown[] = [];
     await boot([capturePlugin(events, [], accountPurges)]);
-    expect(accountPurges).toEqual([]);
+    // Keyed by id alone: the http survivor must not read a token minted for the stdio one.
+    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent'] }]);
     // The stdio row is still swept and announced — and the id is still in use.
     expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([['teamtool', true]]);
     const rows = await sql('SELECT owner_user_id FROM connectors_v1_connectors');

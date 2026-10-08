@@ -1889,7 +1889,10 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     ]);
   });
 
-  it('a surviving same-id connector blocks the purge until the last one goes', async () => {
+  it('a surviving same-id connector does NOT keep the deleted one\'s agent sign-ins', async () => {
+    // Sign-ins are keyed by id alone, so a token minted for the deleted
+    // definition would otherwise become readable through a survivor that may
+    // point at other hosts. Deleting one of two live same-id rows purges at once.
     const { h, purges } = await makeHarnessWithPurgeSpy();
     for (const userId of ['admin', 'admin2']) {
       await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId }), sharedSf(userId));
@@ -1897,20 +1900,15 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
     const lines: string[] = [];
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
-    expect(purges).toEqual([]);
-    expect(logged(lines, 'connectors_delete_skipped_agent_signins_purge')).toEqual([
-      expect.objectContaining({ connectorId: 'sf', reason: 'same-id-survives' }),
-    ]);
-    await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin2' }),
-      { userId: 'admin2', connectorId: 'sf', purgeGlobal: true });
     expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
+    expect(logged(lines, 'connectors_delete_skipped_agent_signins_purge')).toEqual([]);
   });
 
-  it('a failing survivor check after the soft-delete still completes the delete and keeps agent rows', async () => {
+  it('a failing liveness check after the soft-delete still completes the delete and purges', async () => {
     // The row is tombstoned before the check runs, so a throw there must not
     // reject the hook (a retry would answer {deleted:false} and never clean
-    // up). Unknown survivor => keep the agent rows; own-key purge + the
-    // connectors:deleted announcement still happen.
+    // up). The purges do not depend on the check; the announcement says
+    // "still live" (unknown).
     const credDeletes: unknown[] = [];
     const purges: unknown[] = [];
     const h = await createTestHarness({
@@ -1920,9 +1918,9 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
       },
     });
     harnesses.push(h);
-    const deletedEvents: string[] = [];
+    const events: boolean[] = [];
     h.bus.subscribe<ConnectorDeletedEvent>('connectors:deleted', 'test/capture', async (_ctx, payload) => {
-      deletedEvents.push(payload.connectorId);
+      events.push(payload.idStillLive);
       return undefined;
     });
     const connector = {
@@ -1931,33 +1929,22 @@ describe('@ax/connectors hooks — delete purges agents\' sign-ins (agent-owned 
       keyMode: 'workspace',
       capabilities: cliCaps(),
     } as unknown as Connector;
-    // Fails the survivor check only (the first liveness read); the
-    // idStillLive read after it answers.
-    let liveReads = 0;
     const store = {
       getByIdNotDeleted: async () => connector,
       softDelete: async () => true,
-      hasLiveById: async (): Promise<boolean> => {
-        liveReads += 1;
-        if (liveReads === 1) throw new Error('db down');
-        return false;
-      },
+      hasLiveById: async (): Promise<boolean> => { throw new Error('db down'); },
     };
     const lines: string[] = [];
     const out = await deleteConnector(store, h.bus, loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'sf', purgeGlobal: true });
     expect(out).toEqual({ deleted: true });
     expect(credDeletes).toEqual([{ scope: 'global', ownerId: null, ref: 'account:sf' }]);
-    expect(deletedEvents).toEqual(['sf']);
-    expect(purges).toEqual([]);
-    expect(logged(lines, 'connectors_delete_survivor_check_failed')).toEqual([
+    expect(purges).toEqual([{ connectorId: 'sf', scopes: ['agent'] }]);
+    expect(events).toEqual([true]);
+    expect(logged(lines, 'connectors_delete_live_check_failed')).toEqual([
       expect.objectContaining({ level: 'warn', connectorId: 'sf', err: 'db down' }),
     ]);
-    expect(logged(lines, 'connectors_delete_skipped_agent_signins_purge')).toEqual([
-      expect.objectContaining({ connectorId: 'sf', reason: 'survivor-check-failed' }),
-    ]);
   });
-
 
 });
 
@@ -2007,13 +1994,13 @@ describe('@ax/connectors hooks — idStillLive + the agent-scope purge (slice 2b
     expect(purges).toEqual([{ connectorId: 'crm', scopes: ['agent'] }]);
   });
 
-  it('a surviving same-id crm blocks the purge', async () => {
+  it('a surviving same-id crm does not block the purge', async () => {
     const { h, purges } = await makeHarnessWithPurgeSpy();
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin' }), crm('admin'));
     await h.bus.call<UpsertInput, UpsertOutput>('connectors:upsert', h.ctx({ userId: 'admin2' }), crm('admin2'));
     await h.bus.call<DeleteInput, DeleteOutput>('connectors:delete', h.ctx({ userId: 'admin' }),
       { userId: 'admin', connectorId: 'crm', purgeGlobal: true });
-    expect(purges).toEqual([]);
+    expect(purges).toEqual([{ connectorId: 'crm', scopes: ['agent'] }]);
   });
 
   it('a delete WITHOUT authority purges nothing, even when the id dies', async () => {
@@ -2026,7 +2013,7 @@ describe('@ax/connectors hooks — idStillLive + the agent-scope purge (slice 2b
     expect(events.map((e) => e.idStillLive)).toEqual([false]);
   });
 
-  it('a failing liveness check after the soft-delete announces idStillLive: true and keeps agent rows', async () => {
+  it('a failing liveness check after the soft-delete announces idStillLive: true and still purges agent rows', async () => {
     const purges: unknown[] = [];
     const h = await createTestHarness({
       services: {
@@ -2046,9 +2033,9 @@ describe('@ax/connectors hooks — idStillLive + the agent-scope purge (slice 2b
     const out = await deleteConnector(store, h.bus, loggedCtx(h, 'admin', lines),
       { userId: 'admin', connectorId: 'crm', purgeGlobal: true });
     expect(out).toEqual({ deleted: true });
-    // SIGNINS-9: the same read answers "is there a survivor?", so an unknown
-    // answer keeps the agent rows (a survivor may still read them).
-    expect(purges).toEqual([]);
+    // The purge does not depend on the liveness read: an unknown answer only
+    // makes the announcement say "still live".
+    expect(purges).toEqual([{ connectorId: 'crm', scopes: ['agent'] }]);
     expect(events.map((e) => e.idStillLive)).toEqual([true]);
     expect(logged(lines, 'connectors_delete_live_check_failed')).toEqual([
       expect.objectContaining({ level: 'warn', connectorId: 'crm', err: 'db down' }),

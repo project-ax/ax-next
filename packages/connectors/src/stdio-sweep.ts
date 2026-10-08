@@ -62,8 +62,9 @@ export async function sweepStdioConnectors(
         }
         await purgeConnectorState(bus, ctx, row.owner_user_id, connector, {
           purgeGlobal: !shared,
-          purgeAgentSignIns: !shared,
-          agentSignInsSkipReason: 'same-id-survives',
+          // Sign-ins are keyed by id alone: purge them even when a survivor
+          // carries the id, or it would read a token minted for the stdio one.
+          purgeAgentSignIns: true,
           // Every stdio row with this id goes in this sweep, so the id stays in
           // use exactly when a surviving non-stdio connector carries it.
           idStillLive: shared,

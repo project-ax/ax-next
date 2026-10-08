@@ -139,8 +139,8 @@ async function markLegacyDefault(ownerUserId: string, connectorId: string): Prom
  *   legacy1  — own, legacy (implicitly attached)
  *   legacy2  — own, legacy, older than legacy1
  *   shared1  — userB's definition (canEdit false for userA), legacy on B's side
- *   amb      — defined by BOTH userB and userC (a legacy duplicate that nothing
- *              resolves; it fails closed until an admin deletes one: ambiguous
+ *   amb      — defined by BOTH userB and userC (a legacy duplicate that resolves
+ *              for neither the agent store nor non-owners; it fails closed until an admin deletes one: ambiguous
  *              for userA → unresolvable)
  */
 async function seed(h: TestHarness): Promise<void> {

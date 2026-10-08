@@ -171,8 +171,9 @@ export async function sweepNonAdminConnectors(
       }
       const { failed } = await purgeConnectorState(bus, ctx, ownerUserId, connector, {
         purgeGlobal: !idStillLive,
-        purgeAgentSignIns: !idStillLive,
-        agentSignInsSkipReason: 'same-id-survives',
+        // Sign-ins are keyed by id alone: purge them even when a survivor
+        // carries the id, or it would read a token minted for the removed one.
+        purgeAgentSignIns: true,
         idStillLive,
         announce: false,
       });

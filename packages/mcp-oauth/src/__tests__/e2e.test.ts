@@ -153,7 +153,7 @@ async function bootStack(testOverrides: Parameters<typeof createMcpOAuthPlugin>[
   const h = await createTestHarness({
     // TASK-711 — the vault reads an agent-scope `account:` row only when a
     // provider of `credentials:authorize-agent:account` (@ax/connectors in a
-    // real host) says the reader resolves the one shared connector. This canary
+    // real host) says the reader resolves the connector's sole definition. This canary
     // is about the sharee resolving the agent-bound token, so the stand-in says yes.
     services: {
       'credentials:authorize-agent:account': (async () => ({ allowed: true })) as ServiceHandler,
@@ -432,7 +432,7 @@ function captureRouteServices(routes: CapturedRoute[]): Record<string, ServiceHa
     }) as ServiceHandler,
     // TASK-798/813 — bob is a team admin of agent-A's team, so he may sign in for it.
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
-    // TASK-711 — @ax/connectors' answer to "is conn-1 the one shared connector
+    // TASK-711 — @ax/connectors' answer to "is conn-1 the connector's sole definition
     // every member of agent-A sees?". Yes here, so the sign-in is stored on the
     // agent AND the vault lets the sharee read it back there — once attached.
     'credentials:authorize-agent:account': (async (_c, input) => {

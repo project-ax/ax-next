@@ -281,14 +281,15 @@ describe('connector delete composition: real connectors + agents + credentials +
     // connector has it either, so it goes too — the sweep's documented rule.
     expect(await attachments(agentA)).toEqual(['sameid', 'admintool', 'dupid']);
     expect(await attachments(agentB)).toEqual([]);
-    // usertool's agents' sign-ins are purged; sameid's stay (an admin's live
-    // connector still carries the id). Every person-level row is gone:
+    // usertool's and sameid's agent sign-ins are purged (sameid too, though an
+    // admin's live connector still carries the id: sign-ins are keyed by id
+    // alone, so the survivor must not read a token minted for the removed
+    // definition). Every person-level row is gone:
     // @ax/credentials' one-time boot purge.
     expect(await keys(h)).toEqual(
       [
         `agent/${agentA}/account:admintool`,
         `agent/${agentA}/account:dupid`,
-        `agent/${agentA}/account:sameid`,
       ].sort(),
     );
     // mcp-oauth's boot sweep dropped the marker for the id removed at boot.
@@ -308,8 +309,8 @@ describe('connector delete composition: real connectors + agents + credentials +
     // Two live definitions of `dupid` (ADMIN's and ADMIN2's): the id is
     // ambiguous, so it fails closed — agent A's stored sign-in reads as absent
     // (the vault's own "no such credential"), not as whichever definition
-    // happens to be asked about. The read after the delete below is the control:
-    // the same row is there, and the survivor can read it.
+    // happens to be asked about. The control: the row is stored.
+    expect((await keys(h)).filter((k) => k.endsWith(':dupid'))).toEqual([`agent/${agentA}/account:dupid`]);
     expect(await readAs(h, ADMIN, agentA, 'account:dupid')).toBe('error:credential-not-found');
     await h.bus.call('connectors:delete', h.ctx({ userId: ADMIN }), {
       userId: ADMIN,
@@ -317,13 +318,14 @@ describe('connector delete composition: real connectors + agents + credentials +
       purgeGlobal: true,
     });
     expect(await liveConnectors()).toEqual([`${ADMIN}/sameid`, `${ADMIN2}/dupid`]);
-    // The id is still live (ADMIN2's): attachments, the agent's marker AND the
-    // agent's sign-in stay, because the survivor is now the one definition that
-    // can read them. It works again, with no re-sign-in.
+    // The id is still live (ADMIN2's): attachments and the agent's marker stay.
+    // The agent's sign-in does NOT: it is keyed by id alone, so it would
+    // otherwise become readable through a survivor that may point at other
+    // hosts. A re-sign-in is needed.
     expect(await attachments(agentA)).toEqual(['sameid', 'dupid']);
-    expect((await keys(h)).filter((k) => k.endsWith(':dupid'))).toEqual([`agent/${agentA}/account:dupid`]);
+    expect((await keys(h)).filter((k) => k.endsWith(':dupid'))).toEqual([]);
     expect(await markers()).toEqual([`agent/${agentA}/dupid`]);
-    expect(await readAs(h, ADMIN, agentA, 'account:dupid')).toBe(`secret-${agentA}-account:dupid`);
+    expect(await readAs(h, ADMIN, agentA, 'account:dupid')).toBe('error:credential-not-found');
     // Nothing per person anywhere.
     expect((await keys(h)).filter((k) => k.startsWith('user/'))).toEqual([]);
   });

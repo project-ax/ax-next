@@ -283,7 +283,7 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
     ]);
   });
 
-  it("keeps the GLOBAL key and agents' sign-ins when an admin's live connector keeps the id", async () => {
+  it("keeps the GLOBAL key but purges agents' sign-ins when an admin's live connector keeps the id", async () => {
     await bootAndClose();
     await insertConnector('admin1', 'teamtool', { keyMode: 'workspace' });
     await insertConnector('userB', 'teamtool', { keyMode: 'workspace' });
@@ -296,11 +296,12 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
       ['userB', 'teamtool', false],
     ]);
     expect(purged.filter((p) => p.scope === 'global')).toEqual([]);
-    expect(accountPurges).toEqual([]);
+    // Keyed by id alone: the survivor must not read a token minted for the removed one.
+    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent'] }]);
     expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([['teamtool', true]]);
   });
 
-  it('two non-admins with the same id: the last one removed purges, once', async () => {
+  it('two non-admins with the same id: each removal purges agent sign-ins (idempotent)', async () => {
     await bootAndClose();
     await insertConnector('userB', 'teamtool', { keyMode: 'workspace' });
     await insertConnector('userC', 'teamtool', { keyMode: 'workspace' });
@@ -311,7 +312,10 @@ describe('@ax/connectors boot removal of non-admin connectors', () => {
       ['userB', 'teamtool', false],
       ['userC', 'teamtool', false],
     ]);
-    expect(accountPurges).toEqual([{ connectorId: 'teamtool', scopes: ['agent'] }]);
+    expect(accountPurges).toEqual([
+      { connectorId: 'teamtool', scopes: ['agent'] },
+      { connectorId: 'teamtool', scopes: ['agent'] },
+    ]);
     expect(events.map((e) => [e.connectorId, e.idStillLive])).toEqual([
       ['teamtool', true],
       ['teamtool', false],

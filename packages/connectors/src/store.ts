@@ -203,8 +203,8 @@ function rowToSummary(
 
 /**
  * Prefer the caller's definition. An id with more than one live row is a
- * legacy duplicate that nothing resolves; it fails closed until an admin
- * deletes one.
+ * legacy duplicate that nothing resolves (neither the agent store nor
+ * non-owners); it fails closed until an admin deletes one.
  */
 function selectAvailableRow(rows: StoredConnectorRow[], userId: string): StoredConnectorRow | null {
   return rows.find((row) => row.owner_user_id === userId) ??

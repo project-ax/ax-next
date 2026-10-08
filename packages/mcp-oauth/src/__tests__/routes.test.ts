@@ -1333,7 +1333,7 @@ describe('mcp-oauth begin route', () => {
   // stored the sign-in on the signer. Fails closed — no provider, a throw or
   // an answer that is not exactly `allowed: true` is a refusal.
   it.each([
-    ['the provider denies (the id has no live definition)', { 'credentials:authorize-agent:account': () => ({ allowed: false }) }],
+    ['the provider denies (a legacy duplicate id)', { 'credentials:authorize-agent:account': () => ({ allowed: false }) }],
     ['no provider is loaded', { 'credentials:authorize-agent:account': undefined }],
     ['the provider throws', { 'credentials:authorize-agent:account': () => { throw new Error('boom'); } }],
     ['the provider answers a truthy non-true', { 'credentials:authorize-agent:account': () => ({ allowed: 'yes' }) }],
@@ -1388,12 +1388,12 @@ describe('mcp-oauth begin route', () => {
     expect(pending.agentId).toBe('agent-1');
   });
 
-  // SIGNINS-7 — a connector still attached to an agent but with no live
-  // definition (deleted, say) is not one an agent may hold a sign-in for, so
-  // the store question says no. It is named (`agent-store-refused`), not read
-  // as "removed from the agent".
+  // SIGNINS-7 — a connector an agent may not hold a sign-in for (a legacy
+  // duplicate id, a missing provider, or a race; a deleted connector 404s
+  // earlier) gets the store question's "no". It is named (`agent-store-refused`),
+  // not read as "removed from the agent".
   it.each([
-    ['the connector has no live definition (still attached)', { 'credentials:authorize-agent:account': (i: unknown) => ({ allowed: (i as { purpose?: unknown }).purpose !== 'store' }) }],
+    ['the connector is a legacy duplicate id (still attached)', { 'credentials:authorize-agent:account': (i: unknown) => ({ allowed: (i as { purpose?: unknown }).purpose !== 'store' }) }],
     ['no provider is loaded', { 'credentials:authorize-agent:account': undefined }],
     ['the provider throws', { 'credentials:authorize-agent:account': () => { throw new Error('boom'); } }],
   ])('SECURITY: mode sign-in-again but %s → 403 agent-store-refused; no pending row, no discovery', async (_label, extra) => {

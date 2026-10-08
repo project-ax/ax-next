@@ -275,7 +275,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
    * the call in `begin`. Fails closed: no provider, a throw or an answer that
    * is not exactly `allowed: true` is "no".
    *
-   * TASK-788 — with `purpose: 'store'` it is the shared-definition question
+   * TASK-788 — with `purpose: 'store'` it is the sole-definition question
    * only, NOT "is the connector attached to this agent?": an Add signs in
    * before it attaches. Without `purpose` it is exactly the vault's READ
    * question, which also requires the attachment (Sign in again).
@@ -537,9 +537,9 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     //                   `already-attached` (the key path's twin), before any
     //                   pending row. Signing in again is the row's own item.
     //   sign-in-again — the same WRITE question first, so a connector no agent
-    //                   may hold a sign-in for (one without exactly one
-    //                   live definition, e.g. a deleted one still attached) gets the
-    //                   same 403 `agent-store-refused` as an Add, and the person
+    //                   may hold a sign-in for (a legacy duplicate id, a
+    //                   missing provider, or a race; a deleted connector 404s
+    //                   earlier) gets the same 403 `agent-store-refused` as an Add, and the person
     //                   is told why. Then the READ question (no `purpose`),
     //                   which also requires the connector to be on the agent
     //                   already — 409 `not-on-agent`. A sign-in the agent could

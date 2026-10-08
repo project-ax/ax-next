@@ -245,8 +245,8 @@ describe('TASK-797: global read of an OAuth client secret', () => {
 });
 
 // SIGNINS-9 — end to end over the real store: two live rows for one id (a
-// legacy duplicate that nothing resolves; it fails closed until an admin
-// deletes one) are ambiguous, so the client secret stays closed.
+// legacy duplicate that resolves for neither the agent store nor non-owners;
+// it fails closed until an admin deletes one) are ambiguous, so the client secret stays closed.
 describe('TASK-797 over the real store: a duplicated id', () => {
   let container: StartedPostgreSqlContainer;
   let db: Kysely<ConnectorDatabase>;

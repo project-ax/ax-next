@@ -31,10 +31,12 @@ export async function purgeConnectorState(
   connector: PurgeableConnector,
   opts: {
     purgeGlobal: boolean;
-    /** Caller-computed: authorized AND no other live same-id connector survives. */
+    /**
+     * Caller-computed: authorized. A same-id survivor does NOT withhold it: the
+     * sign-ins are keyed by id alone, so the survivor would otherwise read a
+     * token minted for the deleted definition.
+     */
     purgeAgentSignIns: boolean;
-    /** Why `purgeAgentSignIns` is false (for the skip log). */
-    agentSignInsSkipReason: 'not-authorized' | 'same-id-survives' | 'survivor-check-failed';
     /**
      * Slice 2b — caller-computed AFTER the row is removed: does any live
      * connector (any owner) still carry this id? A failed check
@@ -116,13 +118,14 @@ export async function purgeConnectorState(
   // Agent-owned sign-ins (2026-10-07 design): every agent's sign-in / per-agent
   // key for this connector lives at AGENT scope under `account:<id>[:SLOT]`.
   // Best-effort, like the credential purge above. Requires admin authority
-  // (purgeGlobal) and no surviving same-id connector (ids are not unique across
-  // owners): the survivor would still read them. SIGNINS-9: every connector is
-  // shared, so every delete is a candidate.
+  // (purgeGlobal) and runs even when a same-id connector survives (ids are not
+  // unique across owners): the survivor would otherwise read a token minted for
+  // the deleted definition. SIGNINS-9: every connector is shared, so every
+  // delete is a candidate.
   if (!opts.purgeAgentSignIns) {
     ctx.logger.info('connectors_delete_skipped_agent_signins_purge', {
       connectorId,
-      reason: opts.agentSignInsSkipReason,
+      reason: 'not-authorized',
     });
   } else if (bus.hasService('credentials:purge-account')) {
     const scopes: Array<'agent'> = ['agent'];
