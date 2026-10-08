@@ -380,8 +380,9 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
     }
     // Another agent's rows say nothing about team-1's sign-in.
     expect((await batch('u1', 'team-2', ['gmail'])).needsReconnect).toEqual([]);
-    // No agent → nothing to report (sign-ins live only on agents).
-    expect(await batch('u1', undefined, ['gmail'])).toEqual({ needsReconnect: [], shared: [], signIns: {} });
+    // SIGNINS-7 — no agent is a malformed request, not an empty answer:
+    // sign-ins live only on agents, so the question needs one.
+    await expect(batch('u1', undefined, ['gmail'])).rejects.toMatchObject({ code: 'invalid-payload' });
 
     // u2's good refresh of the agent's token clears it for u1 too.
     reject = false;
@@ -423,14 +424,21 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
     });
     harnesses.push(h);
     await expect(
-      h.bus.call('mcp-oauth:status-batch', h.ctx(), { userId: '', connectorIds: [] }),
+      h.bus.call('mcp-oauth:status-batch', h.ctx(), { userId: '', agentId: 'a1', connectorIds: [] }),
     ).rejects.toThrow();
     await expect(
       h.bus.call('mcp-oauth:status-batch', h.ctx(), {
         userId: 'u1',
+        agentId: 'a1',
         connectorIds: Array.from({ length: 501 }, (_, i) => `c${i}`),
       }),
     ).rejects.toThrow();
+    // SIGNINS-7 — `agentId` is required: missing or empty is refused.
+    for (const extra of [{}, { agentId: '' }]) {
+      await expect(
+        h.bus.call('mcp-oauth:status-batch', h.ctx(), { userId: 'u1', connectorIds: ['c1'], ...extra }),
+      ).rejects.toMatchObject({ code: 'invalid-payload' });
+    }
   });
 });
 
@@ -494,9 +502,11 @@ describe('@ax/mcp-oauth status-batch signIns (slice 4)', () => {
     expect(resolves).toEqual([]);
   });
 
-  it('no agent named → {} and no list read', async () => {
+  it('no agent named → refused (SIGNINS-7: agentId is required), and no list read', async () => {
     const { batch, listCalls } = await boot((async () => ({ credentials: rows('agent-A') })) as ServiceHandler);
-    expect((await batch({ userId: 'u1', connectorIds: ['gmail'] })).signIns).toEqual({});
+    await expect(batch({ userId: 'u1', connectorIds: ['gmail'] } as never)).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
     expect(listCalls).toEqual([]);
   });
 

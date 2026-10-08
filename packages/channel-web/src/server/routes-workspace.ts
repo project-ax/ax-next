@@ -1833,7 +1833,10 @@ function toConnectorRows(out: ConnectorsListEffectiveOutput): AgentConnectorRow[
 
 interface McpOAuthStatusBatchOutput {
   needsReconnect: string[];
-  /** TASK-756 — the subset whose rejected sign-in is the agent's shared one. */
+  /**
+   * TASK-756 — the subset whose rejected sign-in is the agent's. Since slice 5
+   * every sign-in is the agent's, so this always equals `needsReconnect`.
+   */
   shared?: string[];
   /**
    * Slice 4 — connector id → the agent's sign-in identity, for each requested
@@ -4015,8 +4018,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         };
         if (!bus.hasService('mcp-oauth:status-batch')) return none;
         try {
-          // TASK-756 — name the agent so a team agent's SHARED sign-in counts
-          // (marked once per agent, for every member), not only the caller's own.
+          // Every sign-in lives on the agent (slice 3), so the agent is the
+          // question: `agentId` is required (SIGNINS-7), and a marker counts
+          // for every member of a team agent alike.
           const r = await bus.call<
             { userId: string; agentId: string; connectorIds: string[] },
             McpOAuthStatusBatchOutput

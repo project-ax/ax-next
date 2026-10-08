@@ -261,12 +261,11 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   // on the input field as the contract.
   //
   // NOT a real agent: `'@ax/mcp-oauth'` fails the vault's `ownerId` grammar (the
-  // `/`), so a `credentials:get` from `begin` that misses the user scope THROWS at
-  // the agent-scope step instead of walking on to global scope or the env fallback
-  // (for an `account:` ref the vault now asks `credentials:authorize-agent:account`
-  // first, TASK-711, and a denial skips the step instead of throwing).
-  // That is an accident of the name, not a control, and nothing may rely on it:
-  // `begin` bounds what it may ask the vault for with `isOwnClientSecretRef`.
+  // `/`). `begin` never reads the vault under this ctx: its one dereference (the
+  // pinned client secret) builds its own ctx with an empty agentId, and since
+  // slice 5 an `account:` ref is never read at user scope, so that walk reaches
+  // global only. The name is not a control and nothing may rely on it: `begin`
+  // bounds what it may ask the vault for with `isOwnClientSecretRef`.
   function ctxFor(userId: string): AgentContext {
     return makeAgentContext({ sessionId: 'mcp-oauth', agentId: '@ax/mcp-oauth', userId });
   }
@@ -537,14 +536,19 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     //                   already on the agent, so there is nothing to add — 409
     //                   `already-attached` (the key path's twin), before any
     //                   pending row. Signing in again is the row's own item.
-    //   sign-in-again — the READ question (no `purpose`), which also requires
-    //                   the connector to be on the agent already. A sign-in the
-    //                   agent could never read back is refused, not stored.
+    //   sign-in-again — the same WRITE question first, so a connector no agent
+    //                   may hold a sign-in for (one that isn't the shared
+    //                   definition, e.g. a private one still attached) gets the
+    //                   same 403 `agent-store-refused` as an Add, and the person
+    //                   is told why. Then the READ question (no `purpose`),
+    //                   which also requires the connector to be on the agent
+    //                   already — 409 `not-on-agent`. A sign-in the agent could
+    //                   never read back is refused, not stored.
+    if (!(await mayHoldOnAgent(user.id, agentId, connectorId, 'store'))) {
+      res.status(403).json({ error: 'agent-store-refused' });
+      return;
+    }
     if (mode === 'add') {
-      if (!(await mayHoldOnAgent(user.id, agentId, connectorId, 'store'))) {
-        res.status(403).json({ error: 'agent-store-refused' });
-        return;
-      }
       if (await mayHoldOnAgent(user.id, agentId, connectorId)) {
         res.status(409).json({ error: 'already-attached' });
         return;
@@ -577,9 +581,9 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // A pinned client secret is dereferenced with `credentials:get` and posted to
     // an authorization server the connector's AUTHOR picked, so the ref may name
     // only this connector's own account key (TASK-712). Refuse anything else BEFORE
-    // any vault call. Since TASK-797 the dereference walks user -> global (no agent
-    // step), so this check is the ONLY thing standing between an author-chosen ref
-    // and a global row. Same truthiness as the dereference below (`''` = no pinned
+    // any vault call. The dereference reads global only (no agent step since
+    // TASK-797, no user step for an `account:` ref since slice 5), so this check
+    // is the ONLY thing standing between an author-chosen ref and a global row. Same truthiness as the dereference below (`''` = no pinned
     // secret).
     if (slot.clientSecretRef && !isOwnClientSecretRef(connectorId, slot.clientSecretRef)) {
       logger.warn('mcp_oauth_begin_client_secret_ref_rejected', { connectorId });

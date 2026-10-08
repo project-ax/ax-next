@@ -92,7 +92,7 @@ const ResolveOutputSchema = z.object({
 }) as unknown as z.ZodType<McpOAuthResolveOutput>;
 
 /**
- * `mcp-oauth:status-batch` (TASK-741). Boundary review: `{userId, connectorIds}`
+ * `mcp-oauth:status-batch` (TASK-741). Boundary review: `{userId, agentId, connectorIds}`
  * → `{needsReconnect: connectorIds}` names no storage or transport; an alternate
  * impl (a vault that tracks credential health itself, or one that records the
  * provider's revocation webhook) answers the same shape.
@@ -100,11 +100,12 @@ const ResolveOutputSchema = z.object({
 export interface StatusBatchInput {
   userId: string;
   /**
-   * TASK-756 — the agent the caller is looking at. Slice 5: every sign-in
-   * lives on an agent, so without one there is nothing to report (empty
-   * answer). The caller must already have resolved this agent for `userId`.
+   * TASK-756 — the agent the caller is looking at. Required since SIGNINS-7:
+   * every sign-in lives on an agent, so there is no question to ask without
+   * one (a missing or empty id is `invalid-payload`). The caller must already
+   * have resolved this agent for `userId`.
    */
-  agentId?: string;
+  agentId: string;
   connectorIds: string[];
 }
 export interface StatusBatchOutput {
@@ -115,16 +116,17 @@ export interface StatusBatchOutput {
   needsReconnect: string[];
   /**
    * TASK-756 — the subset of `needsReconnect` where the rejected sign-in is the
-   * agent's own. Slice 5: every sign-in is the agent's, so this always equals
-   * `needsReconnect`. Kept so the caller's shape stands; the caller already
-   * words it "Team sign-in expired" only on a team agent.
+   * agent's own. Slice 5: every sign-in is the agent's, so this ALWAYS equals
+   * `needsReconnect` — it carries no extra information. Kept so the caller's
+   * shape stands; the caller words it "Team sign-in expired" only on a team
+   * agent.
    */
   shared: string[];
   /**
    * Slice 4 — which account the agent signed in as, per connector: keyed by
    * each requested connector id that has a sign-in stored ON `agentId`. A
    * sign-in from before slice 4 recorded nothing, so it is keyed with every
-   * field `null`. `{}` without an `agentId`, or when the vault can't be read.
+   * field `null`. `{}` when the vault can't be read.
    *
    * Boundary review: `account` / `signedInBy` / `signedInAt` name no storage
    * or provider; an alternate impl (a vault that records identity itself)
@@ -136,7 +138,7 @@ export interface StatusBatchOutput {
 const StatusBatchInputSchema = z
   .object({
     userId: z.string().min(1).max(256),
-    agentId: z.string().min(1).max(256).optional(),
+    agentId: z.string().min(1).max(256),
     connectorIds: z.array(z.string().min(1).max(128)).max(500),
   })
   .strict();
@@ -482,8 +484,8 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       // Reads the marker table ONLY: it never resolves, refreshes or even reads
       // a token, so a page of rows costs one indexed query, not N probes. The
       // caller (the connectors rail) has already resolved `agentId` for
-      // `userId` and decided which connectors this user may see. Slice 5:
-      // markers live only on agents, so no `agentId` → nothing to say.
+      // `userId` and decided which connectors this user may see. Markers live
+      // only on agents, so `agentId` is required (SIGNINS-7).
       bus.registerService<StatusBatchInput, StatusBatchOutput>(
         'mcp-oauth:status-batch',
         PLUGIN_NAME,
@@ -498,7 +500,6 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
             });
           }
           const { agentId, connectorIds } = parsed.data;
-          if (agentId === undefined) return { needsReconnect: [], shared: [], signIns: {} };
           const [needsReconnect, signIns] = await Promise.all([
             store.listNeedsReconnect(agentId, connectorIds),
             // Slice 4 — who the agent signed in as. Agent sign-ins only (every

@@ -1355,7 +1355,7 @@ describe('mcp-oauth begin route', () => {
     expect(flow.buildAuthorization).not.toHaveBeenCalled();
   });
 
-  it('mode sign-in-again on an attached connector → 200; asks the READ question (no purpose); pending mode sign-in-again', async () => {
+  it('mode sign-in-again on an attached connector → 200; asks the WRITE then the READ question; pending mode sign-in-again', async () => {
     const authz = vi.fn(() => ({ allowed: true }));
     const { deps, store } = makeDeps({
       'auth:require-user': () => OK_USER,
@@ -1367,10 +1367,17 @@ describe('mcp-oauth begin route', () => {
     await createMcpOAuthRouteHandlers(deps).begin(beginReq('sign-in-again'), res);
 
     expect(state.status).toBe(200);
-    // Exactly the vault's read question: no `purpose`, so @ax/connectors also
-    // requires the connector to be effective on the agent.
-    expect(authz).toHaveBeenCalledTimes(1);
+    // First the store question (is this the shared definition an agent may
+    // hold a sign-in for?), then exactly the vault's read question: no
+    // `purpose`, so @ax/connectors also requires it to be on the agent.
+    expect(authz).toHaveBeenCalledTimes(2);
     expect(authz.mock.calls[0]![0]).toEqual({
+      userId: OK_USER.user.id,
+      agentId: 'agent-1',
+      ref: 'account:conn-1',
+      purpose: 'store',
+    });
+    expect(authz.mock.calls[1]![0]).toEqual({
       userId: OK_USER.user.id,
       agentId: 'agent-1',
       ref: 'account:conn-1',
@@ -1381,10 +1388,33 @@ describe('mcp-oauth begin route', () => {
     expect(pending.agentId).toBe('agent-1');
   });
 
+  // SIGNINS-7 — a private connector still attached to an agent is not the
+  // shared definition, so the store question says no. That is the cause the
+  // person can act on ("make it Shared"), so it is named, not read as
+  // "removed from the agent".
   it.each([
-    ['the connector is not on the agent', { 'credentials:authorize-agent:account': () => ({ allowed: false }) }],
+    ['the connector is not the shared definition (a private one, still attached)', { 'credentials:authorize-agent:account': (i: unknown) => ({ allowed: (i as { purpose?: unknown }).purpose !== 'store' }) }],
     ['no provider is loaded', { 'credentials:authorize-agent:account': undefined }],
     ['the provider throws', { 'credentials:authorize-agent:account': () => { throw new Error('boom'); } }],
+  ])('SECURITY: mode sign-in-again but %s → 403 agent-store-refused; no pending row, no discovery', async (_label, extra) => {
+    const { deps, store, flow } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => PERSONAL,
+      'connectors:get': () => connectorFixture(),
+      ...extra,
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(beginReq('sign-in-again'), res);
+
+    expect(state.status).toBe(403);
+    expect(state.json).toEqual({ error: 'agent-store-refused' });
+    expect(store.putPending).not.toHaveBeenCalled();
+    expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the connector is not on the agent', { 'credentials:authorize-agent:account': (i: unknown) => ({ allowed: (i as { purpose?: unknown }).purpose === 'store' }) }],
+    ['the read question throws', { 'credentials:authorize-agent:account': (i: unknown) => { if ((i as { purpose?: unknown }).purpose === 'store') return { allowed: true }; throw new Error('boom'); } }],
   ])('SECURITY: mode sign-in-again but %s → 409 not-on-agent; no pending row, no discovery', async (_label, extra) => {
     const { deps, store, flow } = makeDeps({
       'auth:require-user': () => OK_USER,
