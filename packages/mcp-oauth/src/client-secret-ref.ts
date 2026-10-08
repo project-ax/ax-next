@@ -18,7 +18,7 @@
 //   - THIS connector's id, so TASK-697's `credentials:authorize-global:account` guard
 //     decides what a global-scope step may do with it;
 //   - a tag is required: the bare `account:<connectorId>` is where the OAuth callback
-//     stores this connector's TOKEN (per user or per team agent), never a client
+//     stores this connector's TOKEN (per agent), never a client
 //     secret.
 //
 // This is a LOCAL COPY of @ax/connectors' `isOwnClientSecretRef`

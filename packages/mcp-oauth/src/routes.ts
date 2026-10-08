@@ -599,11 +599,11 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     if (slot.clientId) {
       let clientSecret: string | undefined;
       if (slot.clientSecretRef) {
-        // TASK-797 — read user -> global, with NO agent step (agentId ''), the
-        // same convention as the `status` probe. A client secret is stored at the
-        // author's user scope, or at global for an admin's SHARED connector so
-        // every signer can use it (@ax/connectors' credential-authz decides who
-        // may read it there); it is never stored on an agent. With the
+        // TASK-797 — read with NO agent step (agentId ''). A client secret is
+        // stored at global for a SHARED connector so every signer can use it
+        // (@ax/connectors' credential-authz decides who may read it there); it
+        // is never stored on an agent. Slice 5: the vault no longer reads an
+        // `account:` ref at user scope, so this walk reaches global only. With the
         // placeholder agentId the agent step ran first, and for a shared
         // connector it threw on the vault's ownerId grammar before the walk
         // reached global. The value is used only below, against the provider's
@@ -741,6 +741,51 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     return reason === undefined ? url : `${url}&reason=${reason}`;
   }
 
+  /**
+   * The callback's re-check of the agent gate `begin` passed, as the same
+   * signer: up to `pendingTtlMs` has gone by, and in that time the agent may
+   * have been deleted or the signer removed or demoted from its team. Answers
+   * `null` when the signer may still sign in on `agentId`, or the reason the
+   * popup reports when not. Never throws; every refusal and fault is logged.
+   */
+  async function recheckAgent(
+    user: { id: string; isAdmin: boolean },
+    agentId: string,
+    connectorId: string,
+  ): Promise<OAuthFailureReason | null> {
+    let visibility: unknown;
+    try {
+      const out = await bus.call<
+        { agentId: string; userId: string },
+        { agent: { visibility: 'personal' | 'team' } }
+      >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
+      visibility = out?.agent?.visibility;
+    } catch (err) {
+      if (isReject(err)) {
+        logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'resolve', ...errFields(err) });
+        return 'not-allowed';
+      }
+      logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
+      return 'sign-in-failed';
+    }
+    // Anything but a personal agent is held to the team rule (fail closed): only
+    // a team admin may choose the account every member's runs act as.
+    if (visibility !== 'personal') {
+      let allowed: boolean;
+      try {
+        allowed = await maySetSharedCredential(user, agentId);
+      } catch (err) {
+        logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
+        return 'sign-in-failed';
+      }
+      if (!allowed) {
+        logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'team-admin' });
+        return 'not-allowed';
+      }
+    }
+    return null;
+  }
+
   async function callback(req: RouteRequest, res: RouteResponse): Promise<void> {
     const user = await requireUser(req, res);
     if (!user) return;
@@ -807,10 +852,18 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       // `begin` leaves it out; the person just tries again. The popup still
       // says sign-in-failed. SECURITY: `error` arrives through the browser,
       // so whoever holds this state can forge `invalid_scope`. The flag is
-      // therefore keyed by the AGENT this authorization was begun for (begin
-      // already checked this person may sign in on it) — never connector-wide,
-      // which would let one member switch identity capture off for every agent.
-      if (errorCode === 'invalid_scope' && pending.identityScope === true && agentId) {
+      // therefore keyed by the AGENT this authorization was begun for — never
+      // connector-wide, which would let one member switch identity capture off
+      // for every agent — and written only once the same agent re-check a
+      // code goes through passes again (slice 5): `begin` checked this person
+      // may sign in on it, but they may have been removed or demoted since.
+      // A refused re-check writes no flag; the popup's reason is unchanged.
+      if (
+        errorCode === 'invalid_scope' &&
+        pending.identityScope === true &&
+        agentId &&
+        (await recheckAgent(user, agentId, connectorId)) === null
+      ) {
         try {
           await store.markIdentityScopeRefused(agentId, connectorId, pending.authServerUrl);
         } catch (err) {
@@ -836,39 +889,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       fail('not-allowed');
       return;
     }
-    let visibility: unknown;
-    try {
-      const out = await bus.call<
-        { agentId: string; userId: string },
-        { agent: { visibility: 'personal' | 'team' } }
-      >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
-      visibility = out?.agent?.visibility;
-    } catch (err) {
-      if (isReject(err)) {
-        logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'resolve', ...errFields(err) });
-        fail('not-allowed');
-        return;
-      }
-      logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
-      fail('sign-in-failed');
+    const refused = await recheckAgent(user, agentId, connectorId);
+    if (refused !== null) {
+      fail(refused);
       return;
-    }
-    // Anything but a personal agent is held to the team rule (fail closed): only
-    // a team admin may choose the account every member's runs act as.
-    if (visibility !== 'personal') {
-      let allowed: boolean;
-      try {
-        allowed = await maySetSharedCredential(user, agentId);
-      } catch (err) {
-        logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
-        fail('sign-in-failed');
-        return;
-      }
-      if (!allowed) {
-        logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'team-admin' });
-        fail('not-allowed');
-        return;
-      }
     }
 
     // Re-fetch the connector to re-derive allowedHosts for the redeem hop
@@ -1157,58 +1181,41 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(400).json({ error: 'connectorId is required' });
       return;
     }
-    const agentId = req.query.agentid || undefined;
+    // Slice 5 — every sign-in lives on an agent, so the probe always names
+    // one. The person-level probe (no agent; walked user → global) is gone.
+    const agentId = req.query.agentid;
+    if (!agentId) {
+      res.status(400).json({ error: 'agentId is required' });
+      return;
+    }
 
-    // Authz gate mirrors `begin`: when agentId is present, agents:resolve IS the
-    // owner/member binding check; when absent, connector ownership gates (connectors:get).
-    //
-    // NOTE: the agent path deliberately does NOT also run `connectors:get` (unlike
-    // `begin`, which checks both). An agent-scope token belongs to the AGENT, so a
-    // team sharee who can resolve the agent but does NOT own the connector must
-    // still see "connected" — adding a connector-ownership check here would 404
-    // them and regress the shared-credential UX. agents:resolve is the only gate.
-    if (agentId !== undefined) {
-      try {
-        await bus.call<{ agentId: string; userId: string }, unknown>(
-          'agents:resolve',
-          ctxFor(user.id),
-          { agentId, userId: user.id },
-        );
-      } catch (err) {
-        if (isReject(err)) {
-          res.status(403).json({ error: 'forbidden' });
-          return;
-        }
-        throw err;
+    // Authz gate mirrors `begin`: agents:resolve IS the owner/member binding
+    // check. It deliberately does NOT also run `connectors:get` (unlike
+    // `begin`, which checks both). An agent-scope token belongs to the AGENT,
+    // so a team sharee who can resolve the agent but does NOT own the
+    // connector must still see "connected" — adding a connector-ownership
+    // check here would 404 them and regress the shared-credential UX.
+    try {
+      await bus.call<{ agentId: string; userId: string }, unknown>(
+        'agents:resolve',
+        ctxFor(user.id),
+        { agentId, userId: user.id },
+      );
+    } catch (err) {
+      if (isReject(err)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
       }
-    } else {
-      try {
-        await bus.call<{ userId: string; connectorId: string }, unknown>(
-          'connectors:get',
-          ctxFor(user.id),
-          { userId: user.id, connectorId },
-        );
-      } catch (err) {
-        if (isReject(err)) {
-          res.status(404).json({ error: 'not-found' });
-          return;
-        }
-        throw err;
-      }
+      throw err;
     }
 
     // Probe the credential via the same runtime path a chat turn uses.
-    // probeCtx.agentId MUST be the real agentId (when present) so credentials:get
-    // walks the agent scope correctly (packages/credentials/src/plugin.ts:567).
-    // When ABSENT (user-scope / Connectors-tab probe), it MUST be '' — credentials:get
-    // only walks the agent scope when ctx.agentId is a non-empty string, so '' makes
-    // it walk user→global only. A non-empty placeholder (e.g. a plugin name) would be
-    // fed to the agent-scope lookup as an ownerId and rejected by the ownerId pattern
-    // (`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`), 500-ing every user-scope status check.
+    // probeCtx.agentId is the real agentId so credentials:get walks the agent
+    // scope (an `account:` ref resolves agent → global only).
     const ref = `account:${connectorId}`;
     const probeCtx = makeAgentContext({
       sessionId: 'mcp-oauth',
-      agentId: agentId ?? '',
+      agentId,
       userId: user.id,
     });
     try {

@@ -741,9 +741,10 @@ describe('@ax/mcp-oauth e2e canary — two agents of one owner keep two separate
 // TASK-858 — a team admin removes the agent's shared sign-in. Through the REAL
 // vault and the REAL callback: the sign-in the callback wrote is gone for every
 // member (so the rail reads "needs sign-in"), its "expired" marker goes with it,
-// and a person's OWN sign-in to the same connector is not touched.
+// and another agent's marker for the same connector is not touched. (Slice 5:
+// there are no person-level sign-ins left to survive it.)
 describe('@ax/mcp-oauth e2e canary — mcp-oauth:remove-shared-sign-in removes the sign-in the callback wrote', () => {
-  it('after removal the sharee has no sign-in and no stale marker; a personal sign-in for the same connector survives', async () => {
+  it("after removal the sharee has no sign-in and no stale marker; another agent's marker for the same connector survives", async () => {
     const routes: CapturedRoute[] = [];
     const metadata = {
       issuer: 'https://auth.example.com',
@@ -805,25 +806,6 @@ describe('@ax/mcp-oauth e2e canary — mcp-oauth:remove-shared-sign-in removes t
     await callback.handler(fakeReq({ query: { code: 'auth-code', state: pending.state } }), cbRes);
     expect(cbRec.redirectUrl).toContain('oauth=success');
 
-    // carol ALSO has her own sign-in to the same connector (user scope).
-    await h.bus.call('credentials:set', h.ctx({ userId: 'carol' }), {
-      scope: 'user',
-      ownerId: 'carol',
-      ref: 'account:conn-1',
-      kind: 'mcp-oauth',
-      payload: encodeTokenBlob({
-        accessToken: 'carol-own-AT',
-        refreshToken: 'carol-own-RT',
-        tokenType: 'Bearer',
-        expiresAt: Date.now() + 60 * 60_000,
-        resource: 'https://mcp.example.com',
-        authServerUrl: 'https://auth.example.com',
-        tokenEndpoint: 'https://auth.example.com/token',
-        clientKey: 'conn-1|https://auth.example.com',
-        clientId: 'cid',
-      }),
-    });
-
     const get = (userId: string) =>
       h.bus.call<{ ref: string; userId: string }, string>(
         'credentials:get',
@@ -847,7 +829,9 @@ describe('@ax/mcp-oauth e2e canary — mcp-oauth:remove-shared-sign-in removes t
           { userId: 'bob', agentId: 'agent-A', connectorIds: ['conn-1'] },
         )
       ).shared;
-    await createMcpOAuthStore(db).markNeedsReconnect({ kind: 'agent', agentId: 'agent-A' }, 'conn-1');
+    const store = createMcpOAuthStore(db);
+    await store.markNeedsReconnect({ kind: 'agent', agentId: 'agent-A' }, 'conn-1');
+    await store.markNeedsReconnect({ kind: 'agent', agentId: 'agent-B' }, 'conn-1');
     expect(await sharedMarked()).toEqual(['conn-1']);
 
     const out = await h.bus.call('mcp-oauth:remove-shared-sign-in', h.ctx({ userId: 'bob' }), {
@@ -860,9 +844,8 @@ describe('@ax/mcp-oauth e2e canary — mcp-oauth:remove-shared-sign-in removes t
     await expect(get('bob')).rejects.toMatchObject({ code: 'credential-not-found' });
     expect(await has('bob')).toEqual({ present: false });
     expect(await sharedMarked()).toEqual([]);
-    // carol's own sign-in is hers: still there, still the one she resolves.
-    expect(await get('carol')).toBe('carol-own-AT');
-    expect(await has('carol')).toEqual({ present: true });
+    // Another agent's sign-in health is that agent's: untouched.
+    expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'agent-B' }, 'conn-1')).toBe(true);
 
     // Removing again (already gone) is a quiet success, not an error.
     expect(

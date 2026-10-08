@@ -68,8 +68,9 @@ export interface PendingAuthorization {
   mode: SignInMode;
   /**
    * Slice 4 — `begin` added the `openid`/`email` identity scopes to `scope`.
-   * An `invalid_scope` answer to such an authorization sets the per-(connector,
-   * authorization server) skip flag. Absent reads as false.
+   * An `invalid_scope` answer to such an authorization sets the skip flag
+   * keyed per (agent, connector, authorization server) — only once the
+   * callback's agent re-check passes. Absent reads as false.
    */
   identityScope?: boolean;
   createdAt: number;

@@ -1373,7 +1373,8 @@ describe('agent connector routes', () => {
         if (sharedSignOutThrows) throw new Error('vault row 7 for account:figma is corrupt');
         return { removed: true };
       });
-      // Still registered by @ax/mcp-oauth until slice 5 — Remove must not call it.
+      // Retired from @ax/mcp-oauth in slice 5; stubbed here so a regression
+      // that still calls it from Remove is caught (Remove must not call it).
       bus.registerService('mcp-oauth:remove-personal-sign-in', 'mcp-oauth', async (_c, i: unknown) => {
         personalSignOuts.push(i);
         return { removed: true };

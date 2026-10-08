@@ -21,6 +21,7 @@ import {
 } from './oauth-flow.js';
 import { registerMcpOAuthRoutes } from './routes.js';
 import { readAgentSignIns, type SignInIdentity } from './sign-ins.js';
+import { sweepDeadAgentMarkers } from './sweep.js';
 import { DEFAULT_CLIENT_NAME, oauthClientName } from './client-name.js';
 
 const PLUGIN_NAME = '@ax/mcp-oauth';
@@ -99,21 +100,24 @@ const ResolveOutputSchema = z.object({
 export interface StatusBatchInput {
   userId: string;
   /**
-   * TASK-756 — the agent the caller is looking at. When given, a rejected
-   * sign-in that agent's members SHARE (a team agent's token) counts too.
-   * The caller must already have resolved this agent for `userId`.
+   * TASK-756 — the agent the caller is looking at. Slice 5: every sign-in
+   * lives on an agent, so without one there is nothing to report (empty
+   * answer). The caller must already have resolved this agent for `userId`.
    */
   agentId?: string;
   connectorIds: string[];
 }
 export interface StatusBatchOutput {
-  /** The subset of `connectorIds` whose sign-in was rejected and not yet renewed. */
+  /**
+   * The subset of `connectorIds` whose sign-in ON `agentId` was rejected and
+   * not yet renewed.
+   */
   needsReconnect: string[];
   /**
    * TASK-756 — the subset of `needsReconnect` where the rejected sign-in is the
-   * agent's shared one, not the caller's own. A connector whose OWN sign-in is
-   * also rejected is not listed here: the caller's own sign-in is the one their
-   * use of it reaches first, so it is theirs to fix.
+   * agent's own. Slice 5: every sign-in is the agent's, so this always equals
+   * `needsReconnect`. Kept so the caller's shape stands; the caller already
+   * words it "Team sign-in expired" only on a team agent.
    */
   shared: string[];
   /**
@@ -167,7 +171,7 @@ const StatusBatchOutputSchema = z.object({
  * rejected, unexpired token (TASK-817). Delete-then-clear is bundled so that
  * cannot be asked for.
  *
- * Never touches a user-scope row or marker: a person's own sign-in is theirs.
+ * Scope is fixed to `agent`: sign-ins live only on agents (slice 5).
  */
 export interface RemoveSharedSignInInput {
   agentId: string;
@@ -192,48 +196,6 @@ const RemoveSharedSignInInputSchema = z
 const RemoveSharedSignInOutputSchema = z.object({
   removed: z.literal(true),
 }) as unknown as z.ZodType<RemoveSharedSignInOutput>;
-
-/**
- * `mcp-oauth:remove-personal-sign-in`. A person's OWN sign-in to one
- * connector goes — the user-scope token row and that person's "sign-in
- * expired" marker.
- *
- * NO PRODUCTION CALLER since slice 3: the host's `signOutIfUnused` (its only
- * caller) was deleted when sign-ins moved onto agents, and Remove now deletes
- * the agent's own sign-in (`mcp-oauth:remove-shared-sign-in`). It stays
- * registered only until slice 5 flips lookup off user-scope rows and purges
- * them, which retires this hook with them.
- *
- * Boundary review: `{userId, connectorId}` → `{removed: true}` names no
- * storage or transport; an alternate impl (a vault that tracks sign-in
- * health itself) answers the same shape. A hook of its own for the same
- * reason as the team one: the row and the marker are this plugin's, and
- * delete-then-clear is bundled so a bare marker-clear can't be asked for.
- *
- * Never touches an agent-scope row or marker: an agent's sign-in is the
- * agent's (that one is `mcp-oauth:remove-shared-sign-in`).
- */
-export interface RemovePersonalSignInInput {
-  userId: string;
-  connectorId: string;
-}
-export interface RemovePersonalSignInOutput {
-  removed: true;
-}
-const RemovePersonalSignInInputSchema = z
-  .object({
-    userId: z.string().min(1).max(256),
-    // Same slug rule as the team hook: this hook builds the ref itself.
-    connectorId: z
-      .string()
-      .min(1)
-      .max(128)
-      .regex(/^[a-z0-9][a-z0-9_-]*$/),
-  })
-  .strict();
-const RemovePersonalSignInOutputSchema = z.object({
-  removed: z.literal(true),
-}) as unknown as z.ZodType<RemovePersonalSignInOutput>;
 
 /**
  * Build the minimal {@link AuthorizationServerMetadata} the SDK's refresh helper
@@ -294,7 +256,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       // @ax/agents calls reaches this plugin.
       'agents:attach-connector',
     );
-    registers.push('mcp-oauth:remove-shared-sign-in', 'mcp-oauth:remove-personal-sign-in');
+    registers.push('mcp-oauth:remove-shared-sign-in');
   }
 
   return {
@@ -310,6 +272,14 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
           // it never resolves or refreshes a token.
           hook: 'credentials:list',
           degradation: 'connector rows never say which account the agent signed in as',
+        },
+        {
+          // Slice 5 — the boot sweep asks which connector ids carrying an
+          // agent "sign-in expired" marker still exist. No cycle: @ax/connectors
+          // never calls this plugin.
+          hook: 'connectors:live-ids',
+          degradation:
+            "a connector deleted while the host was down keeps its agents' sign-in-expired markers (harmless: no rail row shows them)",
         },
         // The routes name AX on third-party consent screens after the operator's
         // branding when a branding plugin is loaded.
@@ -378,8 +348,8 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         return undefined;
       });
 
-      // Slice 2b — a deleted connector's reconnect markers (people's and agents')
-      // go with it, and (slice 4) so does its identity-scope skip flag.
+      // Slice 2b — a deleted connector's reconnect markers (every agent's) go
+      // with it, and (slice 4) so does its identity-scope skip flag.
       // Payload (declared locally, no cross-plugin import):
       // `{ connectorId, toolNamespaces, idStillLive }`. Act ONLY on an explicit
       // `idStillLive === false`: true, missing or non-boolean means a live
@@ -396,10 +366,9 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         }
         if (p?.idStillLive !== false) return undefined;
         try {
-          const { user, agent, identityScope } = await store.deleteMarkersForConnector(connectorId);
+          const { agent, identityScope } = await store.deleteMarkersForConnector(connectorId);
           ctx.logger.info('mcp_oauth_markers_purged_for_deleted_connector', {
             connectorId,
-            user,
             agent,
             identityScope,
           });
@@ -411,6 +380,12 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         }
         return undefined;
       });
+
+      // Slice 5 — the `connectors:deleted` events this boot never saw (lost, or
+      // from before the subscriber existed): drop agent markers for connector
+      // ids no live connector carries. Best-effort; never throws, keeps
+      // everything when connectors is absent or can't answer.
+      await sweepDeadAgentMarkers({ bus, ctx: initCtx, store, logger: initCtx.logger });
 
       // The refresh-on-read resolver. `refresh` is injected so the resolver unit
       // stays offline; here we wire it to oauth-flow.refresh, constructing the
@@ -503,12 +478,12 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         { returns: ResolveOutputSchema },
       );
 
-      // TASK-741 — which of these connectors need the caller to sign in again.
+      // TASK-741 — which of these connectors need the agent signed in again.
       // Reads the marker table ONLY: it never resolves, refreshes or even reads
       // a token, so a page of rows costs one indexed query, not N probes. The
-      // caller (the connectors rail) has already decided which connectors this
-      // user may see; the answer is keyed on `userId`, so it can only ever say
-      // something about that user's own sign-ins.
+      // caller (the connectors rail) has already resolved `agentId` for
+      // `userId` and decided which connectors this user may see. Slice 5:
+      // markers live only on agents, so no `agentId` → nothing to say.
       bus.registerService<StatusBatchInput, StatusBatchOutput>(
         'mcp-oauth:status-batch',
         PLUGIN_NAME,
@@ -522,19 +497,16 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
               message: 'invalid status-batch input',
             });
           }
-          const { userId, agentId, connectorIds } = parsed.data;
-          const [{ personal, shared }, signIns] = await Promise.all([
-            store.listNeedsReconnect(userId, agentId, connectorIds),
+          const { agentId, connectorIds } = parsed.data;
+          if (agentId === undefined) return { needsReconnect: [], shared: [], signIns: {} };
+          const [needsReconnect, signIns] = await Promise.all([
+            store.listNeedsReconnect(agentId, connectorIds),
             // Slice 4 — who the agent signed in as. Agent sign-ins only (every
             // sign-in is the agent's since slice 3), so no agent → nothing.
             // Fail-soft: a vault fault leaves the health answer standing.
-            agentId === undefined
-              ? Promise.resolve({})
-              : readAgentSignIns({ bus, ctx, logger: ctx.logger, agentId, connectorIds }),
+            readAgentSignIns({ bus, ctx, logger: ctx.logger, agentId, connectorIds }),
           ]);
-          const own = new Set(personal);
-          const sharedOnly = shared.filter((id) => !own.has(id));
-          return { needsReconnect: [...personal, ...sharedOnly], shared: sharedOnly, signIns };
+          return { needsReconnect, shared: needsReconnect, signIns };
         },
         { returns: StatusBatchOutputSchema },
       );
@@ -548,7 +520,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
               'mcp-oauth: mountRoutes requires publicOrigin (the OAuth redirect_uri + connector-return redirect are derived from it)',
           });
         }
-        // TASK-858 — remove a team agent's shared sign-in. The ORDER is the point:
+        // TASK-858 — remove an agent's sign-in. The ORDER is the point:
         // delete the vault row FIRST, then clear the agent's marker. Clearing first
         // would, if the delete then failed, leave a marked-but-unexpired token with
         // no marker: the resolver would trust it again (TASK-817) after the caller
@@ -557,7 +529,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         //
         // `credentials:delete` of an absent row is not an error (the vault
         // overwrites it with a tombstone), so removing twice is a quiet success.
-        // Scope is fixed to `agent`: this hook can never reach a person's own row.
+        // Scope is fixed to `agent`: sign-ins live only on agents.
         bus.registerService<RemoveSharedSignInInput, RemoveSharedSignInOutput>(
           'mcp-oauth:remove-shared-sign-in',
           PLUGIN_NAME,
@@ -593,41 +565,6 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
             return { removed: true };
           },
           { returns: RemoveSharedSignInOutputSchema },
-        );
-
-        bus.registerService<RemovePersonalSignInInput, RemovePersonalSignInOutput>(
-          'mcp-oauth:remove-personal-sign-in',
-          PLUGIN_NAME,
-          async (ctx, raw) => {
-            const parsed = RemovePersonalSignInInputSchema.safeParse(raw);
-            if (!parsed.success) {
-              throw new PluginError({
-                code: 'invalid-payload',
-                plugin: PLUGIN_NAME,
-                hookName: 'mcp-oauth:remove-personal-sign-in',
-                message: 'invalid remove-personal-sign-in input',
-              });
-            }
-            const { userId, connectorId } = parsed.data;
-            await bus.call<
-              { scope: 'user'; ownerId: string; ref: string },
-              void
-            >('credentials:delete', ctx, {
-              scope: 'user',
-              ownerId: userId,
-              ref: `account:${connectorId}`,
-            });
-            try {
-              await store.clearNeedsReconnect({ kind: 'user', userId }, connectorId);
-            } catch (err) {
-              ctx.logger.warn('mcp_oauth_needs_reconnect_clear_failed', {
-                connectorId,
-                name: err instanceof Error ? err.name : 'unknown',
-              });
-            }
-            return { removed: true };
-          },
-          { returns: RemovePersonalSignInOutputSchema },
         );
 
         const unregs = await registerMcpOAuthRoutes(bus, initCtx, {

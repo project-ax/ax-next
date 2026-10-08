@@ -2196,17 +2196,74 @@ describe('mcp-oauth callback route', () => {
   });
 
   describe('invalid_scope after the identity add-on (slice 4)', () => {
-    async function refuse(over: Partial<PendingAuthorization>, providerError = 'invalid_scope', storeOver = {}) {
+    async function refuse(
+      over: Partial<PendingAuthorization>,
+      providerError = 'invalid_scope',
+      storeOver = {},
+      stubs: BusStubs = {},
+    ) {
       const p = { ...pending, scope: 'read write openid email', identityScope: true, ...over };
       const store = storeWithPending(p, storeOver);
-      const { deps, logger } = makeCbDeps({ 'auth:require-user': () => OK_USER }, { store });
+      const { deps, logger, calls } = makeCbDeps({ 'auth:require-user': () => OK_USER, ...stubs }, { store });
       const { res, state } = fakeRes();
       await createMcpOAuthRouteHandlers(deps).callback(
         fakeReq({ query: { error: providerError, state: 'STATE0' } }),
         res,
       );
-      return { store, state, logger };
+      return { store, state, logger, calls };
     }
+
+    // Slice 5 (carried from slice 4) — `begin` checked this person may sign in
+    // on the agent, but up to the pending TTL has gone by since. The flag is
+    // written only once the SAME re-check the code path runs passes again.
+    it('the flag is written only after agents:resolve re-admits the signer for this agent', async () => {
+      const { store, calls } = await refuse({});
+      const resolve = calls.find((c) => c.hook === 'agents:resolve');
+      expect(resolve?.input).toEqual({ agentId: 'agent-1', userId: 'user-1' });
+      expect(store.markIdentityScopeRefused).toHaveBeenCalledTimes(1);
+    });
+
+    it('SECURITY: a removed team member (agents:resolve now rejects) forging invalid_scope sets no flag', async () => {
+      const { store, state } = await refuse({}, 'invalid_scope', {}, {
+        'agents:resolve': () => rejectThrow('not a member'),
+      });
+      expect(store.markIdentityScopeRefused).not.toHaveBeenCalled();
+      expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+    });
+
+    it.each([
+      ['demoted from team admin', { 'agents:can-set-shared-credential': () => ({ allowed: false }) }],
+      ['the team-admin hook refuses', { 'agents:can-set-shared-credential': () => rejectThrow('not a member') }],
+      ['no team-admin provider is loaded', {}],
+    ])('SECURITY: team agent, %s → no flag', async (_label, extra) => {
+      const { store, state } = await refuse({}, 'invalid_scope', {}, {
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
+        ...extra,
+      });
+      expect(store.markIdentityScopeRefused).not.toHaveBeenCalled();
+      expect(state.redirectUrl).toContain('reason=sign-in-failed');
+    });
+
+    it('team agent whose signer is still a team admin → the flag is written', async () => {
+      const { store } = await refuse({}, 'invalid_scope', {}, {
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
+        'agents:can-set-shared-credential': () => ({ allowed: true }),
+      });
+      expect(store.markIdentityScopeRefused).toHaveBeenCalledWith('agent-1', 'conn-1', 'https://auth.example.com');
+    });
+
+    it('agents:resolve fails with a server fault → no flag; the popup still says sign-in-failed', async () => {
+      const { store, state } = await refuse({}, 'invalid_scope', {}, {
+        'agents:resolve': () => { throw new Error('db down'); },
+      });
+      expect(store.markIdentityScopeRefused).not.toHaveBeenCalled();
+      expect(state.redirectUrl).toContain('reason=sign-in-failed');
+    });
+
+    it('a provider error that sets no flag never asks agents:resolve', async () => {
+      const { calls } = await refuse({}, 'access_denied');
+      expect(calls.map((c) => c.hook)).not.toContain('agents:resolve');
+    });
 
     it("sets the skip flag for (this authorization's agent, connector, auth server) only; the popup still says sign-in-failed", async () => {
       // The `error` parameter arrives through the browser, so it is the
@@ -2754,15 +2811,17 @@ describe('mcp-oauth callback route', () => {
 });
 
 describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
+  const PERSONAL_AGENT = { agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } };
+
   it('Task4.1. credentials:get resolves → 200 { status: "connected" }', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'connectors:get': () => connectorFixture(),
+      'agents:resolve': () => PERSONAL_AGENT,
       'credentials:get': () => 'access-token-value',
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
-    await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    await handlers.status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.status).toBe(200);
     expect(state.json).toEqual({ status: 'connected' });
   });
@@ -2770,14 +2829,14 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
   it('Task4.2. credentials:get throws credential-not-found → 200 { status: "not-connected" }', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'connectors:get': () => connectorFixture(),
+      'agents:resolve': () => PERSONAL_AGENT,
       'credentials:get': () => {
         throw new PluginError({ code: 'credential-not-found', plugin: 'credentials', message: '' });
       },
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
-    await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    await handlers.status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.status).toBe(200);
     expect(state.json).toEqual({ status: 'not-connected' });
   });
@@ -2790,7 +2849,7 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
   it('Task4.3a. credentials:get throws the bus-WRAPPED NeedsReconnectError (via .cause) → 200 { status: "needs-reconnect" }', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'connectors:get': () => connectorFixture(),
+      'agents:resolve': () => PERSONAL_AGENT,
       'credentials:get': () => {
         throw new PluginError({
           code: 'unknown',
@@ -2803,7 +2862,7 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
-    await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    await handlers.status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.status).toBe(200);
     expect(state.json).toEqual({ status: 'needs-reconnect' });
   });
@@ -2813,14 +2872,14 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
   it('Task4.3b. credentials:get throws a bare NeedsReconnectError → 200 { status: "needs-reconnect" }', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'connectors:get': () => connectorFixture(),
+      'agents:resolve': () => PERSONAL_AGENT,
       'credentials:get': () => {
         throw new NeedsReconnectError('reconnect required');
       },
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
-    await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    await handlers.status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.status).toBe(200);
     expect(state.json).toEqual({ status: 'needs-reconnect' });
   });
@@ -2840,14 +2899,14 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
   it('Task4.5. credentials:get throws unexpected error → 500', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'connectors:get': () => connectorFixture(),
+      'agents:resolve': () => PERSONAL_AGENT,
       'credentials:get': () => {
         throw new Error('db down');
       },
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
-    await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    await handlers.status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.status).toBe(500);
     expect(state.json).toEqual({ error: 'status_check_failed' });
   });
@@ -2875,13 +2934,13 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
 
     const { deps, logger } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'connectors:get': () => connectorFixture(),
+      'agents:resolve': () => PERSONAL_AGENT,
       'credentials:get': () => {
         throw wrapped;
       },
     });
     const { res, state } = fakeRes();
-    await createMcpOAuthRouteHandlers(deps).status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    await createMcpOAuthRouteHandlers(deps).status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.status).toBe(500);
     expect(state.json).toEqual({ error: 'status_check_failed' });
     expect(logger.error).toHaveBeenCalledTimes(1);
@@ -2923,26 +2982,36 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
     expect(credGet).toBe(1);
   });
 
-  // Regression (manual-acceptance walk): a NO-agentId (user-scope / Connectors-tab)
-  // probe MUST pass probeCtx.agentId='' so the real credentials:get walks user→global
-  // only. A non-empty placeholder ('@ax/mcp-oauth') was fed to the agent-scope lookup
-  // as an ownerId and rejected by the ownerId pattern → 500 on every user-scope status
-  // check (the mock credentials:get here doesn't validate ownerId, so the bug only
-  // shows as the wrong ctx.agentId — that's what this pins).
-  it('Task4.8. NO agentId → probeCtx.agentId is "" (agent-scope walk skipped)', async () => {
+  // Slice 5 — every sign-in lives on an agent, so a probe that names none has
+  // nothing to look at. The person-level probe (walked user → global) is gone.
+  it('Slice5. NO agentId → 400 agentId is required; no agent lookup, no credential read', async () => {
     const { deps, calls } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'connectors:get': () => connectorFixture(),
+      'agents:resolve': () => PERSONAL_AGENT,
+      'credentials:get': () => 'token-value',
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    expect(state.status).toBe(400);
+    expect(state.json).toEqual({ error: 'agentId is required' });
+    expect(calls.map((c) => c.hook)).not.toContain('credentials:get');
+    expect(calls.map((c) => c.hook)).not.toContain('agents:resolve');
+    expect(calls.map((c) => c.hook)).not.toContain('connectors:get');
+  });
+
+  it('Slice5. the probe reads the credential under the agent it names, and never asks connectors:get', async () => {
+    const { deps, calls } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => PERSONAL_AGENT,
       'credentials:get': () => {
         throw new PluginError({ code: 'credential-not-found', plugin: 'credentials', message: '' });
       },
     });
-    const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
-    await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
-    expect(state.status).toBe(200);
+    await createMcpOAuthRouteHandlers(deps).status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.json).toEqual({ status: 'not-connected' });
     const credGet = calls.find((c) => c.hook === 'credentials:get');
-    expect((credGet?.ctx as { agentId?: string } | undefined)?.agentId).toBe('');
+    expect((credGet?.ctx as { agentId?: string } | undefined)?.agentId).toBe('agent-1');
+    expect(calls.map((c) => c.hook)).not.toContain('connectors:get');
   });
 });

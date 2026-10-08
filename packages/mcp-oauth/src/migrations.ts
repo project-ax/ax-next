@@ -22,20 +22,23 @@ import { sql, type Kysely } from 'kysely';
  *     nullable `client_secret`) so the callback redeems the code as that client;
  *     both are NULL on a row written before TASK-696.
  *
- *   mcp_oauth_v1_needs_reconnect — TASK-741. One row per (user, connector) whose
- *     sign-in the authorization server has REJECTED (the resolver threw
- *     NeedsReconnectError while resolving that user's `account:<connectorId>`
- *     token). Written by the resolver, cleared by a successful refresh or a
- *     completed sign-in, read by `mcp-oauth:status-batch` so the connectors rail
- *     can show "Sign-in expired" from stored state — never by probing a token.
- *     Holds no secret: ids and a timestamp only.
+ *   mcp_oauth_v1_needs_reconnect_agent — TASK-741/756. One row per (agent,
+ *     connector) whose sign-in the authorization server has REJECTED (the
+ *     resolver threw NeedsReconnectError while resolving that agent's
+ *     `account:<connectorId>` token). Written by the resolver, cleared by a
+ *     successful refresh or a completed sign-in, read by
+ *     `mcp-oauth:status-batch` so the connectors rail can show "Sign-in
+ *     expired" from stored state — never by probing a token. Keyed by agent so
+ *     on a team agent one admin's reconnect clears it for every member.
+ *     Cleaned on agent delete (`deleteAllForAgent`, via `agents:deleted`), on
+ *     connector delete (`deleteMarkersForConnector`, via `connectors:deleted`),
+ *     and by the boot sweep for connector ids no longer live (slice 5). Holds
+ *     no secret: ids and a timestamp only.
  *
- *   mcp_oauth_v1_needs_reconnect_agent — TASK-756. The same marker for a token
- *     an AGENT owns (a team agent's shared sign-in, vault scope `agent`), keyed
- *     (agent, connector) so one member's reconnect clears it for every member.
- *     The per-user table above keeps the markers for tokens a person owns.
- *     Cleaned on agent delete (`deleteAllForAgent`, via `agents:deleted`), so a
- *     deleted agent leaves no marker behind.
+ *   mcp_oauth_v1_needs_reconnect — DROPPED (slice 5). It held the same marker
+ *     per (person, connector) for person-level sign-ins; those are gone (every
+ *     sign-in lives on an agent), so the table is dropped on every migrate —
+ *     `DROP TABLE IF EXISTS`, idempotent, no marker needed.
  *
  *   mcp_oauth_v1_identity_scope_refused — slice 4. One row per (agent,
  *     connector, authorization server) that answered `invalid_scope` to a
@@ -85,13 +88,9 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
   // authorization? The callback needs it to tell an `invalid_scope` the add-on
   // caused from one it didn't. A row from before slice 4 never carried it.
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS identity_scope BOOLEAN NOT NULL DEFAULT false`.execute(db);
-  await sql`
-    CREATE TABLE IF NOT EXISTS mcp_oauth_v1_needs_reconnect (
-      user_id       TEXT NOT NULL,
-      connector_id  TEXT NOT NULL,
-      marked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (user_id, connector_id)
-    )`.execute(db);
+  // Slice 5 — person-level "sign-in expired" markers went with person-level
+  // sign-ins. Idempotent: a second migrate finds nothing to drop.
+  await sql`DROP TABLE IF EXISTS mcp_oauth_v1_needs_reconnect`.execute(db);
   await sql`
     CREATE TABLE IF NOT EXISTS mcp_oauth_v1_needs_reconnect_agent (
       agent_id      TEXT NOT NULL,
@@ -139,12 +138,6 @@ export interface McpOAuthPendingRow {
   created_at: Date;
 }
 
-export interface McpOAuthNeedsReconnectRow {
-  user_id: string;
-  connector_id: string;
-  marked_at: Date;
-}
-
 export interface McpOAuthNeedsReconnectAgentRow {
   agent_id: string;
   connector_id: string;
@@ -161,7 +154,6 @@ export interface McpOAuthIdentityScopeRefusedRow {
 export interface McpOAuthDatabase {
   mcp_oauth_v1_clients: McpOAuthClientRow;
   mcp_oauth_v1_pending: McpOAuthPendingRow;
-  mcp_oauth_v1_needs_reconnect: McpOAuthNeedsReconnectRow;
   mcp_oauth_v1_needs_reconnect_agent: McpOAuthNeedsReconnectAgentRow;
   mcp_oauth_v1_identity_scope_refused: McpOAuthIdentityScopeRefusedRow;
 }

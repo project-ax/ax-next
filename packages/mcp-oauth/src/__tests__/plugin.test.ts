@@ -75,6 +75,7 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS mcp_oauth_v1_pending');
     await cleanup.query('DROP TABLE IF EXISTS mcp_oauth_v1_needs_reconnect');
     await cleanup.query('DROP TABLE IF EXISTS mcp_oauth_v1_needs_reconnect_agent');
+    await cleanup.query('DROP TABLE IF EXISTS mcp_oauth_v1_identity_scope_refused');
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -97,7 +98,9 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     expect(off.manifest.calls).toEqual(['database:get-instance']);
     // Slice 4 — status-batch (registered always) reads the sign-in identity
     // through credentials:list, optionally: without a vault it says nothing.
-    expect(off.manifest.optionalCalls?.map((c) => c.hook)).toEqual(['credentials:list']);
+    // Slice 5 — the boot marker sweep asks connectors:live-ids, optionally:
+    // without @ax/connectors every marker is kept.
+    expect(off.manifest.optionalCalls?.map((c) => c.hook)).toEqual(['credentials:list', 'connectors:live-ids']);
     // TASK-718: a deleted agent's in-flight handshakes go with it. Subscribed
     // whether or not the routes are mounted — the table exists either way.
     expect(off.manifest.subscribes).toEqual(['agents:deleted', 'connectors:deleted']);
@@ -107,12 +110,14 @@ describe('@ax/mcp-oauth plugin manifest', () => {
       publicOrigin: 'https://example.com',
     });
     // Always registers the resolver sub-service.
+    // Slice 5 — person-level sign-ins are gone, and so is the hook that
+    // removed one.
     expect(on.manifest.registers).toEqual([
       'credentials:resolve:mcp-oauth',
       'mcp-oauth:status-batch',
       'mcp-oauth:remove-shared-sign-in',
-      'mcp-oauth:remove-personal-sign-in',
     ]);
+    expect(on.manifest.registers).not.toContain('mcp-oauth:remove-personal-sign-in');
     expect(on.manifest.subscribes).toEqual(['agents:deleted', 'connectors:deleted']);
     // The route handlers call these; mountRoutes pushes them onto `calls`.
     expect(on.manifest.calls).toEqual([
@@ -133,6 +138,7 @@ describe('@ax/mcp-oauth plugin manifest', () => {
     const optional = on.manifest.optionalCalls?.map((c) => c.hook);
     expect(optional).toContain('agents:can-set-shared-credential');
     expect(optional).toContain('credentials:list');
+    expect(optional).toContain('connectors:live-ids');
     expect(optional).not.toContain('agents:can-manage-connectors');
   });
 });
@@ -228,10 +234,11 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
       ],
     });
     harnesses.push(h);
-    const batch = async (connectorIds: string[], userId = 'u1') =>
+    const batch = async (connectorIds: string[], agentId = 'agent-A') =>
       (
         await h.bus.call<unknown, { needsReconnect: string[] }>('mcp-oauth:status-batch', h.ctx(), {
-          userId,
+          userId: 'u1',
+          agentId,
           connectorIds,
         })
       ).needsReconnect;
@@ -243,14 +250,16 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
         payload: expiredBlob(),
         userId: 'u1',
         ref: 'account:gmail',
+        scope: 'agent',
+        ownerId: 'agent-A',
       }),
     ).rejects.toThrow();
     expect(refresh).toHaveBeenCalledTimes(1);
 
     // The batch read is store-only: it never reaches the refresh.
     expect(await batch(['gmail', 'slack'])).toEqual(['gmail']);
-    // Keyed on the user: someone else's sign-in is not reported.
-    expect(await batch(['gmail'], 'u2')).toEqual([]);
+    // Keyed on the agent: another agent's sign-in is not reported.
+    expect(await batch(['gmail'], 'agent-B')).toEqual([]);
     expect(refresh).toHaveBeenCalledTimes(1);
 
     reject = false;
@@ -258,6 +267,8 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
       payload: expiredBlob(),
       userId: 'u1',
       ref: 'account:gmail',
+      scope: 'agent',
+      ownerId: 'agent-A',
     });
     expect(await batch(['gmail', 'slack'])).toEqual([]);
   });
@@ -296,12 +307,15 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
         payload: unexpired,
         userId: 'u1',
         ref: 'account:gmail',
+        scope: 'agent',
+        ownerId: 'agent-A',
         ...extra,
       });
     const batch = async () =>
       (
         await h.bus.call<unknown, { needsReconnect: string[] }>('mcp-oauth:status-batch', h.ctx(), {
           userId: 'u1',
+          agentId: 'agent-A',
           connectorIds: ['gmail'],
         })
       ).needsReconnect;
@@ -324,9 +338,10 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
   });
 
   // TASK-756 — a team agent's token is the agent's (vault scope `agent`): one
-  // member's rejected refresh shows for every member, as SHARED, and one
-  // member's good refresh clears it for all of them.
-  it('an agent-scope rejection is shared across members; a personal one stays per user', async () => {
+  // member's rejected refresh shows for every member, and one member's good
+  // refresh clears it for all of them. Slice 5: only agent markers exist, so
+  // `shared` always equals `needsReconnect`.
+  it('an agent-scope rejection shows for every member; a good refresh by any member clears it', async () => {
     let reject = true;
     const refresh = vi.fn(async () => {
       if (reject) throw new InvalidGrantError('revoked');
@@ -345,44 +360,42 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
         ...(agentId !== undefined ? { agentId } : {}),
         connectorIds,
       });
-    const resolveAs = (userId: string, scope: 'user' | 'agent', ownerId: string, ref: string) =>
+    const resolveAs = (userId: string, ownerId: string, ref: string) =>
       h.bus.call('credentials:resolve:mcp-oauth', h.ctx(), {
         payload: expiredBlob(),
         userId,
         ref,
-        scope,
+        scope: 'agent',
         ownerId,
       });
 
-    await expect(resolveAs('u1', 'agent', 'team-1', 'account:gmail')).rejects.toThrow();
-    await expect(resolveAs('u1', 'user', 'u1', 'account:slack')).rejects.toThrow();
+    await expect(resolveAs('u1', 'team-1', 'account:gmail')).rejects.toThrow();
 
-    expect(await batch('u1', 'team-1', ['gmail', 'slack'])).toEqual({
-      needsReconnect: ['slack', 'gmail'],
-      shared: ['gmail'],
-      signIns: {},
-    });
-    // Another member sees the shared one, and not u1's personal one.
-    expect(await batch('u2', 'team-1', ['gmail', 'slack'])).toEqual({
-      needsReconnect: ['gmail'],
-      shared: ['gmail'],
-      signIns: {},
-    });
+    for (const member of ['u1', 'u2']) {
+      expect(await batch(member, 'team-1', ['gmail', 'slack'])).toEqual({
+        needsReconnect: ['gmail'],
+        shared: ['gmail'],
+        signIns: {},
+      });
+    }
+    // Another agent's rows say nothing about team-1's sign-in.
+    expect((await batch('u1', 'team-2', ['gmail'])).needsReconnect).toEqual([]);
+    // No agent → nothing to report (sign-ins live only on agents).
+    expect(await batch('u1', undefined, ['gmail'])).toEqual({ needsReconnect: [], shared: [], signIns: {} });
 
-    // u2's good refresh of the SHARED token clears it for u1 too.
+    // u2's good refresh of the agent's token clears it for u1 too.
     reject = false;
-    await resolveAs('u2', 'agent', 'team-1', 'account:gmail');
+    await resolveAs('u2', 'team-1', 'account:gmail');
     expect(await batch('u1', 'team-1', ['gmail', 'slack'])).toEqual({
-      needsReconnect: ['slack'],
+      needsReconnect: [],
       shared: [],
       signIns: {},
     });
-    // ...and u2's success says nothing about u1's personal sign-in.
-    await resolveAs('u2', 'user', 'u2', 'account:slack');
-    expect((await batch('u1', 'team-1', ['slack'])).needsReconnect).toEqual(['slack']);
   });
 
-  it('a connector whose own AND shared sign-in were rejected reads as the caller\'s own', async () => {
+  // Slice 5 — a row at any scope but `agent` (a leftover person-level row, a
+  // global one) has no marker owner: a rejection there marks nothing.
+  it('a rejected user- or global-scope resolve leaves no marker anywhere', async () => {
     const refresh = vi.fn(async () => {
       throw new InvalidGrantError('revoked');
     });
@@ -393,16 +406,15 @@ describe('@ax/mcp-oauth needs-reconnect marker + status-batch (TASK-741)', () =>
       ],
     });
     harnesses.push(h);
-    for (const [scope, ownerId] of [['agent', 'team-1'], ['user', 'u1']] as const) {
+    for (const [scope, ownerId] of [['user', 'u1'], ['global', null]] as const) {
       await expect(
         h.bus.call('credentials:resolve:mcp-oauth', h.ctx(), {
           payload: expiredBlob(), userId: 'u1', ref: 'account:gmail', scope, ownerId,
         }),
       ).rejects.toThrow();
     }
-    expect(
-      await h.bus.call('mcp-oauth:status-batch', h.ctx(), { userId: 'u1', agentId: 'team-1', connectorIds: ['gmail'] }),
-    ).toEqual({ needsReconnect: ['gmail'], shared: [], signIns: {} });
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>('database:get-instance', h.ctx(), {});
+    expect(await createMcpOAuthStore(db).listMarkedConnectorIds()).toEqual([]);
   });
 
   it('status-batch refuses a malformed request', async () => {
@@ -584,23 +596,20 @@ describe('@ax/mcp-oauth mcp-oauth:remove-shared-sign-in (TASK-858)', () => {
     expect(await batch(h, 'u1', 'team-1', ['gmail'])).toEqual({ needsReconnect: [], shared: [], signIns: {} });
   });
 
-  it('leaves other connectors, other agents and every user-scope marker alone', async () => {
+  it('leaves other connectors and other agents alone', async () => {
     const { h, store } = await boot();
     await store.markNeedsReconnect({ kind: 'agent', agentId: 'team-1' }, 'gmail');
     await store.markNeedsReconnect({ kind: 'agent', agentId: 'team-1' }, 'slack');
     await store.markNeedsReconnect({ kind: 'agent', agentId: 'team-2' }, 'gmail');
-    // u1's OWN sign-in to the same connector is theirs, not the team's.
-    await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail');
 
     await h.bus.call(HOOK, h.ctx(), { agentId: 'team-1', connectorId: 'gmail' });
 
     expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'team-1' }, 'gmail')).toBe(false);
     expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'team-1' }, 'slack')).toBe(true);
     expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'team-2' }, 'gmail')).toBe(true);
-    expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail')).toBe(true);
-    // The same view the rail reads: u1's own marker still wins for the connector.
+    // The same view the rail reads.
     expect(await batch(h, 'u1', 'team-1', ['gmail', 'slack'])).toEqual({
-      needsReconnect: ['gmail', 'slack'],
+      needsReconnect: ['slack'],
       shared: ['slack'],
       signIns: {},
     });
@@ -689,89 +698,19 @@ describe('@ax/mcp-oauth mcp-oauth:remove-shared-sign-in (TASK-858)', () => {
   });
 });
 
-describe('@ax/mcp-oauth mcp-oauth:remove-personal-sign-in', () => {
-  const HOOK = 'mcp-oauth:remove-personal-sign-in';
-
-  type DeleteInput = { scope: string; ownerId: string | null; ref: string };
-
-  async function boot(
-    del: (input: DeleteInput) => unknown = () => undefined,
-  ): Promise<{ h: TestHarness; store: ReturnType<typeof createMcpOAuthStore>; deletes: DeleteInput[] }> {
-    const deletes: DeleteInput[] = [];
-    const services = routeStubServices([]);
-    services['credentials:delete'] = (async (_ctx, input) => {
-      deletes.push(input as DeleteInput);
-      return del(input as DeleteInput);
-    }) as ServiceHandler;
+// Slice 5 — person-level sign-ins are gone, and so is the hook that removed one.
+describe('@ax/mcp-oauth mcp-oauth:remove-personal-sign-in (retired, slice 5)', () => {
+  it('is not registered, even with the routes mounted', async () => {
     const h = await createTestHarness({
-      services,
+      services: routeStubServices([]),
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),
         createMcpOAuthPlugin({ mountRoutes: true, publicOrigin: 'https://example.com' }),
       ],
     });
     harnesses.push(h);
-    const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>(
-      'database:get-instance',
-      h.ctx(),
-      {},
-    );
-    return { h, store: createMcpOAuthStore(db), deletes };
-  }
-
-  it('deletes the user-scope sign-in row for that connector and answers { removed: true }', async () => {
-    const { h, deletes } = await boot();
-
-    const out = await h.bus.call(HOOK, h.ctx(), { userId: 'u1', connectorId: 'gmail' });
-
-    expect(out).toEqual({ removed: true });
-    // Exactly the row the OAuth callback wrote for a personal sign-in.
-    // Never an agent-scope row.
-    expect(deletes).toEqual([{ scope: 'user', ownerId: 'u1', ref: 'account:gmail' }]);
-  });
-
-  it("clears that person's marker for that connector and leaves everything else alone", async () => {
-    const { h, store } = await boot();
-    await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail');
-    await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'slack');
-    await store.markNeedsReconnect({ kind: 'user', userId: 'u2' }, 'gmail');
-    // A team's shared sign-in is the team's, not this person's.
-    await store.markNeedsReconnect({ kind: 'agent', agentId: 'team-1' }, 'gmail');
-
-    await h.bus.call(HOOK, h.ctx(), { userId: 'u1', connectorId: 'gmail' });
-
-    expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail')).toBe(false);
-    expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'slack')).toBe(true);
-    expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u2' }, 'gmail')).toBe(true);
-    expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'team-1' }, 'gmail')).toBe(true);
-  });
-
-  it('deletes BEFORE clearing: a failing delete leaves the marker in place and the error reaches the caller', async () => {
-    const { h, store } = await boot(() => {
-      throw new Error('vault down');
-    });
-    await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail');
-
-    await expect(
-      h.bus.call(HOOK, h.ctx(), { userId: 'u1', connectorId: 'gmail' }),
-    ).rejects.toThrow(/vault down/);
-
-    expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail')).toBe(true);
-  });
-
-  it.each([
-    ['no userId', { connectorId: 'gmail' }],
-    ['an empty userId', { userId: '', connectorId: 'gmail' }],
-    ['a connectorId naming a sub-ref', { userId: 'u1', connectorId: 'gmail:OAUTH_CLIENT_SECRET' }],
-    ['a non-slug connectorId', { userId: 'u1', connectorId: 'Gmail' }],
-    ['an unknown field (e.g. a caller trying to pick the scope)', { userId: 'u1', connectorId: 'gmail', scope: 'agent' }],
-    ['null', null],
-  ])('refuses %s with invalid-payload, and touches nothing', async (_case, bad) => {
-    const { h, deletes } = await boot();
-
-    await expect(h.bus.call(HOOK, h.ctx(), bad)).rejects.toMatchObject({ code: 'invalid-payload' });
-
-    expect(deletes).toEqual([]);
+    expect(h.bus.hasService('mcp-oauth:remove-personal-sign-in')).toBe(false);
+    expect(h.bus.hasService('mcp-oauth:remove-shared-sign-in')).toBe(true);
   });
 });
 
@@ -1057,6 +996,68 @@ describe('@ax/mcp-oauth agents:deleted subscriber (TASK-718)', () => {
   });
 });
 
+// Slice 5 — at boot, agent markers for connector ids no live connector carries
+// are dropped (a lost `connectors:deleted` event). The sweep itself is unit
+// tested in sweep.test.ts; this pins that init runs it against the real store.
+describe('@ax/mcp-oauth boot marker sweep (slice 5)', () => {
+  async function bootWith(services: Record<string, ServiceHandler>) {
+    const h = await createTestHarness({
+      services,
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createMcpOAuthPlugin()],
+    });
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    return { h, store: createMcpOAuthStore(db) };
+  }
+
+  it('without connectors:live-ids every marker is kept; with it, only dead ids lose theirs', async () => {
+    const first = await bootWith({});
+    await first.store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail');
+    await first.store.markNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail');
+    await first.store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear');
+    await first.store.markIdentityScopeRefused('a1', 'gmail', 'https://auth.example.com');
+    await first.h.close({ onError: () => {} });
+
+    // A boot with no connectors (the CLI preset): nothing is dropped.
+    const second = await bootWith({});
+    expect(await second.store.listMarkedConnectorIds()).toEqual(['gmail', 'linear']);
+    await second.h.close({ onError: () => {} });
+
+    // A boot where connectors says only `linear` is still live.
+    const asked: unknown[] = [];
+    const third = await bootWith({
+      'connectors:live-ids': (async (_ctx, input) => {
+        asked.push(input);
+        const ids = (input as { connectorIds: string[] }).connectorIds;
+        return { live: ids.filter((id) => id === 'linear') };
+      }) as ServiceHandler,
+    });
+    harnesses.push(third.h);
+    expect(asked).toEqual([{ connectorIds: ['gmail', 'linear'] }]);
+    expect(await third.store.listMarkedConnectorIds()).toEqual(['linear']);
+    expect(await third.store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear')).toBe(true);
+    // The dead connector's identity-scope flag goes with it, as on a delete event.
+    expect(await third.store.isIdentityScopeRefused('a1', 'gmail', 'https://auth.example.com')).toBe(false);
+  });
+
+  it('a connectors:live-ids that throws keeps every marker and never fails the boot', async () => {
+    const first = await bootWith({});
+    await first.store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail');
+    await first.h.close({ onError: () => {} });
+
+    const second = await bootWith({
+      'connectors:live-ids': (async () => {
+        throw new Error('connectors down');
+      }) as ServiceHandler,
+    });
+    harnesses.push(second.h);
+    expect(await second.store.listMarkedConnectorIds()).toEqual(['gmail']);
+  });
+});
+
 // Slice 2b — a deleted connector's reconnect markers go with it, but only when
 // no connector of any owner still carries the id.
 describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
@@ -1073,7 +1074,6 @@ describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
     const store = createMcpOAuthStore(db);
     await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail');
     await store.markNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail');
-    await store.markNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail');
     await store.markNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear');
     // Slice 4 — the provider refused the identity scopes for this connector.
     await store.markIdentityScopeRefused('a1', 'gmail', 'https://auth.example.com');
@@ -1092,18 +1092,17 @@ describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
     ...over,
   });
 
-  it('removes the id\'s markers on two agents and a person, and keeps another connector\'s', async () => {
+  it('removes the id\'s markers on two agents, and keeps another connector\'s', async () => {
     const { h, store } = await boot();
     const lines: string[] = [];
     const res = await h.bus.fire('connectors:deleted', loggedCtx(h, lines), ev());
     expect(res.rejected).toBe(false);
     expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail')).toBe(false);
     expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail')).toBe(false);
-    expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail')).toBe(false);
     expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'linear')).toBe(true);
     expect(
       parse(lines).find((e) => e.msg === 'mcp_oauth_markers_purged_for_deleted_connector'),
-    ).toMatchObject({ level: 'info', connectorId: 'gmail', user: 1, agent: 2, identityScope: 2 });
+    ).toMatchObject({ level: 'info', connectorId: 'gmail', agent: 2, identityScope: 2 });
     // The identity-scope skip flags go with the connector, on every agent; another's stay.
     expect(await store.isIdentityScopeRefused('a1', 'gmail', 'https://auth.example.com')).toBe(false);
     expect(await store.isIdentityScopeRefused('a2', 'gmail', 'https://auth.example.com')).toBe(false);
@@ -1116,8 +1115,8 @@ describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
       const { h, store } = await boot();
       const res = await h.bus.fire('connectors:deleted', loggedCtx(h, []), ev({ idStillLive: still }));
       expect(res.rejected).toBe(false);
+      expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a2' }, 'gmail')).toBe(true);
       expect(await store.hasNeedsReconnect({ kind: 'agent', agentId: 'a1' }, 'gmail')).toBe(true);
-      expect(await store.hasNeedsReconnect({ kind: 'user', userId: 'u1' }, 'gmail')).toBe(true);
       expect(await store.isIdentityScopeRefused('a1', 'gmail', 'https://auth.example.com')).toBe(true);
     },
   );
@@ -1142,7 +1141,7 @@ describe('@ax/mcp-oauth connectors:deleted subscriber (slice 2b)', () => {
     const c = new pg.Client({ connectionString });
     await c.connect();
     try {
-      await c.query('DROP TABLE mcp_oauth_v1_needs_reconnect');
+      await c.query('DROP TABLE mcp_oauth_v1_needs_reconnect_agent');
     } finally {
       await c.end().catch(() => {});
     }

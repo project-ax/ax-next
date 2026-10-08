@@ -116,6 +116,43 @@ describe('@ax/preset-k8s wiring', () => {
     expect(unsatisfied).toEqual([]);
   });
 
+  // The call graph bootstrap builds (required `calls` plus every
+  // `optionalCalls` entry whose producer is loaded) must stay acyclic. Slice 5:
+  // @ax/mcp-oauth's boot marker sweep added an optional edge to @ax/connectors
+  // (`connectors:live-ids`); connectors never calls mcp-oauth, so mcp-oauth
+  // initializes after it and the edge closes no cycle.
+  it('the plugin call graph (calls + present optionalCalls) has no cycle; mcp-oauth depends on connectors', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const producer = new Map<string, string>();
+    for (const p of plugins) for (const h of p.manifest.registers) producer.set(h, p.manifest.name);
+    const edges = new Map<string, Set<string>>();
+    for (const p of plugins) {
+      const out = new Set<string>();
+      const hooks = [...p.manifest.calls, ...(p.manifest.optionalCalls ?? []).map((c) => c.hook)];
+      for (const h of hooks) {
+        const to = producer.get(h);
+        if (to !== undefined && to !== p.manifest.name) out.add(to);
+      }
+      edges.set(p.manifest.name, out);
+    }
+    const state = new Map<string, 'visiting' | 'done'>();
+    const cycles: string[] = [];
+    const visit = (n: string, trail: string[]): void => {
+      if (state.get(n) === 'done') return;
+      if (state.get(n) === 'visiting') {
+        cycles.push([...trail.slice(trail.indexOf(n)), n].join(' -> '));
+        return;
+      }
+      state.set(n, 'visiting');
+      for (const m of edges.get(n) ?? []) visit(m, [...trail, n]);
+      state.set(n, 'done');
+    };
+    for (const n of edges.keys()) visit(n, []);
+    expect(cycles).toEqual([]);
+    expect(edges.get('@ax/mcp-oauth')?.has('@ax/connectors')).toBe(true);
+    expect(edges.get('@ax/connectors')?.has('@ax/mcp-oauth')).toBe(false);
+  });
+
   // TASK-149: the TCP-Service credential-proxy posture assembles without error
   // when both the port AND a non-empty advertised endpoint are present.
   it('createK8sPlugins assembles the TCP credential-proxy when tcpPort + advertisedEndpoint are set', () => {
@@ -1103,9 +1140,8 @@ describe('@ax/preset-k8s wiring', () => {
       // TASK-858 — a team admin removes a team agent's shared sign-in. Needs the
       // vault's `credentials:delete`, so it rides the mounted routes.
       'mcp-oauth:remove-shared-sign-in',
-      // A person's own sign-in goes once its connector is on none of their
-      // agents (channel-web's connector DELETE). Same credentials:delete need.
-      'mcp-oauth:remove-personal-sign-in',
+      // Slice 5 — `mcp-oauth:remove-personal-sign-in` is retired with
+      // person-level sign-ins.
     ]);
     // mountRoutes:true in the preset expands the manifest `calls` to the OAuth
     // route + resolver deps. All are registered by plugins loaded above
