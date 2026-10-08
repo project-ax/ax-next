@@ -15,7 +15,8 @@
  * description is clamped, and it sits behind a popover that says whose words
  * they are.
  */
-import { Ban, Check, Hand, Info, Loader2, type LucideIcon } from 'lucide-react';
+import { Ban, Check, Hand, Info, type LucideIcon } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import {
   clampDescription,
   groupTools,
@@ -236,7 +237,7 @@ export function ConnectorToolPermissions({
   if (load.kind === 'loading') {
     body = (
       <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+        <Spinner aria-hidden="true" />
         Looking up this connector’s tools…
       </p>
     );

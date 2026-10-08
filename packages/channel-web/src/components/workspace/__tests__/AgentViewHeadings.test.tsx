@@ -276,3 +276,26 @@ describe('AgentView loading pane name', () => {
     });
   }
 });
+
+/*
+  The loading pane is a blank pane with a small spinner, not skeleton bubbles.
+  An agent switch remounts AgentView, so this pane flashes by on every switch;
+  #829's two skeletons (a short bar and a tall block, laid out in a row) read
+  as two chat bubbles on one line for a few milliseconds. jsdom has no CSS, so
+  this pins the markup — no `animate-pulse` placeholders, one decorative
+  spinner — not pixels or timing.
+
+  VACUITY: against #829's pane both assertions fail (two pulse blocks, no spin).
+*/
+describe('AgentView loading pane contents', () => {
+  it('shows a spinner rather than placeholder bubbles', () => {
+    agentMock.mockReturnValue(new Promise<AgentDetail>(() => {}));
+    renderView({ tab: 'chat' });
+
+    const pane = screen.getByRole('region', { name: 'Loading agent' });
+    expect(pane.querySelectorAll('.animate-pulse')).toHaveLength(0);
+    const spinners = pane.querySelectorAll('svg.animate-spin');
+    expect(spinners).toHaveLength(1);
+    expect(spinners[0]).toHaveAttribute('aria-hidden', 'true');
+  });
+});
