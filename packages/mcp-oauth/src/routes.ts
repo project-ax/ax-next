@@ -637,7 +637,6 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         ...(client.clientSecret !== undefined ? { clientSecret: client.clientSecret } : {}),
         resource,
         scope,
-        credScope: 'agent',
         mode,
         createdAt: now(),
       };
@@ -790,7 +789,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       if (isReject(err)) {
         // The connector vanished (or is no longer visible to the signer) while
         // the popup was open. The popup still gets a redirect, not a bare 404.
-        logger.warn('mcp_oauth_callback_failed', { stage: 'connector', connectorId, ...errFields(err) });
+        logger.warn('mcp_oauth_callback_failed', { stage: 'connector-gone', connectorId, ...errFields(err) });
         fail('sign-in-failed');
         return;
       }
@@ -912,7 +911,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // it so the operator can tell a storage outage from a provider rejection.
     // Every sign-in belongs to an agent, so the token is always stored ON the
     // agent — never on the signer. That includes a row `begin` wrote before that
-    // rule (`credScope: 'user'`) and still in flight: it lands on its agent,
+    // rule (one meant for the signer) and still in flight: it lands on its agent,
     // where it is read only if the connector is on the agent.
     const ref = `account:${connectorId}`;
     try {

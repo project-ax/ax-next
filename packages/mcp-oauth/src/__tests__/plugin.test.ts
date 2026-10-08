@@ -187,7 +187,6 @@ describe('@ax/mcp-oauth plugin init (mountRoutes:false)', () => {
       clientSecret: 'pending-secret',
       resource: 'https://mcp.example.com',
       scope: 'read',
-      credScope: 'agent',
       mode: 'add',
       createdAt: Date.now(),
     });
@@ -793,7 +792,6 @@ describe('@ax/mcp-oauth agents:deleted subscriber (TASK-718)', () => {
       clientKey: 'my-connector|https://auth.example.com',
       resource: 'https://api.example.com',
       scope: 'read',
-      credScope: 'agent' as const,
       mode: 'add' as const,
       createdAt: Date.now(),
       ...over,
@@ -807,15 +805,15 @@ describe('@ax/mcp-oauth agents:deleted subscriber (TASK-718)', () => {
       {},
     );
     const store = createMcpOAuthStore(db);
-    // agt_del: handshakes started by three different people, both cred scopes,
+    // agt_del: handshakes started by three different people, both modes,
     // one with a confidential client's secret in the row.
     await store.putPending(pendingFor('d1', 'agt_del', 'u1'));
-    await store.putPending(pendingFor('d2', 'agt_del', 'u2', { credScope: 'user' }));
+    await store.putPending(pendingFor('d2', 'agt_del', 'u2', { mode: 'sign-in-again' }));
     await store.putPending(
       pendingFor('d3', 'agt_del', 'u3', { clientId: 'cid', clientSecret: 'plaintext-secret' }),
     );
     await store.putPending(pendingFor('k1', 'agt_keep', 'u1'));
-    await store.putPending(pendingFor('k2', 'agt_keep', 'u2', { credScope: 'user' }));
+    await store.putPending(pendingFor('k2', 'agt_keep', 'u2', { mode: 'sign-in-again' }));
     // The legacy shared client row is not agent-keyed; it must survive.
     await db
       .insertInto('mcp_oauth_v1_clients')

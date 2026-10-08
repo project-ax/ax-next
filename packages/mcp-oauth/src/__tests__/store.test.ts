@@ -128,7 +128,6 @@ describe('createMcpOAuthStore', () => {
       clientKey: 'my-connector|https://auth.example.com',
       resource: 'https://api.example.com',
       scope: 'read write',
-      credScope: 'agent',
       mode: 'add',
       createdAt: Date.now(),
       ...overrides,
@@ -202,9 +201,6 @@ describe('createMcpOAuthStore', () => {
     expect(first!.clientKey).toBe(pending.clientKey);
     expect(first!.resource).toBe(pending.resource);
     expect(first!.scope).toBe(pending.scope);
-    // credScope round-trips (default-case 'agent' from makePending).
-    expect(first!.credScope).toBe(pending.credScope);
-    expect(first!.credScope).toBe('agent');
 
     // Second call: row is gone, returns null
     const second = await store.consumePending(pending.state, now, ttlMs);
@@ -250,8 +246,6 @@ describe('createMcpOAuthStore', () => {
     expect(first!.state).toBe(pending.state);
     expect(first!.userId).toBe(pending.userId);
     expect(first!.codeVerifier).toBe(pending.codeVerifier);
-    // credScope survives a peek (default-case 'agent' from makePending).
-    expect(first!.credScope).toBe('agent');
     const second = await store.getPending(pending.state);
     expect(second).not.toBeNull();
 
@@ -273,18 +267,23 @@ describe('createMcpOAuthStore', () => {
     expect(await store.getPending('no-such-state')).toBeNull();
   });
 
-  it('round-trips credScope through put/get/consume', async () => {
+  // Slice 3 — the `cred_scope` column is unused: a row written before it (one
+  // meant for the signer) still reads and consumes, and the value is not surfaced.
+  it('a pre-slice-3 row with cred_scope=user still reads and consumes; the column is not surfaced', async () => {
     const db = makeKysely();
     await runMcpOAuthMigration(db);
     const store = createMcpOAuthStore(db);
 
-    await store.putPending({
-      state: 'st-cs', userId: 'u', agentId: '', connectorId: 'c', slot: 'S',
-      codeVerifier: 'v', authServerUrl: 'https://auth', clientKey: 'c|a',
-      resource: 'https://mcp', scope: 'read', credScope: 'user', mode: 'sign-in-again', createdAt: 1000,
-    }, 1000);
-    expect((await store.getPending('st-cs'))?.credScope).toBe('user');
-    expect((await store.consumePending('st-cs', 2000, 600000))?.credScope).toBe('user');
+    await sql`
+      INSERT INTO mcp_oauth_v1_pending
+        (state, user_id, agent_id, connector_id, slot, code_verifier, auth_server_url,
+         client_key, resource, scope, cred_scope, created_at)
+      VALUES ('st-cs', 'u', 'a1', 'c', 'S', 'v', 'https://auth', 'c|a', 'https://mcp', 'read', 'user', ${new Date()})
+    `.execute(db);
+    const peeked = await store.getPending('st-cs');
+    expect(peeked).toMatchObject({ state: 'st-cs', agentId: 'a1', mode: 'sign-in-again' });
+    expect(peeked).not.toHaveProperty('credScope');
+    expect(await store.consumePending('st-cs', Date.now(), 600000)).toMatchObject({ state: 'st-cs' });
   });
 
   // Agent-owned sign-ins (slice 3): the pending row records which flow began it.
@@ -506,14 +505,13 @@ describe('createMcpOAuthStore', () => {
           state: 'g2',
           agentId: 'agt_gone',
           userId: 'u2',
-          credScope: 'user',
           clientId: 'cid',
           clientSecret: 'plaintext-secret',
         }),
       );
       await store.putPending(makePending({ state: 'g3', agentId: 'agt_gone', userId: 'u3' }), Date.now() - 60 * 60_000);
       await store.putPending(makePending({ state: 'k1', agentId: 'agt_kept', userId: 'u1' }));
-      await store.putPending(makePending({ state: 'k2', agentId: 'agt_kept', userId: 'u2', credScope: 'user' }));
+      await store.putPending(makePending({ state: 'k2', agentId: 'agt_kept', userId: 'u2' }));
       // The legacy shared client row: not agent-keyed, so it must survive.
       await db
         .insertInto('mcp_oauth_v1_clients')

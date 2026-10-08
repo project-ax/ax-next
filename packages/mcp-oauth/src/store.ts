@@ -112,7 +112,6 @@ function rowToPending(r: {
   client_key: string;
   resource: string;
   scope: string | null;
-  cred_scope: string;
   mode: string;
   client_id: string | null;
   client_secret: string | null;
@@ -136,7 +135,6 @@ function rowToPending(r: {
     ...(r.client_secret !== null ? { clientSecret: r.client_secret } : {}),
     resource: r.resource,
     scope: r.scope ?? undefined,
-    credScope: r.cred_scope === 'user' ? 'user' : 'agent',
     // Only the exact 'add' attaches; anything else (an unknown value) is the
     // flow that attaches nothing.
     mode: r.mode === 'add' ? 'add' : 'sign-in-again',
@@ -176,7 +174,6 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           client_key: p.clientKey,
           resource: p.resource,
           scope: p.scope ?? null,
-          cred_scope: p.credScope,
           mode: p.mode,
           client_id: p.clientId ?? null,
           client_secret: p.clientSecret ?? null,

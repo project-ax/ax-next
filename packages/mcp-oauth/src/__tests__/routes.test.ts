@@ -1149,9 +1149,9 @@ describe('mcp-oauth begin route', () => {
     expect(state.status).toBe(200);
     expect(store.putPending).toHaveBeenCalledTimes(1);
     const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
-    expect(pending.credScope).toBe('agent');
     expect(pending.agentId).toBe('agent-1');
     expect(pending.mode).toBe('add');
+    expect(pending).not.toHaveProperty('credScope');
     // The WRITE-scope question (TASK-788): an Add signs in before it attaches,
     // so it must not ask the read question (which requires the attachment).
     expect(authz).toHaveBeenCalledTimes(1);
@@ -1211,7 +1211,7 @@ describe('mcp-oauth begin route', () => {
     });
     const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
     expect(pending.mode).toBe('sign-in-again');
-    expect(pending.credScope).toBe('agent');
+    expect(pending).not.toHaveProperty('credScope');
     expect(pending.agentId).toBe('agent-1');
   });
 
@@ -1374,7 +1374,6 @@ describe('mcp-oauth callback route', () => {
     clientSecret: 'pending-secret',
     resource: 'https://mcp.example.com/mcp',
     scope: 'read write',
-    credScope: 'agent',
     mode: 'add',
     createdAt: 1_000_000,
   };
@@ -1595,9 +1594,8 @@ describe('mcp-oauth callback route', () => {
     expect(logged).not.toContain('auth-code-xyz');
   });
 
-  // Phase 2: the callback writes the credential at the pending row's STORED
-  // credScope/ownerId, NOT a hardcoded agent scope. These pin the production
-  // credentials:set fields for both scope variants.
+  // Slice 3: every sign-in is stored on its agent (scope agent, ownerId the
+  // pending row's agentId), whatever the row was begun for.
 
   it('TASK-741: a completed sign-in clears the caller\'s needs-reconnect marker AFTER the token is stored', async () => {
     const order: string[] = [];
@@ -1620,8 +1618,7 @@ describe('mcp-oauth callback route', () => {
     const { res, state } = fakeRes();
     await handlers.callback(fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }), res);
     expect(store.clearNeedsReconnect).toHaveBeenCalledTimes(1);
-    // TASK-756 — this pending is a TEAM agent's (credScope 'agent'): the token
-    // is the agent's, so the marker cleared is the agent's, for every member.
+    // TASK-756 — the token is the agent's, so the marker cleared is the agent's, for every member.
     expect(store.clearNeedsReconnect).toHaveBeenCalledWith({ kind: 'agent', agentId: 'agent-1' }, 'conn-1');
     expect(order).toEqual(['set', 'clear']);
     expect(state.redirectUrl).toContain('oauth=success');
@@ -1629,7 +1626,7 @@ describe('mcp-oauth callback route', () => {
 
   it('a pre-upgrade row with NO agent is refused: reason=not-allowed; no agent lookup, no token exchange, no write, no marker', async () => {
     const store = storeWithPending(
-      { ...pending, state: 'STATE-USER', credScope: 'user', agentId: '', userId: 'alice', mode: 'sign-in-again' },
+      { ...pending, state: 'STATE-USER', agentId: '', userId: 'alice', mode: 'sign-in-again' },
       { clearNeedsReconnect: vi.fn(async () => {}) },
     );
     const { deps, calls, flow } = makeCbDeps(
@@ -1692,11 +1689,10 @@ describe('mcp-oauth callback route', () => {
     expect(state.redirectUrl).toContain('oauth=success');
   });
 
-  it('a pre-upgrade row (credScope=user) for an agent is written at AGENT scope on that agent — never on the signer', async () => {
+  it('a pre-upgrade sign-in-again row for an agent is written at AGENT scope on that agent — never on the signer', async () => {
     const userScopedPending: PendingAuthorization = {
       ...pending,
       state: 'STATE-USER',
-      credScope: 'user',
       agentId: 'A',
       userId: 'alice',
       mode: 'sign-in-again',
@@ -1726,11 +1722,10 @@ describe('mcp-oauth callback route', () => {
     expect(state.redirectUrl).toContain('oauth=success');
   });
 
-  it('credScope=agent: callback writes credentials:set with scope=agent, ownerId=agentId', async () => {
+  it('an Add for agent A: callback writes credentials:set with scope=agent, ownerId=A', async () => {
     const agentScopedPending: PendingAuthorization = {
       ...pending,
       state: 'STATE-AGENT',
-      credScope: 'agent',
       agentId: 'A',
       userId: 'alice',
     };
@@ -2314,6 +2309,12 @@ describe('mcp-oauth callback route', () => {
       expect(out.state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
       expect(out.setSpy).not.toHaveBeenCalled();
       expect(out.attachSpy).not.toHaveBeenCalled();
+      // A distinct stage at WARN: the connector going away is not a server fault.
+      expect(out.logger.warn).toHaveBeenCalledWith(
+        'mcp_oauth_callback_failed',
+        expect.objectContaining({ stage: 'connector-gone', connectorId: 'conn-1' }),
+      );
+      expect(out.logger.error).not.toHaveBeenCalled();
     });
   });
 

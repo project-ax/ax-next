@@ -60,6 +60,7 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
       scope         TEXT,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`.execute(db);
+  // Unused since slice 3 (every sign-in is stored on its agent); kept, default 'agent'.
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS cred_scope TEXT NOT NULL DEFAULT 'agent'`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_id TEXT`.execute(db);
   await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS client_secret TEXT`.execute(db);
@@ -104,7 +105,6 @@ export interface McpOAuthPendingRow {
   client_key: string;
   resource: string;
   scope: string | null;
-  cred_scope: string;
   /** 'add' | 'sign-in-again'; the column default is 'sign-in-again'. */
   mode: string;
   /** The client this authorization started with; NULL on a pre-TASK-696 row. */
