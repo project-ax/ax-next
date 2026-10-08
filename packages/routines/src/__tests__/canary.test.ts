@@ -9,7 +9,7 @@ import {
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createRoutinesPlugin } from '../plugin.js';
-import { asWorkspaceVersion, type WorkspaceDelta } from '@ax/core';
+import { asWorkspaceVersion, type AgentContext, type WorkspaceDelta } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import type { RoutinesDatabase } from '../migrations.js';
@@ -52,7 +52,15 @@ interface TickOpts {
 
 async function makeHarness(
   captured: Captured,
-  replyOnInvoke: { contentBlocks: unknown[] },
+  replyOnInvoke: {
+    contentBlocks: unknown[];
+    /**
+     * Slice 6 — when set, the invoke fires `chat:connectors-skipped` with
+     * these connectors before its turn ends (the orchestrator's order).
+     * Read at invoke time, so a test can change it between fires.
+     */
+    skipped?: (ctx: AgentContext) => unknown[] | undefined;
+  },
   tick?: TickOpts,
 ) {
   let nextConvId = 1;
@@ -63,7 +71,10 @@ async function makeHarness(
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_ctx, input: unknown) => ({
-        agent: { id: (input as { agentId: string }).agentId, ownerId: 'u1', workspaceRef: null },
+        agent: {
+          id: (input as { agentId: string }).agentId, ownerId: 'u1', workspaceRef: null,
+          displayName: 'Bob',
+        },
       }),
       'agents:ensure-webhook-token': async (_ctx, input: unknown) => ({
         token: `tok-${(input as { agentId: string }).agentId}`,
@@ -107,6 +118,12 @@ async function makeHarness(
           reqId: ctx.reqId ?? '',
           conversationId: ctx.conversationId,
         });
+        const skipped = replyOnInvoke.skipped?.(ctx);
+        if (skipped !== undefined) {
+          await busRef.current!.bus.fire('chat:connectors-skipped', ctx, {
+            reqId: ctx.reqId, connectors: skipped,
+          });
+        }
         // Synchronously fire chat:turn-end so the routines plugin's
         // one-shot router runs in the same tick.
         await busRef.current!.bus.fire('chat:turn-end', ctx, {
@@ -427,6 +444,132 @@ describe('Phase B canary — routine creates → fires → silence path closes w
     expect(captured.createInputs[0]!.hidden).toBe(true);
     // And the shared branch is covered by the existing reuse test above
     // (fallbackHidden: true assertion).
+  });
+});
+
+// Slice 6 — a routine run that went without a connector says so: on its fire
+// row and on the routine. Driven through the real plugin: the
+// chat:connectors-skipped subscriber, then the chat:turn-end write.
+describe('slice 6 canary — a run that went without a connector', () => {
+  const GMAIL = { connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' };
+
+  async function applyRoutine(h: TestHarness, path: string): Promise<void> {
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path, kind: 'added', contentAfter: async () => routineBody() }],
+    });
+  }
+
+  async function readBack(path: string): Promise<{ fires: Array<{ warning: string | null; conversation_id: string | null }>; lastWarning: string | null }> {
+    const k = new Kysely<RoutinesDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+    });
+    try {
+      const fires = await k.selectFrom('routines_v1_fires').select(['warning', 'conversation_id'])
+        .where('agent_id', '=', 'agt_a').where('path', '=', path).orderBy('id', 'asc').execute();
+      const def = await k.selectFrom('routines_v1_definitions').select(['last_warning'])
+        .where('agent_id', '=', 'agt_a').where('path', '=', path).executeTakeFirstOrThrow();
+      return { fires, lastWarning: def.last_warning };
+    } finally {
+      await k.destroy();
+    }
+  }
+
+  async function waitForFires(path: string, n: number) {
+    let out!: Awaited<ReturnType<typeof readBack>>;
+    await vi.waitFor(async () => {
+      out = await readBack(path);
+      expect(out.fires).toHaveLength(n);
+    }, { timeout: 5_000, interval: 25 });
+    return out;
+  }
+
+  it('records the warning on the fire row and as lastWarning; routines:list carries it; the next clean fire clears it', async () => {
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const reply: Parameters<typeof makeHarness>[1] = {
+      contentBlocks: [{ type: 'text', text: 'done' }],
+      skipped: () => [GMAIL],
+    };
+    const h = await makeHarness(captured, reply);
+    await applyRoutine(h, '.ax/routines/r.md');
+
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
+    const W = "Gmail isn't signed in on Bob, so this run went without it.";
+    const first = await waitForFires('.ax/routines/r.md', 1);
+    expect(first.fires[0]!.warning).toBe(W);
+    expect(first.lastWarning).toBe(W);
+    const listed = await h.bus.call<unknown, { routines: Array<{ path: string; lastWarning: string | null }> }>(
+      'routines:list', h.ctx({ userId: 'u1' }), { agentId: 'agt_a' },
+    );
+    expect(listed.routines.find((r) => r.path === '.ax/routines/r.md')!.lastWarning).toBe(W);
+    const fires = await h.bus.call<unknown, { fires: Array<{ warning: string | null }> }>(
+      'routines:recent-fires', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' },
+    );
+    expect(fires.fires[0]!.warning).toBe(W);
+
+    delete reply.skipped;
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
+    const second = await waitForFires('.ax/routines/r.md', 2);
+    expect(second.fires.map((f) => f.warning)).toEqual([W, null]);
+    expect(second.lastWarning).toBeNull();
+  });
+
+  it('a silenced fire that skipped a connector still records the warning', async () => {
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const h = await makeHarness(captured, {
+      contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }],
+      skipped: () => [{ connectorId: 'linear', name: 'Linear', reason: 'needs-reconnect' }],
+    });
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => routineBody({ silenceToken: 'HEARTBEAT_OK' }) }],
+    });
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
+    const out = await waitForFires('.ax/routines/r.md', 1);
+    expect(out.lastWarning).toBe('Linear needs to be signed in again on Bob, so this run went without it.');
+  });
+
+  it('two routines fired at once each get their own warning, never crossed', async () => {
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const nameByConversation = new Map<string, string>();
+    let n = 0;
+    const h = await makeHarness(captured, {
+      contentBlocks: [{ type: 'text', text: 'done' }],
+      skipped: (ctx) => {
+        const name = (n++ % 2 === 0) ? 'Gmail' : 'Linear';
+        nameByConversation.set(ctx.conversationId!, name);
+        return [{ connectorId: name.toLowerCase(), name, reason: 'not-signed-in' }];
+      },
+    });
+    await applyRoutine(h, '.ax/routines/one.md');
+    await applyRoutine(h, '.ax/routines/two.md');
+    await Promise.all(['one', 'two'].map((p) => h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
+      agentId: 'agt_a', path: `.ax/routines/${p}.md`,
+    })));
+    for (const p of ['one', 'two']) {
+      const out = await waitForFires(`.ax/routines/${p}.md`, 1);
+      const want = nameByConversation.get(out.fires[0]!.conversation_id!);
+      expect(want).toBeDefined();
+      const W = `${want} isn't signed in on Bob, so this run went without it.`;
+      expect(out.fires[0]!.warning).toBe(W);
+      expect(out.lastWarning).toBe(W);
+    }
+  });
+
+  it('an event for a reqId that is not a routine fire (an interactive chat) is ignored', async () => {
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'done' }] });
+    await applyRoutine(h, '.ax/routines/r.md');
+    const r = await h.bus.fire('chat:connectors-skipped', h.ctx({ userId: 'u1' }), {
+      reqId: 'req-chat-1', connectors: [GMAIL],
+    });
+    expect(r.rejected).toBe(false);
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), { agentId: 'agt_a', path: '.ax/routines/r.md' });
+    const out = await waitForFires('.ax/routines/r.md', 1);
+    expect(out.fires[0]!.warning).toBeNull();
+    expect(out.lastWarning).toBeNull();
   });
 });
 

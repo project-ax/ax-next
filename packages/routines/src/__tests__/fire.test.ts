@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HookBus, PluginError, type AgentContext } from '@ax/core';
-import { createFireRoutine, type FireDeps, type PendingFires } from '../fire.js';
+import {
+  createFireRoutine, stashConnectorsSkipped, warningFor,
+  type FireDeps, type PendingFire, type PendingFires,
+} from '../fire.js';
 import type { RoutineRow } from '../types.js';
 import type { RecordFireInput } from '../store.js';
 
@@ -12,6 +15,7 @@ function row(over: Partial<RoutineRow> = {}): RoutineRow {
     activeHours: null, silenceToken: null, silenceMaxChars: 300,
     conversation: 'per-fire', promptBody: 'do work',
     nextRunAt: null, lastRunAt: null, lastStatus: null, lastError: null,
+    lastWarning: null, definitionId: null, definitionUpdatedAt: null,
     ...over,
   };
 }
@@ -338,6 +342,181 @@ describe('createFireRoutine — webhook payload templating (Phase C)', () => {
       await new Promise((r) => setImmediate(r));
       expect(recorded).toEqual([]);
       expect(pending.size).toBe(1);
+    });
+  });
+});
+
+// Slice 6 — chat:connectors-skipped is keyed to the in-flight fire by reqId;
+// whoever records the fire turns the stashed skips into its warning.
+describe('connector skips per fire (slice 6)', () => {
+  function pendingEntry(over: Partial<PendingFire> = {}): PendingFire {
+    return {
+      row: row(), conversationId: 'cnv', source: 'tick', renderedPrompt: 'p',
+      agentName: 'Bob', skips: [], onTurnEnd: async () => {},
+      ...over,
+    };
+  }
+
+  it('an event for an unknown reqId is ignored', () => {
+    const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
+    stashConnectorsSkipped(pending, {
+      reqId: 'req-other',
+      connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }],
+    });
+    expect(pending.size).toBe(1);
+    expect(pending.get('req-1')!.skips).toEqual([]);
+    expect(pending.has('req-other')).toBe(false);
+  });
+
+  it('stashes valid skips, drops malformed entries, and merges a repeat without duplicating', () => {
+    const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
+    stashConnectorsSkipped(pending, {
+      reqId: 'req-1',
+      connectors: [
+        { connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' },
+        { connectorId: 'x', name: 'X', reason: 'exploded' },
+        { connectorId: 7, name: 'Seven', reason: 'not-signed-in' },
+        { connectorId: 'y', name: null, reason: 'not-signed-in' },
+        null,
+        'nope',
+      ],
+    });
+    stashConnectorsSkipped(pending, {
+      reqId: 'req-1',
+      connectors: [
+        { connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' },
+        { connectorId: 'linear', name: 'Linear', reason: 'needs-reconnect' },
+      ],
+    });
+    expect(pending.get('req-1')!.skips).toEqual([
+      { connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' },
+      { connectorId: 'linear', name: 'Linear', reason: 'needs-reconnect' },
+    ]);
+  });
+
+  it('a payload that is not the expected shape is ignored without throwing', () => {
+    const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
+    for (const bad of [undefined, null, 'x', { reqId: 'req-1' }, { reqId: 'req-1', connectors: 'x' }, { reqId: 5, connectors: [] }]) {
+      expect(() => stashConnectorsSkipped(pending, bad)).not.toThrow();
+    }
+    expect(pending.get('req-1')!.skips).toEqual([]);
+  });
+
+  it('holds at most 50 skips per fire', () => {
+    const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
+    stashConnectorsSkipped(pending, {
+      reqId: 'req-1',
+      connectors: Array.from({ length: 500 }, (_, i) => ({ connectorId: `c${i}`, name: `C${i}`, reason: 'not-signed-in' })),
+    });
+    expect(pending.get('req-1')!.skips).toHaveLength(50);
+  });
+
+  it('a nameless skip falls back to its connector id', () => {
+    const pending: PendingFires = new Map([['req-1', pendingEntry()]]);
+    stashConnectorsSkipped(pending, {
+      reqId: 'req-1',
+      connectors: [{ connectorId: 'gmail', name: ' ‮ ', reason: 'not-signed-in' }],
+    });
+    expect(warningFor(pending.get('req-1')!)).toBe(
+      "gmail isn't signed in on Bob, so this run went without it.",
+    );
+  });
+
+  it('warningFor: null when nothing was skipped', () => {
+    expect(warningFor(pendingEntry())).toBeNull();
+  });
+
+  it('carries the agent display name from agents:resolve into the pending entry', async () => {
+    const bus = await makeBus({
+      resolve: async (agentId, userId) => ({ agent: { id: agentId, ownerId: userId, displayName: 'Bob' } }),
+    });
+    const pending: PendingFires = new Map();
+    await createFireRoutine({ bus, pending } as FireDeps)(row(), 'tick');
+    const [entry] = [...pending.values()];
+    expect(entry!.agentName).toBe('Bob');
+    expect(entry!.skips).toEqual([]);
+  });
+
+  it('an agent with no display name leaves agentName null ("this agent")', async () => {
+    const bus = await makeBus({});
+    const pending: PendingFires = new Map();
+    await createFireRoutine({ bus, pending } as FireDeps)(row(), 'tick');
+    const [entry] = [...pending.values()];
+    expect(entry!.agentName).toBeNull();
+    expect(warningFor({ ...entry!, skips: [{ connectorId: 'g', name: 'Gmail', reason: 'not-signed-in' }] }))
+      .toBe("Gmail isn't signed in on this agent, so this run went without it.");
+  });
+
+  it('a terminated fire that skipped a connector records the warning on its row', async () => {
+    const pending: PendingFires = new Map();
+    const bus = await makeBus({
+      resolve: async (agentId, userId) => ({ agent: { id: agentId, ownerId: userId, displayName: 'Bob' } }),
+      invoke: async (ctx) => {
+        stashConnectorsSkipped(pending, {
+          reqId: ctx.reqId,
+          connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'needs-reconnect' }],
+        });
+        return { kind: 'terminated', reason: 'chat-timeout' };
+      },
+    });
+    const recorded: RecordFireInput[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } })(row(), 'tick');
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(recorded[0]).toMatchObject({
+      status: 'error',
+      warning: 'Gmail needs to be signed in again on Bob, so this run went without it.',
+    });
+  });
+
+  it('a terminated fire with nothing skipped records warning: null (clears the last one)', async () => {
+    const bus = await makeBus({ invoke: async () => ({ kind: 'terminated', reason: 'x' }) });
+    const recorded: RecordFireInput[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await createFireRoutine({ bus, pending: new Map(), recordFire: async (i) => { recorded.push(i); } })(row(), 'tick');
+      await vi.waitFor(() => expect(recorded).toHaveLength(1));
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(recorded[0]!.warning).toBeNull();
+  });
+
+  it('two concurrent fires each get their own warning, keyed by reqId', async () => {
+    const pending: PendingFires = new Map();
+    const release: Array<() => void> = [];
+    const bus = await makeBus({
+      resolve: async (agentId, userId) => ({ agent: { id: agentId, ownerId: userId, displayName: 'Bob' } }),
+      invoke: async (ctx) => {
+        const name = ctx.triggerLabel === 'one' ? 'Gmail' : 'Linear';
+        stashConnectorsSkipped(pending, {
+          reqId: ctx.reqId,
+          connectors: [{ connectorId: name.toLowerCase(), name, reason: 'not-signed-in' }],
+        });
+        await new Promise<void>((r) => release.push(r));
+        return { kind: 'terminated', reason: 'x' };
+      },
+    });
+    const recorded: RecordFireInput[] = [];
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const fire = createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } });
+      await fire(row({ name: 'one', path: 'one.md' }), 'tick');
+      await fire(row({ name: 'two', path: 'two.md' }), 'tick');
+      await vi.waitFor(() => expect(release).toHaveLength(2));
+      for (const r of release) r();
+      await vi.waitFor(() => expect(recorded).toHaveLength(2));
+    } finally {
+      stderr.mockRestore();
+    }
+    const byPath = Object.fromEntries(recorded.map((r) => [r.path, r.warning]));
+    expect(byPath).toEqual({
+      'one.md': "Gmail isn't signed in on Bob, so this run went without it.",
+      'two.md': "Linear isn't signed in on Bob, so this run went without it.",
     });
   });
 });

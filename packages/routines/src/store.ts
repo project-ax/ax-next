@@ -42,6 +42,13 @@ export interface RecordFireInput {
   status: FireStatus;
   error: string | null;
   renderedPrompt?: string | null;
+  /**
+   * Slice 6 — "Gmail isn't signed in on Bob, so this run went without it."
+   * Written to the fire row AND to the routine's `last_warning`, null
+   * included: a clean run clears the previous run's warning. Omitted means
+   * null (a fire recorded before its turn ever ran skipped nothing).
+   */
+  warning?: string | null;
 }
 
 export interface UpsertDefaultInput {
@@ -218,6 +225,7 @@ function rowToRoutine(row: {
   conversation: string; prompt_body: string;
   next_run_at: Date | null; last_run_at: Date | null;
   last_status: string | null; last_error: string | null;
+  last_warning: string | null;
   definition_id: string | null;
   definition_updated_at: Date | null;
 }): RoutineRow {
@@ -238,6 +246,7 @@ function rowToRoutine(row: {
     lastRunAt: row.last_run_at,
     lastStatus: row.last_status as FireStatus | null,
     lastError: row.last_error,
+    lastWarning: row.last_warning,
     definitionId: row.definition_id,
     definitionUpdatedAt: row.definition_updated_at,
   };
@@ -248,6 +257,7 @@ function rowToFire(r: {
   agent_id: string; path: string; fired_at: Date;
   trigger_source: string; conversation_id: string | null;
   status: string; error: string | null; rendered_prompt: string | null;
+  warning: string | null;
 }): FireRow {
   return {
     id: Number(r.id),
@@ -259,6 +269,7 @@ function rowToFire(r: {
     status: r.status as FireStatus,
     error: r.error,
     renderedPrompt: r.rendered_prompt,
+    warning: r.warning,
   };
 }
 
@@ -362,6 +373,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         conversation: string; prompt_body: string;
         next_run_at: Date | null; last_run_at: Date | null;
         last_status: string | null; last_error: string | null;
+        last_warning: string | null;
         definition_id: string | null;
         definition_updated_at: Date | null;
       }>`
@@ -440,15 +452,31 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       const MAX = 64 * 1024;
       const raw = input.renderedPrompt ?? null;
       const renderedPrompt = raw !== null ? truncateUtf8(raw, MAX) : null;
-      const row = await db.insertInto('routines_v1_fires').values({
-        agent_id: input.agentId,
-        path: input.path,
-        trigger_source: input.triggerSource,
-        conversation_id: input.conversationId,
-        status: input.status,
-        error: input.error,
-        rendered_prompt: renderedPrompt,
-      }).returning('id').executeTakeFirstOrThrow();
+      const warning = input.warning ?? null;
+      // Slice 6 — the fire row and the routine's `last_warning` in ONE
+      // statement, so every path that records a fire (turn end, a terminated
+      // invoke, a fire that failed before dispatch, any trigger kind) also
+      // sets or clears the routine's warning, and neither write can land
+      // without the other. The UPDATE matches nothing when the routine has
+      // since been deleted; the fire row is still written, as before.
+      // `advance` never touches `last_warning`.
+      const res = await sql<{ id: number | string }>`
+        WITH warn AS (
+          UPDATE routines_v1_definitions
+             SET last_warning = ${warning}
+           WHERE agent_id = ${input.agentId} AND path = ${input.path}
+        )
+        INSERT INTO routines_v1_fires
+          (agent_id, path, trigger_source, conversation_id, status, error,
+           rendered_prompt, warning)
+        VALUES
+          (${input.agentId}, ${input.path}, ${input.triggerSource},
+           ${input.conversationId}, ${input.status}, ${input.error},
+           ${renderedPrompt}, ${warning})
+        RETURNING id
+      `.execute(db);
+      const row = res.rows[0];
+      if (row === undefined) throw new Error('recordFire: INSERT … RETURNING returned no row');
       return Number(row.id);
     },
 

@@ -3,15 +3,71 @@ import type { RoutineRow, FireSource } from './types.js';
 import type { FireResult } from './tick.js';
 import { renderTemplate } from './template.js';
 import type { RecordFireInput } from './store.js';
+import { buildSkipWarning, sanitizeSkipName, type SkipReason } from './skip-warning.js';
+
+/**
+ * Slice 6 — one connector the turn went without, as `chat:connectors-skipped`
+ * reported it. Mirrors chat-orchestrator's `ConnectorsSkippedPayload` entry
+ * (invariant 2 keeps the import out).
+ */
+export interface SkippedConnector {
+  connectorId: string;
+  name: string;
+  reason: SkipReason;
+}
 
 export interface PendingFire {
   row: RoutineRow;
   conversationId: string;
   source: FireSource;
   renderedPrompt: string;
+  /** The agent's display name from `agents:resolve`; null → "this agent". */
+  agentName: string | null;
+  /** What `chat:connectors-skipped` said this fire's turn went without. */
+  skips: SkippedConnector[];
   onTurnEnd: (turn: { contentBlocks?: unknown[] }) => Promise<void>;
 }
 export type PendingFires = Map<string, PendingFire>;
+
+const MAX_SKIPS_PER_FIRE = 50;
+
+/**
+ * Slice 6 — the `chat:connectors-skipped` subscriber's whole job: if `reqId`
+ * is an in-flight fire, add the skips to it. A map write and nothing else, so
+ * it never holds up the turn (the orchestrator awaits it before the turn
+ * runs). An unknown reqId — an interactive chat's turn — is ignored.
+ *
+ * The payload crosses a plugin boundary, so it is validated here rather than
+ * trusted: malformed entries are dropped, a repeat is merged by connector id.
+ */
+export function stashConnectorsSkipped(pending: PendingFires, payload: unknown): void {
+  if (typeof payload !== 'object' || payload === null) return;
+  const { reqId, connectors } = payload as { reqId?: unknown; connectors?: unknown };
+  if (typeof reqId !== 'string' || !Array.isArray(connectors)) return;
+  const pf = pending.get(reqId);
+  if (pf === undefined) return;
+  for (const c of connectors) {
+    // Bounded: the warning shows a few names and is capped at 300 chars, so
+    // there is no reason to hold more than this per fire.
+    if (pf.skips.length >= MAX_SKIPS_PER_FIRE) break;
+    if (typeof c !== 'object' || c === null) continue;
+    const { connectorId, name, reason } = c as Record<string, unknown>;
+    if (typeof connectorId !== 'string' || connectorId.length === 0) continue;
+    if (typeof name !== 'string') continue;
+    if (reason !== 'not-signed-in' && reason !== 'needs-reconnect') continue;
+    if (pf.skips.some((s) => s.connectorId === connectorId)) continue;
+    // A name that sanitizes to nothing falls back to the id, as the
+    // producer's own label does.
+    const label = sanitizeSkipName(name) || sanitizeSkipName(connectorId);
+    if (label.length === 0) continue;
+    pf.skips.push({ connectorId, name: label, reason });
+  }
+}
+
+/** The warning to record with this fire, or null when nothing was skipped. */
+export function warningFor(pf: PendingFire): string | null {
+  return buildSkipWarning(pf.agentName, pf.skips);
+}
 
 export interface FireDeps {
   bus: HookBus;
@@ -71,11 +127,15 @@ export function createFireRoutine(deps: FireDeps) {
       userId: row.ownerUserId,
     });
 
+    let agentName: string | null = null;
     try {
-      await deps.bus.call<
+      const resolved = await deps.bus.call<
         { agentId: string; userId: string },
-        { agent: { id: string; ownerId?: string; workspaceRef?: string | null } }
+        { agent: { id: string; ownerId?: string; workspaceRef?: string | null; displayName?: unknown } }
       >('agents:resolve', baseCtx, { agentId: row.agentId, userId: row.ownerUserId });
+      // Slice 6 — only used to word a skipped-connector warning.
+      const displayName = resolved?.agent?.displayName;
+      if (typeof displayName === 'string') agentName = displayName;
     } catch (err) {
       if (err instanceof PluginError) {
         return {
@@ -174,6 +234,7 @@ export function createFireRoutine(deps: FireDeps) {
     deps.pending.set(reqId, {
       row, conversationId, source,
       renderedPrompt: prompt,
+      agentName, skips: [],
       onTurnEnd: async () => {},
     });
 
@@ -186,7 +247,8 @@ export function createFireRoutine(deps: FireDeps) {
     // turn must not vanish from the log (routines design §5.2, "errors are
     // visible").
     const settleWithoutTurn = async (error: string): Promise<void> => {
-      if (!deps.pending.delete(reqId)) return;
+      const entry = deps.pending.get(reqId);
+      if (entry === undefined || !deps.pending.delete(reqId)) return;
       process.stderr.write(
         `[ax/routines] agent:invoke failed for ${row.agentId}/${row.path}: ${error}\n`,
       );
@@ -197,6 +259,8 @@ export function createFireRoutine(deps: FireDeps) {
           conversationId,
           status: 'error', error,
           renderedPrompt: prompt,
+          // Slice 6 — a terminated run that skipped a connector says so too.
+          warning: warningFor(entry),
         });
       } catch (err) {
         process.stderr.write(
