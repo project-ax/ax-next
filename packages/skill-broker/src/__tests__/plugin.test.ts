@@ -14,8 +14,12 @@ const convCtx = makeAgentContext({
 
 function busWithStubs(
   opts: {
-    /** when true, register a credentials:list stub seeded with `vaultRefs`. */
+    /** when true, register a credentials:has stub answering from `vaultRefs`
+     *  (what the session's agent, then global, holds), plus a credentials:list
+     *  that must never be asked (a user-scope listing is not presence). */
     withVault?: boolean;
+    /** when true, the credentials:has stub throws (best-effort path). */
+    vaultThrows?: boolean;
     /** when false, do NOT register the catalog:submit stub (degrade path). default true. */
     withCatalogSubmit?: boolean;
     /** when true, skills:search-catalog returns [] for ANY intent (force a miss). */
@@ -46,9 +50,12 @@ function busWithStubs(
     requestedByUserId: string;
     description: string;
   }> = [];
-  // The user's existing vault entries (account:<service> refs). A closure the
-  // test flips via setVault before invoking the tool.
+  // The refs the vault resolves for the session (agent -> global). A closure
+  // the test flips via setVault before invoking the tool.
   let vaultRefs: string[] = [];
+  // Every credentials:has ask, with the ctx it came under.
+  const hasCalls: Array<{ input: { ref: string; userId: string }; agentId: string; userId: string }> = [];
+  const listCalls: unknown[] = [];
   const setVault = (refs: string[]): void => {
     vaultRefs = refs;
   };
@@ -97,16 +104,25 @@ function busWithStubs(
     });
   }
   if (opts.withVault === true) {
-    // Metadata-only vault listing — refs + kinds, NEVER a secret value.
-    bus.registerService('credentials:list', 'creds', async (_c, _input: unknown) => ({
-      credentials: vaultRefs.map((ref) => ({
-        scope: 'user' as const,
-        ownerId: 'u',
-        ref,
-        kind: 'api-key',
-        createdAt: new Date(0).toISOString(),
-      })),
-    }));
+    // Presence only — a boolean, NEVER a secret value.
+    bus.registerService('credentials:has', 'creds', async (c, input: unknown) => {
+      const typed = input as { ref: string; userId: string };
+      hasCalls.push({ input: typed, agentId: c.agentId, userId: c.userId });
+      if (opts.vaultThrows === true) throw new Error('vault down');
+      return { present: vaultRefs.includes(typed.ref) };
+    });
+    bus.registerService('credentials:list', 'creds', async (_c, input: unknown) => {
+      listCalls.push(input);
+      return {
+        credentials: vaultRefs.map((ref) => ({
+          scope: 'user' as const,
+          ownerId: 'u',
+          ref,
+          kind: 'api-key',
+          createdAt: new Date(0).toISOString(),
+        })),
+      };
+    });
   }
   if (opts.withCatalogSubmit !== false) {
     // The admit-queue submit hook (owned by @ax/skills in production). The
@@ -116,7 +132,7 @@ function busWithStubs(
       return { requestId: 'req_stub', created: true, status: 'pending' };
     });
   }
-  return { bus, registered, setVault, coldStarts };
+  return { bus, registered, setVault, coldStarts, hasCalls, listCalls };
 }
 
 describe('skill-broker tool descriptors — activityPhrase', () => {
@@ -406,10 +422,11 @@ describe('request_capability — bundled approval card (chat:permission-request)
     });
   });
 
-  // JIT P2/P7.2 — a connector slot tagged `account: <svc>` + a vaulted key →
-  // haveExisting:true.
-  it('card marks haveExisting:true + account when the user already has the connector\'s vaulted key', async () => {
-    const { bus, setVault } = busWithStubs({
+  // JIT P2/P7.2 — a connector slot tagged `account: <svc>` + a key the session
+  // resolves → haveExisting:true. Slice 5: presence is `credentials:has` under
+  // the session ctx (the agent, then global), never a user-scope listing.
+  it('card marks haveExisting:true + account when the session\'s agent already has the connector\'s key', async () => {
+    const { bus, setVault, hasCalls, listCalls } = busWithStubs({
       linearConnectors: ['linear'],
       withVault: true,
       connectorsResolve: (id) => ({
@@ -438,6 +455,40 @@ describe('request_capability — bundled approval card (chat:permission-request)
       // tag, no slotTag; haveExisting matches `account:linear`.
       { slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', service: 'linear', haveExisting: true },
     ]);
+    // Asked under the SESSION ctx (agent 'a'), for exactly the slot's ref.
+    expect(hasCalls).toEqual([{ input: { ref: 'account:linear', userId: 'u' }, agentId: 'a', userId: 'u' }]);
+    // Never decided from a user-scope listing (un-purged person-level rows
+    // would still be listed there).
+    expect(listCalls).toEqual([]);
+  });
+
+  it('card marks haveExisting:false when the presence check throws (best-effort, still raises the card)', async () => {
+    const { bus, setVault } = busWithStubs({
+      linearConnectors: ['linear'],
+      withVault: true,
+      vaultThrows: true,
+      connectorsResolve: (id) => ({
+        id,
+        capabilities: {
+          allowedHosts: ['api.linear.app'],
+          credentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear' }],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    });
+    setVault(['account:linear']);
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ slots: Array<Record<string, unknown>> }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(cards[0]?.slots[0]).toMatchObject({ slot: 'LINEAR_TOKEN', haveExisting: false });
   });
 
   // TASK-124 — a ≥2-slot referenced connector yields one card slot per slot, each

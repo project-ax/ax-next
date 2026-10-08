@@ -77,11 +77,11 @@ interface ConnectorsResolveOutput {
 // skill-declared connector id's shape before handing it to connectors:resolve.
 const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 
-// credentials:list returns METADATA ONLY — refs + kinds, NEVER a secret value.
+// credentials:has returns PRESENCE ONLY — a boolean, NEVER a secret value.
 // Minimal local mirror (I2 — no @ax/credentials import). The broker only learns
-// whether an `account:<service>` ref EXISTS for the user, never its value.
-interface CredentialsListOutput {
-  credentials: Array<{ ref: string }>;
+// whether the session resolves an `account:<service>` ref, never its value.
+interface CredentialsHasOutput {
+  present: boolean;
 }
 
 // The bundled approval card payload (design §11.3, decision #6). Carries only
@@ -166,26 +166,6 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         throw err;
       }
 
-      // Vault lookup (JIT P2): which `account:<service>` refs does this user
-      // already have? Metadata-only (credentials:list, user scope) — the secret
-      // NEVER crosses this boundary; we only learn EXISTENCE so the card can
-      // offer "use your existing <service> key". Gated by hasService so
-      // credential-less presets degrade to always-prompt; best-effort so a failed
-      // lookup just prompts rather than blocking the card.
-      const vaulted = new Set<string>();
-      if (bus.hasService('credentials:list')) {
-        try {
-          const list = await bus.call<{ scope: 'user'; ownerId: string }, CredentialsListOutput>(
-            'credentials:list',
-            toolCtx,
-            { scope: 'user', ownerId: toolCtx.userId },
-          );
-          for (const c of list.credentials) vaulted.add(c.ref);
-        } catch {
-          // A failed lookup just means the card prompts. Never block the card.
-        }
-      }
-
       // TASK-100 / TASK-111 — the card surface comes ENTIRELY from the connectors
       // a skill references via its top-level `connectors[]` (TASK-92). A skill no
       // longer carries a capability block of its own (TASK-100 closed that path),
@@ -268,6 +248,33 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
       const allNpm = dedup(connectorNpm);
       const allPypi = dedup(connectorPypi);
 
+      // Vault presence (JIT P2): does this SESSION already resolve each slot's
+      // `account:` ref? `credentials:has` under the session ctx walks the agent,
+      // then global — the same walk the credential proxy will do — and returns
+      // only a boolean, so the secret NEVER crosses this boundary; the card just
+      // learns whether to offer "use the existing key". Never a user-scope
+      // `credentials:list`: connector keys are not stored per person (agent-owned
+      // sign-ins, slice 5), and an old person-level row the boot purge hasn't
+      // reached yet would still be listed there. Gated by hasService so
+      // credential-less presets degrade to always-prompt; best-effort per ref so
+      // a failed check just prompts rather than blocking the card.
+      const vaulted = new Set<string>();
+      if (bus.hasService('credentials:has')) {
+        const refsToCheck = new Set([...slotByName.values()].map((c) => c.ref));
+        for (const ref of refsToCheck) {
+          try {
+            const out = await bus.call<{ ref: string; userId: string }, CredentialsHasOutput>(
+              'credentials:has',
+              toolCtx,
+              { ref, userId: toolCtx.userId },
+            );
+            if (out.present === true) vaulted.add(ref);
+          } catch {
+            // A failed check just means the card prompts. Never block the card.
+          }
+        }
+      }
+
       // A skill that references no connectors (or whose connectors resolve to no
       // reach) has nothing to gate — it's a free-path instruction skill. Fire no
       // card; request_capability is a no-op approval surface in that case.
@@ -286,7 +293,7 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
       // The card both collects/binds the key and (TASK-36) attaches + resumes;
       // the binding ref is minted in chat-orchestrator's applyCapabilityGrant,
       // where the `account`-vs-`skill` decision lives. For an account-tagged slot
-      // the card offers the user's existing vaulted key (haveExisting) — one tap,
+      // the card offers the agent's existing key (haveExisting) — one tap,
       // no re-entry.
       const card: PermissionRequestEvent = {
         kind: 'skill',

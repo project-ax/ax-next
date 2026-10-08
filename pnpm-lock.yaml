@@ -2107,6 +2107,12 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@ax/credentials':
+        specifier: workspace:*
+        version: link:../credentials
+      '@ax/credentials-store-db':
+        specifier: workspace:*
+        version: link:../credentials-store-db
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
