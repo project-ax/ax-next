@@ -1335,6 +1335,20 @@ export function createOrchestrator(
     }
     set.add(reqId);
   }
+  /**
+   * Slice 6 — true while a turn on this session has not settled (a waiter
+   * registered for it is still pending). A routine turn never retires such a
+   * session; it queues into it.
+   */
+  function sessionBusy(sessionId: string): boolean {
+    const reqIds = reqIdsBySession.get(sessionId);
+    if (reqIds === undefined) return false;
+    for (const reqId of reqIds) {
+      const deferred = waitersByReqId.get(reqId);
+      if (deferred !== undefined && !deferred.settled) return true;
+    }
+    return false;
+  }
   function unregisterWaiter(sessionId: string, reqId: string): void {
     waitersByReqId.delete(reqId);
     const set = reqIdsBySession.get(sessionId);
@@ -1481,6 +1495,7 @@ export function createOrchestrator(
     respawnSessions.delete(sessionId);
     augmentGenBySession.delete(sessionId);
     skippedConnectorRefsBySession.delete(sessionId);
+    skippedConnectorsBySession.delete(sessionId);
     rotationFailedSessions.delete(sessionId);
     forgetSessionConnectors(sessionId);
   }
@@ -1733,6 +1748,12 @@ export function createOrchestrator(
   // sessions that skipped something have an entry. Same lifetime + single-
   // replica posture as `augmentGenBySession`.
   const skippedConnectorRefsBySession = new Map<string, string[]>();
+  // Slice 6 — what each session went without at spawn (ids, labels, reasons;
+  // never refs), for a ROUTINE turn queued into a busy session: its tools were
+  // fixed at spawn, so these are exactly what the queued run goes without.
+  // Only sessions that skipped something have an entry; same lifetime as
+  // skippedConnectorRefsBySession (dropped at every one of its deletes).
+  const skippedConnectorsBySession = new Map<string, ConnectorsSkippedPayload['connectors']>();
 
   /** True when a ref skipped at spawn now answers present. Any fault → false. */
   async function skippedConnectorSignedIn(ctx: AgentContext, sessionId: string): Promise<boolean> {
@@ -2148,6 +2169,7 @@ export function createOrchestrator(
       { subscriberTimeoutMs: chatStartSubscriberTimeoutMs },
     );
     if (startResult.rejected) {
+      // @ax/routines keys off the `chat:start:` prefix (a pre-assembly refusal).
       const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: `chat:start:${startResult.reason}`,
@@ -2184,6 +2206,7 @@ export function createOrchestrator(
       agent = resolved.agent;
     } catch (err) {
       const code = err instanceof PluginError ? err.code : 'internal';
+      // @ax/routines keys off the `agent-resolve:` prefix (a pre-assembly refusal).
       const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: `agent-resolve:${code}`,
@@ -2311,13 +2334,16 @@ export function createOrchestrator(
             // registration. Reopen the durable conversation after restart;
             // never send a turn through an unowned credential-proxy session.
             const hostSessionMissing = keepAlive && !warmSessions.has(candidate);
-            // Slice 6 — a ROUTINE turn never reuses a warm session: it always
-            // spawns fresh, so its connectors are assembled (and any it goes
-            // without are skipped and announced via chat:connectors-skipped)
-            // for THIS run. A reused session assembles nothing, so a re-fire
-            // inside the keepAlive window would record no warning and clear
-            // the last one. Retired like any other can't-reuse session.
-            const routineTurn = ctx.source === 'routine';
+            // Slice 6 — a ROUTINE turn never reuses an IDLE warm session: it
+            // retires it and spawns fresh, so its connectors are assembled
+            // (and any it goes without are skipped and announced via
+            // chat:connectors-skipped) for THIS run. A BUSY session — another
+            // routine fire on this shared conversation still running (webhook
+            // burst, a cron shorter than the run, fire-now mid-run) — is never
+            // retired for this: that would cut the running fire and pull its
+            // credentials. The turn queues into it instead, and the routed
+            // path below announces the session's spawn-time skips.
+            const routineRetire = ctx.source === 'routine' && !sessionBusy(candidate);
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             let rotationFailed = rotationFailedSessions.has(candidate);
@@ -2331,7 +2357,7 @@ export function createOrchestrator(
               connectorDeletedSessions.has(candidate) ||
               connectorSelectionChanged(candidate, agent) ||
               (!(
-                routineTurn ||
+                routineRetire ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -2340,7 +2366,7 @@ export function createOrchestrator(
                 (await foldedConnectorsChanged(ctx, candidate, agent)));
             const connectorSignedIn =
               !(
-                routineTurn ||
+                routineRetire ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -2353,7 +2379,7 @@ export function createOrchestrator(
             // proxy session anyway. A failure retires it (secure direction).
             if (
               !(
-                routineTurn ||
+                routineRetire ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -2366,7 +2392,7 @@ export function createOrchestrator(
               rotationFailed = true;
             }
             if (
-              routineTurn ||
+              routineRetire ||
               skillsDirty ||
               augmentStale ||
               hostSessionMissing ||
@@ -2394,7 +2420,8 @@ export function createOrchestrator(
               // TASK-811: and when a connector was attached to or detached from
               // the agent mid-chat. The fresh spawn folds the new set.
               //
-              // Slice 6: and on every ROUTINE turn (see routineTurn above).
+              // Slice 6: and on a ROUTINE turn, when the session is idle (see
+              // routineRetire above).
               //
               // TASK-833: and when a connector it folded was deleted or edited.
               // Its proxy session is closed below (TASK-871: directly, not only
@@ -2402,7 +2429,7 @@ export function createOrchestrator(
               // substituted no later than this turn.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
-                reason: routineTurn
+                reason: routineRetire
                   ? 'routine-turn'
                   : hostSessionMissing
                     ? 'host-session-lost'
@@ -2431,6 +2458,7 @@ export function createOrchestrator(
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
               skippedConnectorRefsBySession.delete(candidate);
+              skippedConnectorsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
               forgetSessionConnectors(candidate);
               // TASK-871 — revoke the retired session's credentials HERE, not
@@ -2440,7 +2468,8 @@ export function createOrchestrator(
               // keeps substituting the OLD key until the idle reaper. Closing
               // first means a hung terminate cannot delay it either. The close
               // is idempotent, so the later `handle.exited` close is a no-op.
-              // Nothing of the old session is in flight: we are between turns.
+              // Nothing of the old session is in flight: these reasons fire
+              // between turns (a routine turn retires only an IDLE session).
               // TASK-878 — the wait is bounded: a close that hangs is logged
               // and we terminate + respawn anyway (the close keeps running).
               if (bus.hasService('proxy:close-session')) {
@@ -2491,6 +2520,26 @@ export function createOrchestrator(
       // and do NOT register a NEW handle.exited watcher — the existing
       // sandbox's lifecycle is owned by whoever opened it originally.
       const sessionId = routedSessionId;
+
+      // Slice 6 — a ROUTINE turn routed here queued into a BUSY session (an
+      // idle one is retired above). It assembles nothing, but the session's
+      // tools were fixed at spawn, so what that spawn went without is exactly
+      // what this run goes without: announce it under THIS turn's reqId, the
+      // same bounded, isolated, awaited fire as the spawn path. Nothing
+      // skipped at spawn → nothing fired, as for a fresh spawn.
+      const spawnSkips = ctx.source === 'routine' ? skippedConnectorsBySession.get(sessionId) : undefined;
+      if (spawnSkips !== undefined && spawnSkips.length > 0) {
+        try {
+          await fireChatEvent<ConnectorsSkippedPayload>('chat:connectors-skipped', ctx, {
+            reqId: ctx.reqId,
+            connectors: spawnSkips.map((c) => ({ ...c })),
+          });
+        } catch (err) {
+          ctx.logger.warn('chat_connectors_skipped_fire_failed', {
+            name: err instanceof Error ? err.name : 'unknown',
+          });
+        }
+      }
 
       // Turn starting on a warm session: cancel any pending idle reap. It is
       // re-armed on this turn's chat:turn-end. (Narrow race: if the idle timer
@@ -3566,11 +3615,18 @@ export function createOrchestrator(
       // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
       // turns, slice 6) has a row, so re-asking presence would answer yes and
       // retire the session on every turn. Harmless: only a routine turn makes
-      // a needs-reconnect skip, and a routine turn never reuses a warm session
-      // (routing retires it — see routineTurn), so it never needs that re-ask.
+      // a needs-reconnect skip, and the next routine turn retires an idle
+      // session anyway (see routineRetire); a queued one into a busy session
+      // is told the spawn-time skips instead (skippedConnectorsBySession).
       const skippedRefs = [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))];
       if (skippedRefs.length > 0) {
         skippedConnectorRefsBySession.set(sessionId, skippedRefs);
+      }
+      if (connectorSignIn.skipped.length > 0) {
+        skippedConnectorsBySession.set(
+          sessionId,
+          connectorsSkippedPayload(ctx.reqId, connectorSignIn.skipped).connectors,
+        );
       }
       if (keepAlive) {
         // Warm the session: the runner outlives this request. One handle.exited
@@ -3599,6 +3655,7 @@ export function createOrchestrator(
             sessionsNeedingRotation.delete(sessionId);
             augmentGenBySession.delete(sessionId);
             skippedConnectorRefsBySession.delete(sessionId);
+            skippedConnectorsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
             forgetSessionConnectors(sessionId);
             if (proxyOpened) {
@@ -3857,6 +3914,7 @@ export function createOrchestrator(
         // session drops it in handle.exited; a one-shot session is done now.
         augmentGenBySession.delete(ctx.sessionId);
         skippedConnectorRefsBySession.delete(ctx.sessionId);
+        skippedConnectorsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);
         forgetSessionConnectors(ctx.sessionId);
       }

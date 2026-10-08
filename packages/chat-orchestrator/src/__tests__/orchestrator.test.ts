@@ -7348,7 +7348,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
     });
 
     // Slice 6 — two connectors, both api-key, presence from `present`.
-    async function skipHarness(present: Set<string>) {
+    async function skipHarness(present: Set<string>, extra: Record<string, ServiceHandler> = {}) {
       const connector = (id: string, name: string) => ({
         summary: { id, name },
         source: 'attached',
@@ -7367,6 +7367,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         }),
         // A routine turn also asks for needs-reconnect markers: none here.
         'mcp-oauth:status-batch': async () => ({ needsReconnect: [], shared: [], signIns: {} }),
+        ...extra,
       } as Record<string, ServiceHandler>);
       const events: Array<{ reqId: string; connectors: Array<{ connectorId: string }> }> = [];
       h.bus.subscribe('chat:connectors-skipped', 'obs', async (_c, p: unknown) => {
@@ -7432,6 +7433,92 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         ['req-r2', ['gmail', 'linear']],
       ]);
       expect(logs.find((l) => l.msg === 'stale_session_respawn')?.reason).toBe('routine-turn');
+    });
+
+    // Slice 6 residual review — two routine fires overlapping on one shared
+    // conversation (webhook burst, cron shorter than the run, fire-now
+    // mid-run). The second must NOT retire the session the first is running
+    // in (that would cut it and pull its credentials): it queues into it, and
+    // its reqId is told what that session went without at spawn.
+    it('an overlapping ROUTINE fire queues into the busy session (no terminate) and gets the spawn-time skips', async () => {
+      const queued: string[] = [];
+      const { h, counters, events, logs } = await skipHarness(new Set<string>(), {
+        'session:queue-work': async (_c: unknown, input: unknown) => {
+          queued.push((input as { sessionId?: string }).sessionId ?? '?');
+          return { cursor: 0 };
+        },
+      });
+      const invoke = (reqId: string, sessionId: string) =>
+        h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          makeAgentContext({
+            sessionId,
+            agentId: 'test-agent',
+            userId: 'test-user',
+            conversationId: 'conv-1',
+            reqId,
+            source: 'routine',
+            logger: createLogger({
+              reqId,
+              writer: (line: string) => {
+                const rec = JSON.parse(line) as { msg: string; reason?: unknown };
+                logs.push({ msg: rec.msg, reason: rec.reason });
+              },
+            }),
+          }),
+          { message: { role: 'user', content: 'hi' } },
+        );
+      // Fire #1 spawns 's-1' and stays in flight (no turn end yet).
+      const first = invoke('req-r1', 's-1');
+      await vi.waitFor(async () => {
+        const r = await h.bus.call<unknown, { alive: boolean }>(
+          'session:is-alive', ctxWith({ sessionId: 's-1', reqId: 'probe' }), { sessionId: 's-1' },
+        );
+        expect(r.alive).toBe(true);
+      });
+      // Fire #2 arrives while #1 is still running.
+      const second = invoke('req-r2', 's-2');
+      await vi.waitFor(() => expect(queued.length).toBeGreaterThanOrEqual(2));
+      fireTurnEnd(h.bus, 's-1', 'req-r1');
+      fireTurnEnd(h.bus, 's-1', 'req-r2');
+      const [o1, o2] = await Promise.all([first, second]);
+      expect(o1.kind).toBe('complete');
+      expect(o2.kind).toBe('complete');
+      expect(counters.opens).toBe(1); // queued, not re-spawned
+      expect(counters.terminates).not.toContain('s-1'); // fire #1 was not cut
+      expect(logs.find((l) => l.msg === 'stale_session_respawn')).toBeUndefined();
+      expect(events.map((e) => [e.reqId, e.connectors.map((c) => c.connectorId)])).toEqual([
+        ['req-r1', ['gmail', 'linear']],
+        ['req-r2', ['gmail', 'linear']],
+      ]);
+    });
+
+    it('an overlapping ROUTINE fire into a busy session that skipped nothing fires no event', async () => {
+      const { h, counters, events } = await skipHarness(new Set(['account:gmail', 'account:linear']));
+      const invoke = (reqId: string, sessionId: string) =>
+        h.bus.call<unknown, AgentOutcome>(
+          'agent:invoke',
+          makeAgentContext({
+            sessionId, agentId: 'test-agent', userId: 'test-user', conversationId: 'conv-1', reqId,
+            source: 'routine', logger: createLogger({ reqId, writer: () => undefined }),
+          }),
+          { message: { role: 'user', content: 'hi' } },
+        );
+      const first = invoke('req-r1', 's-1');
+      await vi.waitFor(async () => {
+        const r = await h.bus.call<unknown, { alive: boolean }>(
+          'session:is-alive', ctxWith({ sessionId: 's-1', reqId: 'probe' }), { sessionId: 's-1' },
+        );
+        expect(r.alive).toBe(true);
+      });
+      const second = invoke('req-r2', 's-2');
+      await new Promise((r) => setTimeout(r, 20));
+      fireTurnEnd(h.bus, 's-1', 'req-r1');
+      fireTurnEnd(h.bus, 's-1', 'req-r2');
+      await Promise.all([first, second]);
+      expect(counters.opens).toBe(1);
+      expect(counters.terminates).not.toContain('s-1');
+      expect(events).toEqual([]);
     });
 
     it('a presence read that throws on the routed turn does not re-spawn', async () => {
