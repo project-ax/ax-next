@@ -37,6 +37,25 @@ describe('buildAuthorization', () => {
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
   });
 
+  // Slice 4 — the identity scopes ride the authorize request. They must not
+  // disturb the prompt merge: the SDK's `consent` for `offline_access` stays.
+  it('a scope carrying openid + email + offline_access: each once in the URL, and prompt keeps the SDK consent', async () => {
+    const { authorizationUrl } = await buildAuthorization({
+      metadata: meta,
+      client: { clientId: 'cid', clientSecret: undefined },
+      redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+      resource: 'https://mcp.example.com/mcp',
+      scope: 'read offline_access openid email',
+      state: 'st', allowedHosts: allow, resolver,
+    });
+    const url = new URL(authorizationUrl);
+    const scopes = url.searchParams.get('scope')!.split(' ');
+    for (const s of ['read', 'offline_access', 'openid', 'email']) {
+      expect(scopes.filter((x) => x === s)).toHaveLength(1);
+    }
+    expect(url.searchParams.getAll('prompt')).toEqual(['select_account consent']);
+  });
+
   it('produces an authorize URL with state, PKCE challenge, and resource', async () => {
     const { authorizationUrl, codeVerifier } = await buildAuthorization({
       metadata: meta,
@@ -362,6 +381,22 @@ describe('discover', () => {
     ]);
   });
 
+  // Slice 4 reads `scopes_supported` (identity scopes) and `userinfo_endpoint`
+  // (the fallback) off the discovered AS metadata, so discovery must keep them.
+  it('keeps the AS metadata\'s scopes_supported and userinfo_endpoint', async () => {
+    const mocked = discoveryFetch();
+    mocked.mockImplementationOnce(async () => new Response(JSON.stringify({
+      ...meta,
+      scopes_supported: ['openid', 'email', 'read'],
+      userinfo_endpoint: 'https://auth.example.com/userinfo',
+    }), { headers: { 'content-type': 'application/json' } }));
+    const { metadata } = await discover({
+      resourceUrl, pinnedAuthServerUrl: meta.issuer, allowedHosts: discoveryHosts, resolver,
+    });
+    expect(metadata.scopes_supported).toEqual(['openid', 'email', 'read']);
+    expect((metadata as { userinfo_endpoint?: unknown }).userinfo_endpoint).toBe('https://auth.example.com/userinfo');
+  });
+
   it('rejects metadata whose issuer differs from the discovered authorization server', async () => {
     const mocked = discoveryFetch();
     mocked.mockImplementationOnce(async () => new Response(JSON.stringify({
@@ -456,6 +491,26 @@ describe('discover', () => {
 });
 
 describe('redeemCode', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Slice 4 reads the account from the token response's `id_token`.
+  it('returns the token response\'s id_token', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      access_token: 'at', token_type: 'Bearer', id_token: 'h.p.s',
+    }), { headers: { 'content-type': 'application/json' } })));
+    const tokens = await redeemCode({
+      metadata: meta,
+      client: { clientId: 'cid', clientSecret: undefined },
+      code: 'authcode',
+      codeVerifier: 'verifier',
+      redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+      resource: 'https://mcp.example.com',
+      allowedHosts: allow,
+      resolver,
+    });
+    expect(tokens.id_token).toBe('h.p.s');
+  });
+
   it('rejects when the token endpoint host is not allowlisted', async () => {
     await expect(
       redeemCode({

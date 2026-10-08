@@ -10,6 +10,12 @@ import { isOwnClientSecretRef } from './client-secret-ref.js';
 import { NeedsReconnectError } from './resolver.js';
 import { discoverOAuthHosts, metadataUrl } from './host-discovery.js';
 import { DEFAULT_CLIENT_NAME } from './client-name.js';
+import {
+  accountFromIdToken,
+  fetchUserinfoAccount,
+  requestScopeWithIdentity,
+  userinfoEndpointOf,
+} from './identity.js';
 import type { McpOAuthStore } from './store.js';
 import {
   clientKeyOf,
@@ -132,6 +138,16 @@ export interface McpOAuthRouteDeps {
     ensureClient: typeof ensureClient;
     buildAuthorization: typeof buildAuthorization;
     redeemCode: typeof redeemCode;
+    /**
+     * Slice 4 — the guarded userinfo lookup (`identity.ts`). Optional so tests
+     * can swap it; production uses `fetchUserinfoAccount` (SSRF pre-check, no
+     * redirects, 5 s, 64 KiB). Must never throw (the callback guards anyway).
+     */
+    userinfoAccount?: (opts: {
+      endpoint: string;
+      accessToken: string;
+      allowedHosts: Set<string>;
+    }) => Promise<string | null>;
   };
   config: McpOAuthRouteConfig;
   /** `crypto.randomBytes(32).toString('hex')` in prod; deterministic in tests. */
@@ -169,6 +185,18 @@ interface OAuthSlot {
   tokenUrl?: string;
 }
 
+/**
+ * Slice 4 — the sign-in identity stored as the credential's envelope metadata.
+ * Storage-agnostic names; `@ax/connectors` reads these exact keys back from
+ * `credentials:list`. `account` is untrusted provider text, sanitized, for
+ * display only; `signedInBy` is the signer's user id; `signedInAt` is ISO 8601.
+ */
+type SignInMetadata = {
+  account: string | null;
+  signedInBy: string;
+  signedInAt: string;
+};
+
 interface ConnectorView {
   capabilities: {
     allowedHosts: string[];
@@ -201,6 +229,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   clientMetadata(req: RouteRequest, res: RouteResponse): Promise<void>;
 } {
   const { bus, store, flow, config, genState, now, pendingTtlMs } = deps;
+  const userinfoAccount = flow.userinfoAccount ?? fetchUserinfoAccount;
   const clientName = deps.clientName ?? (async () => DEFAULT_CLIENT_NAME);
   const redirectUri = `${config.publicOrigin}/api/connectors/oauth/callback`;
   const clientMetadataUrl = `${config.publicOrigin}/api/connectors/oauth/client-metadata`;
@@ -615,13 +644,20 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         logger.warn('mcp_oauth_begin_purge_failed', errFields(err));
       }
 
+      // Slice 4 — also ask for the account identity (`openid`, `email`) when
+      // the AUTHORIZATION SERVER advertises them, so the rail can say which
+      // account this agent signed in as. Authorize request + pending row only:
+      // the registration above keeps the plain scope, so a client registered
+      // before this change is not invalidated.
+      const requestScope = requestScopeWithIdentity(scope, metadata);
+
       const state = genState();
       const { authorizationUrl, codeVerifier } = await flow.buildAuthorization({
         metadata,
         client,
         redirectUri,
         resource,
-        ...(scope !== undefined ? { scope } : {}),
+        ...(requestScope !== undefined ? { scope: requestScope } : {}),
         state,
         allowedHosts,
       });
@@ -644,7 +680,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         clientId: client.clientId,
         ...(client.clientSecret !== undefined ? { clientSecret: client.clientSecret } : {}),
         resource,
-        scope,
+        scope: requestScope,
         mode,
         createdAt: now(),
       };
@@ -915,6 +951,32 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       ...(client.clientSecret !== undefined ? { clientSecret: client.clientSecret } : {}),
     };
 
+    // Slice 4 — which account did the agent sign in as? Best effort and display
+    // only: the id_token first, then (only without a usable one) one guarded
+    // userinfo GET. Any failure is `account: null`; it never changes the outcome
+    // or the reason, and nothing about it is logged (token or account).
+    let account: string | null = null;
+    try {
+      account = accountFromIdToken(tokens.id_token);
+      const userinfoEndpoint = account === null ? userinfoEndpointOf(metadata) : undefined;
+      if (userinfoEndpoint !== undefined) {
+        account = await userinfoAccount({
+          endpoint: userinfoEndpoint,
+          accessToken: tokens.access_token,
+          allowedHosts,
+        });
+      }
+    } catch {
+      account = null;
+    }
+    // Envelope metadata only — never inside the token blob. The vault keeps it
+    // across a refresh (the resolver returns no metadata of its own).
+    const metadataOut: SignInMetadata = {
+      account,
+      signedInBy: pending.userId,
+      signedInAt: new Date(now()).toISOString(),
+    };
+
     // The vault write. A throw is a SERVER/DB fault (NOT "OAuth failed") → log
     // it so the operator can tell a storage outage from a provider rejection.
     // Every sign-in belongs to an agent, so the token is always stored ON the
@@ -931,6 +993,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
           kind: string;
           payload: Uint8Array;
           expiresAt?: number;
+          metadata: SignInMetadata;
         },
         void
       >('credentials:set', ctxFor(pending.userId), {
@@ -940,6 +1003,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         kind: 'mcp-oauth',
         payload: encodeTokenBlob(blob),
         ...(blob.expiresAt !== undefined ? { expiresAt: blob.expiresAt } : {}),
+        metadata: metadataOut,
       });
     } catch (err) {
       logger.error('mcp_oauth_callback_failed', {

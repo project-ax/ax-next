@@ -387,6 +387,63 @@ describe('mcp-oauth begin route', () => {
     expect(store.putPending).toHaveBeenCalledWith(expect.objectContaining({ scope: expected }));
   });
 
+  // Slice 4 — ask for the account identity too (openid/email) when the
+  // AUTHORIZATION SERVER supports it. Authorize request + pending row only:
+  // registration keeps today's scope so an existing client stays valid.
+  describe('identity scopes (slice 4)', () => {
+    async function beginWith(scopesSupported: string[] | undefined, slotScopes: string[] = ['read', 'write']) {
+      const flow = fakeFlow({ discover: vi.fn(async () => ({
+        authServerUrl: 'https://auth.example.com',
+        metadata: {
+          issuer: 'https://auth.example.com',
+          authorization_endpoint: 'https://auth.example.com/authorize',
+          token_endpoint: 'https://auth.example.com/token',
+          response_types_supported: ['code'],
+          ...(scopesSupported ? { scopes_supported: scopesSupported } : {}),
+        },
+      })) });
+      const { deps, store } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'connectors:get': () => connectorFixture({ credentials: [{
+          slot: 'oauth-main', kind: 'oauth', server: 'srv', scopes: slotScopes,
+        }] }),
+      }, { flow });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }), res as never,
+      );
+      expect(state.status).toBe(200);
+      const scopeOf = (fn: unknown) =>
+        ((fn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as { scope?: string }).scope;
+      return {
+        registration: scopeOf(flow.ensureClient),
+        authorize: scopeOf(flow.buildAuthorization),
+        pending: scopeOf(store.putPending),
+      };
+    }
+
+    it('scopes_supported with openid + email → the authorize scope and pending row carry both, once each', async () => {
+      const out = await beginWith(['openid', 'email', 'read', 'write'], ['read', 'openid', 'write']);
+      expect(out.authorize).toBe('read openid write email');
+      expect(out.authorize!.split(' ').filter((s) => s === 'openid')).toHaveLength(1);
+      expect(out.pending).toBe(out.authorize);
+    });
+
+    it('the registration scope is unchanged', async () => {
+      const out = await beginWith(['openid', 'email', 'read', 'write']);
+      expect(out.registration).toBe('read write');
+      expect(out.authorize).toBe('read write openid email');
+    });
+
+    it('without openid in scopes_supported → unchanged everywhere', async () => {
+      const out = await beginWith(['read', 'write', 'email']);
+      expect(out).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write' });
+      const none = await beginWith(undefined);
+      expect(none).toEqual({ registration: 'read write', authorize: 'read write', pending: 'read write' });
+    });
+  });
+
   it('1. happy path → 200 { authorizationUrl }; putPending(state,userId) called; the shared client row is never written', async () => {
     // The real store has no putClient any more. Plant one on the double so that a
     // stray begin -> putClient call (the TASK-696 bug) is observable, not a TypeError
@@ -1498,6 +1555,129 @@ describe('mcp-oauth callback route', () => {
     expect(state.redirectUrl).toBe(
       'https://app.example.com/settings/connectors?connector=conn-1&oauth=success',
     );
+  });
+
+  // --- Slice 4: "Signed in as" — identity stored as credential metadata ---
+  describe('sign-in identity metadata (slice 4)', () => {
+    const b64url = (s: string) => Buffer.from(s, 'utf8').toString('base64url');
+    const idToken = (claims: unknown) => `${b64url('{"alg":"RS256"}')}.${b64url(JSON.stringify(claims))}.sig`;
+    const baseMetadata = {
+      issuer: 'https://auth.example.com',
+      authorization_endpoint: 'https://auth.example.com/authorize',
+      token_endpoint: 'https://auth.example.com/token',
+      response_types_supported: ['code'],
+    };
+
+    async function runIdentity(opts: {
+      tokens?: Record<string, unknown>;
+      userinfoEndpoint?: string;
+      userinfoAccount?: ReturnType<typeof vi.fn>;
+    }) {
+      const setArgs: Array<Record<string, unknown>> = [];
+      const userinfoAccount = opts.userinfoAccount ?? vi.fn(async () => null);
+      const flow = fakeFlow({
+        discover: vi.fn(async () => ({
+          authServerUrl: 'https://auth.example.com',
+          metadata: {
+            ...baseMetadata,
+            ...(opts.userinfoEndpoint ? { userinfo_endpoint: opts.userinfoEndpoint } : {}),
+          },
+        })),
+        redeemCode: vi.fn(async () => ({
+          access_token: 'at-123',
+          refresh_token: 'rt-456',
+          expires_in: 3600,
+          token_type: 'Bearer',
+          ...opts.tokens,
+        })),
+        userinfoAccount,
+      } as never);
+      const { deps, logger } = makeCbDeps(
+        {
+          'auth:require-user': () => OK_USER,
+          'connectors:get': () => connectorFixture(),
+          'credentials:set': (input) => { setArgs.push(input as Record<string, unknown>); },
+        },
+        { store: storeWithPending(pending), flow },
+      );
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).callback(
+        fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE0' } }),
+        res as never,
+      );
+      return { setArgs, state, logger, userinfoAccount };
+    }
+
+    const SIGNED_AT = new Date(1_000_000).toISOString();
+
+    it('an id_token email → metadata.account; signedInBy = the signer, signedInAt = now() as ISO 8601; no userinfo call', async () => {
+      const out = await runIdentity({
+        tokens: { id_token: idToken({ email: 'alice@example.com', sub: '1' }) },
+        userinfoEndpoint: 'https://auth.example.com/userinfo',
+      });
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+      expect(out.setArgs).toHaveLength(1);
+      expect(out.setArgs[0]!.metadata).toEqual({
+        account: 'alice@example.com',
+        signedInBy: 'user-1',
+        signedInAt: SIGNED_AT,
+      });
+      expect(out.userinfoAccount).not.toHaveBeenCalled();
+    });
+
+    it('no id_token + a userinfo endpoint → one guarded userinfo lookup with the connector allowlist; its account is stored', async () => {
+      const userinfoAccount = vi.fn(async (_opts: unknown) => 'bob@example.com');
+      const out = await runIdentity({ userinfoEndpoint: 'https://auth.example.com/userinfo', userinfoAccount });
+      expect(userinfoAccount).toHaveBeenCalledTimes(1);
+      const arg = userinfoAccount.mock.calls[0]![0] as { endpoint: string; accessToken: string; allowedHosts: Set<string> };
+      expect(arg.endpoint).toBe('https://auth.example.com/userinfo');
+      expect(arg.accessToken).toBe('at-123');
+      expect([...arg.allowedHosts].sort()).toEqual(['auth.example.com', 'mcp.example.com']);
+      expect(out.setArgs[0]!.metadata).toEqual({ account: 'bob@example.com', signedInBy: 'user-1', signedInAt: SIGNED_AT });
+      expect(out.state.redirectUrl).toContain('oauth=success');
+    });
+
+    it('a malformed id_token falls back to userinfo', async () => {
+      const userinfoAccount = vi.fn(async () => 'bob@example.com');
+      const out = await runIdentity({
+        tokens: { id_token: 'not-a-jwt' },
+        userinfoEndpoint: 'https://auth.example.com/userinfo',
+        userinfoAccount,
+      });
+      expect(userinfoAccount).toHaveBeenCalledTimes(1);
+      expect((out.setArgs[0]!.metadata as { account: unknown }).account).toBe('bob@example.com');
+    });
+
+    it('neither an id_token nor a userinfo endpoint → account: null, still signedInBy/signedInAt; no lookup', async () => {
+      const out = await runIdentity({});
+      expect(out.userinfoAccount).not.toHaveBeenCalled();
+      expect(out.setArgs[0]!.metadata).toEqual({ account: null, signedInBy: 'user-1', signedInAt: SIGNED_AT });
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+    });
+
+    it('an identity lookup that THROWS never changes the outcome: success redirect, account null, no reason', async () => {
+      const userinfoAccount = vi.fn(async () => { throw new Error('boom at-123'); });
+      const out = await runIdentity({ userinfoEndpoint: 'https://auth.example.com/userinfo', userinfoAccount });
+      expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success');
+      expect((out.setArgs[0]!.metadata as { account: unknown }).account).toBeNull();
+      // Nothing about the identity step (or the token) reaches the logs.
+      expect(JSON.stringify([out.logger.warn.mock.calls, out.logger.error.mock.calls])).not.toContain('at-123');
+    });
+
+    it('a hostile id_token email is stored stripped and capped', async () => {
+      const out = await runIdentity({
+        tokens: { id_token: idToken({ email: `‮<script>x</script>\n${'a'.repeat(2000)}` }) },
+      });
+      const account = (out.setArgs[0]!.metadata as { account: string }).account;
+      expect([...account]).toHaveLength(254);
+      expect(account).not.toMatch(/[‮\n]/);
+    });
+
+    it('the identity is NOT written into the token blob (envelope metadata only)', async () => {
+      const out = await runIdentity({ tokens: { id_token: idToken({ email: 'alice@example.com' }) } });
+      const blob = decodeTokenBlob(out.setArgs[0]!.payload as Uint8Array) as unknown as Record<string, unknown>;
+      expect(JSON.stringify(blob)).not.toContain('alice@example.com');
+    });
   });
 
   // --- TASK-696: redeem AS, and record, the client the authorization started with ---

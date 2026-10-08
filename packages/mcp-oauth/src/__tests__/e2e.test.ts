@@ -330,6 +330,64 @@ describe('@ax/mcp-oauth e2e canary — sharee resolves owner agent-bound token +
   });
 });
 
+// Slice 4 — "Signed in as" lives in the credential's ENVELOPE metadata. A lazy
+// refresh re-stores the token through the REAL vault; the label must survive it
+// (the vault keeps `env.metadata` when the resolver returns none of its own).
+describe('@ax/mcp-oauth e2e canary — the sign-in identity survives a refresh (slice 4)', () => {
+  it('envelope metadata {account, signedInBy, signedInAt} is unchanged after a refresh re-store', async () => {
+    const { fakeRefresh, recorder } = makeFakeRefresh();
+    const { h } = await bootStack({ testOverrides: { refresh: fakeRefresh } });
+    const signIn = {
+      account: 'alice@example.com',
+      signedInBy: 'owner',
+      signedInAt: '2026-10-07T12:00:00.000Z',
+    };
+
+    await h.bus.call('credentials:set', h.ctx({ agentId: 'agent-A', userId: 'owner' }), {
+      scope: 'agent',
+      ownerId: 'agent-A',
+      ref: 'account:test',
+      kind: 'mcp-oauth',
+      payload: encodeTokenBlob({
+        accessToken: 'stale-AT',
+        refreshToken: 'rt1',
+        tokenType: 'Bearer',
+        expiresAt: PAST,
+        scope: 'read',
+        resource: 'https://mcp.example.com',
+        authServerUrl: 'https://auth.example.com',
+        tokenEndpoint: 'https://auth.example.com/token',
+        clientKey: CLIENT_KEY,
+        clientId: 'issuing-cid',
+      }),
+      expiresAt: PAST,
+      metadata: signIn,
+    });
+
+    const resolved = await h.bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      h.ctx({ agentId: 'agent-A', userId: 'owner' }),
+      { ref: 'account:test', userId: 'owner' },
+    );
+    expect(resolved).toBe('fresh-AT');
+    expect(recorder.calls).toBe(1); // the refresh really ran and re-stored
+
+    const got = await h.bus.call<
+      { scope: 'agent'; ownerId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', h.ctx(), { scope: 'agent', ownerId: 'agent-A', ref: 'account:test' });
+    const plaintext = await h.bus.call<{ ciphertext: Uint8Array }, { plaintext: string }>(
+      'credentials:envelope-decrypt',
+      h.ctx(),
+      { ciphertext: got.blob! },
+    );
+    const env = JSON.parse(plaintext.plaintext) as { payloadB64: string; metadata?: unknown };
+    const stored = decodeTokenBlob(new Uint8Array(Buffer.from(env.payloadB64, 'base64')));
+    expect(stored.accessToken).toBe('fresh-AT'); // this IS the re-stored row
+    expect(env.metadata).toEqual(signIn);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // OPTIONAL begin→callback half (step 6). Drives the REAL begin/callback route
 // handlers (mounted by the real plugin via mountRoutes:true) end-to-end against
@@ -463,6 +521,11 @@ describe('@ax/mcp-oauth e2e canary — begin→callback lands an agent-bound blo
         expires_in: 3600,
         token_type: 'Bearer',
         scope: 'read',
+        // Slice 4 — the account the agent signed in as (signature unchecked;
+        // display only).
+        id_token: `${Buffer.from('{}').toString('base64url')}.${Buffer.from(
+          JSON.stringify({ email: 'owner@example.com' }),
+        ).toString('base64url')}.sig`,
       })) as never,
     };
 
@@ -532,6 +595,17 @@ describe('@ax/mcp-oauth e2e canary — begin→callback lands an agent-bound blo
       { ref: 'account:conn-1', userId: 'carol' },
     );
     expect(resolved).toBe('callback-AT');
+
+    // Slice 4 — the real vault holds the sign-in identity as envelope metadata,
+    // and credentials:list hands those exact keys back.
+    const listed = await h.bus.call<
+      { scope: 'agent'; ownerId: string },
+      { credentials: Array<{ ref: string; metadata?: Record<string, unknown> }> }
+    >('credentials:list', h.ctx({ agentId: 'agent-A', userId: 'owner' }), { scope: 'agent', ownerId: 'agent-A' });
+    const row = listed.credentials.find((c) => c.ref === 'account:conn-1');
+    expect(row?.metadata).toMatchObject({ account: 'owner@example.com' });
+    expect(typeof row?.metadata?.signedInBy).toBe('string');
+    expect(Number.isNaN(Date.parse(String(row?.metadata?.signedInAt)))).toBe(false);
   });
 });
 
