@@ -32,7 +32,6 @@ import {
   CircleAlert,
   CircleCheck,
   KeyRound,
-  Loader2,
   LogIn,
   Trash2,
 } from 'lucide-react';
@@ -41,6 +40,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Tooltip,
@@ -636,9 +636,9 @@ function ToolRow({
         {tool.title}
       </span>
       {busy && (
-        <Loader2
+        <Spinner
           aria-hidden="true"
-          className="size-3.5 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none"
+          className="size-3.5 shrink-0 text-muted-foreground"
         />
       )}
       <ToggleGroup

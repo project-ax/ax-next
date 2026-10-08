@@ -59,12 +59,12 @@ import {
   Download,
   FileText,
   Folder,
-  Loader2,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
 import {
   Breadcrumb,
@@ -798,7 +798,7 @@ function FileViewer({
         </Alert>
       ) : loading || file === null ? (
         <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-          <Loader2 size={13} className="animate-spin" />
+          <Spinner aria-hidden="true" className="size-3.5" />
           Opening&hellip;
         </div>
       ) : (

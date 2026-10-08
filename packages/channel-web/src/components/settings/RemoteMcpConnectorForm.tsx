@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, Loader2 } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import {
   createConnector,
   patchConnector,
@@ -672,7 +673,7 @@ export function RemoteMcpConnectorForm({
                     role="status"
                     className="flex items-center gap-2 text-sm text-muted-foreground"
                   >
-                    <Loader2 className="size-4 animate-spin motion-reduce:animate-none" />
+                    <Spinner aria-hidden="true" />
                     Checking how this server signs in…
                   </p>
                 )}
