@@ -117,6 +117,18 @@ describe('purgeUserAccountCredentials (unit)', () => {
     });
   });
 
+  // The CLI prints the chat reply on stdout, and a boot ctx's default logger
+  // writes there too: a fresh vault (nothing to purge) must stay silent, or
+  // every first CLI run starts its output with a JSON log line.
+  it('a purge that removed nothing writes the marker but logs nothing', async () => {
+    const store = new Map<string, Uint8Array>();
+    const { ctx, lines } = recordingCtx();
+    const out = await purgeUserAccountCredentials(storageBus(store), ctx, async () => ({ purged: 0 }));
+    expect(out).toEqual({ ran: true, purged: 0 });
+    expect(store.get(USER_ACCOUNT_PURGE_MARKER_KEY)?.length).toBeGreaterThan(0);
+    expect(lines).toEqual([]);
+  });
+
   it('is a no-op once the marker is set: the purge is not called', async () => {
     const store = new Map<string, Uint8Array>([[USER_ACCOUNT_PURGE_MARKER_KEY, enc('2026-10-08')]]);
     let called = 0;

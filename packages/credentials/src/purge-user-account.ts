@@ -25,7 +25,7 @@ export const USER_ACCOUNT_PURGE_MARKER_KEY =
  *     retries. Rows tombstoned before a midway failure stay tombstoned.
  *
  * Logs counts only — never a ref, an owner, or the error text (which can name
- * either).
+ * either) — and only when it removed something.
  */
 export async function purgeUserAccountCredentials(
   bus: HookBus,
@@ -49,7 +49,9 @@ export async function purgeUserAccountCredentials(
       key: USER_ACCOUNT_PURGE_MARKER_KEY,
       value: new TextEncoder().encode(new Date().toISOString()),
     });
-    ctx.logger.info('credentials_user_account_purged', { purged });
+    // Silent when there was nothing to remove: the CLI's boot ctx logs to
+    // stdout, which is also where it prints the chat reply.
+    if (purged > 0) ctx.logger.info('credentials_user_account_purged', { purged });
     return { ran: true, purged };
   } catch (err) {
     ctx.logger.warn('credentials_user_account_purge_failed', {
