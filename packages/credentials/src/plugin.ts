@@ -326,14 +326,15 @@ export interface CredentialsPurgeByOwnerOutput {
  *
  * With `connectorId`: `account:<id>` and `account:<id>:<anything>` only — the
  * trailing `:` keeps `gmail` from matching `gmail2`. Without it: every
- * `account:` row. Only in the listed `scopes`, each one of 'user' | 'agent' —
- * 'global' is refused (invalid-payload): no caller needs it, and a company
- * key is a connector's OWN key, purged by ref via `credentials:delete`. Other
- * ref namespaces are never touched. Used when a shared connector is deleted
- * (agent scope), and once at boot with `{ scopes: ['user'] }` to remove every
- * person-level connector credential (purge-user-account.ts) — connector
- * credentials live on the agent or globally only, and credentials:set refuses
- * them at user scope. 'user' stays accepted so that purge can run.
+ * `account:` row. Agent scope only (SIGNINS-7): `scopes` must be `['agent']`,
+ * and anything else — 'user' or 'global' — is refused (invalid-payload).
+ * Connector credentials live on agents or globally; a company key is a
+ * connector's OWN key, purged by ref via `credentials:delete`. Other ref
+ * namespaces are never touched. Used when a shared connector is deleted.
+ *
+ * The one-time boot purge of person-level connector credentials
+ * (purge-user-account.ts) needs user scope; it calls this plugin's internal
+ * function directly, so no hook caller can reach a user-scope purge.
  *
  * Boundary review: alternate impl = a KMS/vault backend deleting by tag; no
  * backend vocabulary in the payload.
@@ -341,8 +342,8 @@ export interface CredentialsPurgeByOwnerOutput {
 export interface CredentialsPurgeAccountInput {
   /** Omit to purge EVERY `account:` row in `scopes`. */
   connectorId?: string;
-  /** Non-empty; each one of 'user' | 'agent' ('global' is rejected). */
-  scopes: Array<Exclude<CredentialScope, 'global'>>;
+  /** Non-empty, and only 'agent' (SIGNINS-7) — 'user' and 'global' are rejected. */
+  scopes: Array<'agent'>;
 }
 
 export interface CredentialsPurgeAccountOutput {
@@ -1191,12 +1192,18 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         },
       );
 
-      async function purgeAccount(
+      const invalidPurge = (message: string) =>
+        new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME, message });
+
+      /**
+       * The purge itself, for `scopes` of 'user' and/or 'agent'. INTERNAL: the
+       * hook below accepts only 'agent'; 'user' is reachable only from this
+       * plugin's own boot purge (purge-user-account.ts).
+       */
+      async function purgeAccountRows(
         ctx: AgentContext,
-        input: CredentialsPurgeAccountInput,
+        input: { connectorId?: string; scopes: Array<'user' | 'agent'> },
       ): Promise<CredentialsPurgeAccountOutput> {
-        const invalidPurge = (message: string) =>
-          new PluginError({ code: 'invalid-payload', plugin: PLUGIN_NAME, message });
         if (!Array.isArray(input.scopes) || input.scopes.length === 0) {
           throw invalidPurge('scopes must be a non-empty array');
         }
@@ -1246,10 +1253,24 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         return { purged };
       }
 
+      // SIGNINS-7 — the hook purges agent scope only. Checked before any
+      // read, so a 'user' or 'global' request touches nothing.
       bus.registerService<CredentialsPurgeAccountInput, CredentialsPurgeAccountOutput>(
         'credentials:purge-account',
         PLUGIN_NAME,
-        purgeAccount,
+        async (ctx, input) => {
+          const scopes: unknown = (input as { scopes?: unknown } | null)?.scopes;
+          if (!Array.isArray(scopes) || scopes.length === 0) {
+            throw invalidPurge('scopes must be a non-empty array');
+          }
+          if (!scopes.every((s) => s === 'agent')) {
+            throw invalidPurge("scopes may only contain 'agent'");
+          }
+          return purgeAccountRows(ctx, {
+            ...(input.connectorId !== undefined ? { connectorId: input.connectorId } : {}),
+            scopes: ['agent'],
+          });
+        },
       );
 
       // One-shot wipe of pre-redesign credential rows. Runs on every boot but
@@ -1280,7 +1301,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           agentId: PLUGIN_NAME,
           userId: 'system',
         }),
-        (purgeCtx) => purgeAccount(purgeCtx, { scopes: ['user'] }),
+        (purgeCtx) => purgeAccountRows(purgeCtx, { scopes: ['user'] }),
       );
     },
   };

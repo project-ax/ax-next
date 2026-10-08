@@ -11,9 +11,11 @@ export const USER_ACCOUNT_PURGE_MARKER_KEY =
  * ignores those rows and `credentials:set` refuses new ones — this removes the
  * ones a vault written before the change still holds.
  *
- * `purge` is the plugin's own `credentials:purge-account` with
- * `{ scopes: ['user'] }` (every `account:` row at user scope, other ref
- * namespaces and other scopes untouched).
+ * `purge` is the plugin's internal purge function (the one behind
+ * `credentials:purge-account`) with `{ scopes: ['user'] }` — every `account:`
+ * row at user scope, other ref namespaces and other scopes untouched. The hook
+ * itself accepts agent scope only, so this boot step is the one user-scope
+ * caller there is.
  *
  * Marker-guarded like `wipePreRedesignCredentials`, and it fails toward
  * keeping data without ever failing the boot:
@@ -56,6 +58,9 @@ export async function purgeUserAccountCredentials(
   } catch (err) {
     ctx.logger.warn('credentials_user_account_purge_failed', {
       code: err instanceof PluginError ? err.code : 'unknown',
+      // The constructor name only (e.g. `TypeError`) — never the message,
+      // which can name a ref or an owner.
+      name: err instanceof Error ? err.constructor.name : typeof err,
     });
     return { ran: false, purged: 0 };
   }

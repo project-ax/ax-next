@@ -167,12 +167,15 @@ describe('purgeUserAccountCredentials (unit)', () => {
     const bus = storageBus(store);
     const { ctx, lines } = recordingCtx();
     const out = await purgeUserAccountCredentials(bus, ctx, async () => {
-      throw new Error('store down: user:bob account:linear');
+      throw new TypeError('store down: user:bob account:linear');
     });
     expect(out).toEqual({ ran: false, purged: 0 });
     expect(store.has(USER_ACCOUNT_PURGE_MARKER_KEY)).toBe(false);
     const warn = lines.find((l) => l.level === 'warn');
     expect(warn?.msg).toBe('credentials_user_account_purge_failed');
+    // SIGNINS-7 — the error's constructor name beside its code, so an
+    // operator can tell a store fault from a bug; never the message.
+    expect(warn?.bindings).toEqual({ code: 'unknown', name: 'TypeError' });
     expect(JSON.stringify(lines)).not.toContain('bob');
 
     let retried = 0;

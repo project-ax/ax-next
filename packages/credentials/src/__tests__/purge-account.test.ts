@@ -116,16 +116,22 @@ describe('credentials:purge-account', () => {
     ]);
   });
 
-  it('with no connectorId purges every account: row in the scopes, nothing else', async () => {
+  it('with no connectorId purges every account: row at agent scope, nothing else', async () => {
     const { bus } = await makeHarness();
-    await put(bus, 'user', 'u1', 'account:a');
-    await put(bus, 'user', 'u2', 'account:b:SLOT');
-    await put(bus, 'user', 'u1', 'skill:x');
-    await put(bus, 'user', 'u1', 'routine:r');
     await put(bus, 'agent', 'agt1', 'account:a');
-    const out = await bus.call('credentials:purge-account', ctx(), { scopes: ['user'] });
+    await put(bus, 'agent', 'agt2', 'account:b:SLOT');
+    await put(bus, 'agent', 'agt1', 'skill:x');
+    await put(bus, 'agent', 'agt1', 'routine:r');
+    await put(bus, 'user', 'u1', 'account:a');
+    await put(bus, 'global', null, 'account:a');
+    const out = await bus.call('credentials:purge-account', ctx(), { scopes: ['agent'] });
     expect(out).toEqual({ purged: 2 });
-    expect(await refs(bus)).toEqual(['agent:agt1:account:a', 'user:u1:routine:r', 'user:u1:skill:x']);
+    expect(await refs(bus)).toEqual([
+      'agent:agt1:routine:r',
+      'agent:agt1:skill:x',
+      'global:_:account:a',
+      'user:u1:account:a',
+    ]);
   });
 
   it('does not count rows that are already tombstoned', async () => {
@@ -206,10 +212,17 @@ describe('credentials:purge-account', () => {
     [{ connectorId: 'gmail', scopes: ['global'] }],
     [{ connectorId: 'gmail', scopes: ['agent', 'global'] }],
     [{ scopes: ['global'] }],
+    // SIGNINS-7 — 'user' is refused too: the hook purges agent scope only.
+    // (The one-time boot purge of person-level rows calls the plugin's
+    // internal function; no hook caller can reach user scope.)
+    [{ connectorId: 'gmail', scopes: ['user'] }],
+    [{ connectorId: 'gmail', scopes: ['agent', 'user'] }],
+    [{ scopes: ['user'] }],
   ])('rejects invalid input %j without purging anything', async (input) => {
     const { bus } = await makeHarness();
     await put(bus, 'agent', 'agt1', 'account:gmail');
+    await put(bus, 'user', 'u1', 'account:gmail');
     await expect(bus.call('credentials:purge-account', ctx(), input)).rejects.toMatchObject({ code: 'invalid-payload' });
-    expect(await refs(bus)).toEqual(['agent:agt1:account:gmail']);
+    expect(await refs(bus)).toEqual(['agent:agt1:account:gmail', 'user:u1:account:gmail']);
   });
 });
