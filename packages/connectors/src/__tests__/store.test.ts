@@ -306,9 +306,11 @@ describe('createConnectorStore', () => {
     await store.upsert({ ...base, userId: 'owner' });
     expect(await store.getSoleLiveById('owner', 'linear')).toMatchObject({ ownerUserId: 'owner', connector: { canEdit: true } });
     expect(await store.getSoleLiveById('member', 'linear')).toMatchObject({ ownerUserId: 'owner', connector: { canEdit: false } });
-    // The attack shape: a second live definition with the same id (only a
-    // legacy duplicate can still produce one). Mallory resolves her own, the
-    // others resolve nothing — so the id is ambiguous for EVERYONE.
+    // The attack shape: a second live definition with the same id (legacy
+    // data, or a concurrent create race — `requireUniqueId` is
+    // check-then-insert). Mallory resolves her own, the others resolve
+    // nothing — so the id is ambiguous for EVERYONE, and fails closed until
+    // an admin deletes one.
     await store.upsert({ ...base, userId: 'mallory', name: 'Mine' });
     expect(await store.getAvailableById('mallory', 'linear')).toMatchObject({ ownerUserId: 'mallory' });
     expect(await store.getSoleLiveById('mallory', 'linear')).toBeNull();

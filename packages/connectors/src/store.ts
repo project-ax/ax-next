@@ -203,8 +203,10 @@ function rowToSummary(
 
 /**
  * Prefer the caller's definition. An id with more than one live row is a
- * legacy duplicate that nothing resolves (neither the agent store nor
- * non-owners); it fails closed until an admin deletes one.
+ * duplicate that nothing resolves (neither the agent store nor non-owners);
+ * it fails closed until an admin deletes one. A duplicate is legacy data or
+ * the loser of a concurrent create race (`requireUniqueId` is
+ * check-then-insert, with no unique index behind it — a follow-up).
  */
 function selectAvailableRow(rows: StoredConnectorRow[], userId: string): StoredConnectorRow | null {
   return rows.find((row) => row.owner_user_id === userId) ??
@@ -331,7 +333,8 @@ export interface ConnectorStore {
    * exists, and it is the row `getAvailableById` picks). This is "the
    * connector every member of a team agent sees under this id": the only
    * connector a credential stored ON an agent can belong to. Null otherwise
-   * (no live row, or two or more — a legacy duplicate).
+   * (no live row, or two or more — a duplicate: legacy data or a concurrent
+   * create race; it fails closed until an admin deletes one).
    */
   getSoleLiveById(userId: string, connectorId: string): Promise<AvailableConnector | null>;
   /**
@@ -410,9 +413,9 @@ export function createConnectorStore(
         .execute();
       // `availableConnectors` returns every live row (any owner), so this is
       // the complete set of live rows for the id.
+      // One row is exactly the row `getAvailableById` would pick too.
       if (rows.length !== 1) return null;
-      const picked = selectAvailableRow(rows, userId);
-      if (picked === null || picked !== rows[0]) return null;
+      const picked = rows[0]!;
       return {
         connector: { ...rowToConnector(picked), canEdit: picked.owner_user_id === userId },
         ownerUserId: picked.owner_user_id,
