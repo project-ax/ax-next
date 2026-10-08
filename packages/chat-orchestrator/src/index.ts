@@ -17,3 +17,7 @@ export { KNOWN_PROVIDERS, type KnownProvider } from './orchestrator.js';
 // where the rail's own copy lives) can run it against the other two copies. A
 // pure function over a capabilities literal; no bus, no state.
 export { connectorCredentialSlots } from './connector-union.js';
+// Slice 6 — the `chat:connectors-skipped` payload builder, exported so
+// @ax/routines' contract test can feed the producer's REAL output into its
+// consumer. A pure function over the skipped list; no bus, no state.
+export { connectorsSkippedPayload } from './connector-union.js';

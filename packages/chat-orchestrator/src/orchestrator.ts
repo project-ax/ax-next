@@ -2311,6 +2311,13 @@ export function createOrchestrator(
             // registration. Reopen the durable conversation after restart;
             // never send a turn through an unowned credential-proxy session.
             const hostSessionMissing = keepAlive && !warmSessions.has(candidate);
+            // Slice 6 — a ROUTINE turn never reuses a warm session: it always
+            // spawns fresh, so its connectors are assembled (and any it goes
+            // without are skipped and announced via chat:connectors-skipped)
+            // for THIS run. A reused session assembles nothing, so a re-fire
+            // inside the keepAlive window would record no warning and clear
+            // the last one. Retired like any other can't-reuse session.
+            const routineTurn = ctx.source === 'routine';
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             let rotationFailed = rotationFailedSessions.has(candidate);
@@ -2323,10 +2330,17 @@ export function createOrchestrator(
             const connectorsChanged =
               connectorDeletedSessions.has(candidate) ||
               connectorSelectionChanged(candidate, agent) ||
-              (!(skillsDirty || augmentStale || hostSessionMissing || rotationFailed) &&
+              (!(
+                routineTurn ||
+                skillsDirty ||
+                augmentStale ||
+                hostSessionMissing ||
+                rotationFailed
+              ) &&
                 (await foldedConnectorsChanged(ctx, candidate, agent)));
             const connectorSignedIn =
               !(
+                routineTurn ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -2339,6 +2353,7 @@ export function createOrchestrator(
             // proxy session anyway. A failure retires it (secure direction).
             if (
               !(
+                routineTurn ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -2351,6 +2366,7 @@ export function createOrchestrator(
               rotationFailed = true;
             }
             if (
+              routineTurn ||
               skillsDirty ||
               augmentStale ||
               hostSessionMissing ||
@@ -2378,23 +2394,27 @@ export function createOrchestrator(
               // TASK-811: and when a connector was attached to or detached from
               // the agent mid-chat. The fresh spawn folds the new set.
               //
+              // Slice 6: and on every ROUTINE turn (see routineTurn above).
+              //
               // TASK-833: and when a connector it folded was deleted or edited.
               // Its proxy session is closed below (TASK-871: directly, not only
               // via terminate), so a deleted connector's key stops being
               // substituted no later than this turn.
               ctx.logger.info('stale_session_respawn', {
                 sessionId: candidate,
-                reason: hostSessionMissing
-                  ? 'host-session-lost'
-                  : skillsDirty
-                    ? 'skills-proposed'
-                    : augmentStale
-                      ? 'system-prompt-augment-changed'
-                      : rotationFailed
-                        ? 'credential-rotation-failed'
-                        : connectorsChanged
-                          ? 'connectors-changed'
-                          : 'connector-signed-in',
+                reason: routineTurn
+                  ? 'routine-turn'
+                  : hostSessionMissing
+                    ? 'host-session-lost'
+                    : skillsDirty
+                      ? 'skills-proposed'
+                      : augmentStale
+                        ? 'system-prompt-augment-changed'
+                        : rotationFailed
+                          ? 'credential-rotation-failed'
+                          : connectorsChanged
+                            ? 'connectors-changed'
+                            : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -3137,8 +3157,9 @@ export function createOrchestrator(
     // without a connector whose sign-in needs doing again (status-batch's
     // marker; any fault keeps it, today's behaviour). An interactive chat
     // keeps failing with connector-needs-reconnect: that error is what tells
-    // the person to sign in again. @ax/decisions' replay also stamps
-    // source:'routine' — intended: the rule is "any turn nobody is watching".
+    // the person to sign in again. (@ax/decisions' replay also stamps
+    // source:'routine', but it calls `tool:execute:<name>` directly and never
+    // reaches agent:invoke, so it never gets here.)
     let connectorSignIn = await partitionConnectorsBySignIn(bus, ctx, allConnectors);
     if (ctx.source === 'routine') {
       connectorSignIn = await skipConnectorsNeedingReconnect(
@@ -3157,8 +3178,9 @@ export function createOrchestrator(
       // routine can record "Gmail isn't signed in on Bob, so this run went
       // without it." Observation only. Each subscriber is bounded by
       // connectorsSkippedSubscriberTimeoutMs (2 s) and a throwing subscriber
-      // is isolated by the bus, so no subscriber can fail or hang the turn. Awaited (bounded) so a subscriber has seen it
-      // before the turn can end. Payload: ids, labels, reasons — never refs.
+      // is isolated by the bus, so no subscriber can fail or hang the turn.
+      // Awaited (bounded) so a subscriber has seen it before the turn can
+      // end. Payload: ids, labels, reasons — never refs.
       try {
         await fireChatEvent<ConnectorsSkippedPayload>(
           'chat:connectors-skipped',
@@ -3543,8 +3565,9 @@ export function createOrchestrator(
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
       // Only not-signed-in skips carry refs: a needs-reconnect skip (routine
       // turns, slice 6) has a row, so re-asking presence would answer yes and
-      // retire the session on every turn. Latent: a kept-warm ROUTINE session
-      // would thus not re-spawn after a re-sign-in (routines always spawn fresh).
+      // retire the session on every turn. Harmless: only a routine turn makes
+      // a needs-reconnect skip, and a routine turn never reuses a warm session
+      // (routing retires it — see routineTurn), so it never needs that re-ask.
       const skippedRefs = [...new Set(connectorSignIn.skipped.flatMap((s) => s.refs))];
       if (skippedRefs.length > 0) {
         skippedConnectorRefsBySession.set(sessionId, skippedRefs);

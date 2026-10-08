@@ -86,7 +86,7 @@
    - move any in `needsReconnect` to skipped with `reason:'needs-reconnect'`;
    - add them to the system-prompt skip line too (the existing `skippedConnectorsPromptLine` wording is fine for both reasons).
 3. **Fire `chat:connectors-skipped`** with `{reqId: ctx.reqId, connectors:[{connectorId, name: connectorLabel(...), reason}]}` whenever anything was skipped. Use the existing bounded `fireChatEvent` path, and never block or fail the turn on a subscriber.
-4. **The warm path.** If a warm turn re-assembles connectors (the re-check paths), fire the event with that turn's `reqId` too. Routines always spawn fresh, but chats can be warm. Keep it consistent.
+4. **The warm path.** If a warm turn re-assembles connectors (the re-check paths), fire the event with that turn's `reqId` too. Chats can be warm; keep it consistent. Routines always spawn fresh *by construction*: a turn with `ctx.source === 'routine'` is never routed to a warm session — routing retires any live one (`stale_session_respawn` reason `routine-turn`) and spawns, so a shared routine re-fired inside the keepAlive window still assembles, skips and announces (final-review fix; before it, a warm re-fire fired nothing and cleared the warning).
 5. Add the event to the manifest's fired list and `mcp-oauth:status-batch` to `optionalCalls`. Check the k8s preset boot graph for a cycle: does mcp-oauth call chat-orchestrator? Expect not.
 
 **Tests (write first):**

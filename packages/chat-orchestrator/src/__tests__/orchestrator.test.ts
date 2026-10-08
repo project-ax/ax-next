@@ -7347,11 +7347,8 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       expect(vault.hasCalls).toEqual(['account:gmail']);
     });
 
-    // Slice 6 — a warm turn that RE-ASSEMBLES its connectors (the re-check
-    // retired the session) fires chat:connectors-skipped with ITS reqId; a
-    // routed turn that reuses the warm session assembles nothing and fires none.
-    it('chat:connectors-skipped: fired at each assembly with that turn\'s reqId, not on a reused warm turn', async () => {
-      const present = new Set<string>();
+    // Slice 6 — two connectors, both api-key, presence from `present`.
+    async function skipHarness(present: Set<string>) {
       const connector = (id: string, name: string) => ({
         summary: { id, name },
         source: 'attached',
@@ -7368,20 +7365,46 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         'credentials:has': async (_c: unknown, input: unknown) => ({
           present: present.has((input as { ref: string }).ref),
         }),
+        // A routine turn also asks for needs-reconnect markers: none here.
+        'mcp-oauth:status-batch': async () => ({ needsReconnect: [], shared: [], signIns: {} }),
       } as Record<string, ServiceHandler>);
       const events: Array<{ reqId: string; connectors: Array<{ connectorId: string }> }> = [];
       h.bus.subscribe('chat:connectors-skipped', 'obs', async (_c, p: unknown) => {
         events.push(p as { reqId: string; connectors: Array<{ connectorId: string }> });
         return undefined;
       });
-      const turn = async (reqId: string) => {
+      const logs: Array<{ msg: string; reason?: unknown }> = [];
+      const turn = async (reqId: string, source?: 'routine') => {
         fireTurnEnd(h.bus, 's-1', reqId);
-        await h.bus.call<unknown, AgentOutcome>(
-          'agent:invoke',
-          ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId }),
-          { message: { role: 'user', content: 'hi' } },
-        );
+        const ctx = makeAgentContext({
+          sessionId: 's-1',
+          agentId: 'test-agent',
+          userId: 'test-user',
+          conversationId: 'conv-1',
+          reqId,
+          ...(source ? { source } : {}),
+          logger: createLogger({
+            reqId,
+            writer: (line: string) => {
+              const rec = JSON.parse(line) as { msg: string; reason?: unknown };
+              logs.push({ msg: rec.msg, reason: rec.reason });
+            },
+          }),
+        });
+        await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctx, {
+          message: { role: 'user', content: 'hi' },
+        });
       };
+      return { h, counters, events, logs, turn };
+    }
+
+    // An INTERACTIVE warm turn that re-assembles its connectors (the re-check
+    // retired the session) fires chat:connectors-skipped with ITS reqId; an
+    // interactive routed turn that reuses the warm session assembles nothing
+    // and fires none. Interactive warm routing is unchanged by slice 6.
+    it('chat:connectors-skipped (interactive): fired at each assembly with that turn\'s reqId, not on a reused warm turn', async () => {
+      const present = new Set<string>();
+      const { counters, events, turn } = await skipHarness(present);
       await turn('req-1'); // spawn: both skipped
       await turn('req-2'); // routed, reused: nothing assembled
       present.add('account:linear');
@@ -7391,6 +7414,24 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         ['req-1', ['gmail', 'linear']],
         ['req-3', ['gmail']],
       ]);
+    });
+
+    // Slice 6 final review — a shared-conversation routine re-fired inside the
+    // keepAlive window used to be routed to the warm session, assembled
+    // nothing, fired nothing, and so silently CLEARED the run warning. A
+    // routine turn now never reuses a warm session: both fires spawn fresh
+    // and both reqIds get their own event.
+    it('two ROUTINE turns on one conversation with keepalive on: both spawn fresh, both reqIds get an event', async () => {
+      const { counters, events, logs, turn } = await skipHarness(new Set<string>());
+      await turn('req-r1', 'routine');
+      await turn('req-r2', 'routine');
+      expect(counters.opens).toBe(2);
+      expect(counters.terminates).toContain('s-1'); // the warm session was retired
+      expect(events.map((e) => [e.reqId, e.connectors.map((c) => c.connectorId)])).toEqual([
+        ['req-r1', ['gmail', 'linear']],
+        ['req-r2', ['gmail', 'linear']],
+      ]);
+      expect(logs.find((l) => l.msg === 'stale_session_respawn')?.reason).toBe('routine-turn');
     });
 
     it('a presence read that throws on the routed turn does not re-spawn', async () => {
