@@ -483,12 +483,20 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // provider, a denial or a throw all mean "no" (fail closed).
     //   add           — the WRITE question (`purpose: 'store'`): the connector
     //                   is attached only once the sign-in worked (TASK-788).
+    //                   Then the READ question: a "yes" means the connector is
+    //                   already on the agent, so there is nothing to add — 409
+    //                   `already-attached` (the key path's twin), before any
+    //                   pending row. Signing in again is the row's own item.
     //   sign-in-again — the READ question (no `purpose`), which also requires
     //                   the connector to be on the agent already. A sign-in the
     //                   agent could never read back is refused, not stored.
     if (mode === 'add') {
       if (!(await mayHoldOnAgent(user.id, agentId, connectorId, 'store'))) {
         res.status(403).json({ error: 'agent-store-refused' });
+        return;
+      }
+      if (await mayHoldOnAgent(user.id, agentId, connectorId)) {
+        res.status(409).json({ error: 'already-attached' });
         return;
       }
     } else if (!(await mayHoldOnAgent(user.id, agentId, connectorId))) {

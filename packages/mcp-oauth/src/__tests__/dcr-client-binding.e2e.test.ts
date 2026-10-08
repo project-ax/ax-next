@@ -369,7 +369,8 @@ type ResolveResult =
 interface Stack {
   h: TestHarness;
   db: Kysely<McpOAuthDatabase>;
-  /** Every sign-in belongs to an agent; `mode` defaults to an Add. */
+  /** Every sign-in belongs to an agent; `mode` defaults to an Add, or to
+   *  Sign in again once the connector is on that agent. */
   begin(
     user: string,
     body: { connectorId: string; agentId: string; mode?: 'add' | 'sign-in-again' },
@@ -399,6 +400,10 @@ const clientIdOf = (authorizationUrl: string): string =>
 async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<AsOpts>; scopes?: string[] }): Promise<Stack> {
   fas = new FakeAs(opts.asOpts);
   const routes: CapturedRoute[] = [];
+  // `agentId|connectorId` pairs the callback attached: @ax/connectors' read
+  // question ("is it on the agent?") answers from this, and begin's default
+  // mode follows it (an attached row signs in again; anything else is an Add).
+  const attached = new Set<string>();
   const services: Record<string, ServiceHandler> = {
     'http:register-route': (async (_c, input) => {
       routes.push(input as CapturedRoute);
@@ -411,12 +416,21 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
       agent: { id: (input as { agentId: string }).agentId, visibility: opts.visibility, ownerId: 'alice' },
     })) as ServiceHandler,
     // An Add's callback attaches the connector once the sign-in is stored.
-    'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,
+    'agents:attach-connector': (async (_c, input) => {
+      const { agentId, connectorId } = input as { agentId: string; connectorId: string };
+      attached.add(`${agentId}|${connectorId}`);
+      return { agent: {}, changed: true };
+    }) as ServiceHandler,
     // TASK-798/813 — every signer here may sign in for the agent (a team admin).
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
     // TASK-711 — @ax/connectors' "is this the one shared connector" answer: yes,
-    // so a team-agent sign-in is stored on the agent and members read it there.
-    'credentials:authorize-agent:account': (async () => ({ allowed: true })) as ServiceHandler,
+    // so a team-agent sign-in is stored on the agent and members read it there
+    // once it is attached.
+    'credentials:authorize-agent:account': (async (_c, input) => {
+      const i = input as { agentId: string; ref: string; purpose?: string };
+      if (i.purpose === 'store') return { allowed: true };
+      return { allowed: attached.has(`${i.agentId}|${i.ref.replace(/^account:/, '')}`) };
+    }) as ServiceHandler,
     // Connectors are keyed (owner, slug), so every user can own a connector with the SAME
     // id `conn-1` -- the harness hands back the same shape for whoever asks.
     'connectors:get': (async () => ({
@@ -459,7 +473,8 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
     db,
     async begin(user, body) {
       const { res, rec } = fakeRes();
-      await route('/api/connectors/oauth/begin')(fakeReq(user, { body: { mode: 'add', ...body } }), res);
+      const mode = attached.has(`${body.agentId}|${body.connectorId}`) ? 'sign-in-again' : 'add';
+      await route('/api/connectors/oauth/begin')(fakeReq(user, { body: { mode, ...body } }), res);
       return {
         status: rec.status,
         ...(rec.json?.authorizationUrl !== undefined ? { authorizationUrl: rec.json.authorizationUrl } : {}),

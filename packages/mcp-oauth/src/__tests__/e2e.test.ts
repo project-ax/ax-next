@@ -349,6 +349,10 @@ interface CapturedRoute {
 }
 
 function captureRouteServices(routes: CapturedRoute[]): Record<string, ServiceHandler> {
+  // `agentId|connectorId` pairs the callback attached. Begin's Add asks the
+  // read question (no `purpose`) to refuse an Add of a connector already on
+  // the agent, so "yes" must mean "attached", as @ax/connectors answers it.
+  const attached = new Set<string>();
   return {
     'http:register-route': (async (_ctx, input) => {
       const r = input as CapturedRoute;
@@ -363,13 +367,21 @@ function captureRouteServices(routes: CapturedRoute[]): Record<string, ServiceHa
     // matching the sharee-resolves design this canary exercises.
     'agents:resolve': (async () => ({ agent: { id: 'agent-A', visibility: 'team', ownerId: 'team-1' } })) as ServiceHandler,
     // An Add's callback attaches the connector once the sign-in is stored.
-    'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,
+    'agents:attach-connector': (async (_c, input) => {
+      const { agentId, connectorId } = input as { agentId: string; connectorId: string };
+      attached.add(`${agentId}|${connectorId}`);
+      return { agent: {}, changed: true };
+    }) as ServiceHandler,
     // TASK-798/813 — bob is a team admin of agent-A's team, so he may sign in for it.
     'agents:can-set-shared-credential': (async () => ({ allowed: true })) as ServiceHandler,
     // TASK-711 — @ax/connectors' answer to "is conn-1 the one shared connector
     // every member of agent-A sees?". Yes here, so the sign-in is stored on the
-    // agent AND the vault lets the sharee read it back there.
-    'credentials:authorize-agent:account': (async () => ({ allowed: true })) as ServiceHandler,
+    // agent AND the vault lets the sharee read it back there — once attached.
+    'credentials:authorize-agent:account': (async (_c, input) => {
+      const i = input as { agentId: string; ref: string; purpose?: string };
+      if (i.purpose === 'store') return { allowed: true };
+      return { allowed: attached.has(`${i.agentId}|${i.ref.replace(/^account:/, '')}`) };
+    }) as ServiceHandler,
     // One oauth slot + a matching mcpServer.
     'connectors:get': (async () => ({
       connector: {
@@ -545,9 +557,10 @@ describe('@ax/mcp-oauth e2e canary — two agents of one owner keep two separate
     services['agents:resolve'] = (async (_c, input) => ({
       agent: { id: (input as { agentId: string }).agentId, visibility: 'personal', ownerId: 'bob' },
     })) as ServiceHandler;
-    services['agents:attach-connector'] = (async (_c, input) => {
+    const recordAttach = services['agents:attach-connector']!;
+    services['agents:attach-connector'] = (async (c, input) => {
       attaches.push(input);
-      return { agent: {}, changed: true };
+      return recordAttach(c, input);
     }) as ServiceHandler;
     const h = await createTestHarness({
       services,

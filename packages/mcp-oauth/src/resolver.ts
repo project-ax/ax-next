@@ -72,8 +72,9 @@ export interface ResolverDeps {
 
 /**
  * TASK-756 — whose sign-in a resolve is about: the token's OWNER, read from the
- * vault row it came from. An agent-scope row is a team agent's shared sign-in,
- * so its marker is the agent's — one member reconnecting clears it for all.
+ * vault row it came from. An agent-scope row is that agent's own sign-in (a
+ * personal agent's or a team agent's alike), so its marker is the agent's —
+ * on a team agent one admin signing in again clears it for every member.
  * Everything else (a user row, a global row, a caller that did not say) stays
  * keyed on the person resolving, as before.
  */

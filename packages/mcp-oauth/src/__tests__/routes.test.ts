@@ -169,10 +169,13 @@ function connectorFixture(over: Partial<{ credentials: unknown[]; mcpServers: un
 
 function makeDeps(stubs: BusStubs, opts: { store?: ReturnType<typeof fakeStore>; flow?: McpOAuthRouteDeps['flow'] } = {}) {
   // Every begin asks @ax/connectors whether this agent may hold the sign-in.
-  // Default to "yes" so tests about other gates needn't repeat it; a test about
-  // this gate overrides it (or sets it to `undefined` to model "not loaded").
+  // Default to "may store it, not attached yet" — the plain Add — so tests
+  // about other gates needn't repeat it; a test about this gate overrides it
+  // (or sets it to `undefined` to model "not loaded").
   const { bus, calls } = fakeBus({
-    'credentials:authorize-agent:account': () => ({ allowed: true }),
+    'credentials:authorize-agent:account': (i: unknown) => ({
+      allowed: (i as { purpose?: unknown }).purpose === 'store',
+    }),
     ...stubs,
   });
   const store = opts.store ?? fakeStore();
@@ -1134,7 +1137,8 @@ describe('mcp-oauth begin route', () => {
     ['personal', PERSONAL],
     ['team', TEAM],
   ])('mode add on a %s agent → agent-scope pending row with agentId and mode add; asks the STORE question', async (_label, agent) => {
-    const authz = vi.fn(() => ({ allowed: true }));
+    // May store it; not on the agent yet.
+    const authz = vi.fn((i: unknown) => ({ allowed: (i as { purpose?: unknown }).purpose === 'store' }));
     const { deps, store } = makeDeps({
       'auth:require-user': () => OK_USER,
       'agents:resolve': () => agent,
@@ -1152,15 +1156,58 @@ describe('mcp-oauth begin route', () => {
     expect(pending.agentId).toBe('agent-1');
     expect(pending.mode).toBe('add');
     expect(pending).not.toHaveProperty('credScope');
-    // The WRITE-scope question (TASK-788): an Add signs in before it attaches,
-    // so it must not ask the read question (which requires the attachment).
-    expect(authz).toHaveBeenCalledTimes(1);
-    expect(authz).toHaveBeenCalledWith({
+    // The WRITE-scope question (TASK-788) decides whether an Add may sign in;
+    // the read question (which requires the attachment) only asks whether
+    // the connector is already on the agent — a "no" is the normal Add.
+    expect(authz).toHaveBeenCalledTimes(2);
+    expect(authz).toHaveBeenNthCalledWith(1, {
       userId: OK_USER.user.id,
       agentId: 'agent-1',
       ref: 'account:conn-1',
       purpose: 'store',
     });
+    expect(authz).toHaveBeenNthCalledWith(2, {
+      userId: OK_USER.user.id,
+      agentId: 'agent-1',
+      ref: 'account:conn-1',
+    });
+  });
+
+  // An Add of a connector already on the agent is refused, the way the key
+  // path answers 409: nothing to add. Signing in again is the row's own item.
+  it('mode add on a connector already on the agent → 409 already-attached; no pending row, no discovery', async () => {
+    const authz = vi.fn(() => ({ allowed: true }));
+    const { deps, store, flow } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => PERSONAL,
+      'connectors:get': () => connectorFixture(),
+      'credentials:authorize-agent:account': authz,
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(beginReq('add'), res);
+
+    expect(state.status).toBe(409);
+    expect(state.json).toEqual({ error: 'already-attached' });
+    expect(store.putPending).not.toHaveBeenCalled();
+    expect(store.purgeExpiredPending).not.toHaveBeenCalled();
+    expect(flow.discover).not.toHaveBeenCalled();
+    expect(flow.buildAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('mode add when the attachment question throws → treated as not attached (the Add proceeds)', async () => {
+    const { deps, store } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => PERSONAL,
+      'connectors:get': () => connectorFixture(),
+      'credentials:authorize-agent:account': (i: unknown) => {
+        if ((i as { purpose?: unknown }).purpose === 'store') return { allowed: true };
+        throw new Error('boom');
+      },
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).begin(beginReq('add'), res);
+    expect(state.status).toBe(200);
+    expect(store.putPending).toHaveBeenCalledTimes(1);
   });
 
   // `begin` refuses instead of downgrading: before slice 3 a "no" silently

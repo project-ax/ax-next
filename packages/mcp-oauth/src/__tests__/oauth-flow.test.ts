@@ -32,7 +32,7 @@ describe('buildAuthorization', () => {
     expect(url.searchParams.get('access_type')).toBe('offline');
     // The picker first (which account this agent acts as), then renewed consent
     // so Google issues a refresh token even for a previously-authorized client.
-    expect(url.searchParams.get('prompt')).toBe('select_account consent');
+    expect(url.searchParams.getAll('prompt')).toEqual(['select_account consent']);
     expect(url.searchParams.get('state')).toBe('google-state');
     expect(url.searchParams.get('code_challenge_method')).toBe('S256');
   });
@@ -59,6 +59,38 @@ describe('buildAuthorization', () => {
     expect(u.searchParams.get('prompt')).toBe('select_account');
     expect(u.searchParams.getAll('prompt')).toHaveLength(1);
     expect(codeVerifier.length).toBeGreaterThan(20);
+  });
+
+  it('keeps the SDK\'s consent prompt for offline_access on a non-Google server, after the account picker', async () => {
+    // The SDK appends prompt=consent when the scope asks for offline_access
+    // (OIDC Core §11). Overwriting it would cost the refresh token.
+    const { authorizationUrl } = await buildAuthorization({
+      metadata: meta,
+      client: { clientKey: 'c|a', clientId: 'cid', clientSecret: undefined, dynamic: true },
+      redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+      resource: 'https://mcp.example.com',
+      scope: 'read offline_access',
+      state: 'st-offline',
+      allowedHosts: allow,
+      resolver,
+    });
+    const u = new URL(authorizationUrl);
+    expect(u.searchParams.getAll('prompt')).toEqual(['select_account consent']);
+    expect(u.searchParams.has('access_type')).toBe(false);
+  });
+
+  it('asks Google once for the picker and consent, even when the scope has offline_access', async () => {
+    const { authorizationUrl } = await buildAuthorization({
+      metadata: { ...meta, issuer: 'https://accounts.google.com', authorization_endpoint: 'https://accounts.google.com/o/oauth2/v2/auth' },
+      client: { clientId: 'google-client', clientSecret: 'secret' },
+      redirectUri: 'https://app.example.com/api/connectors/oauth/callback',
+      resource: 'https://gmailmcp.googleapis.com/mcp/v1',
+      scope: 'openid offline_access',
+      state: 'g2', allowedHosts: new Set(['accounts.google.com']), resolver,
+    });
+    const url = new URL(authorizationUrl);
+    expect(url.searchParams.getAll('prompt')).toEqual(['select_account consent']);
+    expect(url.searchParams.get('access_type')).toBe('offline');
   });
 
   it('rejects when the authorization endpoint host is not allowlisted', async () => {
