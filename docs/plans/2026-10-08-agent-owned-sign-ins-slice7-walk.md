@@ -70,11 +70,23 @@
 
 Every scenario passes, or its finding is fixed with a regression test and re-walked. Record the results in the slice 7 PR body and in a SIGNINS-9 context shard.
 
+## Results (2026-10-08)
+
+We ran W1–W10 on 2026-10-08 against the slice 6 image, before the Private option was removed.
+
+- All ten scenarios passed.
+- W9 (team member) was checked through the API only, not in the browser.
+- W6's "Now X (was Y)" text didn't show up during the walk, so that line is unconfirmed.
+- Finding: Linear ignores `prompt=select_account`, so its sign-in can't be forced to offer an account picker. The owner chose not to add help text for it.
+
 ## After the walk — owner decision (2026-10-08)
 
-**Every connector is shared and usable by agents.** Remove the Private option. This supersedes the slice 5 ruling "private connectors aren't auto-shared".
+**Every connector is shared and usable by agents.** The Private option is gone. This supersedes the slice 5 ruling "private connectors aren't auto-shared".
 
-- Drop the Sharing control from `RemoteMcpConnectorForm` and `LegacyConnectorEditDialog`, along with the "private connector" notices and the Add-list exclusion.
-- Migrate the existing private connectors to shared once, guarded by a marker. Creation always writes shared.
-- The server-side 403 `agent-store-refused` for non-shared connectors becomes unreachable. Remove it, or keep it only as a defensive backstop with a test.
-- Tests for each piece. Add a SIGNINS-9 decisions shard recording the superseded ruling.
+Where it ended up:
+
+- The `visibility` column and its `connectors_v1_connectors_shared` index are dropped by the migration. A non-unique index on live connector ids replaces it.
+- There is no boot step. Existing rows stay live and simply become shared; preserving them wasn't a requirement, since nobody is using AX yet.
+- There's no Sharing control, no "private connector" notice and no Add-list exclusion in channel-web.
+- Duplicate live ids fail closed. While two live connectors share an id, neither gets agent sign-ins, agent keys or the workspace key, until an admin deletes one.
+- Rolling back to a pre-slice-7 image is unsupported. The recovery SQL is in the SIGNINS-9 decisions shard.
