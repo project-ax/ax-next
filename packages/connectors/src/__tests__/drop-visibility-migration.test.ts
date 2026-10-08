@@ -43,6 +43,22 @@ const hasColumn = async () =>
   )).length === 1;
 const hasIndex = async () =>
   (await sql(`SELECT 1 FROM pg_indexes WHERE indexname = 'connectors_v1_connectors_shared'`)).length === 1;
+// Final review M2 — the replacement: a NON-unique index on live ids (every
+// by-id lookup and the duplicate check filter on it). Not unique: an existing
+// duplicate must not fail boot.
+const liveIdIndexDef = async (): Promise<string | null> => {
+  const rows = await sql(
+    `SELECT indexdef FROM pg_indexes WHERE indexname = 'connectors_v1_connectors_live_id'`,
+  );
+  return rows.length === 1 ? String((rows[0] as { indexdef: unknown }).indexdef) : null;
+};
+const expectLiveIdIndex = async () => {
+  const def = await liveIdIndexDef();
+  expect(def).not.toBeNull();
+  expect(def).not.toMatch(/UNIQUE/i);
+  expect(def).toMatch(/\(connector_id\)/);
+  expect(def).toMatch(/WHERE \(deleted_at IS NULL\)/);
+};
 
 describe('migration drops the retired visibility column (SIGNINS-9)', () => {
   it('an OLD-schema database keeps its rows live, loses the column and index, and is idempotent', async () => {
@@ -87,6 +103,7 @@ describe('migration drops the retired visibility column (SIGNINS-9)', () => {
 
     expect(await hasColumn()).toBe(false);
     expect(await hasIndex()).toBe(false);
+    await expectLiveIdIndex();
     expect(
       await sql('SELECT owner_user_id, connector_id, deleted_at FROM connectors_v1_connectors ORDER BY connector_id'),
     ).toEqual([
@@ -125,5 +142,6 @@ describe('migration drops the retired visibility column (SIGNINS-9)', () => {
     }
     expect(await hasColumn()).toBe(false);
     expect(await hasIndex()).toBe(false);
+    await expectLiveIdIndex();
   });
 });

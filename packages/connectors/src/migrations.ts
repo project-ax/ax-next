@@ -86,6 +86,14 @@ export async function runConnectorsMigration<DB>(
   // SIGNINS-9 (slice 7) — every connector is shared: drop the retired visibility column + its index.
   await sql`DROP INDEX IF EXISTS connectors_v1_connectors_shared`.execute(db);
   await sql`ALTER TABLE connectors_v1_connectors DROP COLUMN IF EXISTS visibility`.execute(db);
+  // Its replacement: a NON-unique index on live ids, for every by-id lookup
+  // and the duplicate check. Deliberately not UNIQUE — an existing duplicate
+  // would fail boot; a unique index (closing the create race) is a follow-up.
+  await sql`
+    CREATE INDEX IF NOT EXISTS connectors_v1_connectors_live_id
+      ON connectors_v1_connectors (connector_id)
+      WHERE deleted_at IS NULL
+  `.execute(db);
 
   // TASK-94 — agent-authored connector drafts. Keyed per-(owner, agent,
   // connector) because an authored draft is THIS agent's model-generated
