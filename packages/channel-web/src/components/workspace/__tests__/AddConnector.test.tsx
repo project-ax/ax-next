@@ -22,7 +22,7 @@ import {
   type Connector,
   type ConnectorSummary,
 } from '@/lib/connectors';
-import { beginOAuth, getOAuthStatus } from '@/lib/connectors-oauth';
+import { BeginOAuthError, beginOAuth, getOAuthStatus } from '@/lib/connectors-oauth';
 import { HttpError } from '@/lib/http';
 import { myCredentials, adminCredentials } from '@/lib/credentials';
 import { OAUTH_MESSAGE_TYPE } from '@/lib/oauth-callback-bridge';
@@ -221,6 +221,24 @@ describe('a swallowed failure is never silent (TASK-757)', () => {
   });
 });
 
+describe('a sign-in the server refuses before the popup says why, in our words', () => {
+  it.each([
+    [403, 'agent-store-refused', "This connector can't be added to this agent."],
+    [409, 'already-attached', "It's already on this agent."],
+  ] as const)('%i %s → "%s"', async (status, refusal, copy) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(beginOAuth).mockRejectedValue(new BeginOAuthError(status, 'server text', refusal));
+    renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    expect(await screen.findByText(copy)).toBeTruthy();
+    expect(screen.queryByText(/server text/)).toBeNull();
+    expect(screen.queryByText(/Please try again/)).toBeNull();
+    expect(window.open).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
 describe('OAuth: Add opens the sign-in, and the server adds it', () => {
   it('Add begins an Add sign-in on this agent straight away — even if a sign-in exists somewhere', async () => {
     vi.mocked(getOAuthStatus).mockResolvedValue('connected');
@@ -273,6 +291,47 @@ describe('OAuth: Add opens the sign-in, and the server adds it', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(onAttached).not.toHaveBeenCalled();
     expect(attachMock).not.toHaveBeenCalled();
+  });
+
+  // The popup's success message can be lost (the person closed it as the
+  // callback finished). The server attached it anyway, so a settle re-reads
+  // and an Add that DID land is treated as one.
+  it('a popup closed with no message, after the server already added it, still counts as added', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    vi.mocked(workspaceApi.connectors).mockResolvedValue({
+      connectors: [
+        { id: 'linear', name: 'Linear', source: 'attached', editable: false, health: 'ok', removable: true },
+        { id: 'notion', name: 'Notion', source: 'attached', editable: false, health: 'ok', removable: true },
+      ],
+      shared: false,
+      connectorsSupported: true, manageable: true, sharedCredentials: false,
+    });
+    const reads = vi.mocked(workspaceApi.connectors).mock.calls.length;
+    popup.closed = true;
+    await waitFor(() => expect(onAttached).toHaveBeenCalledTimes(1), { timeout: 2000 });
+    expect(vi.mocked(workspaceApi.connectors).mock.calls.length).toBe(reads + 1);
+    expect(attachMock).not.toHaveBeenCalled();
+  });
+
+  it('a settle re-read that finds nothing added leaves the row offering Add', async () => {
+    const { onAttached } = renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    const reads = vi.mocked(workspaceApi.connectors).mock.calls.length;
+    postOAuth('notion', 'error', 'cancelled');
+    expect(await screen.findByText('Sign-in was cancelled, so nothing was added.')).toBeTruthy();
+    await waitFor(() =>
+      expect(vi.mocked(workspaceApi.connectors).mock.calls.length).toBe(reads + 1),
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onAttached).not.toHaveBeenCalled();
+    // The failure sentence survives the quiet re-read.
+    expect(screen.getByText('Sign-in was cancelled, so nothing was added.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add — Notion' })).toBeTruthy();
   });
 
   it('Cancel while the sign-in is still starting never opens the popup', async () => {
@@ -427,6 +486,18 @@ describe('per-agent key: the key form, saved with the Add', () => {
       expect(attachMock).toHaveBeenCalledWith('a-quill', 'zendesk', [{ slot: 'token', payload: 'sk-123' }]),
     );
     await waitFor(() => expect(onAttached).toHaveBeenCalled());
+  });
+
+  it('trims spaces and newlines around a pasted key before sending it', async () => {
+    renderAdd();
+    await ready();
+    const dialog = await openKeyForm();
+    const input = within(dialog).getByLabelText(/token/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '\n sk-123 \n' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
+    await waitFor(() =>
+      expect(attachMock).toHaveBeenCalledWith('a-quill', 'zendesk', [{ slot: 'token', payload: 'sk-123' }]),
+    );
   });
 
   it('cannot be saved with a key missing, and closing it adds nothing', async () => {

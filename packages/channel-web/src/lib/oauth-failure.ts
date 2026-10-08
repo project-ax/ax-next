@@ -58,3 +58,23 @@ export function oauthFailureMessage(
       return `Sign-in didn't finish, so ${serviceName} isn't connected. You can try again whenever you're ready.`;
   }
 }
+
+/**
+ * Why `begin` refused before any popup opened (slice 3). Matched by the
+ * client against the server's status AND error word; the sentence is ours.
+ *   - `agent-store-refused` — this agent may not hold this connector's sign-in.
+ *   - `not-on-agent`        — Sign in again, but the connector was removed.
+ *   - `already-attached`    — an Add of a connector already on the agent.
+ */
+export type BeginRefusal = 'agent-store-refused' | 'not-on-agent' | 'already-attached';
+
+export function beginRefusalMessage(refusal: BeginRefusal): string {
+  switch (refusal) {
+    case 'agent-store-refused':
+      return "This connector can't be added to this agent.";
+    case 'not-on-agent':
+      return "This connector isn't on this agent any more.";
+    case 'already-attached':
+      return "It's already on this agent.";
+  }
+}

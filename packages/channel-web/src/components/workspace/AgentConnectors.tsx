@@ -11,7 +11,8 @@
  * team admin (`canSetAccount`) — gets:
  *
  *   - **Sign in again**, first, only on a row that needs it: its sign-in
- *     expired (`needs-reconnect`) or is missing (`setup: 'sign-in'`). A dialog
+ *     expired (`needs-reconnect`) — or **Sign in** when it was never signed
+ *     in (`setup: 'sign-in'`). A dialog
  *     around the OAuth widget, which opens the popup as a `sign-in-again` on
  *     THIS agent: it replaces the agent's sign-in and leaves the connector,
  *     and what this agent may do with its tools, as they are. On a team agent
@@ -31,8 +32,9 @@
  * a workspace admin; the agent's owner on a personal agent) — so a workspace
  * admin who is not the team's admin may remove a connector but not sign the
  * team in. Everyone else is a member, who sees who the agent acts as and has
- * no actions: no Sign in again, no Add key, no Remove — only a read-only
- * **View details**, the same view. Every write asks the server again.
+ * no actions: no Sign in again, no Add key, no Remove — only **Edit**, the
+ * same view (editable within the TASK-809 ceiling, so not "View details").
+ * Every write asks the server again.
  *
  * Connector health (TASK-741, slice 8): a row whose sign-in was rejected or
  * whose server could not be reached gets ONE red `CircleAlert` right after its
@@ -67,7 +69,6 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import {
   CircleAlert,
-  Info,
   KeyRound,
   LogIn,
   MoreHorizontal,
@@ -170,6 +171,14 @@ function needsSignIn(row: AgentConnectorRow): boolean {
   );
 }
 
+/**
+ * Ruling (slice 3): a row that was never signed in says "Sign in"; only an
+ * expired sign-in says "Sign in again". Menu item and dialog title alike.
+ */
+function signInLabelFor(row: AgentConnectorRow): 'Sign in' | 'Sign in again' {
+  return row.health === 'needs-reconnect' ? 'Sign in again' : 'Sign in';
+}
+
 /** Slice 3 — the row's agent key is missing: Add key fixes it. */
 function needsKey(row: AgentConnectorRow): boolean {
   return row.health === 'needs-sign-in' && row.setup === 'add-key';
@@ -270,7 +279,9 @@ export function AgentConnectors({
     if (outcome === 'removed-partial') {
       setNotice({
         tone: 'note',
-        text: `Removed ${row.name}. Some of what you’d approved for it couldn’t be cleared just now — it no longer applies while ${row.name} is off this agent.`,
+        // Neutral: the step that failed may be approved access, or this
+        // agent's sign-in or key for it.
+        text: `Removed ${row.name}. Some of ${row.name}’s details couldn’t be cleaned up.`,
       });
     }
     onChanged?.();
@@ -302,10 +313,12 @@ export function AgentConnectors({
       row={row}
       agentName={name}
       busy={removing.has(row.id)}
-      {...(canSetAccount && needsSignIn(row) ? { onSignInAgain: () => onSignInAgain(row) } : {})}
+      {...(canSetAccount && needsSignIn(row)
+        ? { onSignInAgain: () => onSignInAgain(row), signInLabel: signInLabelFor(row) }
+        : {})}
       {...(canSetAccount && needsKey(row) ? { onAddKey: () => onAddKey(row) } : {})}
       {...(withView && onView !== undefined
-        ? { onView: () => onView(row.id), viewLabel: canSetAccount || manageable ? 'Edit' : 'View details' }
+        ? { onView: () => onView(row.id) }
         : {})}
       {...(row.removable ? { onRemove: () => setConfirming(row) } : {})}
     />
@@ -400,8 +413,8 @@ export function AgentConnectors({
               Remove {confirming?.name} from {name}?
             </DialogTitle>
             <DialogDescription>
-              {name} won’t be able to use {confirming?.name} any more, and
-              anything you approved for it here is taken back. The connector
+              This removes {confirming?.name} from {name}, including its sign-in
+              and keys, and anything you approved for it here. The connector
               itself stays, and so do your other agents that use it.
             </DialogDescription>
           </DialogHeader>
@@ -428,11 +441,17 @@ export function AgentConnectors({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Sign in to {signingIn?.name} again</DialogTitle>
+            <DialogTitle>
+              {signingIn !== null && signInLabelFor(signingIn) === 'Sign in'
+                ? `Sign in to ${signingIn.name}`
+                : `Sign in to ${signingIn?.name ?? ''} again`}
+            </DialogTitle>
             <DialogDescription>
               {shared
                 ? `Sign in, and everyone using ${name} uses ${signingIn?.name ?? ''} as you.`
-                : `Sign in and ${name} can keep using ${signingIn?.name ?? ''}.`}
+                : signingIn !== null && signInLabelFor(signingIn) === 'Sign in'
+                  ? `Sign in and ${name} can use ${signingIn.name}.`
+                  : `Sign in and ${name} can keep using ${signingIn?.name ?? ''}.`}
             </DialogDescription>
           </DialogHeader>
           {/* What signing in hands the assistant — drawn here, in the file that
@@ -577,7 +596,7 @@ function HealthIcon({ reason, tone }: { reason: string; tone: 'error' | 'neutral
 
 /**
  * One row's `⋯` menu (slice 3): each item is present only when its handler
- * is — Sign in again, Add key, Edit (or a member's View details), Remove.
+ * is — Sign in (again), Add key, Edit, Remove.
  * Hidden, never drawn disabled.
  */
 function RowMenu({
@@ -587,7 +606,7 @@ function RowMenu({
   onSignInAgain,
   onAddKey,
   onView,
-  viewLabel = 'Edit',
+  signInLabel = 'Sign in again',
   onRemove,
 }: {
   row: AgentConnectorRow;
@@ -595,12 +614,12 @@ function RowMenu({
   busy: boolean;
   /** The sign-in expired or is missing, and this person may redo it. */
   onSignInAgain?: () => void;
+  /** "Sign in" for a row never signed in; "Sign in again" when it expired. */
+  signInLabel?: 'Sign in' | 'Sign in again';
   /** The agent key is missing, and this person may add it. */
   onAddKey?: () => void;
   /** Absent inside the details view itself: it already is the details. */
   onView?: () => void;
-  /** "Edit" for whoever manages the agent; a member's read-only "View details". */
-  viewLabel?: 'Edit' | 'View details';
   /** TASK-798 — absent for anyone who may not remove it. */
   onRemove?: () => void;
 }) {
@@ -612,7 +631,7 @@ function RowMenu({
       item: (
         <DropdownMenuItem onSelect={onSignInAgain}>
           <LogIn aria-hidden="true" />
-          Sign in again
+          {signInLabel}
         </DropdownMenuItem>
       ),
     });
@@ -633,8 +652,8 @@ function RowMenu({
       key: 'view',
       item: (
         <DropdownMenuItem onSelect={onView}>
-          {viewLabel === 'Edit' ? <Pencil aria-hidden="true" /> : <Info aria-hidden="true" />}
-          {viewLabel}
+          <Pencil aria-hidden="true" />
+          Edit
         </DropdownMenuItem>
       ),
     });

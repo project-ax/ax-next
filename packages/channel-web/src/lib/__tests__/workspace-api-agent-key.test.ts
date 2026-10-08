@@ -52,12 +52,20 @@ describe('workspaceApi.setAgentKey', () => {
     expect(forbidden).toBeInstanceOf(HttpError);
     expect((forbidden as HttpError).status).toBe(403);
     expect((forbidden as Error).message).toBe(AGENT_KEY_FORBIDDEN);
+    // Personal agent = its owner; team agent = a team admin. Both "manage" it.
+    expect(AGENT_KEY_FORBIDDEN).toBe('Only someone who manages this agent can add its key.');
 
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ error: 'agent-key-unavailable' }), { status: 409 }),
     );
     const unavailable = await failure(workspaceApi.setAgentKey('a1', 'linear', 'api_key', SECRET));
     expect((unavailable as Error).message).toBe(AGENT_KEY_UNAVAILABLE);
+    // The server answers one 409 for two cases (the connector spends the
+    // workspace's key, or this agent may not hold one for it — e.g. it left
+    // the agent), so the sentence covers both, honestly.
+    expect(AGENT_KEY_UNAVAILABLE).toBe(
+      'This agent can’t have its own key for this connector. It may use your workspace’s key, or no longer be on this agent. Ask a workspace admin.',
+    );
   });
 
   it('a transport failure never carries the key, and nothing logs it', async () => {

@@ -1,5 +1,5 @@
 /**
- * ConnectorOAuthConnect — reusable OAuth connect/reconnect widget for a single
+ * ConnectorOAuthConnect — reusable OAuth sign-in widget for a single
  * MCP connector. Handles:
  *
  *   - Status polling (on mount + after a successful OAuth round-trip).
@@ -112,10 +112,12 @@ export function ConnectorOAuthConnect({
       return <Badge variant="secondary">Connected</Badge>;
     }
     if (status === 'needs-reconnect') {
+      // Slice 3 — the sign-in is the agent's, not "yours", and the fix is
+      // called "Sign in again" everywhere (menu, dialog, button).
       return (
         <>
-          <Badge variant="destructive">Reconnect needed</Badge>
-          <span className="text-xs text-muted-foreground">Your sign-in to {serviceName} needs a refresh. Reconnect to keep this working.</span>
+          <Badge variant="destructive">Sign-in expired</Badge>
+          <span className="text-xs text-muted-foreground">The sign-in to {serviceName} expired. Sign in again to keep it working.</span>
         </>
       );
     }
@@ -125,8 +127,9 @@ export function ConnectorOAuthConnect({
 
   // ── Connect button label ──────────────────────────────────────────────────
 
-  const connectLabel =
-    status === 'needs-reconnect' ? 'Reconnect' : `Connect with ${serviceName}`;
+  // "Sign in again" only for an expired sign-in; anything else (never signed
+  // in, or replacing one that works) is a plain "Sign in".
+  const connectLabel = status === 'needs-reconnect' ? 'Sign in again' : 'Sign in';
 
   // ── Consent gate (only when requiresConsent && not yet accepted) ──────────
 

@@ -3,9 +3,10 @@
  *
  * Pinned: a `needs-sign-in` row wears a NEUTRAL icon (not the red error one)
  * whose reason is its accessible name and a tooltip on hover AND keyboard
- * focus; the `⋯` menu leads with the row's fix — **Sign in again** (OAuth) or
- * **Add key** (the agent's own key) — and offers nothing for `ask-admin`;
- * Sign in again opens a dialog around the OAuth widget on THIS agent, as a
+ * focus; the `⋯` menu leads with the row's fix — **Sign in** (OAuth; never
+ * signed in, so not "again") or **Add key** (the agent's own key) — and
+ * offers nothing for `ask-admin`; Sign in opens a dialog around the OAuth
+ * widget on THIS agent, as a
  * sign-in-again (it is already on the agent); Add key opens the agent key
  * dialog; finishing either re-reads the list. The details view says the same
  * word and offers the same button.
@@ -208,9 +209,11 @@ describe('the row icon', () => {
 });
 
 describe('the row menu', () => {
-  it('leads with Sign in again for a sign-in row', async () => {
+  // Ruling: a row that was never signed in says "Sign in"; only an expired
+  // one says "Sign in again".
+  it('leads with Sign in for a row never signed in', async () => {
     renderTab();
-    expect(await menuItems('Linear')).toEqual(['Sign in again', ...EDIT_REMOVE]);
+    expect(await menuItems('Linear')).toEqual(['Sign in', ...EDIT_REMOVE]);
   });
 
   it('leads with Add key for a key row', async () => {
@@ -229,21 +232,22 @@ describe('the row menu', () => {
   it('offers no setup on a healthy row beside one that has it', async () => {
     renderTab();
     const menu = await openMenu('Linear');
-    expect(within(menu).getByRole('menuitem', { name: 'Sign in again' })).toBeTruthy();
+    expect(within(menu).getByRole('menuitem', { name: 'Sign in' })).toBeTruthy();
     fireEvent.keyDown(menu, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     expect(await menuItems('Gmail')).toEqual(EDIT_REMOVE);
   });
 });
 
-describe('Sign in again', () => {
+describe('Sign in (a row never signed in)', () => {
   it('opens a sign-in-again on THIS agent, and finishing it re-reads the list', async () => {
     renderTab();
     const menu = await openMenu('Linear');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in again' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in' }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Sign in to Linear again')).toBeTruthy();
-    expect(within(dialog).getByText('Sign in and Quill can keep using Linear.')).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Sign in to Linear' })).toBeTruthy();
+    expect(within(dialog).queryByText(/again/)).toBeNull();
+    expect(within(dialog).getByText('Sign in and Quill can use Linear.')).toBeTruthy();
     const widget = within(dialog).getByTestId('oauth-connect');
     expect(widget.dataset.connector).toBe('linear');
     expect(widget.dataset.agent).toBe('a-quill');
@@ -259,7 +263,7 @@ describe('Sign in again', () => {
     list([SIGN_IN], true);
     renderTab();
     const menu = await openMenu('Linear');
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in again' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Sign in' }));
     const dialog = await screen.findByRole('dialog');
     expect(
       within(dialog).getByText('Sign in, and everyone using Quill uses Linear as you.'),
@@ -300,7 +304,7 @@ describe('the details view', () => {
     expect(screen.queryByText('Sign-in needed')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Sign in to Linear again')).toBeTruthy();
+    expect(within(dialog).getByRole('heading', { name: 'Sign in to Linear' })).toBeTruthy();
     const widget = within(dialog).getByTestId('oauth-connect');
     expect(widget.dataset.agent).toBe('a-quill');
     expect(widget.dataset.mode).toBe('sign-in-again');

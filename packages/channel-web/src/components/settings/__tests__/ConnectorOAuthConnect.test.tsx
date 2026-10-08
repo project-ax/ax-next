@@ -27,12 +27,16 @@ describe('status badge', () => {
     expect(await screen.findByText('Connected')).toBeInTheDocument();
   });
 
-  it('renders "Reconnect needed" badge when status is needs-reconnect', async () => {
+  it('says "Sign-in expired" when status is needs-reconnect — "Sign in again" wording, never "Reconnect"', async () => {
     vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('needs-reconnect');
     render(
       <ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="TestService" />,
     );
-    expect(await screen.findByText('Reconnect needed')).toBeInTheDocument();
+    expect(await screen.findByText('Sign-in expired')).toBeInTheDocument();
+    expect(
+      screen.getByText('The sign-in to TestService expired. Sign in again to keep it working.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Reconnect|Your sign-in/)).toBeNull();
   });
 
   it('shows "Checking…" while status is in flight, then resolves', async () => {
@@ -97,12 +101,12 @@ describe('consent gate', () => {
     ).toBeInTheDocument();
     // Connect button is NOT reachable before consent.
     expect(
-      screen.queryByRole('button', { name: /Connect with MyService/i }),
+      screen.queryByRole('button', { name: 'Sign in' }),
     ).toBeNull();
     // Accept consent → Connect button appears.
     fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
     expect(
-      await screen.findByRole('button', { name: /Connect with MyService/i }),
+      await screen.findByRole('button', { name: 'Sign in' }),
     ).toBeInTheDocument();
   });
 
@@ -140,7 +144,7 @@ describe('no consent step', () => {
       />,
     );
     expect(
-      await screen.findByRole('button', { name: /Connect with MyService/i }),
+      await screen.findByRole('button', { name: 'Sign in' }),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Authorizing lets anyone who uses/i)).toBeNull();
   });
@@ -150,7 +154,7 @@ describe('no consent step', () => {
       <ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />,
     );
     expect(
-      await screen.findByRole('button', { name: /Connect with MyService/i }),
+      await screen.findByRole('button', { name: 'Sign in' }),
     ).toBeInTheDocument();
   });
 });
@@ -166,7 +170,7 @@ describe('connect button click', () => {
         agentId="a-42"
       />,
     );
-    const btn = await screen.findByRole('button', { name: /Connect with MyService/i });
+    const btn = await screen.findByRole('button', { name: 'Sign in' });
     fireEvent.click(btn);
     await waitFor(() => expect(oauthLib.beginOAuth).toHaveBeenCalledWith({
       connectorId: 'svc-3',
@@ -184,7 +188,7 @@ describe('connect button click', () => {
     render(
       <ConnectorOAuthConnect connectorId="svc-4" serviceName="MyService" agentId="a-7" mode="add" />,
     );
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() =>
       expect(oauthLib.beginOAuth).toHaveBeenCalledWith({ connectorId: 'svc-4', agentId: 'a-7', mode: 'add' }),
     );
@@ -204,14 +208,20 @@ describe('connect button click', () => {
     expect(noMode).toBeTruthy();
   });
 
-  it('labels the button "Reconnect" when status is needs-reconnect', async () => {
+  it('labels the button "Sign in again" when status is needs-reconnect', async () => {
     vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('needs-reconnect');
     render(
       <ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />,
     );
-    expect(
-      await screen.findByRole('button', { name: /^Reconnect$/i }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Sign in again' })).toBeInTheDocument();
+  });
+
+  it('labels the button "Sign in" on a sign-in-again for a connector never signed in', async () => {
+    vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('not-connected');
+    render(
+      <ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />,
+    );
+    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
   });
 });
 
@@ -233,7 +243,7 @@ describe('OAuth message handling', () => {
     );
 
     // Open the popup.
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
 
     // Simulate the popup posting back a success message.
@@ -263,7 +273,7 @@ describe('OAuth message handling', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
 
     window.dispatchEvent(
@@ -278,7 +288,7 @@ describe('OAuth message handling', () => {
     expect(onConnected).not.toHaveBeenCalled();
     // busy must clear (Connect button re-enabled).
     expect(
-      await screen.findByRole('button', { name: /Connect with MyService/i }),
+      await screen.findByRole('button', { name: 'Sign in' }),
     ).not.toBeDisabled();
   });
 
@@ -286,7 +296,7 @@ describe('OAuth message handling', () => {
   // never says anything was or wasn't "added".
   it('a cancelled Sign in again says nothing changed', async () => {
     render(<ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />);
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
     window.dispatchEvent(
       new MessageEvent('message', {
@@ -310,7 +320,7 @@ describe('OAuth message handling', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
 
     // Connector field absent (undefined) — must be silently ignored.
@@ -337,7 +347,7 @@ describe('OAuth message handling', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
 
     window.dispatchEvent(
@@ -363,7 +373,7 @@ describe('popup-blocked guard (C1)', () => {
       <ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
 
     // Error message must appear.
     expect(
@@ -374,7 +384,7 @@ describe('popup-blocked guard (C1)', () => {
 
     // busy must have cleared — the Connect button is re-enabled.
     expect(
-      await screen.findByRole('button', { name: /Connect with MyService/i }),
+      await screen.findByRole('button', { name: 'Sign in' }),
     ).not.toBeDisabled();
 
     // beginOAuth was still called (we got as far as opening the popup).
@@ -413,7 +423,7 @@ describe('origin filter (security)', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
 
     // Message from evil origin — must be silently dropped.
@@ -441,7 +451,7 @@ describe('origin filter (security)', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
 
     window.dispatchEvent(
@@ -466,7 +476,7 @@ describe('beginOAuth error', () => {
     render(
       <ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />,
     );
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     expect(await screen.findByText(/couldn't start the sign-in/i)).toBeInTheDocument();
     expect(window.open).not.toHaveBeenCalled();
   });
@@ -476,7 +486,7 @@ describe('beginOAuth error', () => {
     render(
       <ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />,
     );
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await screen.findByText(/couldn't start the sign-in/i);
     // Must not show a "Connected" badge.
     expect(screen.queryByText('Connected')).toBeNull();
@@ -495,17 +505,17 @@ describe('access disclosure (TASK-700)', () => {
 
   it('shows the sign-in notice above the Connect button', async () => {
     render(<ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />);
-    const button = await screen.findByRole('button', { name: /Connect with MyService/i });
+    const button = await screen.findByRole('button', { name: 'Sign in' });
     const notice = screen.getByTestId(NOTICE);
     expect(notice).toHaveTextContent(connectorAccessCopy('sign-in').headline);
     expect(notice).toHaveTextContent(connectorAccessCopy('sign-in').details);
     expect(notice.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('is still there on Reconnect (re-granting is granting)', async () => {
+  it('is still there on Sign in again (re-granting is granting)', async () => {
     vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('needs-reconnect');
     render(<ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />);
-    await screen.findByRole('button', { name: 'Reconnect' });
+    await screen.findByRole('button', { name: 'Sign in again' });
     expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
   });
 
@@ -521,7 +531,7 @@ describe('access disclosure (TASK-700)', () => {
     ).toBeTruthy();
     // After Continue the notice is still exactly one, not re-stacked.
     fireEvent.click(continueBtn);
-    await screen.findByRole('button', { name: /Connect with MyService/i });
+    await screen.findByRole('button', { name: 'Sign in' });
     expect(screen.getAllByTestId(NOTICE)).toHaveLength(1);
   });
 
@@ -529,14 +539,14 @@ describe('access disclosure (TASK-700)', () => {
     render(
       <ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" showAccessNotice={false} />,
     );
-    await screen.findByRole('button', { name: /Connect with MyService/i });
+    await screen.findByRole('button', { name: 'Sign in' });
     expect(screen.queryByTestId(NOTICE)).toBeNull();
   });
 
   it('is not an alert, so a sign-in error is still the only alert on screen', async () => {
     vi.mocked(oauthLib.beginOAuth).mockRejectedValue(new Error('boom'));
     render(<ConnectorOAuthConnect agentId="a-1" mode="sign-in-again" connectorId="svc-1" serviceName="MyService" />);
-    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
     await screen.findByText(/couldn't start the sign-in/i);
     expect(screen.getAllByRole('alert')).toHaveLength(1);
   });

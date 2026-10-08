@@ -1,7 +1,7 @@
 /**
  * The connector details subview (TASK-742, connectors-rail slice 9).
  *
- * Pinned, through the real rail: "Edit" (a plain member's "View details")
+ * Pinned, through the real rail: "Edit" (for everyone, members included)
  * swaps the whole tab for the
  * subview and back; tools sit in "Looks things up" / "Makes changes"; a
  * segment looser than the admin's ceiling is refused in the browser AND says
@@ -104,12 +104,9 @@ async function openDetails(name = 'Linear') {
   const trigger = await screen.findByRole('button', { name: `Actions for ${name}` });
   fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
   const menu = await screen.findByRole('menu');
-  // Slice 3 — "Edit" for whoever may manage the agent; a plain member's
-  // read-only "View details" opens the same view.
-  const item =
-    within(menu).queryByRole('menuitem', { name: 'Edit' }) ??
-    within(menu).getByRole('menuitem', { name: 'View details' });
-  fireEvent.click(item);
+  // Slice 3 — "Edit" for everyone: a plain member's view is editable within
+  // the TASK-809 ceiling too.
+  fireEvent.click(within(menu).getByRole('menuitem', { name: 'Edit' }));
   await screen.findByRole('button', { name: 'Connectors' });
 }
 

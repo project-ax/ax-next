@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { oauthFailureMessage, parseOAuthFailureReason } from '../oauth-failure';
+import { beginRefusalMessage, oauthFailureMessage, parseOAuthFailureReason } from '../oauth-failure';
 
 describe('parseOAuthFailureReason', () => {
   it('accepts exactly the four reasons', () => {
@@ -40,5 +40,15 @@ describe('oauthFailureMessage', () => {
     expect(oauthFailureMessage('not-allowed', 'sign-in-again', 'Notion')).toBe(
       "You can't sign in on this agent any more.",
     );
+  });
+});
+
+describe('beginRefusalMessage', () => {
+  it('each refusal before the popup opens has its own fixed sentence', () => {
+    expect(beginRefusalMessage('agent-store-refused')).toBe(
+      "This connector can't be added to this agent.",
+    );
+    expect(beginRefusalMessage('not-on-agent')).toBe("This connector isn't on this agent any more.");
+    expect(beginRefusalMessage('already-attached')).toBe("It's already on this agent.");
   });
 });

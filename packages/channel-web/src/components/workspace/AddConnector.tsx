@@ -219,6 +219,31 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
     };
   }, [agentId, isAdmin, attempt]);
 
+  // A sign-in's success message can be lost (the popup closed as the
+  // callback finished), yet the server's callback attached it. So when a
+  // sign-in settles, quietly re-read the agent's connectors: one that IS on
+  // the agent now counts as added. A failed re-read changes nothing (logged).
+  // After `onAttached` this view unmounts, so a late answer lands nowhere.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const recheckAdded = useCallback(
+    async (connectorId: string) => {
+      try {
+        const effective = await workspaceApi.connectors(agentId);
+        if (!mounted.current) return;
+        if (effective.connectors.some((c) => c.id === connectorId)) onAttached();
+      } catch (e) {
+        logRequestFailure(e, 'add-connector');
+      }
+    },
+    [agentId, onAttached],
+  );
+
   const setProblem = (id: string, problem: RowProblem | null) =>
     setProblems((prev) => {
       const next = { ...prev };
@@ -347,6 +372,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
               canSetCredential={!teamAgent || sharedCredentials}
               // The callback already added it: re-read, never attach here.
               onSignedIn={onAttached}
+              onSignInSettled={() => void recheckAdded(c.id)}
               onAddKey={() => {
                 const full = details[c.id];
                 if (full === undefined) return;
@@ -389,6 +415,7 @@ function AvailableRow({
   teamAgent,
   canSetCredential,
   onSignedIn,
+  onSignInSettled,
   onAddKey,
   onAdd,
 }: {
@@ -403,6 +430,8 @@ function AvailableRow({
   /** TASK-813 — false: a team agent this person may not put a sign-in or key on. */
   canSetCredential: boolean;
   onSignedIn: () => void;
+  /** The sign-in ended without a cancel, whatever the popup said. */
+  onSignInSettled: () => void;
   onAddKey: () => void;
   onAdd: () => void;
 }) {
@@ -413,6 +442,7 @@ function AvailableRow({
     mode: 'add',
     serviceName: connector.name,
     onConnected: onSignedIn,
+    onSettled: onSignInSettled,
   });
   const pending = signIn.busy;
 

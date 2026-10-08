@@ -99,7 +99,12 @@ export function AddKeyDialog({
     setBusy(true);
     setError(null);
     try {
-      await onSave(entries.map((entry) => ({ slot: entry.slot, payload: values[entry.slot] ?? '' })));
+      // Leading/trailing spaces and newlines are never part of a key (a paste
+      // often brings a trailing newline), so they are trimmed before anything
+      // is encoded or sent — for the Add form and the rail's Add key alike.
+      await onSave(
+        entries.map((entry) => ({ slot: entry.slot, payload: (values[entry.slot] ?? '').trim() })),
+      );
     } catch (err) {
       setError(
         err instanceof Error

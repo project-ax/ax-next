@@ -213,6 +213,26 @@ describe('Add key (slice 3)', () => {
     expect(connectorsMock).toHaveBeenCalledTimes(2);
   });
 
+  // A pasted key often carries a trailing newline or spaces; they are never
+  // part of a key, and a key with them fails at the provider.
+  it('trims spaces and newlines around a pasted key before encoding it', async () => {
+    list([row({})]);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ saved: true }), { status: 200 }));
+    renderTab();
+    const dialog = await openAddKey('Linear');
+    const inputs = await within(dialog).findAllByLabelText(/key/i, { selector: 'input' });
+    fireEvent.change(inputs[0]!, { target: { value: '  lin_agent_1\r\n' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(puts()).toEqual([
+      {
+        url: '/api/workspace/agents/a-quill/connectors/linear/key',
+        method: 'PUT',
+        body: { slot: 'LINEAR_API_KEY', payloadB64: btoa('lin_agent_1') },
+      },
+    ]);
+  });
+
   it('on a team agent, its team admin is told everyone will use the key', async () => {
     list([row({})], { shared: true, sharedCredentials: true });
     renderTab();

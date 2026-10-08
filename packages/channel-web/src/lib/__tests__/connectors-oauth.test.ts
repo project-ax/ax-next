@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
-import { beginOAuth, discoverOAuthHosts, getOAuthStatus } from '../connectors-oauth';
+import { BeginOAuthError, beginOAuth, discoverOAuthHosts, getOAuthStatus } from '../connectors-oauth';
 
 describe('discoverOAuthHosts', () => {
   it('POSTs only the draft URL, with authentication/CSRF headers and a cancellation signal', async () => {
@@ -70,6 +70,31 @@ describe('beginOAuth', () => {
     expect(typeof noMode).toBe('function');
   });
 
+  it.each([
+    [403, 'agent-store-refused'],
+    [409, 'not-on-agent'],
+    [409, 'already-attached'],
+  ] as const)('a %i %s refusal is named on the error, as one of three fixed words', async (status, error) => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error }), { status }));
+    const e = await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(BeginOAuthError);
+    expect((e as BeginOAuthError).status).toBe(status);
+    expect((e as BeginOAuthError).refusal).toBe(error);
+  });
+
+  it.each([
+    [409, 'agent-store-refused'], // right word, wrong status
+    [403, 'already-attached'],
+    [403, 'forbidden'],
+    [409, 'something else the server says'],
+    [500, 'not-on-agent'],
+  ] as const)('a %i %s is no known refusal', async (status, error) => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error }), { status }));
+    const e = await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(BeginOAuthError);
+    expect((e as BeginOAuthError).refusal).toBeUndefined();
+  });
+
   it('throws the server message on non-ok', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ message: 'oauth_discovery_failed' }), { status: 502 }),
@@ -83,17 +108,17 @@ describe('getOAuthStatus', () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ status: 'needs-reconnect' }), { status: 200 }),
     );
-    expect(await getOAuthStatus({ connectorId: 'c' })).toBe('needs-reconnect');
-    expect((fetch as Mock).mock.calls[0]![0]).toContain(
-      '/api/connectors/oauth/status?connectorId=c',
+    expect(await getOAuthStatus({ connectorId: 'c', agentId: 'A' })).toBe('needs-reconnect');
+    expect((fetch as Mock).mock.calls[0]![0]).toBe(
+      '/api/connectors/oauth/status?connectorId=c&agentId=A',
     );
   });
 
-  it('includes agentId in the query when given', async () => {
-    globalThis.fetch = vi.fn(async () =>
-      new Response(JSON.stringify({ status: 'connected' }), { status: 200 }),
-    );
-    await getOAuthStatus({ connectorId: 'c', agentId: 'A' });
-    expect((fetch as Mock).mock.calls[0]![0]).toContain('agentId=A');
+  it('every status read names its agent: agentId is required by the type', () => {
+    // Compile-time pin (channel-web's tsc includes tests). Never called.
+    const noAgent = () =>
+      // @ts-expect-error — agentId is required
+      getOAuthStatus({ connectorId: 'c' });
+    expect(typeof noAgent).toBe('function');
   });
 });

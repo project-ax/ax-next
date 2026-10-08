@@ -12,6 +12,8 @@
  * (`purpose: 'add-key'`): every slot, Save once all are filled. Each slot is
  * one `workspaceApi.setAgentKey` PUT — never the personal or company key
  * routes — and only the slot NAME is sent; the server derives the vault ref.
+ * The key arrives already trimmed (`AddKeyDialog` strips surrounding spaces
+ * and newlines before handing it over), so what is encoded is the key alone.
  * A refusal keeps the dialog open with what was typed and shows the api's
  * fixed sentence.
  *

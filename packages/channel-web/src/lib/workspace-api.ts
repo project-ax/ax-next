@@ -522,9 +522,14 @@ export class AttachConnectorError extends WorkspaceApiError {
  * rail's Add key). The server decides who may: a team agent's team admin, a
  * personal agent's owner.
  */
-export const AGENT_KEY_FORBIDDEN = 'Only the agent’s owner can add its key.';
+export const AGENT_KEY_FORBIDDEN = 'Only someone who manages this agent can add its key.';
+/**
+ * One 409 (`agent-key-unavailable`) answers two cases the server does not
+ * tell apart: the connector spends the workspace's key, or the vault would
+ * not let this agent read a key for it (e.g. it is no longer on the agent).
+ */
 export const AGENT_KEY_UNAVAILABLE =
-  'This connector uses your workspace’s key, so the agent can’t have its own. Ask a workspace admin.';
+  'This agent can’t have its own key for this connector. It may use your workspace’s key, or no longer be on this agent. Ask a workspace admin.';
 export const AGENT_KEY_INVALID = 'That key didn’t look right. Check it and paste it again.';
 
 /** UTF-8 → base64, same encoding the credentials routes take. */
