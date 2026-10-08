@@ -396,7 +396,7 @@ spec:
                   name: {{ include "ax-next.fullname" . }}-secrets
                   key: auth-secret
 
-            # Conditionally mount /admin/credentials* + /settings/credentials*
+            # Conditionally mount /admin/credentials* + /admin|/settings/destinations/*
             # by loading @ax/credentials-admin-routes. Off by default; the
             # preset reads this env var (loadK8sConfigFromEnv) and only loads
             # the plugin when it's literally 'true'.

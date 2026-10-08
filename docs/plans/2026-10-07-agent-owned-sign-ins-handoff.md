@@ -101,7 +101,7 @@ Agents act as "digital employees" with their own accounts: agent 1 uses Gmail as
 - **Follow-up candidates, not yet filed:**
   - the stdio sweep hard-deletes despite reported purge failures;
   - an mcp-oauth↔connectors contract test for the meaning of absent `clientRegistration`/`scopes`;
-  - `scripts/test-remote-mcp-modal.mjs` is stale (it waits for a button the form no longer has);
+  - `scripts/test-remote-mcp-modal.mjs` is stale (it waits for a button the form no longer has) — deleted in SIGNINS-7;
   - `connectors:live-ids` rejects a whole batch on one invalid id;
   - a browser walk of Admin › Connectors / Awaiting approval / Settings › Sites.
 

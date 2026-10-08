@@ -28,16 +28,7 @@ The web package and affected backend packages have regression coverage for prese
 
 Browser verification uses the actual settings UI with intercepted test APIs. It covers desktop, mobile, short viewports, light and dark themes, reduced motion, disclosures, all client choices, custom credentials and headers, saving, reopening, closing, and keyboard behavior. It does not perform a live third-party OAuth authorization.
 
-To rerun the browser check, provide Playwright and Chromium or Chrome outside the application's production dependencies:
-
-```sh
-# Use an existing Playwright installation, or install a verification-only copy:
-npm install --prefix /tmp/ax-connector-browser --no-save playwright
-AX_PLAYWRIGHT_MODULE=/tmp/ax-connector-browser/node_modules/playwright \
-  node scripts/test-remote-mcp-modal.mjs
-```
-
-The script uses Chrome's standard macOS location when available. Elsewhere, set `AX_BROWSER_EXECUTABLE` to a compatible browser executable or install Playwright's Chromium. It starts a local Vite server on an available port and removes its temporary entry points when finished. Screenshots land in `.playwright-mcp/remote-mcp-modal/`.
+The browser check that lived in `scripts/test-remote-mcp-modal.mjs` was deleted in SIGNINS-7 (agent-owned sign-ins, slice 5): it set up a private connector with a per-person key and two secret writes, which the editor no longer allows.
 
 No deployment is part of this change.
 

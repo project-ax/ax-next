@@ -490,8 +490,12 @@ credentials:
   admin:
     # When true, the host pod loads @ax/credentials-admin-routes which
     # mounts:
-    #   /admin/credentials*    — admin-only CRUD (full scope axis)
-    #   /settings/credentials* — per-user CRUD (scope='user', actor-bound)
+    #   /admin/credentials*                — admin-only reads (full scope
+    #                                        axis) + provider-key routes
+    #   /admin/destinations/*/credential   — admin-only destination writes
+    #   /settings/destinations/*/credential — per-user destination writes
+    #                                        (never a connector `account`:
+    #                                        those belong to agents)
     #
     # On by default since the channel-web Settings UI (Provider keys +
     # Model config tabs) depends on these routes. Without them, those
