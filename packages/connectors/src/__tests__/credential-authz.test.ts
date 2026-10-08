@@ -488,4 +488,33 @@ describe("credentials:authorize-agent:account — purpose 'store'", () => {
       { msg: 'connectors_agent_credential_denied', bindings: { reason: 'not-the-connector', ref: 'account:never-existed' } },
     ]);
   });
+
+  it('a duplicated id (two live rows, inserted directly) fails closed: not-the-connector for store AND read', async () => {
+    const h = await makeHarness();
+    const c = new (await import('pg')).default.Client({ connectionString });
+    await c.connect();
+    try {
+      for (const owner of ['root', 'other']) {
+        await c.query(
+          `INSERT INTO connectors_v1_connectors (owner_user_id, connector_id, name, key_mode, capabilities)
+           VALUES ($1, 'linear', 'Linear', 'personal', $2::jsonb)`,
+          [owner, JSON.stringify(caps('TOKEN'))],
+        );
+      }
+    } finally {
+      await c.end().catch(() => {});
+    }
+    const { logger, lines } = recording();
+    expect(await store(h, 'member', 'account:linear', logger)).toEqual(DENIED);
+    const read = await h.bus.call<AuthorizeAgentInput, AuthorizeAgentOutput>(
+      'credentials:authorize-agent:account',
+      h.ctx({ userId: 'member', logger }),
+      { userId: 'member', agentId: 'team-agent', ref: 'account:linear' },
+    );
+    expect(read).toEqual(DENIED);
+    expect(lines.filter((l) => l.msg === 'connectors_agent_credential_denied')).toEqual([
+      { msg: 'connectors_agent_credential_denied', bindings: { reason: 'not-the-connector', ref: 'account:linear' } },
+      { msg: 'connectors_agent_credential_denied', bindings: { reason: 'not-the-connector', ref: 'account:linear' } },
+    ]);
+  });
 });

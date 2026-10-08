@@ -49,23 +49,12 @@ export async function runConnectorsMigration<DB>(
       usage_note    TEXT NOT NULL DEFAULT '',
       key_mode      TEXT NOT NULL
         CHECK (key_mode IN ('personal', 'workspace')),
-      visibility    TEXT NOT NULL
-        CHECK (visibility IN ('private', 'shared')),
       capabilities  JSONB NOT NULL,
       deleted_at    TIMESTAMPTZ,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (owner_user_id, connector_id)
     )
-  `.execute(db);
-
-  // SIGNINS-9 (slice 7) — every connector is shared. Code no longer writes
-  // `visibility`, so new rows take this default. The column (and its CHECK and
-  // the `_shared` partial index below) stays only so a rolled-back image still
-  // reads every row as shared; a later cleanup drops it. Idempotent.
-  await sql`
-    ALTER TABLE connectors_v1_connectors
-      ALTER COLUMN visibility SET DEFAULT 'shared'
   `.execute(db);
 
   // Owner list index excludes tombstones so list-by-owner stays fast even with
@@ -94,11 +83,9 @@ export async function runConnectorsMigration<DB>(
       ADD COLUMN IF NOT EXISTS requires_attachment BOOLEAN NOT NULL DEFAULT false
   `.execute(db);
 
-  await sql`
-    CREATE INDEX IF NOT EXISTS connectors_v1_connectors_shared
-      ON connectors_v1_connectors (connector_id)
-      WHERE deleted_at IS NULL AND visibility = 'shared'
-  `.execute(db);
+  // SIGNINS-9 (slice 7) — every connector is shared: drop the retired visibility column + its index.
+  await sql`DROP INDEX IF EXISTS connectors_v1_connectors_shared`.execute(db);
+  await sql`ALTER TABLE connectors_v1_connectors DROP COLUMN IF EXISTS visibility`.execute(db);
 
   // TASK-94 — agent-authored connector drafts. Keyed per-(owner, agent,
   // connector) because an authored draft is THIS agent's model-generated
@@ -156,11 +143,6 @@ export interface ConnectorsRow {
   description: string;
   usage_note: string;
   key_mode: string;
-  /**
-   * Vestigial since SIGNINS-9: always `'shared'` (the column DEFAULT). No code
-   * reads or writes it except the one-time boot step (`all-shared-step.ts`).
-   */
-  visibility: Generated<string>;
   capabilities: unknown;
   /**
    * TASK-97, retired by TASK-808 — see the migration header. `Generated` so no

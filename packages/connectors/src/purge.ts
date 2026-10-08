@@ -6,68 +6,6 @@ import {
 } from './oauth-client-secret-ref.js';
 import { deriveToolNamespaces } from './tool-namespace.js';
 import type { Capabilities, Connector, ConnectorDeletedEvent } from './types.js';
-import type { ResignTarget } from './all-shared-step.js';
-
-const AGENT_SCOPE: Array<'agent'> = ['agent'];
-
-/** Delete one GLOBAL-scope ref. Throws on failure; callers decide what to log. */
-async function deleteGlobalRef(bus: HookBus, ctx: AgentContext, ref: string): Promise<void> {
-  await bus.call('credentials:delete', ctx, { scope: 'global', ownerId: null, ref });
-}
-
-/** Purge every agent's sign-ins for an id (agent scope only). Throws on failure. */
-async function purgeAgentScopeSignIns(bus: HookBus, ctx: AgentContext, connectorId: string): Promise<number> {
-  const out = await bus.call<
-    { connectorId: string; scopes: Array<'agent'> },
-    { purged: number }
-  >('credentials:purge-account', ctx, { connectorId, scopes: AGENT_SCOPE });
-  return out.purged;
-}
-
-/**
- * SIGNINS-9 — the all-shared boot step's injected `ResignPurge`. Before it
- * dedupes an id that has two or more SHARED definitions, the id's id-keyed
- * credentials may belong to the definition about to lose, so for each target
- * this purges every agent's sign-ins (agent scope), the global OAuth client
- * secret (`account:<id>:OAUTH_CLIENT_SECRET`) and the workspace company keys
- * (`target.globalRefs`); agents and the admin then sign in / enter the key
- * again against the kept definition.
- *
- * Failures are COUNTED, not swallowed: the step aborts (no dedup, no marker)
- * unless this answers `{failed: 0}`, and retries next boot. A missing
- * credentials hook is not a failure (nothing is stored without it). Logs a
- * count only: the step promises never to log ids or owners.
- */
-export async function purgeSignInsForResign(
-  bus: HookBus,
-  ctx: AgentContext,
-  targets: readonly ResignTarget[],
-): Promise<{ failed: number }> {
-  let failed = 0;
-  for (const { connectorId, globalRefs } of targets) {
-    if (bus.hasService('credentials:purge-account')) {
-      try {
-        await purgeAgentScopeSignIns(bus, ctx, connectorId);
-      } catch {
-        failed += 1;
-      }
-    }
-    if (bus.hasService('credentials:delete')) {
-      for (const ref of [oauthClientSecretRefFor(connectorId), ...globalRefs]) {
-        try {
-          await deleteGlobalRef(bus, ctx, ref);
-        } catch {
-          failed += 1;
-        }
-      }
-    }
-  }
-  if (targets.length > 0) {
-    const log = failed > 0 ? ctx.logger.warn.bind(ctx.logger) : ctx.logger.info.bind(ctx.logger);
-    log('connectors_all_shared_resign_purged', { ids: targets.length, failed });
-  }
-  return { failed };
-}
 
 /** What `purgeConnectorState` reads from a connector — no more. */
 export type PurgeableConnector = Pick<Connector, 'id' | 'keyMode'> & {
@@ -163,7 +101,7 @@ export async function purgeConnectorState(
         continue;
       }
       try {
-        await deleteGlobalRef(bus, ctx, ref);
+        await bus.call('credentials:delete', ctx, { scope: 'global', ownerId: null, ref });
       } catch (err) {
         failed.push(`credentials:delete:global:${ref}`);
         ctx.logger.warn('connectors_delete_credential_purge_failed', {
@@ -187,13 +125,16 @@ export async function purgeConnectorState(
       reason: opts.agentSignInsSkipReason,
     });
   } else if (bus.hasService('credentials:purge-account')) {
-    const scopes = AGENT_SCOPE;
+    const scopes: Array<'agent'> = ['agent'];
     try {
-      const purged = await purgeAgentScopeSignIns(bus, ctx, connectorId);
+      const out = await bus.call<
+        { connectorId: string; scopes: Array<'agent'> },
+        { purged: number }
+      >('credentials:purge-account', ctx, { connectorId, scopes });
       ctx.logger.info('connectors_delete_agent_signins_purged', {
         connectorId,
         scopes,
-        purged,
+        purged: out.purged,
       });
     } catch (err) {
       failed.push('credentials:purge-account');

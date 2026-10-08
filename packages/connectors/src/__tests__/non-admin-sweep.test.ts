@@ -193,9 +193,8 @@ afterEach(async () => {
   await sql('DROP TABLE IF EXISTS connectors_v1_boot_steps');
 });
 
-// This sweep's marker only: the SIGNINS-9 all-shared step records its own.
 const doneMarkers = async () =>
-  (await sql("SELECT name FROM connectors_v1_boot_steps WHERE name <> 'all-connectors-shared'")).map((r) => r['name']);
+  (await sql('SELECT name FROM connectors_v1_boot_steps')).map((r) => r['name']);
 
 afterAll(async () => {
   if (container) await stopPostgresContainer(container);

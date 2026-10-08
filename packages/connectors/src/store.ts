@@ -465,10 +465,6 @@ export function createConnectorStore(
             description: args.description,
             usage_note: args.usageNote,
             key_mode: args.keyMode,
-            // SIGNINS-9 — vestigial column, never read; written 'shared' so a
-            // rolled-back image never sees an edited row (e.g. one a failed boot
-            // step left private) as private. Rollback safety only.
-            visibility: 'shared',
             capabilities: sql<unknown>`${JSON.stringify(args.capabilities)}::jsonb`,
             updated_at: now,
           })
@@ -543,11 +539,6 @@ export function createConnectorStore(
         description: args.description,
         usage_note: args.usageNote,
         key_mode: args.keyMode,
-        // SIGNINS-9 — vestigial column, never read; written 'shared' so a
-        // revived private tombstone (the boot step skips tombstones) never
-        // reads as private to a rolled-back image. Rollback safety only. A
-        // fresh INSERT takes the column DEFAULT ('shared').
-        visibility: 'shared',
         capabilities: capabilitiesJson,
         // Resurrect a tombstoned row on upsert — re-creating a deleted
         // connector under the same id is allowed.
