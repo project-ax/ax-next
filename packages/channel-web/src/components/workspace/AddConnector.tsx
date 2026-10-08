@@ -32,7 +32,8 @@
  * shadcn primitives + semantic tokens only (invariant #6).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, Loader2, Search } from 'lucide-react';
+import { ChevronLeft, Search } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -441,8 +442,8 @@ function AvailableRow({
     );
   } else if (attaching) {
     control = (
-      <Loader2
-        className="mr-2 size-4 animate-spin text-muted-foreground"
+      <Spinner
+        className="mr-2 text-muted-foreground"
         aria-label={`Adding ${connector.name}`}
       />
     );
@@ -494,8 +495,8 @@ function AvailableRow({
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="truncate text-[13px] font-medium">{connector.name}</span>
           {pending && (
-            <Loader2
-              className="size-3.5 shrink-0 animate-spin text-muted-foreground"
+            <Spinner
+              className="size-3.5 shrink-0 text-muted-foreground"
               aria-label="Waiting for sign-in"
             />
           )}

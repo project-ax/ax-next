@@ -22,7 +22,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
-import { Skeleton } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
 import { useRailPreference } from '@/lib/use-rail-preference';
 import { conversationControls } from '@/lib/conversation-controls';
 import { useIsCompact } from '@/lib/use-compact';
@@ -1310,7 +1310,18 @@ export function AgentView({
         }}
         className="flex flex-1 items-center justify-center text-[13px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <Skeleton className="h-6 w-1/3" /><Skeleton className="h-20 w-2/3" />
+        {/*
+          A blank pane, then a small spinner — not skeleton bubbles. An agent
+          switch remounts this view, so the pane is on screen for a few
+          milliseconds on every switch, and a bubble-shaped placeholder that
+          flashes past reads as a broken chat. The spinner waits 300ms before
+          fading in, so a fast read shows nothing at all. The fade sits on the
+          wrapper because `animate-in` and the Spinner's own spin both set
+          `animation`.
+        */}
+        <span className="animate-in fade-in-0 fill-mode-both delay-300 duration-200 motion-reduce:animate-none">
+          <Spinner aria-hidden="true" />
+        </span>
       </div>
     );
   }

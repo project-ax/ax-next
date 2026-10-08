@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
-import { Download, FileText, LoaderCircle } from 'lucide-react';
+import { Download, FileText } from 'lucide-react';
+import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { clampAttachmentName } from '@/lib/attachment-name';
@@ -66,7 +67,7 @@ export function GeneratedFileChip({ file, conversationId }: {
             {busy ? 'Downloading…' : [size, 'Download'].filter(Boolean).join(' · ')}
           </span>
         </span>
-        {busy ? <LoaderCircle data-icon="inline-end" className="animate-spin" aria-hidden="true" />
+        {busy ? <Spinner data-icon="inline-end" aria-hidden="true" />
           : <Download data-icon="inline-end" aria-hidden="true" />}
       </Button>
       {error !== null && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
