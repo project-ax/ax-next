@@ -7280,6 +7280,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      *     If a write or the attach fails, every key this request wrote is
      *     deleted again and the answer is that first failure's — so nothing
      *     is half-added.
+     *     A connector already on the agent is 409 `already-attached` before
+     *     anything is written: replacing a key is PUT …/key.
      *   - a shared key (`keyMode: 'workspace'`) or nothing: `keys` is refused
      *     (400 `keys-not-accepted`), and a shared key must already exist
      *     ({@link sharedKeyGate}).
@@ -7472,6 +7474,32 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           res.status(403).json({ error: 'agent-store-refused' });
           return;
         }
+      }
+      // Already on the agent: this is not an Add. Writing would overwrite the
+      // agent's working key, and a refused attach would then delete it.
+      // Replacing a key is PUT …/connectors/:connectorId/key.
+      if (!bus.hasService('connectors:list-effective')) {
+        res.status(503).json({ error: 'connectors-unavailable' });
+        return;
+      }
+      let onAgent: boolean;
+      try {
+        const effective = await listEffectiveConnectors(agent, actor.id);
+        onAgent = (Array.isArray(effective?.connectors) ? effective.connectors : []).some(
+          (c) => c?.summary?.id === connectorId,
+        );
+      } catch (err) {
+        initCtx.logger.warn('workspace_connector_attach_check_failed', {
+          connectorId,
+          step: 'effective',
+          name: err instanceof Error ? err.name : 'unknown',
+        });
+        res.status(503).json({ error: 'connector-check-failed' });
+        return;
+      }
+      if (onAgent) {
+        res.status(409).json({ error: 'already-attached' });
+        return;
       }
       // A write that cannot be undone is not made: no delete, no Add.
       if (!bus.hasService('credentials:set') || !bus.hasService('credentials:delete')) {

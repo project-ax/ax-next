@@ -103,6 +103,8 @@ describe('agent connector routes', () => {
   let attachCalls: Array<Record<string, unknown>>;
   let detachRefusal: PluginError | null;
   let attachRefusal: PluginError | null;
+  /** What `agents:attach-connector` says it changed. */
+  let attachChanged: boolean;
   /** toolKey → verdict, for agent a1. */
   let overrides: Map<string, string>;
   let overrideClears: string[];
@@ -159,6 +161,7 @@ describe('agent connector routes', () => {
     attachCalls = [];
     detachRefusal = null;
     attachRefusal = null;
+    attachChanged = true;
     overrides = new Map([
       [`mcp.${NS_LINEAR}.create_issue`, 'deny'],
       [`mcp.${NS_LINEAR}.search`, 'hold'],
@@ -232,7 +235,7 @@ describe('agent connector routes', () => {
     bus.registerService('agents:attach-connector', 'agents', async (_c, i: unknown) => {
       attachCalls.push(i as Record<string, unknown>);
       if (attachRefusal !== null) throw attachRefusal;
-      return { agent: {}, changed: true };
+      return { agent: {}, changed: attachChanged };
     });
     bus.registerService('agents:detach-connector', 'agents', async (_c, i: unknown) => {
       detachCalls.push(i as Record<string, unknown>);
@@ -1453,6 +1456,7 @@ describe('agent connector routes', () => {
           'agents:can-manage-connectors',
           'agents:can-set-shared-credential',
           'connectors:get',
+          'connectors:list-effective',
           'credentials:get',
           'credentials:authorize-agent:account',
           'credentials:set',
@@ -1685,6 +1689,7 @@ describe('agent connector routes', () => {
         'credentials:authorize-agent:account',
         'credentials:set',
         'credentials:delete',
+        'connectors:list-effective',
       ])('no %s: 503, nothing written, nothing attached', async (omit) => {
         const old = bus;
         bus = new HookBus();
@@ -1695,6 +1700,7 @@ describe('agent connector routes', () => {
           'agents:can-set-shared-credential',
           'agents:attach-connector',
           'connectors:get',
+          'connectors:list-effective',
           'credentials:authorize-agent:account',
           'credentials:set',
           'credentials:delete',
@@ -1705,6 +1711,33 @@ describe('agent connector routes', () => {
         expect(r.statusCode).toBe(503);
         expect(sets).toEqual([]);
         expect(attachCalls).toEqual([]);
+      });
+
+      // Review Minor 1 — re-adding a key connector the agent already has would
+      // overwrite its working key (and a refused attach would then delete it).
+      it('a per-agent key connector already on the agent: 409 already-attached, credentials:set never called', async () => {
+        effective.push({
+          summary: { id: 'multi', name: 'multi', keyMode: 'personal' },
+          source: 'attached',
+          toolNamespaces: [],
+        });
+        const r = await attach({ connectorId: 'multi', keys: keysFor() });
+        expect(r).toEqual({ statusCode: 409, body: { error: 'already-attached' } });
+        expect(sets).toEqual([]);
+        expect(deletes).toEqual([]);
+        expect(attachCalls).toEqual([]);
+        expectNoLeak(r);
+      });
+
+      it('a shared-key or no-auth re-add stays idempotent (changed: false), not 409', async () => {
+        attachChanged = false;
+        vault.add('account:company');
+        for (const connectorId of ['linear', 'company']) {
+          expect(await attach({ connectorId })).toEqual({
+            statusCode: 200,
+            body: { attached: true, changed: false },
+          });
+        }
       });
 
       it('a single-slot key connector writes the collapsed ref account:<id>', async () => {

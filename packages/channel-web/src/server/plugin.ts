@@ -299,7 +299,7 @@ export function createChannelWebServerPlugin(
           // the dependency the routes already degrade without.
           hook: 'connectors:list-effective',
           degradation:
-            'the Connectors tab list, a connector\'s details, its tool verdicts and Remove all answer 503 (there is no list of what this agent may use to check against)',
+            'the Connectors tab list, a connector\'s details, its tool verdicts, Remove and adding a key-based connector all answer 503 (there is no list of what this agent may use to check against)',
         },
         {
           // TASK-741 — the Connectors tab's "Sign-in expired" icon. A stored
