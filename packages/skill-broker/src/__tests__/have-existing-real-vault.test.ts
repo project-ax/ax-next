@@ -191,6 +191,21 @@ describe('request_capability haveExisting — the real vault', () => {
     expect(await haveExisting(bus)).toBe(false);
   });
 
+  // SIGNINS-7 — another agent's key is that agent's alone. The authz stub
+  // allows every agent here, so the only thing keeping it out is the vault
+  // reading the SESSION's agent row and no other.
+  it("is false when only another agent has the key", async () => {
+    const bus = await boot();
+    await bus.call('credentials:set', adminCtx(), {
+      scope: 'agent',
+      ownerId: 'agent-2',
+      ref: REF,
+      kind: 'api-key',
+      payload: enc('OTHER-AGENT-KEY'),
+    });
+    expect(await haveExisting(bus)).toBe(false);
+  });
+
   it('is false with an empty vault', async () => {
     const bus = await boot();
     expect(await haveExisting(bus)).toBe(false);
