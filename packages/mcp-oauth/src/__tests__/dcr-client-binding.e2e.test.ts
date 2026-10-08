@@ -392,6 +392,9 @@ interface Stack {
   resolve(user: string, agentId: string): Promise<ResolveResult>;
   clientRows(): Promise<Array<{ client_key: string; client_id: string; client_secret: string | null }>>;
   pendingStates(): Promise<string[]>;
+  /** `agentId|connectorId` pairs on the agent: callbacks add to it, and a test
+   *  that seeds a row directly (a legacy token) adds its own pair. */
+  attached: Set<string>;
 }
 
 const clientIdOf = (authorizationUrl: string): string =>
@@ -471,6 +474,7 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
   const stack: Stack = {
     h,
     db,
+    attached,
     async begin(user, body) {
       const { res, rec } = fakeRes();
       const mode = attached.has(`${body.agentId}|${body.connectorId}`) ? 'sign-in-again' : 'add';
@@ -747,6 +751,9 @@ describe('legacy token blobs (no clientId/clientSecret, only clientKey)', () => 
       clientKey: SHARED_CLIENT_KEY,
     };
     expect(blob).not.toHaveProperty('clientId');
+    // A legacy token was signed in on an agent that has the connector: the
+    // vault's read question ("is it on the agent?") must say yes for it.
+    s.attached.add('agent-legacy|conn-1');
     await s.h.bus.call('credentials:set', s.h.ctx({ userId: 'alice' }), {
       scope: 'agent',
       ownerId: 'agent-legacy',
