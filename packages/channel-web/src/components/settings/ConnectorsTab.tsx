@@ -59,6 +59,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
+/** SIGNINS-7 — a private connector's row: why it does nothing, and the fix. */
+const PRIVATE_CONNECTOR_NOTICE =
+  "Private connectors can't be used by agents. Make it Shared to use it, or delete it.";
+
 /**
  * Mechanism-free "what it needs" caption — keyMode only, no transport vocab.
  * The stored value is still `'personal'` (not renamed, slice 2a ruling); a
@@ -239,20 +243,31 @@ export function ConnectorsTab() {
     return (
       <div key={c.id} data-testid={`connector-tile-${c.id}`}>
         <RoleCard pill="service" title={c.name} caption={needsCaption(c.keyMode)}>
-          {canEdit && (
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => setEditing(c)}>
-                Edit
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setPendingDelete(c)}
-              >
-                Delete
-              </Button>
-            </div>
-          )}
+          <div className="flex flex-col gap-3">
+            {c.visibility === 'private' && (
+              // SIGNINS-7 — an agent can hold a sign-in or key only for a
+              // shared connector, so a private one does nothing. It is never
+              // shared for the admin; this says what fixes it. A note, not an
+              // error (the shared Alert defaults to role="alert").
+              <Alert role="note">
+                <AlertDescription>{PRIVATE_CONNECTOR_NOTICE}</AlertDescription>
+              </Alert>
+            )}
+            {canEdit && (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setEditing(c)}>
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPendingDelete(c)}
+                >
+                  Delete
+                </Button>
+              </div>
+            )}
+          </div>
         </RoleCard>
       </div>
     );

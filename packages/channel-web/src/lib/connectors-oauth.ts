@@ -15,8 +15,10 @@ import type { BeginRefusal, OAuthMode } from './oauth-failure';
 
 /**
  * A begin the server answered with a non-ok status. `refusal` is set ONLY for
- * the three known refusals at their own status (403 `agent-store-refused`,
- * 409 `not-on-agent`, 409 `already-attached`); the UI maps it to fixed copy.
+ * the known refusals at their own status (403 `agent-store-refused`, 409
+ * `not-on-agent`, 409 `already-attached`, and — SIGNINS-7 — 400
+ * `oauth_client_secret_unavailable` as `client-secret-missing`); the UI maps
+ * it to fixed copy.
  * The message is for the console, never the screen.
  */
 export class BeginOAuthError extends Error {
@@ -33,6 +35,7 @@ export class BeginOAuthError extends Error {
 function beginRefusalOf(status: number, code: unknown): BeginRefusal | undefined {
   if (status === 403 && code === 'agent-store-refused') return 'agent-store-refused';
   if (status === 409 && (code === 'not-on-agent' || code === 'already-attached')) return code;
+  if (status === 400 && code === 'oauth_client_secret_unavailable') return 'client-secret-missing';
   return undefined;
 }
 

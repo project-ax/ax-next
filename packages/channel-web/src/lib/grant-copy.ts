@@ -81,6 +81,17 @@ export const GRANT_REASSURANCE =
   'choose, and you can change it later in Settings.';
 
 /**
+ * Slice 5 — a connector's key or sign-in is the agent's or the workspace's,
+ * never the person answering the card, so the card asks for none. SIGNINS-7:
+ * the card can't tell a connector already on the agent (only its sign-in
+ * missing) from one not added yet, so one sentence covers both and points at
+ * the agent's Connectors tab, which fixes either.
+ */
+export function connectorSetupHint(service: string): string {
+  return `Add ${humanizeId(service)} to this agent, or sign it in, from its Connectors tab.`;
+}
+
+/**
  * The single trust moment of the product: we are asking for a secret.
  *
  * The field used to be labelled `api_key` with nothing saying where the key
@@ -89,14 +100,6 @@ export const GRANT_REASSURANCE =
  * credential store and never reaches the model or the transcript (§10,
  * TASK-35).
  */
-/**
- * Slice 5 — a connector's key is the agent's or the workspace's, never the
- * person answering the card, so the card asks for none. It says who can add it.
- */
-export function askAdminForConnector(service: string): string {
-  return `Ask a workspace admin to add a ${humanizeId(service)} connector, then add it to this agent.`;
-}
-
 export const KEY_SAFETY =
   'We store this key on the server. The agent never sees it, and it never ' +
   'appears in your conversation.';

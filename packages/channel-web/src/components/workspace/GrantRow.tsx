@@ -63,7 +63,7 @@ import {
   PACKAGES_LINE,
   REACH_LEAD_IN,
   SLOT_HINT,
-  askAdminForConnector,
+  connectorSetupHint,
   grantDescription,
   grantPackagesVisible,
   grantTitle,
@@ -583,13 +583,13 @@ export function GrantRow({
         const account = slotAccount(s);
         const connectorService = connectorServiceOf(s);
         if (connectorService !== undefined && s.haveExisting !== true)
-          // Slice 5 — not the person's to type: see `askAdminForConnector`.
+          // Slice 5 — not the person's to type: see `connectorSetupHint`.
           // A note, not an interruption: the shared Alert defaults to
           // role="alert", which belongs to a failed Connect alone.
           return (
             <Alert key={s.slot} role="note" className="mt-3 max-w-[660px]">
               <AlertDescription className="text-[13px] leading-relaxed">
-                {askAdminForConnector(connectorService)}
+                {connectorSetupHint(connectorService)}
               </AlertDescription>
             </Alert>
           );

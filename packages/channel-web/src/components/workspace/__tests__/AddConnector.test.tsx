@@ -220,8 +220,9 @@ describe('a swallowed failure is never silent (TASK-757)', () => {
 
 describe('a sign-in the server refuses before the popup says why, in our words', () => {
   it.each([
-    [403, 'agent-store-refused', "This connector can't be added to this agent."],
+    [403, 'agent-store-refused', "This connector can't be used by agents yet. Ask a workspace admin to make it Shared."],
     [409, 'already-attached', "It's already on this agent."],
+    [400, 'client-secret-missing', "This connector's client secret is missing. Ask a workspace admin to enter it again."],
   ] as const)('%i %s → "%s"', async (status, refusal, copy) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(beginOAuth).mockRejectedValue(new BeginOAuthError(status, 'server text', refusal));
@@ -513,7 +514,9 @@ describe('per-agent key: the key form, saved with the Add', () => {
     [409, 'connector-needs-sign-in', 'Zendesk is added by signing in. Go back and open Add again.'],
     [400, 'keys-not-accepted', 'Zendesk doesn’t take a key any more. Go back and open Add again.'],
     [409, 'already-attached', 'Zendesk is already on Quill. To change its key, remove it and add it again.'],
-    [403, 'agent-store-refused', 'You can’t add keys to Quill. Ask the agent’s owner.'],
+    // SIGNINS-7 — the vault's store question said no: the connector isn't
+    // the shared one (a private connector). Say so, not "you can't".
+    [403, 'agent-store-refused', "This connector can't be used by agents yet. Ask a workspace admin to make it Shared."],
     [403, 'forbidden', 'You can’t add keys to Quill. Ask the agent’s owner.'],
     [503, 'connector-check-failed', 'We couldn’t add Zendesk to Quill just now. Nothing was saved — please try again.'],
   ])('a %i %s refusal shows fixed copy in the form, and nothing is added', async (status, code, copy) => {

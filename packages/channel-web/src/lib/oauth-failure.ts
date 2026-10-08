@@ -62,16 +62,26 @@ export function oauthFailureMessage(
 /**
  * Why `begin` refused before any popup opened (slice 3). Matched by the
  * client against the server's status AND error word; the sentence is ours.
- *   - `agent-store-refused` — this agent may not hold this connector's sign-in.
- *   - `not-on-agent`        — Sign in again, but the connector was removed.
- *   - `already-attached`    — an Add of a connector already on the agent.
+ *   - `agent-store-refused`   — no agent may hold this connector's sign-in:
+ *                              it isn't the shared definition (SIGNINS-7: a
+ *                              private connector). An admin fixes it.
+ *   - `not-on-agent`          — Sign in again, but the connector was removed.
+ *   - `already-attached`      — an Add of a connector already on the agent.
+ *   - `client-secret-missing` — its custom OAuth client's secret is gone from
+ *                              the workspace (SIGNINS-7). An admin fixes it.
  */
-export type BeginRefusal = 'agent-store-refused' | 'not-on-agent' | 'already-attached';
+export type BeginRefusal =
+  | 'agent-store-refused'
+  | 'not-on-agent'
+  | 'already-attached'
+  | 'client-secret-missing';
 
 export function beginRefusalMessage(refusal: BeginRefusal): string {
   switch (refusal) {
     case 'agent-store-refused':
-      return "This connector can't be added to this agent.";
+      return "This connector can't be used by agents yet. Ask a workspace admin to make it Shared.";
+    case 'client-secret-missing':
+      return "This connector's client secret is missing. Ask a workspace admin to enter it again.";
     case 'not-on-agent':
       return "This connector isn't on this agent any more.";
     case 'already-attached':

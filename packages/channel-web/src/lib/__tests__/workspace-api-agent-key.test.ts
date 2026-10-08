@@ -60,11 +60,11 @@ describe('workspaceApi.setAgentKey', () => {
     );
     const unavailable = await failure(workspaceApi.setAgentKey('a1', 'linear', 'api_key', SECRET));
     expect((unavailable as Error).message).toBe(AGENT_KEY_UNAVAILABLE);
-    // The server answers one 409 for two cases (the connector spends the
-    // workspace's key, or this agent may not hold one for it — e.g. it left
-    // the agent), so the sentence covers both, honestly.
+    // The server answers one 409 for three cases (the connector isn't
+    // Shared — SIGNINS-7 —, it spends the workspace's key, or it left the
+    // agent), so the sentence covers all three, honestly.
     expect(AGENT_KEY_UNAVAILABLE).toBe(
-      'This agent can’t have its own key for this connector. It may use your workspace’s key, or no longer be on this agent. Ask a workspace admin.',
+      'This agent can’t have its own key for this connector. The connector may not be Shared yet, may use your workspace’s key, or may no longer be on this agent. Ask a workspace admin.',
     );
   });
 

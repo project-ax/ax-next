@@ -33,8 +33,11 @@ export function availableConnectors(
   catalog: readonly ConnectorSummary[],
   effectiveIds: ReadonlySet<string>,
 ): ConnectorSummary[] {
+  // SIGNINS-7 — an agent can hold a sign-in or key only for a SHARED
+  // connector, so a private one can't be added. It is left out here, never
+  // quietly shared; Admin › Connectors says how to fix it.
   return catalog
-    .filter((c) => !effectiveIds.has(c.id))
+    .filter((c) => c.visibility === 'shared' && !effectiveIds.has(c.id))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 

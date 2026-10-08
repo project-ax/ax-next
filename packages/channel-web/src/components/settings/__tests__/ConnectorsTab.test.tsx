@@ -77,6 +77,27 @@ describe('ConnectorsTab', () => {
     expect(screen.getByText('Salesforce')).toBeInTheDocument();
   });
 
+  // SIGNINS-7 — an agent can hold a sign-in or key only for a shared
+  // connector. A private one is never made shared for the admin: its row
+  // says why it does nothing and what fixes it.
+  const PRIVATE_NOTICE =
+    "Private connectors can't be used by agents. Make it Shared to use it, or delete it.";
+
+  it('a private connector says agents can’t use it, and how to fix that', async () => {
+    render(<ConnectorsTab />);
+    const tile = await screen.findByTestId('connector-tile-my-notion');
+    const note = within(tile).getByText(PRIVATE_NOTICE);
+    // A note beside the row, not an error.
+    expect(note.closest('[role="note"]')).not.toBeNull();
+    expect(within(tile).queryByRole('alert')).toBeNull();
+  });
+
+  it('a shared connector has no such notice', async () => {
+    render(<ConnectorsTab />);
+    const tile = await screen.findByTestId('connector-tile-company-salesforce');
+    expect(within(tile).queryByText(PRIVATE_NOTICE)).toBeNull();
+  });
+
   // Slice 2c — Awaiting approval: every person's connector requests (an agent
   // needed a connector nobody had defined). Approval is creation: "Set it up"
   // opens the normal create editor prefilled from the request.

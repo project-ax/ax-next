@@ -5,14 +5,18 @@ import { describe, expect, it } from 'vitest';
 import { addActionFor, agentKeyEntries, availableConnectors } from '../add-connector';
 import { emptyCapabilities, type Connector, type ConnectorSummary } from '../connectors';
 
-function summary(id: string, keyMode: 'personal' | 'workspace'): ConnectorSummary {
+function summary(
+  id: string,
+  keyMode: 'personal' | 'workspace',
+  visibility: 'private' | 'shared' = 'shared',
+): ConnectorSummary {
   return {
     id,
     name: id,
     description: '',
     usageNote: '',
     keyMode,
-    visibility: 'shared',
+    visibility,
     createdAt: '',
     updatedAt: '',
   };
@@ -31,6 +35,17 @@ describe('availableConnectors', () => {
       new Set(['c']),
     );
     expect(list.map((c) => c.id)).toEqual(['a', 'b']);
+  });
+
+  // SIGNINS-7 — an agent can hold a sign-in or key only for a SHARED
+  // connector, so a private one can't be added any more. It is left out,
+  // never quietly made shared.
+  it('leaves out private connectors', () => {
+    const list = availableConnectors(
+      [summary('p', 'personal', 'private'), summary('w', 'workspace', 'private'), summary('s', 'personal')],
+      new Set(),
+    );
+    expect(list.map((c) => c.id)).toEqual(['s']);
   });
 });
 

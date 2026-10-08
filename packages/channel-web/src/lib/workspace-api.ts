@@ -500,6 +500,8 @@ export const ATTACH_REFUSAL_CODES = [
   'connector-needs-shared-key',
   'already-attached',
   'keys-not-accepted',
+  // SIGNINS-7 — the vault's store question said no: not the shared connector.
+  'agent-store-refused',
 ] as const;
 export type AttachRefusalCode = (typeof ATTACH_REFUSAL_CODES)[number];
 
@@ -524,12 +526,13 @@ export class AttachConnectorError extends WorkspaceApiError {
  */
 export const AGENT_KEY_FORBIDDEN = 'Only someone who manages this agent can add its key.';
 /**
- * One 409 (`agent-key-unavailable`) answers two cases the server does not
- * tell apart: the connector spends the workspace's key, or the vault would
- * not let this agent read a key for it (e.g. it is no longer on the agent).
+ * One 409 (`agent-key-unavailable`) answers three cases the server does not
+ * tell apart: the connector isn't Shared (SIGNINS-7: no agent may hold a key
+ * for a private one), it spends the workspace's key, or the vault would not
+ * let this agent read a key for it (e.g. it is no longer on the agent).
  */
 export const AGENT_KEY_UNAVAILABLE =
-  'This agent can’t have its own key for this connector. It may use your workspace’s key, or no longer be on this agent. Ask a workspace admin.';
+  'This agent can’t have its own key for this connector. The connector may not be Shared yet, may use your workspace’s key, or may no longer be on this agent. Ask a workspace admin.';
 export const AGENT_KEY_INVALID = 'That key didn’t look right. Check it and paste it again.';
 
 /** UTF-8 → base64, same encoding the credentials routes take. */

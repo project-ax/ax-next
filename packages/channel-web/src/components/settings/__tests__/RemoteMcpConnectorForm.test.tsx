@@ -191,6 +191,12 @@ async function finishAdding() {
   await waitFor(() => expect(save).toBeEnabled());
   fireEvent.click(save);
 }
+/** The radios on screen other than Sharing's (SIGNINS-7), by value. */
+const signInRadios = () =>
+  screen
+    .queryAllByRole('radio')
+    .map((r) => r.getAttribute('value'))
+    .filter((v) => v !== 'shared' && v !== 'private');
 const withoutClientId = () => {
   fixture.capabilities.credentials = [
     { kind: 'oauth', slot: 'TOKEN', server: 'linear' },
@@ -296,10 +302,9 @@ describe('remote connector editor', () => {
     await openEditor();
     expect(screen.getByLabelText('Client ID')).toHaveValue('existing-client');
     expect(screen.getByText('Saved securely')).toBeInTheDocument();
-    // The only choice offered is HOW people sign in — never CIMD vs DCR.
-    expect(
-      screen.getAllByRole('radio').map((r) => r.getAttribute('value')),
-    ).toEqual(['oauth', 'key']);
+    // The only sign-in choice offered is HOW people sign in — never CIMD vs
+    // DCR. (Sharing, SIGNINS-7, is its own choice.)
+    expect(signInRadios()).toEqual(['oauth', 'key']);
     fireEvent.click(
       screen.getByRole('button', { name: 'Use automatic setup instead' }),
     );
@@ -623,10 +628,9 @@ describe('remote connector editor', () => {
       };
       await openEditor();
       expect(screen.getByText(text)).toBeVisible();
-      // The only choice offered is HOW people sign in — never CIMD vs DCR.
-      expect(
-        screen.getAllByRole('radio').map((r) => r.getAttribute('value')),
-      ).toEqual(['oauth', 'key']);
+      // The only sign-in choice offered is HOW people sign in — never CIMD
+      // vs DCR. (Sharing, SIGNINS-7, is its own choice.)
+      expect(signInRadios()).toEqual(['oauth', 'key']);
       expect(screen.queryByLabelText('Client ID')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /Request headers/ }));
       fireEvent.click(screen.getByRole('button', { name: 'Add header' }));
@@ -1636,6 +1640,102 @@ describe('a client secret missing from the workspace', () => {
   });
 });
 
+// SIGNINS-7 — an agent can hold a sign-in or key only for a SHARED connector.
+// A private one is never made shared for the admin; the editor offers the
+// choice, and it travels on the same PATCH as every other field (the server's
+// owner-only rule still decides).
+describe('sharing (SIGNINS-7)', () => {
+  const SHARED = /Shared — agents can use it/;
+  const PRIVATE = /Private — agents can’t use it/;
+
+  it('an editor shows the choice, and leaves visibility out of the save when it is unchanged', async () => {
+    const options = await openEditor();
+    expect(screen.getByLabelText(SHARED)).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(writes[0]!.body).not.toHaveProperty('visibility');
+  });
+
+  it('a private connector says agents can’t use it, and Save makes it Shared when chosen', async () => {
+    fixture.visibility = 'private';
+    const options = await openEditor();
+    expect(screen.getByLabelText(PRIVATE)).toBeChecked();
+    expect(
+      screen.getByText("Private connectors can't be used by agents. Make it Shared to use it."),
+    ).toBeVisible();
+    fireEvent.click(screen.getByLabelText(SHARED));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(calls).toEqual(['PATCH /admin/connectors/linear']);
+    expect(writes[0]!.body).toMatchObject({ visibility: 'shared' });
+  });
+
+  it('making it Shared lets the same save carry a client secret, stored at the workspace', async () => {
+    fixture.visibility = 'private';
+    const options = await openEditor();
+    fireEvent.click(screen.getByLabelText(SHARED));
+    replaceClientSecret('now-shared-secret');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(screen.queryByText(NEEDS_SHARED)).not.toBeInTheDocument();
+    expect(writes[0]!.body).toMatchObject({ scope: 'global', ownerId: null });
+    expect(writes[1]!.body).toMatchObject({ visibility: 'shared' });
+  });
+
+  it('a whitespace-only client secret is no secret: a private connector still saves', async () => {
+    fixture.visibility = 'private';
+    const options = await openEditor();
+    replaceClientSecret('   ');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(options.onSaved).toHaveBeenCalled());
+    expect(screen.queryByText(NEEDS_SHARED)).not.toBeInTheDocument();
+    expect(calls).toEqual(['PATCH /admin/connectors/linear']);
+  });
+
+  it('a save refused as owner-only says who can change it', async () => {
+    fixture.visibility = 'private';
+    writeResponse = () =>
+      new Response(JSON.stringify({ error: 'owner-only-change' }), { status: 403 });
+    const options = await openEditor();
+    fireEvent.click(screen.getByLabelText(SHARED));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText(/Only the admin who created this connector/)).toBeVisible();
+    expect(options.onSaved).not.toHaveBeenCalled();
+  });
+
+  it('a new connector shows no choice: it is created Shared', async () => {
+    await openNew();
+    expect(screen.queryByLabelText(SHARED)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(PRIVATE)).not.toBeInTheDocument();
+  });
+});
+
+// SIGNINS-7 — a custom OAuth client whose secret the workspace doesn't have
+// (an admin's old per-person copy was removed at boot): say so where it's fixed.
+describe('missing client secret notice (SIGNINS-7)', () => {
+  const MISSING = 'The client secret is missing. Enter it again so agents can sign in.';
+
+  it('shows when the connector has a custom client and the workspace has no secret', async () => {
+    adminCredentialsResponse = () => new Response(JSON.stringify({ credentials: [] }));
+    await openEditor();
+    expect(await screen.findByText(MISSING)).toBeVisible();
+  });
+
+  it('stays hidden when the workspace has the secret', async () => {
+    await openEditor();
+    await settle();
+    expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+  });
+
+  it('stays hidden when the connector has no custom client', async () => {
+    adminCredentialsResponse = () => new Response(JSON.stringify({ credentials: [] }));
+    withoutClientId();
+    await openEditor();
+    await settle();
+    expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+  });
+});
+
 describe('whose key (TASK-827)', () => {
   const NO_SIGN_IN = { hosts: ['public.example.com'], auth: 'none' };
   const addKeyHeader = () => {
@@ -1726,7 +1826,7 @@ describe('whose key (TASK-827)', () => {
       await openEditor();
       expect(screen.getByText(line)).toBeVisible();
       expect(screen.queryByText('Whose key')).not.toBeInTheDocument();
-      expect(screen.queryAllByRole('radio')).toHaveLength(0);
+      expect(signInRadios()).toEqual([]);
     },
   );
 

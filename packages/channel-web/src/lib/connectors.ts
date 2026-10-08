@@ -25,7 +25,8 @@
  *
  * SECURITY — actor identity comes from the session, never the request body.
  * Shared definitions contain credential references, never secret values.
- * Personal credentials remain scoped to the user connecting the service.
+ * A connector's credentials belong to an agent (its sign-in or its own key)
+ * or to the workspace (one shared key) — never to a person (slice 5).
  *
  * CSRF — state-changing methods carry `X-Requested-With: ax-admin`, same as
  * `lib/admin.ts`.

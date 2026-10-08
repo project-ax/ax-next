@@ -725,13 +725,16 @@ describe('invalid caller-id credential floor', () => {
   still the person's to type.
 */
 describe('a grant that needs a connector key', () => {
-  const ASK_ADMIN = 'Ask a workspace admin to add a Linear connector, then add it to this agent.';
+  // SIGNINS-7 — the card can't tell whether the connector is already on the
+  // agent (only its sign-in missing) or not added yet, so one sentence covers
+  // both, and points at the place that fixes either.
+  const ASK_ADMIN = 'Add Linear to this agent, or sign it in, from its Connectors tab.';
   const connectorSlotReq: PermissionRequest = {
     ...skillReq,
     slots: [{ slot: 'api_key', kind: 'api-key', service: 'linear' }],
   };
 
-  test('says to ask an admin, and offers no key field', () => {
+  test('says where to add or sign it in, and offers no key field', () => {
     row(connectorSlotReq);
     expect(screen.getByText(ASK_ADMIN)).toBeInTheDocument();
     // A note, so a failed Connect stays the row's only alert.

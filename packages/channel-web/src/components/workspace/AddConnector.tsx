@@ -59,6 +59,7 @@ import {
   type ConnectorSummary,
 } from '@/lib/connectors';
 import { HttpError, logRequestFailure } from '@/lib/http';
+import { beginRefusalMessage } from '@/lib/oauth-failure';
 import { useOAuthPopup } from '@/lib/use-oauth-popup';
 import { useUser } from '@/lib/user-context';
 import { AttachConnectorError, workspaceApi, type AgentConnectorKey } from '@/lib/workspace-api';
@@ -123,6 +124,11 @@ function refusalCopy(
         : `${c.name} needs a key first. Go back and open Add again.`,
       retry: false,
     };
+  }
+  if (code === 'agent-store-refused') {
+    // SIGNINS-7 — the connector isn't the shared one (a private connector):
+    // no agent may hold its key. An admin fixes that; trying again won't.
+    return { text: beginRefusalMessage('agent-store-refused'), retry: false };
   }
   if (code === 'connector-needs-shared-key') {
     // TASK-827 — the shared key is the workspace's. No Retry: it would meet

@@ -82,12 +82,22 @@ describe('beginOAuth', () => {
     expect((e as BeginOAuthError).refusal).toBe(error);
   });
 
+  it('SIGNINS-7: a 400 oauth_client_secret_unavailable is named client-secret-missing', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify({ error: 'oauth_client_secret_unavailable' }), { status: 400 }),
+    );
+    const e = await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'sign-in-again' }).catch((x: unknown) => x);
+    expect((e as BeginOAuthError).refusal).toBe('client-secret-missing');
+  });
+
   it.each([
     [409, 'agent-store-refused'], // right word, wrong status
     [403, 'already-attached'],
     [403, 'forbidden'],
     [409, 'something else the server says'],
     [500, 'not-on-agent'],
+    [409, 'oauth_client_secret_unavailable'], // right word, wrong status
+    [400, 'client-secret-missing'], // our word, never the server's
   ] as const)('a %i %s is no known refusal', async (status, error) => {
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error }), { status }));
     const e = await beginOAuth({ connectorId: 'c', agentId: 'A', mode: 'add' }).catch((x: unknown) => x);

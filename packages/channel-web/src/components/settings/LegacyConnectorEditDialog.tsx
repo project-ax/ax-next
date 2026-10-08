@@ -844,11 +844,13 @@ export function LegacyConnectorEditDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                {/* SIGNINS-7 — the same words as the remote form: an agent
+                    can hold a sign-in or key only for a shared connector. */}
                 <SelectItem value="private">
-                  Private — just your agents
+                  Private — agents can’t use it
                 </SelectItem>
                 <SelectItem value="shared">
-                  Shared — agents others can use
+                  Shared — agents can use it
                 </SelectItem>
               </SelectContent>
             </Select>

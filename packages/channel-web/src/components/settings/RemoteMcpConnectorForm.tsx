@@ -163,10 +163,19 @@ export function RemoteMcpConnectorForm({
   >('loading');
   const [copied, setCopied] = useState(false);
   const [editingClientSecret, setEditingClientSecret] = useState(false);
+  // SIGNINS-7 — Sharing. An agent can hold a sign-in or key only for a
+  // shared connector, so an editor offers the choice (a new connector is
+  // created shared, with no choice). A change rides the same PATCH as every
+  // other field, so the server's owner-only rule decides; it is sent only
+  // when it changed, so an admin relabelling someone else's shared connector
+  // never trips that rule.
+  const [visibility, setVisibility] = useState<'private' | 'shared'>(
+    connector?.visibility ?? 'shared',
+  );
   // The client secret is always the workspace's (global scope), so everyone
   // who signs in can use it. A private connector can't carry one (see
-  // `CLIENT_SECRET_NEEDS_SHARED`); a new connector is created shared.
-  const sharedConnector = (connector?.visibility ?? 'shared') === 'shared';
+  // `CLIENT_SECRET_NEEDS_SHARED`) — unless this same save makes it Shared.
+  const sharedConnector = visibility === 'shared';
   // What the connector pointed at when this form opened. Stays put while the
   // draft's own reference changes (Remove clears it).
   const [savedClientSecretRef] = useState(draft.clientSecretRef);
@@ -434,8 +443,9 @@ export function RemoteMcpConnectorForm({
     }
     if (saving || blocked) return;
     const nextErrors = remoteErrors(effectiveDraft, keyMode);
+    // A secret of only spaces is no secret (and must not trip the private check).
     const writesClientSecret =
-      signIn === 'oauth' && registration === 'custom' && Boolean(draft.clientSecret);
+      signIn === 'oauth' && registration === 'custom' && draft.clientSecret.trim().length > 0;
     if (writesClientSecret && !sharedConnector)
       nextErrors.clientSecret = CLIENT_SECRET_NEEDS_SHARED;
     if (
@@ -523,6 +533,7 @@ export function RemoteMcpConnectorForm({
         capabilities,
         keyMode,
         ...(prefill ? { usageNote } : {}),
+        ...(connector && visibility !== connector.visibility ? { visibility } : {}),
       };
       let added: Connector | undefined;
       if (connector) await patchConnector(connectorId, input, base);
@@ -672,6 +683,37 @@ export function RemoteMcpConnectorForm({
                       choose again.
                     </AlertDescription>
                   </Alert>
+                )}
+                {connector && (
+                  <FieldSet>
+                    <FieldLegend variant="label">Sharing</FieldLegend>
+                    <RadioGroup
+                      value={visibility}
+                      onValueChange={(v) => setVisibility(v === 'private' ? 'private' : 'shared')}
+                    >
+                      <Field orientation="horizontal">
+                        <RadioGroupItem value="shared" id={fieldId('sharing-shared')} />
+                        <FieldContent>
+                          <FieldLabel htmlFor={fieldId('sharing-shared')}>
+                            Shared — agents can use it
+                          </FieldLabel>
+                        </FieldContent>
+                      </Field>
+                      <Field orientation="horizontal">
+                        <RadioGroupItem value="private" id={fieldId('sharing-private')} />
+                        <FieldContent>
+                          <FieldLabel htmlFor={fieldId('sharing-private')}>
+                            Private — agents can’t use it
+                          </FieldLabel>
+                        </FieldContent>
+                      </Field>
+                    </RadioGroup>
+                    {visibility === 'private' && (
+                      <FieldDescription>
+                        Private connectors can't be used by agents. Make it Shared to use it.
+                      </FieldDescription>
+                    )}
+                  </FieldSet>
                 )}
                 {awaitingDiscovery && (
                   <p
@@ -840,6 +882,17 @@ export function RemoteMcpConnectorForm({
                                 }
                               />
                             )}
+                            {clientSecretMissing &&
+                              draft.clientId.trim() !== '' &&
+                              draft.clientSecretRef !== '' &&
+                              !errors.clientSecret && (
+                                // SIGNINS-7 — the connector names a secret the
+                                // workspace doesn't have, so sign-ins fail
+                                // until it's entered again.
+                                <FieldDescription data-testid="client-secret-missing">
+                                  The client secret is missing. Enter it again so agents can sign in.
+                                </FieldDescription>
+                              )}
                             {errors.clientSecret && (
                               <FieldError id={fieldId('client-secret-error')}>
                                 {errors.clientSecret}
