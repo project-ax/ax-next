@@ -624,6 +624,36 @@ describe('which settled fires touch last_warning (slice 6)', () => {
     expect('warning' in r).toBe(false);
   });
 
+  // Residual review — skips stashed for this fire prove it reached assembly,
+  // whatever the outcome says afterwards.
+  it('a fire that stashed skips and then threw (or was refused) still records its warning', async () => {
+    for (const end of [
+      async () => { throw new Error('transport blip'); },
+      async () => ({ kind: 'terminated', reason: 'agent-resolve:internal' }),
+    ]) {
+      const pending: PendingFires = new Map();
+      const bus = await makeBus({
+        resolve: async (agentId, userId) => ({ agent: { id: agentId, ownerId: userId, displayName: 'Bob' } }),
+        invoke: async (ctx) => {
+          stashConnectorsSkipped(pending, {
+            reqId: ctx.reqId,
+            connectors: [{ connectorId: 'gmail', name: 'Gmail', reason: 'not-signed-in' }],
+          });
+          return end();
+        },
+      });
+      const recorded: RecordFireInput[] = [];
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        await createFireRoutine({ bus, pending, recordFire: async (i) => { recorded.push(i); } })(row(), 'tick');
+        await vi.waitFor(() => expect(recorded).toHaveLength(1));
+      } finally {
+        stderr.mockRestore();
+      }
+      expect(recorded[0]!.warning).toBe("Gmail isn't signed in on Bob, so this run went without it.");
+    }
+  });
+
   it('any other terminated run → warning written (null when nothing was skipped)', async () => {
     const r = await settle(async () => ({ kind: 'terminated', reason: 'connector-needs-reconnect' }));
     expect(r.warning).toBeNull();

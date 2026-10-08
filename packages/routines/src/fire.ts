@@ -317,8 +317,9 @@ export function createFireRoutine(deps: FireDeps) {
           renderedPrompt: prompt,
           // Slice 6 — a terminated run that skipped a connector says so too.
           // Omitted (last_warning untouched) when the turn never got as far
-          // as choosing its connectors; see above.
-          ...(reachedAssembly ? { warning: warningFor(entry) } : {}),
+          // as choosing its connectors; see above. Stashed skips PROVE it got
+          // that far, whatever the outcome says afterwards.
+          ...(reachedAssembly || entry.skips.length > 0 ? { warning: warningFor(entry) } : {}),
         });
       } catch (err) {
         process.stderr.write(
