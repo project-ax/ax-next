@@ -805,9 +805,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   //    the same session key); and WHERE — only placeholders whose credential is
   //    bound to this tunnel's destination host. A placeholder for any other
   //    host, or owned by any other session, is forwarded verbatim as an inert
-  //    fake token. Being on the session allowlist is NOT enough: a host the
-  //    user approved via `proxy:add-host`, or one an admin-written connector
-  //    names, may be a host someone else controls, and that
+  //    fake token. Being on the session allowlist is NOT enough: `proxy:add-host`
+  //    and private connectors let a user allowlist a host they control, and that
   //    must never make an operator-paid key substitutable there.
   //  - `generateDomainCert` static-imported (no longer dynamic).
   //  - `canaryToken` aggregated across sessions (per-session field, not
