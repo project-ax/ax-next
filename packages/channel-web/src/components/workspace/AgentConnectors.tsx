@@ -372,28 +372,14 @@ export function AgentConnectors({
           {connectors.map((row, i) => (
             <Fragment key={row.id}>
               {i > 0 && <Separator />}
-              <div className="flex min-h-11 items-center gap-2 py-1.5 pl-3 pr-1.5">
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 truncate text-[13px]">{row.name}</span>
-                    {row.health !== 'ok' && (
-                      <HealthIcon
-                        reason={healthReason(row, canSetAccount, isAdmin)}
-                        tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
-                      />
-                    )}
-                  </div>
-                  {/* Slice 4 — which account the agent signed in as, on its own
-                      quieter line so the name stays easy to scan.
-                      Provider text: a text node only, never markup. */}
-                  {row.signedIn?.account != null && (
-                    <p
-                      className="truncate text-[11.5px] leading-snug text-muted-foreground"
-                      title={row.signedIn.account}
-                    >
-                      {/* bdi: a right-to-left account can't reorder the row. */}
-                      <bdi>{row.signedIn.account}</bdi>
-                    </p>
+              <div className="flex h-11 items-center gap-2 pl-3 pr-1.5">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                  <ConnectorName id={row.id} name={row.name} account={row.signedIn?.account ?? null} />
+                  {row.health !== 'ok' && (
+                    <HealthIcon
+                      reason={healthReason(row, canSetAccount, isAdmin)}
+                      tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
+                    />
                   )}
                 </div>
                 {menuFor(row, true)}
@@ -612,6 +598,45 @@ function NoConnectors({
  * coloured: red for an error, muted for `neutral` (TASK-795 — not set up yet,
  * which is nothing broken).
  */
+/**
+ * A row's name (slice 4). Which account the agent signed in as stays off the
+ * row so the list is easy to scan: it shows in a tooltip on hover or keyboard
+ * focus, and screen readers hear it with the name. A row with no recorded
+ * account is plain text, with no tooltip and no tab stop.
+ * Provider text: text nodes only, never markup; `bdi` so a right-to-left
+ * account can't reorder what's around it.
+ */
+function ConnectorName({ id, name, account }: { id: string; name: string; account: string | null }) {
+  if (account === null) {
+    return (
+      <span data-testid={`connector-name-${id}`} className="min-w-0 truncate text-[13px]">
+        {name}
+      </span>
+    );
+  }
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            data-testid={`connector-name-${id}`}
+            tabIndex={0}
+            className="min-w-0 truncate rounded-sm text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {name}
+            <span className="sr-only">
+              , signed in as <bdi>{account}</bdi>
+            </span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          Signed in as <bdi>{account}</bdi>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 function HealthIcon({ reason, tone }: { reason: string; tone: 'error' | 'neutral' }) {
   return (
     <TooltipProvider delayDuration={200}>

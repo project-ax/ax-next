@@ -390,41 +390,48 @@ describe('which account the agent uses (slice 4)', () => {
   const EXPIRED = (account: string | null) =>
     row({ id: 'gmail', name: 'Gmail', health: 'needs-reconnect', signedIn: signedIn(account) });
 
-  it('a row shows the account on its own quieter line under the name', async () => {
+  it('a row shows only the name; the account is in a tooltip on hover', async () => {
     list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') }), SIGN_IN]);
     renderTab();
-    const account = await screen.findByTitle('bob@x.com');
-    // Its own line: no separator glued to the name, and the name stays alone.
-    expect(account.textContent).toBe('bob@x.com');
-    expect(screen.getByText('Gmail').textContent).toBe('Gmail');
-    expect(account.tagName).toBe('P');
-    // Smaller and lighter than the name, and cut to one line.
-    expect(account.className).toContain('text-muted-foreground');
-    expect(account.className).toContain('text-[11.5px]');
-    expect(account.className).toContain('truncate');
-    // Provider text is isolated, so a right-to-left account can't reorder
-    // the row around it.
-    expect(account.querySelector('bdi')?.textContent).toBe('bob@x.com');
-    // A row with no sign-in is just its name.
-    expect(screen.getByText('Linear').textContent).toBe('Linear');
+    const name = await screen.findByTestId('connector-name-gmail');
+    // The row draws the name alone; the account is for screen readers only.
+    const shown = [...name.childNodes].filter(
+      (n) => !(n instanceof HTMLElement && n.classList.contains('sr-only')),
+    );
+    expect(shown.map((n) => n.textContent).join('')).toBe('Gmail');
+    expect(name.querySelector('.sr-only')?.textContent).toBe(', signed in as bob@x.com');
+    fireEvent.pointerMove(name, { pointerType: 'mouse' });
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Signed in as bob@x.com');
   });
 
-  it('a row whose sign-in recorded no account is just its name', async () => {
+  it('the account tooltip opens on keyboard focus too', async () => {
+    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') })]);
+    renderTab();
+    const name = await screen.findByTestId('connector-name-gmail');
+    expect(name.getAttribute('tabindex')).toBe('0');
+    name.focus();
+    expect((await screen.findByRole('tooltip')).textContent).toBe('Signed in as bob@x.com');
+  });
+
+  it('a row with no recorded account is just its name, with no tooltip', async () => {
     list([row({ id: 'gmail', name: 'Gmail', signedIn: { account: null, byName: null, byYou: false, at: null } })]);
     renderTab();
-    const name = await screen.findByText('Gmail');
+    const name = await screen.findByTestId('connector-name-gmail');
     expect(name.textContent).toBe('Gmail');
-    expect(document.querySelector('[title]')?.tagName === 'P').toBe(false);
+    expect(name.getAttribute('tabindex')).toBeNull();
+    fireEvent.pointerMove(name, { pointerType: 'mouse' });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
   it('renders a hostile account as literal text, never markup', async () => {
     const evil = '<img src=x onerror=alert(1)>\u202Egro.live';
     list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn(evil) })]);
     renderTab();
-    const account = await screen.findByTitle(evil);
-    expect(account.textContent).toBe(evil);
-    expect(account.querySelector('bdi')?.textContent).toBe(evil);
-    expect(account.querySelector('img')).toBeNull();
+    const name = await screen.findByTestId('connector-name-gmail');
+    expect(name.querySelector('.sr-only')?.textContent).toBe(`, signed in as ${evil}`);
+    expect(name.querySelector('bdi')?.textContent).toBe(evil);
+    expect(name.querySelector('img')).toBeNull();
     expect(document.querySelector('img[src="x"]')).toBeNull();
   });
 
