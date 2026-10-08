@@ -156,8 +156,14 @@ describe('RoutinesList', () => {
       // Same cell as the name, not a separate row of the list.
       const nameCell = screen.getByText('heartbeat').parentElement!;
       expect(nameCell.contains(line)).toBe(true);
-      // A note, not a failure.
+      // A note, not a failure: neither the line nor anything inside it.
       expect(line.className).not.toContain('destructive');
+      expect(line.querySelector('[class*="destructive"]')).toBeNull();
+      // One line with an ellipsis in a list row; the full text is in title.
+      const text = line.querySelector('[dir="auto"]')!;
+      expect(text.className).toContain('truncate');
+      expect(text.className).not.toContain('break-words');
+      expect(text.textContent).toContain(WARNING);
     });
 
     it('shows nothing for a routine with no lastWarning', async () => {

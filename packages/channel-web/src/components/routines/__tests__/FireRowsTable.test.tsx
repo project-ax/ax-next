@@ -92,6 +92,11 @@ describe('FireRowsTable warning', () => {
     expect(line.textContent).toContain(WARNING);
     expect(line.getAttribute('title')).toBe(WARNING);
     expect(screen.getByText(WARNING)).toBeTruthy();
+    // The run history wraps, so the whole sentence reads; isolated direction.
+    const text = line.querySelector('[dir="auto"]')!;
+    expect(text.className).toContain('break-words');
+    expect(text.className).not.toContain('truncate');
+    expect(text.textContent).toContain(WARNING);
   });
 
   it('is not styled as an error', () => {
