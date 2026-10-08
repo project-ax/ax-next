@@ -4,8 +4,6 @@ import {
   requiresSharedKeyConsent,
   serviceTagForSlot,
   accountRef,
-  sharedKeyConsentMessage,
-  SHARED_KEY_CONSENT_COPY,
 } from '../credential-plan.js';
 import type { Connector } from '../types.js';
 
@@ -249,20 +247,5 @@ describe('requiresSharedKeyConsent — the act-as-you gate', () => {
     expect(requiresSharedKeyConsent(connector({ keyMode: 'workspace', visibility: 'shared' }))).toBe(
       true,
     );
-  });
-});
-
-describe('shared-key consent copy', () => {
-  it('the template names the act-as-you risk and the can-use-not-copy distinction', () => {
-    expect(SHARED_KEY_CONSENT_COPY).toContain('act as you');
-    expect(SHARED_KEY_CONSENT_COPY).toContain("can't copy");
-    expect(SHARED_KEY_CONSENT_COPY).toContain('use it');
-  });
-
-  it('sharedKeyConsentMessage interpolates the service name', () => {
-    const msg = sharedKeyConsentMessage('Salesforce');
-    expect(msg).toContain('Salesforce');
-    expect(msg).toContain('act as you');
-    expect(msg).toContain("can't copy");
   });
 });

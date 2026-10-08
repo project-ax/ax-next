@@ -273,7 +273,7 @@ export async function probeConnector(
     if (entry.scope === 'agent') {
       return {
         status: 'needs-key',
-        detail: 'Each agent adds its own key. We can test it once an agent has added one.',
+        detail: "Each agent adds its own key, so there's nothing to test here.",
       };
     }
     let rows: CredentialMetaLike[];

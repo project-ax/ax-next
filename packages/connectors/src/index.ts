@@ -95,7 +95,5 @@ export {
   requiresSharedKeyConsent,
   serviceTagForSlot,
   accountRef,
-  sharedKeyConsentMessage,
-  SHARED_KEY_CONSENT_COPY,
 } from './credential-plan.js';
 export type { CredentialPlanEntry, CredentialScope } from './credential-plan.js';

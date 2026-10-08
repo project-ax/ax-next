@@ -171,17 +171,3 @@ export function deriveCredentialPlan(
 export function requiresSharedKeyConsent(connector: Connector): boolean {
   return connector.keyMode === 'workspace' || connector.visibility === 'shared';
 }
-
-/**
- * The shared-key consent copy (design "Consent caveat"). A `%SERVICE%` placeholder
- * the connect surface fills via {@link sharedKeyConsentMessage}. Exported so the
- * future connect-flow UI renders the SAME wording the design specifies and a test
- * pins it — the consent text is a security-relevant contract, not throwaway UI copy.
- */
-export const SHARED_KEY_CONSENT_COPY =
-  "Sharing this key lets their assistant act as you on %SERVICE%. They can't copy the key — but they can use it.";
-
-/** Fill the consent copy with a concrete service name. */
-export function sharedKeyConsentMessage(service: string): string {
-  return SHARED_KEY_CONSENT_COPY.replace('%SERVICE%', service);
-}

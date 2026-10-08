@@ -1386,7 +1386,9 @@ describe('admin connector routes', () => {
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
     expect(captured.status).toBe(200);
     expect((captured.body as { status: string }).status).toBe('needs-key');
-    expect((captured.body as { detail?: string }).detail).toMatch(/each agent adds its own key/i);
+    expect((captured.body as { detail?: string }).detail).toBe(
+      "Each agent adds its own key, so there's nothing to test here.",
+    );
   });
 
   it('test: a workspace connector resolves its slot at scope:global (ownerId:null)', async () => {
