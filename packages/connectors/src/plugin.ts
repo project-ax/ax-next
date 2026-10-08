@@ -308,8 +308,9 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       // without an `auth:get-user` provider. Never fails the boot. Runs BEFORE
       // the all-shared step, so that step's dedup never keeps a row this sweep
       // would then delete (leaving the id with no definition at all).
+      let sweepDone = false;
       try {
-        await sweepNonAdminConnectors(db, localStore, bus, initCtx);
+        sweepDone = (await sweepNonAdminConnectors(db, localStore, bus, initCtx)).complete;
       } catch (err) {
         initCtx.logger.warn('connectors_non_admin_sweep_failed', {
           err: err instanceof Error ? err.message : String(err),
@@ -317,18 +318,25 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       }
       // SIGNINS-9 — every connector is shared: once, dedupe ids held by more
       // than one live row and flip private rows to shared (all-shared-step.ts).
-      // An id that had two or more SHARED definitions may hold sign-ins granted
-      // against the one that lost, so once the step has committed, its agents'
-      // sign-ins and its global client secret are purged (best-effort, counts
-      // only, purge.ts). The step catches its own errors; this guard only keeps
-      // boot alive.
-      try {
-        const { resignIds } = await makeAllConnectorsShared(db, initCtx.logger);
-        if (resignIds.length > 0) await purgeSignInsForResign(bus, initCtx, resignIds);
-      } catch (err) {
-        initCtx.logger.warn('connectors_all_shared_failed', {
-          name: err instanceof Error ? err.name : typeof err,
-        });
+      // ONLY once the non-admin sweep has completed (its marker is set): a boot
+      // where the sweep skipped (no auth provider) or failed skips this too and
+      // leaves no marker, so a later boot runs both, sweep first. An id with
+      // two or more SHARED definitions has its id-keyed credentials purged
+      // BEFORE the dedup (purge.ts); any purge failure aborts the step for a
+      // retry next boot. The step catches its own errors; this guard only
+      // keeps boot alive.
+      if (sweepDone) {
+        try {
+          await makeAllConnectorsShared(db, initCtx.logger, (targets) =>
+            purgeSignInsForResign(bus, initCtx, targets),
+          );
+        } catch (err) {
+          initCtx.logger.warn('connectors_all_shared_failed', {
+            name: err instanceof Error ? err.name : typeof err,
+          });
+        }
+      } else {
+        initCtx.logger.info('connectors_all_shared_skipped', { reason: 'non-admin-sweep-pending' });
       }
       const localAuthored = createAuthoredConnectorsStore(db);
       _authored = localAuthored;

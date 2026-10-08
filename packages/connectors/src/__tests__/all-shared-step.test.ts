@@ -6,7 +6,7 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { Kysely, PostgresDialect, type KyselyPlugin } from 'kysely';
 import pg from 'pg';
 import { runConnectorsMigration, type ConnectorDatabase } from '../migrations.js';
-import { ALL_SHARED_STEP, makeAllConnectorsShared } from '../all-shared-step.js';
+import { ALL_SHARED_STEP, makeAllConnectorsShared, type ResignTarget } from '../all-shared-step.js';
 import { createConnectorsPlugin } from '../plugin.js';
 
 // SIGNINS-9 (slice 7) — every connector is shared. A one-time boot step flips
@@ -52,6 +52,8 @@ afterEach(async () => {
   await sql('DROP TABLE IF EXISTS connectors_v1_boot_steps');
 });
 
+const capsWith = (credentials: unknown[]) =>
+  JSON.stringify({ allowedHosts: [], credentials, mcpServers: [], packages: { npm: [], pypi: [] } });
 const caps = JSON.stringify({ allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } });
 
 /** Insert a row as the pre-slice-7 code could have left it. */
@@ -59,13 +61,16 @@ async function insertRow(
   owner: string,
   id: string,
   visibility: 'private' | 'shared',
-  opts: { createdAt?: string; deleted?: boolean } = {},
+  opts: { createdAt?: string; deleted?: boolean; keyMode?: 'personal' | 'workspace'; capsJson?: string } = {},
 ): Promise<void> {
   await sql(
     `INSERT INTO connectors_v1_connectors
        (owner_user_id, connector_id, name, key_mode, visibility, capabilities, created_at, deleted_at)
-     VALUES ($1, $2, $2, 'personal', $3, $4::jsonb, $5::timestamptz, $6::timestamptz)`,
-    [owner, id, visibility, caps, opts.createdAt ?? '2026-01-01T00:00:00Z', opts.deleted ? '2026-02-01T00:00:00Z' : null],
+     VALUES ($1, $2, $2, $7, $3, $4::jsonb, $5::timestamptz, $6::timestamptz)`,
+    [
+      owner, id, visibility, opts.capsJson ?? caps, opts.createdAt ?? '2026-01-01T00:00:00Z',
+      opts.deleted ? '2026-02-01T00:00:00Z' : null, opts.keyMode ?? 'personal',
+    ],
   );
 }
 
@@ -99,6 +104,9 @@ function recordingLogger(calls: LogCall[]): Logger {
   return logger;
 }
 
+/** A purge that succeeds and does nothing (most step tests have no 2+ shared group). */
+const okPurge = async (_targets: readonly ResignTarget[]): Promise<{ failed: number }> => ({ failed: 0 });
+
 async function setup(plugins: KyselyPlugin[] = []): Promise<Kysely<ConnectorDatabase>> {
   const db = makeKysely(plugins);
   await runConnectorsMigration(db);
@@ -128,7 +136,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     await insertRow('A', 'alpha', 'private');
     await insertRow('B', 'beta', 'private');
 
-    const result = await makeAllConnectorsShared(db, recordingLogger([]));
+    const result = await makeAllConnectorsShared(db, recordingLogger([]), okPurge);
 
     expect(result).toEqual({ ran: true, flipped: 2, deduped: 0, resignIds: [] });
     expect(await rows()).toEqual([
@@ -145,7 +153,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     await insertRow('A', 'x', 'shared', { createdAt: '2026-03-01T00:00:00Z' });
     await insertRow('B', 'x', 'private', { createdAt: '2026-01-01T00:00:00Z' });
 
-    const result = await makeAllConnectorsShared(db, recordingLogger([]));
+    const result = await makeAllConnectorsShared(db, recordingLogger([]), okPurge);
 
     expect(result).toEqual({ ran: true, flipped: 0, deduped: 1, resignIds: [] });
     expect(await rows()).toEqual([
@@ -159,7 +167,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     await insertRow('A', 'y', 'private', { createdAt: '2026-01-01T00:00:00Z' });
     await insertRow('B', 'y', 'private', { createdAt: '2026-02-01T00:00:00Z' });
 
-    const result = await makeAllConnectorsShared(db, recordingLogger([]));
+    const result = await makeAllConnectorsShared(db, recordingLogger([]), okPurge);
 
     expect(result).toEqual({ ran: true, flipped: 1, deduped: 1, resignIds: [] });
     expect(await rows()).toEqual([
@@ -176,7 +184,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     await insertRow('D', 'w', 'shared', { createdAt: '2026-01-01T00:00:00Z' });
     await insertRow('C', 'w', 'shared', { createdAt: '2026-01-01T00:00:00Z' });
 
-    const result = await makeAllConnectorsShared(db, recordingLogger([]));
+    const result = await makeAllConnectorsShared(db, recordingLogger([]), okPurge);
 
     // Two SHARED definitions each: sign-ins may belong to the loser, so both
     // ids come back (sorted) for a re-sign-in purge.
@@ -195,7 +203,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     await insertRow('S1', 'crm', 'shared', { createdAt: '2026-02-01T00:00:00Z' });
     await insertRow('S2', 'crm', 'shared', { createdAt: '2026-03-01T00:00:00Z' });
 
-    const result = await makeAllConnectorsShared(db, recordingLogger([]));
+    const result = await makeAllConnectorsShared(db, recordingLogger([]), okPurge);
 
     expect(result).toEqual({ ran: true, flipped: 0, deduped: 2, resignIds: ['crm'] });
     expect(await rows()).toEqual([
@@ -205,16 +213,106 @@ describe('makeAllConnectorsShared (boot step)', () => {
     ]);
   });
 
+  it('addendum: purges every 2+-shared id BEFORE any row is soft-deleted, with the workspace refs of every workspace definition', async () => {
+    const db = await setup();
+    await insertRow('A', 'dup', 'shared', { createdAt: '2026-01-01T00:00:00Z', keyMode: 'workspace', capsJson: capsWith([{ slot: 'TOKEN', kind: 'api-key' }]) });
+    await insertRow('B', 'dup', 'shared', { createdAt: '2026-02-01T00:00:00Z', keyMode: 'workspace', capsJson: capsWith([{ slot: 'X', kind: 'api-key' }, { slot: 'Y', kind: 'api-key' }]) });
+    await insertRow('C', 'dup', 'private', { createdAt: '2025-01-01T00:00:00Z', keyMode: 'workspace', capsJson: capsWith([{ slot: 'P', kind: 'api-key' }, { slot: 'Q', kind: 'api-key' }]) });
+    await insertRow('A', 'one', 'shared', { createdAt: '2026-01-01T00:00:00Z' });
+    await insertRow('B', 'one', 'private', { createdAt: '2026-02-01T00:00:00Z' });
+    const seen: Array<{ targets: readonly ResignTarget[]; liveDuring: number }> = [];
+    const purge = async (targets: readonly ResignTarget[]) => {
+      const live = await sql('SELECT 1 FROM connectors_v1_connectors WHERE deleted_at IS NULL');
+      seen.push({ targets, liveDuring: live.length });
+      return { failed: 0 };
+    };
+
+    const result = await makeAllConnectorsShared(db, recordingLogger([]), purge);
+
+    // Called once, while all 5 rows were still live (before the dedup).
+    expect(seen).toEqual([{
+      targets: [{
+        connectorId: 'dup',
+        // Every WORKSPACE definition's global refs (the private row's too: a
+        // company key is keyed by the id, so it may have been entered for any).
+        globalRefs: ['account:dup', 'account:dup:P', 'account:dup:Q', 'account:dup:X', 'account:dup:Y'],
+      }],
+      liveDuring: 5,
+    }]);
+    expect(result).toEqual({ ran: true, flipped: 0, deduped: 3, resignIds: ['dup'] });
+  });
+
+  it('addendum: a purge that throws aborts the whole step (nothing soft-deleted, no marker, still ambiguous); the next run with a working purge completes', async () => {
+    const db = await setup();
+    await insertRow('A', 'dup', 'shared', { createdAt: '2026-01-01T00:00:00Z' });
+    await insertRow('B', 'dup', 'shared', { createdAt: '2026-02-01T00:00:00Z' });
+    await insertRow('C', 'solo', 'private');
+    const before = await rows();
+    const calls: LogCall[] = [];
+
+    const result = await makeAllConnectorsShared(db, recordingLogger(calls), async () => {
+      throw new Error('vault down for connector dup');
+    });
+
+    expect(result).toEqual({ ran: false, flipped: 0, deduped: 0, resignIds: [] });
+    expect(await rows()).toEqual(before);
+    expect(await markers()).toEqual([]);
+    expect(calls.filter((c) => c.msg === 'connectors_all_shared_failed')).toEqual([
+      { level: 'warn', msg: 'connectors_all_shared_failed', bindings: { name: 'Error' } },
+    ]);
+    expect(JSON.stringify(calls)).not.toContain('dup');
+
+    const retried: string[] = [];
+    expect(
+      await makeAllConnectorsShared(db, recordingLogger([]), async (targets) => {
+        retried.push(...targets.map((t) => t.connectorId));
+        return { failed: 0 };
+      }),
+    ).toEqual({ ran: true, flipped: 1, deduped: 1, resignIds: ['dup'] });
+    // Still ambiguous on the retry, so it was detected again.
+    expect(retried).toEqual(['dup']);
+    expect(await markers()).toEqual([ALL_SHARED_STEP]);
+  });
+
+  it('addendum: a purge that REPORTS a failure aborts too, warning a count only', async () => {
+    const db = await setup();
+    await insertRow('A', 'dup', 'shared', { createdAt: '2026-01-01T00:00:00Z' });
+    await insertRow('B', 'dup', 'shared', { createdAt: '2026-02-01T00:00:00Z' });
+    const before = await rows();
+    const calls: LogCall[] = [];
+
+    const result = await makeAllConnectorsShared(db, recordingLogger(calls), async () => ({ failed: 2 }));
+
+    expect(result).toEqual({ ran: false, flipped: 0, deduped: 0, resignIds: [] });
+    expect(await rows()).toEqual(before);
+    expect(await markers()).toEqual([]);
+    expect(calls.filter((c) => c.msg === 'connectors_all_shared_failed')).toEqual([
+      { level: 'warn', msg: 'connectors_all_shared_failed', bindings: { name: 'ResignPurgeFailed', failed: 2 } },
+    ]);
+  });
+
+  it('a group with no workspace definition passes no global refs', async () => {
+    const db = await setup();
+    await insertRow('A', 'dup', 'shared', { createdAt: '2026-01-01T00:00:00Z', capsJson: capsWith([{ slot: 'T', kind: 'api-key' }]) });
+    await insertRow('B', 'dup', 'shared', { createdAt: '2026-02-01T00:00:00Z', capsJson: capsWith([{ slot: 'T', kind: 'api-key' }]) });
+    const seen: ResignTarget[] = [];
+    await makeAllConnectorsShared(db, recordingLogger([]), async (t) => {
+      seen.push(...t);
+      return { failed: 0 };
+    });
+    expect(seen).toEqual([{ connectorId: 'dup', globalRefs: [] }]);
+  });
+
   it('does nothing on a second run', async () => {
     const db = await setup();
     await insertRow('A', 'alpha', 'private');
-    expect(await makeAllConnectorsShared(db, recordingLogger([]))).toEqual({ ran: true, flipped: 1, deduped: 0, resignIds: [] });
+    expect(await makeAllConnectorsShared(db, recordingLogger([]), okPurge)).toEqual({ ran: true, flipped: 1, deduped: 0, resignIds: [] });
 
     // A private row written after the step (e.g. by a rolled-back image) is
     // left alone: the step is one-time.
     await insertRow('B', 'beta', 'private');
     const before = await rows();
-    const result = await makeAllConnectorsShared(db, recordingLogger([]));
+    const result = await makeAllConnectorsShared(db, recordingLogger([]), okPurge);
 
     expect(result).toEqual({ ran: false, flipped: 0, deduped: 0, resignIds: [] });
     expect(await rows()).toEqual(before);
@@ -226,7 +324,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     await insertRow('A', 'x', 'shared');
     await insertRow('B', 'x', 'private', { deleted: true });
 
-    const result = await makeAllConnectorsShared(db, recordingLogger([]));
+    const result = await makeAllConnectorsShared(db, recordingLogger([]), okPurge);
 
     expect(result).toEqual({ ran: true, flipped: 0, deduped: 0, resignIds: [] });
     expect(await rows()).toEqual([
@@ -247,7 +345,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     await insertRow('owner-b', 'secret-id', 'private', { createdAt: '2026-05-01T00:00:00Z' });
     const calls: LogCall[] = [];
 
-    await makeAllConnectorsShared(db, recordingLogger(calls));
+    await makeAllConnectorsShared(db, recordingLogger(calls), okPurge);
 
     const done = calls.filter((c) => c.msg === 'connectors_all_shared');
     expect(done).toHaveLength(1);
@@ -263,7 +361,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     // A pass that changes nothing logs no `connectors_all_shared` line.
     await sql('DELETE FROM connectors_v1_boot_steps');
     const quiet: LogCall[] = [];
-    expect(await makeAllConnectorsShared(db, recordingLogger(quiet))).toEqual({ ran: true, flipped: 0, deduped: 0, resignIds: [] });
+    expect(await makeAllConnectorsShared(db, recordingLogger(quiet), okPurge)).toEqual({ ran: true, flipped: 0, deduped: 0, resignIds: [] });
     expect(quiet.filter((c) => c.msg === 'connectors_all_shared')).toEqual([]);
   });
 
@@ -277,7 +375,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     // The dedup UPDATE runs, then the flip UPDATE rejects.
     const failing = makeKysely([failNthUpdate(2)]);
     const calls: LogCall[] = [];
-    const result = await makeAllConnectorsShared(failing, recordingLogger(calls));
+    const result = await makeAllConnectorsShared(failing, recordingLogger(calls), okPurge);
 
     expect(result).toEqual({ ran: false, flipped: 0, deduped: 0, resignIds: [] });
     expect(await markers()).toEqual([]);
@@ -291,7 +389,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
     expect(JSON.stringify(calls)).not.toContain('secret-id');
 
     const healthy = makeKysely();
-    expect(await makeAllConnectorsShared(healthy, recordingLogger([]))).toEqual({ ran: true, flipped: 2, deduped: 1, resignIds: [] });
+    expect(await makeAllConnectorsShared(healthy, recordingLogger([]), okPurge)).toEqual({ ran: true, flipped: 2, deduped: 1, resignIds: [] });
     expect(await rows()).toEqual([
       ['C', 'solo', 'shared', true],
       ['A', 'x', 'shared', true],
@@ -302,7 +400,7 @@ describe('makeAllConnectorsShared (boot step)', () => {
 
   it("an INSERT that omits visibility reads back as shared (the column's DEFAULT)", async () => {
     const db = await setup();
-    await makeAllConnectorsShared(db, recordingLogger([]));
+    await makeAllConnectorsShared(db, recordingLogger([]), okPurge);
 
     await sql(
       `INSERT INTO connectors_v1_connectors (owner_user_id, connector_id, name, key_mode, capabilities)
@@ -377,18 +475,32 @@ const purgeCallsFor = (calls: HookCall[], id: string) =>
 describe('all-connectors-shared at plugin init (fix round 1)', () => {
   it('two SHARED definitions: keeps the earliest and purges the id\'s agent sign-ins and global client secret, logging a count only', async () => {
     await setup();
-    await insertRow('owner-early', 'dupid', 'shared', { createdAt: '2026-01-01T00:00:00Z' });
-    await insertRow('owner-late', 'dupid', 'shared', { createdAt: '2026-02-01T00:00:00Z' });
+    // Both workspace-keyed, with different slots: the company key may have
+    // been entered for either definition, so every global ref of either goes.
+    await insertRow('owner-early', 'dupid', 'shared', {
+      createdAt: '2026-01-01T00:00:00Z', keyMode: 'workspace', capsJson: capsWith([{ slot: 'TOKEN', kind: 'api-key' }]),
+    });
+    await insertRow('owner-late', 'dupid', 'shared', {
+      createdAt: '2026-02-01T00:00:00Z', keyMode: 'workspace',
+      capsJson: capsWith([{ slot: 'A', kind: 'api-key' }, { slot: 'B', kind: 'api-key' }]),
+    });
     const calls: HookCall[] = [];
-    const { result: h, text } = await captureStdout(() => bootWith([capturePlugin(calls)]));
+    const { result: h, text } = await captureStdout(() =>
+      bootWith([capturePlugin(calls, { 'owner-early': true, 'owner-late': true })]),
+    );
     try {
       expect(await rows()).toEqual([
         ['owner-early', 'dupid', 'shared', true],
         ['owner-late', 'dupid', 'shared', false],
       ]);
+      const del = (ref: string) => ({ hook: 'credentials:delete', input: { scope: 'global', ownerId: null, ref } });
       expect(calls).toEqual([
         { hook: 'credentials:purge-account', input: { connectorId: 'dupid', scopes: ['agent'] } },
-        { hook: 'credentials:delete', input: { scope: 'global', ownerId: null, ref: 'account:dupid:OAUTH_CLIENT_SECRET' } },
+        del('account:dupid:OAUTH_CLIENT_SECRET'),
+        // Fix round 2 — the workspace (company) keys of every definition.
+        del('account:dupid'),
+        del('account:dupid:A'),
+        del('account:dupid:B'),
       ]);
       const lines = text.split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l) as Record<string, unknown>);
       expect(lines.filter((l) => l['msg'] === 'connectors_all_shared')).toEqual([
@@ -408,7 +520,7 @@ describe('all-connectors-shared at plugin init (fix round 1)', () => {
     await insertRow('A', 'x', 'shared', { createdAt: '2026-02-01T00:00:00Z' });
     await insertRow('B', 'x', 'private', { createdAt: '2026-01-01T00:00:00Z' });
     const calls: HookCall[] = [];
-    const h = await bootWith([capturePlugin(calls)]);
+    const h = await bootWith([capturePlugin(calls, { A: true, B: true })]);
     try {
       expect(await rows()).toEqual([
         ['A', 'x', 'shared', true],
@@ -425,7 +537,7 @@ describe('all-connectors-shared at plugin init (fix round 1)', () => {
     await insertRow('A', 'x', 'private', { createdAt: '2026-01-01T00:00:00Z' });
     await insertRow('B', 'x', 'private', { createdAt: '2026-02-01T00:00:00Z' });
     const calls: HookCall[] = [];
-    const h = await bootWith([capturePlugin(calls)]);
+    const h = await bootWith([capturePlugin(calls, { A: true, B: true })]);
     try {
       expect(await rows()).toEqual([
         ['A', 'x', 'shared', true],
@@ -464,6 +576,26 @@ describe('all-connectors-shared at plugin init (fix round 1)', () => {
       expect(purgeCallsFor(calls, 'crm')).toEqual([]);
     } finally {
       await h.close({ onError: () => {} });
+    }
+  });
+
+  it('fix round 2: no auth provider → the non-admin sweep skips unmarked, so the step does not run and leaves no marker; a later boot with the sweep done runs it', async () => {
+    await setup();
+    await insertRow('A', 'x', 'private');
+    const first = await bootWith([capturePlugin([])]);
+    try {
+      expect(await rows()).toEqual([['A', 'x', 'private', true]]);
+      expect(await markers()).toEqual([]);
+    } finally {
+      await first.close({ onError: () => {} });
+    }
+
+    const second = await bootWith([capturePlugin([], { A: true })]);
+    try {
+      expect(await rows()).toEqual([['A', 'x', 'shared', true]]);
+      expect((await markers()).sort()).toEqual([ALL_SHARED_STEP, 'non-admin-connector-removal'].sort());
+    } finally {
+      await second.close({ onError: () => {} });
     }
   });
 });

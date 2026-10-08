@@ -193,7 +193,8 @@ export async function hasOtherLiveSameIdConnectorForSystemSweep(
 
 /**
  * DELIBERATELY UNSCOPED — every owner's LIVE connector rows, identity plus the
- * vestigial `visibility` column and `created_at`: exactly what the one-time
+ * vestigial `visibility` column, `created_at`, and the key mode + capabilities
+ * (for the global refs of an id it must purge): exactly what the one-time
  * SIGNINS-9 boot step (all-shared-step.ts) needs to pick one row per id. The
  * step is the ONLY caller (it runs as `system` during plugin init, inside its
  * own transaction, hence the `db` parameter); no request path may use it.
@@ -202,7 +203,7 @@ export async function hasOtherLiveSameIdConnectorForSystemSweep(
 export function liveRowsForAllSharedStep(db: Kysely<ConnectorDatabase>) {
   return db
     .selectFrom('connectors_v1_connectors')
-    .select(['owner_user_id', 'connector_id', 'visibility', 'created_at'])
+    .select(['owner_user_id', 'connector_id', 'visibility', 'created_at', 'key_mode', 'capabilities'])
     .where('deleted_at', 'is', null);
 }
 
