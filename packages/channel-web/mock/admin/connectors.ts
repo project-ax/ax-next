@@ -264,10 +264,24 @@ function isReadOnly(row: StoredConnector, actorId: string, mode: RouteMode): boo
   return mode === 'user' && (row.userId !== actorId || row.keyMode === 'workspace');
 }
 
-/** Mirrors the real `changesOwnerOnlyFields`: keyMode and capabilities. */
+/** Stable JSON: object keys sorted, so key order never reads as a change
+ *  (the real route's `canonicalJson`). */
+function canonicalJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val: unknown) =>
+    val !== null && typeof val === 'object' && !Array.isArray(val)
+      ? Object.fromEntries(
+          Object.entries(val as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+      : val,
+  );
+}
+
+/** Mirrors the real `changesOwnerOnlyFields`: keyMode and capabilities,
+ *  compared key-order-insensitively. (The mock skips the real route's zod
+ *  parse and OAuth slot defaults.) */
 function changesOwnerOnlyFields(existing: StoredConnector, body: Record<string, unknown>): boolean {
   if ('keyMode' in body && body.keyMode !== existing.keyMode) return true;
-  if ('capabilities' in body && JSON.stringify(body.capabilities) !== JSON.stringify(existing.capabilities))
+  if ('capabilities' in body && canonicalJson(body.capabilities) !== canonicalJson(existing.capabilities))
     return true;
   return false;
 }

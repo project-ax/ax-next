@@ -377,6 +377,18 @@ describe('mock admin connectors', () => {
         body: JSON.stringify({ capabilities: { allowedHosts: ['evil.example'], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } } }),
       });
       await expectStatus(caps, 403);
+      // The SAME capabilities with their keys in another order are not a
+      // change (the real route compares canonical JSON), so the save is a 200.
+      const reorder = (v: unknown): unknown =>
+        v !== null && typeof v === 'object' && !Array.isArray(v)
+          ? Object.fromEntries(Object.entries(v as Record<string, unknown>).reverse().map(([k, x]) => [k, reorder(x)]))
+          : Array.isArray(v) ? v.map(reorder) : v;
+      const sameCaps = await fetch(`${url}/admin/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed again', capabilities: reorder(owned.capabilities) }),
+      });
+      await expectStatus(sameCaps, 200);
 
       // Any admin may delete it.
       const del = await fetch(`${url}/admin/connectors/gdrive`, {
