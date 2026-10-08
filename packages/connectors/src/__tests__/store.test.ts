@@ -572,6 +572,48 @@ describe('validateCapabilities — stdio removed', () => {
   });
 });
 
+// Fix round 1 (SIGNINS-9) — every upsert path writes visibility 'shared', so a
+// rolled-back image never reads a resurrected or edited row as private.
+describe('createConnectorStore — upserts write the vestigial visibility as shared', () => {
+  async function insertPrivate(db: ReturnType<typeof makeKysely>, deleted: boolean): Promise<void> {
+    await db.insertInto('connectors_v1_connectors').values({
+      owner_user_id: 'owner', connector_id: 'crm', name: 'CRM', description: '', usage_note: '',
+      key_mode: 'personal', visibility: 'private',
+      capabilities: JSON.stringify(caps()) as unknown as object,
+      deleted_at: deleted ? new Date() : null, created_at: new Date(), updated_at: new Date(),
+    }).execute();
+  }
+  const column = async (db: ReturnType<typeof makeKysely>) =>
+    (await db.selectFrom('connectors_v1_connectors').select('visibility')
+      .where('owner_user_id', '=', 'owner').where('connector_id', '=', 'crm').executeTakeFirstOrThrow()).visibility;
+  const base = { userId: 'owner', connectorId: 'crm', name: 'CRM again', description: '', usageNote: '', keyMode: 'personal' as const, capabilities: caps() };
+
+  it('resurrecting a private tombstone stores shared', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    await insertPrivate(db, true);
+    const out = await createConnectorStore(db).upsert(base);
+    expect(out.created).toBe(true);
+    expect(await column(db)).toBe('shared');
+  });
+
+  it('an updateOnly edit of a live private row (a failed boot step) stores shared', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    await insertPrivate(db, false);
+    await createConnectorStore(db).upsert({ ...base, updateOnly: true });
+    expect(await column(db)).toBe('shared');
+  });
+
+  it('a plain upsert over a live private row stores shared', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    await insertPrivate(db, false);
+    await createConnectorStore(db).upsert(base);
+    expect(await column(db)).toBe('shared');
+  });
+});
+
 describe('createConnectorStore — id liveness across owners (slice 2b)', () => {
   it('hasLiveById counts any owner, never a tombstone', async () => {
     const db = makeKysely();

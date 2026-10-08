@@ -38,7 +38,7 @@ import { makeAllConnectorsShared } from './all-shared-step.js';
 import { listEffectiveConnectors } from './effective-connectors.js';
 import { requireUserId } from './input-guards.js';
 import { assertOwnClientSecretRefs } from './oauth-client-secret-ref.js';
-import { purgeConnectorState } from './purge.js';
+import { purgeConnectorState, purgeSignInsForResign } from './purge.js';
 import { sweepNonAdminConnectors } from './non-admin-sweep.js';
 import { sweepStdioConnectors } from './stdio-sweep.js';
 import { deriveToolNamespaces, diffToolNamespaces } from './tool-namespace.js';
@@ -303,25 +303,31 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       await sweepStdioConnectors(db, bus, initCtx);
       const localStore = createConnectorStore(db);
       _store = localStore;
-      // SIGNINS-9 — every connector is shared: once, dedupe ids held by more
-      // than one live row and flip private rows to shared (all-shared-step.ts).
-      // Runs before the non-admin sweep so that sweep sees one row per id.
-      // The step catches its own errors; this guard only keeps boot alive.
-      try {
-        await makeAllConnectorsShared(db, initCtx.logger);
-      } catch (err) {
-        initCtx.logger.warn('connectors_all_shared_failed', {
-          name: err instanceof Error ? err.name : typeof err,
-        });
-      }
       // Slice 2b — only admins define connectors: remove the ones people made,
       // once, with full delete cleanup (non-admin-sweep.ts). Skips entirely
-      // without an `auth:get-user` provider. Never fails the boot.
+      // without an `auth:get-user` provider. Never fails the boot. Runs BEFORE
+      // the all-shared step, so that step's dedup never keeps a row this sweep
+      // would then delete (leaving the id with no definition at all).
       try {
         await sweepNonAdminConnectors(db, localStore, bus, initCtx);
       } catch (err) {
         initCtx.logger.warn('connectors_non_admin_sweep_failed', {
           err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      // SIGNINS-9 — every connector is shared: once, dedupe ids held by more
+      // than one live row and flip private rows to shared (all-shared-step.ts).
+      // An id that had two or more SHARED definitions may hold sign-ins granted
+      // against the one that lost, so once the step has committed, its agents'
+      // sign-ins and its global client secret are purged (best-effort, counts
+      // only, purge.ts). The step catches its own errors; this guard only keeps
+      // boot alive.
+      try {
+        const { resignIds } = await makeAllConnectorsShared(db, initCtx.logger);
+        if (resignIds.length > 0) await purgeSignInsForResign(bus, initCtx, resignIds);
+      } catch (err) {
+        initCtx.logger.warn('connectors_all_shared_failed', {
+          name: err instanceof Error ? err.name : typeof err,
         });
       }
       const localAuthored = createAuthoredConnectorsStore(db);

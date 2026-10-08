@@ -7,6 +7,63 @@ import {
 import { deriveToolNamespaces } from './tool-namespace.js';
 import type { Capabilities, Connector, ConnectorDeletedEvent } from './types.js';
 
+const AGENT_SCOPE: Array<'agent'> = ['agent'];
+
+/** Delete one GLOBAL-scope ref. Throws on failure; callers decide what to log. */
+async function deleteGlobalRef(bus: HookBus, ctx: AgentContext, ref: string): Promise<void> {
+  await bus.call('credentials:delete', ctx, { scope: 'global', ownerId: null, ref });
+}
+
+/** Purge every agent's sign-ins for an id (agent scope only). Throws on failure. */
+async function purgeAgentScopeSignIns(bus: HookBus, ctx: AgentContext, connectorId: string): Promise<number> {
+  const out = await bus.call<
+    { connectorId: string; scopes: Array<'agent'> },
+    { purged: number }
+  >('credentials:purge-account', ctx, { connectorId, scopes: AGENT_SCOPE });
+  return out.purged;
+}
+
+/**
+ * SIGNINS-9, fix round 1 — after the all-shared boot step resolved an id that
+ * had two or more SHARED definitions, the id's sign-ins may have been granted
+ * against the definition that lost. Purge, for each id, every agent's sign-ins
+ * (agent scope) and the global OAuth client secret
+ * (`account:<id>:OAUTH_CLIENT_SECRET`), so agents sign in again against the
+ * kept definition. The workspace company key (`account:<id>[:SLOT]` at global)
+ * is left alone: an admin supplied it for the id, not for a server.
+ *
+ * Best-effort (soft-deps, failures swallowed) and counts only: the boot step
+ * promises never to log ids or owners, so nothing here names one.
+ */
+export async function purgeSignInsForResign(
+  bus: HookBus,
+  ctx: AgentContext,
+  connectorIds: readonly string[],
+): Promise<{ failed: number }> {
+  let failed = 0;
+  for (const connectorId of connectorIds) {
+    if (bus.hasService('credentials:purge-account')) {
+      try {
+        await purgeAgentScopeSignIns(bus, ctx, connectorId);
+      } catch {
+        failed += 1;
+      }
+    }
+    if (bus.hasService('credentials:delete')) {
+      try {
+        await deleteGlobalRef(bus, ctx, oauthClientSecretRefFor(connectorId));
+      } catch {
+        failed += 1;
+      }
+    }
+  }
+  if (connectorIds.length > 0) {
+    const log = failed > 0 ? ctx.logger.warn.bind(ctx.logger) : ctx.logger.info.bind(ctx.logger);
+    log('connectors_all_shared_resign_purged', { ids: connectorIds.length, failed });
+  }
+  return { failed };
+}
+
 /** What `purgeConnectorState` reads from a connector — no more. */
 export type PurgeableConnector = Pick<Connector, 'id' | 'keyMode'> & {
   capabilities: Pick<Capabilities, 'credentials' | 'mcpServers'>;
@@ -79,9 +136,12 @@ export async function purgeConnectorState(
     // TASK-797 — the connector's OAuth client secret is not a plan slot, but it
     // is the connector's own key too: the editor stores it at global. Like the
     // plan's global refs it is owner-independent, so it is purged only with
-    // `purgeGlobal` (which callers withhold while another same-id connector
-    // survives). SIGNINS-9: every connector is shared, so there is no private
-    // definition whose delete must be kept away from it.
+    // `purgeGlobal`. What callers pass: `deleteConnector` passes the caller's
+    // `purgeGlobal` straight through (the admin-only DELETE route sets it), even
+    // while another same-id connector survives; the boot stdio and non-admin
+    // sweeps withhold it while another live connector carries the id.
+    // SIGNINS-9: every connector is shared, so there is no private definition
+    // whose delete must be kept away from it.
     const clientSecretRef = oauthClientSecretRefFor(connectorId);
     const ownsClientSecret = namesOAuthClientSecretRef(connector.capabilities, clientSecretRef);
     const globalRefs: string[] = [
@@ -98,7 +158,7 @@ export async function purgeConnectorState(
         continue;
       }
       try {
-        await bus.call('credentials:delete', ctx, { scope: 'global', ownerId: null, ref });
+        await deleteGlobalRef(bus, ctx, ref);
       } catch (err) {
         failed.push(`credentials:delete:global:${ref}`);
         ctx.logger.warn('connectors_delete_credential_purge_failed', {
@@ -122,16 +182,13 @@ export async function purgeConnectorState(
       reason: opts.agentSignInsSkipReason,
     });
   } else if (bus.hasService('credentials:purge-account')) {
-    const scopes: Array<'agent'> = ['agent'];
+    const scopes = AGENT_SCOPE;
     try {
-      const out = await bus.call<
-        { connectorId: string; scopes: Array<'agent'> },
-        { purged: number }
-      >('credentials:purge-account', ctx, { connectorId, scopes });
+      const purged = await purgeAgentScopeSignIns(bus, ctx, connectorId);
       ctx.logger.info('connectors_delete_agent_signins_purged', {
         connectorId,
         scopes,
-        purged: out.purged,
+        purged,
       });
     } catch (err) {
       failed.push('credentials:purge-account');
